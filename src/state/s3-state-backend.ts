@@ -86,6 +86,19 @@ export class S3StateBackend {
   }
 
   /**
+   * Read-only accessor for the S3 key prefix this backend writes under
+   * (defaults to `cdkd`). Used by the cross-account `Fn::GetStackOutput`
+   * resolver when it constructs an ephemeral state backend pointed at
+   * the producer account's bucket — the producer's prefix should match
+   * the consumer's prefix (both sides almost always default to `cdkd`,
+   * but `--state-prefix` overrides at the consumer side propagate
+   * cleanly).
+   */
+  get prefix(): string {
+    return this.config.prefix;
+  }
+
+  /**
    * Get the new (region-scoped) S3 key for a stack's state file.
    */
   private getStateKey(stackName: string, region: string): string {

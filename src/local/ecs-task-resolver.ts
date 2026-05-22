@@ -9,7 +9,11 @@ import {
   tryResolveImageFnJoin,
   type ImageResolutionContext,
 } from './intrinsic-image.js';
-import { substituteAgainstState, type SubstitutionContext } from './state-resolver.js';
+import {
+  substituteAgainstState,
+  substituteAgainstStateAsync,
+  type SubstitutionContext,
+} from './state-resolver.js';
 
 /**
  * Result of resolving a `cdkd local run-task <target>` argument back to a
@@ -231,6 +235,15 @@ export interface EcsImageResolutionNeeds {
    * path — silent drop would mount an empty anonymous volume).
    */
   needsEnvOrSecretSubstitution: boolean;
+  /**
+   * Any container's `Environment[].Value` OR `Secrets[].ValueFrom` is a
+   * cross-stack intrinsic (top-level `Fn::ImportValue` /
+   * `Fn::GetStackOutput`). Issue #454 — gates the cross-stack resolver
+   * construction inside the `--from-state` flow so literal +
+   * same-stack-intrinsic env maps don't pay the extra S3-client / index-
+   * load cost.
+   */
+  needsCrossStackResolver: boolean;
 }
 
 export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolutionNeeds {
@@ -238,6 +251,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
   let needsPseudoParameters = false;
   let needsStateResources = false;
   let needsEnvOrSecretSubstitution = false;
+  let needsCrossStackResolver = false;
 
   for (const res of Object.values(resources)) {
     if (res.Type !== 'AWS::ECS::TaskDefinition') continue;
@@ -253,6 +267,10 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
       if (need.pseudo) needsPseudoParameters = true;
       if (need.state) needsStateResources = true;
       if (containerHasIntrinsicEnvOrSecret(co)) needsEnvOrSecretSubstitution = true;
+      if (containerHasCrossStackEnvOrSecret(co)) {
+        needsEnvOrSecretSubstitution = true;
+        needsCrossStackResolver = true;
+      }
     }
     // Volumes[].Host.SourcePath as a CFn intrinsic (Gap 6 of #286).
     const rawVolumes = props['Volumes'];
@@ -275,7 +293,44 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
       needsEnvOrSecretSubstitution = true;
     }
   }
-  return { needsPseudoParameters, needsStateResources, needsEnvOrSecretSubstitution };
+  return {
+    needsPseudoParameters,
+    needsStateResources,
+    needsEnvOrSecretSubstitution,
+    needsCrossStackResolver,
+  };
+}
+
+/**
+ * Returns true when any `Environment[].Value` or `Secrets[].ValueFrom`
+ * is a top-level `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic.
+ * Issue #454 — gates cross-stack resolver construction so literal +
+ * same-stack-intrinsic env / secret maps don't pay the extra cost.
+ */
+function containerHasCrossStackEnvOrSecret(c: Record<string, unknown>): boolean {
+  const env = c['Environment'];
+  if (Array.isArray(env)) {
+    for (const entry of env) {
+      if (!entry || typeof entry !== 'object') continue;
+      const v = (entry as Record<string, unknown>)['Value'];
+      if (isCrossStackIntrinsic(v)) return true;
+    }
+  }
+  const secrets = c['Secrets'];
+  if (Array.isArray(secrets)) {
+    for (const entry of secrets) {
+      if (!entry || typeof entry !== 'object') continue;
+      const v = (entry as Record<string, unknown>)['ValueFrom'];
+      if (isCrossStackIntrinsic(v)) return true;
+    }
+  }
+  return false;
+}
+
+function isCrossStackIntrinsic(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return 'Fn::ImportValue' in obj || 'Fn::GetStackOutput' in obj;
 }
 
 /**
@@ -1400,5 +1455,125 @@ export function checkVolumeHostPath(hostPath: string): boolean {
     return existsSync(hostPath) && statSync(hostPath).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/**
+ * Async post-pass that walks the resolved task's container Environment +
+ * Secrets entries from the raw template (preserved in `task.resource`)
+ * and re-attempts substitution via {@link substituteAgainstStateAsync}
+ * against the supplied context. The sync `parseContainerDefinition`
+ * pass already substituted everything the legacy resolver handles; this
+ * pass picks up the additional shapes the async resolver supports —
+ * specifically `Fn::ImportValue` / `Fn::GetStackOutput` (issue #454).
+ *
+ * Resolved entries are patched onto the container's `environment` /
+ * `secrets` map AND the corresponding `warnings` entries are filtered
+ * out so the CLI doesn't print a stale per-container warn for an entry
+ * the post-pass successfully resolved. Entries that STILL can't resolve
+ * (e.g. producer stack not deployed) keep their original warning so the
+ * CLI's UX matches the sync path.
+ *
+ * Pure-functional on the task structure outside of in-place mutation of
+ * the container's `environment` / `secrets` / `warnings` arrays. The
+ * task is expected to be the same `ResolvedEcsTask` instance returned
+ * by `resolveEcsTaskTarget` — the runner downstream reads from these
+ * fields directly.
+ */
+export async function applyCrossStackResolverToTask(
+  task: ResolvedEcsTask,
+  context: SubstitutionContext
+): Promise<void> {
+  if (!context.crossStackResolver) return;
+  const props = task.resource.Properties ?? {};
+  const rawContainers = props['ContainerDefinitions'];
+  if (!Array.isArray(rawContainers)) return;
+
+  for (let idx = 0; idx < task.containers.length; idx += 1) {
+    const container = task.containers[idx]!;
+    const raw = rawContainers[idx];
+    if (!raw || typeof raw !== 'object') continue;
+    const c = raw as Record<string, unknown>;
+    const containerName = pickString(c['Name']) ?? container.name;
+
+    // Track keys the post-pass resolved so we can filter the matching
+    // entries out of `container.warnings` (which the sync pass populated
+    // with "dropped: <reason>" lines).
+    const resolvedEnvKeys = new Set<string>();
+    const resolvedSecretNames = new Set<string>();
+
+    // Environment[].Value
+    if (Array.isArray(c['Environment'])) {
+      for (const entry of c['Environment'] as unknown[]) {
+        if (!entry || typeof entry !== 'object') continue;
+        const e = entry as Record<string, unknown>;
+        const key = pickString(e['Name']);
+        const value = e['Value'];
+        if (!key) continue;
+        // Skip literal values + entries already resolved by the sync
+        // pass (present in `container.environment`).
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+          continue;
+        }
+        if (key in container.environment) continue;
+        if (!isCrossStackIntrinsic(value)) {
+          // The sync pass already tried this — re-trying here can't
+          // produce a different outcome.
+          continue;
+        }
+        const sub = await substituteAgainstStateAsync(value, context);
+        if (sub.kind === 'literal') {
+          container.environment[key] = String(sub.value);
+          resolvedEnvKeys.add(key);
+        }
+      }
+    }
+
+    // Secrets[].ValueFrom
+    if (Array.isArray(c['Secrets'])) {
+      for (const entry of c['Secrets'] as unknown[]) {
+        if (!entry || typeof entry !== 'object') continue;
+        const e = entry as Record<string, unknown>;
+        const sName = pickString(e['Name']);
+        const valueFromRaw = e['ValueFrom'];
+        if (!sName) continue;
+        if (typeof valueFromRaw === 'string' && valueFromRaw.length > 0) continue;
+        if (container.secrets.some((s) => s.name === sName)) continue;
+        if (!isCrossStackIntrinsic(valueFromRaw)) continue;
+        const sub = await substituteAgainstStateAsync(valueFromRaw, context);
+        if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
+          container.secrets.push({ name: sName, valueFrom: sub.value });
+          resolvedSecretNames.add(sName);
+        }
+      }
+    }
+
+    if (resolvedEnvKeys.size > 0 || resolvedSecretNames.size > 0) {
+      container.warnings = container.warnings.filter((w) => {
+        for (const k of resolvedEnvKeys) {
+          if (w.startsWith(`Environment '${k}' dropped:`)) return false;
+        }
+        for (const k of resolvedSecretNames) {
+          if (w.startsWith(`Secret '${k}' dropped:`)) return false;
+        }
+        return true;
+      });
+      // Same filter at the task-level (the per-container warnings are
+      // re-emitted onto `task.warnings` by `parseEcsTaskFromCdkResource`,
+      // prefixed with `Container '<name>': `).
+      task.warnings = task.warnings.filter((w) => {
+        for (const k of resolvedEnvKeys) {
+          if (w.startsWith(`Container '${containerName}': Environment '${k}' dropped:`)) {
+            return false;
+          }
+        }
+        for (const k of resolvedSecretNames) {
+          if (w.startsWith(`Container '${containerName}': Secret '${k}' dropped:`)) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
   }
 }
