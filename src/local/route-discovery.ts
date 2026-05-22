@@ -4,6 +4,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
+import { isSupportedSubtype, type SupportedSubtype } from './httpv2-service-integration.js';
 
 /**
  * One discovered API → Lambda route for `cdkd local start-api`.
@@ -141,6 +142,26 @@ export interface DiscoveredRoute {
    * `unsupported` instead — cdkd cannot run their VTL mapping templates.
    */
   mockCors?: { statusCode: number; headers: Record<string, string> };
+  /**
+   * Set on HTTP API v2 routes wired to an AWS service integration
+   * (`IntegrationType: AWS_PROXY` + `IntegrationSubtype`) — see AWS
+   * docs: https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html
+   *
+   * cdkd dispatches the route via `httpv2-service-integration.ts`
+   * (per-subtype SDK adapter); `lambdaLogicalId` is the empty string
+   * (no Lambda backs the route). The `subtype` value is one of the
+   * AWS-documented supported subtypes; unrecognized `IntegrationSubtype`
+   * values fall through to {@link DiscoveredRoute.unsupported} so they
+   * still surface a clear 501.
+   *
+   * Mutually exclusive with {@link DiscoveredRoute.unsupported} and
+   * {@link DiscoveredRoute.mockCors}.
+   */
+  serviceIntegration?: {
+    subtype: SupportedSubtype;
+    requestParameters: Readonly<Record<string, unknown>>;
+    responseParameters?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  };
   /** Diagnostic only — used in route-table output and error messages. */
   declaredAt: string;
 }
@@ -641,15 +662,13 @@ function discoverHttpApiRoute(
   }
   if (integrationProps['IntegrationSubtype'] !== undefined) {
     return [
-      {
-        ...baseRoute,
-        lambdaLogicalId: '',
-        unsupported: {
-          reason: `${stackName}/${logicalId}: HTTP API v2 service integration with IntegrationSubtype '${stringifyValue(
-            integrationProps['IntegrationSubtype']
-          )}' is not supported (cdkd cannot proxy directly to SQS / EventBridge / etc.).`,
-        },
-      },
+      classifyServiceIntegrationRoute(
+        baseRoute,
+        integrationProps,
+        stackName,
+        logicalId,
+        integrationLogicalId
+      ),
     ];
   }
 
@@ -674,6 +693,75 @@ function discoverHttpApiRoute(
       lambdaLogicalId: arnOutcome.logicalId,
     },
   ];
+}
+
+/**
+ * Classify an HTTP API v2 route whose `IntegrationSubtype` is set
+ * (service integration, no Lambda backing). Recognized subtypes
+ * become `serviceIntegration` routes the HTTP server dispatches via
+ * the SDK adapter table in `httpv2-service-integration.ts`;
+ * unrecognized subtypes (typo / future-AWS-subtype-cdkd-doesn't-bundle
+ * an SDK for) become deferred-501 unsupported routes.
+ *
+ * `RequestParameters` is the load-bearing field for dispatch — it
+ * carries the SDK input as a flat map keyed by SDK parameter name.
+ * Missing / non-object RequestParameters surfaces as unsupported (the
+ * SDK call would have nothing to send).
+ */
+function classifyServiceIntegrationRoute(
+  baseRoute: Omit<DiscoveredRoute, 'lambdaLogicalId'>,
+  integrationProps: Record<string, unknown>,
+  stackName: string,
+  routeLogicalId: string,
+  integrationLogicalId: string
+): DiscoveredRoute {
+  const subtypeRaw = integrationProps['IntegrationSubtype'];
+  const declaredAt = `${stackName}/${routeLogicalId}`;
+
+  if (!isSupportedSubtype(subtypeRaw)) {
+    return {
+      ...baseRoute,
+      lambdaLogicalId: '',
+      unsupported: {
+        reason: `${declaredAt}: HTTP API v2 service integration subtype '${stringifyValue(
+          subtypeRaw
+        )}' is not supported by cdkd local start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
+      },
+    };
+  }
+
+  const requestParameters = integrationProps['RequestParameters'];
+  if (
+    !requestParameters ||
+    typeof requestParameters !== 'object' ||
+    Array.isArray(requestParameters)
+  ) {
+    return {
+      ...baseRoute,
+      lambdaLogicalId: '',
+      unsupported: {
+        reason: `${stackName}/${integrationLogicalId}: HTTP API v2 service integration '${subtypeRaw}' is missing RequestParameters or it is not an object — cannot dispatch to the SDK without input mapping.`,
+      },
+    };
+  }
+
+  const responseParameters = integrationProps['ResponseParameters'];
+  const validatedResponseParameters =
+    responseParameters &&
+    typeof responseParameters === 'object' &&
+    !Array.isArray(responseParameters)
+      ? (responseParameters as Record<string, Record<string, string>>)
+      : undefined;
+
+  return {
+    ...baseRoute,
+    lambdaLogicalId: '',
+    serviceIntegration: {
+      subtype: subtypeRaw as SupportedSubtype,
+      requestParameters: requestParameters as Record<string, unknown>,
+      ...(validatedResponseParameters && { responseParameters: validatedResponseParameters }),
+    },
+  };
 }
 
 /**

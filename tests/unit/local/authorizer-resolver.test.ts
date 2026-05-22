@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   attachAuthorizers,
+  findIgnoredServiceIntegrationAuthorizers,
   resolveHttpApiAuthorizer,
   resolveRestV1Authorizer,
 } from '../../../src/local/authorizer-resolver.js';
@@ -626,5 +627,129 @@ describe('attachAuthorizers', () => {
       declaredAt: 'S/Method',
     };
     expect(() => attachAuthorizers([stack], [route])).toThrow(RouteDiscoveryError);
+  });
+});
+
+describe('findIgnoredServiceIntegrationAuthorizers (PR #500 / issue #502)', () => {
+  function svcRoute(declaredAt: string): DiscoveredRoute {
+    // Minimal service-integration shape — only the bits the helper reads.
+    return {
+      method: 'POST',
+      pathPattern: '/sqs',
+      source: 'http-api',
+      apiVersion: 'v2',
+      stage: '$default',
+      declaredAt,
+      lambdaLogicalId: '',
+      serviceIntegration: {
+        subtype: 'SQS-SendMessage',
+        requestParameters: { QueueUrl: 'q' },
+      },
+    } as unknown as DiscoveredRoute;
+  }
+
+  it('surfaces routes with AuthorizationType: JWT + AuthorizerId Ref', () => {
+    const stack = buildStack('S', {
+      MyRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          AuthorizationType: 'JWT',
+          AuthorizerId: { Ref: 'MyJwtAuth' },
+        },
+      },
+    });
+    const found = findIgnoredServiceIntegrationAuthorizers([stack], [svcRoute('S/MyRoute')]);
+    expect(found).toEqual([{ declaredAt: 'S/MyRoute', authorizerName: 'MyJwtAuth' }]);
+  });
+
+  it('surfaces routes with AuthorizationType: CUSTOM (Lambda authorizer)', () => {
+    const stack = buildStack('S', {
+      MyRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          AuthorizationType: 'CUSTOM',
+          AuthorizerId: { Ref: 'MyLambdaAuth' },
+        },
+      },
+    });
+    const found = findIgnoredServiceIntegrationAuthorizers([stack], [svcRoute('S/MyRoute')]);
+    expect(found).toEqual([{ declaredAt: 'S/MyRoute', authorizerName: 'MyLambdaAuth' }]);
+  });
+
+  it('surfaces routes with AuthorizationType: AWS_IAM via the sentinel name', () => {
+    const stack = buildStack('S', {
+      MyRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          AuthorizationType: 'AWS_IAM',
+        },
+      },
+    });
+    const found = findIgnoredServiceIntegrationAuthorizers([stack], [svcRoute('S/MyRoute')]);
+    expect(found).toEqual([{ declaredAt: 'S/MyRoute', authorizerName: 'AWS_IAM' }]);
+  });
+
+  it('skips routes with AuthorizationType: NONE (no auth → nothing to warn about)', () => {
+    const stack = buildStack('S', {
+      MyRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: { AuthorizationType: 'NONE' },
+      },
+    });
+    expect(
+      findIgnoredServiceIntegrationAuthorizers([stack], [svcRoute('S/MyRoute')])
+    ).toEqual([]);
+  });
+
+  it('skips routes with no AuthorizationType set', () => {
+    const stack = buildStack('S', {
+      MyRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {},
+      },
+    });
+    expect(
+      findIgnoredServiceIntegrationAuthorizers([stack], [svcRoute('S/MyRoute')])
+    ).toEqual([]);
+  });
+
+  it('skips non-service-integration routes entirely (warn only fires on the affected class)', () => {
+    const stack = buildStack('S', {
+      MyRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          AuthorizationType: 'JWT',
+          AuthorizerId: { Ref: 'MyJwtAuth' },
+        },
+      },
+    });
+    // Lambda-backed route (no serviceIntegration field) — the regular
+    // auth pass handles these, so the warn must NOT fire.
+    const lambdaRoute: DiscoveredRoute = {
+      method: 'GET',
+      pathPattern: '/',
+      source: 'http-api',
+      apiVersion: 'v2',
+      stage: '$default',
+      declaredAt: 'S/MyRoute',
+      lambdaLogicalId: 'SomeLambda',
+    } as unknown as DiscoveredRoute;
+    expect(findIgnoredServiceIntegrationAuthorizers([stack], [lambdaRoute])).toEqual([]);
+  });
+
+  it('reports a useful placeholder when AuthorizerId is malformed but AuthorizationType is set', () => {
+    const stack = buildStack('S', {
+      MyRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          AuthorizationType: 'JWT',
+          // No AuthorizerId Ref — typically a template authoring bug.
+        },
+      },
+    });
+    const found = findIgnoredServiceIntegrationAuthorizers([stack], [svcRoute('S/MyRoute')]);
+    expect(found).toHaveLength(1);
+    expect(found[0].declaredAt).toBe('S/MyRoute');
+    expect(found[0].authorizerName).toContain('authType=JWT');
   });
 });

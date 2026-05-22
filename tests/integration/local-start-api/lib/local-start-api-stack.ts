@@ -22,6 +22,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     curl an OPTIONS preflight and assert the canonical response —
  *     PR 8c, issue #235)
  *   - HTTP API:    GET /protected (authorizer-gated, PR 8b)
+ *   - HTTP API:    POST /sqs (service integration: `SQS-SendMessage`),
+ *                  POST /events (service integration: `EventBridge-PutEvents`),
+ *                  POST /unknown-subtype (typo'd subtype → deferred-501).
+ *                  Issue #458 — verify.sh asserts the dispatcher fires
+ *                  against the real AWS SDK (not 501) on the first two,
+ *                  and the classifier rejects the typo on the third.
  *   - REST v1:     ANY /v1/{proxy+} (stage 'prod' with `Variables`
  *     so the integ can assert `event.stageVariables.STAGE === 'prod'`)
  *     plus `defaultCorsPreflightOptions` so CDK auto-emits OPTIONS
@@ -199,6 +205,75 @@ export class LocalStartApiStack extends cdk.Stack {
       new apigw.LambdaIntegration(restHandler, { proxy: true }),
       { authorizer: crossStackAuth, authorizationType: apigw.AuthorizationType.CUSTOM }
     );
+
+    // HTTP API v2 service integrations (#458) — IntegrationSubtype wired
+    // directly to an AWS SDK call, no Lambda backing the route. CDK
+    // doesn't ship an L2 for this yet, so we use L1 `CfnIntegration` +
+    // `CfnRoute`. The integ does NOT deploy anything; verify.sh asserts
+    // (a) the route table shows the per-subtype label (proving classifier
+    // routed the subtype to dispatch, not deferred-501), and (b) a curl
+    // hit returns a 4xx from the SDK adapter (proving dispatch wired into
+    // the real SDK — pre-#458 the route 501'd before any SDK call).
+    const sqsSendIntegration = new apigwv2.CfnIntegration(this, 'SqsSendInteg', {
+      apiId: httpApi.apiId,
+      integrationType: 'AWS_PROXY',
+      integrationSubtype: 'SQS-SendMessage',
+      payloadFormatVersion: '1.0',
+      // `CredentialsArn` is required on deployed AWS API Gateway for
+      // service integrations; it's a no-op locally (the dispatcher uses
+      // the dev's local AWS credential chain) but we set it to a
+      // fixture-stable value so cdkd synth doesn't fail validation.
+      credentialsArn: 'arn:aws:iam::123456789012:role/fixture-sqs-role',
+      requestParameters: {
+        QueueUrl: '$request.querystring.url',
+        MessageBody: '$request.body.message',
+      },
+    });
+    new apigwv2.CfnRoute(this, 'SqsSendRoute', {
+      apiId: httpApi.apiId,
+      routeKey: 'POST /sqs',
+      target: cdk.Fn.join('/', ['integrations', sqsSendIntegration.ref]),
+    });
+
+    const eventBridgeIntegration = new apigwv2.CfnIntegration(this, 'EventBridgePutInteg', {
+      apiId: httpApi.apiId,
+      integrationType: 'AWS_PROXY',
+      integrationSubtype: 'EventBridge-PutEvents',
+      payloadFormatVersion: '1.0',
+      credentialsArn: 'arn:aws:iam::123456789012:role/fixture-events-role',
+      requestParameters: {
+        Source: 'cdkd.local-start-api.integ',
+        DetailType: '$request.querystring.type',
+        Detail: '$request.body',
+        // EventBusName intentionally omitted — falls back to 'default'
+        // when the user does not template it.
+      },
+    });
+    new apigwv2.CfnRoute(this, 'EventBridgePutRoute', {
+      apiId: httpApi.apiId,
+      routeKey: 'POST /events',
+      target: cdk.Fn.join('/', ['integrations', eventBridgeIntegration.ref]),
+    });
+
+    // Unrecognized subtype path — exercises the classifier's fallback to
+    // deferred-501 (preserves the safe surface for typo'd subtypes AND
+    // for AWS-documented subtypes cdkd does not yet implement). Use an
+    // obviously-bogus subtype name so the test is unambiguous about
+    // exercising the unsupported path rather than asserting anything
+    // about a real AWS service.
+    const fakeSubtypeIntegration = new apigwv2.CfnIntegration(this, 'FakeSubtypeInteg', {
+      apiId: httpApi.apiId,
+      integrationType: 'AWS_PROXY',
+      integrationSubtype: 'BogusService-NotASubtype',
+      payloadFormatVersion: '1.0',
+      credentialsArn: 'arn:aws:iam::123456789012:role/fixture-bogus-role',
+      requestParameters: { Param: 'foo' },
+    });
+    new apigwv2.CfnRoute(this, 'FakeSubtypeRoute', {
+      apiId: httpApi.apiId,
+      routeKey: 'POST /unknown-subtype',
+      target: cdk.Fn.join('/', ['integrations', fakeSubtypeIntegration.ref]),
+    });
 
     // Function URL on a separate Lambda.
     const urlHandler = new lambda.Function(this, 'UrlHandler', {

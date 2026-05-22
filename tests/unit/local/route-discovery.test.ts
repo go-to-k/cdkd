@@ -425,7 +425,7 @@ describe('discoverRoutes — HTTP API v2', () => {
     expect(routes[0]?.lambdaLogicalId).toBe('');
   });
 
-  it('flags integrations with IntegrationSubtype set (service integrations) as deferred-error unsupported', () => {
+  it('classifies AWS-recognized IntegrationSubtype routes as serviceIntegration (issue #458)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
       Integ: {
@@ -434,6 +434,11 @@ describe('discoverRoutes — HTTP API v2', () => {
           ApiId: { Ref: 'Api' },
           IntegrationType: 'AWS_PROXY',
           IntegrationSubtype: 'SQS-SendMessage',
+          PayloadFormatVersion: '1.0',
+          RequestParameters: {
+            QueueUrl: '$request.querystring.url',
+            MessageBody: '$request.body',
+          },
         },
       },
       Route: {
@@ -447,7 +452,100 @@ describe('discoverRoutes — HTTP API v2', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes).toHaveLength(1);
-    expect(routes[0]?.unsupported?.reason).toMatch(/IntegrationSubtype/);
+    expect(routes[0]?.unsupported).toBeUndefined();
+    expect(routes[0]?.lambdaLogicalId).toBe('');
+    expect(routes[0]?.serviceIntegration?.subtype).toBe('SQS-SendMessage');
+    expect(routes[0]?.serviceIntegration?.requestParameters).toEqual({
+      QueueUrl: '$request.querystring.url',
+      MessageBody: '$request.body',
+    });
+  });
+
+  it('preserves ResponseParameters on serviceIntegration routes', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationSubtype: 'EventBridge-PutEvents',
+          PayloadFormatVersion: '1.0',
+          RequestParameters: { Detail: '{}', DetailType: 't', Source: 's' },
+          ResponseParameters: {
+            '200': { 'overwrite:statuscode': '202' },
+          },
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'POST /events',
+          Target: { 'Fn::Join': ['/', ['integrations', { Ref: 'Integ' }]] },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes[0]?.serviceIntegration?.responseParameters).toEqual({
+      '200': { 'overwrite:statuscode': '202' },
+    });
+  });
+
+  it('falls back to deferred-501 on unrecognized IntegrationSubtype (e.g. typo or future-AWS)', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationSubtype: 'DynamoDB-PutItem',
+          PayloadFormatVersion: '1.0',
+          RequestParameters: {},
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'POST /ddb',
+          Target: { 'Fn::Join': ['/', ['integrations', { Ref: 'Integ' }]] },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]?.serviceIntegration).toBeUndefined();
+    expect(routes[0]?.unsupported?.reason).toMatch(/DynamoDB-PutItem/);
+    expect(routes[0]?.unsupported?.reason).toMatch(/not supported/);
+  });
+
+  it('flags serviceIntegration with missing RequestParameters as deferred-501', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationSubtype: 'SQS-SendMessage',
+          PayloadFormatVersion: '1.0',
+          // RequestParameters omitted on purpose
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'POST /noparams',
+          Target: { 'Fn::Join': ['/', ['integrations', { Ref: 'Integ' }]] },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes[0]?.serviceIntegration).toBeUndefined();
+    expect(routes[0]?.unsupported?.reason).toMatch(/RequestParameters/);
   });
 
   it("parses CDK's actual Target shape Fn::Join ['', ['integrations/', { Ref }]]", () => {

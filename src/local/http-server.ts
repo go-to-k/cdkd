@@ -28,6 +28,15 @@ import {
 } from './lambda-authorizer.js';
 import { type JwksCache, verifyCognitoJwt, verifyJwtAuthorizer } from './cognito-jwt.js';
 import { type CredentialsLoader, verifySigV4 } from './sigv4-verify.js';
+import {
+  applyResponseParameters,
+  dispatchServiceIntegration,
+  type ResponseParameterContext,
+} from './httpv2-service-integration.js';
+import {
+  resolveServiceIntegrationParameters,
+  type RequestParameterContext,
+} from './parameter-mapping.js';
 
 /**
  * The user-facing HTTP server for `cdkd local start-api`.
@@ -149,6 +158,17 @@ export interface StartApiServerOptions {
    * CLI flag flips this on for dev loops that need it.
    */
   sigV4AllowUnverified?: boolean;
+  /**
+   * Default AWS region for HTTP API v2 service integrations (#458).
+   * Resolved by the CLI from `--region` / `AWS_REGION` / profile at
+   * boot. Per-route `RequestParameters.Region` overrides this on a
+   * per-request basis (matches AWS API Gateway behavior).
+   *
+   * Required when any route has `serviceIntegration` set; unused
+   * otherwise. The dispatcher rejects calls with a 400 error when
+   * both this and the per-request override are empty.
+   */
+  defaultRegion?: string;
 }
 
 /**
@@ -351,6 +371,16 @@ async function handleRequest(
   // they hit the route, while the rest of the API surface stays up.
   if (match.route.unsupported) {
     writeNotImplemented(res, match.route.unsupported.reason);
+    return;
+  }
+
+  // HTTP API v2 service integration (#458): dispatch to the SDK via
+  // the per-subtype adapter table. Runs BEFORE authorizer + container
+  // acquire because there's no Lambda to acquire AND the authorizer
+  // pass (when wired) still applies to service integrations the same
+  // way it does to Lambda routes.
+  if (match.route.serviceIntegration) {
+    await handleServiceIntegrationRequest(req, res, match, bodyBuf, opts);
     return;
   }
 
@@ -1080,11 +1110,14 @@ function lowercaseSingularHeaders(raw: Record<string, string[]>): Record<string,
 }
 
 /**
- * Parse query string into a singular (last-wins) map. Used by the
- * authorizer pass — separate from api-gateway-event because the
- * authorizer needs raw header values too.
+ * Parse query string into a singular map. Multi-value keys are
+ * comma-joined in order of appearance (`?foo=a&foo=b` -> `foo: 'a,b'`)
+ * — matches the contract documented at
+ * `src/local/parameter-mapping.ts:14` ("multi-values comma-joined")
+ * AND deployed API Gateway behavior. Used by both the authorizer pass
+ * and the HTTP API v2 service-integration parameter mapper.
  */
-function parseQueryStringSingular(rawUrl: string): Record<string, string> {
+export function parseQueryStringSingular(rawUrl: string): Record<string, string> {
   const q = rawUrl.indexOf('?');
   if (q < 0) return {};
   const raw = rawUrl.slice(q + 1);
@@ -1107,7 +1140,8 @@ function parseQueryStringSingular(rawUrl: string): Record<string, string> {
     } catch {
       /* keep raw */
     }
-    out[key] = value;
+    const prev = out[key];
+    out[key] = prev === undefined ? value : `${prev},${value}`;
   }
   return out;
 }
@@ -1163,6 +1197,142 @@ function writeError(
   res.setHeader('content-type', 'application/json');
   res.setHeader('content-length', String(Buffer.byteLength(body, 'utf-8')));
   res.end(body);
+}
+
+/**
+ * Handle an HTTP API v2 service-integration route (#458). The route
+ * carries `serviceIntegration: { subtype, requestParameters, responseParameters? }`
+ * — no Lambda backs it. Flow:
+ *
+ *   1. Build a {@link RequestParameterContext} from the HTTP request +
+ *      route match (path parameters, query string, headers, context
+ *      variables, stage variables).
+ *   2. Resolve every `RequestParameters` value against that context via
+ *      `parameter-mapping.ts`. Per-parameter unresolved refs degrade to
+ *      `""` (matches AWS deployed behavior).
+ *   3. Dispatch to the per-subtype SDK adapter in
+ *      `httpv2-service-integration.ts`. Per-request `Region` parameter
+ *      overrides the server's `opts.defaultRegion`; absent both surfaces
+ *      a 400.
+ *   4. Apply per-status-code `ResponseParameters` overlay (header /
+ *      statuscode overwrites).
+ *   5. Write the result to the HTTP client.
+ *
+ * Authorizer pass: NOT yet wired (current scope is dispatch only). When
+ * a service-integration route carries an authorizer, the discovery layer
+ * leaves it in place but the server short-circuits to dispatch BEFORE the
+ * auth pass. A follow-up PR can hoist the auth pass earlier — keeping it
+ * out of this PR limits the blast radius.
+ */
+async function handleServiceIntegrationRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  match: { route: DiscoveredRoute; pathParameters: Record<string, string> },
+  bodyBuf: Buffer,
+  opts: StartApiServerOptions
+): Promise<void> {
+  const route = match.route;
+  const svc = route.serviceIntegration;
+  if (!svc) {
+    // Defensive — caller already gated on this branch.
+    writeError(res, 500);
+    return;
+  }
+  const rawUrl = req.url ?? '/';
+  const headersFlat = flattenHeadersForMapping(req);
+  const queryString = parseQueryStringSingular(rawUrl);
+  const requestPath = rawUrl.split('?')[0] ?? '/';
+  const context = buildServiceIntegrationContextVars(req, route);
+  const ctx: RequestParameterContext = {
+    headers: headersFlat,
+    queryString,
+    pathParameters: match.pathParameters,
+    requestPath,
+    body: bodyBuf.toString('utf8'),
+    context,
+    stageVariables: route.stageVariables ?? {},
+  };
+  const outcome = resolveServiceIntegrationParameters(svc.requestParameters, ctx);
+  if (outcome.kind === 'error') {
+    getLogger().warn(`[${route.declaredAt}] ${outcome.reason}`);
+    const body = JSON.stringify({ message: 'Invalid integration mapping', reason: outcome.reason });
+    res.statusCode = 500;
+    res.setHeader('content-type', 'application/json');
+    res.setHeader('content-length', String(Buffer.byteLength(body, 'utf-8')));
+    res.end(body);
+    return;
+  }
+  const result = await dispatchServiceIntegration(
+    svc.subtype,
+    outcome.resolved,
+    opts.defaultRegion ?? ''
+  );
+  const responseCtx: ResponseParameterContext = {
+    context,
+    stageVariables: route.stageVariables ?? {},
+  };
+  const finalResult = applyResponseParameters(result, svc.responseParameters, responseCtx);
+  res.statusCode = finalResult.statusCode;
+  for (const [name, value] of Object.entries(finalResult.headers)) {
+    res.setHeader(name, value);
+  }
+  res.setHeader('content-length', String(Buffer.byteLength(finalResult.body, 'utf-8')));
+  res.end(finalResult.body);
+}
+
+/**
+ * Flatten Node's `req.headers` to the single-string-per-key shape the
+ * parameter-mapping resolver expects (`$request.header.<name>` is
+ * documented as comma-joined multi-value). Header NAMES are lowercased
+ * because AWS docs document `$request.header.<name>` as case-insensitive.
+ */
+function flattenHeadersForMapping(req: IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    const lower = name.toLowerCase();
+    if (Array.isArray(value)) {
+      out[lower] = value.join(', ');
+    } else if (typeof value === 'string') {
+      out[lower] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the subset of AWS context variables the service-integration
+ * parameter-mapping resolver needs to surface (per AWS docs
+ * https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-logging-variables.html).
+ *
+ * We populate the most-commonly-referenced fields with realistic values
+ * (`requestId` is fresh per call, `accountId` / `domainName` are mock
+ * but stable). Selection expressions against context variables we
+ * don't model resolve to `""` — matches the AWS-deployed behavior of
+ * absent values.
+ */
+function buildServiceIntegrationContextVars(
+  req: IncomingMessage,
+  route: DiscoveredRoute
+): Record<string, string> {
+  const requestId = `cdkd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const sourceIp = req.socket.remoteAddress ?? '127.0.0.1';
+  return {
+    requestId,
+    accountId: '123456789012',
+    apiId: route.apiLogicalId ?? 'local',
+    stage: route.stage,
+    'identity.sourceIp': sourceIp,
+    'identity.userAgent':
+      Array.isArray(req.headers['user-agent']) || typeof req.headers['user-agent'] === 'string'
+        ? String(req.headers['user-agent'])
+        : '',
+    domainName: 'localhost',
+    httpMethod: req.method ?? 'GET',
+    path: (req.url ?? '/').split('?')[0] ?? '/',
+    protocol: 'HTTP/1.1',
+    requestTime: new Date().toISOString(),
+    requestTimeEpoch: String(Date.now()),
+  };
 }
 
 /**
