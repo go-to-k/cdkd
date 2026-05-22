@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 import {
   invokeRieStreaming,
   parseStreamingPrelude,
+  STREAM_BODY_MAX_BYTES,
   type StreamingInvokeResult,
 } from '../../../src/local/rie-client.js';
 
@@ -302,4 +303,43 @@ describe('invokeRieStreaming', () => {
       /did not emit the prelude\/body separator/
     );
   });
+
+  it('destroys the body Readable with a clear error when STREAM_BODY_MAX_BYTES is exceeded (issue #503 item 2)', async () => {
+    // Sanity-check the exported cap so a future code change that lowers
+    // the default surfaces here.
+    expect(STREAM_BODY_MAX_BYTES).toBe(100 * 1024 * 1024);
+
+    // Send prelude + body bytes that overshoot the cap. The Readable
+    // must destroy itself with the cap-exceeded error rather than
+    // pushing the entire body. 100 MiB writes in under a second on
+    // loopback so this stays a fast unit test.
+    const cap = STREAM_BODY_MAX_BYTES;
+    const overshoot = 64 * 1024; // 64 KiB past the cap
+    nextStreamResponse = async (_req, res) => {
+      res.writeHead(200);
+      const prelude = JSON.stringify({ statusCode: 200, headers: {} });
+      res.write(Buffer.concat([Buffer.from(prelude), SEPARATOR]));
+      // 4 MiB chunks keep the writev queue manageable while writing
+      // ~25 of them to clear the cap.
+      const chunkBytes = 4 * 1024 * 1024;
+      const totalBytes = cap + overshoot;
+      const chunk = Buffer.alloc(chunkBytes, 0x41);
+      let sent = 0;
+      while (sent < totalBytes) {
+        if (!res.write(chunk)) {
+          await new Promise<void>((r) => res.once('drain', () => r()));
+        }
+        sent += chunkBytes;
+      }
+      res.end();
+    };
+    const result = await invokeRieStreaming('127.0.0.1', port, {}, 30000);
+    // Consume the body and assert it errors out at the cap.
+    const consume = async (): Promise<void> => {
+      for await (const _ of result.body) {
+        // drain
+      }
+    };
+    await expect(consume()).rejects.toThrow(/streaming body exceeded/i);
+  }, 60000);
 });

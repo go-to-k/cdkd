@@ -276,7 +276,26 @@ const STREAM_PRELUDE_SEPARATOR = Buffer.from([0, 0, 0, 0, 0, 0, 0, 0]);
  * indicates the handler didn't call `HttpResponseStream.from` at all, in
  * which case we want to fail fast rather than buffer the whole body.
  */
-const STREAM_PRELUDE_MAX_BYTES = 1024 * 1024;
+export const STREAM_PRELUDE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Maximum cumulative bytes of body the streaming Readable will push
+ * before destroying itself with a clear error (defense-in-depth against
+ * a buggy / malicious handler streaming gigabytes — Node's chunked-pipe
+ * machinery handles per-chunk backpressure, but the running total can
+ * still grow without bound on a slow consumer).
+ *
+ * 100 MiB is the default cap — generous enough that no realistic
+ * dev-loop streaming response (token-by-token LLM output, large-file
+ * download, video segment) hits it, low enough that a genuine runaway
+ * surfaces locally before swap pressure kicks in. The HTTP server
+ * converts the destroyed Readable to a truncated response (best-effort —
+ * headers may already be on the wire).
+ *
+ * Consistent with {@link STREAM_PRELUDE_MAX_BYTES} (1 MiB cap on the
+ * pre-body buffer); this is the post-body counterpart.
+ */
+export const STREAM_BODY_MAX_BYTES = 100 * 1024 * 1024;
 
 /**
  * POST the event payload to RIE with the `streaming` response-mode
@@ -294,10 +313,26 @@ const STREAM_PRELUDE_MAX_BYTES = 1024 * 1024;
  * the header, but setting it makes the contract explicit and survives
  * future RIE behavior changes.)
  *
- * `timeoutMs` bounds the total wall time including the prelude wait —
- * the handler can stream for the full Lambda timeout, so callers should
- * pass a generous value (typically the function's configured Timeout * 2
- * with a 30s floor, matching `invokeRie`'s convention).
+ * **`timeoutMs` bounds the TOTAL wall time of the entire streaming
+ * exchange**, NOT just the prelude wait — the single armed `setTimeout`
+ * covers both the prelude arrival AND the body drain. Once it fires,
+ * `controller.abort()` destroys the underlying Readable, so a
+ * legitimately long-lived streaming handler (e.g. a 15-minute AI / LLM
+ * proxy) will have its connection torn down mid-stream even though
+ * bytes are arriving correctly. Callers MUST size `timeoutMs` to cover
+ * the longest expected handler stream, NOT just the time to first byte.
+ *
+ * Convention: pass `lambda.Timeout * 2` with a 30-second floor — same
+ * order-of-magnitude formula as `invokeRie`, but the absolute value
+ * differs because streaming handlers can intentionally run for the full
+ * Lambda timeout (default 15 minutes for streaming-capable functions).
+ * Splitting the bound into a strict prelude timer + a per-chunk idle
+ * timer that resets on each chunk is deferred to a follow-up — see
+ * issue #503 item 1 for the design discussion.
+ *
+ * The body Readable is additionally guarded by {@link STREAM_BODY_MAX_BYTES}
+ * (100 MiB by default) so a runaway handler can't blow host memory; the
+ * Readable is destroyed with a clear error when the cap trips.
  */
 export async function invokeRieStreaming(
   host: string,
@@ -390,9 +425,27 @@ export async function invokeRieStreaming(
     },
   });
 
+  // Track cumulative body bytes pushed into the Readable so we can
+  // destroy the stream if it crosses the safety cap. See
+  // STREAM_BODY_MAX_BYTES for the rationale.
+  let bodyBytesPushed = 0;
+  const exceedsCap = (added: number): boolean => {
+    bodyBytesPushed += added;
+    return bodyBytesPushed > STREAM_BODY_MAX_BYTES;
+  };
+
   void (async () => {
     try {
       if (bodyTail && bodyTail.length > 0) {
+        if (exceedsCap(bodyTail.length)) {
+          reader.cancel().catch(() => undefined);
+          stream.destroy(
+            new Error(
+              `RIE streaming body exceeded ${STREAM_BODY_MAX_BYTES} bytes — destroying stream.`
+            )
+          );
+          return;
+        }
         stream.push(bodyTail);
       }
       // Drain the rest. The reader has internal backpressure; pushing
@@ -401,7 +454,17 @@ export async function invokeRieStreaming(
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        stream.push(Buffer.from(value));
+        const chunk = Buffer.from(value);
+        if (exceedsCap(chunk.length)) {
+          reader.cancel().catch(() => undefined);
+          stream.destroy(
+            new Error(
+              `RIE streaming body exceeded ${STREAM_BODY_MAX_BYTES} bytes — destroying stream.`
+            )
+          );
+          return;
+        }
+        stream.push(chunk);
       }
       stream.push(null);
     } catch (err) {

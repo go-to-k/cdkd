@@ -612,6 +612,16 @@ async function handleRequest(
  *
  * Cookies in the prelude are emitted as multiple `Set-Cookie` headers
  * (HTTP API v2 semantics — matching the buffered path's behavior).
+ *
+ * **Conflicting headers stripped**: `Content-Length` and
+ * `Transfer-Encoding` (case-insensitive) are removed from the prelude
+ * before `res.writeHead(...)` — some handlers set these defensively,
+ * but doing so either crashes Node (Content-Length doesn't match the
+ * actual bytes that arrive on the chunked body) or produces a
+ * corrupted Content-Length-but-actually-chunked wire response. Node
+ * automatically emits `Transfer-Encoding: chunked` when no
+ * Content-Length is set, which is what streaming Function URLs
+ * always want.
  */
 function writeStreamingResponse(
   res: ServerResponse,
@@ -625,7 +635,16 @@ function writeStreamingResponse(
   // Content-Length and switches to chunked encoding automatically.
   // Cookies are stitched in via the array-form Set-Cookie header
   // (Node's writeHead accepts string-or-array values).
-  const headersOut: Record<string, string | string[]> = { ...prelude.headers };
+  //
+  // Strip `Content-Length` / `Transfer-Encoding` (case-insensitive) so
+  // a handler that set them defensively doesn't break the chunked-
+  // encoding contract Node enforces automatically.
+  const headersOut: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(prelude.headers)) {
+    const lower = key.toLowerCase();
+    if (lower === 'content-length' || lower === 'transfer-encoding') continue;
+    headersOut[key] = value;
+  }
   if (prelude.cookies && prelude.cookies.length > 0) {
     headersOut['set-cookie'] = prelude.cookies;
   }
