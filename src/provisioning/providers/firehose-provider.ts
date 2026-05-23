@@ -16,6 +16,12 @@ import {
   type RedshiftDestinationUpdate,
   type S3DestinationUpdate,
   type SplunkDestinationUpdate,
+  type AmazonopensearchserviceDestinationUpdate,
+  type AmazonOpenSearchServerlessDestinationUpdate,
+  type HttpEndpointDestinationUpdate,
+  type ElasticsearchDestinationUpdate,
+  type IcebergDestinationUpdate,
+  type SnowflakeDestinationUpdate,
   type Tag,
   type HttpEndpointDestinationConfiguration,
   type RedshiftDestinationConfiguration,
@@ -51,8 +57,14 @@ import type {
  * to minimize merge conflicts when multiple follow-ups race.
  */
 const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
+  'AmazonOpenSearchServerlessDestinationConfiguration',
+  'AmazonopensearchserviceDestinationConfiguration',
+  'ElasticsearchDestinationConfiguration',
   'ExtendedS3DestinationConfiguration',
+  'HttpEndpointDestinationConfiguration',
+  'IcebergDestinationConfiguration',
   'RedshiftDestinationConfiguration',
+  'SnowflakeDestinationConfiguration',
   'SplunkDestinationConfiguration',
 ]);
 
@@ -438,17 +450,72 @@ export class FirehoseProvider implements ResourceProvider {
    *     no S3 backup destination shape (no `S3BackupConfiguration`
    *     field) — unlike Redshift / ExtendedS3.
    *
-   * Other destination types (`S3DestinationConfiguration`,
-   * `HttpEndpointDestinationConfiguration`,
-   * `ElasticsearchDestinationConfiguration`,
-   * `AmazonopensearchserviceDestinationConfiguration`,
-   * `AmazonOpenSearchServerlessDestinationConfiguration`,
-   * `IcebergDestinationConfiguration`,
-   * `SnowflakeDestinationConfiguration`) stay rejected with a tightened
-   * error message naming the AWS API. Each one is a follow-up to (#549)
-   * — AWS provides `UpdateDestination` for them too, but the per-shape
-   * reverse-mappers are deep and each warrants its own focused PR.
-   * Re-deploy with `cdkd deploy --replace` until they land.
+   *   - `AmazonopensearchserviceDestinationConfiguration` (#549) —
+   *     `AmazonopensearchserviceDestinationUpdate` payload produced
+   *     by {@link mapAmazonopensearchserviceConfigToUpdate}. Handles
+   *     `RoleARN`, `DomainARN`, `ClusterEndpoint`, `IndexName`,
+   *     `TypeName`, `IndexRotationPeriod`, `BufferingHints`,
+   *     `RetryOptions`, `S3Configuration` → `S3Update`,
+   *     `ProcessingConfiguration`, `CloudWatchLoggingOptions`,
+   *     `DocumentIdOptions`. `VpcConfiguration` is read-only on
+   *     AWS-side Update — diffs to that field will not be forwarded
+   *     and surface on the next `cdkd drift` run.
+   *
+   *   - `AmazonOpenSearchServerlessDestinationConfiguration` (#549) —
+   *     `AmazonOpenSearchServerlessDestinationUpdate` payload
+   *     produced by {@link mapAmazonOpenSearchServerlessConfigToUpdate}.
+   *     Simpler than the service variant — `RoleARN`,
+   *     `CollectionEndpoint`, `IndexName`, `BufferingHints`,
+   *     `RetryOptions`, `S3Configuration` → `S3Update`,
+   *     `ProcessingConfiguration`, `CloudWatchLoggingOptions`.
+   *
+   *   - `HttpEndpointDestinationConfiguration` (#549) —
+   *     `HttpEndpointDestinationUpdate` payload produced by
+   *     {@link mapHttpEndpointConfigToUpdate}. Handles
+   *     `EndpointConfiguration`, `BufferingHints`,
+   *     `CloudWatchLoggingOptions`, `RequestConfiguration`,
+   *     `ProcessingConfiguration`, `RoleARN`, `RetryOptions`,
+   *     `S3BackupMode`, `S3Configuration` → `S3Update`,
+   *     `SecretsManagerConfiguration`.
+   *
+   *   - `ElasticsearchDestinationConfiguration` (#549) —
+   *     `ElasticsearchDestinationUpdate` payload produced by
+   *     {@link mapElasticsearchConfigToUpdate}. Legacy variant of
+   *     `Amazonopensearchservice*`; same field shape sans
+   *     `VpcConfiguration` (also read-only on Update).
+   *
+   *   - `IcebergDestinationConfiguration` (#549) —
+   *     `IcebergDestinationUpdate` payload produced by
+   *     {@link mapIcebergConfigToUpdate}. Handles
+   *     `DestinationTableConfigurationList`,
+   *     `SchemaEvolutionConfiguration`,
+   *     `TableCreationConfiguration`, `BufferingHints`,
+   *     `CloudWatchLoggingOptions`, `ProcessingConfiguration`,
+   *     `S3BackupMode`, `RetryOptions`, `RoleARN`, `AppendOnly`,
+   *     `CatalogConfiguration`, `S3Configuration`. **Quirk**: the
+   *     SDK Update shape's S3 field is named `S3Configuration` (full
+   *     `S3DestinationConfiguration` shape), NOT `S3Update` — unlike
+   *     every other destination type. The reverse-mapper forwards it
+   *     verbatim without renaming.
+   *
+   *   - `SnowflakeDestinationConfiguration` (#549) —
+   *     `SnowflakeDestinationUpdate` payload produced by
+   *     {@link mapSnowflakeConfigToUpdate}. Handles many connector
+   *     credentials (`AccountUrl` / `PrivateKey` / `KeyPassphrase` /
+   *     `User` / `Database` / `Schema` / `Table` /
+   *     `SnowflakeRoleConfiguration`) plus the standard suite
+   *     (`DataLoadingOption`, `MetaDataColumnName`,
+   *     `ContentColumnName`, `CloudWatchLoggingOptions`,
+   *     `ProcessingConfiguration`, `RoleARN`, `RetryOptions`,
+   *     `S3BackupMode`, `S3Configuration` → `S3Update`,
+   *     `SecretsManagerConfiguration`, `BufferingHints`).
+   *
+   * The legacy `S3DestinationConfiguration` (deprecated by AWS in
+   * favor of `ExtendedS3DestinationConfiguration`) stays rejected
+   * with a tightened error — CDK constructs always emit Extended.
+   * Templates that still pin the legacy shape should migrate to
+   * Extended; in-place update of the deprecated shape isn't a
+   * priority follow-up.
    *
    * Destination-type SWITCHES (e.g. ExtendedS3 → Redshift) are immutable
    * on AWS; cdkd surfaces `ResourceUpdateNotSupportedError` so the caller
@@ -524,6 +591,54 @@ export class FirehoseProvider implements ResourceProvider {
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
         await this.applySplunkDestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'AmazonopensearchserviceDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyAmazonopensearchserviceDestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'AmazonOpenSearchServerlessDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyAmazonOpenSearchServerlessDestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'HttpEndpointDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyHttpEndpointDestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'ElasticsearchDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyElasticsearchDestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'IcebergDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyIcebergDestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'SnowflakeDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applySnowflakeDestinationUpdate(physicalId, nextDest);
       }
     }
 
@@ -1096,6 +1211,555 @@ export class FirehoseProvider implements ResourceProvider {
       result.SecretsManagerConfiguration = config[
         'SecretsManagerConfiguration'
       ] as SplunkDestinationUpdate['SecretsManagerConfiguration'];
+    }
+    return result;
+  }
+
+  /**
+   * Apply UpdateDestination for `AmazonopensearchserviceDestinationConfiguration` (#549).
+   * Mirrors {@link applyRedshiftDestinationUpdate}.
+   */
+  private async applyAmazonopensearchserviceDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        AmazonopensearchserviceDestinationUpdate:
+          this.mapAmazonopensearchserviceConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `AmazonopensearchserviceDestinationConfiguration` to the
+   * `AmazonopensearchserviceDestinationUpdate` shape (#549). Every field
+   * `!== undefined` gated. CFn `S3Configuration` → SDK `S3Update`.
+   * `VpcConfiguration` is intentionally NOT included — the SDK Update
+   * shape has no field for it (AWS treats Vpc placement as immutable
+   * post-create). VpcConfiguration-only diffs will surface on the next
+   * `cdkd drift` run if the user re-applies a different Vpc on the
+   * console side.
+   */
+  private mapAmazonopensearchserviceConfigToUpdate(
+    config: Record<string, unknown>
+  ): AmazonopensearchserviceDestinationUpdate {
+    const result: AmazonopensearchserviceDestinationUpdate = {};
+    const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['DomainARN'] !== undefined) result.DomainARN = config['DomainARN'] as string;
+    if (config['ClusterEndpoint'] !== undefined) {
+      result.ClusterEndpoint = config['ClusterEndpoint'] as string;
+    }
+    if (config['IndexName'] !== undefined) result.IndexName = config['IndexName'] as string;
+    if (config['TypeName'] !== undefined) result.TypeName = config['TypeName'] as string;
+    if (config['IndexRotationPeriod'] !== undefined) {
+      result.IndexRotationPeriod = config[
+        'IndexRotationPeriod'
+      ] as AmazonopensearchserviceDestinationUpdate['IndexRotationPeriod'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      result.BufferingHints = config[
+        'BufferingHints'
+      ] as AmazonopensearchserviceDestinationUpdate['BufferingHints'];
+    }
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config[
+        'RetryOptions'
+      ] as AmazonopensearchserviceDestinationUpdate['RetryOptions'];
+    }
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Update = this.mapS3ConfigToUpdate(
+        config['S3Configuration'] as Record<string, unknown>
+      );
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as AmazonopensearchserviceDestinationUpdate['ProcessingConfiguration'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as AmazonopensearchserviceDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['DocumentIdOptions'] !== undefined) {
+      result.DocumentIdOptions = config[
+        'DocumentIdOptions'
+      ] as AmazonopensearchserviceDestinationUpdate['DocumentIdOptions'];
+    }
+    return result;
+  }
+
+  /**
+   * Apply UpdateDestination for `AmazonOpenSearchServerlessDestinationConfiguration` (#549).
+   * Mirrors {@link applyRedshiftDestinationUpdate}.
+   */
+  private async applyAmazonOpenSearchServerlessDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        AmazonOpenSearchServerlessDestinationUpdate:
+          this.mapAmazonOpenSearchServerlessConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `AmazonOpenSearchServerlessDestinationConfiguration` to the
+   * `AmazonOpenSearchServerlessDestinationUpdate` shape (#549). Every
+   * field `!== undefined` gated. CFn `S3Configuration` → SDK `S3Update`.
+   * Simpler than the service variant — no VpcConfiguration / TypeName /
+   * IndexRotationPeriod / DocumentIdOptions.
+   */
+  private mapAmazonOpenSearchServerlessConfigToUpdate(
+    config: Record<string, unknown>
+  ): AmazonOpenSearchServerlessDestinationUpdate {
+    const result: AmazonOpenSearchServerlessDestinationUpdate = {};
+    const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['CollectionEndpoint'] !== undefined) {
+      result.CollectionEndpoint = config['CollectionEndpoint'] as string;
+    }
+    if (config['IndexName'] !== undefined) result.IndexName = config['IndexName'] as string;
+    if (config['BufferingHints'] !== undefined) {
+      result.BufferingHints = config[
+        'BufferingHints'
+      ] as AmazonOpenSearchServerlessDestinationUpdate['BufferingHints'];
+    }
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config[
+        'RetryOptions'
+      ] as AmazonOpenSearchServerlessDestinationUpdate['RetryOptions'];
+    }
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Update = this.mapS3ConfigToUpdate(
+        config['S3Configuration'] as Record<string, unknown>
+      );
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as AmazonOpenSearchServerlessDestinationUpdate['ProcessingConfiguration'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as AmazonOpenSearchServerlessDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    return result;
+  }
+
+  /**
+   * Apply UpdateDestination for `HttpEndpointDestinationConfiguration` (#549).
+   * Mirrors {@link applyRedshiftDestinationUpdate}.
+   */
+  private async applyHttpEndpointDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        HttpEndpointDestinationUpdate: this.mapHttpEndpointConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `HttpEndpointDestinationConfiguration` to the
+   * `HttpEndpointDestinationUpdate` shape (#549). Every field
+   * `!== undefined` gated. CFn `S3Configuration` → SDK `S3Update`.
+   * `EndpointConfiguration` (Url / Name / AccessKey) and
+   * `SecretsManagerConfiguration` are both pass-through (AWS accepts
+   * either auth mode on Update).
+   */
+  private mapHttpEndpointConfigToUpdate(
+    config: Record<string, unknown>
+  ): HttpEndpointDestinationUpdate {
+    const result: HttpEndpointDestinationUpdate = {};
+    if (config['EndpointConfiguration'] !== undefined) {
+      result.EndpointConfiguration = config[
+        'EndpointConfiguration'
+      ] as HttpEndpointDestinationUpdate['EndpointConfiguration'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      result.BufferingHints = config[
+        'BufferingHints'
+      ] as HttpEndpointDestinationUpdate['BufferingHints'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as HttpEndpointDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['RequestConfiguration'] !== undefined) {
+      result.RequestConfiguration = config[
+        'RequestConfiguration'
+      ] as HttpEndpointDestinationUpdate['RequestConfiguration'];
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as HttpEndpointDestinationUpdate['ProcessingConfiguration'];
+    }
+    const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config['RetryOptions'] as HttpEndpointDestinationUpdate['RetryOptions'];
+    }
+    if (config['S3BackupMode'] !== undefined) {
+      result.S3BackupMode = config['S3BackupMode'] as HttpEndpointDestinationUpdate['S3BackupMode'];
+    }
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Update = this.mapS3ConfigToUpdate(
+        config['S3Configuration'] as Record<string, unknown>
+      );
+    }
+    if (config['SecretsManagerConfiguration'] !== undefined) {
+      result.SecretsManagerConfiguration = config[
+        'SecretsManagerConfiguration'
+      ] as HttpEndpointDestinationUpdate['SecretsManagerConfiguration'];
+    }
+    return result;
+  }
+
+  /**
+   * Apply UpdateDestination for `ElasticsearchDestinationConfiguration` (#549).
+   * Mirrors {@link applyRedshiftDestinationUpdate}. Elasticsearch is the
+   * legacy variant — AWS still accepts it for stacks that pre-date the
+   * Amazonopensearchservice rename.
+   */
+  private async applyElasticsearchDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        ElasticsearchDestinationUpdate: this.mapElasticsearchConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `ElasticsearchDestinationConfiguration` to the
+   * `ElasticsearchDestinationUpdate` shape (#549). Every field
+   * `!== undefined` gated. CFn `S3Configuration` → SDK `S3Update`.
+   * Field set mirrors {@link mapAmazonopensearchserviceConfigToUpdate}
+   * — Elasticsearch is the legacy variant of the same destination.
+   */
+  private mapElasticsearchConfigToUpdate(
+    config: Record<string, unknown>
+  ): ElasticsearchDestinationUpdate {
+    const result: ElasticsearchDestinationUpdate = {};
+    const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['DomainARN'] !== undefined) result.DomainARN = config['DomainARN'] as string;
+    if (config['ClusterEndpoint'] !== undefined) {
+      result.ClusterEndpoint = config['ClusterEndpoint'] as string;
+    }
+    if (config['IndexName'] !== undefined) result.IndexName = config['IndexName'] as string;
+    if (config['TypeName'] !== undefined) result.TypeName = config['TypeName'] as string;
+    if (config['IndexRotationPeriod'] !== undefined) {
+      result.IndexRotationPeriod = config[
+        'IndexRotationPeriod'
+      ] as ElasticsearchDestinationUpdate['IndexRotationPeriod'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      result.BufferingHints = config[
+        'BufferingHints'
+      ] as ElasticsearchDestinationUpdate['BufferingHints'];
+    }
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config[
+        'RetryOptions'
+      ] as ElasticsearchDestinationUpdate['RetryOptions'];
+    }
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Update = this.mapS3ConfigToUpdate(
+        config['S3Configuration'] as Record<string, unknown>
+      );
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as ElasticsearchDestinationUpdate['ProcessingConfiguration'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as ElasticsearchDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['DocumentIdOptions'] !== undefined) {
+      result.DocumentIdOptions = config[
+        'DocumentIdOptions'
+      ] as ElasticsearchDestinationUpdate['DocumentIdOptions'];
+    }
+    return result;
+  }
+
+  /**
+   * Apply UpdateDestination for `IcebergDestinationConfiguration` (#549).
+   * Mirrors {@link applyRedshiftDestinationUpdate}.
+   */
+  private async applyIcebergDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        IcebergDestinationUpdate: this.mapIcebergConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `IcebergDestinationConfiguration` to the
+   * `IcebergDestinationUpdate` shape (#549). Every field
+   * `!== undefined` gated. **Quirk vs every other destination**: the
+   * SDK Update shape's S3 field is `S3Configuration` (a full
+   * `S3DestinationConfiguration`), NOT `S3Update`. Iceberg is a newer
+   * destination type and AWS chose to keep the field name aligned with
+   * the create shape; this reverse-mapper forwards it verbatim.
+   */
+  private mapIcebergConfigToUpdate(config: Record<string, unknown>): IcebergDestinationUpdate {
+    const result: IcebergDestinationUpdate = {};
+    if (config['DestinationTableConfigurationList'] !== undefined) {
+      result.DestinationTableConfigurationList = config[
+        'DestinationTableConfigurationList'
+      ] as IcebergDestinationUpdate['DestinationTableConfigurationList'];
+    }
+    if (config['SchemaEvolutionConfiguration'] !== undefined) {
+      result.SchemaEvolutionConfiguration = config[
+        'SchemaEvolutionConfiguration'
+      ] as IcebergDestinationUpdate['SchemaEvolutionConfiguration'];
+    }
+    if (config['TableCreationConfiguration'] !== undefined) {
+      result.TableCreationConfiguration = config[
+        'TableCreationConfiguration'
+      ] as IcebergDestinationUpdate['TableCreationConfiguration'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      result.BufferingHints = config[
+        'BufferingHints'
+      ] as IcebergDestinationUpdate['BufferingHints'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as IcebergDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as IcebergDestinationUpdate['ProcessingConfiguration'];
+    }
+    if (config['S3BackupMode'] !== undefined) {
+      result.S3BackupMode = config['S3BackupMode'] as IcebergDestinationUpdate['S3BackupMode'];
+    }
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config['RetryOptions'] as IcebergDestinationUpdate['RetryOptions'];
+    }
+    const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['AppendOnly'] !== undefined) {
+      result.AppendOnly = config['AppendOnly'] as boolean;
+    }
+    if (config['CatalogConfiguration'] !== undefined) {
+      result.CatalogConfiguration = config[
+        'CatalogConfiguration'
+      ] as IcebergDestinationUpdate['CatalogConfiguration'];
+    }
+    // Iceberg's S3 field is named `S3Configuration` on the Update shape
+    // (a full S3DestinationConfiguration), unlike the other destinations
+    // which use the partial `S3Update` shape. Forward verbatim.
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Configuration = config[
+        'S3Configuration'
+      ] as IcebergDestinationUpdate['S3Configuration'];
+    }
+    return result;
+  }
+
+  /**
+   * Apply UpdateDestination for `SnowflakeDestinationConfiguration` (#549).
+   * Mirrors {@link applyRedshiftDestinationUpdate}.
+   */
+  private async applySnowflakeDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        SnowflakeDestinationUpdate: this.mapSnowflakeConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `SnowflakeDestinationConfiguration` to the
+   * `SnowflakeDestinationUpdate` shape (#549). Every field
+   * `!== undefined` gated. CFn `S3Configuration` → SDK `S3Update`.
+   * Snowflake carries many connector-side credential / target-table
+   * fields (`AccountUrl` / `PrivateKey` / `KeyPassphrase` / `User` /
+   * `Database` / `Schema` / `Table`) all pass-through.
+   */
+  private mapSnowflakeConfigToUpdate(config: Record<string, unknown>): SnowflakeDestinationUpdate {
+    const result: SnowflakeDestinationUpdate = {};
+    if (config['AccountUrl'] !== undefined) result.AccountUrl = config['AccountUrl'] as string;
+    if (config['PrivateKey'] !== undefined) result.PrivateKey = config['PrivateKey'] as string;
+    if (config['KeyPassphrase'] !== undefined) {
+      result.KeyPassphrase = config['KeyPassphrase'] as string;
+    }
+    if (config['User'] !== undefined) result.User = config['User'] as string;
+    if (config['Database'] !== undefined) result.Database = config['Database'] as string;
+    if (config['Schema'] !== undefined) result.Schema = config['Schema'] as string;
+    if (config['Table'] !== undefined) result.Table = config['Table'] as string;
+    if (config['SnowflakeRoleConfiguration'] !== undefined) {
+      result.SnowflakeRoleConfiguration = config[
+        'SnowflakeRoleConfiguration'
+      ] as SnowflakeDestinationUpdate['SnowflakeRoleConfiguration'];
+    }
+    if (config['DataLoadingOption'] !== undefined) {
+      result.DataLoadingOption = config[
+        'DataLoadingOption'
+      ] as SnowflakeDestinationUpdate['DataLoadingOption'];
+    }
+    if (config['MetaDataColumnName'] !== undefined) {
+      result.MetaDataColumnName = config['MetaDataColumnName'] as string;
+    }
+    if (config['ContentColumnName'] !== undefined) {
+      result.ContentColumnName = config['ContentColumnName'] as string;
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as SnowflakeDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as SnowflakeDestinationUpdate['ProcessingConfiguration'];
+    }
+    const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config['RetryOptions'] as SnowflakeDestinationUpdate['RetryOptions'];
+    }
+    if (config['S3BackupMode'] !== undefined) {
+      result.S3BackupMode = config['S3BackupMode'] as SnowflakeDestinationUpdate['S3BackupMode'];
+    }
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Update = this.mapS3ConfigToUpdate(
+        config['S3Configuration'] as Record<string, unknown>
+      );
+    }
+    if (config['SecretsManagerConfiguration'] !== undefined) {
+      result.SecretsManagerConfiguration = config[
+        'SecretsManagerConfiguration'
+      ] as SnowflakeDestinationUpdate['SecretsManagerConfiguration'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      result.BufferingHints = config[
+        'BufferingHints'
+      ] as SnowflakeDestinationUpdate['BufferingHints'];
     }
     return result;
   }

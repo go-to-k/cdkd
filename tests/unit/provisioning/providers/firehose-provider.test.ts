@@ -170,13 +170,13 @@ describe('FirehoseProvider', () => {
   });
 
   describe('update', () => {
-    // Per #477, FirehoseProvider.update() supports Tags diff +
-    // ExtendedS3 UpdateDestination. Detailed roundtrip coverage lives in
-    // firehose-provider-roundtrip.test.ts; this test pins the rejection
-    // path that survived #477 + #549: an unsupported destination diff
-    // (e.g. Amazonopensearchservice) still throws
-    // ResourceUpdateNotSupportedError until each per-shape reverse-mapper
-    // is implemented.
+    // After #549's bundle PR closes the 7 follow-ups, every modern
+    // destination type has an in-place reverse-mapper. Only the legacy
+    // `S3DestinationConfiguration` (deprecated by AWS in favor of
+    // ExtendedS3) still hits the rejection path. Detailed roundtrip
+    // coverage for every supported destination lives in
+    // firehose-provider-roundtrip.test.ts; this test pins the residual
+    // rejection.
     it('still rejects unsupported destination diffs with ResourceUpdateNotSupportedError', async () => {
       await expect(
         provider.update(
@@ -185,14 +185,16 @@ describe('FirehoseProvider', () => {
           'AWS::KinesisFirehose::DeliveryStream',
           {
             DeliveryStreamName: 'test-stream',
-            AmazonopensearchserviceDestinationConfiguration: {
-              IndexName: 'logs-v2',
+            S3DestinationConfiguration: {
+              BucketARN: 'arn:aws:s3:::bucket-v2',
+              RoleARN: 'arn:aws:iam::111:role/firehose-role',
             },
           },
           {
             DeliveryStreamName: 'test-stream',
-            AmazonopensearchserviceDestinationConfiguration: {
-              IndexName: 'logs-v1',
+            S3DestinationConfiguration: {
+              BucketARN: 'arn:aws:s3:::bucket-v1',
+              RoleARN: 'arn:aws:iam::111:role/firehose-role',
             },
           }
         )
