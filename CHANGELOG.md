@@ -1,3 +1,10 @@
+# [0.144.0](https://github.com/go-to-k/cdkd/compare/v0.143.0...v0.144.0) (2026-05-23)
+
+
+### Features
+
+* **provisioning:** AWS::CloudFormation::Stack nested stack support ([#459](https://github.com/go-to-k/cdkd/issues/459) main) ([#548](https://github.com/go-to-k/cdkd/issues/548)) ([c1abf52](https://github.com/go-to-k/cdkd/commit/c1abf52e893f91c87cf44234c4fa0aa4427e9990))
+
 # [0.143.0](https://github.com/go-to-k/cdkd/compare/v0.142.0...v0.143.0) (2026-05-23)
 
 
