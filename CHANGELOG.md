@@ -1,3 +1,10 @@
+# [0.143.0](https://github.com/go-to-k/cdkd/compare/v0.142.0...v0.143.0) (2026-05-23)
+
+
+### Features
+
+* **hooks:** main-tree-branch-gate prevents cross-agent main-tree contention ([#554](https://github.com/go-to-k/cdkd/issues/554)) ([c275a31](https://github.com/go-to-k/cdkd/commit/c275a319f355af70e1b637406e4a9091ddc656c1))
+
 # [0.142.0](https://github.com/go-to-k/cdkd/compare/v0.141.1...v0.142.0) (2026-05-23)
 
 
