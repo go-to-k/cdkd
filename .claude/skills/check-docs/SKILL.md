@@ -66,5 +66,5 @@ Skip this step if issues remain unfixed — a stale or missing marker correctly 
 
 - Do NOT add documentation that doesn't exist yet (don't create new doc files)
 - Focus on consistency between existing docs and code, not completeness
-- Check CLAUDE.md's "Known Limitations / Recently Implemented" section for stale entries
+- Check CLAUDE.md's "Known Limitations" section AND `docs/changelog-cdkd.md` (the per-PR shipped-feature changelog moved out of CLAUDE.md per Claude Code's ≤200-line memory guidance) for stale entries
 - Prefer referencing source directories over hardcoded lists in docs
