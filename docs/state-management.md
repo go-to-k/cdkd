@@ -221,7 +221,7 @@ next `cdkd drift` run sees a real AWS-current snapshot. Pass
 upgrade refresh; `cdkd state refresh-observed <stack>` remains the
 manual / non-deploy path for refreshing the baseline.
 
-### `version: 5` adds `deletionPolicy` / `updateReplacePolicy` (current writers)
+### `version: 5` adds `deletionPolicy` / `updateReplacePolicy` (pre-v6 writers)
 
 Schema `version: 5` adds two optional template-attribute fields to each
 `ResourceState`: `deletionPolicy` and `updateReplacePolicy`. They mirror the
@@ -263,17 +263,49 @@ populate the field).
 > only surface `UPDATE` for resources whose template attribute actually
 > changed.
 
+### `version: 6` adds `parentStack` / `parentLogicalId` / `parentRegion` (current writers)
+
+Schema `version: 6` adds three optional stack-level fields to `StackState`:
+`parentStack`, `parentLogicalId`, `parentRegion`. They are populated **only on
+nested-stack child state records** — the
+`AWS::CloudFormation::Stack` adoption shipped in
+[#459](https://github.com/go-to-k/cdkd/issues/459). Top-level stack state
+files leave all three undefined; a v6 reader treats absence as "I am a
+top-level stack" (= the default semantics for every state file v1..v5
+binaries wrote).
+
+Child state files live at `cdkd/{parentStack}~{parentLogicalId}/{region}/state.json`
+— the `~` separator avoids ambiguity with CDK Stage's `/`-separated
+display paths. The on-disk shape is otherwise identical to v5.
+
+Writers always emit `version: 6`. v5 readers see a `version: 6` blob
+and fail with the same "upgrade cdkd" error. **v5 → v6 upgrade is
+fully transparent** — read a v5 state file with a v6 binary and the
+parser tolerates the missing fields (degrades to "top-level stack");
+the next write persists `version: 6` silently. No `cdkd state
+migrate-schema` command, no env flag, no manual JSON edit. The
+[`tests/integration/schema-v5-to-v6-migration/`](../../tests/integration/schema-v5-to-v6-migration/)
+integ test proves the round-trip against real AWS.
+
+The v6 prep PR added the type bump alone. The
+`NestedStackProvider` that populates the new fields on child state
+records lands in a follow-up — until then, every cdkd-managed stack
+remains top-level and the new fields stay undefined on every write.
+
 ## State Schema
 
 ### StackState (`state.json`)
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5               // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy
+  version: 1 | 2 | 3 | 4 | 5 | 6           // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption)
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
   outputs: Record<string, string>          // Output name → Resolved value
+  parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
+  parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
+  parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
   lastModified: number                     // Unix timestamp (milliseconds)
 }
 ```

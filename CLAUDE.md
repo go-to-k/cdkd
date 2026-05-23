@@ -44,16 +44,19 @@ vp run typecheck
 
 ## State Schema
 
-State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v5).
+State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v6). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` once the [#459](https://github.com/go-to-k/cdkd/issues/459) `NestedStackProvider` follow-up ships; the v6 prep PR added the `parentStack` / `parentLogicalId` / `parentRegion` fields only.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5;
+  version: 1 | 2 | 3 | 4 | 5 | 6;
   stackName: string;
   region?: string;
   resources: Record<string, ResourceState>;
   outputs: Record<string, string>;
   imports?: StateImportEntry[];
+  parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level stacks)
+  parentLogicalId?: string;    // v6+: the AWS::CloudFormation::Stack logical id in the parent's template
+  parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
   lastModified: number;
 }
 
@@ -69,7 +72,7 @@ interface ResourceState {
 }
 ```
 
-Full per-field semantics (v1-v5 migration story, `observedProperties` / `deletionPolicy` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
+Full per-field semantics (v1-v6 migration story, `observedProperties` / `deletionPolicy` / `parentStack` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
 
 ## Provider Pattern
 

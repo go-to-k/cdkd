@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema (StackState v1-v5 interface, observedProperties / deletionPolicy semantics)
+description: cdkd S3 state schema (StackState v1-v6 interface, observedProperties / deletionPolicy / parentStack semantics)
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -9,12 +9,15 @@ paths:
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy
+  version: 1 | 2 | 3 | 4 | 5 | 6; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption)
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
   outputs: Record<string, string>;
   imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
+  parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
+  parentLogicalId?: string;    // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
+  parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
   lastModified: number;
 }
 
@@ -56,6 +59,29 @@ wins and the template stays a back-compat fallback; `cdkd state destroy`
 pre-v5 state on `cdkd state destroy` therefore stays at the pre-fix
 "delete every resource in state" behavior until a redeploy under v5
 populates the field.
+
+**`parentStack` / `parentLogicalId` / `parentRegion`** (schema v6+, issue
+[#459](https://github.com/go-to-k/cdkd/issues/459)) are populated on
+**nested-stack child state records only** (`AWS::CloudFormation::Stack` →
+recursive deploy via `NestedStackProvider`). Top-level stack state files
+leave all three undefined and a v6 reader treats absence as "I am a
+top-level stack", which is the correct semantics for every state file
+written before nested-stack support shipped (= every state file v1..v5
+binaries wrote). The child's S3 key uses
+`cdkd/{parentStack}~{parentLogicalId}/{region}/state.json` (the `~`
+separator avoids ambiguity with CDK Stage's `/`). Recorded so:
+(a) `cdkd state list` / `state show` can surface the parent → child
+tree, (b) `cdkd destroy <child-only>` can reject with a pointer at the
+parent (mirrors CFn's "cannot directly destroy a nested stack" semantic),
+(c) a future cross-region nested-stack capability doesn't require
+another schema bump (the explicit `parentRegion` field is there now,
+even though v1 of the feature always inherits the parent's region —
+AWS does not support cross-region nested stacks today). v5 readers see
+v6 state as `version: 6` and fail with the existing "Upgrade cdkd"
+error; v6 readers tolerate missing fields and degrade to the
+top-level-stack default. The v6 prep PR added the type bump alone —
+the `NestedStackProvider` that populates these fields lands in the
+follow-up.
 
 **`observedProperties`** is populated on each successful create / update by
 calling `provider.readCurrentState` fire-and-forget after the resource flips

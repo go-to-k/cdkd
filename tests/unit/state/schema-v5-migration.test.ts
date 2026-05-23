@@ -6,16 +6,16 @@ import {
 } from '../../../src/types/state.js';
 
 describe('State schema v5 — DeletionPolicy / UpdateReplacePolicy attribute fields', () => {
-  it('current schema version is 5', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(5);
-  });
-
-  it('readers accept every prior version + v5', () => {
+  it('readers accept every prior version including v5', () => {
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(1);
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(2);
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(3);
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(4);
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(5);
+  });
+
+  it('current schema version is at least 5 (forward-compatible — v6+ writers still preserve the v5 attribute fields)', () => {
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(5);
   });
 
   it('ResourceState.deletionPolicy / updateReplacePolicy are optional', () => {

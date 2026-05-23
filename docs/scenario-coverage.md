@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**33 / 33 canonical scenarios** have at least one integ fixture exercising them. **99 / 99 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**33 / 33 canonical scenarios** have at least one integ fixture exercising them. **100 / 100 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -60,7 +60,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `rds-aurora-cluster-instance` | RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family. | [`rds-aurora`](../tests/integration/rds-aurora/) |
 | `remove-protection-bypass` | `--remove-protection` flag bypassing AWS-side deletion-protection on supported types. | [`remove-protection`](../tests/integration/remove-protection/) |
 | `state-bucket-region-resolve` | State-bucket S3 client auto-detects bucket region via `GetBucketLocation` regardless of caller-profile region. | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
-| `state-schema-migration` | Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema. | [`legacy-state-migration`](../tests/integration/legacy-state-migration/) |
+| `state-schema-migration` | Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema. | [`legacy-state-migration`](../tests/integration/legacy-state-migration/)<br>[`schema-v5-to-v6-migration`](../tests/integration/schema-v5-to-v6-migration/) |
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 

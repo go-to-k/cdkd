@@ -683,6 +683,13 @@
       "scenarios": []
     },
     {
+      "name": "schema-v5-to-v6-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "serverless-api",
       "annotated": true,
       "scenarios": []
@@ -991,7 +998,8 @@
       "scenario": "state-schema-migration",
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.",
       "fixtures": [
-        "legacy-state-migration"
+        "legacy-state-migration",
+        "schema-v5-to-v6-migration"
       ]
     },
     {
