@@ -59,15 +59,34 @@ Run each check and report pass/fail:
 5. **Documentation consistency**
    - Invoke `/check-docs` skill logic: verify docs match code changes
    - Check for stale references to removed code
-   - **Integ coverage matrix freshness**: when the diff touches `src/provisioning/register-providers.ts` OR adds / removes / modifies any file under `tests/integration/*/lib/*.ts` or `tests/integration/*/bin/*.ts`, regenerate `docs/integ-coverage.md` and `docs/_generated/integ-coverage.json` to keep the report aligned with the code:
+   - **Coverage matrix freshness**: CI runs three independent matrix checks (`integ-coverage`, `scenario-coverage`, `audit:coverage:check`) and hard-fails on staleness. PR #548 hit two of these in succession because `/verify-pr` only regenerated `integ-coverage` locally — the contributor pushed, CI failed on `audit:coverage:check`, the contributor regenerated provider-coverage and pushed again, CI failed on `scenario-coverage matrix is up-to-date`. The block below covers all three so the same round-trip can't happen again:
      ```bash
-     if git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$|^tests/integration/[^/]+/(lib|bin)/.+\.ts$'; then
+     fixtures_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$|^tests/integration/[^/]+/(lib|bin)/.+\.ts$|^tests/integration/[^/]+/\.scenarios\.json$' && echo yes)
+     providers_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$' && echo yes)
+
+     if [ "$fixtures_changed" = "yes" ]; then
        vp run integ-coverage
-       git status --short docs/integ-coverage.md docs/_generated/integ-coverage.json
+       vp run scenario-coverage
      fi
+
+     if [ "$providers_changed" = "yes" ]; then
+       # `--check` is offline (~0.5s) and verifies the cached
+       # docs/_generated/provider-coverage.json matches register-providers.ts
+       # under the current Tier classification. If it fails, the contributor
+       # must run `vp run audit:coverage:regenerate` (heavy: ~15 min, requires
+       # AWS creds with cloudformation:ListTypes + DescribeType) and commit
+       # the regenerated cache. /verify-pr does NOT auto-run :regenerate
+       # because the cost is too high and AWS creds may not be present in
+       # the local dev environment.
+       vp run audit:coverage:check
+     fi
+
+     git status --short docs/integ-coverage.md docs/_generated/integ-coverage.json \
+                        docs/scenario-coverage.md docs/_generated/scenario-coverage.json \
+                        docs/_generated/provider-coverage.json docs/_generated/provider-coverage.md
      ```
-     If `git status` reports either file as dirty, the contributor forgot to regenerate after their code change. Stage the regenerated output, amend / new-commit it onto the PR, and re-run `/check-docs` to refresh the docs marker.
-     The `provider-integ-gate.sh` PreToolUse hook blocks `git commit` when a new `registry.register('AWS::Foo::Bar', ...)` is added without integ coverage (literal type id, `Cfn<Type>(` L1 class, or `// allow-no-integ: <rationale>` carve-out) — but it does not enforce that the matrix snapshot itself is regenerated. This step closes that gap.
+     If `git status` reports any of these files as dirty, the contributor forgot to regenerate after their code change. Stage the regenerated output, amend / new-commit it onto the PR, and re-run `/check-docs` to refresh the docs marker. If `vp run audit:coverage:check` exits non-zero, run `vp run audit:coverage:regenerate` (heavy — see above) and commit the regenerated `docs/_generated/provider-coverage.{json,md}`.
+     The `provider-integ-gate.sh` PreToolUse hook blocks `git commit` when a new `registry.register('AWS::Foo::Bar', ...)` is added without integ coverage (literal type id, `Cfn<Type>(` L1 class, or `// allow-no-integ: <rationale>` carve-out) — but it does not enforce that the matrix snapshots themselves are regenerated. This step closes that gap.
 
 6. **Leftover resources**
    - Resolve account ID via `aws sts get-caller-identity --query Account --output text`
