@@ -344,6 +344,65 @@ describe('attachWebSocketServer end-to-end', () => {
     }
   });
 
+  // #531 m1-test: Node Lambda runtime emits `{errorMessage, errorType,
+  // stackTrace}` envelopes when a handler throws (or hits an unhandled
+  // promise rejection). The $connect verdict path at
+  // `invokeRouteAndDecideAuth` (websocket-server.ts) must treat this
+  // shape as a deny — AWS-deployed WebSocket APIs do not admit
+  // connections whose `$connect` handler threw. The
+  // `errorMessage`-without-`statusCode` precedence has no prior unit
+  // coverage; this test pins it.
+  it('denies $connect when handler returns Lambda error envelope (errorMessage without statusCode)', async () => {
+    rieModule.__resetQueue();
+    rieModule.__queueInvokeResult({
+      errorMessage: 'Cannot read properties of undefined',
+      errorType: 'TypeError',
+      stackTrace: ['at handler (/var/task/index.js:5:1)'],
+    });
+
+    const pool = buildFakePool();
+    const api = buildApi([{ routeKey: '$connect' }]);
+    const { port, close } = await startTestServer({
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+    });
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      const closure = await awaitClose(ws);
+      expect(closure.code).toBe(1008);
+    } finally {
+      await close();
+    }
+  });
+
+  // #531 m1-test (cont.): when both `statusCode` AND `errorMessage` are
+  // present, `statusCode` wins — matches AWS-deployed behavior for
+  // handlers that build a response payload after catching their own
+  // exception.
+  it('admits $connect when statusCode: 200 is present even alongside errorMessage', async () => {
+    rieModule.__resetQueue();
+    rieModule.__queueInvokeResult({
+      statusCode: 200,
+      errorMessage: 'recoverable',
+    });
+
+    const pool = buildFakePool();
+    const api = buildApi([{ routeKey: '$connect' }]);
+    const { port, close } = await startTestServer({
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+    });
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+      await awaitClose(ws);
+    } finally {
+      await close();
+    }
+  });
+
   it('admits $connect with no statusCode / no errorMessage (lenient AWS default)', async () => {
     rieModule.__resetQueue();
     rieModule.__queueInvokeResult({});

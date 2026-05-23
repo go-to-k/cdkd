@@ -213,7 +213,7 @@ function discoverOneApi(
     apiLogicalId: logicalId,
     apiStackName: stackName,
     declaredAt,
-    ...(apiCdkPath !== '' && { apiCdkPath }),
+    ...(apiCdkPath !== undefined && { apiCdkPath }),
     routeSelectionExpression,
     stage,
     routes,
@@ -469,8 +469,9 @@ function pickRefLogicalId(value: unknown): string | null {
   return null;
 }
 
-function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): string {
+function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): string | undefined {
   const resource = template.Resources?.[logicalId];
-  if (!resource) return '';
-  return readCdkPath(resource);
+  if (!resource) return undefined;
+  const path = readCdkPath(resource);
+  return path === '' ? undefined : path;
 }

@@ -81,6 +81,7 @@ export interface WebSocketRequestContextBase {
   apiId: string;
   authorizer: null;
   identity: {
+    accountId: string;
     sourceIp: string;
     userAgent: string;
   };
@@ -135,6 +136,13 @@ function buildRequestContext(
     apiId: MOCK_API_ID,
     authorizer: null,
     identity: {
+      // Mirror AWS-deployed WebSocket events: `requestContext.identity.accountId`
+      // carries the API owner's account id. Local emulation hard-codes the
+      // shared mock account so handler code reading this field is non-undefined,
+      // matching the deployed surface. The constant is exported via
+      // `WEBSOCKET_MOCK_CONSTANTS` so integ tests + handlers can assert against
+      // the same value.
+      accountId: MOCK_ACCOUNT_ID,
       sourceIp: snapshot.sourceIp ?? '127.0.0.1',
       userAgent: snapshot.userAgent ?? '',
     },

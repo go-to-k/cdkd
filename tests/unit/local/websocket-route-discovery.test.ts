@@ -349,6 +349,82 @@ describe('parseSelectionExpressionPath', () => {
   });
 });
 
+// #531 m2-test: `parseSelectionExpressionPath` is only ever called on
+// expressions that passed `assertSupportedSelectionExpression` at
+// discovery time, but the discovery-side validator is the actual
+// boundary that user-supplied templates hit. Pin the rejection set so a
+// future grammar relaxation can't silently leak unsupported shapes into
+// the dispatcher.
+describe('selection expression validation rejection set (#531 m2)', () => {
+  const ApiResource = {
+    Type: 'AWS::ApiGatewayV2::Api',
+    Properties: {
+      ProtocolType: 'WEBSOCKET',
+    },
+  } as const;
+  // Build a stack with a hand-picked RouteSelectionExpression and assert
+  // the discovery surface error mentions exactly that string. The lambda
+  // / integration / route boilerplate matches the other tests in this
+  // file.
+  function tryExpression(expr: string): string | undefined {
+    const stack = buildStack('S', {
+      MyHandler: buildLambda(),
+      WsApi: {
+        ...ApiResource,
+        Properties: {
+          ...ApiResource.Properties,
+          RouteSelectionExpression: expr,
+        },
+      },
+      Integ: buildIntegration(),
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$connect',
+          Target: { 'Fn::Join': ['', ['integrations/', { Ref: 'Integ' }]] },
+        },
+      },
+    });
+    const { errors } = discoverWebSocketApis([stack]);
+    return errors[0];
+  }
+
+  it.each([
+    // Trailing dot: regex requires at least one identifier after each
+    // dot; a bare trailing dot fails the `[A-Za-z_]` class.
+    '$request.body.',
+    // Nested trailing dot
+    '$request.body.action.',
+    // Uppercase prefix: regex is case-sensitive, matches AWS-deployed
+    // case-sensitive selection expressions.
+    '$REQUEST.body.action',
+    // Mixed-case middle: the leading `$request.body.` is literal.
+    '$Request.Body.action',
+    // Leading / trailing whitespace
+    ' $request.body.action',
+    '$request.body.action ',
+    // Identifier starting with a digit
+    '$request.body.1action',
+    // Empty key segment in the middle
+    '$request.body..action',
+    // Hyphen in identifier (regex only allows `[A-Za-z0-9_]`)
+    '$request.body.my-action',
+    // Array-index access (called out by the reviewer as a candidate for
+    // future support — must error today)
+    '$request.body[0]',
+    // Header / context shapes (already tested above; included here for
+    // grouping)
+    '$request.header.action',
+    '$context.connectionId',
+  ])('rejects %j with an actionable error', (expr) => {
+    const err = tryExpression(expr);
+    expect(err).toBeDefined();
+    expect(err).toContain(expr);
+    expect(err).toContain('not supported');
+  });
+});
+
 // B2 (#526): non-NONE `AuthorizationType` on any Route belonging to a
 // WebSocket API must tag the parent API as `unsupported`. cdkd v1 does
 // not emulate WebSocket authorizers; silently admitting unauthenticated
