@@ -62,13 +62,19 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 const destroyCalls: Array<{
   stackName: string;
   skipConfirmation: boolean;
+  destroyCtx: Record<string, unknown>;
   capturedCtx: NestedStackProviderContext | undefined;
 }> = [];
 vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
-  runDestroyForStack: vi.fn(async (stackName: string, _state: StackState, ctx: { skipConfirmation: boolean }) => {
+  runDestroyForStack: vi.fn(async (stackName: string, _state: StackState, ctx: Record<string, unknown>) => {
     const ctxMod = await import('../../../src/provisioning/nested-stack-context.js');
     const capturedCtx = ctxMod.getCurrentNestedStackContext();
-    destroyCalls.push({ stackName, skipConfirmation: ctx.skipConfirmation, capturedCtx });
+    destroyCalls.push({
+      stackName,
+      skipConfirmation: ctx['skipConfirmation'] as boolean,
+      destroyCtx: ctx,
+      capturedCtx,
+    });
     return {
       stackName,
       cancelled: false,
@@ -152,9 +158,30 @@ describe('NestedStackProvider', () => {
   });
 
   describe('create()', () => {
-    it('requires deploy-mode context fields (nestedTemplates / dagBuilder / diffCalculator)', async () => {
+    it('requires deploy-mode context fields — nestedTemplates: undefined', async () => {
       const provider = new NestedStackProvider();
       const ctx = makeContext({ nestedTemplates: undefined });
+      await expect(
+        withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
+      ).rejects.toThrow(/deploy-mode context fields .* are missing/);
+    });
+
+    // B1 per-arm coverage (issue #556): the requireDeployContext `||` check
+    // has three arms; only `nestedTemplates: undefined` is exercised above.
+    // Cover the other two so a future split of the unified `||` (e.g. into
+    // per-arm error messages naming exactly which field is missing) does
+    // not silently regress one arm.
+    it('requires deploy-mode context fields — dagBuilder: undefined', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ dagBuilder: undefined });
+      await expect(
+        withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
+      ).rejects.toThrow(/deploy-mode context fields .* are missing/);
+    });
+
+    it('requires deploy-mode context fields — diffCalculator: undefined', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ diffCalculator: undefined });
       await expect(
         withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
       ).rejects.toThrow(/deploy-mode context fields .* are missing/);
@@ -166,6 +193,38 @@ describe('NestedStackProvider', () => {
       await expect(
         withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
       ).rejects.toThrow(/Nested template file not found for AWS::CloudFormation::Stack 'Child'/);
+    });
+
+    // B2 readChildTemplate failure paths (issue #556): the private helper
+    // wraps both `fs.readFileSync` ENOENT and `JSON.parse` SyntaxError with
+    // file-path context. A future refactor that drops the wrapping (e.g.
+    // letting raw `ENOENT: no such file or directory, open '...'` bubble)
+    // would lose the actionable signal — the user would see the path only
+    // by introspecting `error.cause`, which most error-display surfaces
+    // don't render. These cases pin the contract.
+    it('readChildTemplate: wraps fs.readFileSync ENOENT with template path', async () => {
+      const provider = new NestedStackProvider();
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-enoent-'));
+      const missingPath = join(dir, 'does-not-exist.nested.template.json');
+      const ctx = makeContext({ nestedTemplates: { Child: missingPath } });
+      await expect(
+        withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
+      ).rejects.toThrow(
+        new RegExp(`Failed to read nested template at ${missingPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      );
+    });
+
+    it('readChildTemplate: wraps JSON.parse SyntaxError with template path', async () => {
+      const provider = new NestedStackProvider();
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-parse-'));
+      const invalidPath = join(dir, 'invalid.nested.template.json');
+      writeFileSync(invalidPath, '{ this is not valid JSON ::: }');
+      const ctx = makeContext({ nestedTemplates: { Child: invalidPath } });
+      await expect(
+        withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
+      ).rejects.toThrow(
+        new RegExp(`Failed to parse nested template at ${invalidPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      );
     });
 
     it('reads child template, dispatches child DeployEngine, returns synthesized ARN + flat Outputs', async () => {
@@ -366,6 +425,71 @@ describe('NestedStackProvider', () => {
       expect(captured?.parentStackName).toBe('Parent~Child');
       expect(captured?.parentRegion).toBe('us-east-1');
       expect(captured?.nestedTemplates).toBeUndefined();
+    });
+
+    // B3 (issue #556): delete() forwards every per-resource budget / per-type
+    // override / profile field from the parent's `destroyOptions` PLUS the
+    // `removeProtection` flag from the DeleteContext into the recursive
+    // runDestroyForStack invocation. Without these, a `cdkd destroy
+    // --remove-protection --resource-timeout=AWS::S3::Bucket=10m` flag run
+    // against a nested-stack parent would silently fall back to defaults
+    // inside the child engine. Each field is independently load-bearing —
+    // the existing "no options" happy-path test above proves the
+    // pass-through wiring exists but not that every field reaches the
+    // child. This combined case pins all six forwarding paths.
+    it('forwards removeProtection + destroyOptions.{resourceWarnAfterMs, resourceTimeoutMs, *ByType, profile} to recursive destroy', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({
+        destroyOptions: {
+          resourceWarnAfterMs: 7 * 60_000,
+          resourceTimeoutMs: 45 * 60_000,
+          resourceWarnAfterByType: { 'AWS::S3::Bucket': 10 * 60_000 },
+          resourceTimeoutByType: { 'AWS::Lambda::Function': 30 * 60_000 },
+          profile: 'my-test-profile',
+        },
+      });
+
+      await withNestedStackContext(ctx, () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          undefined,
+          { removeProtection: true }
+        )
+      );
+
+      expect(destroyCalls.length).toBe(1);
+      const fwd = destroyCalls[0]!.destroyCtx;
+      expect(fwd['removeProtection']).toBe(true);
+      expect(fwd['resourceWarnAfterMs']).toBe(7 * 60_000);
+      expect(fwd['resourceTimeoutMs']).toBe(45 * 60_000);
+      expect(fwd['resourceWarnAfterByType']).toEqual({ 'AWS::S3::Bucket': 10 * 60_000 });
+      expect(fwd['resourceTimeoutByType']).toEqual({ 'AWS::Lambda::Function': 30 * 60_000 });
+      expect(fwd['profile']).toBe('my-test-profile');
+    });
+
+    // Sibling negative case: when neither DeleteContext.removeProtection nor
+    // destroyOptions are present, the optional fields MUST be absent from
+    // the forwarded ctx — `...(cond && { key: v })` should NOT leak a
+    // `key: false` / `key: 0` to runDestroyForStack. The destroy runner
+    // treats "key absent" and "key === false" identically today, but the
+    // contract is "absent means default" and a future refactor should not
+    // be free to change that without surfacing it as a regression.
+    it('does NOT forward removeProtection / destroyOptions fields when neither is set', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+      await withNestedStackContext(ctx, () =>
+        provider.delete('Child', 'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child', 'AWS::CloudFormation::Stack')
+      );
+
+      const fwd = destroyCalls[0]!.destroyCtx;
+      expect(fwd).not.toHaveProperty('removeProtection');
+      expect(fwd).not.toHaveProperty('resourceWarnAfterMs');
+      expect(fwd).not.toHaveProperty('resourceTimeoutMs');
+      expect(fwd).not.toHaveProperty('resourceWarnAfterByType');
+      expect(fwd).not.toHaveProperty('resourceTimeoutByType');
+      expect(fwd).not.toHaveProperty('profile');
     });
   });
 
