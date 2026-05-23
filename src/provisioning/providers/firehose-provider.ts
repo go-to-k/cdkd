@@ -421,9 +421,10 @@ export class FirehoseProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Firehose delivery stream ${logicalId}: ${physicalId}`);
 
-    // Tags diff is independent of destination — apply unconditionally.
-    await this.applyTagsDiff(physicalId, properties['Tags'], previousProperties['Tags']);
-
+    // Validate destination shape BEFORE issuing any mutating call so a
+    // Tags+rejected-destination combined diff does not write Tags then
+    // throw — otherwise AWS would carry new tags while cdkd state was
+    // never updated (m1 in PR review).
     const destKey = this.findDestinationKey(properties);
     const prevDestKey = this.findDestinationKey(previousProperties);
 
@@ -438,13 +439,7 @@ export class FirehoseProvider implements ResourceProvider {
     }
 
     const activeDest = destKey ?? prevDestKey;
-    if (activeDest === 'ExtendedS3DestinationConfiguration') {
-      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
-      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
-      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        await this.applyExtendedS3DestinationUpdate(physicalId, nextDest);
-      }
-    } else if (activeDest) {
+    if (activeDest && activeDest !== 'ExtendedS3DestinationConfiguration') {
       // Some other destination type — check whether it actually changed,
       // and reject only if it did. Tags-only diffs against e.g. a Redshift
       // delivery stream should NOT throw.
@@ -456,6 +451,21 @@ export class FirehoseProvider implements ResourceProvider {
           logicalId,
           `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it; the per-shape reverse-mapper is a follow-up to #477). Re-deploy with cdkd deploy --replace.`
         );
+      }
+    }
+
+    // Now that destination validity is established, apply Tags
+    // (TagDeliveryStream / UntagDeliveryStream is independent of
+    // destination type but must not run BEFORE the rejection branches —
+    // otherwise a partial AWS write strands tags on a stream whose
+    // destination diff was rejected).
+    await this.applyTagsDiff(physicalId, properties['Tags'], previousProperties['Tags']);
+
+    if (activeDest === 'ExtendedS3DestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyExtendedS3DestinationUpdate(physicalId, nextDest);
       }
     }
 
@@ -579,6 +589,14 @@ export class FirehoseProvider implements ResourceProvider {
       'AmazonopensearchserviceDestinationConfiguration',
       'SplunkDestinationConfiguration',
       'AmazonOpenSearchServerlessDestinationConfiguration',
+      // Newer destination types (Iceberg / Snowflake) — current cdkd
+      // does not implement reverse-mappers for them, so they hit the
+      // non-ExtendedS3 reject branch with a clear message. Tracked as
+      // follow-ups to #477. Listed here so a stream USING one of them
+      // isn't silently treated as "no destination", which would let
+      // tag-only diffs proceed without surfacing the unsupported-update.
+      'IcebergDestinationConfiguration',
+      'SnowflakeDestinationConfiguration',
     ];
     for (const key of destinationKeys) {
       if (properties[key] !== undefined) return key;
@@ -814,13 +832,10 @@ export class FirehoseProvider implements ResourceProvider {
     if (config['S3BackupMode'] !== undefined) {
       result.S3BackupMode = config['S3BackupMode'] as ExtendedS3DestinationUpdate['S3BackupMode'];
     }
-    if (config['S3BackupUpdate'] !== undefined) {
-      // CFn spells this `S3BackupConfiguration`; SDK uses `S3BackupUpdate`
-      // for the Update shape. Accept either key for resilience.
-      result.S3BackupUpdate = this.mapS3ConfigToUpdate(
-        config['S3BackupUpdate'] as Record<string, unknown>
-      );
-    } else if (config['S3BackupConfiguration'] !== undefined) {
+    if (config['S3BackupConfiguration'] !== undefined) {
+      // CFn property is `S3BackupConfiguration`; SDK's Update shape uses
+      // `S3BackupUpdate`. The reverse-mapper consumes CFn-shaped input,
+      // so only the CFn key needs to be handled.
       result.S3BackupUpdate = this.mapS3ConfigToUpdate(
         config['S3BackupConfiguration'] as Record<string, unknown>
       );

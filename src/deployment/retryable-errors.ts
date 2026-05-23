@@ -10,8 +10,12 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // Firehose-specific phrasing for the same eventual-consistency case:
   // role exists but Firehose's auth layer hasn't propagated the trust
   // policy yet. Surfaced by tests/integration/log-pipeline against a
-  // fresh deploy where FirehoseDeliveryRole was just CREATE'd.
-  'is unable to assume role',
+  // fresh deploy where FirehoseDeliveryRole was just CREATE'd. The
+  // pattern is anchored on the service name (`Firehose is unable to
+  // assume`) so a non-transient "user X is unable to assume role Y
+  // because of explicit deny" from a different service won't false-
+  // positive into the retry loop.
+  'Firehose is unable to assume role',
   'role defined for the function',
   'not authorized to perform',
   'execution role',
