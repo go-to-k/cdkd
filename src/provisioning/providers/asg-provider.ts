@@ -741,12 +741,18 @@ export class ASGProvider implements ResourceProvider {
     // covered by TargetGroupARNs / LoadBalancerNames so TrafficSources
     // only carries the residual UNIQUE entries (VPC Lattice, VPC
     // Endpoint Service, etc.) that don't have a dedicated CFn property.
+    // Filter strictly on (Identifier, Type) — only elbv2 entries dedupe
+    // against TargetGroupARNs and elb entries against LoadBalancerNames.
+    // This guards against future TrafficSource Type values that could
+    // legitimately share Identifier with a TG/LB.
     const tgArnSet = new Set(group.TargetGroupARNs ?? []);
     const lbNameSet = new Set(group.LoadBalancerNames ?? []);
-    const dedupedTrafficSources = trafficSources.filter(
-      (t) =>
-        t.Identifier !== undefined && !tgArnSet.has(t.Identifier) && !lbNameSet.has(t.Identifier)
-    );
+    const dedupedTrafficSources = trafficSources.filter((t) => {
+      if (t.Identifier === undefined) return false;
+      if (t.Type === 'elbv2' && tgArnSet.has(t.Identifier)) return false;
+      if (t.Type === 'elb' && lbNameSet.has(t.Identifier)) return false;
+      return true;
+    });
     result['TrafficSources'] = mapTrafficSourcesToCfn(dedupedTrafficSources);
     result['NotificationConfigurations'] = mapNotificationsToCfn(notifications);
 
@@ -1066,26 +1072,47 @@ export class ASGProvider implements ResourceProvider {
     }
   }
 
+  private static readonly TG_CONVERGENCE_TIMEOUT_MS = 30_000;
+  private static readonly TG_CONVERGENCE_POLL_INTERVAL_MS = 1_000;
+
   private async waitForTargetGroupArnsConvergence(
     physicalId: string,
     expected: Set<string>
   ): Promise<void> {
-    const deadlineMs = Date.now() + 30_000;
+    const deadlineMs = Date.now() + ASGProvider.TG_CONVERGENCE_TIMEOUT_MS;
+    let lastObserved: Set<string> = new Set();
     while (Date.now() < deadlineMs) {
-      const resp = await this.getClient().send(
-        new DescribeAutoScalingGroupsCommand({ AutoScalingGroupNames: [physicalId] })
-      );
-      const current = new Set(resp.AutoScalingGroups?.[0]?.TargetGroupARNs ?? []);
-      if (current.size === expected.size && [...expected].every((a) => current.has(a))) {
+      let resp;
+      try {
+        resp = await this.getClient().send(
+          new DescribeAutoScalingGroupsCommand({ AutoScalingGroupNames: [physicalId] })
+        );
+      } catch (err) {
+        // Transient throttle / network blip during the 30s window must
+        // not throw out of applyTargetGroupArnsDiff — the Attach/Detach
+        // already succeeded, and propagating would fail the whole
+        // update path. Log + retry; the loop will fall through to the
+        // timeout-warn path if the API is genuinely down.
+        this.logger.debug(
+          `applyTargetGroupArnsDiff convergence poll: transient error, retrying — ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+        await new Promise((r) => setTimeout(r, ASGProvider.TG_CONVERGENCE_POLL_INTERVAL_MS));
+        continue;
+      }
+      lastObserved = new Set(resp.AutoScalingGroups?.[0]?.TargetGroupARNs ?? []);
+      if (lastObserved.size === expected.size && [...expected].every((a) => lastObserved.has(a))) {
         return;
       }
-      await new Promise((r) => setTimeout(r, 1_000));
+      await new Promise((r) => setTimeout(r, ASGProvider.TG_CONVERGENCE_POLL_INTERVAL_MS));
     }
-    // 30s timeout — surface as a warning rather than failure so the
-    // caller still sees the SDK-side success; drift can re-report if
-    // the propagation is still stuck.
+    // Timeout — surface as a warning rather than failure so the caller
+    // still sees the SDK-side success; drift can re-report if the
+    // propagation is still stuck. Includes observed vs expected so
+    // post-mortem doesn't need a re-deploy.
     this.logger.warn(
-      `applyTargetGroupArnsDiff: TG set did not converge to expected within 30s for ASG ${physicalId}`
+      `applyTargetGroupArnsDiff: TG set did not converge within ${ASGProvider.TG_CONVERGENCE_TIMEOUT_MS}ms for ASG ${physicalId}. expected=${JSON.stringify([...expected])} observed=${JSON.stringify([...lastObserved])}`
     );
   }
 
