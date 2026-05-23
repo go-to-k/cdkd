@@ -4,7 +4,9 @@ paths:
   - 'src/analyzer/**'
 ---
 
-# Intrinsic Function Resolution
+# Analyzer
+
+## Intrinsic Function Resolution
 
 - Implemented in `IntrinsicResolver` class (`src/analyzer/intrinsic-resolver.ts`)
 - Ref: References other resource's PhysicalId
@@ -12,13 +14,13 @@ paths:
 - Fn::Join: String concatenation
 - Fn::Sub: Template string substitution
 
-## Supporting a New Intrinsic Function
+### Supporting a New Intrinsic Function
 
 1. Extend `resolve()` method in `src/analyzer/intrinsic-resolver.ts`
 2. Implement recursive resolution
 3. Write tests (`tests/unit/analyzer/intrinsic-resolver.test.ts`)
 
-# Dependency Analysis
+## Dependency Analysis
 
 - Implemented in `DagBuilder` class (`src/analyzer/dag-builder.ts`)
 - Scans template to detect `Ref` / `Fn::GetAtt` / `DependsOn`

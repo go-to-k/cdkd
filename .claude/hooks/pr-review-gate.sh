@@ -160,7 +160,7 @@ UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/local/cognito-jwt\.ts|src/local/lamb
 
 # Down-bias buckets. Either ALL paths are docs/infra, or ALL paths
 # are tests. Mixed → no down-bias.
-DOWN_DOCS_REGEX='^(\.gitignore|CLAUDE\.md|README\.md|docs/.*|\.claude/skills/.*|\.claude/agents/.*|\.claude/hooks/.*|\.claude/settings.*\.json|\.markgate\.yml|package\.json)$'
+DOWN_DOCS_REGEX='^(\.gitignore|CLAUDE\.md|README\.md|docs/.*|\.claude/skills/.*|\.claude/agents/.*|\.claude/hooks/.*|\.claude/rules/.*|\.claude/settings.*\.json|\.markgate\.yml|package\.json)$'
 DOWN_TESTS_REGEX='^tests/.*'
 
 all_docs=1
