@@ -1,3 +1,10 @@
+## [0.137.1](https://github.com/go-to-k/cdkd/compare/v0.137.0...v0.137.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* **local:** post-[#524](https://github.com/go-to-k/cdkd/issues/524) WebSocket audit follow-ups ([#538](https://github.com/go-to-k/cdkd/issues/538)) ([75da9a6](https://github.com/go-to-k/cdkd/commit/75da9a636622481d4382101f2a1917ad719ca258))
+
 # [0.137.0](https://github.com/go-to-k/cdkd/compare/v0.136.0...v0.137.0) (2026-05-23)
 
 
