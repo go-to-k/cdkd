@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**32 / 32 canonical scenarios** have at least one integ fixture exercising them. **98 / 98 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**33 / 33 canonical scenarios** have at least one integ fixture exercising them. **99 / 99 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (32 scenarios)
+## Per-scenario coverage (33 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
