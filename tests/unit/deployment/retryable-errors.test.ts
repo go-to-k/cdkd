@@ -43,6 +43,12 @@ describe('isRetryableTransientError', () => {
     it.each([
       // IAM propagation
       ['cannot be assumed by Lambda', 'IAM propagation'],
+      // Firehose-specific IAM propagation phrasing (surfaced by
+      // log-pipeline integ on a fresh FirehoseDeliveryRole CREATE)
+      [
+        'Firehose is unable to assume role arn:aws:iam::111:role/FirehoseDeliveryRole. Please check the role provided.',
+        'Firehose IAM propagation',
+      ],
       ['The execution role you provided does not have permission', 'execution role'],
       ['Role validation failed', 'Role validation failed'],
       // CW Logs SubscriptionFilter (the bug we are fixing)
