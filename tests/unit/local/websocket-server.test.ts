@@ -726,3 +726,140 @@ describe('$connect-deny listener safety (B4 regression guard)', () => {
     }
   });
 });
+
+// Issue #527 M1: per-connection message dispatch is SERIALIZED via a
+// promise chain. AWS WebSocket APIs invoke handlers serially per
+// connection (frame N+1 never starts dispatching until frame N's
+// handler returns); without the chain, three rapid frames race the
+// warm-pool entry and produce out-of-order handler invocations.
+describe('per-connection dispatch serialization (M1)', () => {
+  beforeEach(() => {
+    rieModule.__resetQueue();
+    rieModule.invokeRie.mockClear();
+  });
+  it('dispatches frames in arrival order for a single connection', async () => {
+    rieModule.__resetQueue();
+    rieModule.__queueInvokeResult({ statusCode: 200 }); // $connect
+
+    // Each $default invocation records its start order then sleeps a
+    // descending amount. If dispatch were parallel, frame 0's 100ms
+    // sleep would finish AFTER frames 1 / 2 (50ms / 10ms) — exit
+    // order would be reversed. With the chain, exit order matches
+    // arrival order regardless of per-call sleep.
+    const startOrder: number[] = [];
+    const endOrder: number[] = [];
+    rieModule.invokeRie.mockImplementationOnce(async () => ({
+      payload: { statusCode: 200 },
+      raw: '{"statusCode":200}',
+    }));
+    const sleeps = [100, 50, 10];
+    for (let i = 0; i < sleeps.length; i += 1) {
+      const ms = sleeps[i]!;
+      const idx = i;
+      rieModule.invokeRie.mockImplementationOnce(async () => {
+        startOrder.push(idx);
+        await new Promise((r) => setTimeout(r, ms));
+        endOrder.push(idx);
+        return { payload: {}, raw: '{}' };
+      });
+    }
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$default', lambda: 'DefaultFn' },
+    ]);
+    const { port, close } = await startTestServer({
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+    });
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      ws.send(JSON.stringify({ action: 'a', seq: 0 }));
+      ws.send(JSON.stringify({ action: 'b', seq: 1 }));
+      ws.send(JSON.stringify({ action: 'c', seq: 2 }));
+      // Wait for all 3 $default handlers to fully complete (NOT just
+      // be invoked). With serialization, total wall-clock is
+      // ~100+50+10 = 160ms; ceiling 2s leaves room for scheduler jitter.
+      await waitFor(() => endOrder.length >= 3, 2000);
+      expect(rieModule.invokeRie).toHaveBeenCalledTimes(4);
+      // Arrival order is preserved on both start AND end. Pre-fix the
+      // parallel dispatch would have endOrder = [2, 1, 0].
+      expect(startOrder).toEqual([0, 1, 2]);
+      expect(endOrder).toEqual([0, 1, 2]);
+      ws.close();
+      await awaitClose(ws);
+    } finally {
+      await close();
+    }
+  });
+});
+
+// Issue #527 M3: graceful shutdown drains in-flight $disconnect
+// dispatches with a bounded ceiling. A hung handler pre-fix would leak
+// its rieTimeoutMs (60s+) past close()'s 5s socket-close timeout.
+describe('graceful shutdown bounded drain (M3)', () => {
+  beforeEach(() => {
+    rieModule.__resetQueue();
+    rieModule.invokeRie.mockClear();
+  });
+  it('logs a warn naming the leaking $disconnect count when drain times out', async () => {
+    rieModule.__resetQueue();
+    rieModule.__queueInvokeResult({ statusCode: 200 }); // $connect for the live conn
+    // $disconnect hangs longer than the 5s drain window.
+    rieModule.invokeRie.mockImplementation(async (_id: string, _meta: unknown, event: any) => {
+      const routeKey = event?.requestContext?.routeKey;
+      if (routeKey === '$connect') return { payload: { statusCode: 200 }, raw: '{}' };
+      // Sleep past the drain window — exact value doesn't matter past 5s.
+      await new Promise((r) => setTimeout(r, 10_000).unref?.());
+      return { payload: {}, raw: '{}' };
+    });
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$disconnect', lambda: 'DisconnectFn' },
+    ]);
+    const server = createServer((_req, res) => {
+      res.statusCode = 404;
+      res.end();
+    });
+    const attached = attachWebSocketServer({
+      httpServer: server,
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+      rieTimeoutMs: 60_000,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn');
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      await waitFor(() => attached.registry.size() === 1, 1000);
+      // Closing the WebSocket fires the close listener, which kicks off
+      // $disconnect. Then immediately call attached.close() which awaits
+      // the drain. The drain hits the 5s ceiling and the warn fires.
+      // We do NOT await ws's close event here because attached.close
+      // itself drives the close to completion.
+      ws.close();
+      const t0 = Date.now();
+      await attached.close();
+      const elapsed = Date.now() - t0;
+      // Drain ceiling = 5000ms; some scheduler jitter accepted.
+      expect(elapsed).toBeGreaterThanOrEqual(4_500);
+      expect(elapsed).toBeLessThan(7_500);
+      const drainWarns = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('graceful shutdown drained for')
+      );
+      expect(drainWarns).toHaveLength(1);
+      expect(drainWarns[0]![0]).toContain('still in flight');
+    } finally {
+      warnSpy.mockRestore();
+      rieModule.invokeRie.mockReset();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections?.();
+      });
+    }
+  }, 10_000);
+});

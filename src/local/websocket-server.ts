@@ -142,6 +142,40 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     apiPaths.push(cfg.apiPath);
   }
 
+  // Per-connection serialized dispatch chain (Issue #527 M1). AWS
+  // WebSocket APIs invoke handlers SERIALLY per connection — frame N+1
+  // never starts dispatching until frame N's handler returns. Without
+  // this chain, three rapid frames from one client race the warm-pool
+  // entry and produce out-of-order handler invocations, breaking
+  // ordering-dependent handlers (chat history, conversational state).
+  // Across-connection dispatch stays parallel via separate map entries.
+  const dispatchChainsByConnection = new Map<string, Promise<void>>();
+  const enqueueDispatch = (connectionId: string, work: () => Promise<void>): Promise<void> => {
+    const prev = dispatchChainsByConnection.get(connectionId) ?? Promise.resolve();
+    const next = prev.then(work);
+    // Store `next` directly in the Map (NOT `next.finally(...)`): the
+    // `=== next` identity check below would never match if we stored
+    // the finally-wrapper, and the entry would leak permanently — the
+    // pre-fix bug surfaced in PR #539 review. Storing `next` keeps the
+    // chain semantics (the next enqueue picks up `next` as its `prev`
+    // and the finally-tap runs at the same logical time as `next`
+    // resolves) while making the cleanup branch reachable.
+    dispatchChainsByConnection.set(connectionId, next);
+    void next.finally(() => {
+      if (dispatchChainsByConnection.get(connectionId) === next) {
+        dispatchChainsByConnection.delete(connectionId);
+      }
+    });
+    return next;
+  };
+
+  // In-flight $disconnect dispatches tracked so close() can bound the
+  // graceful-shutdown drain (Issue #527 M3). A hung $disconnect handler
+  // pre-fix would leak its rieTimeoutMs (60s+) past close()'s 5s
+  // socket-close timeout — the Node process couldn't exit until SIGKILL
+  // or the verify.sh 120s grace.
+  const inFlightDisconnects = new Set<Promise<void>>();
+
   const upgradeListener = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     const url = req.url ?? '/';
     const pathOnly = url.split('?', 1)[0]!;
@@ -311,38 +345,55 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
 
     // Attach the real listeners NOW. From this point forward, the
     // standard dispatch path runs for every incoming frame.
+    //
+    // Per-connection dispatch is SERIALIZED via `enqueueDispatch` (Issue
+    // #527 M1). Each new frame chains onto the previous one's promise,
+    // so handler N+1 starts only after handler N returns — matching
+    // AWS-deployed semantics.
     ws.on('message', (raw, isBinary) => {
       const { body, isBase64Encoded } = websocketBody.bufferToBody(raw, isBinary);
       logger.debug(
         `WebSocket message received for connection ${connectionId}: ${body.slice(0, 200)}`
       );
-      void dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
-        (err) => {
-          logger.error(
-            `WebSocket message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
-          );
-          try {
-            ws.send(
-              JSON.stringify({
-                message: 'Internal server error',
-                connectionId,
-                requestId: randomUUID(),
-              })
+      void enqueueDispatch(connectionId, () =>
+        dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
+          (err) => {
+            logger.error(
+              `WebSocket message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
             );
-          } catch {
-            /* socket may already be closed */
+            try {
+              ws.send(
+                JSON.stringify({
+                  message: 'Internal server error',
+                  connectionId,
+                  requestId: randomUUID(),
+                })
+              );
+            } catch {
+              /* socket may already be closed */
+            }
           }
-        }
+        )
       );
     });
     ws.on('close', (code, reason) => {
-      void onDisconnect(connectionId, cfg, handshakeSnapshot, code, reason.toString('utf-8')).catch(
-        (err) => {
+      const reasonText = reason.toString('utf-8');
+      // $disconnect runs AFTER any in-flight message dispatch for this
+      // connection completes — same chain ensures the handler observes
+      // a consistent end-of-stream rather than racing the last frame.
+      // Track the promise so close()'s graceful-shutdown drain (Issue
+      // #527 M3) can bound how long it waits for a hung handler.
+      const disconnectPromise = enqueueDispatch(connectionId, () =>
+        onDisconnect(connectionId, cfg, handshakeSnapshot, code, reasonText).catch((err) => {
           logger.warn(
             `WebSocket $disconnect dispatch failed (connection ${connectionId}): ${err instanceof Error ? err.message : String(err)}`
           );
-        }
+        })
       );
+      inFlightDisconnects.add(disconnectPromise);
+      void disconnectPromise.finally(() => {
+        inFlightDisconnects.delete(disconnectPromise);
+      });
     });
     ws.on('error', (err) => {
       logger.debug(
@@ -350,18 +401,21 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
       );
     });
 
-    // Drain any frames buffered pre-verdict synchronously. Each frame
-    // goes through the same dispatcher as a real-time frame —
-    // bufferToBody allocation runs here (post-admit, bounded count)
-    // not at frame-receive time (pre-admit, unbounded by attacker).
+    // Drain any frames buffered pre-verdict via the same per-connection
+    // chain so they dispatch in arrival order ahead of any new frames
+    // that land while the drain is in flight. bufferToBody allocation
+    // runs here (post-admit, bounded count) not at frame-receive time
+    // (pre-admit, unbounded by attacker).
     for (const frame of preVerdictFrames) {
       const { body, isBase64Encoded } = websocketBody.bufferToBody(frame.raw, frame.isBinary);
-      void dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
-        (err) => {
-          logger.error(
-            `WebSocket buffered-message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
-          );
-        }
+      void enqueueDispatch(connectionId, () =>
+        dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
+          (err) => {
+            logger.error(
+              `WebSocket buffered-message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+            );
+          }
+        )
       );
     }
     preVerdictFrames.length = 0;
@@ -436,6 +490,13 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     await invokeRoute(disconnectRoute.targetLambdaLogicalId, event, opts.pool, rieTimeoutMs);
   };
 
+  // Bounded total drain window for in-flight $disconnect dispatches
+  // during graceful shutdown (Issue #527 M3). 5s is long enough for a
+  // well-behaved handler to flush logs / close db connections, short
+  // enough that a hung handler can't hold the process open for
+  // rieTimeoutMs (60s+) waiting on SIGKILL or the verify.sh 120s grace.
+  const SHUTDOWN_DRAIN_MS = 5_000;
+
   let closed = false;
   return {
     registry,
@@ -466,6 +527,25 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
           })
       );
       await Promise.all(closes);
+      // Drain in-flight $disconnect dispatches with a bounded ceiling.
+      // A handler that exceeds SHUTDOWN_DRAIN_MS keeps running in the
+      // background but no longer blocks the process exit.
+      if (inFlightDisconnects.size > 0) {
+        const drainStartCount = inFlightDisconnects.size;
+        const drainComplete = Promise.allSettled(Array.from(inFlightDisconnects));
+        const drainResult = await Promise.race([
+          drainComplete.then(() => 'complete' as const),
+          new Promise<'timeout'>((resolve) =>
+            setTimeout(() => resolve('timeout'), SHUTDOWN_DRAIN_MS).unref()
+          ),
+        ]);
+        if (drainResult === 'timeout' && inFlightDisconnects.size > 0) {
+          logger.warn(
+            `WebSocket graceful shutdown drained for ${SHUTDOWN_DRAIN_MS}ms; ` +
+              `${inFlightDisconnects.size}/${drainStartCount} $disconnect handlers still in flight — leaking past shutdown.`
+          );
+        }
+      }
       await new Promise<void>((resolve) => {
         wss.close(() => resolve());
       });
