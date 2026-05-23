@@ -13,6 +13,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/main-tree-branch-gate.sh",
+            "if": "Bash(git switch*) or Bash(git checkout*) or Bash(cd * && git switch*) or Bash(cd * && git checkout*) or Bash(git -C * switch*) or Bash(git -C * checkout*)",
+            "timeout": 10,
+            "statusMessage": "Checking main-tree branch-switch policy..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/post-merge-orphan-push-gate.sh",
             "if": "Bash(git push*) or Bash(git -C * push*)",
             "timeout": 10,
