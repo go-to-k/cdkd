@@ -728,7 +728,26 @@ export class ASGProvider implements ResourceProvider {
     // catches console-side ADDs to a previously-empty list.
     result['MetricsCollection'] = mapEnabledMetricsToCfn(group.EnabledMetrics);
     result['LifecycleHookSpecificationList'] = mapLifecycleHooksToCfn(lifecycleHooks);
-    result['TrafficSources'] = mapTrafficSourcesToCfn(trafficSources);
+    // TrafficSources is the AWS-side unified view of every traffic
+    // attachment — it overlaps with TargetGroupARNs / LoadBalancerNames
+    // for elbv2 + classic-elb attachments, since the same underlying
+    // attachment is reachable via either API. Storing the overlap in
+    // observedProperties causes a `cdkd drift --revert` to apply the
+    // same attach/detach diff TWICE (once via applyTargetGroupArnsDiff,
+    // once via applyTrafficSourcesDiff), with the second pass operating
+    // on already-modified AWS state and producing inconsistent
+    // [tg1, tg2] residuals — surfaced by tests/integration/
+    // drift-revert-vpc. Filter out entries whose Identifier is already
+    // covered by TargetGroupARNs / LoadBalancerNames so TrafficSources
+    // only carries the residual UNIQUE entries (VPC Lattice, VPC
+    // Endpoint Service, etc.) that don't have a dedicated CFn property.
+    const tgArnSet = new Set(group.TargetGroupARNs ?? []);
+    const lbNameSet = new Set(group.LoadBalancerNames ?? []);
+    const dedupedTrafficSources = trafficSources.filter(
+      (t) =>
+        t.Identifier !== undefined && !tgArnSet.has(t.Identifier) && !lbNameSet.has(t.Identifier)
+    );
+    result['TrafficSources'] = mapTrafficSourcesToCfn(dedupedTrafficSources);
     result['NotificationConfigurations'] = mapNotificationsToCfn(notifications);
 
     return result;
@@ -744,8 +763,18 @@ export class ASGProvider implements ResourceProvider {
       | undefined;
     if (!lt) return undefined;
     const out: LaunchTemplateSpecification = {};
-    if (lt.LaunchTemplateId !== undefined) out.LaunchTemplateId = lt.LaunchTemplateId;
-    if (lt.LaunchTemplateName !== undefined) out.LaunchTemplateName = lt.LaunchTemplateName;
+    // AWS UpdateAutoScalingGroup rejects when both LaunchTemplateId and
+    // LaunchTemplateName are present in the same LaunchTemplate object
+    // ("Valid requests must contain either launchTemplateId or
+    // LaunchTemplateName"). DescribeAutoScalingGroups returns both, so
+    // a straight readCurrentState → update round-trip on `drift --revert`
+    // would hit this. Prefer the ID (canonical, doesn't change on LT
+    // rename) and only fall back to Name when ID is absent.
+    if (lt.LaunchTemplateId !== undefined) {
+      out.LaunchTemplateId = lt.LaunchTemplateId;
+    } else if (lt.LaunchTemplateName !== undefined) {
+      out.LaunchTemplateName = lt.LaunchTemplateName;
+    }
     if (lt.Version !== undefined) {
       // Defensive coercion: AWS SDK `LaunchTemplateSpecification.Version`
       // is `string` and AWS rejects non-string forms with `Invalid
@@ -1023,6 +1052,41 @@ export class ASGProvider implements ResourceProvider {
         })
       );
     }
+    // AttachLoadBalancerTargetGroups is async — the target group starts in
+    // 'Adding' state and only becomes visible in
+    // DescribeAutoScalingGroups.TargetGroupARNs after AWS internal
+    // propagation. A subsequent `cdkd drift` read right after the call
+    // returns can otherwise see a stale snapshot and report drift
+    // against the AWS-side empty list (surfaced by tests/integration/
+    // drift-revert-vpc's step-6 "drift again" check). Bounded poll to
+    // confirm the post-state matches the intent before returning so the
+    // caller's next read is consistent.
+    if (toDetach.length > 0 || toAttach.length > 0) {
+      await this.waitForTargetGroupArnsConvergence(physicalId, new Set(nextArns));
+    }
+  }
+
+  private async waitForTargetGroupArnsConvergence(
+    physicalId: string,
+    expected: Set<string>
+  ): Promise<void> {
+    const deadlineMs = Date.now() + 30_000;
+    while (Date.now() < deadlineMs) {
+      const resp = await this.getClient().send(
+        new DescribeAutoScalingGroupsCommand({ AutoScalingGroupNames: [physicalId] })
+      );
+      const current = new Set(resp.AutoScalingGroups?.[0]?.TargetGroupARNs ?? []);
+      if (current.size === expected.size && [...expected].every((a) => current.has(a))) {
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    // 30s timeout — surface as a warning rather than failure so the
+    // caller still sees the SDK-side success; drift can re-report if
+    // the propagation is still stuck.
+    this.logger.warn(
+      `applyTargetGroupArnsDiff: TG set did not converge to expected within 30s for ASG ${physicalId}`
+    );
   }
 
   private async applyMetricsCollectionDiff(

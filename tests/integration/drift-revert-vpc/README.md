@@ -27,6 +27,10 @@ against live AWS.
      `Properties.DnsProperties.SOA.TTL` from `60` to `30`.
    - `SetSecurityGroups` swaps the ALB's `SecurityGroups` from `[Sg1]`
      to `[Sg2]`.
+   - `CreateOrUpdateTags` adds an extra `Component=drift-revert-vpc-ADDED`
+     tag onto the ASG (templated `Tags` carry only `Owner=cdkd-integ`).
+   - `DetachLoadBalancerTargetGroups` + `AttachLoadBalancerTargetGroups`
+     swap the ASG's attached target group from `tg1` to `tg2`.
 3. `cdkd drift CdkdDriftRevertVpcExample` — assert exit code **1**
    (drift detected on every mutated resource).
 4. `cdkd drift CdkdDriftRevertVpcExample --revert -y` — assert exit
@@ -65,12 +69,23 @@ The script:
   `Description: integ-original`, `Properties.DnsProperties.SOA.TTL: 60`.
 - `AWS::ElasticLoadBalancingV2::LoadBalancer` (DriftLoadBalancer) —
   Application, internet-facing, IPv4, `SecurityGroups: [Sg1]`.
+- `AWS::ElasticLoadBalancingV2::TargetGroup` × 2 (DriftAsgTg1 /
+  DriftAsgTg2) — port 80, `targetType: instance`. No listener
+  attached; tg1 is the ASG's templated initial value and tg2 is the
+  swap target for `inject-drift.ts`.
+- `AWS::EC2::LaunchTemplate` (DriftAsgLt) — t3.nano + Amazon Linux
+  2023. Never instantiates an instance because the ASG's capacity is 0.
+- `AWS::AutoScaling::AutoScalingGroup` (DriftAsg) — `MinSize` /
+  `MaxSize` / `DesiredCapacity` all `0` (zero EC2 instances ever
+  launch). Templated `Tags: [{Owner=cdkd-integ}]` and
+  `TargetGroupARNs: [tg1.arn]`.
 
-The three exercised provider extensions (`UpdateFileSystem` /
+The exercised provider extensions (`UpdateFileSystem` /
 `ModifyMountTargetSecurityGroups` / `UpdatePrivateDnsNamespace` /
-`SetSecurityGroups`) are first-class via the SDK provider —
-`cdkd drift --revert` exercises real AWS update calls, not the CC
-API fallback.
+`SetSecurityGroups` / `CreateOrUpdateTags` / `DeleteTags` /
+`AttachLoadBalancerTargetGroups` / `DetachLoadBalancerTargetGroups`)
+are first-class via the SDK provider — `cdkd drift --revert`
+exercises real AWS update calls, not the CC API fallback.
 
 ## Why subnet / IpAddressType mutations are not exercised
 

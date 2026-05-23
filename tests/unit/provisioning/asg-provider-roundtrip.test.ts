@@ -235,6 +235,96 @@ describe('ASGProvider update', () => {
       mockSend.mock.calls.some((c) => c[0] instanceof CreateAutoScalingGroupCommand)
     ).toBe(false);
   });
+
+  it('strips LaunchTemplateName when LaunchTemplateId is present (UpdateAutoScalingGroup rejects both)', async () => {
+    // AWS DescribeAutoScalingGroups returns BOTH LaunchTemplateId AND
+    // LaunchTemplateName, but UpdateAutoScalingGroup rejects when both
+    // are present in the same LaunchTemplate object ("Valid requests
+    // must contain either launchTemplateId or LaunchTemplateName"). The
+    // straight readCurrentState → update round-trip on `drift --revert`
+    // hit this in real-AWS testing against tests/integration/
+    // drift-revert-vpc. buildLaunchTemplate should prefer ID (canonical,
+    // doesn't change on LT rename) and drop the Name.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof UpdateAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof DescribeAutoScalingGroupsCommand) {
+        return Promise.resolve({
+          AutoScalingGroups: [
+            { AutoScalingGroupName: 'my-asg', AutoScalingGroupARN: 'arn:asg:my-asg' },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const provider = new ASGProvider();
+    const propsFromReadCurrentState = {
+      AutoScalingGroupName: 'my-asg',
+      MinSize: 0,
+      MaxSize: 0,
+      LaunchTemplate: {
+        LaunchTemplateId: 'lt-aaaa1111',
+        LaunchTemplateName: 'some-name',
+        Version: '1',
+      },
+    };
+    await provider.update('MyAsg', 'my-asg', RESOURCE_TYPE, propsFromReadCurrentState, {
+      AutoScalingGroupName: 'my-asg',
+      MinSize: 0,
+      MaxSize: 0,
+    });
+
+    const updateCalls = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateAutoScalingGroupCommand);
+    expect(updateCalls).toHaveLength(1);
+    const input = (updateCalls[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['LaunchTemplate']).toEqual({
+      LaunchTemplateId: 'lt-aaaa1111',
+      Version: '1',
+    });
+  });
+
+  it('falls back to LaunchTemplateName when LaunchTemplateId is absent', async () => {
+    // Symmetric guard — when only LaunchTemplateName is provided
+    // (e.g. user templated the name explicitly), buildLaunchTemplate
+    // forwards it to AWS without falling back to undefined.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof UpdateAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof DescribeAutoScalingGroupsCommand) {
+        return Promise.resolve({
+          AutoScalingGroups: [
+            { AutoScalingGroupName: 'my-asg', AutoScalingGroupARN: 'arn:asg:my-asg' },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      {
+        AutoScalingGroupName: 'my-asg',
+        MinSize: 0,
+        MaxSize: 0,
+        LaunchTemplate: { LaunchTemplateName: 'my-template', Version: '1' },
+      },
+      { AutoScalingGroupName: 'my-asg', MinSize: 0, MaxSize: 0 }
+    );
+
+    const updateCalls = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateAutoScalingGroupCommand);
+    expect(updateCalls).toHaveLength(1);
+    const input = (updateCalls[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['LaunchTemplate']).toEqual({
+      LaunchTemplateName: 'my-template',
+      Version: '1',
+    });
+  });
 });
 
 // #475: Tags diffs via CreateOrUpdateTags / DeleteTags.
@@ -332,7 +422,23 @@ describe('ASGProvider update — LoadBalancerNames + TargetGroupARNs (#476)', ()
   });
 
   it('issues AttachLoadBalancerTargetGroups + DetachLoadBalancerTargetGroups for the TG delta', async () => {
-    mockSend.mockResolvedValue({});
+    // After Detach/Attach, the helper polls DescribeAutoScalingGroups
+    // for the expected TG set to converge — mock the post-state to
+    // match the intent so the poll returns on the first iteration
+    // instead of timing out.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeAutoScalingGroupsCommand) {
+        return Promise.resolve({
+          AutoScalingGroups: [
+            {
+              AutoScalingGroupName: 'my-asg',
+              TargetGroupARNs: ['arn:tg:new', 'arn:tg:kept'],
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
     const provider = new ASGProvider();
     await provider.update(
       'MyAsg',
@@ -544,6 +650,56 @@ describe('ASGProvider readCurrentState', () => {
     expect(state?.['LoadBalancerNames']).toEqual([]);
     expect(state?.['TargetGroupARNs']).toEqual([]);
     expect(state?.['Tags']).toEqual([{ Key: 'env', Value: 'dev' }]);
+  });
+
+  it('filters TrafficSources entries already covered by TargetGroupARNs / LoadBalancerNames', async () => {
+    // Surfaced by tests/integration/drift-revert-vpc: AWS-side
+    // DescribeTrafficSources surfaces TG/LB attachments as TrafficSource
+    // entries (Type='elbv2' / 'elb') in ADDITION to surfacing them via
+    // TargetGroupARNs / LoadBalancerNames directly. Recording the overlap
+    // in observedProperties caused `cdkd drift --revert` to apply the
+    // same attach/detach diff twice (once via applyTargetGroupArnsDiff,
+    // once via applyTrafficSourcesDiff, with the second pass producing
+    // inconsistent residuals). The dedupe keeps drift visibility for
+    // entries unique to TrafficSources (VPC Lattice / VPC Endpoint
+    // Service etc.) while removing the overlap.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeLifecycleHooksCommand)
+        return Promise.resolve({ LifecycleHooks: [] });
+      if (command instanceof DescribeNotificationConfigurationsCommand)
+        return Promise.resolve({ NotificationConfigurations: [] });
+      if (command instanceof DescribeTrafficSourcesCommand) {
+        return Promise.resolve({
+          TrafficSources: [
+            { Identifier: 'arn:aws:elasticloadbalancing:tg-1', Type: 'elbv2' },
+            { Identifier: 'classic-elb-name', Type: 'elb' },
+            { Identifier: 'arn:aws:vpc-lattice:tg-99', Type: 'vpc-lattice' },
+          ],
+        });
+      }
+      return Promise.resolve({
+        AutoScalingGroups: [
+          {
+            AutoScalingGroupName: 'my-asg',
+            AutoScalingGroupARN: 'arn:asg:my-asg',
+            MinSize: 0,
+            MaxSize: 0,
+            TargetGroupARNs: ['arn:aws:elasticloadbalancing:tg-1'],
+            LoadBalancerNames: ['classic-elb-name'],
+          },
+        ],
+      });
+    });
+    const provider = new ASGProvider();
+    const state = await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE);
+    expect(state).toBeDefined();
+    expect(state?.['TargetGroupARNs']).toEqual(['arn:aws:elasticloadbalancing:tg-1']);
+    expect(state?.['LoadBalancerNames']).toEqual(['classic-elb-name']);
+    // Only the VPC Lattice entry remains in TrafficSources — the elbv2
+    // and elb entries dedupe against TargetGroupARNs / LoadBalancerNames.
+    expect(state?.['TrafficSources']).toEqual([
+      { Identifier: 'arn:aws:vpc-lattice:tg-99', Type: 'vpc-lattice' },
+    ]);
   });
 
   it('returns undefined when AWS reports the group is gone', async () => {

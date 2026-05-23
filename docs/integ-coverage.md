@@ -59,7 +59,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::AppSync::GraphQLApi` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AppSync::GraphQLSchema` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AppSync::Resolver` | [`appsync`](../tests/integration/appsync/) (l1) |
-| `AWS::AutoScaling::AutoScalingGroup` | [`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
+| `AWS::AutoScaling::AutoScalingGroup` | [`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l1,literal)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
 | `AWS::BedrockAgentCore::Runtime` | [`bedrock-agentcore`](../tests/integration/bedrock-agentcore/) (literal) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudFront::Distribution` | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) (l2)<br>[`cloudfront-function-url`](../tests/integration/cloudfront-function-url/) (l2)<br>[`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |

@@ -409,9 +409,14 @@
     {
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
       "integs": [
+        "drift-revert-vpc",
         "remove-protection"
       ],
       "signals": {
+        "drift-revert-vpc": [
+          "l1",
+          "literal"
+        ],
         "remove-protection": [
           "l2",
           "literal"
