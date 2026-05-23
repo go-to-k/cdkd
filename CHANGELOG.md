@@ -1,3 +1,10 @@
+## [0.141.1](https://github.com/go-to-k/cdkd/compare/v0.141.0...v0.141.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* **asg-provider:** drift-revert round-trip for ASG Tags/LB/TG + fixture coverage ([#547](https://github.com/go-to-k/cdkd/issues/547)) ([49c91d7](https://github.com/go-to-k/cdkd/commit/49c91d7baf758edf6e546766dae14816caa3b659))
+
 # [0.141.0](https://github.com/go-to-k/cdkd/compare/v0.140.0...v0.141.0) (2026-05-23)
 
 
