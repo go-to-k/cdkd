@@ -95,6 +95,7 @@ gates:
       - "docs/**"
       - "README.md"
       - "CLAUDE.md"
+      - ".claude/rules/**"
 
   verify-pr:
     # `requires` (markgate 0.3+) declares verify-pr's freshness as the

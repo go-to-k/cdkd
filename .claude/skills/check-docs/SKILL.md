@@ -18,7 +18,7 @@ You are checking whether documentation is up to date with recent code changes in
    - `src/state/**` — bucket name, key layout, lock layout, schema version. These are documented verbatim in `docs/state-management.md`, `docs/troubleshooting.md`, README.md ("Outputs" example path), and CLAUDE.md ("S3 storage structure"). A path-layout change in `s3-state-backend.ts` or `lock-manager.ts` invalidates ~30 shell snippets across those files; the auto-migration session of 2026-05-01 (PR #57 → v0.7.0) shipped before this trigger existed and the docs took the full rollout to be re-aligned.
    - **any new file added** anywhere under `src/**` — must be mentioned in CLAUDE.md "Key Files and Directories"
    - `package.json` — dependency additions/removals described in CLAUDE.md "Dependencies"
-   - `README.md`, `CLAUDE.md`, `docs/**` — the docs themselves
+   - `README.md`, `CLAUDE.md`, `docs/**`, `.claude/rules/**` — the docs themselves
    - README-visible CLI behavior changes (new flags, changed defaults, new commands)
 
    If none of the above apply (only internal src files modified, no new files, no deps changed), write a one-line note — "no docs-visible surface touched" — set the `docs` marker (see "Commit-gate marker" below), and stop. Do NOT re-read docs for unrelated internal edits.
@@ -52,7 +52,7 @@ You are checking whether documentation is up to date with recent code changes in
 
 ## Commit-gate marker (on success only)
 
-After documentation is verified consistent (either no issues were found, or all issues were fixed), record the `docs` markgate marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The `docs` gate is scoped to `src/**`, `docs/**`, `README.md`, and `CLAUDE.md` via `.markgate.yml`, so it only invalidates when one of those is edited.
+After documentation is verified consistent (either no issues were found, or all issues were fixed), record the `docs` markgate marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The `docs` gate is scoped to `src/**`, `docs/**`, `README.md`, `CLAUDE.md`, and `.claude/rules/**` via `.markgate.yml`, so it only invalidates when one of those is edited.
 
 Run from the repo root (use `mise exec` to avoid PATH issues when shims aren't active):
 
