@@ -48,6 +48,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/integ-schema-migration-gate.sh",
+            "if": "Bash(gh pr merge*)",
+            "timeout": 10,
+            "statusMessage": "Checking integ-schema-migration marker..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/pr-review-gate.sh",
             "if": "Bash(gh pr merge*)",
             "timeout": 15,
@@ -59,6 +66,13 @@
             "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*)",
             "timeout": 10,
             "statusMessage": "Checking PR body for Closes (#N) auto-close trap..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/non-english-text-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * pr merge*)",
+            "timeout": 15,
+            "statusMessage": "Checking PR diff for non-English text..."
           },
           {
             "type": "command",

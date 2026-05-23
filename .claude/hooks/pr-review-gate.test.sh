@@ -87,6 +87,14 @@ EOF
 {"additions":1000,"deletions":500,"changedFiles":15,"headRefOid":"tst1234567890","headRefName":"feat/tests","files":[{"path":"tests/a.test.ts"},{"path":"tests/b.test.ts"},{"path":"tests/c.test.ts"},{"path":"tests/d.test.ts"},{"path":"tests/e.test.ts"},{"path":"tests/f.test.ts"},{"path":"tests/g.test.ts"},{"path":"tests/h.test.ts"},{"path":"tests/i.test.ts"},{"path":"tests/j.test.ts"},{"path":"tests/k.test.ts"},{"path":"tests/l.test.ts"},{"path":"tests/m.test.ts"},{"path":"tests/n.test.ts"},{"path":"tests/o.test.ts"}]}
 EOF
     ;;
+  rules-only-large)
+    # 781 LOC, 11 files, ALL under .claude/rules/ + CLAUDE.md → down-bias
+    # to 1-reviewer. Mirrors the PR #532 shape that originally surfaced
+    # the missing `.claude/rules/.*` clause in DOWN_DOCS_REGEX.
+    cat <<'EOF'
+{"additions":460,"deletions":321,"changedFiles":11,"headRefOid":"rul1234567890","headRefName":"docs/claude-md-trim","files":[{"path":"CLAUDE.md"},{"path":".claude/rules/architecture.md"},{"path":".claude/rules/code-layout.md"},{"path":".claude/rules/state-schema.md"},{"path":".claude/rules/providers.md"},{"path":".claude/rules/synthesis.md"},{"path":".claude/rules/assets.md"},{"path":".claude/rules/analyzer.md"},{"path":".claude/rules/cli-internals.md"},{"path":".claude/rules/testing.md"},{"path":".claude/rules/hooks.md"}]}
+EOF
+    ;;
   fail)
     # Simulate gh failure.
     exit 1
@@ -266,6 +274,19 @@ run_case "tests-only large PR down-bias → still gated on stale" 2 \
 run_case "tests-only large PR + fresh marker → pass" 0 \
   tests-only-large fresh "tst1234567890" \
   "gh pr merge 500"
+
+# 14b. .claude/rules/-only large PR (PR #532 shape):
+#      781 LOC, 11 files, all under .claude/rules/ + CLAUDE.md → base
+#      3-axis → down-bias → 1-reviewer → still gated. Verifies the
+#      `.claude/rules/.*` clause in DOWN_DOCS_REGEX (added in #533).
+run_case ".claude/rules/-only large PR down-bias → still gated on stale" 2 \
+  rules-only-large stale "" \
+  "gh pr merge 532"
+
+# 14c. Same PR with fresh+matching marker → pass.
+run_case ".claude/rules/-only large PR + fresh marker → pass" 0 \
+  rules-only-large fresh "rul1234567890" \
+  "gh pr merge 532"
 
 # --- gh failure fail-open --------------------------------------------
 
