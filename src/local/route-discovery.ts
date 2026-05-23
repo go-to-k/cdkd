@@ -4,6 +4,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
+import { pickRefLogicalId } from './intrinsic-utils.js';
 import { isSupportedSubtype, type SupportedSubtype } from './httpv2-service-integration.js';
 import type {
   AwsLambdaIntegrationConfig,
@@ -1362,18 +1363,6 @@ function parseRouteKey(routeKey: string): { method: string; pathPattern: string 
     );
   }
   return { method: m[1]!.toUpperCase(), pathPattern: m[2]! };
-}
-
-/**
- * If `value` is a `{ Ref: <string> }` intrinsic, return the referenced
- * logical ID. Otherwise return `null`.
- */
-function pickRefLogicalId(value: unknown): string | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const ref = (value as Record<string, unknown>)['Ref'];
-    if (typeof ref === 'string') return ref;
-  }
-  return null;
 }
 
 /**

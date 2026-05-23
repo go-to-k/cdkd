@@ -1,8 +1,10 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
+import { getLogger } from '../utils/logger.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
+import { pickRefLogicalId } from './intrinsic-utils.js';
 
 /**
  * Authorizer detection for `cdkd local start-api` (PR 8b of #224).
@@ -547,11 +549,22 @@ function parseCognitoIssuer(issuer: string): { region: string; userPoolId: strin
 }
 
 /**
- * Pull a string out of a {Ref} / literal entry under `ProviderARNs`.
- * CDK's CognitoUserPoolsAuthorizer emits a literal array of `Fn::GetAtt:
- * [<UserPool>, 'Arn']` entries — we accept both. The `location` argument
- * carries the full `<stack>/<authorizer>.ProviderARNs[<idx>]` path so the
- * error names the offending entry exactly.
+ * Pull a string out of a literal / `Fn::GetAtt` entry under `ProviderARNs`.
+ *
+ * CDK's `apigateway.CognitoUserPoolsAuthorizer` emits a `Fn::GetAtt:
+ * [<UserPool>, 'Arn']` reference, which is the canonical shape any user
+ * who writes `new CognitoUserPoolsAuthorizer(this, 'auth', { cognitoUserPools: [pool] })`
+ * ends up with (#470). Without `--from-state` we cannot resolve the
+ * deployed pool ARN, so we synthesize an obviously-unreachable placeholder
+ * pointing at a non-existent pool id — the JWKS fetch will fail and
+ * cognito-jwt.ts's pass-through fallback (PR #234) admits every JWT
+ * without signature verification. The warn log names the affected
+ * authorizer + the recommended explicit `providerArns` workaround so
+ * developers who DO want real verification know how to switch over.
+ *
+ * The `location` argument carries the full
+ * `<stack>/<authorizer>.ProviderARNs[<idx>]` path so the warn / error
+ * names the offending entry exactly.
  */
 function pickStringFromArn(value: unknown, location: string): string {
   if (typeof value === 'string') return value;
@@ -565,15 +578,19 @@ function pickStringFromArn(value: unknown, location: string): string {
         typeof arg[0] === 'string' &&
         arg[1] === 'Arn'
       ) {
-        // Synthesize a placeholder ARN — start-api never reaches AWS for
-        // this; we only need region + pool id, which the JWKS fetcher
-        // re-derives from the issuer URL inside the JWT itself if the
-        // ARN-shaped lookup fails. But Cognito authorizers use ARNs for
-        // verification so the discovery layer has to fail loudly if it
-        // can't extract one.
-        throw new RouteDiscoveryError(
-          `${location}: uses Fn::GetAtt against logical ID '${arg[0]}'. cdkd local start-api needs the literal ARN string to derive the JWKS URL — set the user pool ARN explicitly via 'authorizer.providerArns' on the CDK construct, or upgrade to JWT (HTTP v2) which encodes the pool in the Issuer URL.`
+        const logicalId = arg[0];
+        getLogger().warn(
+          `${location}: uses Fn::GetAtt against logical ID '${logicalId}'. ` +
+            `cdkd local start-api cannot resolve the deployed user pool ARN — synthesizing ` +
+            `an unreachable placeholder so JWKS pass-through admits every token. ` +
+            `For real signature verification, set 'providerArns: [pool.userPoolArn]' explicitly on the CDK construct.`
         );
+        // The placeholder region is informational — the JWKS URL it
+        // produces (`https://cognito-idp.us-east-1.amazonaws.com/<pool>/.well-known/jwks.json`)
+        // is supposed to 404 so the pass-through path is the only outcome.
+        // The pool id is namespaced with the logical id so the warn line is
+        // easy to grep back to the offending authorizer if multiple coexist.
+        return `arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_cdkdplaceholder${logicalId}`;
       }
     }
   }
@@ -783,14 +800,6 @@ function detectHttpApiAuthorizer(
     stack.stackName,
     `${stack.stackName}/${routeLogicalId}`
   );
-}
-
-function pickRefLogicalId(value: unknown): string | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const ref = (value as Record<string, unknown>)['Ref'];
-    if (typeof ref === 'string') return ref;
-  }
-  return null;
 }
 
 function shortJson(value: unknown): string {

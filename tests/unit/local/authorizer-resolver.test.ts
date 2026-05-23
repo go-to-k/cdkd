@@ -152,7 +152,13 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
     );
   });
 
-  it('rejects Fn::GetAtt-shaped ProviderARNs (literal required for JWKS URL)', () => {
+  // Issue #470: CDK's `apigateway.CognitoUserPoolsAuthorizer` emits
+  // `Fn::GetAtt: [<UserPool>, 'Arn']` for `ProviderARNs[]`. Pre-fix this
+  // hard-errored at boot; post-fix it synthesizes an unreachable
+  // placeholder ARN so cognito-jwt.ts's JWKS pass-through admits every
+  // token. Real verification still needs explicit `providerArns:
+  // [pool.userPoolArn]` on the CDK construct.
+  it('accepts Fn::GetAtt-shaped ProviderARNs and synthesizes an unreachable placeholder (#470)', () => {
     const stack = buildStack('S', {
       Auth: {
         Type: 'AWS::ApiGateway::Authorizer',
@@ -162,8 +168,36 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
         },
       },
     });
+    const info = resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method') as {
+      kind: string;
+      pools: Array<{ userPoolArn: string; region: string; userPoolId: string }>;
+      region: string;
+      userPoolId: string;
+    };
+    expect(info.kind).toBe('cognito');
+    expect(info.pools).toHaveLength(1);
+    // Placeholder ARN must still parse via parseCognitoUserPoolArn and
+    // produce a pool id namespaced with the originating logical id so the
+    // emitted JWKS URL is visibly synthetic in logs.
+    expect(info.pools[0]!.userPoolArn).toBe(
+      'arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_cdkdplaceholderUserPool'
+    );
+    expect(info.pools[0]!.region).toBe('us-east-1');
+    expect(info.pools[0]!.userPoolId).toBe('us-east-1_cdkdplaceholderUserPool');
+  });
+
+  it('rejects malformed ProviderARNs entries (not string, not Fn::GetAtt-Arn)', () => {
+    const stack = buildStack('S', {
+      Auth: {
+        Type: 'AWS::ApiGateway::Authorizer',
+        Properties: {
+          Type: 'COGNITO_USER_POOLS',
+          ProviderARNs: [{ Ref: 'UserPool' }],
+        },
+      },
+    });
     expect(() => resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method')).toThrow(
-      /literal ARN string|Fn::GetAtt/
+      /must be a literal string/
     );
   });
 
@@ -222,6 +256,9 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
   });
 
   it('error message names the offending ProviderARNs index', () => {
+    // Using an obviously-malformed string at index 2 — Fn::GetAtt is no
+    // longer rejected after #470 so the malformed entry must be something
+    // pickStringFromArn / parseCognitoUserPoolArn still rejects.
     const stack = buildStack('S', {
       Auth: {
         Type: 'AWS::ApiGateway::Authorizer',
@@ -230,7 +267,7 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
           ProviderARNs: [
             'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_aaa',
             'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_bbb',
-            { 'Fn::GetAtt': ['UserPoolC', 'Arn'] },
+            { Ref: 'UserPoolC' },
           ],
         },
       },
