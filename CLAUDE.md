@@ -8,9 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Important Notes**:
 
-- NOT recommended for production use (development/testing environments only)
-- Educational and experimental project
-- NOT intended as a replacement for the official AWS CDK CLI
+- For dev/test workflows only — early in development, not yet production-ready
+- Complements the AWS CDK CLI rather than replacing it (use CDK CLI in production for full CloudFormation tooling)
+- Bidirectional CloudFormation migration via `cdkd import --migrate-from-cloudformation` / `cdkd export`
 
 ## Architecture
 
@@ -134,7 +134,7 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 
 ## Known Limitations
 
-- NOT recommended for production use
+- Not yet production-ready — use the AWS CDK CLI for production workloads (see "Important Notes" above)
 
 **Recently Implemented**: per-PR shipped-feature notes moved to
 [docs/changelog-cdkd.md](docs/changelog-cdkd.md). Past entries are preserved
