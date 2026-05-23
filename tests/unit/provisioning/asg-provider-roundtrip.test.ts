@@ -652,17 +652,21 @@ describe('ASGProvider readCurrentState', () => {
     expect(state?.['Tags']).toEqual([{ Key: 'env', Value: 'dev' }]);
   });
 
-  it('filters TrafficSources entries already covered by TargetGroupARNs / LoadBalancerNames', async () => {
+  it('strips all elbv2 / elb entries from TrafficSources regardless of TG/LB membership', async () => {
     // Surfaced by tests/integration/drift-revert-vpc: AWS-side
     // DescribeTrafficSources surfaces TG/LB attachments as TrafficSource
     // entries (Type='elbv2' / 'elb') in ADDITION to surfacing them via
     // TargetGroupARNs / LoadBalancerNames directly. Recording the overlap
     // in observedProperties caused `cdkd drift --revert` to apply the
-    // same attach/detach diff twice (once via applyTargetGroupArnsDiff,
-    // once via applyTrafficSourcesDiff, with the second pass producing
-    // inconsistent residuals). The dedupe keeps drift visibility for
-    // entries unique to TrafficSources (VPC Lattice / VPC Endpoint
-    // Service etc.) while removing the overlap.
+    // same attach/detach diff twice and produce inconsistent residuals.
+    // The dedupe MUST strip every elbv2/elb entry — not just those whose
+    // Identifier matches the current TG/LB set — because AWS returns
+    // inconsistent snapshots between DescribeAutoScalingGroups and
+    // DescribeTrafficSources during eventual-consistency windows after
+    // an attach/detach (a stale TS entry can reference an OLD TG ARN
+    // that has already been removed from TargetGroupARNs, surfacing as
+    // false drift on the next read). VPC Lattice + VPC Endpoint Service
+    // entries remain because they don't have a dedicated CFn property.
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof DescribeLifecycleHooksCommand)
         return Promise.resolve({ LifecycleHooks: [] });
@@ -672,6 +676,11 @@ describe('ASGProvider readCurrentState', () => {
         return Promise.resolve({
           TrafficSources: [
             { Identifier: 'arn:aws:elasticloadbalancing:tg-1', Type: 'elbv2' },
+            // Stale entry — Identifier no longer in TargetGroupARNs but
+            // still in DescribeTrafficSources mid-propagation. The old
+            // matching-key dedupe missed this. The new always-strip
+            // semantic catches it.
+            { Identifier: 'arn:aws:elasticloadbalancing:tg-stale', Type: 'elbv2' },
             { Identifier: 'classic-elb-name', Type: 'elb' },
             { Identifier: 'arn:aws:vpc-lattice:tg-99', Type: 'vpc-lattice' },
           ],
@@ -695,8 +704,9 @@ describe('ASGProvider readCurrentState', () => {
     expect(state).toBeDefined();
     expect(state?.['TargetGroupARNs']).toEqual(['arn:aws:elasticloadbalancing:tg-1']);
     expect(state?.['LoadBalancerNames']).toEqual(['classic-elb-name']);
-    // Only the VPC Lattice entry remains in TrafficSources — the elbv2
-    // and elb entries dedupe against TargetGroupARNs / LoadBalancerNames.
+    // Both the current AND the stale elbv2 entries are stripped, plus
+    // the elb entry. Only the VPC Lattice entry (no dedicated CFn
+    // property to track it elsewhere) remains.
     expect(state?.['TrafficSources']).toEqual([
       { Identifier: 'arn:aws:vpc-lattice:tg-99', Type: 'vpc-lattice' },
     ]);

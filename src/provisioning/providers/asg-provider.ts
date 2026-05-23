@@ -741,16 +741,21 @@ export class ASGProvider implements ResourceProvider {
     // covered by TargetGroupARNs / LoadBalancerNames so TrafficSources
     // only carries the residual UNIQUE entries (VPC Lattice, VPC
     // Endpoint Service, etc.) that don't have a dedicated CFn property.
-    // Filter strictly on (Identifier, Type) — only elbv2 entries dedupe
-    // against TargetGroupARNs and elb entries against LoadBalancerNames.
-    // This guards against future TrafficSource Type values that could
-    // legitimately share Identifier with a TG/LB.
-    const tgArnSet = new Set(group.TargetGroupARNs ?? []);
-    const lbNameSet = new Set(group.LoadBalancerNames ?? []);
+    // Strip ALL elbv2 / elb entries from TrafficSources — the canonical
+    // attachment state for these types lives in TargetGroupARNs and
+    // LoadBalancerNames respectively. AWS returns inconsistent
+    // snapshots between DescribeAutoScalingGroups (TGs/LBs view) and
+    // DescribeTrafficSources during eventual-consistency windows after
+    // Attach/Detach: a drift-revert that just modified TGs intermittently
+    // sees a stale TS entry referencing the OLD TG ARN (no longer in
+    // tgArnSet, so not Identifier-matched-dedupe) and surfaces it as
+    // drift on the next read. Filtering elbv2 / elb unconditionally is
+    // the right semantic — TS is meant for attachment types without a
+    // dedicated CFn property (VPC Lattice, VPC Endpoint Service, etc.);
+    // every elbv2 / elb entry is redundantly tracked elsewhere.
     const dedupedTrafficSources = trafficSources.filter((t) => {
       if (t.Identifier === undefined) return false;
-      if (t.Type === 'elbv2' && tgArnSet.has(t.Identifier)) return false;
-      if (t.Type === 'elb' && lbNameSet.has(t.Identifier)) return false;
+      if (t.Type === 'elbv2' || t.Type === 'elb') return false;
       return true;
     });
     result['TrafficSources'] = mapTrafficSourcesToCfn(dedupedTrafficSources);
