@@ -13,6 +13,7 @@ import {
   type S3DestinationConfiguration,
   type ExtendedS3DestinationConfiguration,
   type ExtendedS3DestinationUpdate,
+  type RedshiftDestinationUpdate,
   type S3DestinationUpdate,
   type Tag,
   type HttpEndpointDestinationConfiguration,
@@ -38,6 +39,20 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * CFn destination property names that this provider can apply
+ * in-place via UpdateDestinationCommand. Other destination types
+ * still hard-reject in update() with a tightened error pointing at
+ * the per-shape reverse-mapper follow-up issue (#549).
+ *
+ * Membership grows as each follow-up PR lands. Keep alphabetical
+ * to minimize merge conflicts when multiple follow-ups race.
+ */
+const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
+  'ExtendedS3DestinationConfiguration',
+  'RedshiftDestinationConfiguration',
+]);
 
 /**
  * SDK Provider for AWS Kinesis Firehose resources
@@ -397,16 +412,29 @@ export class FirehoseProvider implements ResourceProvider {
    *     `DescribeDeliveryStream` call, then applies the diff. Only fires
    *     when the destination shape actually differs.
    *
+   *   - `RedshiftDestinationConfiguration` (#549) — same flow as
+   *     ExtendedS3: `DescribeDeliveryStream` recovers VersionId +
+   *     DestinationId, then `UpdateDestinationCommand` issues the
+   *     diff with a `RedshiftDestinationUpdate` payload produced by
+   *     {@link mapRedshiftConfigToUpdate}. Handles `CopyCommand`,
+   *     `RetryOptions`, `S3Configuration` → `S3Update`,
+   *     `S3BackupConfiguration` → `S3BackupUpdate`,
+   *     `ProcessingConfiguration`, `S3BackupMode`,
+   *     `CloudWatchLoggingOptions`, `Username` / `Password` /
+   *     `RoleARN` / `ClusterJDBCURL`.
+   *
    * Other destination types (`S3DestinationConfiguration`,
-   * `HttpEndpointDestinationConfiguration`, `RedshiftDestinationConfiguration`,
+   * `HttpEndpointDestinationConfiguration`,
    * `ElasticsearchDestinationConfiguration`,
    * `AmazonopensearchserviceDestinationConfiguration`,
    * `SplunkDestinationConfiguration`,
-   * `AmazonOpenSearchServerlessDestinationConfiguration`) stay rejected
-   * with a tightened error message naming the AWS API. Each one is a
-   * follow-up to (#477) — AWS provides `UpdateDestination` for them too,
-   * but the per-shape reverse-mappers are deep and each warrants its own
-   * focused PR. Re-deploy with `cdkd deploy --replace` until they land.
+   * `AmazonOpenSearchServerlessDestinationConfiguration`,
+   * `IcebergDestinationConfiguration`,
+   * `SnowflakeDestinationConfiguration`) stay rejected with a tightened
+   * error message naming the AWS API. Each one is a follow-up to (#549)
+   * — AWS provides `UpdateDestination` for them too, but the per-shape
+   * reverse-mappers are deep and each warrants its own focused PR.
+   * Re-deploy with `cdkd deploy --replace` until they land.
    *
    * Destination-type SWITCHES (e.g. ExtendedS3 → Redshift) are immutable
    * on AWS; cdkd surfaces `ResourceUpdateNotSupportedError` so the caller
@@ -439,9 +467,9 @@ export class FirehoseProvider implements ResourceProvider {
     }
 
     const activeDest = destKey ?? prevDestKey;
-    if (activeDest && activeDest !== 'ExtendedS3DestinationConfiguration') {
+    if (activeDest && !SUPPORTED_UPDATE_DESTINATIONS.has(activeDest)) {
       // Some other destination type — check whether it actually changed,
-      // and reject only if it did. Tags-only diffs against e.g. a Redshift
+      // and reject only if it did. Tags-only diffs against e.g. a Splunk
       // delivery stream should NOT throw.
       const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
@@ -449,7 +477,7 @@ export class FirehoseProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it; the per-shape reverse-mapper is a follow-up to #477). Re-deploy with cdkd deploy --replace.`
+          `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it; the per-shape reverse-mapper is a follow-up to #549). Re-deploy with cdkd deploy --replace.`
         );
       }
     }
@@ -466,6 +494,14 @@ export class FirehoseProvider implements ResourceProvider {
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
         await this.applyExtendedS3DestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'RedshiftDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyRedshiftDestinationUpdate(physicalId, nextDest);
       }
     }
 
@@ -844,6 +880,102 @@ export class FirehoseProvider implements ResourceProvider {
       result.DataFormatConversionConfiguration = config[
         'DataFormatConversionConfiguration'
       ] as ExtendedS3DestinationUpdate['DataFormatConversionConfiguration'];
+    }
+    return result;
+  }
+
+  /**
+   * Recover `CurrentDeliveryStreamVersionId` + `DestinationId` from
+   * `DescribeDeliveryStream` and issue `UpdateDestination` with the new
+   * Redshift shape. The reverse-mapper at
+   * {@link mapRedshiftConfigToUpdate} produces the
+   * `RedshiftDestinationUpdate` payload — only fields present in the
+   * input are forwarded so omitted CFn keys don't clobber AWS-side
+   * state. Mirrors {@link applyExtendedS3DestinationUpdate} (#549).
+   */
+  private async applyRedshiftDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const currentDestination = desc?.Destinations?.[0];
+    const destinationId = currentDestination?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        RedshiftDestinationUpdate: this.mapRedshiftConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `RedshiftDestinationConfiguration` to the
+   * `RedshiftDestinationUpdate` shape used by AWS
+   * `UpdateDestinationCommand` (#549). Every field is `!== undefined`
+   * gated so omitted CFn keys do not clobber AWS-side state. The CFn
+   * `S3Configuration` field is mapped through
+   * {@link mapS3ConfigToUpdate} into the SDK-side `S3Update` slot;
+   * `S3BackupConfiguration` likewise into `S3BackupUpdate`.
+   */
+  private mapRedshiftConfigToUpdate(config: Record<string, unknown>): RedshiftDestinationUpdate {
+    const result: RedshiftDestinationUpdate = {};
+    const roleArn = (config['RoleArn'] ?? config['RoleARN']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    const clusterJdbcUrl = (config['ClusterJDBCURL'] ?? config['ClusterJdbcUrl']) as
+      | string
+      | undefined;
+    if (clusterJdbcUrl !== undefined) result.ClusterJDBCURL = clusterJdbcUrl;
+    if (config['CopyCommand'] !== undefined) {
+      result.CopyCommand = config['CopyCommand'] as RedshiftDestinationUpdate['CopyCommand'];
+    }
+    if (config['Username'] !== undefined) result.Username = config['Username'] as string;
+    if (config['Password'] !== undefined) result.Password = config['Password'] as string;
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config['RetryOptions'] as RedshiftDestinationUpdate['RetryOptions'];
+    }
+    // CFn property is `S3Configuration`; SDK Update shape uses `S3Update`.
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Update = this.mapS3ConfigToUpdate(
+        config['S3Configuration'] as Record<string, unknown>
+      );
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as RedshiftDestinationUpdate['ProcessingConfiguration'];
+    }
+    if (config['S3BackupMode'] !== undefined) {
+      result.S3BackupMode = config['S3BackupMode'] as RedshiftDestinationUpdate['S3BackupMode'];
+    }
+    // CFn property is `S3BackupConfiguration`; SDK Update shape uses
+    // `S3BackupUpdate`. Mirrors the ExtendedS3 pattern.
+    if (config['S3BackupConfiguration'] !== undefined) {
+      result.S3BackupUpdate = this.mapS3ConfigToUpdate(
+        config['S3BackupConfiguration'] as Record<string, unknown>
+      );
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as RedshiftDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['SecretsManagerConfiguration'] !== undefined) {
+      result.SecretsManagerConfiguration = config[
+        'SecretsManagerConfiguration'
+      ] as RedshiftDestinationUpdate['SecretsManagerConfiguration'];
     }
     return result;
   }
