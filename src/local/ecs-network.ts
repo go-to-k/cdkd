@@ -26,8 +26,10 @@ export const METADATA_ENDPOINT_IMAGE = 'amazon/amazon-ecs-local-container-endpoi
  * matches the documented AWS task-metadata endpoint address. Containers
  * inject `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<id>`
  * to reach it. `cdkd local run-task` keeps this verbatim; `cdkd local
- * start-service` allocates a per-replica subnet (via `subnetOctet`) so
- * concurrent replicas don't collide on a single docker network range.
+ * start-service` creates ONE shared network at CLI startup (design
+ * § 5 Option A) — the shared sidecar lives at `169.254.171.2` (see
+ * `SHARED_SVC_SUBNET_OCTET` below), one octet up so the two CLI
+ * variants can run on the same host without bridge-pool collision.
  */
 export const METADATA_ENDPOINT_IP = '169.254.170.2';
 
