@@ -40,6 +40,11 @@ import { buildCrossStackResolver, loadStateForStack } from './local-state-loader
 import type { SubstitutionContext } from '../../local/state-resolver.js';
 import { CloudMapRegistry } from '../../local/cloud-map-registry.js';
 import { buildCloudMapIndex, type CloudMapIndex } from '../../local/cloud-map-resolver.js';
+import {
+  createSharedSvcNetwork,
+  destroyTaskNetwork,
+  type TaskNetwork,
+} from '../../local/ecs-network.js';
 
 interface LocalStartServiceOptions {
   app?: string;
@@ -111,11 +116,21 @@ async function localStartServiceCommand(
 
   let sigintHandler: (() => void) | undefined;
   let sigintCount = 0;
+  // Hoisted out of the try block so the single-flight cleanup closure
+  // can teardown the shared network after every container is gone.
+  // Assigned inside the try once the shared `cdkd-local-svc-<rand>`
+  // network + sidecar are up; left undefined if the run failed to
+  // create them.
+  let sharedNetwork: TaskNetwork | undefined;
 
   // Single-flight cleanup so the SIGINT handler and the outer `finally`
   // collapse to one underlying invocation. Fans out across every
   // target's controller; falls back to per-replica cleanupEcsRun when
   // a controller never finished construction (early-failure case).
+  // The shared network is torn down LAST so per-replica
+  // `cleanupEcsRun()` calls (which only stop containers — they no
+  // longer destroy the network in shared mode because the task
+  // runner marks the network as caller-owned) finish first.
   const cleanup = singleFlight(
     async (): Promise<void> => {
       await Promise.allSettled(
@@ -131,6 +146,21 @@ async function localStartServiceCommand(
           }
         })
       );
+      // Shared network teardown (design § 5 Option A). The sidecar +
+      // network were created once at CLI startup and survived every
+      // per-replica `cleanupEcsRun()`; we drop them once now that
+      // every container has been removed. `destroyTaskNetwork` is
+      // idempotent on undefined so we don't need a separate guard.
+      if (sharedNetwork) {
+        try {
+          await destroyTaskNetwork(sharedNetwork);
+        } catch (err) {
+          getLogger().warn(
+            `shared service network teardown failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        sharedNetwork = undefined;
+      }
     },
     (err) =>
       getLogger().warn(
@@ -178,7 +208,41 @@ async function localStartServiceCommand(
     // / Service Connect surfaces to publish; otherwise we leave it
     // undefined and the runner short-circuits all registry work.
     const registry = new CloudMapRegistry();
-    const discovery: ServiceDiscoveryContext = { registry, cloudMapIndexByStack };
+    // Design doc § 5 Option A — create ONE shared docker network used
+    // by every service-replica boot in this CLI invocation. The
+    // alternative (one network per task — pre-PR-#522 shape) made
+    // cross-service peer reachability impossible: docker bridge
+    // networks are isolated by default, so a frontend container on
+    // `169.254.171.0/24` could not reach an orders container on
+    // `169.254.170.0/24` even with `--add-host orders:<ip>` populating
+    // its `/etc/hosts`. With one shared network across all services,
+    // every container can reach every peer by IP / network alias
+    // without docker `network connect` choreography.
+    //
+    // The sidecar attached to this shared network serves the
+    // metadata endpoint to every container. Per-service IAM role
+    // emulation in multi-service runs is NOT supported in v1 — each
+    // service's `TaskRoleArn` flows into its container env via
+    // `buildMetadataEnv`, but the sidecar itself uses the user's
+    // default AWS credential chain. Users who need per-service IAM
+    // role emulation should split their run into multiple
+    // `cdkd local start-service` invocations.
+    try {
+      sharedNetwork = await createSharedSvcNetwork({
+        prefix: options.cluster,
+        skipPull: options.pull === false,
+        cluster: options.cluster,
+      });
+    } catch (err) {
+      throw new LocalStartServiceError(
+        `Failed to create shared service network: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    const discovery: ServiceDiscoveryContext = {
+      registry,
+      cloudMapIndexByStack,
+      sharedNetwork,
+    };
 
     // SIGINT pattern mirrors local-run-task: double-^C bypasses
     // cleanup and exits 130 immediately so users have an escape hatch

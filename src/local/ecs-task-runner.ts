@@ -107,6 +107,41 @@ export interface RunEcsTaskOptions {
    * undefined → no extra flags emitted.
    */
   addHostFlags?: ReadonlyArray<string>;
+  /**
+   * Pre-existing docker network + sidecar to reuse instead of letting
+   * the runner create a fresh per-task one. Set by the
+   * `cdkd local start-service` CLI which creates ONE shared network at
+   * the start of the run (per design doc § 5 Option A — peer services
+   * can reach each other by IP without docker `network connect`
+   * choreography). When this option is supplied, `runEcsTask`:
+   *   1. Skips `createTaskNetwork()`.
+   *   2. Uses `existingNetwork.networkName` / `sidecarIp` for every
+   *      container's `--network` and `ECS_CONTAINER_METADATA_URI_V4`
+   *      env injection.
+   *   3. Marks `state.network.ownedByCaller = true` so
+   *      `cleanupEcsRun()` does NOT teardown the shared lifecycle —
+   *      only the caller (CLI) tears down once at the end of the run.
+   *
+   * When undefined, the pre-existing per-task lifecycle applies (one
+   * network per task, created + destroyed with the task).
+   */
+  existingNetwork?: TaskNetwork;
+  /**
+   * Extra docker `--network-alias <alias>` values to register against
+   * specific containers in the task. Keyed by container name so the
+   * runner only attaches the aliases to the matching container's
+   * `docker run` invocation — Service Connect aliases belong to the
+   * container that declared the matching `PortMappings[].Name`, not
+   * to every container in the task.
+   *
+   * Used by `cdkd local start-service` Option A (shared docker
+   * network) so peers can reach this service by its Service Connect
+   * `<discoveryName>` short-form / ClientAlias / fqdn via docker's
+   * built-in DNS server — without depending on a separate Cloud Map
+   * DNS sidecar. Empty / undefined → no extra aliases emitted
+   * (network-aliases default to the container's `--name` only).
+   */
+  networkAliasesByContainer?: ReadonlyMap<string, ReadonlyArray<string>>;
 }
 
 /**
@@ -181,10 +216,15 @@ export async function cleanupEcsRun(
     state.startedContainers = [];
   }
 
-  // Sidecar + network teardown runs unconditionally (the docs spell out
-  // that `--keep-running` only spares user containers — the network +
-  // sidecar would otherwise leak across runs).
-  await destroyTaskNetwork(state.network);
+  // Sidecar + network teardown runs unconditionally for runner-owned
+  // networks (the docs spell out that `--keep-running` only spares
+  // user containers — the network + sidecar would otherwise leak
+  // across runs). Caller-owned (shared) networks survive per-task
+  // cleanup — `cdkd local start-service` tears down ONCE at the end
+  // of the run after every replica has been cleaned up.
+  if (state.network && !state.network.ownedByCaller) {
+    await destroyTaskNetwork(state.network);
+  }
   state.network = undefined;
 
   for (const v of state.dockerVolumeNames) {
@@ -248,15 +288,25 @@ export async function runEcsTask(
   const secretsByContainer = groupSecretsByContainer(resolvedSecrets);
 
   // Bring the network + sidecar up. From this point on the cleanup
-  // path is non-trivial — any failure must `destroyTaskNetwork(state.network)`.
-  const netCreateOpts: Parameters<typeof createTaskNetwork>[0] = {
-    prefix: options.cluster,
-    skipPull: options.skipPull,
-  };
-  if (options.taskCredentials) netCreateOpts.credentials = options.taskCredentials;
-  if (options.cluster) netCreateOpts.cluster = options.cluster;
-  if (options.subnetOctet !== undefined) netCreateOpts.subnetOctet = options.subnetOctet;
-  state.network = await createTaskNetwork(netCreateOpts);
+  // path is non-trivial — any failure must `destroyTaskNetwork(state.network)`
+  // for runner-owned networks, but caller-owned (shared) networks survive
+  // per-task cleanup.
+  if (options.existingNetwork) {
+    // Option A (design § 5) — `cdkd local start-service` creates one
+    // shared network at the start of the run; every replica reuses it.
+    // The runner marks the state's network as caller-owned so
+    // `cleanupEcsRun()` skips teardown (only the CLI tears down once).
+    state.network = { ...options.existingNetwork, ownedByCaller: true };
+  } else {
+    const netCreateOpts: Parameters<typeof createTaskNetwork>[0] = {
+      prefix: options.cluster,
+      skipPull: options.skipPull,
+    };
+    if (options.taskCredentials) netCreateOpts.credentials = options.taskCredentials;
+    if (options.cluster) netCreateOpts.cluster = options.cluster;
+    if (options.subnetOctet !== undefined) netCreateOpts.subnetOctet = options.subnetOctet;
+    state.network = await createTaskNetwork(netCreateOpts);
+  }
 
   // Realize docker volumes (per-task `Scope: 'task'` are torn down at
   // cleanup; `Scope: 'shared'` would survive but the docs explicitly
@@ -290,6 +340,9 @@ export async function runEcsTask(
         sidecarIp: state.network.sidecarIp,
         ...(options.addHostFlags && options.addHostFlags.length > 0
           ? { addHostFlags: options.addHostFlags }
+          : {}),
+        ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
+          ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
           : {}),
       })
     );
@@ -751,6 +804,16 @@ interface BuildDockerRunArgs {
    * flag-pair shape (`['--add-host', 'name:ip', ...]`).
    */
   addHostFlags?: ReadonlyArray<string>;
+  /**
+   * Issue #460 / design § 5 Option A — extra `--network-alias <alias>`
+   * values the runner adds to the `docker run` invocation. Used by
+   * `cdkd local start-service` shared-network mode so peers can reach
+   * this container by its Service Connect discoveryName / ClientAlias
+   * / fqdn via docker's built-in DNS server. The container's
+   * `--name`-derived alias is ALWAYS added (line 813); these are
+   * additional aliases registered alongside it.
+   */
+  networkAliases?: ReadonlyArray<string>;
 }
 
 /**
@@ -766,6 +829,22 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
   args.push('--name', `cdkd-local-${task.family}-${container.name}-${randHex(3)}`);
   args.push('--network', network);
   args.push('--network-alias', container.name);
+
+  // Issue #460 / design § 5 Option A — extra `--network-alias` for
+  // every Service Connect discoveryName / ClientAlias short-form /
+  // fqdn this container should be reachable as. With a shared docker
+  // network across all services in the CLI run, peers resolve any
+  // alias via docker's built-in DNS server — no extra DNS sidecar
+  // needed. De-duplicated against the `container.name` alias above.
+  if (opts.networkAliases && opts.networkAliases.length > 0) {
+    const seen = new Set<string>([container.name]);
+    for (const a of opts.networkAliases) {
+      if (!seen.has(a)) {
+        args.push('--network-alias', a);
+        seen.add(a);
+      }
+    }
+  }
 
   // Issue #460 — Cloud Map / Service Connect overlay. The
   // `--add-host` flags here come from the in-process CloudMapRegistry

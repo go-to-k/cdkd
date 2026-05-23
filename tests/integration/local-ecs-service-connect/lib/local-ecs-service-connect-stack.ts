@@ -56,17 +56,29 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
           image: 'public.ecr.aws/docker/library/busybox:1.36',
           essential: true,
           // PortMappings.Name is the linchpin — Service Connect
-          // references it via `Services[].PortName`.
+          // references it via `Services[].PortName`. `hostPort: 8081`
+          // is set explicitly because cdkd's `docker run -p` would
+          // otherwise bind host port 80 (= containerPort by default),
+          // which fails to start on Docker Desktop 20.x (the container
+          // sits in `Created` state instead of erroring out). Peer
+          // discovery between containers goes through the per-task
+          // docker network on `containerPort: 80`, so the host-side
+          // mapping is irrelevant to what this integ asserts.
           portMappings: [
-            { name: 'orders-api', containerPort: 80, protocol: 'tcp' },
+            { name: 'orders-api', containerPort: 80, hostPort: 8081, protocol: 'tcp' },
           ],
           entryPoint: ['/bin/sh', '-c'],
           // Tiny TCP echo over port 80 using busybox's nc. Reads one
-          // request line and responds with a fixed HTTP echo so the
-          // consumer can `wget` it. Loops so a single curl doesn't
-          // kill the server.
+          // request, responds with a fixed HTTP echo, then exits so
+          // the outer `while true` loop can spin up a fresh listener
+          // for the next request. (busybox `nc` does NOT support
+          // GNU netcat's `-q` flag — the original command tried `-q 1`
+          // and tripped `nc: invalid option -- 'q'` on every restart,
+          // leaving port 80 silently unlistened. busybox's stock nc
+          // exits on EOF on its stdin, so piping a single response
+          // into it is sufficient.)
           command: [
-            "while true; do { echo -e 'HTTP/1.1 200 OK\\r\\nContent-Length: 13\\r\\nConnection: close\\r\\n\\r\\nHELLO_ORDERS\\n'; } | nc -l -p 80 -q 1; done",
+            "while true; do { echo -e 'HTTP/1.1 200 OK\\r\\nContent-Length: 13\\r\\nConnection: close\\r\\n\\r\\nHELLO_ORDERS\\n'; } | nc -l -p 80; done",
           ],
           memoryReservation: 32,
         },

@@ -11,6 +11,7 @@ import type { ResolvedEcsService } from './ecs-service-resolver.js';
 import type { CloudMapRegistry, RegistrationHandle } from './cloud-map-registry.js';
 import type { CloudMapIndex } from './cloud-map-resolver.js';
 import { getContainerNetworkIp } from './docker-inspect.js';
+import type { TaskNetwork } from './ecs-network.js';
 
 /**
  * Phase 2 of #262 — long-running ECS Service emulator. Wraps the existing
@@ -107,6 +108,20 @@ export interface ServiceDiscoveryContext {
    * stack's index.
    */
   cloudMapIndexByStack: ReadonlyMap<string, CloudMapIndex>;
+  /**
+   * Single docker network shared across every replica boot in this
+   * CLI invocation (design doc § 5 Option A). The CLI creates one
+   * `cdkd-local-svc-<rand>` network at startup via
+   * `createSharedSvcNetwork()` and tears it down at the end of the
+   * run. Per-replica `runEcsTask()` calls receive this as
+   * `existingNetwork` so every container joins the shared bridge —
+   * peer services then reach each other by IP / network alias
+   * without docker `network connect` choreography (design rejected
+   * Option B for being "unwieldy and racy"). Undefined for callers
+   * that opt out of shared mode (single-service runs that do not
+   * need cross-service discovery).
+   */
+  sharedNetwork?: TaskNetwork;
 }
 
 /**
@@ -415,6 +430,52 @@ export class ServiceController {
 }
 
 /**
+ * Build the `--network-alias` map for one service's containers (design
+ * doc § 5 Option A). For every Service Connect entry, attach the
+ * fqdn (`<discoveryName>.<namespaceName>`), the bare discoveryName,
+ * AND every ClientAlias DnsName to the container that owns the
+ * matching PortName. Other containers in the task get NO extra
+ * aliases (only their default `--name`-derived alias from
+ * `buildDockerRunArgs`).
+ *
+ * Aliases per container are de-duplicated so docker doesn't reject
+ * a `--network-alias X` repeated against the same container.
+ *
+ * Returns an empty map when the service has no Service Connect — the
+ * runner's `... .size > 0 ? { networkAliasesByContainer } : {}` guard
+ * short-circuits in that case so backward-compat callers pay no cost.
+ */
+export function buildNetworkAliasesByContainer(
+  service: ResolvedEcsService
+): Map<string, ReadonlyArray<string>> {
+  const out = new Map<string, string[]>();
+  const sc = service.serviceConnect;
+  if (!sc) return out as Map<string, ReadonlyArray<string>>;
+
+  // PortName → container that declared it. AWS Service Connect uses
+  // the first matching PortMappings[].Name to bind a service to a
+  // container; cdkd mirrors that.
+  for (const entry of sc.services) {
+    const owner = service.task.containers.find((c) =>
+      c.portMappings.some((pm) => pm.name === entry.portName)
+    );
+    if (!owner) continue; // resolver already warned about PortName mismatch
+    const aliases: string[] = [];
+    aliases.push(entry.discoveryName);
+    aliases.push(`${entry.discoveryName}.${sc.namespaceName}`);
+    for (const ca of entry.clientAliases) {
+      if (ca.dnsName) aliases.push(ca.dnsName);
+    }
+    const existing = out.get(owner.name) ?? [];
+    for (const a of aliases) {
+      if (!existing.includes(a)) existing.push(a);
+    }
+    out.set(owner.name, existing);
+  }
+  return out as Map<string, ReadonlyArray<string>>;
+}
+
+/**
  * Boot a single replica. Mutates the supplied `instance.state` so the
  * shutdown path's `cleanupEcsRun(instance.state)` covers every partial
  * side effect. Network names are suffixed with the replica index so
@@ -442,21 +503,23 @@ async function bootReplica(
   const addHostFlags = options.discovery?.registry
     ? options.discovery.registry.buildAddHostFlags(ownerKeyPrefix)
     : [];
-  // Per-replica subnetOctet: 170 is the AWS-documented default; each
-  // additional replica walks up by 1 within the link-local 169.254.0.0/16
-  // space, capped at 253 (= 170 + 83) before wrapping via `% 84`. The
-  // 84-element range is the CLI cap surfaced as `MAX_TASKS_SUBNET_RANGE_CAP`
-  // in `src/cli/commands/local-start-service.ts`'s `parseMaxTasks` so
-  // the user gets an actionable error at parse time rather than the
-  // cryptic Docker "Pool overlaps with other one" error that fires when
-  // replica 84 lands on replica 0's subnet. See `buildEndpointSubnet`
-  // in ecs-network.ts for the allocation contract; the cap MUST stay in
-  // sync with the modulo divisor.
-  const perReplicaSubnetOctet = 170 + (instance.index % 84);
+  // Network strategy:
+  //   - With a shared discovery network (design § 5 Option A — the
+  //     CLI-built `cdkd-local-svc-<rand>` network), every replica
+  //     joins the SAME docker bridge; peer services are reachable by
+  //     IP / network alias without cross-network bridging. The
+  //     per-replica subnet allocator is unused in this mode.
+  //   - Without a shared network (defensive fallback for callers
+  //     that bypass the CLI's shared-context construction), the
+  //     pre-Option-A formula applies: each replica gets a per-replica
+  //     subnet octet `170 + index` so concurrent replicas don't
+  //     collide on a single /24 — but design § 5 Option B already
+  //     rejected this for cross-service routing reasons.
+  const sharedNetwork = options.discovery?.sharedNetwork;
+  const networkAliasesByContainer = buildNetworkAliasesByContainer(service);
   const perReplicaTaskOptions: RunEcsTaskOptions = {
     ...options.taskOptions,
     cluster: perReplicaCluster,
-    subnetOctet: perReplicaSubnetOctet,
     // Detach is FORCED true at the runner layer — the service runner
     // takes over essential-container monitoring (so it can restart on
     // exit) rather than letting the task runner block on
@@ -464,7 +527,11 @@ async function bootReplica(
     // whether the SERVICE runs in the background; the per-replica
     // detach is internal plumbing.
     detach: true,
+    ...(sharedNetwork
+      ? { existingNetwork: sharedNetwork }
+      : { subnetOctet: 170 + (instance.index % 84) }),
     ...(addHostFlags.length > 0 ? { addHostFlags } : {}),
+    ...(networkAliasesByContainer.size > 0 ? { networkAliasesByContainer } : {}),
   };
   logger.info(`Booting replica ${instance.index} (${perReplicaCluster})`);
   await runEcsTask(service.task, perReplicaTaskOptions, instance.state);
