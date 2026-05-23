@@ -1,4 +1,5 @@
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
+import { pickRefLogicalId } from './intrinsic-utils.js';
 import type { DiscoveredRoute } from './route-discovery.js';
 
 /**
@@ -219,18 +220,4 @@ export function attachStageContext(
     route.stageVariables = stage.variables;
     route.stage = stage.stageName;
   }
-}
-
-/**
- * If `value` is a `{ Ref: <string> }` intrinsic, return the referenced
- * logical ID. Otherwise return `null`. (Duplicated structurally from
- * `route-discovery.ts` — both modules walk the template independently
- * and shouldn't grow a coupling for a 5-line helper.)
- */
-function pickRefLogicalId(value: unknown): string | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const ref = (value as Record<string, unknown>)['Ref'];
-    if (typeof ref === 'string') return ref;
-  }
-  return null;
 }
