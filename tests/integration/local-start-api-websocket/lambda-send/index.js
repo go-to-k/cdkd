@@ -1,8 +1,16 @@
 // sendMessage handler — echoes the received body back to the same
-// connection via PostToConnection. The AWS-canonical WebSocket
-// reply path; the handler's HTTP response is discarded by both
-// AWS-deployed API Gateway AND cdkd's local emulator.
-const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
+// connection via PostToConnection. The AWS-canonical WebSocket reply
+// path; the handler's HTTP response is discarded by both AWS-deployed
+// API Gateway AND cdkd's local emulator.
+//
+// The echo includes `connectionId` so clients can discover their own
+// id without a dedicated `whoami` route (#528 M4 — multi-client
+// broadcast needs each client to know its id so the recipient list
+// can be passed to lambda-broadcast).
+const {
+  ApiGatewayManagementApiClient,
+  PostToConnectionCommand,
+} = require('@aws-sdk/client-apigatewaymanagementapi');
 
 exports.handler = async (event) => {
   const connectionId = event.requestContext.connectionId;
@@ -23,7 +31,11 @@ exports.handler = async (event) => {
   await client.send(
     new PostToConnectionCommand({
       ConnectionId: connectionId,
-      Data: JSON.stringify({ route: 'sendMessage', echo: parsed.text || null }),
+      Data: JSON.stringify({
+        route: 'sendMessage',
+        connectionId,
+        echo: parsed.text || null,
+      }),
     })
   );
   return { statusCode: 200 };
