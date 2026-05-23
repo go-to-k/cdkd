@@ -26,6 +26,7 @@ import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
@@ -231,6 +232,18 @@ async function destroyCommand(
 
     logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
 
+    // Resolve account id once for the run — needed by NestedStackProvider
+    // contexts on nested-stack destroys (the synthesized ARN format
+    // includes the account). Account is constant across stacks, so a
+    // single STS call up front amortizes cleanly.
+    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+    const stsClient = new STSClient({
+      region: options.region || process.env['AWS_REGION'] || 'us-east-1',
+    });
+    const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
+    const accountId = callerIdentity.Account ?? 'unknown';
+    stsClient.destroy();
+
     // Index state refs by stack name so we can resolve which region(s) each
     // stack has. Built once so the per-stack loop is cheap.
     const stateRefsByName = new Map<string, typeof allStateRefs>();
@@ -310,30 +323,64 @@ async function destroyCommand(
         continue;
       }
 
-      const result = await runDestroyForStack(stackName, stateResult.state, {
-        stateBackend,
-        lockManager,
-        providerRegistry,
-        baseAwsClients: awsClients,
-        baseRegion: region,
-        ...(options.profile && { profile: options.profile }),
-        stateBucket,
-        skipConfirmation: options.yes || options.force,
-        removeProtection: options.removeProtection === true,
-        exportIndexStore,
-        ...(options.resourceWarnAfter?.globalMs !== undefined && {
-          resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-        }),
-        ...(options.resourceTimeout?.globalMs !== undefined && {
-          resourceTimeoutMs: options.resourceTimeout.globalMs,
-        }),
-        ...(options.resourceWarnAfter?.perTypeMs && {
-          resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-        }),
-        ...(options.resourceTimeout?.perTypeMs && {
-          resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-        }),
-      });
+      // Set the NestedStackProvider context for this destroy. The provider
+      // is registered globally (it's state-less) and only fires when the
+      // state file actually carries an AWS::CloudFormation::Stack record;
+      // for stacks without nested children this is a cheap no-op.
+      const result = await withNestedStackContext(
+        {
+          stateBackend,
+          lockManager,
+          providerRegistry,
+          parentStackName: stackName,
+          parentRegion: stackTargetRegion,
+          accountId,
+          awsClients,
+          stateBucket,
+          exportIndexStore,
+          destroyOptions: {
+            ...(options.profile && { profile: options.profile }),
+            ...(options.removeProtection === true && { removeProtection: true }),
+            ...(options.resourceWarnAfter?.globalMs !== undefined && {
+              resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+            }),
+            ...(options.resourceTimeout?.globalMs !== undefined && {
+              resourceTimeoutMs: options.resourceTimeout.globalMs,
+            }),
+            ...(options.resourceWarnAfter?.perTypeMs && {
+              resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+            }),
+            ...(options.resourceTimeout?.perTypeMs && {
+              resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+            }),
+          },
+        },
+        () =>
+          runDestroyForStack(stackName, stateResult.state, {
+            stateBackend,
+            lockManager,
+            providerRegistry,
+            baseAwsClients: awsClients,
+            baseRegion: region,
+            ...(options.profile && { profile: options.profile }),
+            stateBucket,
+            skipConfirmation: options.yes || options.force,
+            removeProtection: options.removeProtection === true,
+            exportIndexStore,
+            ...(options.resourceWarnAfter?.globalMs !== undefined && {
+              resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+            }),
+            ...(options.resourceTimeout?.globalMs !== undefined && {
+              resourceTimeoutMs: options.resourceTimeout.globalMs,
+            }),
+            ...(options.resourceWarnAfter?.perTypeMs && {
+              resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+            }),
+            ...(options.resourceTimeout?.perTypeMs && {
+              resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+            }),
+          })
+      );
       totalErrors += result.errorCount;
     }
 

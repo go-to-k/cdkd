@@ -21,10 +21,14 @@ import { parseCfnTemplate } from '../../yaml-cfn.js';
  *    different from the metadata-transfer migration this command
  *    provides.
  *
- *  - `AWS::CloudFormation::Stack` — nested stacks. cdkd has no
- *    provider for this type, and the matching `cdk migrate` output
- *    flattens nested stacks into separate generated apps in a way
- *    that doesn't round-trip cleanly. Out of scope for #465.
+ *  - `AWS::CloudFormation::Stack` — nested stacks. cdkd's recursive
+ *    `NestedStackProvider` handles fresh `cdkd deploy` (#459), but
+ *    `cdk migrate` flattens nested stacks into separate generated apps
+ *    in a way that doesn't round-trip cleanly into cdkd's parent~child
+ *    state-key layout, so the migrate command keeps rejecting them.
+ *    Adopting an existing CFn-managed nested-stack hierarchy is
+ *    deferred to issue
+ *    [#464](https://github.com/go-to-k/cdkd/issues/464).
  *
  *  - `Custom::*` — any user-defined Custom Resource type prefix.
  *    Same rationale as `AWS::CloudFormation::CustomResource`.

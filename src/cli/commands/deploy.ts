@@ -24,7 +24,8 @@ import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
-import { DeployEngine } from '../../deployment/deploy-engine.js';
+import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
+import { DeployEngine, type DeployEngineOptions } from '../../deployment/deploy-engine.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -426,37 +427,60 @@ async function deployCommand(
           }
         }
 
+        const deployEngineOptions: DeployEngineOptions = {
+          concurrency: options.concurrency,
+          dryRun: options.dryRun,
+          noRollback: !options.rollback,
+          captureObservedState: resolveCaptureObservedState(options.captureObservedState),
+          ...(options.resourceWarnAfter?.globalMs !== undefined && {
+            resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+          }),
+          ...(options.resourceTimeout?.globalMs !== undefined && {
+            resourceTimeoutMs: options.resourceTimeout.globalMs,
+          }),
+          ...(options.resourceWarnAfter?.perTypeMs && {
+            resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+          }),
+          ...(options.resourceTimeout?.perTypeMs && {
+            resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+          }),
+        };
+
         const stackDeployEngine = new DeployEngine(
           stackStateBackend,
           stackLockManager,
           dagBuilder,
           diffCalculator,
           stackProviderRegistry,
-          {
-            concurrency: options.concurrency,
-            dryRun: options.dryRun,
-            noRollback: !options.rollback,
-            captureObservedState: resolveCaptureObservedState(options.captureObservedState),
-            ...(options.resourceWarnAfter?.globalMs !== undefined && {
-              resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-            }),
-            ...(options.resourceTimeout?.globalMs !== undefined && {
-              resourceTimeoutMs: options.resourceTimeout.globalMs,
-            }),
-            ...(options.resourceWarnAfter?.perTypeMs && {
-              resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-            }),
-            ...(options.resourceTimeout?.perTypeMs && {
-              resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-            }),
-          },
+          deployEngineOptions,
           stackRegion,
           exportIndexStore
         );
 
-        const deployResult = await stackDeployEngine.deploy(
-          stackInfo.stackName,
-          stackInfo.template
+        // Set the NestedStackProvider context for this deploy. The provider
+        // pulls parentStackName / parentRegion / nestedTemplates / accountId
+        // from the surrounding AsyncLocalStorage scope (see
+        // src/provisioning/nested-stack-context.ts). When the stack has no
+        // AWS::CloudFormation::Stack resources, this is a cheap no-op (the
+        // provider is never invoked); when it does, the context lets the
+        // provider build a child DeployEngine recursively.
+        const deployResult = await withNestedStackContext(
+          {
+            stateBackend: stackStateBackend,
+            lockManager: stackLockManager,
+            providerRegistry: stackProviderRegistry,
+            parentStackName: stackInfo.stackName,
+            parentRegion: stackRegion,
+            accountId,
+            awsClients: stackAwsClients,
+            stateBucket,
+            exportIndexStore,
+            nestedTemplates: stackInfo.nestedTemplates ?? {},
+            dagBuilder,
+            diffCalculator,
+            options: deployEngineOptions,
+          },
+          () => stackDeployEngine.deploy(stackInfo.stackName, stackInfo.template)
         );
 
         logger.info(`\n${bold('Deployment Summary:')}`);

@@ -65,6 +65,7 @@ import { S3DirectoryBucketProvider } from './providers/s3-directory-bucket-provi
 import { S3TablesProvider } from './providers/s3-tables-provider.js';
 import { ECRProvider } from './providers/ecr-provider.js';
 import { ASGProvider } from './providers/asg-provider.js';
+import { NestedStackProvider } from './providers/nested-stack-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -272,4 +273,11 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::S3Tables::TableBucket', s3TablesProvider);
   registry.register('AWS::S3Tables::Namespace', s3TablesProvider);
   registry.register('AWS::S3Tables::Table', s3TablesProvider);
+
+  // Nested stacks (recursive deploy via NestedStackProvider — issue #459).
+  // The provider is state-less; per-invocation parent identity + asset paths
+  // are propagated through the `NestedStackProviderContext` AsyncLocalStorage
+  // (see src/provisioning/nested-stack-context.ts) that deploy.ts / destroy.ts
+  // set around their DeployEngine.deploy / runDestroyForStack call.
+  registry.register('AWS::CloudFormation::Stack', new NestedStackProvider());
 }
