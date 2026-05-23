@@ -3,6 +3,7 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { Socket } from 'node:net';
 import { EventEmitter } from 'node:events';
 import {
+  buildMgmtEndpointEnvUrl,
   ConnectionRegistry,
   handleConnectionsRequest,
   parseConnectionsPath,
@@ -146,6 +147,53 @@ describe('parseConnectionsPath', () => {
     // Two segments before @connections — would match if regex allowed
     // greedy prefixes, but we only accept ONE optional segment.
     expect(parseConnectionsPath('/v1/prod/@connections/abc')).toBeNull();
+  });
+
+  // Issue #537 item 9: B1 regex edge cases. These all flow through
+  // `^/(?:[^/]+/)?@connections/([^/]+)/?$` — pin the behavior so a
+  // regex rewrite in the future surfaces the change in CI.
+  it('rejects double-slash before @connections (empty stage segment)', () => {
+    // `//@connections/abc` reads as stage='' under a permissive prefix.
+    // Our regex requires `[^/]+/` (>=1 char) so this correctly fails.
+    expect(parseConnectionsPath('//@connections/abc')).toBeNull();
+  });
+  it('rejects a trailing path segment after the connection id', () => {
+    // `/@connections/abc/extra` — the trailing `/extra` is unknown to
+    // the AWS API plane and must not be silently truncated.
+    expect(parseConnectionsPath('/@connections/abc/extra')).toBeNull();
+    expect(parseConnectionsPath('/prod/@connections/abc/extra')).toBeNull();
+  });
+  it('matches a single trailing slash with no stage prefix', () => {
+    // Already covered above; pinned here as a sibling assertion to the
+    // stage-prefix + trailing-slash test for the no-stage form.
+    expect(parseConnectionsPath('/@connections/abc/')).toEqual({ connectionId: 'abc' });
+  });
+});
+
+// Issue #537 item 7: assert the Lambda-container env-var URL includes
+// `/<stage>`. The pre-fix CLI dropped the stage segment and any
+// SDK-built `POST /<stage>/@connections/<id>` hit a 404 against the
+// local parser. Producer (this helper) + consumer
+// (parseConnectionsPath) live in lockstep — a regression here would
+// re-introduce the 404.
+describe('buildMgmtEndpointEnvUrl', () => {
+  it('produces http://<host>:<port>/<stage> with the stage suffix', () => {
+    expect(buildMgmtEndpointEnvUrl('host.docker.internal', 4001, 'prod')).toBe(
+      'http://host.docker.internal:4001/prod'
+    );
+  });
+  it('does NOT drop the stage suffix (B1 #526 regression guard)', () => {
+    const url = buildMgmtEndpointEnvUrl('host.docker.internal', 4001, 'prod');
+    expect(url.endsWith('/prod')).toBe(true);
+  });
+  it('output is parseable end-to-end by parseConnectionsPath', () => {
+    // Simulate the round-trip: SDK builds the per-connection URL from
+    // the env-var endpoint + the AWS-deployed shape; the local server
+    // must accept it. Pins the producer/consumer contract on one test.
+    const env = buildMgmtEndpointEnvUrl('host.docker.internal', 4001, 'prod');
+    const stagePath = new URL(env).pathname; // '/prod'
+    const sdkPath = `${stagePath}/@connections/conn-1`; // '/prod/@connections/conn-1'
+    expect(parseConnectionsPath(sdkPath)).toEqual({ connectionId: 'conn-1' });
   });
 });
 

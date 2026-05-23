@@ -21,6 +21,11 @@ import {
 } from './websocket-mgmt-api.js';
 import type { DiscoveredWebSocketApi } from './websocket-route-discovery.js';
 import { parseSelectionExpressionPath } from './websocket-route-discovery.js';
+// Namespaced import so the B4 regression test (Issue #537 item 6) can
+// spy on `bufferToBody` and intercept every internal call. A direct
+// `import { bufferToBody }` would bind to a local reference the test
+// spy cannot reach.
+import * as websocketBody from './websocket-body.js';
 
 /**
  * Wire a WebSocket API into a long-lived `node:http`'s `upgrade`
@@ -171,6 +176,13 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
   // no `bufferToBody` allocation work — and cap the buffer length at
   // this number. Excess frames are dropped (a warn line names the
   // overflow once per connection).
+  //
+  // Trade-off: 100 frames × ~4 KiB typical text frame ≈ ~400 KiB upper
+  // bound per connection (~40 MiB for the default 100-server total) —
+  // small enough that an attacker cannot exhaust memory by opening many
+  // connections, large enough that a legitimate burst client (e.g. a
+  // chat UI sending its initial state on connect) absorbs ~1s of
+  // pre-verdict traffic at typical 100 frame/s rates without dropping.
   const MAX_PRE_VERDICT_FRAMES = 100;
 
   // Per-connection driver. The lifecycle is:
@@ -221,7 +233,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
         if (!preVerdictOverflow) {
           preVerdictOverflow = true;
           logger.warn(
-            `WebSocket connection ${connectionId}: pre-verdict message buffer overflowed (>${MAX_PRE_VERDICT_FRAMES} frames). Excess frames dropped — client is sending faster than the $connect handler can resolve.`
+            `WebSocket connection ${connectionId}: pre-verdict message buffer overflowed (>${MAX_PRE_VERDICT_FRAMES} frames). Excess frames dropped — client is sending faster than the $connect handler can resolve. (api=${cfg.api.declaredAt})`
           );
         }
         return;
@@ -300,7 +312,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     // Attach the real listeners NOW. From this point forward, the
     // standard dispatch path runs for every incoming frame.
     ws.on('message', (raw, isBinary) => {
-      const { body, isBase64Encoded } = bufferToBody(raw, isBinary);
+      const { body, isBase64Encoded } = websocketBody.bufferToBody(raw, isBinary);
       logger.debug(
         `WebSocket message received for connection ${connectionId}: ${body.slice(0, 200)}`
       );
@@ -343,7 +355,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     // bufferToBody allocation runs here (post-admit, bounded count)
     // not at frame-receive time (pre-admit, unbounded by attacker).
     for (const frame of preVerdictFrames) {
-      const { body, isBase64Encoded } = bufferToBody(frame.raw, frame.isBinary);
+      const { body, isBase64Encoded } = websocketBody.bufferToBody(frame.raw, frame.isBinary);
       void dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
         (err) => {
           logger.error(
@@ -642,30 +654,9 @@ function safeDecode(s: string): string | null {
   }
 }
 
-/**
- * Convert a ws-emitted message buffer into the AWS-canonical event
- * body + `isBase64Encoded` discriminator. Text frames (opcode 0x1) pass
- * through as UTF-8 with `isBase64Encoded: false`; binary frames
- * (opcode 0x2) are base64-encoded with `isBase64Encoded: true`. Matches
- * AWS-deployed WebSocket API event shape exactly — handlers decode via
- * `Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'utf8')`.
- *
- * Closes the data-integrity bug where every byte > 0x7F on a binary
- * frame was silently corrupted by handlers that trusted the previously
- * hardcoded `isBase64Encoded: false` flag and UTF-8-decoded the
- * base64-encoded body.
- */
-export function bufferToBody(
-  raw: Buffer | ArrayBuffer | Buffer[],
-  isBinary: boolean
-): { body: string; isBase64Encoded: boolean } {
-  const buf: Buffer = Array.isArray(raw)
-    ? Buffer.concat(raw)
-    : Buffer.isBuffer(raw)
-      ? raw
-      : Buffer.from(raw);
-  if (isBinary) {
-    return { body: buf.toString('base64'), isBase64Encoded: true };
-  }
-  return { body: buf.toString('utf-8'), isBase64Encoded: false };
-}
+// `bufferToBody` lives in `./websocket-body.ts` and is re-exported here
+// so existing callers (and the existing test surface) continue to read
+// from `websocket-server.js`. The internal callers below import via the
+// `* as websocketBody` namespace so the B4 regression test can spy on
+// the export and intercept every internal call — Issue #537 item 6.
+export { bufferToBody } from './websocket-body.js';

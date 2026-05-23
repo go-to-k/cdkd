@@ -120,6 +120,25 @@ export function parseConnectionsPath(url: string): {
 }
 
 /**
+ * Build the per-Lambda env-var URL the cdkd local server injects as
+ * `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI`. The URL MUST include the
+ * `/<stage>` segment to mirror the AWS-deployed apigatewaymanagementapi
+ * endpoint `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`:
+ * SDK clients built from `domainName + stage` produce
+ * `POST /<stage>/@connections/<id>`, and the local `parseConnectionsPath`
+ * regex above requires the matching prefix. Without `/<stage>` the
+ * deployed-shape SDK call hits a 404 against the local parser
+ * (BLOCKER B1, #526).
+ *
+ * Lives next to `parseConnectionsPath` so the producer + consumer of
+ * the URL shape stay in lockstep — change one, the other's tests fail.
+ * Issue #537 item 7.
+ */
+export function buildMgmtEndpointEnvUrl(host: string, port: number, stage: string): string {
+  return `http://${host}:${port}/${stage}`;
+}
+
+/**
  * `decodeURIComponent` throws `URIError` on malformed input
  * (`%`-escape with non-hex tail). We treat that as a not-found rather
  * than a server error — symmetric with AWS-deployed behavior, which

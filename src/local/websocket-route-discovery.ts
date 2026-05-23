@@ -242,11 +242,27 @@ function collectAuthRoutesForApi(
     const parentRef = pickRefLogicalId(props['ApiId']);
     if (parentRef !== apiLogicalId) continue;
     const authType = props['AuthorizationType'];
-    if (typeof authType !== 'string' || authType.length === 0) continue;
-    if (authType === 'NONE') continue;
+    // AWS-default when omitted is `NONE`. An absent property is the
+    // only safe pass-through path.
+    if (authType === undefined) continue;
     const routeKey = props['RouteKey'];
+    const routeKeyForReport = typeof routeKey === 'string' ? routeKey : '<unknown>';
+    // Fail-closed on any shape we cannot positively prove is `'NONE'`:
+    // empty string, `null`, intrinsic-valued (`{Ref: ...}` / `{Fn::Sub: ...}`
+    // / other object), or numeric. Silently admitting an
+    // intrinsic-valued `AuthorizationType` would re-introduce the
+    // pre-fix BLOCKER-B2 security gap for the uncommon-but-valid CDK
+    // path that passes a context value through.
+    if (typeof authType !== 'string' || authType.length === 0) {
+      result.push({
+        routeKey: routeKeyForReport,
+        authorizationType: '<intrinsic-or-malformed>',
+      });
+      continue;
+    }
+    if (authType === 'NONE') continue;
     result.push({
-      routeKey: typeof routeKey === 'string' ? routeKey : '<unknown>',
+      routeKey: routeKeyForReport,
       authorizationType: authType,
     });
   }

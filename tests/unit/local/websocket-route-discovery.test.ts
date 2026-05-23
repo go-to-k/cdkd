@@ -451,6 +451,78 @@ describe('discoverWebSocketApis B2 authorizer admission guard', () => {
     expect(reason).toContain('$default [AuthorizationType=CUSTOM]');
   });
 
+  // Issue #537 item 8: defense-in-depth for AuthorizationType shapes that
+  // are neither the literal `'NONE'` string nor `undefined`. Includes
+  // typo'd known names, hypothetical future AWS additions, and the
+  // intrinsic-valued / structurally-malformed shapes from item 1.
+  it('tags API as unsupported for typo\'d AuthorizationType (IAM, not AWS_IAM)', () => {
+    const { apis } = discoverWebSocketApis([buildAuthApi('IAM')]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('IAM');
+  });
+  it('tags API as unsupported for hypothetical future AuthorizationType (LAMBDA)', () => {
+    const { apis } = discoverWebSocketApis([buildAuthApi('LAMBDA')]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('LAMBDA');
+  });
+  it('tags API as unsupported when AuthorizationType is `null` (fail-closed)', () => {
+    const stack = buildStack('NullAuth', {
+      MyHandler: buildLambda(),
+      WsApi: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: {
+          ProtocolType: 'WEBSOCKET',
+          Name: 'WsApi',
+          RouteSelectionExpression: '$request.body.action',
+        },
+      },
+      ConnectIntegration: buildIntegration(),
+      ConnectRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$connect',
+          Target: 'integrations/ConnectIntegration',
+          AuthorizationType: null,
+        },
+      },
+    });
+    const { apis } = discoverWebSocketApis([stack]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('<intrinsic-or-malformed>');
+  });
+  it('tags API as unsupported when AuthorizationType is an empty string (fail-closed)', () => {
+    const { apis } = discoverWebSocketApis([buildAuthApi('')]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('<intrinsic-or-malformed>');
+  });
+  it('tags API as unsupported when AuthorizationType is an intrinsic ({Ref}) — defense-in-depth', () => {
+    const stack = buildStack('RefAuth', {
+      MyHandler: buildLambda(),
+      WsApi: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: {
+          ProtocolType: 'WEBSOCKET',
+          Name: 'WsApi',
+          RouteSelectionExpression: '$request.body.action',
+        },
+      },
+      ConnectIntegration: buildIntegration(),
+      ConnectRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$connect',
+          Target: 'integrations/ConnectIntegration',
+          AuthorizationType: { Ref: 'AuthTypeParam' },
+        },
+      },
+    });
+    const { apis } = discoverWebSocketApis([stack]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('<intrinsic-or-malformed>');
+  });
+
   it('does NOT tag the API when only $disconnect / non-$connect routes have NONE auth', () => {
     const stack = buildStack('S', {
       MyHandler: buildLambda(),
