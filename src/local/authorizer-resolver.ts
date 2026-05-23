@@ -3,6 +3,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
+import { pickRefLogicalId } from './intrinsic-utils.js';
 
 /**
  * Authorizer detection for `cdkd local start-api` (PR 8b of #224).
@@ -783,14 +784,6 @@ function detectHttpApiAuthorizer(
     stack.stackName,
     `${stack.stackName}/${routeLogicalId}`
   );
-}
-
-function pickRefLogicalId(value: unknown): string | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const ref = (value as Record<string, unknown>)['Ref'];
-    if (typeof ref === 'string') return ref;
-  }
-  return null;
 }
 
 function shortJson(value: unknown): string {

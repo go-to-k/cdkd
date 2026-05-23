@@ -3,6 +3,7 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { resolveLambdaArnIntrinsic } from './intrinsic-lambda-arn.js';
+import { pickRefLogicalId } from './intrinsic-utils.js';
 
 /**
  * Discovered WebSocket API for `cdkd local start-api`.
@@ -459,14 +460,6 @@ function parseRouteTarget(target: unknown, location: string): string {
   throw new Error(
     `${location}: Target must be 'integrations/<id>' literal, Fn::Join with the documented shapes, or Fn::Sub with an 'integrations/\${...}' template.`
   );
-}
-
-function pickRefLogicalId(value: unknown): string | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const ref = (value as Record<string, unknown>)['Ref'];
-    if (typeof ref === 'string') return ref;
-  }
-  return null;
 }
 
 function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): string | undefined {
