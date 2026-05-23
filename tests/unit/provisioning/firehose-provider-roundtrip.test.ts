@@ -323,24 +323,24 @@ describe('FirehoseProvider.update — ExtendedS3 destination (#477)', () => {
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
   });
 
-  it('rejects unsupported destination diffs (e.g. Splunk) with a tightened error that names the destination type', async () => {
+  it('rejects unsupported destination diffs (e.g. Amazonopensearchservice) with a tightened error that names the destination type', async () => {
     await expect(
       provider.update(
         'L',
         PHYSICAL_ID,
         RESOURCE_TYPE,
         {
-          SplunkDestinationConfiguration: {
-            HECEndpoint: 'https://splunk-b.example.com',
+          AmazonopensearchserviceDestinationConfiguration: {
+            IndexName: 'logs-v2',
           },
         },
         {
-          SplunkDestinationConfiguration: {
-            HECEndpoint: 'https://splunk-a.example.com',
+          AmazonopensearchserviceDestinationConfiguration: {
+            IndexName: 'logs-v1',
           },
         }
       )
-    ).rejects.toThrow(/SplunkDestinationConfiguration/);
+    ).rejects.toThrow(/AmazonopensearchserviceDestinationConfiguration/);
   });
 });
 
@@ -533,6 +533,175 @@ describe('FirehoseProvider.update — Redshift destination (#549)', () => {
     const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
     expect(input['RedshiftDestinationUpdate']).toEqual({
       ClusterJDBCURL: 'jdbc:redshift://new.example.com:5439/db',
+    });
+  });
+});
+
+describe('FirehoseProvider.update — Splunk destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '7',
+            Destinations: [{ DestinationId: 'destinationId-splunk-42' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with SplunkDestinationUpdate when the destination diff fires', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-b.example.com:8088',
+          HECEndpointType: 'Event',
+          HECToken: 'token-v2',
+          HECAcknowledgmentTimeoutInSeconds: 600,
+          RetryOptions: { DurationInSeconds: 7200 },
+          S3BackupMode: 'AllEvents',
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::splunk-backup-bucket',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'splunk-staging/v2/',
+            BufferingHints: { SizeInMBs: 32, IntervalInSeconds: 120 },
+          },
+          BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 60 },
+        },
+      },
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-a.example.com:8088',
+          HECEndpointType: 'Event',
+          HECToken: 'token-v1',
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['DeliveryStreamName']).toBe(PHYSICAL_ID);
+    expect(input['CurrentDeliveryStreamVersionId']).toBe('7');
+    expect(input['DestinationId']).toBe('destinationId-splunk-42');
+    // Verify the reverse-map produces the SDK Update shape:
+    // S3Configuration → S3Update, every field gated on !== undefined.
+    expect(input['SplunkDestinationUpdate']).toEqual({
+      HECEndpoint: 'https://splunk-b.example.com:8088',
+      HECEndpointType: 'Event',
+      HECToken: 'token-v2',
+      HECAcknowledgmentTimeoutInSeconds: 600,
+      RetryOptions: { DurationInSeconds: 7200 },
+      S3BackupMode: 'AllEvents',
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::splunk-backup-bucket',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+        Prefix: 'splunk-staging/v2/',
+        BufferingHints: { SizeInMBs: 32, IntervalInSeconds: 120 },
+      },
+      BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 60 },
+    });
+  });
+
+  it('no-ops when Splunk destination before/after are identical', async () => {
+    const dest = {
+      HECEndpoint: 'https://splunk.example.com:8088',
+      HECEndpointType: 'Raw',
+      HECToken: 'token',
+      RetryOptions: { DurationInSeconds: 3600 },
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SplunkDestinationConfiguration: dest },
+      { SplunkDestinationConfiguration: dest }
+    );
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('round-trips SecretsManagerConfiguration through the Update shape (Splunk Secrets Manager auth)', async () => {
+    // Splunk supports Secrets-Manager-based auth (no inline HECToken).
+    // Per the round-trip rule (`feedback_update_optional_field_undefined_check`),
+    // every field present on the CFn shape must reach AWS unmodified;
+    // dropping SecretsManagerConfiguration would silently break drift-
+    // revert / in-place update for users on Secrets Manager auth.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk.example.com:8088',
+          HECEndpointType: 'Event',
+          SecretsManagerConfiguration: {
+            Enabled: true,
+            SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:splunk-token-Abc',
+            RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+          },
+        },
+      },
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk.example.com:8088',
+          HECEndpointType: 'Event',
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['SplunkDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape['SecretsManagerConfiguration']).toEqual({
+      Enabled: true,
+      SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:splunk-token-Abc',
+      RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+    });
+  });
+
+  it('omits unset CFn keys from the Update shape so AWS-side state is not clobbered', async () => {
+    // Only HECEndpoint changes between before/after. The Update payload
+    // should carry ONLY the keys present in the new config — no
+    // HECToken, no S3Update, no RetryOptions, etc.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-new.example.com:8088',
+        },
+      },
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-old.example.com:8088',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['SplunkDestinationUpdate']).toEqual({
+      HECEndpoint: 'https://splunk-new.example.com:8088',
     });
   });
 });

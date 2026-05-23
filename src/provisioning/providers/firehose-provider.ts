@@ -15,6 +15,7 @@ import {
   type ExtendedS3DestinationUpdate,
   type RedshiftDestinationUpdate,
   type S3DestinationUpdate,
+  type SplunkDestinationUpdate,
   type Tag,
   type HttpEndpointDestinationConfiguration,
   type RedshiftDestinationConfiguration,
@@ -52,6 +53,7 @@ import type {
 const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
   'ExtendedS3DestinationConfiguration',
   'RedshiftDestinationConfiguration',
+  'SplunkDestinationConfiguration',
 ]);
 
 /**
@@ -423,11 +425,23 @@ export class FirehoseProvider implements ResourceProvider {
    *     `CloudWatchLoggingOptions`, `Username` / `Password` /
    *     `RoleARN` / `ClusterJDBCURL`.
    *
+   *   - `SplunkDestinationConfiguration` (#549) — same flow as
+   *     Redshift: `DescribeDeliveryStream` recovers VersionId +
+   *     DestinationId, then `UpdateDestinationCommand` issues the
+   *     diff with a `SplunkDestinationUpdate` payload produced by
+   *     {@link mapSplunkConfigToUpdate}. Handles `HECEndpoint`,
+   *     `HECEndpointType`, `HECToken`,
+   *     `HECAcknowledgmentTimeoutInSeconds`, `RetryOptions`,
+   *     `S3BackupMode`, `S3Configuration` → `S3Update`,
+   *     `ProcessingConfiguration`, `CloudWatchLoggingOptions`,
+   *     `BufferingHints`, `SecretsManagerConfiguration`. Splunk has
+   *     no S3 backup destination shape (no `S3BackupConfiguration`
+   *     field) — unlike Redshift / ExtendedS3.
+   *
    * Other destination types (`S3DestinationConfiguration`,
    * `HttpEndpointDestinationConfiguration`,
    * `ElasticsearchDestinationConfiguration`,
    * `AmazonopensearchserviceDestinationConfiguration`,
-   * `SplunkDestinationConfiguration`,
    * `AmazonOpenSearchServerlessDestinationConfiguration`,
    * `IcebergDestinationConfiguration`,
    * `SnowflakeDestinationConfiguration`) stay rejected with a tightened
@@ -502,6 +516,14 @@ export class FirehoseProvider implements ResourceProvider {
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
         await this.applyRedshiftDestinationUpdate(physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'SplunkDestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applySplunkDestinationUpdate(physicalId, nextDest);
       }
     }
 
@@ -976,6 +998,104 @@ export class FirehoseProvider implements ResourceProvider {
       result.SecretsManagerConfiguration = config[
         'SecretsManagerConfiguration'
       ] as RedshiftDestinationUpdate['SecretsManagerConfiguration'];
+    }
+    return result;
+  }
+
+  /**
+   * Recover `CurrentDeliveryStreamVersionId` + `DestinationId` from
+   * `DescribeDeliveryStream` and issue `UpdateDestination` with the new
+   * Splunk shape. The reverse-mapper at
+   * {@link mapSplunkConfigToUpdate} produces the
+   * `SplunkDestinationUpdate` payload — only fields present in the
+   * input are forwarded so omitted CFn keys don't clobber AWS-side
+   * state. Mirrors {@link applyRedshiftDestinationUpdate} (#549).
+   */
+  private async applySplunkDestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const currentDestination = desc?.Destinations?.[0];
+    const destinationId = currentDestination?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        SplunkDestinationUpdate: this.mapSplunkConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Map CFn `SplunkDestinationConfiguration` to the
+   * `SplunkDestinationUpdate` shape used by AWS
+   * `UpdateDestinationCommand` (#549). Every field is `!== undefined`
+   * gated so omitted CFn keys do not clobber AWS-side state. The CFn
+   * `S3Configuration` field is mapped through
+   * {@link mapS3ConfigToUpdate} into the SDK-side `S3Update` slot.
+   * Splunk has no `S3BackupConfiguration` field (unlike Redshift /
+   * ExtendedS3).
+   */
+  private mapSplunkConfigToUpdate(config: Record<string, unknown>): SplunkDestinationUpdate {
+    const result: SplunkDestinationUpdate = {};
+    if (config['HECEndpoint'] !== undefined) {
+      result.HECEndpoint = config['HECEndpoint'] as string;
+    }
+    if (config['HECEndpointType'] !== undefined) {
+      result.HECEndpointType = config[
+        'HECEndpointType'
+      ] as SplunkDestinationUpdate['HECEndpointType'];
+    }
+    if (config['HECToken'] !== undefined) {
+      result.HECToken = config['HECToken'] as string;
+    }
+    if (config['HECAcknowledgmentTimeoutInSeconds'] !== undefined) {
+      result.HECAcknowledgmentTimeoutInSeconds = config[
+        'HECAcknowledgmentTimeoutInSeconds'
+      ] as number;
+    }
+    if (config['RetryOptions'] !== undefined) {
+      result.RetryOptions = config['RetryOptions'] as SplunkDestinationUpdate['RetryOptions'];
+    }
+    if (config['S3BackupMode'] !== undefined) {
+      result.S3BackupMode = config['S3BackupMode'] as SplunkDestinationUpdate['S3BackupMode'];
+    }
+    // CFn property is `S3Configuration`; SDK Update shape uses `S3Update`.
+    if (config['S3Configuration'] !== undefined) {
+      result.S3Update = this.mapS3ConfigToUpdate(
+        config['S3Configuration'] as Record<string, unknown>
+      );
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as SplunkDestinationUpdate['ProcessingConfiguration'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as SplunkDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      result.BufferingHints = config['BufferingHints'] as SplunkDestinationUpdate['BufferingHints'];
+    }
+    if (config['SecretsManagerConfiguration'] !== undefined) {
+      result.SecretsManagerConfiguration = config[
+        'SecretsManagerConfiguration'
+      ] as SplunkDestinationUpdate['SecretsManagerConfiguration'];
     }
     return result;
   }

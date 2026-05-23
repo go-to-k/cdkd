@@ -174,8 +174,9 @@ describe('FirehoseProvider', () => {
     // ExtendedS3 UpdateDestination. Detailed roundtrip coverage lives in
     // firehose-provider-roundtrip.test.ts; this test pins the rejection
     // path that survived #477 + #549: an unsupported destination diff
-    // (e.g. Splunk) still throws ResourceUpdateNotSupportedError until
-    // each per-shape reverse-mapper is implemented.
+    // (e.g. Amazonopensearchservice) still throws
+    // ResourceUpdateNotSupportedError until each per-shape reverse-mapper
+    // is implemented.
     it('still rejects unsupported destination diffs with ResourceUpdateNotSupportedError', async () => {
       await expect(
         provider.update(
@@ -184,14 +185,14 @@ describe('FirehoseProvider', () => {
           'AWS::KinesisFirehose::DeliveryStream',
           {
             DeliveryStreamName: 'test-stream',
-            SplunkDestinationConfiguration: {
-              HECEndpoint: 'https://splunk-b.example.com',
+            AmazonopensearchserviceDestinationConfiguration: {
+              IndexName: 'logs-v2',
             },
           },
           {
             DeliveryStreamName: 'test-stream',
-            SplunkDestinationConfiguration: {
-              HECEndpoint: 'https://splunk-a.example.com',
+            AmazonopensearchserviceDestinationConfiguration: {
+              IndexName: 'logs-v1',
             },
           }
         )
