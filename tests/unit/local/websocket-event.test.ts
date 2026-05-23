@@ -44,6 +44,11 @@ describe('buildConnectEvent', () => {
     expect(event.requestContext.authorizer).toBeNull();
     expect(event.requestContext.identity.sourceIp).toBe('127.0.0.1');
     expect(event.requestContext.identity.userAgent).toBe('wscat/1.0');
+    // #531 N1 + m3-code: AWS-deployed WebSocket events carry
+    // `requestContext.identity.accountId`; local emulation populates it
+    // from the shared mock account so handler code reading the field is
+    // non-undefined.
+    expect(event.requestContext.identity.accountId).toBe('123456789012');
     expect(event.requestContext.messageDirection).toBe('IN');
     expect(typeof event.requestContext.requestId).toBe('string');
     expect(event.requestContext.requestId.length).toBeGreaterThan(0);
