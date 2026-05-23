@@ -323,24 +323,33 @@ describe('FirehoseProvider.update — ExtendedS3 destination (#477)', () => {
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
   });
 
-  it('rejects unsupported destination diffs (e.g. Splunk) with a tightened error that names the destination type', async () => {
+  it('rejects unsupported destination diffs (legacy S3DestinationConfiguration) with a tightened error that names the destination type', async () => {
+    // After #549's bundle PR closes the 7 follow-ups, every modern
+    // destination type has an in-place reverse-mapper. Only the legacy
+    // `S3DestinationConfiguration` (deprecated by AWS in favor of
+    // ExtendedS3) remains in `findDestinationKey` without a supported
+    // reverse-mapper — CDK constructs always emit Extended, so this
+    // rejection path only fires for hand-authored templates that still
+    // pin the legacy shape.
     await expect(
       provider.update(
         'L',
         PHYSICAL_ID,
         RESOURCE_TYPE,
         {
-          SplunkDestinationConfiguration: {
-            HECEndpoint: 'https://splunk-b.example.com',
+          S3DestinationConfiguration: {
+            BucketARN: 'arn:aws:s3:::bucket-v2',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
           },
         },
         {
-          SplunkDestinationConfiguration: {
-            HECEndpoint: 'https://splunk-a.example.com',
+          S3DestinationConfiguration: {
+            BucketARN: 'arn:aws:s3:::bucket-v1',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
           },
         }
       )
-    ).rejects.toThrow(/SplunkDestinationConfiguration/);
+    ).rejects.toThrow(/'S3DestinationConfiguration'/);
   });
 });
 
@@ -534,5 +543,1137 @@ describe('FirehoseProvider.update — Redshift destination (#549)', () => {
     expect(input['RedshiftDestinationUpdate']).toEqual({
       ClusterJDBCURL: 'jdbc:redshift://new.example.com:5439/db',
     });
+  });
+});
+
+describe('FirehoseProvider.update — Splunk destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '7',
+            Destinations: [{ DestinationId: 'destinationId-splunk-42' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with SplunkDestinationUpdate when the destination diff fires', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-b.example.com:8088',
+          HECEndpointType: 'Event',
+          HECToken: 'token-v2',
+          HECAcknowledgmentTimeoutInSeconds: 600,
+          RetryOptions: { DurationInSeconds: 7200 },
+          S3BackupMode: 'AllEvents',
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::splunk-backup-bucket',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'splunk-staging/v2/',
+            BufferingHints: { SizeInMBs: 32, IntervalInSeconds: 120 },
+          },
+          BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 60 },
+        },
+      },
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-a.example.com:8088',
+          HECEndpointType: 'Event',
+          HECToken: 'token-v1',
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['DeliveryStreamName']).toBe(PHYSICAL_ID);
+    expect(input['CurrentDeliveryStreamVersionId']).toBe('7');
+    expect(input['DestinationId']).toBe('destinationId-splunk-42');
+    // Verify the reverse-map produces the SDK Update shape:
+    // S3Configuration → S3Update, every field gated on !== undefined.
+    expect(input['SplunkDestinationUpdate']).toEqual({
+      HECEndpoint: 'https://splunk-b.example.com:8088',
+      HECEndpointType: 'Event',
+      HECToken: 'token-v2',
+      HECAcknowledgmentTimeoutInSeconds: 600,
+      RetryOptions: { DurationInSeconds: 7200 },
+      S3BackupMode: 'AllEvents',
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::splunk-backup-bucket',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+        Prefix: 'splunk-staging/v2/',
+        BufferingHints: { SizeInMBs: 32, IntervalInSeconds: 120 },
+      },
+      BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 60 },
+    });
+  });
+
+  it('no-ops when Splunk destination before/after are identical', async () => {
+    const dest = {
+      HECEndpoint: 'https://splunk.example.com:8088',
+      HECEndpointType: 'Raw',
+      HECToken: 'token',
+      RetryOptions: { DurationInSeconds: 3600 },
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SplunkDestinationConfiguration: dest },
+      { SplunkDestinationConfiguration: dest }
+    );
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('round-trips SecretsManagerConfiguration through the Update shape (Splunk Secrets Manager auth)', async () => {
+    // Splunk supports Secrets-Manager-based auth (no inline HECToken).
+    // Per the round-trip rule (`feedback_update_optional_field_undefined_check`),
+    // every field present on the CFn shape must reach AWS unmodified;
+    // dropping SecretsManagerConfiguration would silently break drift-
+    // revert / in-place update for users on Secrets Manager auth.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk.example.com:8088',
+          HECEndpointType: 'Event',
+          SecretsManagerConfiguration: {
+            Enabled: true,
+            SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:splunk-token-Abc',
+            RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+          },
+        },
+      },
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk.example.com:8088',
+          HECEndpointType: 'Event',
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['SplunkDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape['SecretsManagerConfiguration']).toEqual({
+      Enabled: true,
+      SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:splunk-token-Abc',
+      RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+    });
+  });
+
+  it('omits unset CFn keys from the Update shape so AWS-side state is not clobbered', async () => {
+    // Only HECEndpoint changes between before/after. The Update payload
+    // should carry ONLY the keys present in the new config — no
+    // HECToken, no S3Update, no RetryOptions, etc.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-new.example.com:8088',
+        },
+      },
+      {
+        SplunkDestinationConfiguration: {
+          HECEndpoint: 'https://splunk-old.example.com:8088',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['SplunkDestinationUpdate']).toEqual({
+      HECEndpoint: 'https://splunk-new.example.com:8088',
+    });
+  });
+});
+
+describe('FirehoseProvider.update — Amazonopensearchservice destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '3',
+            Destinations: [{ DestinationId: 'destinationId-aoss-12' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with AmazonopensearchserviceDestinationUpdate', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+          IndexName: 'logs-v2',
+          TypeName: 'doc',
+          IndexRotationPeriod: 'OneDay',
+          BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 300 },
+          RetryOptions: { DurationInSeconds: 300 },
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::os-backup',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'os-staging/v2/',
+          },
+        },
+      },
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+          IndexName: 'logs-v1',
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['CurrentDeliveryStreamVersionId']).toBe('3');
+    expect(input['DestinationId']).toBe('destinationId-aoss-12');
+    expect(input['AmazonopensearchserviceDestinationUpdate']).toEqual({
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+      IndexName: 'logs-v2',
+      TypeName: 'doc',
+      IndexRotationPeriod: 'OneDay',
+      BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 300 },
+      RetryOptions: { DurationInSeconds: 300 },
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::os-backup',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+        Prefix: 'os-staging/v2/',
+      },
+    });
+  });
+
+  it('no-ops when Amazonopensearchservice destination before/after are identical', async () => {
+    const dest = {
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+      IndexName: 'logs',
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { AmazonopensearchserviceDestinationConfiguration: dest },
+      { AmazonopensearchserviceDestinationConfiguration: dest }
+    );
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('drops VpcConfiguration from the Update shape (read-only on AWS)', async () => {
+    // AWS does not accept VpcConfiguration on Update. The reverse-
+    // mapper silently omits it; users updating only Vpc will see the
+    // diff surface on the next `cdkd drift` run.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          IndexName: 'logs-v2',
+          VpcConfiguration: { SubnetIds: ['s-2'], SecurityGroupIds: ['sg-2'], RoleARN: 'r' },
+        },
+      },
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          IndexName: 'logs-v1',
+          VpcConfiguration: { SubnetIds: ['s-1'], SecurityGroupIds: ['sg-1'], RoleARN: 'r' },
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['AmazonopensearchserviceDestinationUpdate'] as Record<
+      string,
+      unknown
+    >;
+    expect(updateShape).not.toHaveProperty('VpcConfiguration');
+    expect(updateShape['IndexName']).toBe('logs-v2');
+  });
+
+  it('omits unset CFn keys from the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { AmazonopensearchserviceDestinationConfiguration: { IndexName: 'logs-v2' } },
+      { AmazonopensearchserviceDestinationConfiguration: { IndexName: 'logs-v1' } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['AmazonopensearchserviceDestinationUpdate']).toEqual({ IndexName: 'logs-v2' });
+  });
+});
+
+describe('FirehoseProvider.update — AmazonOpenSearchServerless destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '4',
+            Destinations: [{ DestinationId: 'destinationId-aos-svl-22' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with AmazonOpenSearchServerlessDestinationUpdate', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        AmazonOpenSearchServerlessDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CollectionEndpoint: 'https://abc.us-east-1.aoss.amazonaws.com',
+          IndexName: 'logs-v2',
+          BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 300 },
+          RetryOptions: { DurationInSeconds: 300 },
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::aoss-backup',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          },
+        },
+      },
+      {
+        AmazonOpenSearchServerlessDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CollectionEndpoint: 'https://abc.us-east-1.aoss.amazonaws.com',
+          IndexName: 'logs-v1',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['AmazonOpenSearchServerlessDestinationUpdate']).toEqual({
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      CollectionEndpoint: 'https://abc.us-east-1.aoss.amazonaws.com',
+      IndexName: 'logs-v2',
+      BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 300 },
+      RetryOptions: { DurationInSeconds: 300 },
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::aoss-backup',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      },
+    });
+  });
+
+  it('no-ops when AmazonOpenSearchServerless destination before/after are identical', async () => {
+    const dest = {
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      CollectionEndpoint: 'https://abc.us-east-1.aoss.amazonaws.com',
+      IndexName: 'logs',
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { AmazonOpenSearchServerlessDestinationConfiguration: dest },
+      { AmazonOpenSearchServerlessDestinationConfiguration: dest }
+    );
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('omits unset CFn keys from the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { AmazonOpenSearchServerlessDestinationConfiguration: { IndexName: 'logs-v2' } },
+      { AmazonOpenSearchServerlessDestinationConfiguration: { IndexName: 'logs-v1' } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['AmazonOpenSearchServerlessDestinationUpdate']).toEqual({
+      IndexName: 'logs-v2',
+    });
+  });
+});
+
+describe('FirehoseProvider.update — HttpEndpoint destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '5',
+            Destinations: [{ DestinationId: 'destinationId-http-31' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with HttpEndpointDestinationUpdate', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        HttpEndpointDestinationConfiguration: {
+          EndpointConfiguration: {
+            Url: 'https://api.example.com/v2',
+            Name: 'my-endpoint-v2',
+            AccessKey: 'key-v2',
+          },
+          BufferingHints: { SizeInMBs: 1, IntervalInSeconds: 60 },
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          RetryOptions: { DurationInSeconds: 300 },
+          S3BackupMode: 'AllData',
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::http-backup',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          },
+          RequestConfiguration: { ContentEncoding: 'GZIP' },
+        },
+      },
+      {
+        HttpEndpointDestinationConfiguration: {
+          EndpointConfiguration: {
+            Url: 'https://api.example.com/v1',
+            Name: 'my-endpoint-v1',
+            AccessKey: 'key-v1',
+          },
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['HttpEndpointDestinationUpdate']).toEqual({
+      EndpointConfiguration: {
+        Url: 'https://api.example.com/v2',
+        Name: 'my-endpoint-v2',
+        AccessKey: 'key-v2',
+      },
+      BufferingHints: { SizeInMBs: 1, IntervalInSeconds: 60 },
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      RetryOptions: { DurationInSeconds: 300 },
+      S3BackupMode: 'AllData',
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::http-backup',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      },
+      RequestConfiguration: { ContentEncoding: 'GZIP' },
+    });
+  });
+
+  it('no-ops when HttpEndpoint destination before/after are identical', async () => {
+    const dest = {
+      EndpointConfiguration: { Url: 'https://api.example.com/v1', Name: 'e', AccessKey: 'k' },
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { HttpEndpointDestinationConfiguration: dest },
+      { HttpEndpointDestinationConfiguration: dest }
+    );
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('round-trips SecretsManagerConfiguration through the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        HttpEndpointDestinationConfiguration: {
+          EndpointConfiguration: { Url: 'https://api.example.com/v2', Name: 'e' },
+          SecretsManagerConfiguration: {
+            Enabled: true,
+            SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:http-key-Xyz',
+            RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+          },
+        },
+      },
+      {
+        HttpEndpointDestinationConfiguration: {
+          EndpointConfiguration: { Url: 'https://api.example.com/v1', Name: 'e' },
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['HttpEndpointDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape['SecretsManagerConfiguration']).toEqual({
+      Enabled: true,
+      SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:http-key-Xyz',
+      RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+    });
+  });
+
+  it('omits unset CFn keys from the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        HttpEndpointDestinationConfiguration: {
+          EndpointConfiguration: { Url: 'https://api.example.com/v2', Name: 'e' },
+        },
+      },
+      {
+        HttpEndpointDestinationConfiguration: {
+          EndpointConfiguration: { Url: 'https://api.example.com/v1', Name: 'e' },
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['HttpEndpointDestinationUpdate']).toEqual({
+      EndpointConfiguration: { Url: 'https://api.example.com/v2', Name: 'e' },
+    });
+  });
+});
+
+describe('FirehoseProvider.update — Elasticsearch destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '6',
+            Destinations: [{ DestinationId: 'destinationId-es-42' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with ElasticsearchDestinationUpdate', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        ElasticsearchDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+          IndexName: 'logs-v2',
+          TypeName: 'doc',
+          IndexRotationPeriod: 'OneHour',
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::es-backup',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          },
+        },
+      },
+      {
+        ElasticsearchDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+          IndexName: 'logs-v1',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['ElasticsearchDestinationUpdate']).toEqual({
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+      IndexName: 'logs-v2',
+      TypeName: 'doc',
+      IndexRotationPeriod: 'OneHour',
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::es-backup',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      },
+    });
+  });
+
+  it('no-ops when Elasticsearch destination before/after are identical', async () => {
+    const dest = {
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      DomainARN: 'arn:aws:es:us-east-1:111:domain/cluster',
+      IndexName: 'logs',
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { ElasticsearchDestinationConfiguration: dest },
+      { ElasticsearchDestinationConfiguration: dest }
+    );
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('omits unset CFn keys from the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { ElasticsearchDestinationConfiguration: { IndexName: 'logs-v2' } },
+      { ElasticsearchDestinationConfiguration: { IndexName: 'logs-v1' } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['ElasticsearchDestinationUpdate']).toEqual({ IndexName: 'logs-v2' });
+  });
+});
+
+describe('FirehoseProvider.update — Iceberg destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '8',
+            Destinations: [{ DestinationId: 'destinationId-iceberg-66' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with IcebergDestinationUpdate (S3Configuration NOT renamed)', async () => {
+    // Iceberg quirk: the SDK Update shape's S3 field is named
+    // `S3Configuration` (full S3DestinationConfiguration shape) — NOT
+    // `S3Update` like every other destination. The reverse-mapper must
+    // forward it verbatim without renaming.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        IcebergDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CatalogConfiguration: {
+            CatalogArn: 'arn:aws:glue:us-east-1:111:catalog',
+          },
+          DestinationTableConfigurationList: [
+            { DestinationTableName: 't-v2', DestinationDatabaseName: 'db' },
+          ],
+          S3BackupMode: 'FailedDataOnly',
+          AppendOnly: true,
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::iceberg-backup',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'iceberg-staging/v2/',
+          },
+        },
+      },
+      {
+        IcebergDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
+          DestinationTableConfigurationList: [
+            { DestinationTableName: 't-v1', DestinationDatabaseName: 'db' },
+          ],
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['IcebergDestinationUpdate'] as Record<string, unknown>;
+    // Critical assertion: S3Configuration stays as S3Configuration, not S3Update.
+    expect(updateShape).toHaveProperty('S3Configuration');
+    expect(updateShape).not.toHaveProperty('S3Update');
+    expect(updateShape['S3Configuration']).toEqual({
+      BucketARN: 'arn:aws:s3:::iceberg-backup',
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      Prefix: 'iceberg-staging/v2/',
+    });
+    expect(updateShape['RoleARN']).toBe('arn:aws:iam::111:role/firehose-role');
+    expect(updateShape['CatalogConfiguration']).toEqual({
+      CatalogArn: 'arn:aws:glue:us-east-1:111:catalog',
+    });
+    expect(updateShape['S3BackupMode']).toBe('FailedDataOnly');
+    expect(updateShape['AppendOnly']).toBe(true);
+  });
+
+  it('no-ops when Iceberg destination before/after are identical', async () => {
+    const dest = {
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { IcebergDestinationConfiguration: dest },
+      { IcebergDestinationConfiguration: dest }
+    );
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('omits unset CFn keys from the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { IcebergDestinationConfiguration: { AppendOnly: true } },
+      { IcebergDestinationConfiguration: { AppendOnly: false } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['IcebergDestinationUpdate']).toEqual({ AppendOnly: true });
+  });
+});
+
+describe('FirehoseProvider.update — Snowflake destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '9',
+            Destinations: [{ DestinationId: 'destinationId-snowflake-77' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with SnowflakeDestinationUpdate', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SnowflakeDestinationConfiguration: {
+          AccountUrl: 'https://acct-v2.snowflakecomputing.com',
+          PrivateKey: 'PK-v2',
+          User: 'firehose-v2',
+          Database: 'analytics',
+          Schema: 'logs',
+          Table: 'events_v2',
+          DataLoadingOption: 'JSON_MAPPING',
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          S3BackupMode: 'AllData',
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::snowflake-backup',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          },
+        },
+      },
+      {
+        SnowflakeDestinationConfiguration: {
+          AccountUrl: 'https://acct-v1.snowflakecomputing.com',
+          PrivateKey: 'PK-v1',
+          User: 'firehose-v1',
+          Database: 'analytics',
+          Schema: 'logs',
+          Table: 'events_v1',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['SnowflakeDestinationUpdate']).toEqual({
+      AccountUrl: 'https://acct-v2.snowflakecomputing.com',
+      PrivateKey: 'PK-v2',
+      User: 'firehose-v2',
+      Database: 'analytics',
+      Schema: 'logs',
+      Table: 'events_v2',
+      DataLoadingOption: 'JSON_MAPPING',
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      S3BackupMode: 'AllData',
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::snowflake-backup',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      },
+    });
+  });
+
+  it('no-ops when Snowflake destination before/after are identical', async () => {
+    const dest = {
+      AccountUrl: 'https://acct.snowflakecomputing.com',
+      Database: 'd',
+      Schema: 's',
+      Table: 't',
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SnowflakeDestinationConfiguration: dest },
+      { SnowflakeDestinationConfiguration: dest }
+    );
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('round-trips SecretsManagerConfiguration through the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        SnowflakeDestinationConfiguration: {
+          AccountUrl: 'https://acct.snowflakecomputing.com',
+          SecretsManagerConfiguration: {
+            Enabled: true,
+            SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:snowflake-Abc',
+            RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+          },
+        },
+      },
+      {
+        SnowflakeDestinationConfiguration: {
+          AccountUrl: 'https://acct.snowflakecomputing.com',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['SnowflakeDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape['SecretsManagerConfiguration']).toEqual({
+      Enabled: true,
+      SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:snowflake-Abc',
+      RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+    });
+  });
+
+  it('omits unset CFn keys from the Update shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SnowflakeDestinationConfiguration: { Table: 'events_v2' } },
+      { SnowflakeDestinationConfiguration: { Table: 'events_v1' } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['SnowflakeDestinationUpdate']).toEqual({ Table: 'events_v2' });
+  });
+});
+
+// Regression tests for PR #553 review fix-back:
+//   (a) CDK-emitted lowercase ARN aliases (`BucketArn` / `RoleArn` /
+//       `DomainArn`) must be renamed to the SDK's uppercase form in the
+//       Update payload — verbatim forwarding sends the lowercase key to
+//       AWS which rejects it. The create() path handles the rename via
+//       per-mapper alias coalescing (`config['RoleARN'] ?? config['RoleArn']`);
+//       the Update path must do the same.
+//   (b) The `!== undefined` gating (per memory rule
+//       `feedback_update_optional_field_undefined_check.md`) must let
+//       explicit-falsy values (`false`, `0`, `''`) reach the Update
+//       payload so `cdkd drift --revert` can clear console-side changes
+//       back to those falsy values. A truthy-gate regression would pass
+//       every previous test but break drift-revert silently.
+describe('FirehoseProvider.update — CDK lowercase ARN alias regressions (#549 / #553 fix-back)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '99',
+            Destinations: [{ DestinationId: 'destinationId-alias-99' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('Iceberg S3Configuration: BucketArn / RoleArn (CDK lowercase) → BucketARN / RoleARN (SDK uppercase) in the Update payload', async () => {
+    // The Iceberg quirk is that the SDK Update field is named
+    // `S3Configuration` (full S3DestinationConfiguration shape), not
+    // `S3Update`. The reverse-mapper routes through the existing
+    // `mapS3DestinationConfiguration` helper which handles the lowercase
+    // alias rename — verbatim forwarding would send `BucketArn` and AWS
+    // would reject it.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        IcebergDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
+          S3Configuration: {
+            // CDK emits these lowercase. The reverse-mapper must rename.
+            BucketArn: 'arn:aws:s3:::iceberg-backup',
+            RoleArn: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'iceberg/',
+          },
+        },
+      },
+      {
+        IcebergDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['IcebergDestinationUpdate'] as Record<string, unknown>;
+    const s3 = updateShape['S3Configuration'] as Record<string, unknown>;
+    // Critical assertions: only the uppercase form reaches AWS.
+    expect(s3['BucketARN']).toBe('arn:aws:s3:::iceberg-backup');
+    expect(s3['RoleARN']).toBe('arn:aws:iam::111:role/firehose-role');
+    expect(s3).not.toHaveProperty('BucketArn');
+    expect(s3).not.toHaveProperty('RoleArn');
+  });
+
+  it('Amazonopensearchservice DomainArn (CDK lowercase) → DomainARN (SDK uppercase) in the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/cluster-v2',
+          IndexName: 'logs-v2',
+        },
+      },
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/cluster-v1',
+          IndexName: 'logs-v1',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['AmazonopensearchserviceDestinationUpdate'] as Record<
+      string,
+      unknown
+    >;
+    expect(updateShape['DomainARN']).toBe('arn:aws:es:us-east-1:111:domain/cluster-v2');
+    expect(updateShape).not.toHaveProperty('DomainArn');
+  });
+
+  it('Elasticsearch DomainArn (CDK lowercase) → DomainARN (SDK uppercase) in the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        ElasticsearchDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/legacy-v2',
+          IndexName: 'logs-v2',
+        },
+      },
+      {
+        ElasticsearchDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/legacy-v1',
+          IndexName: 'logs-v1',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['ElasticsearchDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape['DomainARN']).toBe('arn:aws:es:us-east-1:111:domain/legacy-v2');
+    expect(updateShape).not.toHaveProperty('DomainArn');
+  });
+});
+
+describe('FirehoseProvider.update — explicit-falsy-value pass-through (#549 / #553 fix-back)', () => {
+  // Per memory rule `feedback_update_optional_field_undefined_check.md`,
+  // `!== undefined` gating must forward `false` / `0` / `''` to AWS so
+  // `cdkd drift --revert` can clear console-side mutations. These tests
+  // pin that intent — a future refactor to truthy gating
+  // (`if (config[k])`) would break drift-revert and pass every other
+  // test in this file; only these tests catch the regression.
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '88',
+            Destinations: [{ DestinationId: 'destinationId-falsy-88' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('Iceberg AppendOnly: false reaches the Update payload (boolean false survives gating)', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { IcebergDestinationConfiguration: { AppendOnly: false } },
+      { IcebergDestinationConfiguration: { AppendOnly: true } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['IcebergDestinationUpdate'] as Record<string, unknown>;
+    // The key MUST exist with the value `false`, not be silently dropped.
+    expect(updateShape).toHaveProperty('AppendOnly', false);
+  });
+
+  it('Snowflake MetaDataColumnName: empty string reaches the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SnowflakeDestinationConfiguration: { MetaDataColumnName: '' } },
+      { SnowflakeDestinationConfiguration: { MetaDataColumnName: 'old_meta' } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['SnowflakeDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape).toHaveProperty('MetaDataColumnName', '');
+  });
+
+  it('Splunk HECAcknowledgmentTimeoutInSeconds: 0 reaches the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SplunkDestinationConfiguration: { HECAcknowledgmentTimeoutInSeconds: 0 } },
+      { SplunkDestinationConfiguration: { HECAcknowledgmentTimeoutInSeconds: 600 } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['SplunkDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape).toHaveProperty('HECAcknowledgmentTimeoutInSeconds', 0);
   });
 });
