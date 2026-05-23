@@ -418,7 +418,7 @@ describe('NestedStackProvider', () => {
   });
 
   describe('runChildDeploy (Minor 4 fix — parameters overwrite vs spread-inherit)', () => {
-    it('replaces parentCtx.options.parameters with child-only parameters; no parent leak into child', async () => {
+    it('child with non-empty Parameters: child overrides parent-options shared key, sibling-only keys not leaked', async () => {
       const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-paramleak-'));
       const childTemplatePath = join(dir, 'child.nested.template.json');
       writeFileSync(
@@ -451,6 +451,48 @@ describe('NestedStackProvider', () => {
       const opts = deployCalls[0]!.ctor[5] as { parameters?: Record<string, string> };
       expect(opts.parameters).toEqual({ Foo: 'childValue' });
       expect(opts.parameters).not.toHaveProperty('SharedToo');
+    });
+
+    it('child with NO Parameters block: parent-options parameters do not leak (the true regression class)', async () => {
+      // This is the regression the unconditional `parameters: childParameters`
+      // overwrite actually closes. Before the fix, the conditional spread
+      // `...(Object.keys(childParameters).length > 0 && { parameters: childParameters })`
+      // only fired when `childParameters` was non-empty — so when the child
+      // template had no `Properties.Parameters` block at all (= the common
+      // case for typical `cdk.NestedStack` usage), the parent's
+      // `options.parameters` (= the `--parameters Foo=Bar` CLI flag) survived
+      // into the child via the outer spread of `parentCtx.options ?? {}`,
+      // and any same-named parameter the child template happened to declare
+      // got the parent's value. The fix is to ALWAYS overwrite with
+      // `parameters: childParameters` (even when empty) so the parent's
+      // CLI scope never leaks into a child whose author did not opt into it.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-paramleak-empty-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: { Foo: { Type: 'AWS::S3::Bucket' } },
+        })
+      );
+
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({
+        nestedTemplates: { Child: childTemplatePath },
+        // Parent CLI scope has parameters set.
+        options: { parameters: { Leaked: 'parent-only' } },
+      });
+
+      // Child resource has NO `Parameters` key — childParameters resolves to {}.
+      await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      );
+
+      // Child engine MUST see `parameters: {}` (empty), NOT
+      // `parameters: { Leaked: 'parent-only' }`.
+      const opts = deployCalls[0]!.ctor[5] as { parameters?: Record<string, string> };
+      expect(opts.parameters).toEqual({});
+      expect(opts.parameters).not.toHaveProperty('Leaked');
     });
   });
 
