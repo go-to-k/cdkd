@@ -293,7 +293,7 @@ Modified files:
 - `src/local/api-server-grouping.ts` — new grouping branch for WebSocket APIs.
 - `src/local/container-pool.ts` — accept per-Lambda env-var overlays at spec build time (probably already supported; verify).
 - `src/cli/commands/local-start-api.ts` — boot WebSocket listeners automatically when discovery yields any WebSocket API; no new CLI flag in v1.
-- `CLAUDE.md` PR 8a "Recently Implemented" bullet — drop the "WebSocket APIs (ProtocolType: WEBSOCKET) — never" wording; add a new bullet noting WebSocket support is shipped.
+- [docs/changelog-cdkd.md](../changelog-cdkd.md) PR 8a entry — drop the "WebSocket APIs (ProtocolType: WEBSOCKET) — never" wording; add a new entry noting WebSocket support is shipped. (Per-PR changelog entries moved here from CLAUDE.md's "Recently Implemented" section.)
 
 New dependency: `ws` + `@types/ws`.
 
@@ -327,7 +327,7 @@ New dependency: `ws` + `@types/ws`.
 - [ ] `$connect` / `$disconnect` / `$default` / custom routes invoke their target Lambda with AWS-spec event shape.
 - [ ] `apigatewaymanagementapi:PostToConnection` from a handler reaches the local client.
 - [ ] `wscat -c ws://127.0.0.1:<port>` works end-to-end against the new integ fixture.
-- [ ] CLAUDE.md PR 8a "WebSocket APIs — never" comment removed; new "Recently Implemented" bullet added.
+- [ ] [docs/changelog-cdkd.md](../changelog-cdkd.md) PR 8a entry "WebSocket APIs — never" wording removed; new shipped-feature entry added.
 
 ## 14. Related
 

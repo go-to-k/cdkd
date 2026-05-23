@@ -361,8 +361,8 @@ For `Fn::GetAtt: [<NestedStackLogicalId>, 'Outputs.<Key>']`:
 
 The child's `Parameters` are populated from the parent's
 `Properties.Parameters` map. cdkd already supports CloudFormation
-Parameters (see "Recently Implemented: CloudFormation Parameters
-support" in CLAUDE.md), so the child DeployEngine instance just gets
+Parameters (see "CloudFormation Parameters support" in
+[docs/changelog-cdkd.md](../changelog-cdkd.md)), so the child DeployEngine instance just gets
 the parent-resolved Parameters map as its `parameters` option.
 
 ### `Fn::ImportValue` from inside a nested child
