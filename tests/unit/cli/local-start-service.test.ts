@@ -14,9 +14,13 @@ describe('createLocalStartServiceCommand', () => {
     expect(cmd.name()).toBe('start-service');
   });
 
-  it('requires a positional target argument', () => {
+  it('accepts one or more positional target arguments (variadic)', () => {
+    // Phase 3 of #262 (Issue #460) — `cdkd local start-service` now
+    // accepts multiple targets in one invocation. The variadic
+    // argument name is `targets`.
     const args = cmd.registeredArguments.map((a) => a.name());
-    expect(args).toEqual(['target']);
+    expect(args).toEqual(['targets']);
+    expect(cmd.registeredArguments[0]?.variadic).toBe(true);
   });
 
   it('declares the documented options', () => {

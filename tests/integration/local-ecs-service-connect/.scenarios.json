@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-ecs-service",
+    "local-ecs-service-connect"
+  ]
+}

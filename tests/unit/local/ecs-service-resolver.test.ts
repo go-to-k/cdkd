@@ -185,13 +185,150 @@ describe('resolveEcsServiceTarget', () => {
     expect(svc.warnings.some((w) => w.includes('LoadBalancers'))).toBe(true);
   });
 
-  it('warns about ServiceConnectConfiguration being deferred', () => {
+  it('does NOT warn about ServiceConnectConfiguration being deferred (Phase 3 ships first-class)', () => {
+    // Pre-PR #460 the resolver emitted a "ServiceConnect deferred" warn;
+    // post-PR the Service Connect block is first-class so no warn is
+    // emitted (the resolver surfaces `serviceConnect` instead).
     const stack = buildStack('MyStack', {
-      TaskDef: makeTaskDef(),
-      Svc: makeService({ serviceConnect: { Enabled: true } }),
+      TaskDef: {
+        Type: 'AWS::ECS::TaskDefinition',
+        Properties: {
+          Family: 'fam',
+          NetworkMode: 'bridge',
+          ContainerDefinitions: [
+            {
+              Name: 'app',
+              Image: 'public.ecr.aws/nginx/nginx:alpine',
+              PortMappings: [{ Name: 'http', ContainerPort: 80, Protocol: 'tcp' }],
+            },
+          ],
+        },
+      },
+      Svc: makeService({
+        serviceConnect: {
+          Enabled: true,
+          Namespace: 'cdkd-local.local',
+          Services: [
+            {
+              PortName: 'http',
+              ClientAliases: [{ DnsName: 'web', Port: 80 }],
+            },
+          ],
+        },
+      }),
     });
     const svc = resolveEcsServiceTarget('MyStack:Svc', [stack]);
-    expect(svc.warnings.some((w) => w.includes('ServiceConnect'))).toBe(true);
+    expect(svc.warnings.some((w) => w.includes('ServiceConnect'))).toBe(false);
+    expect(svc.serviceConnect?.namespaceName).toBe('cdkd-local.local');
+    expect(svc.serviceConnect?.services.length).toBe(1);
+    expect(svc.serviceConnect?.services[0]?.portName).toBe('http');
+    expect(svc.serviceConnect?.services[0]?.containerPort).toBe(80);
+    expect(svc.serviceConnect?.services[0]?.discoveryName).toBe('web');
+  });
+
+  it('parses ServiceRegistries[] into the resolved shape', () => {
+    const stack = buildStack('MyStack', {
+      TaskDef: makeTaskDef(),
+      Svc: {
+        Type: 'AWS::ECS::Service',
+        Properties: {
+          TaskDefinition: { Ref: 'TaskDef' },
+          ServiceRegistries: [
+            {
+              RegistryArn: { 'Fn::GetAtt': ['CloudMapSvc', 'Arn'] },
+              ContainerName: 'app',
+              ContainerPort: 80,
+            },
+          ],
+        },
+      },
+    });
+    const svc = resolveEcsServiceTarget('MyStack:Svc', [stack]);
+    expect(svc.serviceRegistries.length).toBe(1);
+    expect(svc.serviceRegistries[0]?.cloudMapServiceLogicalId).toBe('CloudMapSvc');
+    expect(svc.serviceRegistries[0]?.containerName).toBe('app');
+    expect(svc.serviceRegistries[0]?.containerPort).toBe(80);
+  });
+
+  it('treats ServiceConnectConfiguration.Enabled: false as opt-out', () => {
+    const stack = buildStack('MyStack', {
+      TaskDef: makeTaskDef(),
+      Svc: makeService({
+        serviceConnect: { Enabled: false, Namespace: 'cdkd-local.local', Services: [] },
+      }),
+    });
+    const svc = resolveEcsServiceTarget('MyStack:Svc', [stack]);
+    expect(svc.serviceConnect).toBeUndefined();
+  });
+
+  it('rejects ServiceConnectConfiguration with non-string Namespace', () => {
+    const stack = buildStack('MyStack', {
+      TaskDef: makeTaskDef(),
+      Svc: makeService({
+        serviceConnect: { Enabled: true, Namespace: { Ref: 'Ns' }, Services: [] },
+      }),
+    });
+    expect(() => resolveEcsServiceTarget('MyStack:Svc', [stack])).toThrow(
+      /Namespace must be a literal string/
+    );
+  });
+
+  it('rejects ServiceConnectConfiguration.Services[].PortName not matching any TaskDef port', () => {
+    const stack = buildStack('MyStack', {
+      TaskDef: {
+        Type: 'AWS::ECS::TaskDefinition',
+        Properties: {
+          Family: 'fam',
+          NetworkMode: 'bridge',
+          ContainerDefinitions: [
+            {
+              Name: 'app',
+              Image: 'public.ecr.aws/nginx/nginx:alpine',
+              PortMappings: [{ Name: 'http', ContainerPort: 80, Protocol: 'tcp' }],
+            },
+          ],
+        },
+      },
+      Svc: makeService({
+        serviceConnect: {
+          Enabled: true,
+          Namespace: 'cdkd-local.local',
+          Services: [{ PortName: 'gone' }],
+        },
+      }),
+    });
+    expect(() => resolveEcsServiceTarget('MyStack:Svc', [stack])).toThrow(
+      /PortName='gone' does not match/
+    );
+  });
+
+  it('defaults discoveryName to PortName when no ClientAlias DnsName is set', () => {
+    const stack = buildStack('MyStack', {
+      TaskDef: {
+        Type: 'AWS::ECS::TaskDefinition',
+        Properties: {
+          Family: 'fam',
+          NetworkMode: 'bridge',
+          ContainerDefinitions: [
+            {
+              Name: 'app',
+              Image: 'public.ecr.aws/nginx/nginx:alpine',
+              PortMappings: [{ Name: 'http', ContainerPort: 80, Protocol: 'tcp' }],
+            },
+          ],
+        },
+      },
+      Svc: makeService({
+        serviceConnect: {
+          Enabled: true,
+          Namespace: 'cdkd-local.local',
+          // No ClientAliases — discoveryName should default to PortName.
+          Services: [{ PortName: 'http' }],
+        },
+      }),
+    });
+    const svc = resolveEcsServiceTarget('MyStack:Svc', [stack]);
+    expect(svc.serviceConnect?.services[0]?.discoveryName).toBe('http');
   });
 
   it('does not warn when LoadBalancers is an empty array', () => {

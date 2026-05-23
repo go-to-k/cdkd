@@ -14,18 +14,82 @@ import {
  * Phase 2 of #262 — synthesized `AWS::ECS::Service` resolved against the
  * cloud assembly. Wraps an already-resolved `ResolvedEcsTask` (Phase 1's
  * descriptor) plus the service-specific knobs `cdkd local start-service`
- * needs: `DesiredCount`, `HealthCheckGracePeriodSeconds`, and the
- * physical task-definition logical ID (so the runner can name its
- * docker networks after the service rather than only after the task
- * definition).
+ * needs: `DesiredCount`, `HealthCheckGracePeriodSeconds`, the physical
+ * task-definition logical ID (so the runner can name its docker networks
+ * after the service rather than only after the task definition), AND
+ * (Phase 3 / Issue #460) the Service Connect + ServiceRegistry surfaces
+ * so the Cloud Map registry can publish each replica's endpoint for
+ * peer discovery via the docker `--add-host` DNS overlay.
  *
- * The `LoadBalancers[]` and `ServiceConnectConfiguration` fields are
- * intentionally NOT surfaced in v1 — local load-balancer emulation +
- * Service Connect / Cloud Map are deferred to follow-up PRs per the
- * issue's own PR-split recommendation (see CLAUDE.md "cdkd local
- * start-service" bullet for the deferral list). They will land here as
- * additional fields when the next PR adds the LB emulator.
+ * `LoadBalancers[]` is intentionally NOT surfaced in v1 — local
+ * load-balancer emulation is deferred to a follow-up PR per the issue's
+ * own PR-split recommendation (see CLAUDE.md "cdkd local start-service"
+ * bullet for the deferral list).
  */
+/**
+ * Resolved `AWS::ECS::Service.ServiceConnectConfiguration` (Phase 3 of #262).
+ * Pre-PR cdkd warned and skipped this block; post-PR each entry's
+ * `PortName` is matched against the producer TaskDef's
+ * `ContainerDefinitions[].PortMappings[].Name` (verified empirically
+ * via real `cdk synth` on 2026-05-22 — the CFn field is `PortName`,
+ * NOT the design doc's `PortMappingName`) and the resolver surfaces
+ * the resulting `(discoveryName, port, clientAliases)` tuples so the
+ * Cloud Map registry can publish each replica's endpoint under the
+ * configured DNS names.
+ */
+export interface ResolvedServiceConnect {
+  /**
+   * Namespace name (e.g. `cdkd-local.local`). CDK 2.x synthesizes
+   * `ServiceConnectConfiguration.Namespace` as a literal string (not
+   * a Ref / ARN) — verified empirically on 2026-05-22. The literal is
+   * matched against the resolved `CloudMapIndex.namespacesByName` at
+   * registry-publish time; an unmatched name surfaces as an error
+   * before any container starts.
+   */
+  namespaceName: string;
+  /**
+   * Per-entry mapping: which port (from the task def) is exposed under
+   * which DNS name (the Service Connect ClientAlias), and what the
+   * canonical Cloud Map service-discovery name is.
+   */
+  services: ReadonlyArray<{
+    /** The producer container's `PortMappings[].Name`. */
+    portName: string;
+    /**
+     * Resolved containerPort from the matching `PortMappings[]` entry.
+     * Falls back to the `ClientAliases[0].Port` when the producer side
+     * cannot be resolved (rare — only when the resolver is invoked
+     * against a service whose TaskDef hasn't been parsed yet).
+     */
+    containerPort: number;
+    /**
+     * The canonical Cloud Map discovery name. cdkd derives this from
+     * `ClientAliases[0].DnsName` when the user supplied one; otherwise
+     * defaults to the `PortName` so the registry publishes under a
+     * meaningful key.
+     */
+    discoveryName: string;
+    /** All ClientAlias entries (each becomes its own `--add-host` alias). */
+    clientAliases: ReadonlyArray<{ dnsName?: string; port: number }>;
+  }>;
+}
+
+/**
+ * Resolved `AWS::ECS::Service.ServiceRegistries[]` (Phase 3 of #262).
+ * Each entry binds an ECS Service to one `AWS::ServiceDiscovery::Service`
+ * — the AWS-side ECS Agent calls `RegisterInstance` on each task launch.
+ * Locally, the runner mirrors that behavior into the Cloud Map registry
+ * after each replica's main container boots.
+ */
+export interface ResolvedServiceRegistry {
+  /** Logical id of the `AWS::ServiceDiscovery::Service` this binds to. */
+  cloudMapServiceLogicalId: string;
+  /** Optional container name override (CFn `ContainerName`). */
+  containerName?: string;
+  /** Optional container port override (CFn `ContainerPort`). */
+  containerPort?: number;
+}
+
 export interface ResolvedEcsService {
   /** Stack the service belongs to. */
   stack: StackInfo;
@@ -64,6 +128,20 @@ export interface ResolvedEcsService {
    * replica instance.
    */
   task: ResolvedEcsTask;
+  /**
+   * Phase 3 of #262 / Issue #460 — `ServiceConnectConfiguration` resolved
+   * against the producer TaskDef's PortMappings. `undefined` when the
+   * service has no Service Connect block OR has it but `Enabled: false`.
+   */
+  serviceConnect?: ResolvedServiceConnect;
+  /**
+   * Phase 3 of #262 / Issue #460 — `ServiceRegistries[]` resolved. Empty
+   * array when the service has no Cloud Map registration (the common
+   * case for Service-Connect-only or no-discovery services). Each entry
+   * names the `AWS::ServiceDiscovery::Service` logical id the runner
+   * publishes replica endpoints under.
+   */
+  serviceRegistries: ReadonlyArray<ResolvedServiceRegistry>;
   /**
    * Resolution warnings (e.g. `awsvpc` → bridge map from the task
    * resolver, or load-balancer fields not honored locally). Non-fatal —
@@ -179,8 +257,7 @@ export function extractServiceProperties(
   const serviceName = parseServiceName(props['ServiceName'], serviceLogicalId);
 
   // Surface deferred-feature warnings so users learn what's NOT
-  // emulated locally without reading source. Each warning explicitly
-  // names the deferred follow-up so users can track when it lands.
+  // emulated locally without reading source.
   if (Array.isArray(props['LoadBalancers']) && (props['LoadBalancers'] as unknown[]).length > 0) {
     warnings.push(
       `ECS Service '${serviceLogicalId}' declares LoadBalancers, but local load-balancer ` +
@@ -188,15 +265,14 @@ export function extractServiceProperties(
         'listener; reach them via their published ports.'
     );
   }
-  if (props['ServiceConnectConfiguration']) {
-    warnings.push(
-      `ECS Service '${serviceLogicalId}' declares ServiceConnectConfiguration, but Service ` +
-        'Connect / Cloud Map emulation is deferred (tracked in #460). Cross-service discovery ' +
-        'between locally-run services is not provided.'
-    );
-  }
 
-  return {
+  // Phase 3 of #262 / Issue #460 — Service Connect + ServiceRegistries
+  // are now first-class. Parse + surface; the registry/runner layer
+  // handles cross-service publish + DNS overlay.
+  const serviceConnect = extractServiceConnect(props['ServiceConnectConfiguration'], task);
+  const serviceRegistries = extractServiceRegistries(props['ServiceRegistries']);
+
+  const out: ResolvedEcsService = {
     stack,
     serviceLogicalId,
     resource,
@@ -204,8 +280,161 @@ export function extractServiceProperties(
     desiredCount,
     healthCheckGracePeriodSeconds,
     task,
+    serviceRegistries,
     warnings,
   };
+  if (serviceConnect) out.serviceConnect = serviceConnect;
+  return out;
+}
+
+/**
+ * Parse `ServiceConnectConfiguration` against the producer TaskDef.
+ * Returns `undefined` when the block is missing OR `Enabled: false`.
+ *
+ * Reject conditions (surface as resolver-time errors so the user sees
+ * them BEFORE the docker network is created):
+ *   - `Namespace` is not a literal string. CDK 2.x always emits a
+ *     literal string here (verified 2026-05-22); cross-stack /
+ *     intrinsic shapes are out of scope.
+ *   - `Services[].PortName` doesn't match any of the TaskDef's
+ *     `ContainerDefinitions[].PortMappings[].Name` entries.
+ *
+ * Note on `clientAliases[]` shape: each ClientAlias can declare a
+ * `DnsName` (the bare short-name peers connect to, e.g. `orders`) AND
+ * a `Port` (the listening port the alias maps to inside the consumer).
+ * cdkd surfaces both verbatim; the registry / `--add-host` overlay
+ * publishes each `DnsName` as a bare alias pointing at the same IP as
+ * the canonical fqdn.
+ */
+function extractServiceConnect(
+  raw: unknown,
+  task: ResolvedEcsTask
+): ResolvedServiceConnect | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const cfg = raw as Record<string, unknown>;
+  // CFn default for `Enabled` is `true` when ServiceConnectConfiguration
+  // is present (CDK always emits `Enabled: true`); honor an explicit
+  // `false` as opt-out.
+  if (cfg['Enabled'] === false) return undefined;
+
+  const namespaceName = pickServiceConnectNamespace(cfg['Namespace']);
+  if (!namespaceName) {
+    throw new EcsTaskResolutionError(
+      `ServiceConnectConfiguration.Namespace must be a literal string (the Cloud Map ` +
+        `namespace name like 'cdkd-local.local'); got ${JSON.stringify(cfg['Namespace'])}. ` +
+        'Intrinsic / cross-stack namespace references are not supported in v1.'
+    );
+  }
+
+  const rawServices = cfg['Services'];
+  if (!Array.isArray(rawServices) || rawServices.length === 0) {
+    // No `Services[]` is valid in AWS — the task still gets the local
+    // Cloud Map DNS resolver but doesn't expose anything itself. cdkd's
+    // local emulation treats it the same way (registry publishes
+    // nothing, consumer-side `--add-host` still works).
+    return { namespaceName, services: [] };
+  }
+
+  // Build a `Name → containerPort` index from the producer TaskDef.
+  // The lookup is across ALL containers because CDK emits port mapping
+  // names without container-scoping them.
+  const portByName = new Map<string, number>();
+  for (const c of task.containers) {
+    for (const pm of c.portMappings) {
+      if (pm.name) portByName.set(pm.name, pm.containerPort);
+    }
+  }
+
+  const services: Array<{
+    portName: string;
+    containerPort: number;
+    discoveryName: string;
+    clientAliases: Array<{ dnsName?: string; port: number }>;
+  }> = [];
+  for (const entry of rawServices) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const portName = typeof e['PortName'] === 'string' ? e['PortName'] : undefined;
+    if (!portName) {
+      throw new EcsTaskResolutionError(
+        `ServiceConnectConfiguration.Services[] entry has no PortName: ${JSON.stringify(entry)}. ` +
+          'Every Service entry must reference a producer-side PortMappings[].Name.'
+      );
+    }
+    const containerPort = portByName.get(portName);
+    if (containerPort === undefined) {
+      const available = [...portByName.keys()].join(', ') || '(none)';
+      throw new EcsTaskResolutionError(
+        `ServiceConnectConfiguration.Services[].PortName='${portName}' does not match any ` +
+          `PortMappings[].Name on the producer TaskDef (available: ${available}).`
+      );
+    }
+    const clientAliases: { dnsName?: string; port: number }[] = [];
+    if (Array.isArray(e['ClientAliases'])) {
+      for (const ca of e['ClientAliases'] as unknown[]) {
+        if (!ca || typeof ca !== 'object') continue;
+        const caObj = ca as Record<string, unknown>;
+        const dnsName = typeof caObj['DnsName'] === 'string' ? caObj['DnsName'] : undefined;
+        const port = typeof caObj['Port'] === 'number' ? caObj['Port'] : containerPort;
+        const aliasEntry: { dnsName?: string; port: number } = { port };
+        if (dnsName !== undefined) aliasEntry.dnsName = dnsName;
+        clientAliases.push(aliasEntry);
+      }
+    }
+    // `discoveryName` precedence: first ClientAlias with a DnsName, else
+    // the PortName. Mirrors how AWS-side Service Connect publishes the
+    // service in Cloud Map.
+    const aliasWithName = clientAliases.find((c) => c.dnsName !== undefined);
+    const discoveryName = aliasWithName?.dnsName ?? portName;
+    services.push({ portName, containerPort, discoveryName, clientAliases });
+  }
+
+  return { namespaceName, services };
+}
+
+/**
+ * Parse `ServiceRegistries[]`. Each entry's `RegistryArn` is the
+ * canonical `Fn::GetAtt: [<CloudMapServiceLogicalId>, 'Arn']` shape;
+ * cdkd surfaces the logical id (the AWS-side ARN is irrelevant
+ * locally — the registry is in-process).
+ */
+function extractServiceRegistries(raw: unknown): ReadonlyArray<ResolvedServiceRegistry> {
+  if (!Array.isArray(raw)) return [];
+  const out: ResolvedServiceRegistry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const registryArn = e['RegistryArn'];
+    let cloudMapServiceLogicalId: string | undefined;
+    if (typeof registryArn === 'string') {
+      // Already a literal ARN (rare locally — would imply the user
+      // bound to an existing Cloud Map service deployed out-of-band).
+      // We can't resolve it; surface a warn upstream by skipping.
+      continue;
+    }
+    if (registryArn && typeof registryArn === 'object' && !Array.isArray(registryArn)) {
+      const obj = registryArn as Record<string, unknown>;
+      const getAtt = obj['Fn::GetAtt'];
+      if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') {
+        cloudMapServiceLogicalId = getAtt[0];
+      }
+    }
+    if (!cloudMapServiceLogicalId) continue;
+    const reg: ResolvedServiceRegistry = { cloudMapServiceLogicalId };
+    if (typeof e['ContainerName'] === 'string') reg.containerName = e['ContainerName'];
+    if (typeof e['ContainerPort'] === 'number') reg.containerPort = e['ContainerPort'];
+    out.push(reg);
+  }
+  return out;
+}
+
+function pickServiceConnectNamespace(raw: unknown): string | undefined {
+  // CDK 2.x synthesizes `ServiceConnectConfiguration.Namespace` as a
+  // literal string (verified via real `cdk synth` 2026-05-22).
+  // Defensive: accept a `Ref` that points to a literal-only context
+  // (rare; would land here only when the user hand-rolled a CfnService).
+  if (typeof raw === 'string' && raw.length > 0) return raw;
+  return undefined;
 }
 
 /**

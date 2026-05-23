@@ -28,6 +28,8 @@ import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import {
   createServiceRunState,
   startEcsService,
+  type ServiceController,
+  type ServiceDiscoveryContext,
   type ServiceRunnerOptions,
   type ServiceRunState,
 } from '../../local/ecs-service-runner.js';
@@ -36,6 +38,13 @@ import { cleanupEcsRun, type RunEcsTaskOptions } from '../../local/ecs-task-runn
 import { matchStacks } from '../stack-matcher.js';
 import { buildCrossStackResolver, loadStateForStack } from './local-state-loader.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
+import { CloudMapRegistry } from '../../local/cloud-map-registry.js';
+import { buildCloudMapIndex, type CloudMapIndex } from '../../local/cloud-map-resolver.js';
+import {
+  createSharedSvcNetwork,
+  destroyTaskNetwork,
+  type TaskNetwork,
+} from '../../local/ecs-network.js';
 
 interface LocalStartServiceOptions {
   app?: string;
@@ -76,7 +85,7 @@ interface LocalStartServiceOptions {
  *   - Service Connect / Cloud Map — tracked separately in #460.
  */
 async function localStartServiceCommand(
-  target: string,
+  targets: string[],
   options: LocalStartServiceOptions
 ): Promise<void> {
   const logger = getLogger();
@@ -84,32 +93,90 @@ async function localStartServiceCommand(
 
   warnIfDeprecatedRegion(options);
 
-  const runState: ServiceRunState = createServiceRunState();
+  if (!targets || targets.length === 0) {
+    throw new LocalStartServiceError(
+      'cdkd local start-service requires at least one <target>. ' +
+        "Pass one or more service paths like 'Stack/Orders' 'Stack/Frontend'."
+    );
+  }
+
+  // Per-target run-state + controller, plus a shared Cloud Map
+  // registry across every service. Building everything upfront and
+  // hoisting cleanup keeps SIGINT correctness in lock-step with the
+  // pre-PR single-service shape.
+  type PerTarget = {
+    target: string;
+    runState: ServiceRunState;
+    controller?: ServiceController;
+  };
+  const perTarget: PerTarget[] = targets.map((t) => ({
+    target: t,
+    runState: createServiceRunState(),
+  }));
+
   let sigintHandler: (() => void) | undefined;
   let sigintCount = 0;
-
-  // Controller is created lazily — startEcsService returns it after the
-  // initial replica boot finishes. The cleanup closure has to handle
-  // the boot-failure case where the controller is still undefined.
-  let controller: Awaited<ReturnType<typeof startEcsService>> | undefined;
+  // Hoisted out of the try block so the single-flight cleanup closure
+  // can teardown the shared network after every container is gone.
+  // Assigned inside the try once the shared `cdkd-local-svc-<rand>`
+  // network + sidecar are up; left undefined if the run failed to
+  // create them.
+  let sharedNetwork: TaskNetwork | undefined;
 
   // Single-flight cleanup so the SIGINT handler and the outer `finally`
-  // collapse to one underlying invocation (canonical pattern documented
-  // in `feedback_sigint_finally_cleanup_singleflight.md` and shared
-  // with `cdkd local invoke` / `cdkd local start-api`).
+  // collapse to one underlying invocation. Fans out across every
+  // target's controller; falls back to per-replica cleanupEcsRun when
+  // a controller never finished construction (early-failure case).
+  // The shared network is torn down LAST so per-replica
+  // `cleanupEcsRun()` calls (which only stop containers — they no
+  // longer destroy the network in shared mode because the task
+  // runner marks the network as caller-owned) finish first.
   const cleanup = singleFlight(
     async (): Promise<void> => {
-      if (controller) {
-        await controller.shutdown();
-      } else {
-        // Boot-failure path: tear down any partially-booted
-        // replicas via direct calls into the cleanup function
-        // since the controller never finished construction.
-        await Promise.allSettled(
-          runState.replicas.map((r) =>
-            cleanupEcsRun(r.state, { keepRunning: false }).catch(() => undefined)
-          )
-        );
+      await Promise.allSettled(
+        perTarget.map(async (pt) => {
+          if (pt.controller) {
+            await pt.controller.shutdown();
+          } else {
+            // SIGINT-during-bootOneTarget early-failure path: `pt.controller`
+            // is still undefined because `bootOneTarget` was mid-flight
+            // when the signal arrived. Each replica may have an
+            // `inFlightBoot` promise that is still populating
+            // `state.startedContainers` / `state.network`. Await each
+            // such promise BEFORE iterating replicas for cleanup so
+            // we don't tear down a half-built state and orphan the
+            // containers / network the in-flight boot was about to
+            // record. Mirrors `ServiceController.shutdown()`'s ordering.
+            // `Promise.allSettled` swallows in-flight rejections —
+            // those become per-replica leftover state that the
+            // subsequent `cleanupEcsRun` still tears down.
+            await Promise.allSettled(
+              pt.runState.replicas
+                .map((r) => r.inFlightBoot)
+                .filter((p): p is Promise<void> => p !== undefined)
+            );
+            await Promise.allSettled(
+              pt.runState.replicas.map((r) =>
+                cleanupEcsRun(r.state, { keepRunning: false }).catch(() => undefined)
+              )
+            );
+          }
+        })
+      );
+      // Shared network teardown (design § 5 Option A). The sidecar +
+      // network were created once at CLI startup and survived every
+      // per-replica `cleanupEcsRun()`; we drop them once now that
+      // every container has been removed. `destroyTaskNetwork` is
+      // idempotent on undefined so we don't need a separate guard.
+      if (sharedNetwork) {
+        try {
+          await destroyTaskNetwork(sharedNetwork);
+        } catch (err) {
+          getLogger().warn(
+            `shared service network teardown failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        sharedNetwork = undefined;
       }
     },
     (err) =>
@@ -136,127 +203,103 @@ async function localStartServiceCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
-      // Threaded so the macro-expander has a real state bucket for the
-      // > 51,200-byte template upload path when a stack carries a
-      // CloudFormation macro (Issue #463).
       ...(options.stateBucket && { stateBucket: options.stateBucket }),
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
-    // Reuse local-run-task's resolution-context builder: probe whether
-    // the candidate stack needs pseudo-parameters / state / cross-stack
-    // resolution, then build the substitution context lazily.
-    const imageContext = await buildEcsImageResolutionContext(target, stacks, options);
-    const service = resolveEcsServiceTarget(target, stacks, imageContext);
-    logger.info(
-      `Target: ${service.stack.stackName}/${service.serviceLogicalId} ` +
-        `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +
-        `task=${service.task.taskDefinitionLogicalId})`
-    );
-
-    // Cross-stack env / secret resolution post-pass (mirrors local-run-task).
-    const taskStack = stacks.find((s) => s.stackName === service.stack.stackName) ?? service.stack;
-    const taskNeeds = detectEcsImageResolutionNeeds(taskStack);
-    if (options.fromState && taskNeeds.needsCrossStackResolver) {
-      const consumerRegion =
-        options.region ??
-        process.env['AWS_REGION'] ??
-        process.env['AWS_DEFAULT_REGION'] ??
-        service.stack.region ??
-        'us-east-1';
-      const built = await buildCrossStackResolver(consumerRegion, {
-        ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
-        statePrefix: options.statePrefix,
-        ...(options.region !== undefined && { region: options.region }),
-        ...(options.profile !== undefined && { profile: options.profile }),
-      });
-      if (built) {
-        try {
-          const subContext: SubstitutionContext = {
-            resources: imageContext?.stateResources ?? {},
-            ...(imageContext?.pseudoParameters && {
-              pseudoParameters: imageContext.pseudoParameters,
-            }),
-            consumerRegion,
-            crossStackResolver: built.resolver,
-          };
-          await applyCrossStackResolverToTask(service.task, subContext);
-        } finally {
-          built.dispose();
-        }
-      }
-    } else if (!options.fromState && taskNeeds.needsCrossStackResolver) {
-      logger.warn(
-        'Container Environment / Secrets entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
-          'Pass --from-state to substitute them against deployed cdkd state.'
-      );
+    // Build the shared Cloud Map index once across every stack the
+    // synth produced. Per-stack lookups in the runner then pick the
+    // matching CloudMapIndex by stack name.
+    const cloudMapIndexByStack = new Map<string, CloudMapIndex>();
+    for (const stack of stacks) {
+      const index = buildCloudMapIndex(stack);
+      cloudMapIndexByStack.set(stack.stackName, index);
+      for (const w of index.warnings) logger.warn(w);
     }
 
-    // SIGINT pattern mirrors local-run-task: double-^C bypasses cleanup
-    // and exits 130 immediately so users have an escape hatch when
-    // docker hangs.
+    // Shared Cloud Map registry — every per-service runner registers
+    // into the same instance, and every per-service runner reads from
+    // it to build per-replica `--add-host` flags. Created
+    // unconditionally for every `cdkd local start-service` invocation
+    // (per-service-runner short-circuits internally when the service
+    // has no Cloud Map / Service Connect surfaces to publish). The
+    // single-service no-discovery cost is one in-process Map allocation
+    // — negligible compared to the cost of branching the CLI surface.
+    const registry = new CloudMapRegistry();
+    // Design doc § 5 Option A — create ONE shared docker network used
+    // by every service-replica boot in this CLI invocation. The
+    // alternative (one network per task — pre-PR-#522 shape) made
+    // cross-service peer reachability impossible: docker bridge
+    // networks are isolated by default, so a frontend container on
+    // `169.254.171.0/24` could not reach an orders container on
+    // `169.254.170.0/24` even with `--add-host orders:<ip>` populating
+    // its `/etc/hosts`. With one shared network across all services,
+    // every container can reach every peer by IP / network alias
+    // without docker `network connect` choreography.
+    //
+    // The sidecar attached to this shared network serves the
+    // metadata endpoint to every container. Per-service IAM role
+    // emulation in multi-service runs is NOT supported in v1 — each
+    // service's `TaskRoleArn` flows into its container env via
+    // `buildMetadataEnv`, but the sidecar itself uses the user's
+    // default AWS credential chain. Users who need per-service IAM
+    // role emulation should split their run into multiple
+    // `cdkd local start-service` invocations.
+    try {
+      sharedNetwork = await createSharedSvcNetwork({
+        prefix: options.cluster,
+        skipPull: options.pull === false,
+        cluster: options.cluster,
+      });
+    } catch (err) {
+      throw new LocalStartServiceError(
+        `Failed to create shared service network: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    const discovery: ServiceDiscoveryContext = {
+      registry,
+      cloudMapIndexByStack,
+      sharedNetwork,
+    };
+
+    // SIGINT pattern mirrors local-run-task: double-^C bypasses
+    // cleanup and exits 130 immediately so users have an escape hatch
+    // when docker hangs. Installed BEFORE any docker work so partial
+    // boots are torn down.
     sigintHandler = (): void => {
       sigintCount += 1;
       if (sigintCount >= 2) {
         process.stderr.write('Force-exit on second ^C; container cleanup skipped.\n');
         process.exit(130);
       }
-      logger.info('Stopping service...');
+      logger.info('Stopping service(s)...');
       void cleanup().then(() => process.exit(130));
     };
     process.on('SIGINT', sigintHandler);
     process.on('SIGTERM', sigintHandler);
 
-    // Resolve task-role credentials (lazy STS hop) — same shape as the
-    // run-task command since each replica reuses the same task-role
-    // credentials.
-    let assumedCredentials: RunEcsTaskOptions['taskCredentials'];
-    let resolvedRoleArn: string | undefined;
-    if (options.assumeTaskRole === true) {
-      if (!service.task.taskRoleArn) {
-        throw new LocalStartServiceError(
-          `--assume-task-role passed without an ARN but the task definition has no resolvable ` +
-            `TaskRoleArn. Pass the ARN explicitly: --assume-task-role <arn>`
-        );
-      }
-      resolvedRoleArn = await resolvePlaceholderAccount(service.task.taskRoleArn, options.region);
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
-    } else if (typeof options.assumeTaskRole === 'string') {
-      resolvedRoleArn = options.assumeTaskRole;
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+    // Boot every target SEQUENTIALLY so a first-target failure
+    // surfaces before we burn docker budget on the rest, AND so the
+    // Cloud Map registry is populated in target order — peer services
+    // booted later automatically see earlier services' registrations
+    // and have them substituted via `--add-host` at boot.
+    for (const pt of perTarget) {
+      pt.controller = await bootOneTarget(pt.target, pt.runState, stacks, options, discovery);
     }
 
-    const envOverrides = readEnvOverridesFile(options.envVars);
+    const summary = perTarget
+      .map(
+        (pt) =>
+          `${pt.controller!.service.serviceName} (${pt.controller!.activeReplicaCount()} replica(s))`
+      )
+      .join(', ');
+    logger.info(`Service(s) running: ${summary}. Press ^C to shut down.`);
 
-    const taskOpts: RunEcsTaskOptions = {
-      cluster: options.cluster,
-      containerHost: options.containerHost,
-      skipPull: options.pull === false,
-      keepRunning: false, // service replicas are recycled — keep-running is meaningless
-      detach: true, // forced by the service runner; per-replica monitor handles exits
-    };
-    if (envOverrides) taskOpts.envOverrides = envOverrides;
-    if (assumedCredentials) taskOpts.taskCredentials = assumedCredentials;
-    if (resolvedRoleArn) taskOpts.taskRoleArn = resolvedRoleArn;
-    if (options.platform) taskOpts.platformOverride = options.platform;
-    if (options.region) taskOpts.region = options.region;
-    if (options.ecrRoleArn) taskOpts.ecrRoleArn = options.ecrRoleArn;
-
-    const runnerOpts: ServiceRunnerOptions = {
-      maxTasks: options.maxTasks,
-      restartPolicy: options.restartPolicy,
-      taskOptions: taskOpts,
-    };
-
-    controller = await startEcsService(service, runnerOpts, runState);
-    logger.info(
-      `Service '${service.serviceName}' running with ${controller.activeReplicaCount()} ` +
-        `active replica(s). Press ^C to shut down.`
-    );
-
-    // Block here until SIGINT triggers shutdown.
-    await controller.waitForShutdown();
+    // Block until ALL services shut down (in practice this happens on
+    // SIGINT, which triggers cleanup() above which awaits every
+    // controller.shutdown()).
+    await Promise.all(perTarget.map((pt) => pt.controller!.waitForShutdown()));
   } finally {
     if (sigintHandler) {
       process.off('SIGINT', sigintHandler);
@@ -264,6 +307,123 @@ async function localStartServiceCommand(
     }
     await cleanup();
   }
+}
+
+/**
+ * Boot one target. Extracted from the loop so each per-service block
+ * (image context, cross-stack resolver, task-role credentials, runner
+ * options) is scoped locally. Returns the started controller for the
+ * outer code to wait + tear down.
+ */
+async function bootOneTarget(
+  target: string,
+  runState: ServiceRunState,
+  stacks: StackInfo[],
+  options: LocalStartServiceOptions,
+  discovery: ServiceDiscoveryContext
+): Promise<ServiceController> {
+  const logger = getLogger();
+
+  const imageContext = await buildEcsImageResolutionContext(target, stacks, options);
+  const service = resolveEcsServiceTarget(target, stacks, imageContext);
+  logger.info(
+    `Target: ${service.stack.stackName}/${service.serviceLogicalId} ` +
+      `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +
+      `task=${service.task.taskDefinitionLogicalId})`
+  );
+  for (const w of service.warnings) logger.warn(w);
+  if (service.serviceConnect) {
+    logger.info(
+      `Service Connect: namespace='${service.serviceConnect.namespaceName}', ` +
+        `${service.serviceConnect.services.length} service(s) registered for peer discovery.`
+    );
+  }
+  if (service.serviceRegistries.length > 0) {
+    logger.info(`Cloud Map: ${service.serviceRegistries.length} ServiceRegistry binding(s).`);
+  }
+
+  // Cross-stack env / secret resolution post-pass (mirrors local-run-task).
+  const taskStack = stacks.find((s) => s.stackName === service.stack.stackName) ?? service.stack;
+  const taskNeeds = detectEcsImageResolutionNeeds(taskStack);
+  if (options.fromState && taskNeeds.needsCrossStackResolver) {
+    const consumerRegion =
+      options.region ??
+      process.env['AWS_REGION'] ??
+      process.env['AWS_DEFAULT_REGION'] ??
+      service.stack.region ??
+      'us-east-1';
+    const built = await buildCrossStackResolver(consumerRegion, {
+      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+      statePrefix: options.statePrefix,
+      ...(options.region !== undefined && { region: options.region }),
+      ...(options.profile !== undefined && { profile: options.profile }),
+    });
+    if (built) {
+      try {
+        const subContext: SubstitutionContext = {
+          resources: imageContext?.stateResources ?? {},
+          ...(imageContext?.pseudoParameters && {
+            pseudoParameters: imageContext.pseudoParameters,
+          }),
+          consumerRegion,
+          crossStackResolver: built.resolver,
+        };
+        await applyCrossStackResolverToTask(service.task, subContext);
+      } finally {
+        built.dispose();
+      }
+    }
+  } else if (!options.fromState && taskNeeds.needsCrossStackResolver) {
+    logger.warn(
+      'Container Environment / Secrets entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
+        'Pass --from-state to substitute them against deployed cdkd state.'
+    );
+  }
+
+  // Per-service task-role credentials. Each service can have its own
+  // TaskRoleArn — when multiple services share `--assume-task-role`
+  // (bare flag), each gets its own STS hop. Explicit `--assume-task-role <arn>`
+  // applies the same ARN across every service.
+  let assumedCredentials: RunEcsTaskOptions['taskCredentials'];
+  let resolvedRoleArn: string | undefined;
+  if (options.assumeTaskRole === true) {
+    if (!service.task.taskRoleArn) {
+      throw new LocalStartServiceError(
+        `--assume-task-role passed without an ARN but service '${service.serviceLogicalId}' ` +
+          `has no resolvable TaskRoleArn. Pass the ARN explicitly: --assume-task-role <arn>`
+      );
+    }
+    resolvedRoleArn = await resolvePlaceholderAccount(service.task.taskRoleArn, options.region);
+    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+  } else if (typeof options.assumeTaskRole === 'string') {
+    resolvedRoleArn = options.assumeTaskRole;
+    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+  }
+
+  const envOverrides = readEnvOverridesFile(options.envVars);
+
+  const taskOpts: RunEcsTaskOptions = {
+    cluster: options.cluster,
+    containerHost: options.containerHost,
+    skipPull: options.pull === false,
+    keepRunning: false,
+    detach: true,
+  };
+  if (envOverrides) taskOpts.envOverrides = envOverrides;
+  if (assumedCredentials) taskOpts.taskCredentials = assumedCredentials;
+  if (resolvedRoleArn) taskOpts.taskRoleArn = resolvedRoleArn;
+  if (options.platform) taskOpts.platformOverride = options.platform;
+  if (options.region) taskOpts.region = options.region;
+  if (options.ecrRoleArn) taskOpts.ecrRoleArn = options.ecrRoleArn;
+
+  const runnerOpts: ServiceRunnerOptions = {
+    maxTasks: options.maxTasks,
+    restartPolicy: options.restartPolicy,
+    taskOptions: taskOpts,
+    discovery,
+  };
+
+  return startEcsService(service, runnerOpts, runState);
 }
 
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
@@ -498,16 +658,19 @@ function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none' {
 export function createLocalStartServiceCommand(): Command {
   const cmd = new Command('start-service')
     .description(
-      'Run an AWS::ECS::Service locally as a long-running emulator. Spins up DesiredCount task ' +
-        'replicas (clamped by --max-tasks) using the same per-task docker network + metadata ' +
-        'sidecar pattern as `cdkd local run-task`, then keeps each replica running and ' +
-        'restarts it on exit per --restart-policy. ^C tears every replica + sidecar + network ' +
-        'down. Target accepts a CDK display path (MyStack/MyService) or stack-qualified ' +
-        'logical ID (MyStack:MyServiceXYZ); single-stack apps may omit the stack prefix.'
+      'Run one or more AWS::ECS::Service resources locally as a long-running emulator. Spins up ' +
+        'DesiredCount task replicas per service (clamped by --max-tasks) using the same per-task ' +
+        'docker network + metadata sidecar pattern as `cdkd local run-task`, then keeps each ' +
+        'replica running and restarts it on exit per --restart-policy. ^C tears every replica + ' +
+        'sidecar + network down. Each <target> accepts a CDK display path (MyStack/MyService) ' +
+        'or stack-qualified logical ID (MyStack:MyServiceXYZ); single-stack apps may omit the ' +
+        'stack prefix. When two or more <target>s are supplied, every service is booted into a ' +
+        'shared Cloud Map / Service Connect registry so peer services discover each other via ' +
+        'docker --add-host overlay (Issue #460).'
     )
     .argument(
-      '<target>',
-      'CDK display path or stack-qualified logical ID of the AWS::ECS::Service to run'
+      '<targets...>',
+      'One or more CDK display paths or stack-qualified logical IDs of the AWS::ECS::Service resources to run'
     )
     .addOption(
       new Option(

@@ -61,6 +61,10 @@
       "description": "`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown."
     },
     {
+      "tag": "local-ecs-service-connect",
+      "description": "`cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460)."
+    },
+    {
       "tag": "local-ecs-task",
       "description": "`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar."
     },
@@ -418,6 +422,14 @@
       "annotated": true,
       "scenarios": [
         "state-schema-migration"
+      ]
+    },
+    {
+      "name": "local-ecs-service-connect",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-service",
+        "local-ecs-service-connect"
       ]
     },
     {
@@ -851,7 +863,15 @@
       "scenario": "local-ecs-service",
       "description": "`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.",
       "fixtures": [
+        "local-ecs-service-connect",
         "local-start-service"
+      ]
+    },
+    {
+      "scenario": "local-ecs-service-connect",
+      "description": "`cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460).",
+      "fixtures": [
+        "local-ecs-service-connect"
       ]
     },
     {

@@ -280,6 +280,82 @@ describe('buildDockerRunArgs', () => {
   });
 });
 
+describe('buildDockerRunArgs Service Connect aliases', () => {
+  it('emits extra --network-alias for each entry in networkAliases', () => {
+    const c = makeContainer();
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'cdkd-local-svc-shared',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      networkAliases: ['orders', 'orders.cdkd-sc.local'],
+    });
+    // The first --network-alias (line 813) is the container.name; extra
+    // aliases follow. Walk every --network-alias and confirm presence.
+    const aliasValues: string[] = [];
+    for (let i = 0; i < args.length; i += 1) {
+      if (args[i] === '--network-alias') aliasValues.push(args[i + 1]!);
+    }
+    expect(aliasValues).toContain('app');
+    expect(aliasValues).toContain('orders.cdkd-sc.local');
+  });
+
+  it('de-duplicates a networkAlias that matches container.name (already added by line 813)', () => {
+    const c = makeContainer({ name: 'orders' });
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'cdkd-local-svc-shared',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      networkAliases: ['orders', 'orders.cdkd-sc.local'],
+    });
+    const aliasValues: string[] = [];
+    for (let i = 0; i < args.length; i += 1) {
+      if (args[i] === '--network-alias') aliasValues.push(args[i + 1]!);
+    }
+    // 'orders' appears once (the line 813 default), NOT twice.
+    expect(aliasValues.filter((v) => v === 'orders').length).toBe(1);
+    expect(aliasValues).toContain('orders.cdkd-sc.local');
+  });
+
+  it('emits no extra --network-alias when networkAliases is empty / undefined', () => {
+    const c = makeContainer();
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'cdkd-local-task-xx',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    const aliasValues: string[] = [];
+    for (let i = 0; i < args.length; i += 1) {
+      if (args[i] === '--network-alias') aliasValues.push(args[i + 1]!);
+    }
+    // Only the default container.name alias from line 813.
+    expect(aliasValues).toEqual(['app']);
+  });
+});
+
 describe('cleanupEcsRun', () => {
   it('is a no-op on a freshly-created empty state', async () => {
     const state = createEcsRunState();

@@ -5,10 +5,16 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vite-plus/test'
 // docker. The mocks record every call so we can assert ordering (e.g.
 // "cleanup ran AFTER bootReplica populated state" in the SIGTERM-mid-
 // restart race test) and trigger boot-failure paths.
-const { mockCleanup, mockRunTask } = vi.hoisted(() => ({
+const { mockCleanup, mockRunTask, mockGetContainerIp } = vi.hoisted(() => ({
   mockCleanup: vi.fn<(state: unknown, opts: { keepRunning: boolean }) => Promise<void>>(),
   mockRunTask:
     vi.fn<(task: unknown, opts: unknown, state: unknown) => Promise<void>>(),
+  mockGetContainerIp:
+    vi.fn<(containerId: string, networkName: string) => Promise<string | undefined>>(),
+}));
+
+vi.mock('../../../src/local/docker-inspect.js', () => ({
+  getContainerNetworkIp: mockGetContainerIp,
 }));
 
 vi.mock('../../../src/local/ecs-task-runner.js', async () => {
@@ -26,6 +32,7 @@ import {
   __setSleepImpl,
   __setWaitForExitImpl,
   backoffDelayMs,
+  buildNetworkAliasesByContainer,
   computeReplicaCount,
   createServiceRunState,
   EcsServiceRunnerError,
@@ -43,6 +50,8 @@ beforeEach(() => {
   mockCleanup.mockResolvedValue(undefined);
   mockRunTask.mockReset();
   mockRunTask.mockResolvedValue(undefined);
+  mockGetContainerIp.mockReset();
+  mockGetContainerIp.mockResolvedValue('10.0.0.10');
 });
 
 afterEach(() => {
@@ -650,5 +659,430 @@ describe('startEcsService / bootReplica lifecycle', () => {
     await controller.shutdown();
     // 3 cleanup calls — one per replica.
     expect(mockCleanup).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('Cloud Map / Service Connect registry integration (Issue #460)', () => {
+  // Reuse helpers from the lifecycle block above for these tests.
+  function makeServiceWithSc(): ResolvedEcsService {
+    return {
+      serviceName: 'orders',
+      serviceLogicalId: 'OrdersSvc',
+      desiredCount: 1,
+      task: {
+        taskDefinitionLogicalId: 'OrdersTaskDef',
+        family: 'orders',
+        containers: [
+          {
+            name: 'app',
+            essential: true,
+            portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+          },
+        ],
+      } as unknown as ResolvedEcsService['task'],
+      stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+      serviceConnect: {
+        namespaceName: 'cdkd-local.local',
+        services: [
+          {
+            portName: 'orders-api',
+            containerPort: 80,
+            discoveryName: 'orders',
+            clientAliases: [{ dnsName: 'orders', port: 80 }],
+          },
+        ],
+      },
+      serviceRegistries: [],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+  }
+
+  function makeOptionsWithDiscovery(registry: import('../../../src/local/cloud-map-registry.js').CloudMapRegistry): ServiceRunnerOptions {
+    return {
+      maxTasks: 84,
+      restartPolicy: 'on-failure',
+      taskOptions: {
+        cluster: 'cdkd-local',
+        containerHost: '127.0.0.1',
+        keepRunning: false,
+      },
+      discovery: {
+        registry,
+        cloudMapIndexByStack: new Map([
+          [
+            'StackA',
+            {
+              namespacesByLogicalId: new Map(),
+              namespacesByName: new Map([
+                ['cdkd-local.local', { logicalId: 'Ns', name: 'cdkd-local.local' }],
+              ]),
+              servicesByLogicalId: new Map(),
+              warnings: [],
+            },
+          ],
+        ]),
+      },
+    };
+  }
+
+  it('publishes a replica into the registry after boot', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: 'cdkd-local-svc-r0',
+        sidecarContainerId: 'sidecar-r0',
+        sidecarIp: '169.254.170.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-r0' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+
+    const service = makeServiceWithSc();
+    const opts = makeOptionsWithDiscovery(registry);
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    // The replica should have been registered. The endpoint IP comes
+    // from our mocked `getContainerNetworkIp` (10.0.0.10).
+    const endpoints = registry.lookup('cdkd-local.local', 'orders');
+    expect(endpoints?.length).toBe(1);
+    expect(endpoints?.[0]?.ip).toBe('10.0.0.10');
+    expect(endpoints?.[0]?.port).toBe(80);
+
+    // The bare alias `orders` was also registered via ClientAlias.
+    const aliasEndpoints = registry.lookupAlias('orders');
+    expect(aliasEndpoints?.length).toBe(1);
+    expect(aliasEndpoints?.[0]?.ip).toBe('10.0.0.10');
+
+    // Verify shutdown drops the registration.
+    await controller.shutdown();
+    expect(registry.lookup('cdkd-local.local', 'orders')).toBeUndefined();
+  });
+
+  it('skips publication when docker inspect fails to discover an IP', async () => {
+    mockGetContainerIp.mockResolvedValue(undefined);
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: 'cdkd-local-svc-r0',
+        sidecarContainerId: 'sidecar-r0',
+        sidecarIp: '169.254.170.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-r0' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+    const service = makeServiceWithSc();
+    const opts = makeOptionsWithDiscovery(registry);
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    expect(registry.lookup('cdkd-local.local', 'orders')).toBeUndefined();
+    await controller.shutdown();
+  });
+
+  it('no discovery context → registry never touched (single-service mode)', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: 'cdkd-local-svc-r0',
+        sidecarContainerId: 'sidecar-r0',
+        sidecarIp: '169.254.170.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-r0' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const service = makeServiceWithSc();
+    const opts: ServiceRunnerOptions = {
+      maxTasks: 84,
+      restartPolicy: 'on-failure',
+      taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+      // No discovery context — runner short-circuits all registry work.
+    };
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    // getContainerNetworkIp should NOT have been called when there's
+    // no discovery context.
+    expect(mockGetContainerIp).not.toHaveBeenCalled();
+    await controller.shutdown();
+  });
+
+  it('publishes a ServiceRegistries[] entry against the resolved Cloud Map service', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: 'cdkd-local-svc-r0',
+        sidecarContainerId: 'sidecar-r0',
+        sidecarIp: '169.254.170.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-r0' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+
+    const service: ResolvedEcsService = {
+      serviceName: 'frontend',
+      serviceLogicalId: 'FrontendSvc',
+      desiredCount: 1,
+      task: {
+        taskDefinitionLogicalId: 'TD',
+        family: 'frontend',
+        containers: [
+          {
+            name: 'app',
+            essential: true,
+            portMappings: [{ name: 'frontend-api', containerPort: 8080, protocol: 'tcp' }],
+          },
+        ],
+      } as unknown as ResolvedEcsService['task'],
+      stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+      serviceRegistries: [{ cloudMapServiceLogicalId: 'CloudMapSvc', containerPort: 8080 }],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+
+    const opts: ServiceRunnerOptions = {
+      maxTasks: 84,
+      restartPolicy: 'on-failure',
+      taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+      discovery: {
+        registry,
+        cloudMapIndexByStack: new Map([
+          [
+            'StackA',
+            {
+              namespacesByLogicalId: new Map(),
+              namespacesByName: new Map(),
+              servicesByLogicalId: new Map([
+                [
+                  'CloudMapSvc',
+                  {
+                    logicalId: 'CloudMapSvc',
+                    namespaceLogicalId: 'Ns',
+                    namespaceName: 'cdkd-local.local',
+                    name: 'frontend-cloudmap',
+                    dnsRecords: [{ type: 'A' as const, ttlSeconds: 60 }],
+                  },
+                ],
+              ]),
+              warnings: [],
+            },
+          ],
+        ]),
+      },
+    };
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    const endpoints = registry.lookup('cdkd-local.local', 'frontend-cloudmap');
+    expect(endpoints?.length).toBe(1);
+    expect(endpoints?.[0]?.port).toBe(8080);
+
+    await controller.shutdown();
+    expect(registry.lookup('cdkd-local.local', 'frontend-cloudmap')).toBeUndefined();
+  });
+});
+
+describe('buildNetworkAliasesByContainer', () => {
+  function makeService(
+    serviceConnect:
+      | undefined
+      | {
+          namespaceName: string;
+          services: Array<{
+            portName: string;
+            discoveryName: string;
+            containerPort: number;
+            clientAliases: Array<{ dnsName?: string; port: number }>;
+          }>;
+        },
+    containers: Array<{
+      name: string;
+      essential: boolean;
+      portMappings: Array<{ name?: string; containerPort: number; protocol: string }>;
+    }>
+  ): ResolvedEcsService {
+    return {
+      stack: { stackName: 'StackA' },
+      serviceLogicalId: 'Svc',
+      serviceName: 'svc',
+      desiredCount: 1,
+      task: {
+        family: 'task',
+        containers,
+        volumes: [],
+        runtimePlatform: undefined,
+      },
+      serviceConnect,
+      serviceRegistries: [],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+  }
+
+  it('returns empty map when service has no Service Connect', () => {
+    const service = makeService(undefined, [
+      { name: 'app', essential: true, portMappings: [{ containerPort: 80, protocol: 'tcp' }] },
+    ]);
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(0);
+  });
+
+  it('attaches fqdn + bare discoveryName + ClientAlias dnsNames to the container owning the PortName', () => {
+    const service = makeService(
+      {
+        namespaceName: 'cdkd-sc.local',
+        services: [
+          {
+            portName: 'orders-api',
+            discoveryName: 'orders',
+            containerPort: 80,
+            clientAliases: [{ dnsName: 'orders', port: 80 }],
+          },
+        ],
+      },
+      [
+        {
+          name: 'orders',
+          essential: true,
+          portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(1);
+    // De-duped: discoveryName (`orders`) and ClientAlias dnsName (`orders`)
+    // collapse to one entry; fqdn is the separate second entry.
+    expect(result.get('orders')).toEqual(['orders', 'orders.cdkd-sc.local']);
+  });
+
+  it('skips services whose PortName does not match any container PortMappings.Name (defensive — resolver throws in production)', () => {
+    const service = makeService(
+      {
+        namespaceName: 'cdkd-sc.local',
+        services: [
+          {
+            portName: 'missing-port',
+            discoveryName: 'orders',
+            containerPort: 80,
+            clientAliases: [],
+          },
+        ],
+      },
+      [
+        {
+          name: 'orders',
+          essential: true,
+          portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(0);
+  });
+
+  it('attaches aliases only to the container that owns the matching PortName (sidecars get none)', () => {
+    const service = makeService(
+      {
+        namespaceName: 'cdkd-sc.local',
+        services: [
+          {
+            portName: 'main-port',
+            discoveryName: 'main-svc',
+            containerPort: 80,
+            clientAliases: [],
+          },
+        ],
+      },
+      [
+        {
+          name: 'main',
+          essential: true,
+          portMappings: [{ name: 'main-port', containerPort: 80, protocol: 'tcp' }],
+        },
+        {
+          name: 'sidecar',
+          essential: false,
+          portMappings: [{ name: 'metrics-port', containerPort: 9090, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(1);
+    expect(result.has('main')).toBe(true);
+    expect(result.has('sidecar')).toBe(false);
+  });
+
+  it('merges aliases across multiple Service Connect entries on the same container', () => {
+    const service = makeService(
+      {
+        namespaceName: 'ns.local',
+        services: [
+          {
+            portName: 'http-port',
+            discoveryName: 'http-svc',
+            containerPort: 80,
+            clientAliases: [{ dnsName: 'http', port: 80 }],
+          },
+          {
+            portName: 'grpc-port',
+            discoveryName: 'grpc-svc',
+            containerPort: 50051,
+            clientAliases: [{ dnsName: 'grpc', port: 50051 }],
+          },
+        ],
+      },
+      [
+        {
+          name: 'multi',
+          essential: true,
+          portMappings: [
+            { name: 'http-port', containerPort: 80, protocol: 'tcp' },
+            { name: 'grpc-port', containerPort: 50051, protocol: 'tcp' },
+          ],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.get('multi')).toEqual([
+      'http-svc',
+      'http-svc.ns.local',
+      'http',
+      'grpc-svc',
+      'grpc-svc.ns.local',
+      'grpc',
+    ]);
+  });
+
+  it('drops ClientAlias entries with no dnsName (port-only aliases are not DNS-resolvable locally)', () => {
+    const service = makeService(
+      {
+        namespaceName: 'ns.local',
+        services: [
+          {
+            portName: 'port-a',
+            discoveryName: 'svc-a',
+            containerPort: 80,
+            clientAliases: [{ port: 80 }, { dnsName: 'svc-alias', port: 80 }],
+          },
+        ],
+      },
+      [
+        {
+          name: 'app',
+          essential: true,
+          portMappings: [{ name: 'port-a', containerPort: 80, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.get('app')).toEqual(['svc-a', 'svc-a.ns.local', 'svc-alias']);
   });
 });

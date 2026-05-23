@@ -707,6 +707,50 @@ describe('runEcsTask — empty task and pre-network failures (G1)', () => {
     expect(networkStubs.createTaskNetwork).not.toHaveBeenCalled();
   });
 
+  it('existingNetwork option skips createTaskNetwork and reuses the supplied caller-owned network', async () => {
+    // Design § 5 Option A — when the CLI hands a pre-built shared
+    // network in via `RunEcsTaskOptions.existingNetwork`, the runner
+    // MUST NOT call `createTaskNetwork` (otherwise every replica boot
+    // would create a new network and Option A collapses back to
+    // Option B's per-task isolation). The state.network reflects the
+    // caller-owned shape (`ownedByCaller: true`) so per-replica
+    // cleanup will skip teardown.
+    const sharedNetwork = {
+      networkName: 'cdkd-local-svc-shared-abc',
+      sidecarContainerId: 'shared-sidecar',
+      sidecarIp: '169.254.171.2',
+    };
+    const c = makeContainer();
+    const state = createEcsRunState();
+    await runEcsTask(
+      makeTask({ containers: [c] }),
+      baseOptions({ existingNetwork: sharedNetwork }),
+      state
+    );
+    expect(networkStubs.createTaskNetwork).not.toHaveBeenCalled();
+    expect(state.network?.networkName).toBe('cdkd-local-svc-shared-abc');
+    expect(state.network?.ownedByCaller).toBe(true);
+    // Spot-check that `docker run` was still issued against the
+    // shared network's name (not a fresh per-task one).
+    const runCall = dockerRunCalls()[0];
+    const networkFlagIdx = runCall!.args.indexOf('--network');
+    expect(networkFlagIdx).toBeGreaterThan(-1);
+    expect(runCall!.args[networkFlagIdx + 1]).toBe('cdkd-local-svc-shared-abc');
+  });
+
+  it('without existingNetwork falls back to createTaskNetwork (per-task lifecycle)', async () => {
+    // Pre-existing `cdkd local run-task` shape: runner owns the
+    // network. Regression guard against accidentally inverting the
+    // `if (options.existingNetwork)` branch.
+    const c = makeContainer();
+    const state = createEcsRunState();
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), state);
+    expect(networkStubs.createTaskNetwork).toHaveBeenCalledTimes(1);
+    // Default stub network name from the top-of-file mock.
+    expect(state.network?.networkName).toBe('cdkd-local-task-fake');
+    expect(state.network?.ownedByCaller).toBeUndefined();
+  });
+
   it('docker run failure for a container surfaces as DockerRunnerError', async () => {
     captured.responder = (_cmd: string, args: string[]) => {
       if (args[0] === 'run') return { err: new Error('boom'), stderr: 'image not found' };
@@ -810,6 +854,49 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
     expect(idxNet).toBeGreaterThan(idxRm);
     expect(idxVol).toBeGreaterThan(idxNet);
     expect(state.dockerVolumeNames).toEqual([]);
+  });
+
+  it('ownedByCaller=true state.network skips destroyTaskNetwork (shared-network mode)', async () => {
+    // Design § 5 Option A — the CLI creates ONE shared network at
+    // run startup and tears it down once at the end of the run.
+    // Per-replica `cleanupEcsRun()` must NOT call `destroyTaskNetwork`
+    // for caller-owned networks, otherwise the shared network is torn
+    // down on the first replica's exit and every subsequent replica
+    // boots into a missing-network failure.
+    const state: EcsRunState = {
+      network: {
+        networkName: 'cdkd-local-svc-shared',
+        sidecarContainerId: 'shared-sidecar',
+        sidecarIp: '169.254.171.2',
+        ownedByCaller: true,
+      },
+      dockerVolumeNames: [],
+      startedContainers: [],
+      logStoppers: [],
+    };
+    await cleanupEcsRun(state, { keepRunning: false });
+    expect(networkStubs.destroyTaskNetwork).not.toHaveBeenCalled();
+    expect(state.network).toBeUndefined();
+  });
+
+  it('ownedByCaller=undefined state.network tears down via destroyTaskNetwork (per-task mode)', async () => {
+    // Pre-existing `cdkd local run-task` lifecycle: the runner owns
+    // the network it created, cleanup tears it down. This regression
+    // test prevents an accidental flip of the conditional that would
+    // leak per-task networks indefinitely.
+    const state: EcsRunState = {
+      network: {
+        networkName: 'cdkd-local-task-abc',
+        sidecarContainerId: 'task-sidecar',
+        sidecarIp: '169.254.170.2',
+      },
+      dockerVolumeNames: [],
+      startedContainers: [],
+      logStoppers: [],
+    };
+    await cleanupEcsRun(state, { keepRunning: false });
+    expect(networkStubs.destroyTaskNetwork).toHaveBeenCalledTimes(1);
+    expect(state.network).toBeUndefined();
   });
 
   it('docker volume rm failure is swallowed and remaining volumes still attempted', async () => {

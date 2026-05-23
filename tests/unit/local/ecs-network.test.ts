@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   METADATA_ENDPOINT_IMAGE,
   METADATA_ENDPOINT_IP,
+  SHARED_SVC_SUBNET_OCTET,
   buildEndpointSubnet,
   buildMetadataEnv,
+  createSharedSvcNetwork,
   createTaskNetwork,
   destroyTaskNetwork,
 } from '../../../src/local/ecs-network.js';
@@ -149,5 +151,51 @@ describe('createTaskNetwork / destroyTaskNetwork', () => {
     });
     const rmCalls = captured.calls.filter((c) => c.args[0] === 'rm' || c.args[0] === 'network');
     expect(rmCalls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('createSharedSvcNetwork', () => {
+  it('uses the cdkd-local-svc-* name prefix (distinct from per-task -task-* prefix)', async () => {
+    const net = await createSharedSvcNetwork({ skipPull: true });
+    expect(net.networkName).toMatch(/^cdkd-local-svc-/);
+    expect(net.networkName).not.toContain('-task-');
+  });
+
+  it('allocates from SHARED_SVC_SUBNET_OCTET (= 171) so it does not collide with run-task default 170', async () => {
+    expect(SHARED_SVC_SUBNET_OCTET).toBe(171);
+    captured.calls = [];
+    const net = await createSharedSvcNetwork({ skipPull: true });
+    expect(net.sidecarIp).toBe('169.254.171.2');
+    // The `network create` call must carry the /24 derived from
+    // SHARED_SVC_SUBNET_OCTET. Otherwise a parallel cdkd local run-task
+    // on the same host would collide on the docker bridge pool.
+    const networkCreate = captured.calls.find(
+      (c) => c.args[0] === 'network' && c.args[1] === 'create'
+    );
+    expect(networkCreate?.args.join(' ')).toContain('169.254.171.0/24');
+  });
+
+  it('returns ownedByCaller=true so per-replica cleanupEcsRun skips teardown', async () => {
+    const net = await createSharedSvcNetwork({ skipPull: true });
+    expect(net.ownedByCaller).toBe(true);
+  });
+
+  it('honors the prefix option (CLI threads its --cluster name through)', async () => {
+    const net = await createSharedSvcNetwork({ prefix: 'mycluster', skipPull: true });
+    expect(net.networkName).toMatch(/^mycluster-svc-/);
+  });
+
+  it('forwards credentials to the sidecar env block', async () => {
+    captured.calls = [];
+    await createSharedSvcNetwork({
+      credentials: { accessKeyId: 'AKIA-FAKE', secretAccessKey: 'SECRET-FAKE', sessionToken: 'TOK' },
+      skipPull: true,
+    });
+    const runCall = captured.calls.find((c) => c.args[0] === 'run');
+    expect(runCall).toBeDefined();
+    const joined = runCall!.args.join(' ');
+    expect(joined).toContain('AWS_ACCESS_KEY_ID=AKIA-FAKE');
+    expect(joined).toContain('AWS_SECRET_ACCESS_KEY=SECRET-FAKE');
+    expect(joined).toContain('AWS_SESSION_TOKEN=TOK');
   });
 });

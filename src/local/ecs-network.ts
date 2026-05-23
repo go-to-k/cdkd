@@ -26,8 +26,10 @@ export const METADATA_ENDPOINT_IMAGE = 'amazon/amazon-ecs-local-container-endpoi
  * matches the documented AWS task-metadata endpoint address. Containers
  * inject `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<id>`
  * to reach it. `cdkd local run-task` keeps this verbatim; `cdkd local
- * start-service` allocates a per-replica subnet (via `subnetOctet`) so
- * concurrent replicas don't collide on a single docker network range.
+ * start-service` creates ONE shared network at CLI startup (design
+ * § 5 Option A) — the shared sidecar lives at `169.254.171.2` (see
+ * `SHARED_SVC_SUBNET_OCTET` below), one octet up so the two CLI
+ * variants can run on the same host without bridge-pool collision.
  */
 export const METADATA_ENDPOINT_IP = '169.254.170.2';
 
@@ -65,18 +67,29 @@ export function buildEndpointSubnet(subnetOctet: number): {
 }
 
 export interface TaskNetwork {
-  /** Generated docker network name (`<prefix>-task-<rand>`). */
+  /** Generated docker network name (`<prefix>-task-<rand>` or `<prefix>-svc-<rand>` for shared). */
   networkName: string;
   /** Container id of the metadata-endpoints sidecar. Cleaned up at teardown. */
   sidecarContainerId: string;
   /**
    * Resolved sidecar IP for THIS network instance. `cdkd local run-task`
-   * sees 169.254.170.2 (the default); `cdkd local start-service` sees
-   * a per-replica IP. Containers' `ECS_CONTAINER_METADATA_URI_V4` is
-   * derived from this so each replica's containers hit their own
-   * sidecar regardless of which subnet was allocated.
+   * sees 169.254.170.2 (the default); `cdkd local start-service` shares
+   * a single network across every service in the run at
+   * `169.254.171.2`. Containers' `ECS_CONTAINER_METADATA_URI_V4` is
+   * derived from this so each replica's containers hit the right
+   * sidecar regardless of which network they joined.
    */
   sidecarIp: string;
+  /**
+   * When true, the network + sidecar are owned by the caller (the CLI
+   * created them once and reuses across every task / replica boot in
+   * the run) and `cleanupEcsRun()` MUST NOT teardown — only the caller
+   * tears down at the end of the CLI lifecycle. When false / undefined,
+   * the task runner owns the lifecycle (the pre-existing
+   * `cdkd local run-task` shape: one network per task, torn down
+   * with the task).
+   */
+  ownedByCaller?: boolean;
 }
 
 export interface CreateTaskNetworkOptions {
@@ -112,25 +125,65 @@ export interface CreateTaskNetworkOptions {
 }
 
 /**
- * Create the per-task docker network + start the metadata-endpoints
- * sidecar. The sidecar must come up at the well-known address BEFORE any
- * user container starts so the `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`
- * lookup at container start doesn't race.
+ * Subnet octet for the shared-service docker network used by
+ * `cdkd local start-service`. One octet up from `cdkd local run-task`'s
+ * default (170 → 171) so the two CLI variants can run on the same host
+ * without docker rejecting the second `--subnet`. The shared-service
+ * network reuses the same `createTaskNetwork` machinery; the sidecar at
+ * `169.254.171.2` serves the same metadata-endpoint API to every
+ * container that joins this one network.
  */
-export async function createTaskNetwork(
-  options: CreateTaskNetworkOptions = {}
+export const SHARED_SVC_SUBNET_OCTET = 171;
+
+/**
+ * Create the one shared docker network + metadata-endpoints sidecar
+ * used by every service-replica boot in a single
+ * `cdkd local start-service` invocation. This is design doc § 5
+ * Option A — one network per CLI invocation instead of one network
+ * per task — so peer services can reach each other by IP / network
+ * alias without docker `--network connect` choreography (Option B,
+ * rejected in design § 5 as "unwieldy and racy"). The returned
+ * `TaskNetwork` carries `ownedByCaller: true` so `cleanupEcsRun()`
+ * (called per replica by the service runner) does NOT teardown — the
+ * CLI tears down ONCE at the end of the run.
+ */
+export async function createSharedSvcNetwork(
+  options: Omit<CreateTaskNetworkOptions, 'subnetOctet'> = {}
 ): Promise<TaskNetwork> {
-  const logger = getLogger().child('ecs-network');
   const prefix = options.prefix ?? 'cdkd-local';
   const suffix = randomBytes(4).toString('hex');
-  const networkName = `${prefix}-task-${suffix}`;
-  const subnetOctet = options.subnetOctet ?? 170;
-  const { cidr, sidecarIp } =
-    options.subnetOctet === undefined
-      ? { cidr: DEFAULT_METADATA_ENDPOINT_SUBNET, sidecarIp: METADATA_ENDPOINT_IP }
-      : buildEndpointSubnet(subnetOctet);
+  const networkName = `${prefix}-svc-${suffix}`;
+  const { cidr, sidecarIp } = buildEndpointSubnet(SHARED_SVC_SUBNET_OCTET);
+  const sidecarContainerId = await createNetworkAndSidecar({
+    networkName,
+    cidr,
+    sidecarIp,
+    skipPull: options.skipPull ?? false,
+    ...(options.credentials !== undefined ? { credentials: options.credentials } : {}),
+    ...(options.cluster !== undefined ? { cluster: options.cluster } : {}),
+  });
+  return { networkName, sidecarContainerId, sidecarIp, ownedByCaller: true };
+}
 
-  await pullImage(METADATA_ENDPOINT_IMAGE, options.skipPull ?? false);
+/**
+ * Internal helper shared by `createTaskNetwork` (per-task) and
+ * `createSharedSvcNetwork` (per-CLI-run). Creates the docker network,
+ * pulls the sidecar image, and starts the sidecar at the documented
+ * IP. Throws `DockerRunnerError` with a hint when the network already
+ * exists (the typical "leftover from previous run" path).
+ */
+async function createNetworkAndSidecar(args: {
+  networkName: string;
+  cidr: string;
+  sidecarIp: string;
+  credentials?: CreateTaskNetworkOptions['credentials'];
+  cluster?: string;
+  skipPull: boolean;
+}): Promise<string> {
+  const logger = getLogger().child('ecs-network');
+  const { networkName, cidr, sidecarIp, credentials, cluster, skipPull } = args;
+
+  await pullImage(METADATA_ENDPOINT_IMAGE, skipPull);
 
   logger.info(`Creating docker network ${networkName} (subnet ${cidr})...`);
   try {
@@ -147,16 +200,14 @@ export async function createTaskNetwork(
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
       `docker network create failed: ${e.stderr?.trim() || e.message || String(err)}. ` +
-        `Hint: another cdkd run-task on the same host may already own subnet ${cidr}; ` +
-        'wait for it to finish, or remove the leftover network with `docker network ls` + `docker network rm`. ' +
-        '`cdkd local start-service` walks subnetOctet per replica to avoid this; bare `cdkd local run-task` ' +
-        'uses the default subnet so only one run can be active at a time.'
+        `Hint: another cdkd run may already own subnet ${cidr}; wait for it to ` +
+        'finish, or remove the leftover network with `docker network ls` + ' +
+        '`docker network rm`. `cdkd local start-service` shares one network ' +
+        'across every service in the run; bare `cdkd local run-task` uses a ' +
+        'per-task network so only one run can be active at a time.'
     );
   }
 
-  // Start the sidecar on the resolved IP for this network. AWS docs
-  // say the image honors `AWS_*` env vars for IAM-role emulation;
-  // cluster + region mirror the live ECS metadata shape.
   const sidecarArgs: string[] = [
     'run',
     '-d',
@@ -169,35 +220,58 @@ export async function createTaskNetwork(
     sidecarIp,
   ];
   const sidecarEnv: Record<string, string> = {};
-  if (options.credentials) {
-    sidecarEnv['AWS_ACCESS_KEY_ID'] = options.credentials.accessKeyId;
-    sidecarEnv['AWS_SECRET_ACCESS_KEY'] = options.credentials.secretAccessKey;
-    if (options.credentials.sessionToken) {
-      sidecarEnv['AWS_SESSION_TOKEN'] = options.credentials.sessionToken;
+  if (credentials) {
+    sidecarEnv['AWS_ACCESS_KEY_ID'] = credentials.accessKeyId;
+    sidecarEnv['AWS_SECRET_ACCESS_KEY'] = credentials.secretAccessKey;
+    if (credentials.sessionToken) {
+      sidecarEnv['AWS_SESSION_TOKEN'] = credentials.sessionToken;
     }
   }
-  if (options.cluster) sidecarEnv['CLUSTER'] = options.cluster;
+  if (cluster) sidecarEnv['CLUSTER'] = cluster;
   for (const [k, v] of Object.entries(sidecarEnv)) {
     sidecarArgs.push('-e', `${k}=${v}`);
   }
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
 
   logger.info(`Starting ECS local-container-endpoints sidecar at ${sidecarIp}...`);
-  let sidecarContainerId: string;
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), sidecarArgs, {
       maxBuffer: 10 * 1024 * 1024,
     });
-    sidecarContainerId = stdout.trim();
+    return stdout.trim();
   } catch (err) {
-    // Tear down the freshly-created network so we don't leak it.
     await destroyNetworkOnly(networkName);
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
       `Failed to start metadata-endpoints sidecar: ${e.stderr?.trim() || e.message || String(err)}`
     );
   }
+}
 
+/**
+ * Create the per-task docker network + start the metadata-endpoints
+ * sidecar. The sidecar must come up at the well-known address BEFORE any
+ * user container starts so the `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`
+ * lookup at container start doesn't race.
+ */
+export async function createTaskNetwork(
+  options: CreateTaskNetworkOptions = {}
+): Promise<TaskNetwork> {
+  const prefix = options.prefix ?? 'cdkd-local';
+  const suffix = randomBytes(4).toString('hex');
+  const networkName = `${prefix}-task-${suffix}`;
+  const { cidr, sidecarIp } =
+    options.subnetOctet === undefined
+      ? { cidr: DEFAULT_METADATA_ENDPOINT_SUBNET, sidecarIp: METADATA_ENDPOINT_IP }
+      : buildEndpointSubnet(options.subnetOctet);
+  const sidecarContainerId = await createNetworkAndSidecar({
+    networkName,
+    cidr,
+    sidecarIp,
+    skipPull: options.skipPull ?? false,
+    ...(options.credentials !== undefined ? { credentials: options.credentials } : {}),
+    ...(options.cluster !== undefined ? { cluster: options.cluster } : {}),
+  });
   return { networkName, sidecarContainerId, sidecarIp };
 }
 

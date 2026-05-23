@@ -967,8 +967,9 @@ in a CDK app and starts every container on the developer's Docker host
 Implementation Phase 1: synchronous run of one task, stream every
 container's stdout/stderr with a `[<name>]` prefix, propagate the
 essential container's exit code. Phase 2 (`cdkd local start-service` —
-ECS Service + ALB-emulated path/host-based routing) and Phase 3
-(Service Connect / Cloud Map degraded mode) are tracked separately.
+ECS Service replicas + restart policy) and Phase 3 (Service Connect /
+Cloud Map cross-service discovery via `--add-host` DNS overlay) are
+implemented; ALB-emulated path/host-based routing remains deferred.
 
 **Requires Docker.** The first run pulls the AWS-published
 `amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar (a
@@ -1145,7 +1146,7 @@ torn down. Use to `docker exec` into a stopped container post-mortem.
 | --- | --- |
 | `AWS::ECS::Service` / `DesiredCount` / `LaunchType` | Use `cdkd local start-service` instead |
 | ALB / NLB target group registration / listener rules | Deferred follow-up — needs an HTTP proxy emulator |
-| Service Connect / Cloud Map | Tracked separately ([#460](https://github.com/go-to-k/cdkd/issues/460)) |
+| Service Connect / Cloud Map | Implemented for `cdkd local start-service` via `--add-host` DNS overlay ([#460](https://github.com/go-to-k/cdkd/issues/460)). `cdkd local run-task` is single-task by design; cross-service discovery is meaningful only with multiple long-running services, so it stays out of scope here. |
 | Auto Scaling / Deployment Strategy | Not meaningful locally |
 | Fargate vs EC2 launch-type differences (PID namespace, `awsvpc`-only, ephemeral storage cap) | Local Docker can't enforce these |
 | EFS / FSx volumes | Need real AWS NFS / SMB; hard-error with a routing hint |
@@ -1221,7 +1222,7 @@ hangs.
 | --- | --- |
 | Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up PR — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach them via their published container ports. |
 | `--watch` / `--reload` (rolling deployment on file change) | Follow-up PR — mirrors `cdkd local start-api --watch` semantics; needs container-pool-style hot reload across replicas. |
-| Service Connect / Cloud Map cross-service discovery | [#460](https://github.com/go-to-k/cdkd/issues/460) — covers `ServiceConnectConfiguration`; warning is emitted when present in the template. |
+| Envoy sidecar (L7 routing / retries / circuit breaking / mTLS) | Deferred follow-up — Cloud Map DNS overlay (closed via [#460](https://github.com/go-to-k/cdkd/issues/460)) covers ~80% of debugging use cases; the missing 20% requires the AWS-published Envoy image (~120MB / task). DNS-only mode is the default; an opt-in `--envoy` flag will ship with the sidecar. |
 | Rolling deployment strategy (`DeploymentConfiguration.MaximumPercent` etc.) | Follow-up — meaningful only with the LB emulator. |
 | `HealthCheckGracePeriodSeconds` runtime semantics | Field is parsed and surfaced on `ResolvedEcsService` but not yet acted on. Becomes load-bearing when the LB emulator ships (today's restart policy fires on essential-container exit code, not health-check failure). |
 
