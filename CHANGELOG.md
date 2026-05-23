@@ -1,3 +1,10 @@
+# [0.145.0](https://github.com/go-to-k/cdkd/compare/v0.144.0...v0.145.0) (2026-05-23)
+
+
+### Features
+
+* **provisioning:** in-place update for all 7 Firehose destination types ([#549](https://github.com/go-to-k/cdkd/issues/549) bundle) ([#553](https://github.com/go-to-k/cdkd/issues/553)) ([62bf587](https://github.com/go-to-k/cdkd/commit/62bf58729104a119f600b1d7e95938874262f085))
+
 # [0.144.0](https://github.com/go-to-k/cdkd/compare/v0.143.0...v0.144.0) (2026-05-23)
 
 
