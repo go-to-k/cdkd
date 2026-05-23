@@ -1,3 +1,10 @@
+## [0.137.3](https://github.com/go-to-k/cdkd/compare/v0.137.2...v0.137.3) (2026-05-23)
+
+
+### Bug Fixes
+
+* **local:** WebSocket [#531](https://github.com/go-to-k/cdkd/issues/531) MINORs — accountId / apiCdkPath / test gaps ([#541](https://github.com/go-to-k/cdkd/issues/541)) ([1fd1e35](https://github.com/go-to-k/cdkd/commit/1fd1e35bb873ebcf6ce8b1274cd47d70be5ec172))
+
 ## [0.137.2](https://github.com/go-to-k/cdkd/compare/v0.137.1...v0.137.2) (2026-05-23)
 
 
