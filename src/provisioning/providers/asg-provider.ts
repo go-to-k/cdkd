@@ -904,17 +904,16 @@ export class ASGProvider implements ResourceProvider {
     if (toDelete.length > 0) {
       await this.getClient().send(
         new DeleteTagsCommand({
+          // DeleteTags is keyed only by (ResourceId, ResourceType, Key).
+          // Intentionally omit `Value` / `PropagateAtLaunch`: AWS treats
+          // those as additional match constraints, so passing the
+          // cdkd-recorded values would silently no-op when a console-side
+          // edit drifted them between deploys. cdkd owns the tag, so
+          // delete-by-key matches the "we own the resource" intent.
           Tags: toDelete.map((t) => ({
             ResourceId: physicalId,
             ResourceType: 'auto-scaling-group',
             Key: t.Key as string,
-            // `Value` + `PropagateAtLaunch` are optional on DeleteTags but
-            // AWS uses them as additional match constraints. Pass through
-            // so the delete is scoped exactly to what cdkd recorded.
-            ...(t.Value !== undefined && { Value: t.Value }),
-            ...(t.PropagateAtLaunch !== undefined && {
-              PropagateAtLaunch: t.PropagateAtLaunch,
-            }),
           })),
         })
       );

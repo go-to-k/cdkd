@@ -275,8 +275,12 @@ describe('ASGProvider update — Tags (#475)', () => {
       .map((c) => c[0])
       .filter((c) => c instanceof DeleteTagsCommand);
     expect(deletes).toHaveLength(1);
+    // DeleteTags is intentionally keyed only by (ResourceId, ResourceType,
+    // Key) — AWS treats Value / PropagateAtLaunch as additional match
+    // constraints, so passing cdkd's recorded values would silently no-op
+    // on console-side drift. cdkd owns the tag → delete-by-key always wins.
     expect((deletes[0] as unknown as { input: Record<string, unknown> }).input['Tags']).toEqual([
-      { ResourceId: 'my-asg', ResourceType: 'auto-scaling-group', Key: 'owner', Value: 'team-a', PropagateAtLaunch: true },
+      { ResourceId: 'my-asg', ResourceType: 'auto-scaling-group', Key: 'owner' },
     ]);
   });
 
