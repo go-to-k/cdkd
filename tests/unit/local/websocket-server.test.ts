@@ -8,6 +8,11 @@ import {
   bufferToBody,
   type AttachOptions,
 } from '../../../src/local/websocket-server.js';
+// Namespace import so vi.spyOn(websocketBody, 'bufferToBody') intercepts
+// the same export the production code reads via its namespace import
+// (Issue #537 item 6).
+import * as websocketBody from '../../../src/local/websocket-body.js';
+import { ConsoleLogger } from '../../../src/utils/logger.js';
 import type { DiscoveredWebSocketApi } from '../../../src/local/websocket-route-discovery.js';
 import type { ContainerPool, ContainerHandle } from '../../../src/local/container-pool.js';
 
@@ -119,6 +124,21 @@ function awaitClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
   return new Promise((resolve) => {
     ws.once('close', (code, reason) => resolve({ code, reason: reason.toString('utf-8') }));
   });
+}
+
+/**
+ * Poll `predicate` every 10ms until it returns true or `timeoutMs`
+ * elapses. Resolves either way; the caller checks the spied mock to
+ * decide pass/fail. Replaces fixed `setTimeout(r, 100)` waits with a
+ * race-free wait — under CI load the 100ms budget can be exhausted by
+ * scheduler jitter (Issue #537 item 11).
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
 describe('attachWebSocketServer end-to-end', () => {
@@ -419,6 +439,23 @@ describe('bufferToBody (B3 regression guard)', () => {
       isBase64Encoded: false,
     });
   });
+
+  // Issue #537 item 10: zero-byte binary frame should produce
+  // `{body: '', isBase64Encoded: true}` (NOT throw, NOT silently coerce
+  // to text). Empty Buffers come up in WebSocket protocols that use a
+  // zero-length frame as a sentinel.
+  it('returns empty body + isBase64Encoded=true for zero-byte binary frames', () => {
+    expect(bufferToBody(Buffer.from([]), true)).toEqual({
+      body: '',
+      isBase64Encoded: true,
+    });
+  });
+  it('returns empty body + isBase64Encoded=false for zero-byte text frames', () => {
+    expect(bufferToBody(Buffer.from([]), false)).toEqual({
+      body: '',
+      isBase64Encoded: false,
+    });
+  });
 });
 
 // B3 (#526) end-to-end: binary frames must surface as
@@ -449,7 +486,10 @@ describe('binary frame dispatch (B3 end-to-end)', () => {
       // Send a binary frame containing non-ASCII bytes.
       const binaryPayload = Buffer.from([0xff, 0xfe, 0x80, 0x42, 0x00]);
       ws.send(binaryPayload, { binary: true });
-      await new Promise((r) => setTimeout(r, 100));
+      // Poll for the $default dispatch (Issue #537 item 11 — replaces
+      // a fixed 100ms setTimeout that CI scheduler jitter could
+      // exhaust). 1000ms ceiling matches the issue's recommendation.
+      await waitFor(() => rieModule.invokeRie.mock.calls.length >= 2);
       // 2 invokeRie calls: $connect + $default (binary message).
       expect(rieModule.invokeRie).toHaveBeenCalledTimes(2);
       const messageCall = rieModule.invokeRie.mock.calls.at(-1) as any;
@@ -484,7 +524,8 @@ describe('binary frame dispatch (B3 end-to-end)', () => {
     try {
       const ws = await openWebSocket(port, '/prod');
       ws.send('{"action":"unknown","text":"hello"}'); // text frame
-      await new Promise((r) => setTimeout(r, 100));
+      // Poll until $default dispatch lands (Issue #537 item 11).
+      await waitFor(() => rieModule.invokeRie.mock.calls.length >= 2);
       const messageCall = rieModule.invokeRie.mock.calls.at(-1) as any;
       expect(messageCall[2].isBase64Encoded).toBe(false);
       expect(messageCall[2].body).toBe('{"action":"unknown","text":"hello"}');
@@ -517,6 +558,13 @@ describe('$connect-deny listener safety (B4 regression guard)', () => {
       apis: [{ api, apiPath: '/prod' }],
       pool,
     });
+
+    // Issue #537 item 6: install a spy on the bufferToBody export the
+    // production code reads via its namespace import. A frame that
+    // arrived during the close-handshake window MUST NOT reach
+    // bufferToBody — the pre-fix bug was the listener allocating
+    // Buffer.toString output on every frame even after deny.
+    const bodySpy = vi.spyOn(websocketBody, 'bufferToBody');
     try {
       // Connect with an immediate send race; the client gets denied
       // but might fire send before the close lands.
@@ -546,8 +594,135 @@ describe('$connect-deny listener safety (B4 regression guard)', () => {
       expect(rieModule.invokeRie).toHaveBeenCalledTimes(1);
       const onlyCall = rieModule.invokeRie.mock.calls[0] as any;
       expect(onlyCall[2].requestContext.routeKey).toBe('$connect');
+      // Item 6 assertion: bufferToBody was never called for any of the
+      // denied frames. The pre-listener stores raw refs ONLY; no
+      // allocation work runs until the admit path (which we never
+      // reached). Pins the structural fix.
+      expect(bodySpy).not.toHaveBeenCalled();
     } finally {
+      bodySpy.mockRestore();
       await close();
+    }
+  });
+
+  // Issue #537 item 4: send >MAX_PRE_VERDICT_FRAMES (100) frames during
+  // the pre-verdict window with an ADMIT verdict. Assert (a) the warn
+  // line fires exactly once, (b) the connection still completes, (c)
+  // dispatch volume is capped at 100 — frames beyond the cap are
+  // silently dropped (verified via the warn-fires-once assertion).
+  it('drops frames past MAX_PRE_VERDICT_FRAMES with a single warn on admit', async () => {
+    rieModule.__resetQueue();
+
+    // Delay the $connect verdict so the client can spam frames.
+    let releaseConnect: (() => void) | null = null;
+    rieModule.invokeRie.mockImplementationOnce(async () => {
+      await new Promise<void>((r) => {
+        releaseConnect = r;
+      });
+      return { payload: { statusCode: 200 }, raw: '{"statusCode":200}' };
+    });
+    // Queue 100 $default responses for the buffered drain (cap = 100).
+    for (let i = 0; i < 100; i += 1) {
+      rieModule.__queueInvokeResult({});
+    }
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$default', lambda: 'DefaultFn' },
+    ]);
+    const { port, close } = await startTestServer({
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+    });
+    const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn');
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      // Spam 150 frames during the pre-verdict await window.
+      for (let i = 0; i < 150; i += 1) {
+        ws.send(`frame-${i}`);
+      }
+      // Wait for the server to receive all 150 frames before releasing
+      // the verdict.
+      await new Promise((r) => setTimeout(r, 100));
+      releaseConnect?.();
+      // Wait for $connect + drain to settle (101 invokeRie calls expected).
+      await waitFor(() => rieModule.invokeRie.mock.calls.length >= 101);
+      // The cap is enforced: only 100 buffered frames drained, NOT 150.
+      // Cap = 100, plus 1 for $connect, total 101.
+      expect(rieModule.invokeRie).toHaveBeenCalledTimes(101);
+      // The warn line for the buffer-overflow fires exactly once.
+      const overflowWarns = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('pre-verdict message buffer overflowed')
+      );
+      expect(overflowWarns).toHaveLength(1);
+      // Item 3 follow-up: the warn line carries the API's declaredAt.
+      expect(overflowWarns[0]![0]).toContain('api=S/WsApi');
+      ws.close();
+      await awaitClose(ws);
+    } finally {
+      warnSpy.mockRestore();
+      await close();
+    }
+  });
+
+  // Issue #537 item 5: $connect verdict resolves AFTER the client has
+  // already disconnected. The post-await `ws.readyState !== OPEN`
+  // branch must (a) skip registry insertion, (b) skip $disconnect
+  // Lambda dispatch (no listeners were attached pre-await, so 'close'
+  // never fired into onDisconnect).
+  it('skips registration + $disconnect when client closes during $connect await', async () => {
+    rieModule.__resetQueue();
+    // Delay the $connect verdict so the client can disconnect first.
+    let releaseConnect: (() => void) | null = null;
+    rieModule.invokeRie.mockImplementationOnce(async () => {
+      await new Promise<void>((r) => {
+        releaseConnect = r;
+      });
+      return { payload: { statusCode: 200 }, raw: '{"statusCode":200}' };
+    });
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$disconnect', lambda: 'DisconnectFn' },
+    ]);
+    const server = createServer((_req, res) => {
+      res.statusCode = 404;
+      res.end();
+    });
+    const attached = attachWebSocketServer({
+      httpServer: server,
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+      rieTimeoutMs: 2000,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      // Client disconnects WHILE the verdict is still pending.
+      ws.close(1000, 'client-gone');
+      await awaitClose(ws);
+      // Wait briefly for the close to flush through the server.
+      await new Promise((r) => setTimeout(r, 50));
+      // Now release the $connect verdict — the post-await branch
+      // should observe readyState !== OPEN and bail.
+      releaseConnect?.();
+      // Give the post-await branch a tick to run.
+      await new Promise((r) => setTimeout(r, 100));
+      // (a) Registry has no entry — the connection was never registered.
+      expect(attached.registry.size()).toBe(0);
+      // (b) $disconnect Lambda was NEVER invoked: only $connect ran.
+      expect(rieModule.invokeRie).toHaveBeenCalledTimes(1);
+      const onlyCall = rieModule.invokeRie.mock.calls[0] as any;
+      expect(onlyCall[2].requestContext.routeKey).toBe('$connect');
+    } finally {
+      await attached.close();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections?.();
+      });
     }
   });
 });

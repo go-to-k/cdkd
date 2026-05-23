@@ -48,6 +48,7 @@ import {
   handleManagementRequest,
   type AttachedWebSocketServer,
 } from '../../local/websocket-server.js';
+import { buildMgmtEndpointEnvUrl } from '../../local/websocket-mgmt-api.js';
 import { warnSsrfRiskyUri } from '../../local/rest-v1-integrations.js';
 import {
   createContainerPool,
@@ -785,7 +786,7 @@ async function localStartApiCommand(
     // The pre-fix endpoint dropped `/${stage}` and any SDK call
     // that included the stage segment hit a 404 against the local
     // parser.
-    const mgmtEndpoint = `http://host.docker.internal:${started.port}/${api.stage}`;
+    const mgmtEndpoint = buildMgmtEndpointEnvUrl('host.docker.internal', started.port, api.stage);
     const hostGatewayMapping: { host: string; ip: string }[] = [
       { host: 'host.docker.internal', ip: 'host-gateway' },
     ];

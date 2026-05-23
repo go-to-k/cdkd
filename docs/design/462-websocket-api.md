@@ -28,7 +28,7 @@ Make `AWS::ApiGatewayV2::Api` with `ProtocolType: 'WEBSOCKET'` invocable by `cdk
 - **WebSocket API authorizers** (Lambda + IAM + Cognito on `$connect`) — sibling sub-item like REST/HTTP authorizers (issue #234's WebSocket-equivalent follow-up). Will land in a `cdkd local start-api` PR8b-WebSocket-equivalent.
 - **Connection-ID stability across server restarts** — every restart is a fresh registry; same ephemeral-pool semantics as RIE container restarts. AWS-side connection IDs are opaque and randomly-generated per connection, so the spec doesn't promise stability either.
 - **Connection-level rate limits / message-size limits** — AWS enforces 32KB frame / 128KB message / 2hr idle disconnect; local enforces none. Add an opt-in `--ws-strict-limits` later if real workloads hit this.
-- **`apigatewaymanagementapi:GetConnection` / `DeleteConnection`** — low-priority API surface; add incrementally once `PostToConnection` is solid.
+- ~~**`apigatewaymanagementapi:GetConnection` / `DeleteConnection`** — low-priority API surface; add incrementally once `PostToConnection` is solid.~~ **Shipped in PR #524**: `GET /@connections/<id>` returns AWS-shape `{ConnectedAt, Identity, LastActiveAt}` (LastActiveAt = current time — the local server doesn't track per-message activity), `DELETE /@connections/<id>` force-closes via `ws.close(1000)` and reuses the standard close listener to fire `$disconnect`. Implementation in [src/local/websocket-mgmt-api.ts](../../src/local/websocket-mgmt-api.ts).
 - **`@request.header.*` / `@request.querystring.*` route-selection expressions** — non-body-driven selection; defer to a follow-up after observing how often real apps use it.
 
 ### Won't do
@@ -204,8 +204,8 @@ The AWS `apigatewaymanagementapi` lets handlers push messages back to connected 
 
 ```
 POST /@connections/<connectionId>      -> send message
-GET  /@connections/<connectionId>      -> get connection metadata (out of scope v1)
-DELETE /@connections/<connectionId>    -> force-disconnect (out of scope v1)
+GET  /@connections/<connectionId>      -> get connection metadata (shipped in PR #524)
+DELETE /@connections/<connectionId>    -> force-disconnect (shipped in PR #524)
 ```
 
 The endpoint URL pattern is `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`. Three intercept strategies were considered:
