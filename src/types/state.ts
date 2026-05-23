@@ -21,15 +21,30 @@
  *       through DiffCalculator as `No changes detected`. Layout is the same
  *       as v4; only the resource-level shape grew. v4 readers see v5 as
  *       `version: 5` and fail clearly.
+ * - 6 — adds `StackState.parentStack` / `parentLogicalId` / `parentRegion`
+ *       to support `AWS::CloudFormation::Stack` nested-stack adoption (issue
+ *       [#459](https://github.com/go-to-k/cdkd/issues/459)). Child stacks
+ *       record their parent's name + the child's logical id in the parent's
+ *       template, so `cdkd state list` / `state show` can surface the
+ *       parent → child tree and `cdkd destroy <child-only>` can reject
+ *       with a clear pointer at the parent. The child's S3 key uses
+ *       `cdkd/<parent>~<NestedStackLogicalId>/<region>/state.json` (the `~`
+ *       separator avoids ambiguity with CDK Stage's `/`). Layout
+ *       superset of v5; only the stack-level shape grew. v5 readers
+ *       see v6 as `version: 6` and fail clearly. v6 writers always emit
+ *       the new fields (undefined on top-level stacks, populated on
+ *       nested-stack children). This prep PR adds the type bump alone —
+ *       the `NestedStackProvider` that consumes the fields lands in a
+ *       follow-up.
  *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 5;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 6;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -37,7 +52,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 5;
  * forward-migration, and an unknown / future version triggers an explicit
  * "upgrade cdkd" error in the parser.
  */
-export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5];
+export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5, 6];
 
 /**
  * One `Fn::ImportValue` reference recorded during a consumer stack's
@@ -96,6 +111,48 @@ export interface StackState {
    * next deploy of an upgraded stack repopulates the field.
    */
   imports?: StateImportEntry[];
+
+  /**
+   * Parent stack's physical name when THIS state record describes a
+   * nested-stack child (issue [#459](https://github.com/go-to-k/cdkd/issues/459)).
+   * Undefined on top-level stacks. The pre-v6 reader sees the field as
+   * undefined and degrades to "I am a top-level stack" — which is correct
+   * for every state file written before nested-stack support shipped.
+   * v6+ writers populate this on child state records so `cdkd state list`
+   * can surface the parent → child tree and `cdkd destroy <child-only>`
+   * can reject with a pointer at the parent (matches CFn's "cannot
+   * directly destroy a nested stack" semantic).
+   *
+   * v6 prep PR adds the field shape only; no writer touches it yet —
+   * the `NestedStackProvider` that consumes it lands in the follow-up.
+   */
+  parentStack?: string;
+
+  /**
+   * The `AWS::CloudFormation::Stack` logical ID inside the parent's
+   * template that produced this child. Combined with `parentStack`, the
+   * pair uniquely identifies the child's position in the parent's DAG.
+   * Used by `cdkd destroy` to reject `destroy <child-only>` with a
+   * clear "destroy the parent instead" error message that names the
+   * specific parent + child-logical-id pair, mirroring CFn's behavior.
+   *
+   * Undefined on top-level stacks; populated by v6+ writers on child
+   * state records. Always paired with `parentStack` / `parentRegion`
+   * (never set independently).
+   */
+  parentLogicalId?: string;
+
+  /**
+   * Region of the parent stack. Always equals `region` in v1 of the
+   * nested-stack feature (AWS does not support cross-region nested
+   * stacks — the `AWS::CloudFormation::Stack` resource lives in the
+   * same region as its parent) but recorded explicitly so a future
+   * cross-region capability does not require another schema bump.
+   *
+   * Undefined on top-level stacks; populated by v6+ writers on child
+   * state records.
+   */
+  parentRegion?: string;
 
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;

@@ -2661,6 +2661,7 @@
         "legacy-state-migration",
         "microservices",
         "multi-region-same-stack",
+        "schema-v5-to-v6-migration",
         "state-info-command",
         "vpc-lookup"
       ],
@@ -2701,6 +2702,9 @@
           "l2"
         ],
         "multi-region-same-stack": [
+          "l2"
+        ],
+        "schema-v5-to-v6-migration": [
           "l2"
         ],
         "state-info-command": [
