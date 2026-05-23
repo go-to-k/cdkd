@@ -1,3 +1,10 @@
+# [0.139.0](https://github.com/go-to-k/cdkd/compare/v0.138.0...v0.139.0) (2026-05-23)
+
+
+### Features
+
+* **local:** ECS Service Connect + Cloud Map local emulation ([#460](https://github.com/go-to-k/cdkd/issues/460)) ([#522](https://github.com/go-to-k/cdkd/issues/522)) ([b432b4f](https://github.com/go-to-k/cdkd/commit/b432b4f153d3736ae07c505eb81ffa4bf95689aa))
+
 # [0.138.0](https://github.com/go-to-k/cdkd/compare/v0.137.3...v0.138.0) (2026-05-23)
 
 
