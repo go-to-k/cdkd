@@ -963,7 +963,7 @@ describe('buildNetworkAliasesByContainer', () => {
     expect(result.get('orders')).toEqual(['orders', 'orders.cdkd-sc.local']);
   });
 
-  it('skips services whose PortName does not match any container PortMappings.Name (resolver already warned)', () => {
+  it('skips services whose PortName does not match any container PortMappings.Name (defensive — resolver throws in production)', () => {
     const service = makeService(
       {
         namespaceName: 'cdkd-sc.local',

@@ -454,12 +454,18 @@ export function buildNetworkAliasesByContainer(
 
   // PortName → container that declared it. AWS Service Connect uses
   // the first matching PortMappings[].Name to bind a service to a
-  // container; cdkd mirrors that.
+  // container; cdkd mirrors that. The resolver already throws
+  // `EcsTaskResolutionError` on PortName mismatch BEFORE this runs
+  // (`ecs-service-resolver.ts` `extractServiceConnect`), so `owner`
+  // is always defined here in production. The defensive `continue`
+  // below keeps the helper testable in isolation (callers that hand
+  // in a service with a deliberately mismatched PortName, which the
+  // unit tests do) without throwing twice from two layers.
   for (const entry of sc.services) {
     const owner = service.task.containers.find((c) =>
       c.portMappings.some((pm) => pm.name === entry.portName)
     );
-    if (!owner) continue; // resolver already warned about PortName mismatch
+    if (!owner) continue;
     const aliases: string[] = [];
     aliases.push(entry.discoveryName);
     aliases.push(`${entry.discoveryName}.${sc.namespaceName}`);
@@ -655,12 +661,19 @@ async function publishReplicaToCloudMap(
         );
         continue;
       }
-      // Resolve port: explicit `ContainerPort` override > the named
-      // container's first port mapping. Container-name override is
-      // honored for the IP lookup BUT we already resolved IP once
-      // off the essential container — for v1 we treat the override
-      // as a port-only override (multi-container-with-distinct-IP is
-      // not a real local case since they share one docker network).
+      // Resolve port: explicit `ContainerPort` override > the
+      // essential container's first port mapping. AWS-side
+      // `ServiceRegistries[].ContainerName` (the sibling override
+      // that says "register THIS container's IP rather than the
+      // essential one") is intentionally IGNORED in v1 — every
+      // container in the task shares the same docker network IP
+      // (shared-network mode, design § 5 Option A), so picking a
+      // different container would resolve to the same address.
+      // Multi-IP-per-task is the `awsvpc` mode case which is itself
+      // deferred to [#461]. If a sibling container exposes a
+      // different port-mapping that the user wants registered, file
+      // a follow-up — the in-process registry's `register()` API can
+      // take the port verbatim once the resolver surfaces it.
       let port = reg.containerPort;
       if (port === undefined && essential.portMappings.length > 0) {
         port = essential.portMappings[0]!.containerPort;

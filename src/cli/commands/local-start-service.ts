@@ -138,6 +138,23 @@ async function localStartServiceCommand(
           if (pt.controller) {
             await pt.controller.shutdown();
           } else {
+            // SIGINT-during-bootOneTarget early-failure path: `pt.controller`
+            // is still undefined because `bootOneTarget` was mid-flight
+            // when the signal arrived. Each replica may have an
+            // `inFlightBoot` promise that is still populating
+            // `state.startedContainers` / `state.network`. Await each
+            // such promise BEFORE iterating replicas for cleanup so
+            // we don't tear down a half-built state and orphan the
+            // containers / network the in-flight boot was about to
+            // record. Mirrors `ServiceController.shutdown()`'s ordering.
+            // `Promise.allSettled` swallows in-flight rejections —
+            // those become per-replica leftover state that the
+            // subsequent `cleanupEcsRun` still tears down.
+            await Promise.allSettled(
+              pt.runState.replicas
+                .map((r) => r.inFlightBoot)
+                .filter((p): p is Promise<void> => p !== undefined)
+            );
             await Promise.allSettled(
               pt.runState.replicas.map((r) =>
                 cleanupEcsRun(r.state, { keepRunning: false }).catch(() => undefined)
@@ -203,10 +220,12 @@ async function localStartServiceCommand(
 
     // Shared Cloud Map registry — every per-service runner registers
     // into the same instance, and every per-service runner reads from
-    // it to build per-replica `--add-host` flags. Created only when
-    // we have more than one target OR any single target has Cloud Map
-    // / Service Connect surfaces to publish; otherwise we leave it
-    // undefined and the runner short-circuits all registry work.
+    // it to build per-replica `--add-host` flags. Created
+    // unconditionally for every `cdkd local start-service` invocation
+    // (per-service-runner short-circuits internally when the service
+    // has no Cloud Map / Service Connect surfaces to publish). The
+    // single-service no-discovery cost is one in-process Map allocation
+    // — negligible compared to the cost of branching the CLI surface.
     const registry = new CloudMapRegistry();
     // Design doc § 5 Option A — create ONE shared docker network used
     // by every service-replica boot in this CLI invocation. The
