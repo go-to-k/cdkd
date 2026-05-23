@@ -1,3 +1,10 @@
+# [0.138.0](https://github.com/go-to-k/cdkd/compare/v0.137.3...v0.138.0) (2026-05-23)
+
+
+### Features
+
+* **provisioning:** in-place update for ASG Tags + LoadBalancerNames + TargetGroupARNs ([#475](https://github.com/go-to-k/cdkd/issues/475), [#476](https://github.com/go-to-k/cdkd/issues/476)) ([#543](https://github.com/go-to-k/cdkd/issues/543)) ([6043a79](https://github.com/go-to-k/cdkd/commit/6043a79df4fbae9fe52e7a4f949e0e8a162f1593))
+
 ## [0.137.3](https://github.com/go-to-k/cdkd/compare/v0.137.2...v0.137.3) (2026-05-23)
 
 
