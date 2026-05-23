@@ -15,6 +15,12 @@ import {
   DetachTrafficSourcesCommand,
   PutNotificationConfigurationCommand,
   DeleteNotificationConfigurationCommand,
+  CreateOrUpdateTagsCommand,
+  DeleteTagsCommand,
+  AttachLoadBalancersCommand,
+  DetachLoadBalancersCommand,
+  AttachLoadBalancerTargetGroupsCommand,
+  DetachLoadBalancerTargetGroupsCommand,
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
 } from '@aws-sdk/client-auto-scaling';
@@ -47,27 +53,36 @@ import type {
  *      Groups` already provides.
  *
  * Update has narrower coverage than create: AWS does not support modifying
- * `AutoScalingGroupName` (immutable), `Tags` (those go through `CreateOrUpdate
- * Tags` / `DeleteTags`), or attached LB / target-group references (those go
- * through `Attach*` / `Detach*` calls). Those diffs still surface
- * `ResourceUpdateNotSupportedError` so the caller can `cdkd deploy --replace`.
- * The mutable fields handled in-place via `UpdateAutoScalingGroup` include
- * MinSize / MaxSize / DesiredCapacity / VPCZoneIdentifier / HealthCheckType /
- * HealthCheckGracePeriod / DefaultCooldown / Cooldown / NewInstancesProtected
- * FromScaleIn / MaxInstanceLifetime / TerminationPolicies / CapacityRebalance
- * / ServiceLinkedRoleARN / Context / DesiredCapacityType / DefaultInstance
- * Warmup / AvailabilityZones / AvailabilityZoneDistribution / Availability
- * ZoneImpairmentPolicy / SkipZonalShiftValidation / CapacityReservation
- * Specification / InstanceMaintenancePolicy / DeletionProtection / Mixed
- * InstancesPolicy / LaunchTemplate.
+ * `AutoScalingGroupName` (immutable) — that diff still surfaces
+ * `ResourceUpdateNotSupportedError` so the caller can `cdkd deploy
+ * --replace`. The mutable fields handled in-place via
+ * `UpdateAutoScalingGroup` include MinSize / MaxSize / DesiredCapacity /
+ * VPCZoneIdentifier / HealthCheckType / HealthCheckGracePeriod /
+ * DefaultCooldown / Cooldown / NewInstancesProtectedFromScaleIn /
+ * MaxInstanceLifetime / TerminationPolicies / CapacityRebalance /
+ * ServiceLinkedRoleARN / Context / DesiredCapacityType /
+ * DefaultInstanceWarmup / AvailabilityZones / AvailabilityZoneDistribution
+ * / AvailabilityZoneImpairmentPolicy / SkipZonalShiftValidation /
+ * CapacityReservationSpecification / InstanceMaintenancePolicy /
+ * DeletionProtection / MixedInstancesPolicy / LaunchTemplate.
  *
  * Sub-shape diffs are applied via dedicated AWS APIs before the main
- * `UpdateAutoScalingGroup` call: `MetricsCollection` →
- * `EnableMetricsCollection` / `DisableMetricsCollection`,
- * `LifecycleHookSpecificationList` → per-entry `PutLifecycleHook` /
- * `DeleteLifecycleHook`, `TrafficSources` → `AttachTrafficSources` /
- * `DetachTrafficSources`, `NotificationConfigurations` → per-topic
- * `PutNotificationConfiguration` / `DeleteNotificationConfiguration`.
+ * `UpdateAutoScalingGroup` call:
+ *   - `Tags` → `CreateOrUpdateTags` / `DeleteTags` (#475)
+ *   - `LoadBalancerNames` → `AttachLoadBalancers` /
+ *     `DetachLoadBalancers` (#476)
+ *   - `TargetGroupARNs` → `AttachLoadBalancerTargetGroups` /
+ *     `DetachLoadBalancerTargetGroups` (#476)
+ *   - `MetricsCollection` → `EnableMetricsCollection` /
+ *     `DisableMetricsCollection`
+ *   - `LifecycleHookSpecificationList` → per-entry `PutLifecycleHook` /
+ *     `DeleteLifecycleHook`
+ *   - `TrafficSources` → `AttachTrafficSources` /
+ *     `DetachTrafficSources`
+ *   - `NotificationConfigurations` → per-topic
+ *     `PutNotificationConfiguration` /
+ *     `DeleteNotificationConfiguration`
+ *
  * Each helper is a no-op when the before/after JSON is identical.
  */
 export class ASGProvider implements ResourceProvider {
@@ -297,48 +312,23 @@ export class ASGProvider implements ResourceProvider {
         'AutoScalingGroupName is immutable on AWS — UpdateAutoScalingGroup does not accept a new name; the name is fixed at creation. Use cdkd deploy --replace to replace the group.'
       );
     }
-    if (!stringEq(properties['Tags'] ?? [], previousProperties['Tags'] ?? [])) {
-      // Tags ARE mutable on AWS via CreateOrUpdateTags / DeleteTags — this
-      // rejection is an "unimplemented in cdkd" case, not architectural.
-      // Tracked in issue (#443) follow-up.
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'Tags updates on AWS::AutoScaling::AutoScalingGroup are not yet implemented in cdkd (AWS exposes CreateOrUpdateTags / DeleteTags); use cdkd deploy --replace, or update the tags via AWS console / CLI.'
-      );
-    }
-    if (
-      !stringEq(
-        properties['LoadBalancerNames'] ?? [],
-        previousProperties['LoadBalancerNames'] ?? []
-      )
-    ) {
-      // LoadBalancerNames diffs are implementable via AttachLoadBalancers /
-      // DetachLoadBalancers; tracked in issue (#443) follow-up.
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'LoadBalancerNames diffs on AWS::AutoScaling::AutoScalingGroup are not yet implemented in cdkd (AWS exposes AttachLoadBalancers / DetachLoadBalancers); use cdkd deploy --replace.'
-      );
-    }
-    if (
-      !stringEq(properties['TargetGroupARNs'] ?? [], previousProperties['TargetGroupARNs'] ?? [])
-    ) {
-      // TargetGroupARNs diffs are implementable via
-      // AttachLoadBalancerTargetGroups / DetachLoadBalancerTargetGroups;
-      // tracked in issue (#443) follow-up.
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'TargetGroupARNs diffs on AWS::AutoScaling::AutoScalingGroup are not yet implemented in cdkd (AWS exposes AttachLoadBalancerTargetGroups / DetachLoadBalancerTargetGroups); use cdkd deploy --replace.'
-      );
-    }
     try {
       // Sub-shape diffs are applied via separate per-shape SDK calls
       // BEFORE the main UpdateAutoScalingGroup. AWS does not expose these
       // fields on UpdateAutoScalingGroup, so each one rides its own
       // dedicated API. Each per-shape helper is a no-op when the
       // before/after JSON is identical.
+      await this.applyTagsDiff(physicalId, properties['Tags'], previousProperties['Tags']);
+      await this.applyLoadBalancerNamesDiff(
+        physicalId,
+        properties['LoadBalancerNames'],
+        previousProperties['LoadBalancerNames']
+      );
+      await this.applyTargetGroupArnsDiff(
+        physicalId,
+        properties['TargetGroupARNs'],
+        previousProperties['TargetGroupARNs']
+      );
       await this.applyMetricsCollectionDiff(
         physicalId,
         properties['MetricsCollection'],
@@ -877,6 +867,164 @@ export class ASGProvider implements ResourceProvider {
   // `MetricsCollection` keyed on `Granularity`, `LifecycleHookSpecification
   // List` on `LifecycleHookName`, `TrafficSources` on `Identifier`,
   // `NotificationConfigurations` on `TopicARN`.
+
+  /**
+   * Diff and apply changes to the ASG's `Tags` property via the
+   * `CreateOrUpdateTags` / `DeleteTags` AWS APIs (#475). CFn Tags shape is
+   * `[{Key, Value, PropagateAtLaunch}]`; AWS Tag input adds `ResourceId`
+   * (= the ASG name) and `ResourceType: 'auto-scaling-group'`.
+   *
+   * Diff semantics:
+   *   - Removed keys → `DeleteTags`.
+   *   - Added keys → `CreateOrUpdateTags`.
+   *   - Modified value or `PropagateAtLaunch` flag → `CreateOrUpdateTags`
+   *     (the AWS API upserts by `(ResourceId, ResourceType, Key)` tuple, so
+   *     a single upsert call replaces the old value).
+   *
+   * No-op when before/after JSON is identical.
+   */
+  private async applyTagsDiff(physicalId: string, next: unknown, prev: unknown): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    type CfnTag = { Key?: string; Value?: string; PropagateAtLaunch?: boolean };
+    const nextEntries = (Array.isArray(next) ? next : []) as CfnTag[];
+    const prevEntries = (Array.isArray(prev) ? prev : []) as CfnTag[];
+    const nextByKey = new Map<string, CfnTag>();
+    for (const t of nextEntries) {
+      if (t.Key) nextByKey.set(t.Key, t);
+    }
+    const prevByKey = new Map<string, CfnTag>();
+    for (const t of prevEntries) {
+      if (t.Key) prevByKey.set(t.Key, t);
+    }
+    // Delete keys removed from `next`.
+    const toDelete: CfnTag[] = [];
+    for (const [key, tag] of prevByKey) {
+      if (!nextByKey.has(key)) toDelete.push(tag);
+    }
+    if (toDelete.length > 0) {
+      await this.getClient().send(
+        new DeleteTagsCommand({
+          Tags: toDelete.map((t) => ({
+            ResourceId: physicalId,
+            ResourceType: 'auto-scaling-group',
+            Key: t.Key as string,
+            // `Value` + `PropagateAtLaunch` are optional on DeleteTags but
+            // AWS uses them as additional match constraints. Pass through
+            // so the delete is scoped exactly to what cdkd recorded.
+            ...(t.Value !== undefined && { Value: t.Value }),
+            ...(t.PropagateAtLaunch !== undefined && {
+              PropagateAtLaunch: t.PropagateAtLaunch,
+            }),
+          })),
+        })
+      );
+    }
+    // Upsert keys whose value / propagate-flag differs.
+    const toUpsert: CfnTag[] = [];
+    for (const [key, tag] of nextByKey) {
+      const before = prevByKey.get(key);
+      if (JSON.stringify(before) === JSON.stringify(tag)) continue;
+      toUpsert.push(tag);
+    }
+    if (toUpsert.length > 0) {
+      await this.getClient().send(
+        new CreateOrUpdateTagsCommand({
+          Tags: toUpsert.map((t) => ({
+            ResourceId: physicalId,
+            ResourceType: 'auto-scaling-group',
+            Key: t.Key as string,
+            ...(t.Value !== undefined && { Value: t.Value }),
+            ...(t.PropagateAtLaunch !== undefined && {
+              PropagateAtLaunch: t.PropagateAtLaunch,
+            }),
+          })),
+        })
+      );
+    }
+  }
+
+  /**
+   * Diff `LoadBalancerNames` (Classic Load Balancers) and issue
+   * `AttachLoadBalancers` / `DetachLoadBalancers` for the delta (#476).
+   * Names are opaque strings; AWS allows N attached LBs per ASG so this
+   * helper batches every add into one Attach call and every remove into
+   * one Detach call. No-op when before/after JSON is identical.
+   */
+  private async applyLoadBalancerNamesDiff(
+    physicalId: string,
+    next: unknown,
+    prev: unknown
+  ): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    const nextNames = (Array.isArray(next) ? next : []).filter(
+      (n): n is string => typeof n === 'string'
+    );
+    const prevNames = (Array.isArray(prev) ? prev : []).filter(
+      (n): n is string => typeof n === 'string'
+    );
+    const nextSet = new Set(nextNames);
+    const prevSet = new Set(prevNames);
+    const toAttach = nextNames.filter((n) => !prevSet.has(n));
+    const toDetach = prevNames.filter((n) => !nextSet.has(n));
+    if (toDetach.length > 0) {
+      await this.getClient().send(
+        new DetachLoadBalancersCommand({
+          AutoScalingGroupName: physicalId,
+          LoadBalancerNames: toDetach,
+        })
+      );
+    }
+    if (toAttach.length > 0) {
+      await this.getClient().send(
+        new AttachLoadBalancersCommand({
+          AutoScalingGroupName: physicalId,
+          LoadBalancerNames: toAttach,
+        })
+      );
+    }
+  }
+
+  /**
+   * Diff `TargetGroupARNs` (ALB / NLB target groups) and issue
+   * `AttachLoadBalancerTargetGroups` /
+   * `DetachLoadBalancerTargetGroups` for the delta (#476). Target-group
+   * ARNs are opaque strings; same per-call batching pattern as
+   * `applyLoadBalancerNamesDiff`. No-op when before/after JSON is
+   * identical.
+   */
+  private async applyTargetGroupArnsDiff(
+    physicalId: string,
+    next: unknown,
+    prev: unknown
+  ): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    const nextArns = (Array.isArray(next) ? next : []).filter(
+      (a): a is string => typeof a === 'string'
+    );
+    const prevArns = (Array.isArray(prev) ? prev : []).filter(
+      (a): a is string => typeof a === 'string'
+    );
+    const nextSet = new Set(nextArns);
+    const prevSet = new Set(prevArns);
+    const toAttach = nextArns.filter((a) => !prevSet.has(a));
+    const toDetach = prevArns.filter((a) => !nextSet.has(a));
+    if (toDetach.length > 0) {
+      await this.getClient().send(
+        new DetachLoadBalancerTargetGroupsCommand({
+          AutoScalingGroupName: physicalId,
+          TargetGroupARNs: toDetach,
+        })
+      );
+    }
+    if (toAttach.length > 0) {
+      await this.getClient().send(
+        new AttachLoadBalancerTargetGroupsCommand({
+          AutoScalingGroupName: physicalId,
+          TargetGroupARNs: toAttach,
+        })
+      );
+    }
+  }
 
   private async applyMetricsCollectionDiff(
     physicalId: string,

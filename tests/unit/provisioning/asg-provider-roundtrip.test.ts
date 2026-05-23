@@ -51,6 +51,12 @@ import {
   DetachTrafficSourcesCommand,
   PutNotificationConfigurationCommand,
   DeleteNotificationConfigurationCommand,
+  CreateOrUpdateTagsCommand,
+  DeleteTagsCommand,
+  AttachLoadBalancersCommand,
+  DetachLoadBalancersCommand,
+  AttachLoadBalancerTargetGroupsCommand,
+  DetachLoadBalancerTargetGroupsCommand,
 } from '@aws-sdk/client-auto-scaling';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
@@ -178,22 +184,11 @@ describe('ASGProvider update', () => {
     ).rejects.toThrow(ResourceUpdateNotSupportedError);
   });
 
-  it('rejects Tags / LoadBalancerNames / TargetGroupARNs diffs (sub-shape diffs covered separately)', async () => {
-    mockSend.mockResolvedValue({});
-    const provider = new ASGProvider();
-    const cases: Array<{ key: string; before: unknown; after: unknown }> = [
-      { key: 'Tags', before: [], after: [{ Key: 'env', Value: 'dev' }] },
-      { key: 'LoadBalancerNames', before: [], after: ['lb-1'] },
-      { key: 'TargetGroupARNs', before: [], after: ['arn:tg:1'] },
-    ];
-    for (const c of cases) {
-      const before = { AutoScalingGroupName: 'my-asg', [c.key]: c.before };
-      const after = { AutoScalingGroupName: 'my-asg', [c.key]: c.after };
-      await expect(
-        provider.update('MyAsg', 'my-asg', RESOURCE_TYPE, after, before)
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
-    }
-  });
+  // #475 + #476: previously these three were rejected with
+  // `ResourceUpdateNotSupportedError`; they are now applied in-place via
+  // the dedicated AWS APIs. Each diff is exercised in its own describe
+  // block below. The single rejection that REMAINS is
+  // AutoScalingGroupName (covered in the test above).
 
   it('updates mutable fields in place without firing CreateAutoScalingGroup', async () => {
     mockSend.mockImplementation((command: unknown) => {
@@ -238,6 +233,152 @@ describe('ASGProvider update', () => {
     expect(input['HealthCheckGracePeriod']).toBe(120);
     expect(
       mockSend.mock.calls.some((c) => c[0] instanceof CreateAutoScalingGroupCommand)
+    ).toBe(false);
+  });
+});
+
+// #475: Tags diffs via CreateOrUpdateTags / DeleteTags.
+describe('ASGProvider update — Tags (#475)', () => {
+  it('issues CreateOrUpdateTags for added entries and DeleteTags for removed entries', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      {
+        AutoScalingGroupName: 'my-asg',
+        Tags: [
+          { Key: 'env', Value: 'prod', PropagateAtLaunch: true },
+          { Key: 'tier', Value: 'web', PropagateAtLaunch: false },
+        ],
+      },
+      {
+        AutoScalingGroupName: 'my-asg',
+        Tags: [
+          { Key: 'env', Value: 'dev', PropagateAtLaunch: true },
+          { Key: 'owner', Value: 'team-a', PropagateAtLaunch: true },
+        ],
+      }
+    );
+    const upserts = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof CreateOrUpdateTagsCommand);
+    expect(upserts).toHaveLength(1);
+    expect((upserts[0] as unknown as { input: Record<string, unknown> }).input['Tags']).toEqual([
+      // env value changed
+      { ResourceId: 'my-asg', ResourceType: 'auto-scaling-group', Key: 'env', Value: 'prod', PropagateAtLaunch: true },
+      // tier added
+      { ResourceId: 'my-asg', ResourceType: 'auto-scaling-group', Key: 'tier', Value: 'web', PropagateAtLaunch: false },
+    ]);
+    const deletes = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof DeleteTagsCommand);
+    expect(deletes).toHaveLength(1);
+    expect((deletes[0] as unknown as { input: Record<string, unknown> }).input['Tags']).toEqual([
+      { ResourceId: 'my-asg', ResourceType: 'auto-scaling-group', Key: 'owner', Value: 'team-a', PropagateAtLaunch: true },
+    ]);
+  });
+
+  it('no-ops when Tags before/after are identical', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new ASGProvider();
+    const tags = [{ Key: 'env', Value: 'prod', PropagateAtLaunch: true }];
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: 'my-asg', Tags: tags },
+      { AutoScalingGroupName: 'my-asg', Tags: tags }
+    );
+    expect(
+      mockSend.mock.calls.some(
+        (c) => c[0] instanceof CreateOrUpdateTagsCommand || c[0] instanceof DeleteTagsCommand
+      )
+    ).toBe(false);
+  });
+});
+
+// #476: LoadBalancerNames / TargetGroupARNs diffs via Attach* / Detach*.
+describe('ASGProvider update — LoadBalancerNames + TargetGroupARNs (#476)', () => {
+  it('issues AttachLoadBalancers + DetachLoadBalancers for the LB delta', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: 'my-asg', LoadBalancerNames: ['lb-new', 'lb-kept'] },
+      { AutoScalingGroupName: 'my-asg', LoadBalancerNames: ['lb-old', 'lb-kept'] }
+    );
+    const attaches = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof AttachLoadBalancersCommand);
+    const detaches = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof DetachLoadBalancersCommand);
+    expect(attaches).toHaveLength(1);
+    expect(detaches).toHaveLength(1);
+    expect(
+      (attaches[0] as unknown as { input: Record<string, unknown> }).input['LoadBalancerNames']
+    ).toEqual(['lb-new']);
+    expect(
+      (detaches[0] as unknown as { input: Record<string, unknown> }).input['LoadBalancerNames']
+    ).toEqual(['lb-old']);
+  });
+
+  it('issues AttachLoadBalancerTargetGroups + DetachLoadBalancerTargetGroups for the TG delta', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: 'my-asg', TargetGroupARNs: ['arn:tg:new', 'arn:tg:kept'] },
+      { AutoScalingGroupName: 'my-asg', TargetGroupARNs: ['arn:tg:old', 'arn:tg:kept'] }
+    );
+    const attaches = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof AttachLoadBalancerTargetGroupsCommand);
+    const detaches = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof DetachLoadBalancerTargetGroupsCommand);
+    expect(attaches).toHaveLength(1);
+    expect(detaches).toHaveLength(1);
+    expect(
+      (attaches[0] as unknown as { input: Record<string, unknown> }).input['TargetGroupARNs']
+    ).toEqual(['arn:tg:new']);
+    expect(
+      (detaches[0] as unknown as { input: Record<string, unknown> }).input['TargetGroupARNs']
+    ).toEqual(['arn:tg:old']);
+  });
+
+  it('no-ops when LB / TG arrays before/after are identical', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      {
+        AutoScalingGroupName: 'my-asg',
+        LoadBalancerNames: ['lb-1'],
+        TargetGroupARNs: ['arn:tg:1'],
+      },
+      {
+        AutoScalingGroupName: 'my-asg',
+        LoadBalancerNames: ['lb-1'],
+        TargetGroupARNs: ['arn:tg:1'],
+      }
+    );
+    expect(
+      mockSend.mock.calls.some(
+        (c) =>
+          c[0] instanceof AttachLoadBalancersCommand ||
+          c[0] instanceof DetachLoadBalancersCommand ||
+          c[0] instanceof AttachLoadBalancerTargetGroupsCommand ||
+          c[0] instanceof DetachLoadBalancerTargetGroupsCommand
+      )
     ).toBe(false);
   });
 });
