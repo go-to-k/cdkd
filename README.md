@@ -581,8 +581,11 @@ The Custom Resource Lambda must be idempotent AND must POST to
 `event.ResponseURL` per the cfn-response protocol. Without the flag,
 the command refuses to proceed and the user is expected to destroy
 the offending resources (or accept abandoning them) first. Nested
-`AWS::CloudFormation::Stack` references always block (CFn can neither
-adopt nor recreate them).
+`AWS::CloudFormation::Stack` references block in this release —
+[#464](https://github.com/go-to-k/cdkd/issues/464) will lift the
+restriction. Fresh `cdkd deploy` of nested stacks works via
+[#459](https://github.com/go-to-k/cdkd/issues/459); only the
+cdkd → CFn migration direction is deferred.
 
 ```bash
 cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name

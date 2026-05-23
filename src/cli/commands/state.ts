@@ -28,6 +28,7 @@ import {
 } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import { runDestroyForStack } from './destroy-runner.js';
@@ -970,34 +971,69 @@ async function stateDestroyCommand(
           continue;
         }
 
-        const result = await runDestroyForStack(stackName, stateResult.state, {
-          stateBackend: setup.stateBackend,
-          lockManager: setup.lockManager,
-          providerRegistry,
-          baseAwsClients: setup.awsClients,
-          baseRegion: setup.region,
-          ...(options.profile && { profile: options.profile }),
-          stateBucket: setup.bucket,
-          // --yes covers both the --all batch prompt above (already consumed)
-          // and the per-stack prompt inside the runner. Per-stack prompts are
-          // skipped when `options.yes` is set OR `--all` was set (the user
-          // already accepted the batch prompt).
-          skipConfirmation: options.yes || options.all === true,
-          removeProtection: options.removeProtection === true,
-          exportIndexStore: setup.exportIndexStore,
-          ...(options.resourceWarnAfter?.globalMs !== undefined && {
-            resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-          }),
-          ...(options.resourceTimeout?.globalMs !== undefined && {
-            resourceTimeoutMs: options.resourceTimeout.globalMs,
-          }),
-          ...(options.resourceWarnAfter?.perTypeMs && {
-            resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-          }),
-          ...(options.resourceTimeout?.perTypeMs && {
-            resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-          }),
-        });
+        // Set the NestedStackProvider context — fires only when the state
+        // file carries an AWS::CloudFormation::Stack record. `state destroy`
+        // does not synth, so accountId is not separately resolved here;
+        // the field is unused on the destroy path (only `create` builds
+        // the synthesized ARN).
+        const result = await withNestedStackContext(
+          {
+            stateBackend: setup.stateBackend,
+            lockManager: setup.lockManager,
+            providerRegistry,
+            parentStackName: stackName,
+            parentRegion: ref.region ?? setup.region,
+            accountId: 'unknown',
+            awsClients: setup.awsClients,
+            stateBucket: setup.bucket,
+            exportIndexStore: setup.exportIndexStore,
+            destroyOptions: {
+              ...(options.profile && { profile: options.profile }),
+              ...(options.removeProtection === true && { removeProtection: true }),
+              ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+              }),
+              ...(options.resourceTimeout?.globalMs !== undefined && {
+                resourceTimeoutMs: options.resourceTimeout.globalMs,
+              }),
+              ...(options.resourceWarnAfter?.perTypeMs && {
+                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+              }),
+              ...(options.resourceTimeout?.perTypeMs && {
+                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+              }),
+            },
+          },
+          () =>
+            runDestroyForStack(stackName, stateResult.state, {
+              stateBackend: setup.stateBackend,
+              lockManager: setup.lockManager,
+              providerRegistry,
+              baseAwsClients: setup.awsClients,
+              baseRegion: setup.region,
+              ...(options.profile && { profile: options.profile }),
+              stateBucket: setup.bucket,
+              // --yes covers both the --all batch prompt above (already consumed)
+              // and the per-stack prompt inside the runner. Per-stack prompts are
+              // skipped when `options.yes` is set OR `--all` was set (the user
+              // already accepted the batch prompt).
+              skipConfirmation: options.yes || options.all === true,
+              removeProtection: options.removeProtection === true,
+              exportIndexStore: setup.exportIndexStore,
+              ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+              }),
+              ...(options.resourceTimeout?.globalMs !== undefined && {
+                resourceTimeoutMs: options.resourceTimeout.globalMs,
+              }),
+              ...(options.resourceWarnAfter?.perTypeMs && {
+                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+              }),
+              ...(options.resourceTimeout?.perTypeMs && {
+                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+              }),
+            })
+        );
         totalErrors += result.errorCount;
       }
     }

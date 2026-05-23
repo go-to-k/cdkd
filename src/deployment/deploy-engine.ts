@@ -118,6 +118,26 @@ export interface DeployEngineOptions {
    * when deploy speed is more important than rich drift detection.
    */
   captureObservedState?: boolean;
+
+  /**
+   * When set, every state save during this deploy stamps the supplied
+   * parent-stack identity onto `StackState.parentStack` /
+   * `parentLogicalId` / `parentRegion` (schema v6+). The
+   * `NestedStackProvider` populates this when it builds a child
+   * `DeployEngine`, so the child's state file records that it is a
+   * nested-stack child of `<parentStack>` under template logical id
+   * `<parentLogicalId>`. Top-level deploys leave this `undefined` and
+   * the three fields stay unset (top-level state file shape).
+   *
+   * See issue [#459](https://github.com/go-to-k/cdkd/issues/459) /
+   * [docs/design/459-nested-stacks.md](../../docs/design/459-nested-stacks.md)
+   * §3 for the full state-key + identity layout.
+   */
+  parentStackInfo?: {
+    parentStack: string;
+    parentLogicalId: string;
+    parentRegion: string;
+  };
 }
 
 /**
@@ -296,6 +316,24 @@ export class DeployEngine {
       stackName,
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
       recordedImports: this.recordedImports,
+    };
+  }
+
+  /**
+   * Stamp `parentStack` / `parentLogicalId` / `parentRegion` (schema v6+)
+   * onto a state object that's about to be saved, when this engine was
+   * constructed with `options.parentStackInfo` (= it's deploying a
+   * nested-stack child). Returns the state unchanged for top-level
+   * deploys so the three v6 fields stay absent from non-child state files.
+   */
+  private withParentInfo(state: StackState): StackState {
+    if (!this.options.parentStackInfo) return state;
+    const { parentStack, parentLogicalId, parentRegion } = this.options.parentStackInfo;
+    return {
+      ...state,
+      parentStack,
+      parentLogicalId,
+      parentRegion,
     };
   }
 
@@ -618,7 +656,7 @@ export class DeployEngine {
             await this.stateBackend.saveState(
               stackName,
               this.stackRegion,
-              refreshedState,
+              this.withParentInfo(refreshedState),
               saveOptions
             );
             this.logger.debug('Persisted refreshed observedProperties (no-change path)');
@@ -691,7 +729,11 @@ export class DeployEngine {
       // The legacy migration delete (when migrationPending) was already done by
       // the first per-resource save inside executeDeployment, so this final
       // save is unconditionally region-scoped.
-      const newEtag = await this.stateBackend.saveState(stackName, this.stackRegion, newState);
+      const newEtag = await this.stateBackend.saveState(
+        stackName,
+        this.stackRegion,
+        this.withParentInfo(newState)
+      );
       this.logger.debug(`State saved (ETag: ${newEtag})`);
 
       // 7c. Update the persistent exports index with this stack's
@@ -807,7 +849,7 @@ export class DeployEngine {
           currentEtag = await this.stateBackend.saveState(
             stackName,
             this.stackRegion,
-            partialState,
+            this.withParentInfo(partialState),
             { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
           );
           if (migrate) pendingMigration = false;
@@ -1004,7 +1046,7 @@ export class DeployEngine {
         currentEtag = await this.stateBackend.saveState(
           stackName,
           this.stackRegion,
-          preRollbackState,
+          this.withParentInfo(preRollbackState),
           { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
         );
         if (migrate) pendingMigration = false;
@@ -1048,9 +1090,14 @@ export class DeployEngine {
             }),
           lastModified: Date.now(),
         };
-        await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
-          ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
-        });
+        await this.stateBackend.saveState(
+          stackName,
+          this.stackRegion,
+          this.withParentInfo(postRollbackState),
+          {
+            ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
+          }
+        );
         this.logger.debug('State saved after deployment failure');
       } catch (saveError) {
         // ETag mismatch from per-resource saves — force overwrite with fresh ETag
@@ -1072,9 +1119,14 @@ export class DeployEngine {
               }),
             lastModified: Date.now(),
           };
-          await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
-            ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
-          });
+          await this.stateBackend.saveState(
+            stackName,
+            this.stackRegion,
+            this.withParentInfo(postRollbackState),
+            {
+              ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
+            }
+          );
           this.logger.debug('State saved after deployment failure (retry succeeded)');
         } catch (retryError) {
           this.logger.warn(

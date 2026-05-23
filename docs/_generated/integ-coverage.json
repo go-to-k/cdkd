@@ -18,6 +18,7 @@
     "AWS::AppSync::Resolver",
     "AWS::AutoScaling::AutoScalingGroup",
     "AWS::BedrockAgentCore::Runtime",
+    "AWS::CloudFormation::Stack",
     "AWS::CloudFront::CloudFrontOriginAccessIdentity",
     "AWS::CloudFront::Distribution",
     "AWS::CloudTrail::Trail",
@@ -1785,6 +1786,7 @@
         "migrate-from-cfn",
         "multi-resource",
         "multi-stack-deps",
+        "nested-stack",
         "vpc-lambda-cr-race"
       ],
       "signals": {
@@ -1848,6 +1850,9 @@
           "l2"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "nested-stack": [
           "l2"
         ],
         "vpc-lambda-cr-race": [
@@ -2364,6 +2369,7 @@
         "migrate-from-cfn",
         "multi-resource",
         "multi-stack-deps",
+        "nested-stack",
         "orphan-resource",
         "s3-cloudfront",
         "state-destroy"
@@ -2439,6 +2445,9 @@
           "l2"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "nested-stack": [
           "l2"
         ],
         "orphan-resource": [
@@ -2666,6 +2675,7 @@
         "legacy-state-migration",
         "microservices",
         "multi-region-same-stack",
+        "nested-stack",
         "schema-v5-to-v6-migration",
         "state-info-command",
         "vpc-lookup"
@@ -2707,6 +2717,9 @@
           "l2"
         ],
         "multi-region-same-stack": [
+          "l2"
+        ],
+        "nested-stack": [
           "l2"
         ],
         "schema-v5-to-v6-migration": [
@@ -2785,7 +2798,9 @@
       }
     }
   ],
-  "orphans": [],
+  "orphans": [
+    "AWS::CloudFormation::Stack"
+  ],
   "allowListed": [
     {
       "resourceType": "AWS::Glue::Connection",

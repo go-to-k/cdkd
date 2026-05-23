@@ -58,6 +58,23 @@ export interface StackInfo {
    * flag is a CDK property not stored in cdkd state.json.
    */
   terminationProtection?: boolean | undefined;
+
+  /**
+   * Per-logical-id absolute file paths of nested templates one level below
+   * this stack — populated by walking this stack's template for
+   * `AWS::CloudFormation::Stack` resources whose `Metadata['aws:asset:path']`
+   * points at the child's `<file>.nested.template.json` sibling in the
+   * same `cdk.out` directory. Consumed by `NestedStackProvider.create` /
+   * `update` to load the child template at provider invocation time.
+   *
+   * Only one level is extracted here — grandchildren and deeper levels are
+   * resolved recursively by `NestedStackProvider` itself when it reads
+   * a child template (children's templates live next to the parent
+   * template in `cdk.out`, so the same `path.dirname(parentPath) + assetPath`
+   * trick keeps working at any depth). Undefined when the stack has no
+   * `AWS::CloudFormation::Stack` resources.
+   */
+  nestedTemplates?: Record<string, string> | undefined;
 }
 
 /**
@@ -253,6 +270,20 @@ export class AssemblyReader {
       env = parseEnvironment(artifact.environment);
     }
 
+    // Index nested templates by logical id. CDK encodes the child template's
+    // sibling path under `Metadata['aws:asset:path']` on each
+    // `AWS::CloudFormation::Stack` resource (verified against `cdk synth` of
+    // CDK 2.x `cdk.NestedStack` on 2026-05-22; see docs/design/459-nested-stacks.md §4).
+    const nestedTemplates: Record<string, string> = {};
+    for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
+      if (resource?.Type !== 'AWS::CloudFormation::Stack') continue;
+      const meta = resource.Metadata as Record<string, unknown> | undefined;
+      const assetPath = meta?.['aws:asset:path'];
+      if (typeof assetPath === 'string' && assetPath.length > 0) {
+        nestedTemplates[logicalId] = join(assemblyDir, assetPath);
+      }
+    }
+
     return {
       stackName,
       displayName: artifact.displayName ?? stackName,
@@ -265,6 +296,7 @@ export class AssemblyReader {
       ...(props?.terminationProtection !== undefined && {
         terminationProtection: props.terminationProtection,
       }),
+      ...(Object.keys(nestedTemplates).length > 0 && { nestedTemplates }),
     };
   }
 

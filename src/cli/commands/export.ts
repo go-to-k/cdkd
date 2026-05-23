@@ -121,8 +121,11 @@ interface ExportOptions {
  *
  *   - `AWS::CDK::Metadata` is a CDK sentinel; not a real AWS resource and
  *     CFn refuses to import it.
- *   - `AWS::CloudFormation::Stack` is a nested stack reference; importing
- *     means re-creating the child stack, not adopting AWS resources.
+ *   - `AWS::CloudFormation::Stack` is a nested stack reference. Fresh
+ *     `cdkd deploy` of nested stacks IS supported (issue #459), but
+ *     moving an existing nested-stack hierarchy from cdkd back into
+ *     CloudFormation via `cdkd export` is deferred to the
+ *     [#464](https://github.com/go-to-k/cdkd/issues/464) follow-up.
  *   - `AWS::CloudFormation::CustomResource` is the CFn resource type CDK
  *     emits for `new cdk.CustomResource(...)` when no `resourceType` is
  *     passed. Functionally identical to `Custom::*` — Lambda-backed,
@@ -1309,7 +1312,10 @@ interface Phase2CreateEntry {
  * `AWS::CloudFormation::Stack` (nested stacks) is intentionally NOT in
  * this set: CFn would CREATE a duplicate nested stack rather than adopt
  * the existing one, which would conflict with whatever the cdkd state
- * thought it owned. cdkd doesn't deploy nested stacks anyway.
+ * thought it owned. Fresh `cdkd deploy` of nested stacks is supported
+ * via the recursive `NestedStackProvider` (#459), but `cdkd export`
+ * adoption back into CloudFormation is deferred to the
+ * [#464](https://github.com/go-to-k/cdkd/issues/464) follow-up.
  *
  * Exported for unit testing.
  */

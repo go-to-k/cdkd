@@ -288,9 +288,21 @@ migrate-schema` command, no env flag, no manual JSON edit. The
 integ test proves the round-trip against real AWS.
 
 The v6 prep PR added the type bump alone. The
-`NestedStackProvider` that populates the new fields on child state
-records lands in a follow-up — until then, every cdkd-managed stack
-remains top-level and the new fields stay undefined on every write.
+[`NestedStackProvider`](../src/provisioning/providers/nested-stack-provider.ts)
+that consumes the fields shipped in the [#459](https://github.com/go-to-k/cdkd/issues/459)
+main PR: when a parent stack contains an `AWS::CloudFormation::Stack`
+resource, the provider runs a recursive child deploy / destroy and the
+child's state file lives at
+`cdkd/{parentStackName}~{NestedStackLogicalId}/{region}/state.json`
+with the three fields populated. Top-level deploys (the common case)
+leave the three fields undefined on every write — the v6 reader treats
+absence as "I am a top-level stack" and degrades cleanly.
+
+`cdkd import --migrate-from-cloudformation` adoption of an existing
+CFn-managed nested-stack hierarchy and `cdkd export` of a
+cdkd-managed nested stack back into CloudFormation are still rejected;
+both are deferred to [#464](https://github.com/go-to-k/cdkd/issues/464).
+Fresh `cdkd deploy` of new nested stacks IS supported.
 
 ## State Schema
 

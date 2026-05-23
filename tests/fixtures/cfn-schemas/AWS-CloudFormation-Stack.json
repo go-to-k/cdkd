@@ -1,0 +1,42 @@
+{
+  "resourceType": "AWS::CloudFormation::Stack",
+  "generatedAt": "2026-05-23",
+  "properties": [
+    "Capabilities",
+    "ChangeSetId",
+    "CreationTime",
+    "Description",
+    "DisableRollback",
+    "EnableTerminationProtection",
+    "LastUpdateTime",
+    "NotificationARNs",
+    "Outputs",
+    "Parameters",
+    "ParentId",
+    "RoleARN",
+    "RootId",
+    "StackId",
+    "StackName",
+    "StackPolicyBody",
+    "StackPolicyURL",
+    "StackStatus",
+    "StackStatusReason",
+    "Tags",
+    "TemplateBody",
+    "TemplateURL",
+    "TimeoutInMinutes"
+  ],
+  "readOnlyProperties": [
+    "ChangeSetId",
+    "CreationTime",
+    "LastUpdateTime",
+    "Outputs",
+    "ParentId",
+    "RootId",
+    "StackId",
+    "StackStatus"
+  ],
+  "createOnlyProperties": [
+    "StackName"
+  ]
+}
