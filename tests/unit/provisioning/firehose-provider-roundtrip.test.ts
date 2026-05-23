@@ -34,6 +34,12 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import {
+  DescribeDeliveryStreamCommand,
+  TagDeliveryStreamCommand,
+  UntagDeliveryStreamCommand,
+  UpdateDestinationCommand,
+} from '@aws-sdk/client-firehose';
 import { FirehoseProvider } from '../../../src/provisioning/providers/firehose-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
@@ -120,25 +126,220 @@ describe('FirehoseProvider read-update round-trip', () => {
     expect(observed?.Tags).toEqual([]);
   });
 
-  it('round-trip: update() rejects with ResourceUpdateNotSupportedError without sending any AWS call', async () => {
-    // Firehose update() is intentionally a hard reject (PR I): every
-    // user-visible CFn property change requires replacement on AWS, so
-    // `cdkd drift --revert` surfaces a clear "use --replace or
-    // re-deploy" message instead of silently no-op'ing. This is the
-    // structural guard against a future PR adding a half-implemented
-    // UpdateDestination call that would resurface the Class 1 / Class
-    // 2 / truthy-gate hazards documented in § 3b.
+  it('round-trip: update() no-op when before/after are identical (no destination + no tag diff) — only DescribeDeliveryStream for attributes', async () => {
+    // Per #477 the previous "always reject" guarantee no longer holds:
+    // update() supports Tags diff + ExtendedS3 UpdateDestination. A
+    // zero-diff call should not issue any mutating AWS calls and should
+    // still return a valid ResourceUpdateResult.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: `arn:aws:firehose:us-east-1:111:deliverystream/${PHYSICAL_ID}`,
+            VersionId: '1',
+            Destinations: [{ DestinationId: 'destinationId-000000000001' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
     const observed = {
       DeliveryStreamName: PHYSICAL_ID,
       DeliveryStreamType: 'DirectPut',
       Tags: [] as Array<{ Key: string; Value: string }>,
     };
 
-    await expect(
-      provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const result = await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, observed);
+    expect(result.wasReplaced).toBe(false);
+    expect(result.physicalId).toBe(PHYSICAL_ID);
+    expect(result.attributes['Arn']).toBe(
+      `arn:aws:firehose:us-east-1:111:deliverystream/${PHYSICAL_ID}`
+    );
 
-    // Zero AWS calls — the reject path must not touch the wire.
-    expect(mockSend).not.toHaveBeenCalled();
+    // No mutating calls should fire — only DescribeDeliveryStream (for
+    // the final attribute fetch).
+    const mutatingCommands = mockSend.mock.calls.filter(
+      (c) =>
+        c[0] instanceof TagDeliveryStreamCommand ||
+        c[0] instanceof UntagDeliveryStreamCommand ||
+        c[0] instanceof UpdateDestinationCommand
+    );
+    expect(mutatingCommands).toHaveLength(0);
+  });
+});
+
+// #477: in-place updates for Firehose delivery streams.
+describe('FirehoseProvider.update — Tags diff (#477)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '1',
+            Destinations: [{ DestinationId: 'destinationId-000000000001' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues TagDeliveryStream for added entries and UntagDeliveryStream for removed', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { Tags: [{ Key: 'env', Value: 'prod' }, { Key: 'tier', Value: 'web' }] },
+      { Tags: [{ Key: 'env', Value: 'dev' }, { Key: 'owner', Value: 'team-a' }] }
+    );
+
+    const untags = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UntagDeliveryStreamCommand);
+    expect(untags).toHaveLength(1);
+    expect((untags[0] as unknown as { input: Record<string, unknown> }).input['TagKeys']).toEqual([
+      'owner',
+    ]);
+
+    const tags = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof TagDeliveryStreamCommand);
+    expect(tags).toHaveLength(1);
+    expect((tags[0] as unknown as { input: Record<string, unknown> }).input['Tags']).toEqual([
+      { Key: 'env', Value: 'prod' }, // changed
+      { Key: 'tier', Value: 'web' }, // added
+    ]);
+  });
+
+  it('no-ops when Tags before/after are identical', async () => {
+    const tags = [{ Key: 'env', Value: 'prod' }];
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, { Tags: tags }, { Tags: tags });
+
+    const mutating = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof TagDeliveryStreamCommand || c[0] instanceof UntagDeliveryStreamCommand
+    );
+    expect(mutating).toHaveLength(0);
+  });
+});
+
+describe('FirehoseProvider.update — ExtendedS3 destination (#477)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '7',
+            Destinations: [{ DestinationId: 'destinationId-000000000042' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with the resolved VersionId + DestinationId and the new ExtendedS3 shape', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        ExtendedS3DestinationConfiguration: {
+          BucketArn: 'arn:aws:s3:::dest-bucket',
+          RoleArn: 'arn:aws:iam::111:role/firehose-role',
+          Prefix: 'logs/v2/',
+          BufferingHints: { SizeInMBs: 64, IntervalInSeconds: 60 },
+        },
+      },
+      {
+        ExtendedS3DestinationConfiguration: {
+          BucketArn: 'arn:aws:s3:::dest-bucket',
+          RoleArn: 'arn:aws:iam::111:role/firehose-role',
+          Prefix: 'logs/v1/',
+          BufferingHints: { SizeInMBs: 64, IntervalInSeconds: 60 },
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['DeliveryStreamName']).toBe(PHYSICAL_ID);
+    expect(input['CurrentDeliveryStreamVersionId']).toBe('7');
+    expect(input['DestinationId']).toBe('destinationId-000000000042');
+    expect(input['ExtendedS3DestinationUpdate']).toEqual({
+      BucketARN: 'arn:aws:s3:::dest-bucket',
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      Prefix: 'logs/v2/',
+      BufferingHints: { SizeInMBs: 64, IntervalInSeconds: 60 },
+    });
+  });
+
+  it('no-ops when ExtendedS3 destination before/after are identical', async () => {
+    const dest = {
+      BucketArn: 'arn:aws:s3:::dest-bucket',
+      RoleArn: 'arn:aws:iam::111:role/firehose-role',
+      Prefix: 'logs/',
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { ExtendedS3DestinationConfiguration: dest },
+      { ExtendedS3DestinationConfiguration: dest }
+    );
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('rejects destination-type SWITCH (ExtendedS3 → Redshift) with a tightened error', async () => {
+    await expect(
+      provider.update(
+        'L',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        {
+          RedshiftDestinationConfiguration: { ClusterJDBCURL: 'jdbc:redshift://...' },
+        },
+        {
+          ExtendedS3DestinationConfiguration: {
+            BucketArn: 'arn:aws:s3:::dest-bucket',
+            RoleArn: 'arn:aws:iam::111:role/firehose-role',
+          },
+        }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+  });
+
+  it('rejects non-ExtendedS3 destination diffs with a tightened error that names the destination type', async () => {
+    await expect(
+      provider.update(
+        'L',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        {
+          RedshiftDestinationConfiguration: {
+            ClusterJDBCURL: 'jdbc:redshift://b.amazonaws.com:5439/db',
+          },
+        },
+        {
+          RedshiftDestinationConfiguration: {
+            ClusterJDBCURL: 'jdbc:redshift://a.amazonaws.com:5439/db',
+          },
+        }
+      )
+    ).rejects.toThrow(/RedshiftDestinationConfiguration/);
   });
 });

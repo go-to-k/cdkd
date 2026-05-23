@@ -6,9 +6,14 @@ import {
   ListDeliveryStreamsCommand,
   ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
+  UpdateDestinationCommand,
+  TagDeliveryStreamCommand,
+  UntagDeliveryStreamCommand,
   type CreateDeliveryStreamCommandInput,
   type S3DestinationConfiguration,
   type ExtendedS3DestinationConfiguration,
+  type ExtendedS3DestinationUpdate,
+  type S3DestinationUpdate,
   type Tag,
   type HttpEndpointDestinationConfiguration,
   type RedshiftDestinationConfiguration,
@@ -381,31 +386,204 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
-   * Firehose delivery streams are treated as immutable by cdkd. AWS DOES
-   * provide an `UpdateDestination` API, but the per-destination shape
-   * matrix (Extended S3 / Redshift / OpenSearch / Splunk / HttpEndpoint /
-   * Iceberg / etc.) is deep enough that the deploy engine's immutable-
-   * property replacement path covers the common cases more reliably.
-   * Treating the type as fully immutable for `cdkd drift --revert` is
-   * the conservative choice; users who want in-place destination updates
-   * should re-deploy with `cdkd deploy --replace` so the new shape is
-   * applied via a fresh `CreateDeliveryStream`. Tracked as a follow-up
-   * to issue (#443).
+   * Apply in-place updates to a Firehose delivery stream via the per-shape
+   * AWS APIs (#477):
+   *
+   *   - **Tags** (`TagDeliveryStream` / `UntagDeliveryStream`) — always
+   *     supported; runs first since it is destination-independent.
+   *   - **`ExtendedS3DestinationConfiguration`** (`UpdateDestination` with
+   *     an `ExtendedS3DestinationUpdate` payload) — recovers
+   *     `CurrentDeliveryStreamVersionId` + `DestinationId` from a
+   *     `DescribeDeliveryStream` call, then applies the diff. Only fires
+   *     when the destination shape actually differs.
+   *
+   * Other destination types (`S3DestinationConfiguration`,
+   * `HttpEndpointDestinationConfiguration`, `RedshiftDestinationConfiguration`,
+   * `ElasticsearchDestinationConfiguration`,
+   * `AmazonopensearchserviceDestinationConfiguration`,
+   * `SplunkDestinationConfiguration`,
+   * `AmazonOpenSearchServerlessDestinationConfiguration`) stay rejected
+   * with a tightened error message naming the AWS API. Each one is a
+   * follow-up to (#477) — AWS provides `UpdateDestination` for them too,
+   * but the per-shape reverse-mappers are deep and each warrants its own
+   * focused PR. Re-deploy with `cdkd deploy --replace` until they land.
+   *
+   * Destination-type SWITCHES (e.g. ExtendedS3 → Redshift) are immutable
+   * on AWS; cdkd surfaces `ResourceUpdateNotSupportedError` so the caller
+   * can `cdkd deploy --replace`.
    */
-  update(
+  async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
+    this.logger.debug(`Updating Firehose delivery stream ${logicalId}: ${physicalId}`);
+
+    // Tags diff is independent of destination — apply unconditionally.
+    await this.applyTagsDiff(physicalId, properties['Tags'], previousProperties['Tags']);
+
+    const destKey = this.findDestinationKey(properties);
+    const prevDestKey = this.findDestinationKey(previousProperties);
+
+    // Destination-type switch is immutable on AWS (UpdateDestination only
+    // accepts the SAME destination type; switching types requires replace).
+    if (destKey && prevDestKey && destKey !== prevDestKey) {
+      throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AWS::KinesisFirehose::DeliveryStream in-place update is not implemented in cdkd; AWS provides UpdateDestination but the per-destination shape matrix is large. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
-      )
+        `Switching Firehose destination type from '${prevDestKey}' to '${destKey}' is not supported in-place — AWS UpdateDestination requires the same destination type as the original CreateDeliveryStream. Re-deploy with cdkd deploy --replace.`
+      );
+    }
+
+    const activeDest = destKey ?? prevDestKey;
+    if (activeDest === 'ExtendedS3DestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyExtendedS3DestinationUpdate(physicalId, nextDest);
+      }
+    } else if (activeDest) {
+      // Some other destination type — check whether it actually changed,
+      // and reject only if it did. Tags-only diffs against e.g. a Redshift
+      // delivery stream should NOT throw.
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it; the per-shape reverse-mapper is a follow-up to #477). Re-deploy with cdkd deploy --replace.`
+        );
+      }
+    }
+
+    // Pull current AWS state for the result envelope.
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
     );
+    const desc = description.DeliveryStreamDescription;
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: {
+        ...(desc?.DeliveryStreamARN !== undefined && { Arn: desc.DeliveryStreamARN }),
+      },
+    };
+  }
+
+  /**
+   * Recover `CurrentDeliveryStreamVersionId` + `DestinationId` from
+   * `DescribeDeliveryStream` and issue `UpdateDestination` with the new
+   * ExtendedS3 shape. The reverse-mapper at
+   * {@link mapExtendedS3ConfigToUpdate} produces the
+   * `ExtendedS3DestinationUpdate` payload (CFn property names →
+   * SDK camelCase, omitting `Prefix` / `BufferingHints` / etc. when the
+   * source is undefined so an empty diff doesn't clear AWS-side fields).
+   */
+  private async applyExtendedS3DestinationUpdate(
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const currentDestination = desc?.Destinations?.[0];
+    const destinationId = currentDestination?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        ExtendedS3DestinationUpdate: this.mapExtendedS3ConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * Diff and apply changes to a Firehose delivery stream's Tags via the
+   * `TagDeliveryStream` / `UntagDeliveryStream` AWS APIs.
+   *
+   * Tags shape is `[{Key, Value}]`. Removed keys go through
+   * `UntagDeliveryStream` (key-only); added / modified entries go through
+   * `TagDeliveryStream` (full {Key, Value}). No-op when before/after JSON
+   * is identical.
+   */
+  private async applyTagsDiff(physicalId: string, next: unknown, prev: unknown): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    type CfnTag = { Key?: string; Value?: string };
+    const nextEntries = (Array.isArray(next) ? next : []) as CfnTag[];
+    const prevEntries = (Array.isArray(prev) ? prev : []) as CfnTag[];
+    const nextByKey = new Map<string, CfnTag>();
+    for (const t of nextEntries) {
+      if (t.Key) nextByKey.set(t.Key, t);
+    }
+    const prevByKey = new Map<string, CfnTag>();
+    for (const t of prevEntries) {
+      if (t.Key) prevByKey.set(t.Key, t);
+    }
+    const tagKeysToRemove: string[] = [];
+    for (const key of prevByKey.keys()) {
+      if (!nextByKey.has(key)) tagKeysToRemove.push(key);
+    }
+    if (tagKeysToRemove.length > 0) {
+      await this.getClient().send(
+        new UntagDeliveryStreamCommand({
+          DeliveryStreamName: physicalId,
+          TagKeys: tagKeysToRemove,
+        })
+      );
+    }
+    const tagsToUpsert: CfnTag[] = [];
+    for (const [key, tag] of nextByKey) {
+      const before = prevByKey.get(key);
+      if (JSON.stringify(before) === JSON.stringify(tag)) continue;
+      tagsToUpsert.push(tag);
+    }
+    if (tagsToUpsert.length > 0) {
+      await this.getClient().send(
+        new TagDeliveryStreamCommand({
+          DeliveryStreamName: physicalId,
+          Tags: tagsToUpsert.map((t) => ({
+            Key: t.Key as string,
+            ...(t.Value !== undefined && { Value: t.Value }),
+          })),
+        })
+      );
+    }
+  }
+
+  /**
+   * Return the key of the destination property present on a properties
+   * record, or `undefined` if none is present. AWS allows exactly one
+   * destination configuration per delivery stream, so the first match is
+   * authoritative; the ordering walks the most-common types first.
+   */
+  private findDestinationKey(properties: Record<string, unknown>): string | undefined {
+    const destinationKeys = [
+      'ExtendedS3DestinationConfiguration',
+      'S3DestinationConfiguration',
+      'HttpEndpointDestinationConfiguration',
+      'RedshiftDestinationConfiguration',
+      'ElasticsearchDestinationConfiguration',
+      'AmazonopensearchserviceDestinationConfiguration',
+      'SplunkDestinationConfiguration',
+      'AmazonOpenSearchServerlessDestinationConfiguration',
+    ];
+    for (const key of destinationKeys) {
+      if (properties[key] !== undefined) return key;
+    }
+    return undefined;
   }
 
   /**
@@ -578,6 +756,123 @@ export class FirehoseProvider implements ResourceProvider {
       ] as ExtendedS3DestinationConfiguration['DataFormatConversionConfiguration'];
     }
 
+    return result;
+  }
+
+  /**
+   * Map CFn `ExtendedS3DestinationConfiguration` to the
+   * `ExtendedS3DestinationUpdate` shape expected by AWS
+   * `UpdateDestinationCommand` (#477). Shape is structurally identical
+   * to `ExtendedS3DestinationConfiguration` but every field is optional
+   * — only the fields present in `config` are forwarded so undefined
+   * keys do not clobber AWS-side state.
+   *
+   * `S3BackupConfiguration` is mapped through {@link mapS3ConfigToUpdate}
+   * so its own optional fields likewise round-trip cleanly.
+   */
+  private mapExtendedS3ConfigToUpdate(
+    config: Record<string, unknown>
+  ): ExtendedS3DestinationUpdate {
+    const result: ExtendedS3DestinationUpdate = {};
+    const bucketArn = (config['BucketArn'] ?? config['BucketARN']) as string | undefined;
+    if (bucketArn !== undefined) result.BucketARN = bucketArn;
+    const roleArn = (config['RoleArn'] ?? config['RoleARN']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['Prefix'] !== undefined) result.Prefix = config['Prefix'] as string;
+    if (config['ErrorOutputPrefix'] !== undefined) {
+      result.ErrorOutputPrefix = config['ErrorOutputPrefix'] as string;
+    }
+    if (config['CompressionFormat'] !== undefined) {
+      result.CompressionFormat = config[
+        'CompressionFormat'
+      ] as ExtendedS3DestinationUpdate['CompressionFormat'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      const hints = config['BufferingHints'] as Record<string, unknown>;
+      result.BufferingHints = {
+        ...(hints['SizeInMBs'] !== undefined && { SizeInMBs: hints['SizeInMBs'] as number }),
+        ...(hints['IntervalInSeconds'] !== undefined && {
+          IntervalInSeconds: hints['IntervalInSeconds'] as number,
+        }),
+      };
+    }
+    if (config['EncryptionConfiguration'] !== undefined) {
+      result.EncryptionConfiguration = config[
+        'EncryptionConfiguration'
+      ] as ExtendedS3DestinationUpdate['EncryptionConfiguration'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as ExtendedS3DestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['ProcessingConfiguration'] !== undefined) {
+      result.ProcessingConfiguration = config[
+        'ProcessingConfiguration'
+      ] as ExtendedS3DestinationUpdate['ProcessingConfiguration'];
+    }
+    if (config['S3BackupMode'] !== undefined) {
+      result.S3BackupMode = config['S3BackupMode'] as ExtendedS3DestinationUpdate['S3BackupMode'];
+    }
+    if (config['S3BackupUpdate'] !== undefined) {
+      // CFn spells this `S3BackupConfiguration`; SDK uses `S3BackupUpdate`
+      // for the Update shape. Accept either key for resilience.
+      result.S3BackupUpdate = this.mapS3ConfigToUpdate(
+        config['S3BackupUpdate'] as Record<string, unknown>
+      );
+    } else if (config['S3BackupConfiguration'] !== undefined) {
+      result.S3BackupUpdate = this.mapS3ConfigToUpdate(
+        config['S3BackupConfiguration'] as Record<string, unknown>
+      );
+    }
+    if (config['DataFormatConversionConfiguration'] !== undefined) {
+      result.DataFormatConversionConfiguration = config[
+        'DataFormatConversionConfiguration'
+      ] as ExtendedS3DestinationUpdate['DataFormatConversionConfiguration'];
+    }
+    return result;
+  }
+
+  /**
+   * Map CFn `S3DestinationConfiguration` to the `S3DestinationUpdate`
+   * shape used by AWS `UpdateDestinationCommand` (#477; consumed by
+   * {@link mapExtendedS3ConfigToUpdate} for the `S3BackupUpdate` field).
+   * Every field optional — only present keys are forwarded.
+   */
+  private mapS3ConfigToUpdate(config: Record<string, unknown>): S3DestinationUpdate {
+    const result: S3DestinationUpdate = {};
+    const bucketArn = (config['BucketArn'] ?? config['BucketARN']) as string | undefined;
+    if (bucketArn !== undefined) result.BucketARN = bucketArn;
+    const roleArn = (config['RoleArn'] ?? config['RoleARN']) as string | undefined;
+    if (roleArn !== undefined) result.RoleARN = roleArn;
+    if (config['Prefix'] !== undefined) result.Prefix = config['Prefix'] as string;
+    if (config['ErrorOutputPrefix'] !== undefined) {
+      result.ErrorOutputPrefix = config['ErrorOutputPrefix'] as string;
+    }
+    if (config['CompressionFormat'] !== undefined) {
+      result.CompressionFormat = config[
+        'CompressionFormat'
+      ] as S3DestinationUpdate['CompressionFormat'];
+    }
+    if (config['BufferingHints'] !== undefined) {
+      const hints = config['BufferingHints'] as Record<string, unknown>;
+      result.BufferingHints = {
+        ...(hints['SizeInMBs'] !== undefined && { SizeInMBs: hints['SizeInMBs'] as number }),
+        ...(hints['IntervalInSeconds'] !== undefined && {
+          IntervalInSeconds: hints['IntervalInSeconds'] as number,
+        }),
+      };
+    }
+    if (config['EncryptionConfiguration'] !== undefined) {
+      result.EncryptionConfiguration = config[
+        'EncryptionConfiguration'
+      ] as S3DestinationUpdate['EncryptionConfiguration'];
+    }
+    if (config['CloudWatchLoggingOptions'] !== undefined) {
+      result.CloudWatchLoggingOptions = config[
+        'CloudWatchLoggingOptions'
+      ] as S3DestinationUpdate['CloudWatchLoggingOptions'];
+    }
     return result;
   }
 
