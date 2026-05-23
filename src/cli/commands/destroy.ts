@@ -232,17 +232,14 @@ async function destroyCommand(
 
     logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
 
-    // Resolve account id once for the run — needed by NestedStackProvider
-    // contexts on nested-stack destroys (the synthesized ARN format
-    // includes the account). Account is constant across stacks, so a
-    // single STS call up front amortizes cleanly.
-    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const stsClient = new STSClient({
-      region: options.region || process.env['AWS_REGION'] || 'us-east-1',
-    });
-    const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
-    const accountId = callerIdentity.Account ?? 'unknown';
-    stsClient.destroy();
+    // accountId is only used to synthesize the parent's fake `Ref` ARN inside
+    // `NestedStackProvider.create` — the destroy path never re-synthesizes
+    // that ARN (each child's physicalId already lives in state and is
+    // passed straight to `provider.delete`). Using the same `'unknown'`
+    // placeholder as `cdkd state destroy` avoids an STS call that would
+    // fail when no AWS credentials are configured (= the CI test env), and
+    // matches the same pattern used by `state.ts` for the destroy path.
+    const accountId = 'unknown';
 
     // Index state refs by stack name so we can resolve which region(s) each
     // stack has. Built once so the per-stack loop is cheap.
