@@ -173,10 +173,10 @@ describe('FirehoseProvider', () => {
     // Per #477, FirehoseProvider.update() supports Tags diff +
     // ExtendedS3 UpdateDestination. Detailed roundtrip coverage lives in
     // firehose-provider-roundtrip.test.ts; this test pins the rejection
-    // path that survived #477: a non-ExtendedS3 destination diff still
-    // throws ResourceUpdateNotSupportedError until each per-shape
-    // reverse-mapper is implemented.
-    it('still rejects non-ExtendedS3 destination diffs with ResourceUpdateNotSupportedError', async () => {
+    // path that survived #477 + #549: an unsupported destination diff
+    // (e.g. Splunk) still throws ResourceUpdateNotSupportedError until
+    // each per-shape reverse-mapper is implemented.
+    it('still rejects unsupported destination diffs with ResourceUpdateNotSupportedError', async () => {
       await expect(
         provider.update(
           'MyDeliveryStream',
@@ -184,14 +184,14 @@ describe('FirehoseProvider', () => {
           'AWS::KinesisFirehose::DeliveryStream',
           {
             DeliveryStreamName: 'test-stream',
-            RedshiftDestinationConfiguration: {
-              ClusterJDBCURL: 'jdbc:redshift://b.amazonaws.com:5439/db',
+            SplunkDestinationConfiguration: {
+              HECEndpoint: 'https://splunk-b.example.com',
             },
           },
           {
             DeliveryStreamName: 'test-stream',
-            RedshiftDestinationConfiguration: {
-              ClusterJDBCURL: 'jdbc:redshift://a.amazonaws.com:5439/db',
+            SplunkDestinationConfiguration: {
+              HECEndpoint: 'https://splunk-a.example.com',
             },
           }
         )

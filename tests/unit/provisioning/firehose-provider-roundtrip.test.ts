@@ -323,23 +323,170 @@ describe('FirehoseProvider.update — ExtendedS3 destination (#477)', () => {
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
   });
 
-  it('rejects non-ExtendedS3 destination diffs with a tightened error that names the destination type', async () => {
+  it('rejects unsupported destination diffs (e.g. Splunk) with a tightened error that names the destination type', async () => {
     await expect(
       provider.update(
         'L',
         PHYSICAL_ID,
         RESOURCE_TYPE,
         {
-          RedshiftDestinationConfiguration: {
-            ClusterJDBCURL: 'jdbc:redshift://b.amazonaws.com:5439/db',
+          SplunkDestinationConfiguration: {
+            HECEndpoint: 'https://splunk-b.example.com',
           },
         },
         {
-          RedshiftDestinationConfiguration: {
-            ClusterJDBCURL: 'jdbc:redshift://a.amazonaws.com:5439/db',
+          SplunkDestinationConfiguration: {
+            HECEndpoint: 'https://splunk-a.example.com',
           },
         }
       )
-    ).rejects.toThrow(/RedshiftDestinationConfiguration/);
+    ).rejects.toThrow(/SplunkDestinationConfiguration/);
+  });
+});
+
+describe('FirehoseProvider.update — Redshift destination (#549)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '11',
+            Destinations: [{ DestinationId: 'destinationId-redshift-99' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('issues UpdateDestinationCommand with RedshiftDestinationUpdate when the destination diff fires', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        RedshiftDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          ClusterJDBCURL: 'jdbc:redshift://cluster.example.com:5439/db',
+          CopyCommand: {
+            DataTableName: 'logs_v2',
+            CopyOptions: "FORMAT AS JSON 'auto'",
+          },
+          Username: 'firehose',
+          Password: 'redacted',
+          RetryOptions: { DurationInSeconds: 7200 },
+          S3Configuration: {
+            BucketARN: 'arn:aws:s3:::backup-bucket',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'redshift-staging/v2/',
+            BufferingHints: { SizeInMBs: 32, IntervalInSeconds: 120 },
+          },
+          S3BackupMode: 'Enabled',
+          S3BackupConfiguration: {
+            BucketARN: 'arn:aws:s3:::dr-bucket',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'dr/v2/',
+          },
+        },
+      },
+      {
+        RedshiftDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          ClusterJDBCURL: 'jdbc:redshift://cluster.example.com:5439/db',
+          CopyCommand: { DataTableName: 'logs_v1' },
+          Username: 'firehose',
+          Password: 'redacted',
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['DeliveryStreamName']).toBe(PHYSICAL_ID);
+    expect(input['CurrentDeliveryStreamVersionId']).toBe('11');
+    expect(input['DestinationId']).toBe('destinationId-redshift-99');
+    // Verify the reverse-map produces the SDK Update shape: S3Configuration
+    // → S3Update, S3BackupConfiguration → S3BackupUpdate, every field
+    // gated on !== undefined.
+    expect(input['RedshiftDestinationUpdate']).toEqual({
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      ClusterJDBCURL: 'jdbc:redshift://cluster.example.com:5439/db',
+      CopyCommand: { DataTableName: 'logs_v2', CopyOptions: "FORMAT AS JSON 'auto'" },
+      Username: 'firehose',
+      Password: 'redacted',
+      RetryOptions: { DurationInSeconds: 7200 },
+      S3Update: {
+        BucketARN: 'arn:aws:s3:::backup-bucket',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+        Prefix: 'redshift-staging/v2/',
+        BufferingHints: { SizeInMBs: 32, IntervalInSeconds: 120 },
+      },
+      S3BackupMode: 'Enabled',
+      S3BackupUpdate: {
+        BucketARN: 'arn:aws:s3:::dr-bucket',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+        Prefix: 'dr/v2/',
+      },
+    });
+  });
+
+  it('no-ops when Redshift destination before/after are identical', async () => {
+    const dest = {
+      RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      ClusterJDBCURL: 'jdbc:redshift://cluster.example.com:5439/db',
+      CopyCommand: { DataTableName: 'logs' },
+      Username: 'firehose',
+      Password: 'redacted',
+    };
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { RedshiftDestinationConfiguration: dest },
+      { RedshiftDestinationConfiguration: dest }
+    );
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('omits unset CFn keys from the Update shape so AWS-side state is not clobbered', async () => {
+    // Only ClusterJDBCURL changes between before/after. The Update
+    // payload should carry ONLY the keys present in the new config — no
+    // RoleARN, no CopyCommand, no S3Update, etc. CFn keys present in
+    // both before and after but unchanged still get forwarded (the
+    // reverse-mapper does not diff; the call-site's stringify-equality
+    // check is what short-circuits the no-op case above).
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        RedshiftDestinationConfiguration: {
+          ClusterJDBCURL: 'jdbc:redshift://new.example.com:5439/db',
+        },
+      },
+      {
+        RedshiftDestinationConfiguration: {
+          ClusterJDBCURL: 'jdbc:redshift://old.example.com:5439/db',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['RedshiftDestinationUpdate']).toEqual({
+      ClusterJDBCURL: 'jdbc:redshift://new.example.com:5439/db',
+    });
   });
 });
