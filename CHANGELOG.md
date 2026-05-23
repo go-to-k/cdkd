@@ -1,3 +1,10 @@
+# [0.142.0](https://github.com/go-to-k/cdkd/compare/v0.141.1...v0.142.0) (2026-05-23)
+
+
+### Features
+
+* **provisioning:** in-place update for Firehose RedshiftDestinationConfiguration ([#550](https://github.com/go-to-k/cdkd/issues/550)) ([4a8e7e9](https://github.com/go-to-k/cdkd/commit/4a8e7e9383a640dfc84e05e5a7fb4f1e39546eb5))
+
 ## [0.141.1](https://github.com/go-to-k/cdkd/compare/v0.141.0...v0.141.1) (2026-05-23)
 
 
