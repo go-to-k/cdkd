@@ -1,3 +1,10 @@
+# [0.137.0](https://github.com/go-to-k/cdkd/compare/v0.136.0...v0.137.0) (2026-05-23)
+
+
+### Features
+
+* **local:** WebSocket API support for cdkd local start-api ([#462](https://github.com/go-to-k/cdkd/issues/462)) ([#524](https://github.com/go-to-k/cdkd/issues/524)) ([3ff7413](https://github.com/go-to-k/cdkd/commit/3ff7413c84bfe5254e700b5cc05546bcb67bee63))
+
 # [0.136.0](https://github.com/go-to-k/cdkd/compare/v0.135.1...v0.136.0) (2026-05-22)
 
 
