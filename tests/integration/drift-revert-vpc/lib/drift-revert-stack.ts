@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as efs from 'aws-cdk-lib/aws-efs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
 
 /**
@@ -33,6 +34,30 @@ import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
  *    SubnetMappings / IpAddressType=dualstack require additional infra
  *    (more AZs / IPv6 prerequisites) that bloat this integ stack and
  *    are not on the PR series under test.
+ *  - AWS::AutoScaling::AutoScalingGroup with templated `Tags` (one
+ *    `Owner=cdkd-integ` entry) and `TargetGroupARNs: [<tg1>]`.
+ *    MinSize/MaxSize/DesiredCapacity all 0 so no real EC2 instances
+ *    launch — the group is structural only. inject-drift.ts (a) adds
+ *    a `Component=drift-revert-vpc-ADDED` tag via
+ *    `CreateOrUpdateTags` (exercises `applyTagsDiff` add-side on
+ *    revert: `UntagResource` of the injected tag), and (b) swaps the
+ *    attached target group from `tg1` to `tg2` via
+ *    `DetachLoadBalancerTargetGroups` + `AttachLoadBalancerTargetGroups`
+ *    (exercises `applyTargetGroupArnsDiff` on revert: detach tg2 +
+ *    re-attach tg1). The `Tags` entries are templated WITHOUT
+ *    `PropagateAtLaunch` because the AWS-side `Tag` shape carries it
+ *    but cdkd's shared `normalizeAwsTagsToCfn` (used by every
+ *    provider's `readCurrentState`) strips it back out — templating
+ *    the flag would surface a guaranteed false positive on every
+ *    `cdkd drift` run unrelated to the round-trip under test.
+ *
+ *    LoadBalancerNames (classic ELB) is intentionally NOT exercised:
+ *    the provider code path is structurally identical to
+ *    TargetGroupARNs (same `applyAttachDetachDiff` set-based diff
+ *    pattern, just a different SDK command pair) so the integ-side
+ *    coverage for one of the two is sufficient. Classic ELB also
+ *    requires extra infra (CfnLoadBalancer + Listener) for marginal
+ *    additional coverage.
  *
  * VPC layout: 2 AZs (ALB requires 2+ subnets in different AZs even for
  * a single-AZ test), public-only, no NAT (cuts cost and avoids the
@@ -118,6 +143,60 @@ export class DriftRevertVpcStack extends cdk.Stack {
     });
     lb.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // Two Application target groups for the ASG TargetGroupARNs swap.
+    // No listener attached — TGs without listeners are valid; ASG just
+    // tracks attachment for instance registration which never happens
+    // (the ASG has capacity 0). targetType=instance is the default and
+    // is what ASG attachment expects.
+    const tg1 = new elbv2.ApplicationTargetGroup(this, 'DriftAsgTg1', {
+      vpc,
+      port: 80,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.INSTANCE,
+    });
+    (tg1.node.defaultChild as elbv2.CfnTargetGroup).applyRemovalPolicy(
+      cdk.RemovalPolicy.DESTROY
+    );
+
+    const tg2 = new elbv2.ApplicationTargetGroup(this, 'DriftAsgTg2', {
+      vpc,
+      port: 80,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.INSTANCE,
+    });
+    (tg2.node.defaultChild as elbv2.CfnTargetGroup).applyRemovalPolicy(
+      cdk.RemovalPolicy.DESTROY
+    );
+
+    // ASG with capacity 0 — no EC2 instances ever launch. The
+    // LaunchTemplate satisfies the API requirement (ASG cannot exist
+    // without one) and would be used only if MinSize/DesiredCapacity
+    // ever ticked above zero.
+    const asgLt = new ec2.LaunchTemplate(this, 'DriftAsgLt', {
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.NANO),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      securityGroup: sg1,
+    });
+
+    const asg = new autoscaling.CfnAutoScalingGroup(this, 'DriftAsg', {
+      launchTemplate: {
+        launchTemplateId: asgLt.launchTemplateId,
+        version: asgLt.latestVersionNumber,
+      },
+      minSize: '0',
+      maxSize: '0',
+      desiredCapacity: '0',
+      vpcZoneIdentifier: vpc.publicSubnets.map((s) => s.subnetId),
+      targetGroupArns: [tg1.targetGroupArn],
+      // CDK L1 requires `propagateAtLaunch`. cdkd's read-side
+      // `normalizeAwsTagsToCfn` strips it back out, so the drift
+      // comparator's `observedProperties` baseline (deploy-time
+      // post-create snapshot) and the AWS-current read both produce
+      // `[{Key, Value}]`. No false drift.
+      tags: [{ key: 'Owner', value: 'cdkd-integ', propagateAtLaunch: false }],
+    });
+    asg.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     // Outputs — inject-drift.ts and verify.sh read these via
     // `cdkd state show <stack> --json`.
     new cdk.CfnOutput(this, 'FileSystemId', {
@@ -148,6 +227,21 @@ export class DriftRevertVpcStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'Sg2Id', {
       value: sg2.securityGroupId,
       description: 'Secondary SG ID (drift swap target)',
+    });
+
+    new cdk.CfnOutput(this, 'AsgName', {
+      value: asg.ref,
+      description: 'ASG name targeted by inject-drift.ts',
+    });
+
+    new cdk.CfnOutput(this, 'AsgTg1Arn', {
+      value: tg1.targetGroupArn,
+      description: 'Primary target group ARN (templated initial value)',
+    });
+
+    new cdk.CfnOutput(this, 'AsgTg2Arn', {
+      value: tg2.targetGroupArn,
+      description: 'Secondary target group ARN (drift swap target)',
     });
   }
 }
