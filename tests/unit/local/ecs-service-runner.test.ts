@@ -32,6 +32,7 @@ import {
   __setSleepImpl,
   __setWaitForExitImpl,
   backoffDelayMs,
+  buildNetworkAliasesByContainer,
   computeReplicaCount,
   createServiceRunState,
   EcsServiceRunnerError,
@@ -887,5 +888,201 @@ describe('Cloud Map / Service Connect registry integration (Issue #460)', () => 
 
     await controller.shutdown();
     expect(registry.lookup('cdkd-local.local', 'frontend-cloudmap')).toBeUndefined();
+  });
+});
+
+describe('buildNetworkAliasesByContainer', () => {
+  function makeService(
+    serviceConnect:
+      | undefined
+      | {
+          namespaceName: string;
+          services: Array<{
+            portName: string;
+            discoveryName: string;
+            containerPort: number;
+            clientAliases: Array<{ dnsName?: string; port: number }>;
+          }>;
+        },
+    containers: Array<{
+      name: string;
+      essential: boolean;
+      portMappings: Array<{ name?: string; containerPort: number; protocol: string }>;
+    }>
+  ): ResolvedEcsService {
+    return {
+      stack: { stackName: 'StackA' },
+      serviceLogicalId: 'Svc',
+      serviceName: 'svc',
+      desiredCount: 1,
+      task: {
+        family: 'task',
+        containers,
+        volumes: [],
+        runtimePlatform: undefined,
+      },
+      serviceConnect,
+      serviceRegistries: [],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+  }
+
+  it('returns empty map when service has no Service Connect', () => {
+    const service = makeService(undefined, [
+      { name: 'app', essential: true, portMappings: [{ containerPort: 80, protocol: 'tcp' }] },
+    ]);
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(0);
+  });
+
+  it('attaches fqdn + bare discoveryName + ClientAlias dnsNames to the container owning the PortName', () => {
+    const service = makeService(
+      {
+        namespaceName: 'cdkd-sc.local',
+        services: [
+          {
+            portName: 'orders-api',
+            discoveryName: 'orders',
+            containerPort: 80,
+            clientAliases: [{ dnsName: 'orders', port: 80 }],
+          },
+        ],
+      },
+      [
+        {
+          name: 'orders',
+          essential: true,
+          portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(1);
+    // De-duped: discoveryName (`orders`) and ClientAlias dnsName (`orders`)
+    // collapse to one entry; fqdn is the separate second entry.
+    expect(result.get('orders')).toEqual(['orders', 'orders.cdkd-sc.local']);
+  });
+
+  it('skips services whose PortName does not match any container PortMappings.Name (resolver already warned)', () => {
+    const service = makeService(
+      {
+        namespaceName: 'cdkd-sc.local',
+        services: [
+          {
+            portName: 'missing-port',
+            discoveryName: 'orders',
+            containerPort: 80,
+            clientAliases: [],
+          },
+        ],
+      },
+      [
+        {
+          name: 'orders',
+          essential: true,
+          portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(0);
+  });
+
+  it('attaches aliases only to the container that owns the matching PortName (sidecars get none)', () => {
+    const service = makeService(
+      {
+        namespaceName: 'cdkd-sc.local',
+        services: [
+          {
+            portName: 'main-port',
+            discoveryName: 'main-svc',
+            containerPort: 80,
+            clientAliases: [],
+          },
+        ],
+      },
+      [
+        {
+          name: 'main',
+          essential: true,
+          portMappings: [{ name: 'main-port', containerPort: 80, protocol: 'tcp' }],
+        },
+        {
+          name: 'sidecar',
+          essential: false,
+          portMappings: [{ name: 'metrics-port', containerPort: 9090, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.size).toBe(1);
+    expect(result.has('main')).toBe(true);
+    expect(result.has('sidecar')).toBe(false);
+  });
+
+  it('merges aliases across multiple Service Connect entries on the same container', () => {
+    const service = makeService(
+      {
+        namespaceName: 'ns.local',
+        services: [
+          {
+            portName: 'http-port',
+            discoveryName: 'http-svc',
+            containerPort: 80,
+            clientAliases: [{ dnsName: 'http', port: 80 }],
+          },
+          {
+            portName: 'grpc-port',
+            discoveryName: 'grpc-svc',
+            containerPort: 50051,
+            clientAliases: [{ dnsName: 'grpc', port: 50051 }],
+          },
+        ],
+      },
+      [
+        {
+          name: 'multi',
+          essential: true,
+          portMappings: [
+            { name: 'http-port', containerPort: 80, protocol: 'tcp' },
+            { name: 'grpc-port', containerPort: 50051, protocol: 'tcp' },
+          ],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.get('multi')).toEqual([
+      'http-svc',
+      'http-svc.ns.local',
+      'http',
+      'grpc-svc',
+      'grpc-svc.ns.local',
+      'grpc',
+    ]);
+  });
+
+  it('drops ClientAlias entries with no dnsName (port-only aliases are not DNS-resolvable locally)', () => {
+    const service = makeService(
+      {
+        namespaceName: 'ns.local',
+        services: [
+          {
+            portName: 'port-a',
+            discoveryName: 'svc-a',
+            containerPort: 80,
+            clientAliases: [{ port: 80 }, { dnsName: 'svc-alias', port: 80 }],
+          },
+        ],
+      },
+      [
+        {
+          name: 'app',
+          essential: true,
+          portMappings: [{ name: 'port-a', containerPort: 80, protocol: 'tcp' }],
+        },
+      ]
+    );
+    const result = buildNetworkAliasesByContainer(service);
+    expect(result.get('app')).toEqual(['svc-a', 'svc-a.ns.local', 'svc-alias']);
   });
 });
