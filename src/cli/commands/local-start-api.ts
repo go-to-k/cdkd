@@ -681,7 +681,15 @@ async function localStartApiCommand(
   // from inside the handler lands on cdkd's local endpoint.
   const wsServers: BootedWebSocketServer[] = [];
   const initialWsApis = initialMaterial.webSocketApis ?? [];
+  warnUnsupportedWebSocketApis(initialWsApis, logger);
   for (const api of initialWsApis) {
+    // Skip APIs flagged unsupported at discovery — typical cause is a
+    // non-NONE `AuthorizationType` on `$connect` (cdkd v1 does not
+    // emulate WebSocket authorizers; admitting unauthenticated clients
+    // would diverge from AWS-deployed behavior). The warn fired above
+    // names the affected routes; here we just skip the attach loop so
+    // no upgrade is accepted on this API.
+    if (api.unsupported) continue;
     const wsLambdaIds = new Set(api.routes.map((r) => r.targetLambdaLogicalId));
     const wsSpecs = new Map<string, ContainerSpec>();
     for (const id of wsLambdaIds) {
@@ -762,7 +770,22 @@ async function localStartApiCommand(
     // the container spec for every WebSocket Lambda so the URL
     // always resolves on every platform. The host port is the
     // local server's bound port.
-    const mgmtEndpoint = `http://host.docker.internal:${started.port}`;
+    //
+    // Stage path: the URL INCLUDES `/${api.stage}` to match the
+    // AWS-docs-canonical handler shape. The deployed
+    // apigatewaymanagementapi endpoint URL is
+    // `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`,
+    // so SDK clients built from `domainName + stage` produce
+    // `POST /<stage>/@connections/<id>`. Mirror that exactly for the
+    // env-var override path so handlers that build the SDK client
+    // with `new ApiGatewayManagementApiClient({})` (and let the
+    // SDK pick up the env override) AND handlers that build it
+    // with the explicit `{endpoint: 'https://' + domainName + '/' + stage}`
+    // shape both work without per-handler code differences.
+    // The pre-fix endpoint dropped `/${stage}` and any SDK call
+    // that included the stage segment hit a 404 against the local
+    // parser.
+    const mgmtEndpoint = `http://host.docker.internal:${started.port}/${api.stage}`;
     const hostGatewayMapping: { host: string; ip: string }[] = [
       { host: 'host.docker.internal', ip: 'host-gateway' },
     ];
@@ -2150,6 +2173,32 @@ function warnUnsupportedRoutes(
   );
   for (const r of unsupported) {
     logger.warn(`  - ${r.method} ${r.pathPattern}: ${r.unsupported!.reason}`);
+  }
+  return unsupported.length;
+}
+
+/**
+ * Surface every WebSocket API tagged as unsupported at discovery as a
+ * startup warn. The boot loop above skips attaching the server for
+ * these APIs, so no upgrade requests are ever accepted on them —
+ * mirrors `warnUnsupportedRoutes`'s shape but for the WebSocket axis.
+ * Typical trigger: a Route declaring `AuthorizationType !== 'NONE'` on
+ * `$connect` (cdkd v1 does not emulate WebSocket authorizers; closing
+ * this gap structurally rather than silently admitting
+ * unauthenticated clients matches the security-by-default precedent
+ * PR #514 set for HTTP API v2 service integrations).
+ */
+function warnUnsupportedWebSocketApis(
+  apis: readonly DiscoveredWebSocketApi[],
+  logger: ReturnType<typeof getLogger>
+): number {
+  const unsupported = apis.filter((api) => api.unsupported);
+  if (unsupported.length === 0) return 0;
+  logger.warn(
+    `${unsupported.length} WebSocket API(s) will NOT accept upgrade requests (boot continued):`
+  );
+  for (const api of unsupported) {
+    logger.warn(`  - ${api.declaredAt}: ${api.unsupported!.reason}`);
   }
   return unsupported.length;
 }

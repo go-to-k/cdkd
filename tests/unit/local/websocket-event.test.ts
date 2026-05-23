@@ -87,10 +87,12 @@ describe('buildMessageEvent', () => {
       snapshot: baseSnapshot,
       routeKey: 'sendMessage',
       body: '{"hello":"world"}',
+      isBase64Encoded: false,
     });
     expect(event.requestContext.eventType).toBe('MESSAGE');
     expect(event.requestContext.routeKey).toBe('sendMessage');
     expect(event.body).toBe('{"hello":"world"}');
+    expect(event.isBase64Encoded).toBe(false);
     expect(typeof event.requestContext['messageId']).toBe('string');
   });
 
@@ -102,9 +104,53 @@ describe('buildMessageEvent', () => {
       snapshot: baseSnapshot,
       routeKey: '$default',
       body: 'aGVsbG8=',
+      isBase64Encoded: false,
     });
     expect(event.body).toBe('aGVsbG8=');
     expect(event.requestContext.routeKey).toBe('$default');
+  });
+
+  // B3 (#526): isBase64Encoded MUST round-trip from the caller — pre-fix
+  // it was hardcoded `false`, silently corrupting every binary frame
+  // because the AWS-canonical handler decoded the base64-encoded body as
+  // UTF-8: `Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'utf8')`.
+  it('surfaces isBase64Encoded=true for binary frames (B3 regression guard)', () => {
+    const event = buildMessageEvent({
+      connectionId: 'c',
+      connectedAt: 1,
+      stage: 'prod',
+      snapshot: baseSnapshot,
+      routeKey: '$default',
+      body: 'aGVsbG8gd29ybGQ=', // base64 of "hello world"
+      isBase64Encoded: true,
+    });
+    expect(event.isBase64Encoded).toBe(true);
+    expect(event.body).toBe('aGVsbG8gd29ybGQ=');
+  });
+
+  it('round-trips both isBase64Encoded values via the same field shape', () => {
+    const textEvent = buildMessageEvent({
+      connectionId: 'c',
+      connectedAt: 1,
+      stage: 'prod',
+      snapshot: baseSnapshot,
+      routeKey: 'r',
+      body: 'plaintext',
+      isBase64Encoded: false,
+    });
+    const binaryEvent = buildMessageEvent({
+      connectionId: 'c',
+      connectedAt: 1,
+      stage: 'prod',
+      snapshot: baseSnapshot,
+      routeKey: 'r',
+      body: 'AQID', // base64 bytes
+      isBase64Encoded: true,
+    });
+    // Same shape, only isBase64Encoded + body differ.
+    expect(Object.keys(textEvent).sort()).toEqual(Object.keys(binaryEvent).sort());
+    expect(textEvent.isBase64Encoded).toBe(false);
+    expect(binaryEvent.isBase64Encoded).toBe(true);
   });
 });
 

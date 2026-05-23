@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import {
   attachWebSocketServer,
+  bufferToBody,
   type AttachOptions,
 } from '../../../src/local/websocket-server.js';
 import type { DiscoveredWebSocketApi } from '../../../src/local/websocket-route-discovery.js';
@@ -361,6 +362,190 @@ describe('attachWebSocketServer end-to-end', () => {
       expect(rieModule.invokeRie).toHaveBeenCalledTimes(0);
       ws.close();
       await awaitClose(ws);
+    } finally {
+      await close();
+    }
+  });
+});
+
+// B3 (#526): bufferToBody returns the discriminated `{body, isBase64Encoded}`
+// shape so binary frames surface as base64 + the flag, and text frames
+// surface as UTF-8 + flag=false. Pre-fix the function returned a bare
+// string and the discriminator was hardcoded `false` downstream.
+describe('bufferToBody (B3 regression guard)', () => {
+  beforeEach(() => {
+    rieModule.__resetQueue();
+    rieModule.invokeRie.mockClear();
+  });
+  it('returns text body + isBase64Encoded=false for text frames', () => {
+    const buf = Buffer.from('hello world', 'utf-8');
+    expect(bufferToBody(buf, false)).toEqual({
+      body: 'hello world',
+      isBase64Encoded: false,
+    });
+  });
+
+  it('returns base64 body + isBase64Encoded=true for binary frames', () => {
+    const buf = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x80]);
+    expect(bufferToBody(buf, true)).toEqual({
+      body: buf.toString('base64'),
+      isBase64Encoded: true,
+    });
+  });
+
+  it('preserves bytes > 0x7F across binary round-trip (the original bug class)', () => {
+    // 0xFE / 0xFF are NOT valid UTF-8; pre-fix decoding them as UTF-8
+    // would surface as U+FFFD (replacement char), corrupting the
+    // handler's `Buffer.from(event.body, 'utf8')` decode.
+    const original = Buffer.from([0xff, 0xfe, 0x80, 0x7f, 0x00]);
+    const { body, isBase64Encoded } = bufferToBody(original, true);
+    expect(isBase64Encoded).toBe(true);
+    const roundTrip = Buffer.from(body, 'base64');
+    expect(roundTrip.equals(original)).toBe(true);
+  });
+
+  it('concatenates fragmented Buffer[] input before encoding', () => {
+    const fragments = [Buffer.from([0x01, 0x02]), Buffer.from([0x03, 0x04])];
+    const { body, isBase64Encoded } = bufferToBody(fragments, true);
+    expect(isBase64Encoded).toBe(true);
+    expect(Buffer.from(body, 'base64')).toEqual(Buffer.from([0x01, 0x02, 0x03, 0x04]));
+  });
+
+  it('handles ArrayBuffer input', () => {
+    const ab = new ArrayBuffer(3);
+    new Uint8Array(ab).set([0x41, 0x42, 0x43]); // "ABC"
+    expect(bufferToBody(ab, false)).toEqual({
+      body: 'ABC',
+      isBase64Encoded: false,
+    });
+  });
+});
+
+// B3 (#526) end-to-end: binary frames must surface as
+// `isBase64Encoded: true` on the message event so handlers can correctly
+// decode via `Buffer.from(event.body, 'base64')`. Pre-fix the flag was
+// hardcoded `false` and every binary byte > 0x7F silently corrupted.
+describe('binary frame dispatch (B3 end-to-end)', () => {
+  beforeEach(() => {
+    rieModule.__resetQueue();
+    rieModule.invokeRie.mockClear();
+  });
+  it('surfaces isBase64Encoded=true for binary message frames', async () => {
+    rieModule.__resetQueue();
+    rieModule.__queueInvokeResult({ statusCode: 200 }); // $connect
+    rieModule.__queueInvokeResult({}); // $default
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$default', lambda: 'DefaultFn' },
+    ]);
+    const { port, close } = await startTestServer({
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+    });
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      // Send a binary frame containing non-ASCII bytes.
+      const binaryPayload = Buffer.from([0xff, 0xfe, 0x80, 0x42, 0x00]);
+      ws.send(binaryPayload, { binary: true });
+      await new Promise((r) => setTimeout(r, 100));
+      // 2 invokeRie calls: $connect + $default (binary message).
+      expect(rieModule.invokeRie).toHaveBeenCalledTimes(2);
+      const messageCall = rieModule.invokeRie.mock.calls.at(-1) as any;
+      const event = messageCall[2];
+      expect(event.isBase64Encoded).toBe(true);
+      // Body must be the base64-encoded form, NOT a UTF-8 best-effort
+      // decode (which would corrupt 0xFF / 0xFE / 0x80).
+      expect(event.body).toBe(binaryPayload.toString('base64'));
+      // Round-trip must preserve every byte.
+      expect(Buffer.from(event.body, 'base64').equals(binaryPayload)).toBe(true);
+      ws.close();
+      await awaitClose(ws);
+    } finally {
+      await close();
+    }
+  });
+
+  it('surfaces isBase64Encoded=false for text frames (preserves pre-fix behavior)', async () => {
+    rieModule.__resetQueue();
+    rieModule.__queueInvokeResult({ statusCode: 200 });
+    rieModule.__queueInvokeResult({});
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$default', lambda: 'DefaultFn' },
+    ]);
+    const { port, close } = await startTestServer({
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+    });
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      ws.send('{"action":"unknown","text":"hello"}'); // text frame
+      await new Promise((r) => setTimeout(r, 100));
+      const messageCall = rieModule.invokeRie.mock.calls.at(-1) as any;
+      expect(messageCall[2].isBase64Encoded).toBe(false);
+      expect(messageCall[2].body).toBe('{"action":"unknown","text":"hello"}');
+      ws.close();
+      await awaitClose(ws);
+    } finally {
+      await close();
+    }
+  });
+});
+
+// B4 (#526): the $connect-deny path no longer leaks the message listener
+// after the policy-violation close frame. Verified structurally — frames
+// arriving during the close-handshake window are NOT dispatched.
+describe('$connect-deny listener safety (B4 regression guard)', () => {
+  beforeEach(() => {
+    rieModule.__resetQueue();
+    rieModule.invokeRie.mockClear();
+  });
+  it('does NOT dispatch messages sent after a $connect deny', async () => {
+    rieModule.__resetQueue();
+    rieModule.__queueInvokeResult({ statusCode: 403 }); // $connect deny
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$default', lambda: 'DefaultFn' },
+    ]);
+    const { port, close } = await startTestServer({
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+    });
+    try {
+      // Connect with an immediate send race; the client gets denied
+      // but might fire send before the close lands.
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/prod`);
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => {
+          // Spam frames before the deny lands.
+          for (let i = 0; i < 50; i += 1) {
+            try {
+              ws.send(`frame-${i}`);
+            } catch {
+              break;
+            }
+          }
+          resolve();
+        });
+        ws.on('error', () => resolve()); // close fires shortly after
+        setTimeout(reject, 2000);
+      });
+      await awaitClose(ws);
+      // Wait an extra tick for any straggler dispatches.
+      await new Promise((r) => setTimeout(r, 50));
+      // Only the $connect Lambda was invoked; NONE of the 50 frames
+      // dispatched to $default (pre-fix the leaked listener would
+      // have called bufferToBody + dispatchMessage for every frame in
+      // the close-handshake window).
+      expect(rieModule.invokeRie).toHaveBeenCalledTimes(1);
+      const onlyCall = rieModule.invokeRie.mock.calls[0] as any;
+      expect(onlyCall[2].requestContext.routeKey).toBe('$connect');
     } finally {
       await close();
     }

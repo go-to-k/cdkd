@@ -103,6 +103,50 @@ describe('parseConnectionsPath', () => {
   it('returns null for malformed percent-escapes', () => {
     expect(parseConnectionsPath('/@connections/abc%2x')).toBeNull();
   });
+
+  // B1 (#526): AWS-docs-canonical handler shape calls
+  // `POST /<stage>/@connections/<id>`, where <stage> matches the
+  // deployed apigatewaymanagementapi endpoint URL. The pre-fix regex
+  // rejected this shape and SDK calls built from `domainName + stage`
+  // hit a 404 against the local mgmt API. Verify the new accepted
+  // shapes work end-to-end.
+  it('matches /<stage>/@connections/<id> (AWS-docs-canonical with stage prefix)', () => {
+    expect(parseConnectionsPath('/prod/@connections/abc-123')).toEqual({
+      connectionId: 'abc-123',
+    });
+    expect(parseConnectionsPath('/dev/@connections/abc-123')).toEqual({
+      connectionId: 'abc-123',
+    });
+    expect(parseConnectionsPath('/local/@connections/abc-123')).toEqual({
+      connectionId: 'abc-123',
+    });
+  });
+  it('matches /<stage>/@connections/<id>/ (stage prefix + trailing slash)', () => {
+    expect(parseConnectionsPath('/prod/@connections/abc-123/')).toEqual({
+      connectionId: 'abc-123',
+    });
+  });
+  it('matches /<stage>/@connections/<id>?query (stage prefix + query string)', () => {
+    expect(
+      parseConnectionsPath('/prod/@connections/abc?Action=PostToConnection')
+    ).toEqual({
+      connectionId: 'abc',
+    });
+  });
+  it('decodes URL-encoded connection ids when stage prefix is present', () => {
+    expect(parseConnectionsPath('/prod/@connections/conn%2Bid')).toEqual({
+      connectionId: 'conn+id',
+    });
+  });
+  it('still rejects two-segment paths without @connections', () => {
+    expect(parseConnectionsPath('/prod/users/abc')).toBeNull();
+    expect(parseConnectionsPath('/prod/@conn/abc')).toBeNull();
+  });
+  it('rejects multi-segment stage prefixes (only ONE segment before @connections)', () => {
+    // Two segments before @connections — would match if regex allowed
+    // greedy prefixes, but we only accept ONE optional segment.
+    expect(parseConnectionsPath('/v1/prod/@connections/abc')).toBeNull();
+  });
 });
 
 describe('ConnectionRegistry', () => {

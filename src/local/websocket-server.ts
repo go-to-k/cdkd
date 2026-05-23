@@ -164,17 +164,36 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
   };
   opts.httpServer.on('upgrade', upgradeListener);
 
-  // Per-connection driver. Runs `$connect`, registers the socket on
-  // success, then wires the message / close event handlers.
+  // Maximum number of message frames buffered between handshake
+  // completion and the `$connect` verdict. Bounds the memory-allocation
+  // DoS surface against an unauthenticated client that spams frames
+  // during the brief await window: we store the raw Buffer ref only —
+  // no `bufferToBody` allocation work — and cap the buffer length at
+  // this number. Excess frames are dropped (a warn line names the
+  // overflow once per connection).
+  const MAX_PRE_VERDICT_FRAMES = 100;
+
+  // Per-connection driver. The lifecycle is:
+  //   1. Attach a TINY pre-verdict listener that stores raw frame refs
+  //      only (no bufferToBody allocation work).
+  //   2. Invoke the `$connect` Lambda and await the verdict.
+  //   3a. On allow: detach pre-listener, register the connection,
+  //       attach the real `message` / `close` / `error` listeners, then
+  //       synchronously drain the pre-verdict buffer through the real
+  //       dispatcher.
+  //   3b. On deny: detach pre-listener, drop the buffer, close the
+  //       socket with policy-violation (1008). No registry entry, no
+  //       real listeners ever attached — defends against the DoS
+  //       surface where a denied client floods frames in the
+  //       close-handshake window.
   //
-  // Listener-attach ordering is **load-bearing**: 'message' / 'close' /
-  // 'error' handlers are attached SYNCHRONOUSLY (before any await) on
-  // the same micro-task tick the upgrade callback fires. Otherwise a
-  // client that sends a frame immediately after the WebSocket 'open'
-  // event (the common case) can race the >100ms `$connect` Lambda
-  // cold-start and lose the frame — Node's WebSocket library has no
-  // built-in buffer for pre-listener messages. We buffer messages
-  // ourselves in `pendingMessages` until the $connect verdict lands.
+  // This is the structural fix for the pre-fix listener-leak bug:
+  // previously the `message` listener was attached BEFORE the await
+  // and called `bufferToBody` (allocating Buffers) on every incoming
+  // frame, only short-circuiting on the verdict AFTER the allocation
+  // ran. Even after `connectVerdict = 'denied'`, the listener stayed
+  // attached and kept doing allocation work until the socket fully
+  // closed.
   const onConnect = async (
     ws: WebSocket,
     req: IncomingMessage,
@@ -190,40 +209,120 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
       snapshot: handshakeSnapshot,
     });
 
-    // Buffer messages until the $connect verdict resolves. Read by
-    // the post-allow loop; populated by the always-on listener
-    // attached BEFORE the await below.
-    const pendingMessages: string[] = [];
-    let connectVerdict: 'pending' | 'allowed' | 'denied' = 'pending';
+    // Pre-verdict frame buffer. Stores RAW refs only — no allocation
+    // work. Bounded by MAX_PRE_VERDICT_FRAMES to close the DoS surface.
+    const preVerdictFrames: Array<{ raw: Buffer | ArrayBuffer | Buffer[]; isBinary: boolean }> = [];
+    let preVerdictOverflow = false;
+    let preVerdictClosed = false;
 
-    ws.on('message', (raw, isBinary) => {
-      const body = bufferToBody(raw, isBinary);
-      logger.debug(
-        `WebSocket message received for connection ${connectionId} (verdict=${connectVerdict}): ${body.slice(0, 200)}`
-      );
-      if (connectVerdict === 'pending') {
-        pendingMessages.push(body);
+    const preListener = (raw: Buffer | ArrayBuffer | Buffer[], isBinary: boolean): void => {
+      if (preVerdictClosed) return;
+      if (preVerdictFrames.length >= MAX_PRE_VERDICT_FRAMES) {
+        if (!preVerdictOverflow) {
+          preVerdictOverflow = true;
+          logger.warn(
+            `WebSocket connection ${connectionId}: pre-verdict message buffer overflowed (>${MAX_PRE_VERDICT_FRAMES} frames). Excess frames dropped — client is sending faster than the $connect handler can resolve.`
+          );
+        }
         return;
       }
-      if (connectVerdict === 'denied') return;
-      void dispatchMessage(connectionId, cfg, body, handshakeSnapshot).catch((err) => {
-        logger.error(
-          `WebSocket message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
-        );
-        try {
-          ws.send(
-            JSON.stringify({
-              message: 'Internal server error',
-              connectionId,
-              requestId: randomUUID(),
-            })
-          );
-        } catch {
-          /* socket may already be closed */
-        }
-      });
-    });
+      preVerdictFrames.push({ raw, isBinary });
+    };
+    ws.on('message', preListener);
 
+    // `close` / `error` listeners are intentionally NOT attached during
+    // the await. A client disconnect during the $connect window
+    // emits 'close' to no listener (no $disconnect Lambda fires —
+    // matches AWS-deployed semantics where a connection that never
+    // completed $connect never fires $disconnect either).
+
+    // Find the `$connect` route. AWS treats `$connect` as optional —
+    // when absent, the connection is admitted without invoking any
+    // Lambda. Match deployed behavior.
+    const connectRoute = cfg.api.routes.find((r) => r.routeKey === '$connect');
+    if (connectRoute) {
+      const allowed = await invokeRouteAndDecideAuth(
+        connectRoute.targetLambdaLogicalId,
+        connectEvent,
+        opts.pool,
+        rieTimeoutMs
+      );
+      if (!allowed) {
+        // Deny — close the upgrade with policy violation (1008) and
+        // do NOT register the connection. Detach the pre-listener
+        // immediately and drop every buffered frame so no further
+        // allocation work runs during the close-handshake window.
+        preVerdictClosed = true;
+        preVerdictFrames.length = 0;
+        ws.off('message', preListener);
+        try {
+          ws.close(1008, 'Forbidden');
+        } catch {
+          /* ignore */
+        }
+        logger.debug(
+          `WebSocket $connect denied for connection ${connectionId} on ${cfg.api.declaredAt}`
+        );
+        return;
+      }
+    }
+
+    // Verdict = allowed. Detach the pre-listener BEFORE checking
+    // readyState so a close that lands mid-this-function doesn't get
+    // recorded in the pre-buffer.
+    preVerdictClosed = true;
+    ws.off('message', preListener);
+
+    // Did the client disconnect during the $connect await? When yes,
+    // the close event already fired and was dropped (we hadn't
+    // attached `close` yet). Skip registration + skip $disconnect
+    // dispatch (matches AWS-deployed semantics).
+    if (ws.readyState !== ws.OPEN) {
+      preVerdictFrames.length = 0;
+      logger.debug(
+        `WebSocket connection ${connectionId} closed during $connect await (readyState=${ws.readyState}) — skipping registration`
+      );
+      return;
+    }
+
+    const entry: ConnectionRegistryEntry = {
+      connectionId,
+      socket: ws,
+      connectedAt,
+      apiLogicalId: cfg.api.apiLogicalId,
+      stage: cfg.api.stage,
+    };
+    registry.register(entry);
+    logger.debug(
+      `WebSocket connected: ${connectionId} (${cfg.api.declaredAt}, stage=${cfg.api.stage})`
+    );
+
+    // Attach the real listeners NOW. From this point forward, the
+    // standard dispatch path runs for every incoming frame.
+    ws.on('message', (raw, isBinary) => {
+      const { body, isBase64Encoded } = bufferToBody(raw, isBinary);
+      logger.debug(
+        `WebSocket message received for connection ${connectionId}: ${body.slice(0, 200)}`
+      );
+      void dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
+        (err) => {
+          logger.error(
+            `WebSocket message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+          );
+          try {
+            ws.send(
+              JSON.stringify({
+                message: 'Internal server error',
+                connectionId,
+                requestId: randomUUID(),
+              })
+            );
+          } catch {
+            /* socket may already be closed */
+          }
+        }
+      );
+    });
     ws.on('close', (code, reason) => {
       void onDisconnect(connectionId, cfg, handshakeSnapshot, code, reason.toString('utf-8')).catch(
         (err) => {
@@ -239,67 +338,28 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
       );
     });
 
-    // Find the `$connect` route. AWS treats `$connect` as optional —
-    // when absent, the connection is admitted without invoking any
-    // Lambda. Match deployed behavior.
-    const connectRoute = cfg.api.routes.find((r) => r.routeKey === '$connect');
-    if (connectRoute) {
-      const allowed = await invokeRouteAndDecideAuth(
-        connectRoute.targetLambdaLogicalId,
-        connectEvent,
-        opts.pool,
-        rieTimeoutMs
-      );
-      if (!allowed) {
-        // Deny — close the upgrade with policy violation (1008) and
-        // do NOT register the connection. AWS-deployed behavior is to
-        // refuse the upgrade entirely; we already completed the
-        // handshake by calling `handleUpgrade`, so the closest we can
-        // get is an immediate close frame with the policy code.
-        connectVerdict = 'denied';
-        pendingMessages.length = 0;
-        try {
-          ws.close(1008, 'Forbidden');
-        } catch {
-          /* ignore */
+    // Drain any frames buffered pre-verdict synchronously. Each frame
+    // goes through the same dispatcher as a real-time frame —
+    // bufferToBody allocation runs here (post-admit, bounded count)
+    // not at frame-receive time (pre-admit, unbounded by attacker).
+    for (const frame of preVerdictFrames) {
+      const { body, isBase64Encoded } = bufferToBody(frame.raw, frame.isBinary);
+      void dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
+        (err) => {
+          logger.error(
+            `WebSocket buffered-message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+          );
         }
-        logger.debug(
-          `WebSocket $connect denied for connection ${connectionId} on ${cfg.api.declaredAt}`
-        );
-        return;
-      }
+      );
     }
-
-    const entry: ConnectionRegistryEntry = {
-      connectionId,
-      socket: ws,
-      connectedAt,
-      apiLogicalId: cfg.api.apiLogicalId,
-      stage: cfg.api.stage,
-    };
-    registry.register(entry);
-    connectVerdict = 'allowed';
-    logger.debug(
-      `WebSocket connected: ${connectionId} (${cfg.api.declaredAt}, stage=${cfg.api.stage})`
-    );
-
-    // Drain any messages buffered during the $connect await. Same
-    // dispatcher as the inline path — the buffered messages just had
-    // their frame arrival timestamp predate the registry entry.
-    for (const body of pendingMessages) {
-      void dispatchMessage(connectionId, cfg, body, handshakeSnapshot).catch((err) => {
-        logger.error(
-          `WebSocket buffered-message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
-        );
-      });
-    }
-    pendingMessages.length = 0;
+    preVerdictFrames.length = 0;
   };
 
   const dispatchMessage = async (
     connectionId: string,
     cfg: WebSocketApiConfig,
     body: string,
+    isBase64Encoded: boolean,
     snapshot: WebSocketHandshakeSnapshot
   ): Promise<void> => {
     const entry = registry.get(connectionId);
@@ -331,6 +391,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
       snapshot,
       routeKey,
       body,
+      isBase64Encoded,
     });
     // AWS-deployed WebSocket APIs invoke the handler then DISCARD the
     // response; handler code MUST use `PostToConnection` to reply.
@@ -583,18 +644,28 @@ function safeDecode(s: string): string | null {
 
 /**
  * Convert a ws-emitted message buffer into the AWS-canonical event
- * body. Text frames pass through as UTF-8; binary frames are base64-
- * encoded so the handler receives a valid string (matches AWS's
- * `requestContext.isBase64Encoded` shape — but in v1 we always emit
- * the body as a UTF-8 string for simplicity and only flip to base64
- * for actual binary frames).
+ * body + `isBase64Encoded` discriminator. Text frames (opcode 0x1) pass
+ * through as UTF-8 with `isBase64Encoded: false`; binary frames
+ * (opcode 0x2) are base64-encoded with `isBase64Encoded: true`. Matches
+ * AWS-deployed WebSocket API event shape exactly — handlers decode via
+ * `Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'utf8')`.
+ *
+ * Closes the data-integrity bug where every byte > 0x7F on a binary
+ * frame was silently corrupted by handlers that trusted the previously
+ * hardcoded `isBase64Encoded: false` flag and UTF-8-decoded the
+ * base64-encoded body.
  */
-function bufferToBody(raw: Buffer | ArrayBuffer | Buffer[], isBinary: boolean): string {
+export function bufferToBody(
+  raw: Buffer | ArrayBuffer | Buffer[],
+  isBinary: boolean
+): { body: string; isBase64Encoded: boolean } {
   const buf: Buffer = Array.isArray(raw)
     ? Buffer.concat(raw)
     : Buffer.isBuffer(raw)
       ? raw
       : Buffer.from(raw);
-  if (isBinary) return buf.toString('base64');
-  return buf.toString('utf-8');
+  if (isBinary) {
+    return { body: buf.toString('base64'), isBase64Encoded: true };
+  }
+  return { body: buf.toString('utf-8'), isBase64Encoded: false };
 }

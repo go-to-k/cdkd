@@ -348,3 +348,132 @@ describe('parseSelectionExpressionPath', () => {
     expect(parseSelectionExpressionPath('$context.connectionId')).toEqual([]);
   });
 });
+
+// B2 (#526): non-NONE `AuthorizationType` on any Route belonging to a
+// WebSocket API must tag the parent API as `unsupported`. cdkd v1 does
+// not emulate WebSocket authorizers; silently admitting unauthenticated
+// clients would be a security gap (mirrors the structural pre-empt fix
+// PR #514 shipped for HTTP API v2 service integrations). The CLI's
+// attach loop skips an `unsupported`-tagged API and surfaces the reason
+// as a startup warn.
+describe('discoverWebSocketApis B2 authorizer admission guard', () => {
+  function buildAuthApi(authorizationType: string | undefined): StackInfo {
+    return buildStack('AuthStack', {
+      MyHandler: buildLambda(),
+      WsApi: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: {
+          ProtocolType: 'WEBSOCKET',
+          Name: 'WsApi',
+          RouteSelectionExpression: '$request.body.action',
+        },
+      },
+      ConnectIntegration: buildIntegration(),
+      ConnectRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$connect',
+          Target: 'integrations/ConnectIntegration',
+          ...(authorizationType !== undefined && { AuthorizationType: authorizationType }),
+        },
+      },
+    });
+  }
+
+  it('tags API as unsupported when $connect Route has AuthorizationType: AWS_IAM', () => {
+    const { apis, errors } = discoverWebSocketApis([buildAuthApi('AWS_IAM')]);
+    expect(errors).toEqual([]);
+    expect(apis).toHaveLength(1);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('AWS_IAM');
+    expect(apis[0]!.unsupported!.reason).toContain('$connect');
+    expect(apis[0]!.unsupported!.reason).toContain('cdkd v1 does not emulate');
+  });
+
+  it('tags API as unsupported when $connect Route has AuthorizationType: CUSTOM', () => {
+    const { apis } = discoverWebSocketApis([buildAuthApi('CUSTOM')]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('CUSTOM');
+  });
+
+  it('tags API as unsupported when $connect Route has AuthorizationType: JWT', () => {
+    const { apis } = discoverWebSocketApis([buildAuthApi('JWT')]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    expect(apis[0]!.unsupported!.reason).toContain('JWT');
+  });
+
+  it('does NOT tag API as unsupported when AuthorizationType is explicitly NONE', () => {
+    const { apis } = discoverWebSocketApis([buildAuthApi('NONE')]);
+    expect(apis[0]!.unsupported).toBeUndefined();
+  });
+
+  it('does NOT tag API as unsupported when AuthorizationType is omitted (AWS default = NONE)', () => {
+    const { apis } = discoverWebSocketApis([buildAuthApi(undefined)]);
+    expect(apis[0]!.unsupported).toBeUndefined();
+  });
+
+  it('lists every auth-tagged route in the reason when multiple routes have auth', () => {
+    const stack = buildStack('MultiAuth', {
+      MyHandler: buildLambda(),
+      WsApi: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: {
+          ProtocolType: 'WEBSOCKET',
+          Name: 'WsApi',
+          RouteSelectionExpression: '$request.body.action',
+        },
+      },
+      ConnectIntegration: buildIntegration(),
+      ConnectRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$connect',
+          Target: 'integrations/ConnectIntegration',
+          AuthorizationType: 'AWS_IAM',
+        },
+      },
+      DefaultRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$default',
+          Target: 'integrations/ConnectIntegration',
+          AuthorizationType: 'CUSTOM',
+        },
+      },
+    });
+    const { apis } = discoverWebSocketApis([stack]);
+    expect(apis[0]!.unsupported).toBeDefined();
+    const reason = apis[0]!.unsupported!.reason;
+    expect(reason).toContain('$connect [AuthorizationType=AWS_IAM]');
+    expect(reason).toContain('$default [AuthorizationType=CUSTOM]');
+  });
+
+  it('does NOT tag the API when only $disconnect / non-$connect routes have NONE auth', () => {
+    const stack = buildStack('S', {
+      MyHandler: buildLambda(),
+      WsApi: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: {
+          ProtocolType: 'WEBSOCKET',
+          Name: 'WsApi',
+          RouteSelectionExpression: '$request.body.action',
+        },
+      },
+      ConnectIntegration: buildIntegration(),
+      ConnectRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$connect',
+          Target: 'integrations/ConnectIntegration',
+          AuthorizationType: 'NONE',
+        },
+      },
+    });
+    const { apis } = discoverWebSocketApis([stack]);
+    expect(apis[0]!.unsupported).toBeUndefined();
+  });
+});

@@ -90,13 +90,29 @@ export class ConnectionRegistry {
  *
  * AWS reserves `$` / `@` for control planes so the path prefix
  * `/@connections/` can never collide with user-declared routes.
+ *
+ * Accepted shapes:
+ *   - `/@connections/<id>` (AWS-deployed historical form — supported
+ *     for backward compatibility with handlers that construct URLs
+ *     manually).
+ *   - `/<stage>/@connections/<id>` (AWS-docs-canonical form — the
+ *     deployed apigatewaymanagementapi endpoint URL is
+ *     `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`,
+ *     so SDK-built clients call `POST /<stage>/@connections/<id>`).
+ *
+ * The optional `<stage>` segment matches AWS's deployed URL exactly —
+ * any non-slash sequence preceding `/@connections/`. The stage value
+ * itself is intentionally NOT validated against the per-API configured
+ * stage name: cdkd is a local-dev tool, not a security boundary, and
+ * an aggressive stage check would just trip on misconfigured handlers
+ * without adding any real protection.
  */
 export function parseConnectionsPath(url: string): {
   connectionId: string;
 } | null {
   // Strip the optional query string (e.g. `?Action=GetConnection`).
   const pathOnly = url.split('?', 1)[0]!;
-  const m = /^\/@connections\/([^/]+)\/?$/.exec(pathOnly);
+  const m = /^\/(?:[^/]+\/)?@connections\/([^/]+)\/?$/.exec(pathOnly);
   if (!m) return null;
   const decoded = safeDecodeURIComponent(m[1]!);
   if (decoded === null) return null;

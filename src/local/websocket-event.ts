@@ -188,6 +188,15 @@ export function buildMessageEvent(opts: {
   snapshot: WebSocketHandshakeSnapshot;
   routeKey: string;
   body: string;
+  /**
+   * Whether the body is base64-encoded. True iff the source WebSocket
+   * frame was binary (opcode 0x2); false for text frames (opcode 0x1).
+   * Matches AWS-deployed WebSocket API semantics — handlers reading
+   * `event.body` decode with `Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'utf8')`.
+   * Hardcoding this to `false` (pre-fix) silently corrupted every byte
+   * > 0x7F because the UTF-8 decoder rejected / replaced binary bytes.
+   */
+  isBase64Encoded: boolean;
 }): WebSocketLambdaEvent {
   return {
     requestContext: {
@@ -201,7 +210,7 @@ export function buildMessageEvent(opts: {
       ),
       messageId: randomUUID(),
     },
-    isBase64Encoded: false,
+    isBase64Encoded: opts.isBase64Encoded,
     body: opts.body,
   };
 }

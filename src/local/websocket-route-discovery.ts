@@ -62,6 +62,23 @@ export interface DiscoveredWebSocketApi {
    * design's "Lambda-only in v1" constraint.
    */
   routes: WebSocketRouteEntry[];
+  /**
+   * Set when the whole API is unsupported by cdkd's local emulation.
+   * The CLI's WebSocket attach loop skips an `unsupported`-tagged API
+   * (no server is attached, no upgrade is accepted) and surfaces the
+   * `reason` as a startup warn naming the affected API so the user
+   * sees the gap BEFORE attempting a `wscat`.
+   *
+   * v1 sets this when any route declares
+   * `AuthorizationType !== 'NONE'` (`'AWS_IAM'` / `'CUSTOM'` /
+   * `'JWT'` / `'COGNITO_USER_POOLS'`) — auth on `$connect` is the
+   * canonical WebSocket guard and silently admitting unauthenticated
+   * clients would be a security gap (mirrors the structural pre-empt
+   * fix PR #514 shipped for HTTP API v2 service integrations). Full
+   * authorizer support (wiring `attachAuthorizers` / `runAuthorizerPass`
+   * into the `$connect` flow) is tracked as a follow-up.
+   */
+  unsupported?: { reason: string };
 }
 
 /** One row in {@link DiscoveredWebSocketApi.routes}. */
@@ -171,6 +188,27 @@ function discoverOneApi(
     );
   }
 
+  // Scan for non-NONE AuthorizationType on any Route belonging to
+  // this API. If found, tag the whole API as unsupported — the CLI
+  // attach loop will skip it (no upgrade accepted) and surface the
+  // affected routes as a startup warn. cdkd v1 does NOT emulate
+  // WebSocket authorizers; silently admitting an unauthenticated
+  // client would be a security gap that diverges from
+  // AWS-deployed behavior. Full authorizer support (wire
+  // `attachAuthorizers` / `runAuthorizerPass` into the `$connect`
+  // flow) is tracked as a follow-up.
+  const authRoutes = collectAuthRoutesForApi(logicalId, template, stackName);
+  const unsupported =
+    authRoutes.length > 0
+      ? {
+          reason: `WebSocket API requires authorizer support, which cdkd v1 does not emulate. Affected route(s): ${authRoutes
+            .map((r) => `${r.routeKey} [AuthorizationType=${r.authorizationType}]`)
+            .join(
+              ', '
+            )}. The API will be discovered but no upgrade requests will be accepted on this server.`,
+        }
+      : undefined;
+
   return {
     apiLogicalId: logicalId,
     apiStackName: stackName,
@@ -179,7 +217,40 @@ function discoverOneApi(
     routeSelectionExpression,
     stage,
     routes,
+    ...(unsupported !== undefined && { unsupported }),
   };
+}
+
+/**
+ * Scan the synthesized template for every `AWS::ApiGatewayV2::Route`
+ * referencing the given WebSocket API, returning the subset whose
+ * `AuthorizationType` is set to anything other than `NONE` (the
+ * AWS-default when omitted). Used by {@link discoverOneApi} to tag
+ * the parent API as unsupported when v1's no-authorizer emulation
+ * gap would otherwise let unauthenticated clients through.
+ */
+function collectAuthRoutesForApi(
+  apiLogicalId: string,
+  template: CloudFormationTemplate,
+  _stackName: string
+): { routeKey: string; authorizationType: string }[] {
+  const resources = template.Resources ?? {};
+  const result: { routeKey: string; authorizationType: string }[] = [];
+  for (const [, resource] of Object.entries(resources)) {
+    if (resource.Type !== 'AWS::ApiGatewayV2::Route') continue;
+    const props = resource.Properties ?? {};
+    const parentRef = pickRefLogicalId(props['ApiId']);
+    if (parentRef !== apiLogicalId) continue;
+    const authType = props['AuthorizationType'];
+    if (typeof authType !== 'string' || authType.length === 0) continue;
+    if (authType === 'NONE') continue;
+    const routeKey = props['RouteKey'];
+    result.push({
+      routeKey: typeof routeKey === 'string' ? routeKey : '<unknown>',
+      authorizationType: authType,
+    });
+  }
+  return result;
 }
 
 /**
