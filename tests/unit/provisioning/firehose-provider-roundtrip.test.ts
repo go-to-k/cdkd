@@ -349,7 +349,7 @@ describe('FirehoseProvider.update — ExtendedS3 destination (#477)', () => {
           },
         }
       )
-    ).rejects.toThrow(/S3DestinationConfiguration/);
+    ).rejects.toThrow(/'S3DestinationConfiguration'/);
   });
 });
 
@@ -1459,5 +1459,221 @@ describe('FirehoseProvider.update — Snowflake destination (#549)', () => {
     expect(updates).toHaveLength(1);
     const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
     expect(input['SnowflakeDestinationUpdate']).toEqual({ Table: 'events_v2' });
+  });
+});
+
+// Regression tests for PR #553 review fix-back:
+//   (a) CDK-emitted lowercase ARN aliases (`BucketArn` / `RoleArn` /
+//       `DomainArn`) must be renamed to the SDK's uppercase form in the
+//       Update payload — verbatim forwarding sends the lowercase key to
+//       AWS which rejects it. The create() path handles the rename via
+//       per-mapper alias coalescing (`config['RoleARN'] ?? config['RoleArn']`);
+//       the Update path must do the same.
+//   (b) The `!== undefined` gating (per memory rule
+//       `feedback_update_optional_field_undefined_check.md`) must let
+//       explicit-falsy values (`false`, `0`, `''`) reach the Update
+//       payload so `cdkd drift --revert` can clear console-side changes
+//       back to those falsy values. A truthy-gate regression would pass
+//       every previous test but break drift-revert silently.
+describe('FirehoseProvider.update — CDK lowercase ARN alias regressions (#549 / #553 fix-back)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '99',
+            Destinations: [{ DestinationId: 'destinationId-alias-99' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('Iceberg S3Configuration: BucketArn / RoleArn (CDK lowercase) → BucketARN / RoleARN (SDK uppercase) in the Update payload', async () => {
+    // The Iceberg quirk is that the SDK Update field is named
+    // `S3Configuration` (full S3DestinationConfiguration shape), not
+    // `S3Update`. The reverse-mapper routes through the existing
+    // `mapS3DestinationConfiguration` helper which handles the lowercase
+    // alias rename — verbatim forwarding would send `BucketArn` and AWS
+    // would reject it.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        IcebergDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
+          S3Configuration: {
+            // CDK emits these lowercase. The reverse-mapper must rename.
+            BucketArn: 'arn:aws:s3:::iceberg-backup',
+            RoleArn: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'iceberg/',
+          },
+        },
+      },
+      {
+        IcebergDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['IcebergDestinationUpdate'] as Record<string, unknown>;
+    const s3 = updateShape['S3Configuration'] as Record<string, unknown>;
+    // Critical assertions: only the uppercase form reaches AWS.
+    expect(s3['BucketARN']).toBe('arn:aws:s3:::iceberg-backup');
+    expect(s3['RoleARN']).toBe('arn:aws:iam::111:role/firehose-role');
+    expect(s3).not.toHaveProperty('BucketArn');
+    expect(s3).not.toHaveProperty('RoleArn');
+  });
+
+  it('Amazonopensearchservice DomainArn (CDK lowercase) → DomainARN (SDK uppercase) in the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/cluster-v2',
+          IndexName: 'logs-v2',
+        },
+      },
+      {
+        AmazonopensearchserviceDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/cluster-v1',
+          IndexName: 'logs-v1',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['AmazonopensearchserviceDestinationUpdate'] as Record<
+      string,
+      unknown
+    >;
+    expect(updateShape['DomainARN']).toBe('arn:aws:es:us-east-1:111:domain/cluster-v2');
+    expect(updateShape).not.toHaveProperty('DomainArn');
+  });
+
+  it('Elasticsearch DomainArn (CDK lowercase) → DomainARN (SDK uppercase) in the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        ElasticsearchDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/legacy-v2',
+          IndexName: 'logs-v2',
+        },
+      },
+      {
+        ElasticsearchDestinationConfiguration: {
+          DomainArn: 'arn:aws:es:us-east-1:111:domain/legacy-v1',
+          IndexName: 'logs-v1',
+        },
+      }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['ElasticsearchDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape['DomainARN']).toBe('arn:aws:es:us-east-1:111:domain/legacy-v2');
+    expect(updateShape).not.toHaveProperty('DomainArn');
+  });
+});
+
+describe('FirehoseProvider.update — explicit-falsy-value pass-through (#549 / #553 fix-back)', () => {
+  // Per memory rule `feedback_update_optional_field_undefined_check.md`,
+  // `!== undefined` gating must forward `false` / `0` / `''` to AWS so
+  // `cdkd drift --revert` can clear console-side mutations. These tests
+  // pin that intent — a future refactor to truthy gating
+  // (`if (config[k])`) would break drift-revert and pass every other
+  // test in this file; only these tests catch the regression.
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:111:deliverystream/my-stream',
+            VersionId: '88',
+            Destinations: [{ DestinationId: 'destinationId-falsy-88' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('Iceberg AppendOnly: false reaches the Update payload (boolean false survives gating)', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { IcebergDestinationConfiguration: { AppendOnly: false } },
+      { IcebergDestinationConfiguration: { AppendOnly: true } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['IcebergDestinationUpdate'] as Record<string, unknown>;
+    // The key MUST exist with the value `false`, not be silently dropped.
+    expect(updateShape).toHaveProperty('AppendOnly', false);
+  });
+
+  it('Snowflake MetaDataColumnName: empty string reaches the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SnowflakeDestinationConfiguration: { MetaDataColumnName: '' } },
+      { SnowflakeDestinationConfiguration: { MetaDataColumnName: 'old_meta' } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['SnowflakeDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape).toHaveProperty('MetaDataColumnName', '');
+  });
+
+  it('Splunk HECAcknowledgmentTimeoutInSeconds: 0 reaches the Update payload', async () => {
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      { SplunkDestinationConfiguration: { HECAcknowledgmentTimeoutInSeconds: 0 } },
+      { SplunkDestinationConfiguration: { HECAcknowledgmentTimeoutInSeconds: 600 } }
+    );
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['SplunkDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape).toHaveProperty('HECAcknowledgmentTimeoutInSeconds', 0);
   });
 });

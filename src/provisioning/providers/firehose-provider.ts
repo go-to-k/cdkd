@@ -762,12 +762,12 @@ export class FirehoseProvider implements ResourceProvider {
       'AmazonopensearchserviceDestinationConfiguration',
       'SplunkDestinationConfiguration',
       'AmazonOpenSearchServerlessDestinationConfiguration',
-      // Newer destination types (Iceberg / Snowflake) — current cdkd
-      // does not implement reverse-mappers for them, so they hit the
-      // non-ExtendedS3 reject branch with a clear message. Tracked as
-      // follow-ups to #477. Listed here so a stream USING one of them
-      // isn't silently treated as "no destination", which would let
-      // tag-only diffs proceed without surfacing the unsupported-update.
+      // Every destination key supports in-place update via UpdateDestination
+      // (#477 + #549 follow-ups), with the sole exception of the legacy
+      // `S3DestinationConfiguration` listed above — AWS deprecated that
+      // shape in favor of `ExtendedS3DestinationConfiguration`, CDK
+      // constructs always emit Extended, and the rejection branch in
+      // update() points users at that migration.
       'IcebergDestinationConfiguration',
       'SnowflakeDestinationConfiguration',
     ];
@@ -1263,7 +1263,8 @@ export class FirehoseProvider implements ResourceProvider {
     const result: AmazonopensearchserviceDestinationUpdate = {};
     const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
     if (roleArn !== undefined) result.RoleARN = roleArn;
-    if (config['DomainARN'] !== undefined) result.DomainARN = config['DomainARN'] as string;
+    const domainArn = (config['DomainARN'] ?? config['DomainArn']) as string | undefined;
+    if (domainArn !== undefined) result.DomainARN = domainArn;
     if (config['ClusterEndpoint'] !== undefined) {
       result.ClusterEndpoint = config['ClusterEndpoint'] as string;
     }
@@ -1519,7 +1520,8 @@ export class FirehoseProvider implements ResourceProvider {
     const result: ElasticsearchDestinationUpdate = {};
     const roleArn = (config['RoleARN'] ?? config['RoleArn']) as string | undefined;
     if (roleArn !== undefined) result.RoleARN = roleArn;
-    if (config['DomainARN'] !== undefined) result.DomainARN = config['DomainARN'] as string;
+    const domainArn = (config['DomainARN'] ?? config['DomainArn']) as string | undefined;
+    if (domainArn !== undefined) result.DomainARN = domainArn;
     if (config['ClusterEndpoint'] !== undefined) {
       result.ClusterEndpoint = config['ClusterEndpoint'] as string;
     }
@@ -1653,11 +1655,15 @@ export class FirehoseProvider implements ResourceProvider {
     }
     // Iceberg's S3 field is named `S3Configuration` on the Update shape
     // (a full S3DestinationConfiguration), unlike the other destinations
-    // which use the partial `S3Update` shape. Forward verbatim.
+    // which use the partial `S3Update` shape. Route through the shared
+    // `mapS3DestinationConfiguration` helper so `BucketArn` / `RoleArn`
+    // (the CDK-emitted lowercase aliases) get renamed to `BucketARN` /
+    // `RoleARN` — verbatim forwarding would send the lowercase keys to
+    // AWS, which rejects them on the Update API.
     if (config['S3Configuration'] !== undefined) {
-      result.S3Configuration = config[
-        'S3Configuration'
-      ] as IcebergDestinationUpdate['S3Configuration'];
+      result.S3Configuration = this.mapS3DestinationConfiguration(
+        config['S3Configuration'] as Record<string, unknown>
+      );
     }
     return result;
   }
