@@ -92,9 +92,21 @@ export async function probeHostGatewaySupport(): Promise<HostGatewayProbeResult>
   });
   const rawVersion = result.stdout.trim();
   const parsed = parseDockerVersion(rawVersion);
-  // Treat unparseable versions as "supported" — podman / finch /
-  // nerdctl emit version strings cdkd can't always compare against
-  // Docker's. Defer to the warn path rather than refuse the boot.
+  // Empty stdout is treated as `supported=false` — `docker version
+  // --format '{{.Server.Version}}'` returning an empty string is much
+  // more likely a broken probe (daemon unreachable, permission stripped
+  // output, format string mismatch on a forked CLI) than a podman /
+  // finch shape. Masking it as "unknown engine, proceed" would defeat
+  // the whole point of the probe — the caller's error path surfaces
+  // the empty string explicitly so the user can diagnose the
+  // underlying daemon failure. Surfaced by PR #539 review.
+  if (rawVersion === '') {
+    return { rawVersion, parsed: null, supported: false };
+  }
+  // Treat unparseable-but-non-empty versions as "supported" — podman /
+  // finch / nerdctl emit version strings cdkd can't always compare
+  // against Docker's. Defer to the warn path rather than refuse the
+  // boot.
   const supported = parsed === null || compareDockerVersions(parsed, HOST_GATEWAY_MIN_VERSION) >= 0;
   return { rawVersion, parsed, supported };
 }

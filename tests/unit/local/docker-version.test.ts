@@ -95,6 +95,24 @@ describe('probeHostGatewaySupport', () => {
     expect(probe.supported).toBe(true); // defer to warn path, not hard-fail
     expect(probe.rawVersion).toBe('podman version 4.6.1');
   });
+  it('returns supported=false for empty stdout (daemon unreachable / output stripped)', async () => {
+    // Surfaced by PR #539 review: pre-fix the empty-stdout case
+    // returned `supported=true` (warn-and-pass) because the
+    // unparseable-version branch short-circuited before checking for
+    // the empty string. Empty stdout from `docker version` is much
+    // more likely a broken probe than a real-but-unparseable engine.
+    dockerCmd.runDockerStreaming.mockResolvedValueOnce({ stdout: '', stderr: '' });
+    const probe = await probeHostGatewaySupport();
+    expect(probe.rawVersion).toBe('');
+    expect(probe.parsed).toBeNull();
+    expect(probe.supported).toBe(false);
+  });
+  it('returns supported=false for whitespace-only stdout', async () => {
+    dockerCmd.runDockerStreaming.mockResolvedValueOnce({ stdout: '   \n  ', stderr: '' });
+    const probe = await probeHostGatewaySupport();
+    expect(probe.rawVersion).toBe('');
+    expect(probe.supported).toBe(false);
+  });
   it('lets a docker subprocess failure bubble up unchanged (binary missing / daemon down)', async () => {
     const fakeErr = new Error('Failed to find and execute \'docker\'');
     dockerCmd.runDockerStreaming.mockRejectedValueOnce(fakeErr);

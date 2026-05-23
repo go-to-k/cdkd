@@ -153,14 +153,19 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
   const enqueueDispatch = (connectionId: string, work: () => Promise<void>): Promise<void> => {
     const prev = dispatchChainsByConnection.get(connectionId) ?? Promise.resolve();
     const next = prev.then(work);
-    dispatchChainsByConnection.set(
-      connectionId,
-      next.finally(() => {
-        if (dispatchChainsByConnection.get(connectionId) === next) {
-          dispatchChainsByConnection.delete(connectionId);
-        }
-      })
-    );
+    // Store `next` directly in the Map (NOT `next.finally(...)`): the
+    // `=== next` identity check below would never match if we stored
+    // the finally-wrapper, and the entry would leak permanently — the
+    // pre-fix bug surfaced in PR #539 review. Storing `next` keeps the
+    // chain semantics (the next enqueue picks up `next` as its `prev`
+    // and the finally-tap runs at the same logical time as `next`
+    // resolves) while making the cleanup branch reachable.
+    dispatchChainsByConnection.set(connectionId, next);
+    void next.finally(() => {
+      if (dispatchChainsByConnection.get(connectionId) === next) {
+        dispatchChainsByConnection.delete(connectionId);
+      }
+    });
     return next;
   };
 
