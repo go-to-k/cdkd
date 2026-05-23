@@ -1,3 +1,10 @@
+# [0.140.0](https://github.com/go-to-k/cdkd/compare/v0.139.0...v0.140.0) (2026-05-23)
+
+
+### Features
+
+* **provisioning:** in-place update for Firehose ExtendedS3 destination + Tags ([#477](https://github.com/go-to-k/cdkd/issues/477)) ([#545](https://github.com/go-to-k/cdkd/issues/545)) ([7cb1192](https://github.com/go-to-k/cdkd/commit/7cb119245019bd8302596dbad6b3e283fc277b58))
+
 # [0.139.0](https://github.com/go-to-k/cdkd/compare/v0.138.0...v0.139.0) (2026-05-23)
 
 
