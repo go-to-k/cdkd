@@ -2,7 +2,6 @@
 description: cdkd testing strategy (unit / integration / UPDATE / Rollback failure injection)
 paths:
   - 'tests/**'
-  - 'src/**/*.ts'
 ---
 
 # Testing Strategy
