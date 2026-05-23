@@ -53,7 +53,7 @@ export class NestedStackProvider implements ResourceProvider {
    * internally — mirroring the same opt-out the Custom Resource provider
    * uses for the same reason.
    */
-  disableOuterRetry = true;
+  readonly disableOuterRetry = true;
 
   /**
    * The CC API fallback path for `AWS::CloudFormation::Stack` would call
@@ -63,7 +63,7 @@ export class NestedStackProvider implements ResourceProvider {
    * surfaces as an explicit "unhandled property" deploy error instead of
    * silently round-tripping through CloudFormation.
    */
-  disableCcApiFallback = true;
+  readonly disableCcApiFallback = true;
 
   /**
    * Properties this provider actually wires through to the child deploy.
@@ -256,6 +256,13 @@ export class NestedStackProvider implements ResourceProvider {
     // Treat a missing child state file as idempotent success — the child
     // was never deployed or was already destroyed out-of-band. Mirrors
     // every other provider's "not found = already gone" delete semantic.
+    //
+    // Load-bearing assumption: `S3StateBackend.getState` returns `null`
+    // ONLY on a 404 (NoSuchKey) and throws on every other failure class
+    // (auth / IAM / network / 5xx). A future refactor that swallows those
+    // error classes and returns `null` would silently mask real failures
+    // here and leave orphan AWS resources behind — re-verify the backend
+    // contract before changing its null-return semantics.
     const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
     if (!childStateData) {
       this.logger.debug(
@@ -345,7 +352,14 @@ export class NestedStackProvider implements ResourceProvider {
       parentCtx.providerRegistry,
       {
         ...(parentCtx.options ?? {}),
-        ...(Object.keys(childParameters).length > 0 && { parameters: childParameters }),
+        // Always overwrite (never spread-inherit) parameters: the parent's
+        // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,
+        // and inheriting it would silently leak into the child if the child
+        // template happens to declare a same-named parameter the user did
+        // not intend to set. The child's own parameters come from
+        // `properties.Parameters` on its `AWS::CloudFormation::Stack`
+        // resource — that's the authoritative source.
+        parameters: childParameters,
         parentStackInfo: {
           parentStack: parentCtx.parentStackName,
           parentLogicalId: logicalId,
@@ -426,9 +440,27 @@ export class NestedStackProvider implements ResourceProvider {
     for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
       // Intrinsics in Parameter values were already resolved by the
       // parent's IntrinsicFunctionResolver before reaching the provider,
-      // so the value here is a literal — cast non-string scalars to string
-      // (matches CFn's own coercion of NumberParameter to string at boundary).
-      result[k] = typeof v === 'string' ? v : String(v);
+      // so the value here is a scalar literal — cast number / boolean to
+      // string (matches CFn's own coercion of NumberParameter to string
+      // at boundary). Refuse non-scalars: if an unresolved intrinsic
+      // object leaks through the resolver, `String(obj)` would silently
+      // produce `[object Object]` and the child engine would deploy
+      // with a meaningless parameter value. Loud failure is the right
+      // signal for the upstream resolver bug.
+      if (typeof v === 'string') {
+        result[k] = v;
+      } else if (typeof v === 'number' || typeof v === 'boolean') {
+        result[k] = String(v);
+      } else {
+        throw new Error(
+          `NestedStackProvider: child Parameter '${k}' resolved to a non-scalar value ` +
+            `(type=${v === null ? 'null' : typeof v}). Parameters must be scalars (string / ` +
+            `number / boolean) by the time they reach the provider — an unresolved intrinsic ` +
+            `here means IntrinsicFunctionResolver upstream did not handle the value, which ` +
+            `is a bug. Surface the unresolved input rather than silently coercing to ` +
+            `'[object Object]'.`
+        );
+      }
     }
     return result;
   }
@@ -461,9 +493,24 @@ export class NestedStackProvider implements ResourceProvider {
       if (resource?.Type !== 'AWS::CloudFormation::Stack') continue;
       const meta = resource.Metadata as Record<string, unknown> | undefined;
       const assetPath = meta?.['aws:asset:path'];
-      if (typeof assetPath === 'string' && assetPath.length > 0) {
-        result[grandLogicalId] = path.join(dir, assetPath);
+      if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
+      // CDK emits relative asset paths for nested templates (they're
+      // siblings of the parent template in the same cdk.out directory).
+      // An absolute path indicates the synth output was hand-modified or
+      // generated by a non-CDK toolchain — `path.join(dir, '/abs/foo')`
+      // produces `/abs/foo` (POSIX) which silently bypasses our `dir`
+      // resolution and points outside cdk.out. Refuse loudly rather than
+      // accept a path we cannot trust.
+      if (path.isAbsolute(assetPath)) {
+        throw new Error(
+          `NestedStackProvider: nested-stack '${grandLogicalId}' has ` +
+            `Metadata['aws:asset:path']='${assetPath}' which is absolute. ` +
+            `CDK emits relative asset paths for nested templates; an absolute path ` +
+            `indicates the synth output was hand-modified or generated by a non-CDK ` +
+            `toolchain. Refusing to load.`
+        );
       }
+      result[grandLogicalId] = path.join(dir, assetPath);
     }
     return result;
   }

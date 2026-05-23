@@ -11,18 +11,34 @@ import {
 import type { StackState } from '../../../src/types/state.js';
 
 // Mock DeployEngine so create / update don't require a real S3 backend.
-// The mock records every constructor call so the test can verify it
-// received the right child stackName / region / parameters / parentStackInfo.
+// The mock records every constructor call AND the AsyncLocalStorage
+// context at deploy() time so the test can verify both the constructor
+// inputs (parentStackInfo etc.) and the ALS childCtx the recursive
+// provider switched into for grandchild resolution.
 const deployCalls: Array<{
   ctor: unknown[];
-  deploy: { stackName: string; templateResourceCount: number };
+  deploy: {
+    stackName: string;
+    templateResourceCount: number;
+    capturedCtx: NestedStackProviderContext | undefined;
+  };
 }> = [];
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   DeployEngine: vi.fn().mockImplementation((...ctor: unknown[]) => ({
     deploy: vi.fn(async (stackName: string, template: { Resources?: Record<string, unknown> }) => {
+      // Dynamic import inside the mock factory body: top-level imports
+      // are hoisted before vi.mock() and would create a TDZ / circular
+      // ref. Lazy import resolves at call time after the module graph
+      // has settled.
+      const ctxMod = await import('../../../src/provisioning/nested-stack-context.js');
+      const capturedCtx = ctxMod.getCurrentNestedStackContext();
       deployCalls.push({
         ctor,
-        deploy: { stackName, templateResourceCount: Object.keys(template.Resources ?? {}).length },
+        deploy: {
+          stackName,
+          templateResourceCount: Object.keys(template.Resources ?? {}).length,
+          capturedCtx,
+        },
       });
       return {
         stackName,
@@ -40,12 +56,19 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 }));
 
 // Mock runDestroyForStack so delete doesn't require an actual destroy
-// pipeline. Records every invocation so the test can assert the child
-// stack name + skipConfirmation flag.
-const destroyCalls: Array<{ stackName: string; skipConfirmation: boolean }> = [];
+// pipeline. Records every invocation AND the ALS context captured at
+// call time so the test can verify the child-context swap on the
+// recursive destroy path.
+const destroyCalls: Array<{
+  stackName: string;
+  skipConfirmation: boolean;
+  capturedCtx: NestedStackProviderContext | undefined;
+}> = [];
 vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   runDestroyForStack: vi.fn(async (stackName: string, _state: StackState, ctx: { skipConfirmation: boolean }) => {
-    destroyCalls.push({ stackName, skipConfirmation: ctx.skipConfirmation });
+    const ctxMod = await import('../../../src/provisioning/nested-stack-context.js');
+    const capturedCtx = ctxMod.getCurrentNestedStackContext();
+    destroyCalls.push({ stackName, skipConfirmation: ctx.skipConfirmation, capturedCtx });
     return {
       stackName,
       cancelled: false,
@@ -191,6 +214,94 @@ describe('NestedStackProvider', () => {
       });
       // Child region inherits parent region (AWS forbids cross-region nested stacks).
       expect(deployCalls[0]!.ctor[6]).toBe('us-east-1');
+
+      // ALS context-swap is the load-bearing piece for recursive grandchild
+      // resolution: the child engine MUST see itself as the new "parent" so
+      // any AWS::CloudFormation::Stack resource inside the child template
+      // resolves grandchild templates against the child's directory, not
+      // the top-level parent's. The mock captured the ALS context at
+      // `deploy()` invocation time — verify the swap.
+      const captured = deployCalls[0]!.deploy.capturedCtx;
+      expect(captured?.parentStackName).toBe('Parent~Child');
+      expect(captured?.parentRegion).toBe('us-east-1');
+      // No grandchildren in this fixture: the child template has only
+      // an S3 bucket, so the indexed grandchild-templates map is empty.
+      expect(captured?.nestedTemplates).toEqual({});
+    });
+
+    it('indexes grandchild templates from the child template + rejects absolute aws:asset:path', async () => {
+      // 2-level fixture: the child template itself contains an
+      // AWS::CloudFormation::Stack pointing at a grandchild template file
+      // sibling to the child. Verifies indexGrandchildTemplates walks the
+      // child template's Resources for Metadata['aws:asset:path'].
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-grand-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      const grandchildAssetName = 'grandchild.nested.template.json';
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: {
+            // Three branches of indexGrandchildTemplates exercised in one fixture:
+            // (a) recorded: AWS::CloudFormation::Stack + relative asset path.
+            Grandchild: {
+              Type: 'AWS::CloudFormation::Stack',
+              Properties: { TemplateURL: 'https://example.com/g.json' },
+              Metadata: { 'aws:asset:path': grandchildAssetName },
+            },
+            // (b) skipped: non-nested-stack resource type — no Metadata to walk.
+            SiblingBucket: { Type: 'AWS::S3::Bucket' },
+            // (c) skipped: AWS::CloudFormation::Stack with no Metadata at all.
+            StackWithoutMeta: {
+              Type: 'AWS::CloudFormation::Stack',
+              Properties: { TemplateURL: 'https://example.com/x.json' },
+            },
+          },
+        })
+      );
+
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplatePath } });
+
+      await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      );
+
+      // The captured childCtx's nestedTemplates must contain exactly the
+      // Grandchild entry (absolute path = childTemplate's dir joined with
+      // the relative aws:asset:path).
+      const captured = deployCalls[0]!.deploy.capturedCtx;
+      expect(captured?.nestedTemplates).toEqual({
+        Grandchild: join(dir, grandchildAssetName),
+      });
+    });
+
+    it('rejects absolute aws:asset:path on grandchild (defensive — CDK only emits relative paths)', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-abs-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: {
+            Grandchild: {
+              Type: 'AWS::CloudFormation::Stack',
+              Properties: { TemplateURL: 'https://example.com/g.json' },
+              // Absolute path — should be rejected defensively.
+              Metadata: { 'aws:asset:path': '/abs/path/to/grandchild.json' },
+            },
+          },
+        })
+      );
+
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplatePath } });
+
+      await expect(
+        withNestedStackContext(ctx, () =>
+          provider.create('Child', 'AWS::CloudFormation::Stack', {})
+        )
+      ).rejects.toThrow(/which is absolute/);
     });
   });
 
@@ -243,7 +354,103 @@ describe('NestedStackProvider', () => {
         provider.delete('Child', 'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child', 'AWS::CloudFormation::Stack')
       );
       expect(destroyCalls.length).toBe(1);
-      expect(destroyCalls[0]).toEqual({ stackName: 'Parent~Child', skipConfirmation: true });
+      expect(destroyCalls[0]!.stackName).toBe('Parent~Child');
+      expect(destroyCalls[0]!.skipConfirmation).toBe(true);
+
+      // ALS context-swap on the destroy path: any grandchild
+      // AWS::CloudFormation::Stack inside the child's state will resolve
+      // against the child as its parent — verify the swap fired. Also
+      // confirm `nestedTemplates` was nulled out (destroy is state-driven
+      // and doesn't need a synth template index).
+      const captured = destroyCalls[0]!.capturedCtx;
+      expect(captured?.parentStackName).toBe('Parent~Child');
+      expect(captured?.parentRegion).toBe('us-east-1');
+      expect(captured?.nestedTemplates).toBeUndefined();
+    });
+  });
+
+  describe('extractParameters (edge cases)', () => {
+    // The provider's private helper. Exercised here directly to cover
+    // shapes the public `create` happy path doesn't reach.
+    function extract(provider: NestedStackProvider, properties: Record<string, unknown>) {
+      return (provider as unknown as {
+        extractParameters: (p: Record<string, unknown>) => Record<string, string>;
+      }).extractParameters(properties);
+    }
+
+    it('returns {} when Properties has no Parameters key', () => {
+      const provider = new NestedStackProvider();
+      expect(extract(provider, {})).toEqual({});
+    });
+
+    it('returns {} when Parameters is null', () => {
+      const provider = new NestedStackProvider();
+      expect(extract(provider, { Parameters: null })).toEqual({});
+    });
+
+    it('returns {} when Parameters is an array (defensive — CFn shape is Map<string,string>)', () => {
+      const provider = new NestedStackProvider();
+      expect(extract(provider, { Parameters: ['unexpected'] })).toEqual({});
+    });
+
+    it('coerces number / boolean values to strings (matches CFn boundary coercion)', () => {
+      const provider = new NestedStackProvider();
+      expect(
+        extract(provider, {
+          Parameters: { Count: 42, Enabled: true, Disabled: false, Zero: 0 },
+        })
+      ).toEqual({ Count: '42', Enabled: 'true', Disabled: 'false', Zero: '0' });
+    });
+
+    it('throws on a non-scalar value (unresolved intrinsic leak)', () => {
+      const provider = new NestedStackProvider();
+      expect(() =>
+        extract(provider, { Parameters: { Bad: { Ref: 'SomeOtherStack' } } })
+      ).toThrow(/non-scalar value.*Parameters must be scalars/);
+    });
+
+    it('throws on a null value (distinct from missing key — explicit null is suspicious)', () => {
+      const provider = new NestedStackProvider();
+      expect(() => extract(provider, { Parameters: { Bad: null } })).toThrow(
+        /non-scalar value.*type=null/
+      );
+    });
+  });
+
+  describe('runChildDeploy (Minor 4 fix — parameters overwrite vs spread-inherit)', () => {
+    it('replaces parentCtx.options.parameters with child-only parameters; no parent leak into child', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-paramleak-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: { Foo: { Type: 'AWS::S3::Bucket' } },
+        })
+      );
+
+      const provider = new NestedStackProvider();
+      // Parent has a CLI --parameters Foo=parentValue set on its own
+      // DeployEngineOptions. The child template happens to declare a
+      // 'Foo' parameter too — if the parent's options leaked into the
+      // child, the child would inherit `Foo=parentValue` even though
+      // its `Properties.Parameters` block sets `Foo=childValue`.
+      const ctx = makeContext({
+        nestedTemplates: { Child: childTemplatePath },
+        options: { parameters: { Foo: 'parentValue', SharedToo: 'parent-only' } },
+      });
+
+      await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {
+          Parameters: { Foo: 'childValue' },
+        })
+      );
+
+      // Child engine MUST see `parameters: { Foo: 'childValue' }` — NOT
+      // `{ Foo: 'parentValue', SharedToo: 'parent-only', Foo: 'childValue' }`.
+      const opts = deployCalls[0]!.ctor[5] as { parameters?: Record<string, string> };
+      expect(opts.parameters).toEqual({ Foo: 'childValue' });
+      expect(opts.parameters).not.toHaveProperty('SharedToo');
     });
   });
 
