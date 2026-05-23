@@ -72,6 +72,21 @@ export interface NextStateMaterial {
   specs: Map<string, ContainerSpec>;
   corsConfigByApiId: Map<string, CorsConfig>;
   /**
+   * Discovered WebSocket APIs (#462). Empty array when no
+   * `AWS::ApiGatewayV2::Api` with `ProtocolType: 'WEBSOCKET'` appears
+   * in any target stack. Each entry carries its own Lambda map; the
+   * `specs` field above ALSO carries those Lambdas (so the container
+   * pool can dispatch WebSocket-route Lambdas from the unified
+   * `specs`).
+   *
+   * Hot reload (`--watch`) for WebSocket APIs: in v1 a route-set or
+   * Lambda change forces a server restart — the WebSocket protocol
+   * has no equivalent of `setServerState`'s atomic swap; in-flight
+   * connections would silently use stale Lambda code. Documented in
+   * the design doc §12 Q5.
+   */
+  webSocketApis?: readonly import('./websocket-route-discovery.js').DiscoveredWebSocketApi[];
+  /**
    * The target StackInfo[] used to build this material. Carried so the
    * caller (initial boot only) can run startup-only side effects like
    * `warnVpcConfigLambdas` without re-issuing synth. The orchestrator

@@ -123,6 +123,17 @@ export interface DockerRunOptions {
    * Lambdas without `EphemeralStorage`).
    */
   tmpfs?: { target: string; sizeMb: number };
+  /**
+   * Extra `--add-host <host>:<ip>` mappings written into the
+   * container's `/etc/hosts`. Used by `cdkd local start-api`'s
+   * WebSocket support (#462) to add
+   * `host.docker.internal:host-gateway` so the Lambda container can
+   * reach the host's `@connections` HTTP endpoint regardless of OS
+   * (Docker Desktop on macOS / Windows already resolves
+   * `host.docker.internal`; Linux native dockerd needs the explicit
+   * `host-gateway` flag since 20.10+).
+   */
+  extraHosts?: { host: string; ip: string }[];
 }
 
 /**
@@ -199,6 +210,11 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   }
   if (opts.platform) {
     args.push('--platform', opts.platform);
+  }
+  if (opts.extraHosts) {
+    for (const entry of opts.extraHosts) {
+      args.push('--add-host', `${entry.host}:${entry.ip}`);
+    }
   }
 
   const host = opts.host ?? '127.0.0.1';

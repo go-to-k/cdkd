@@ -95,6 +95,7 @@ gates:
       - "docs/**"
       - "README.md"
       - "CLAUDE.md"
+      - ".claude/rules/**"
 
   verify-pr:
     # `requires` (markgate 0.3+) declares verify-pr's freshness as the
@@ -225,14 +226,9 @@ gates:
     # binary -> read works -> next write upgrades to vN+1 silently ->
     # destroy clean. Unit tests can't catch wire-format divergences
     # (`undefined` field stripping, key ordering, schema version
-    # coercion); only real round-trip does.
-    #
-    # The user instruction (recorded 2026-05-23):
-    #   "schema バージョン上げるなら、バージョン間の互換性もちゃんと
-    #    保証する、つまりそれを実現する integ は絶対作って実行すること。"
-    #   "ユーザーは何もしなくても裏側でいい感じに migrate して
-    #    くれるようにして。これは今後 schema バージョンあげる時は
-    #    絶対保証すること。"
+    # coercion); only real round-trip does. Users must never need to
+    # run an explicit migrate command for a schema bump — the binary
+    # auto-migrates on first write under the new version.
     #
     # Why a separate marker (vs. extending `integ-destroy` /
     # `integ-broad`): a destroy / broad integ flips its marker on

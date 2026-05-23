@@ -206,6 +206,7 @@
         "export",
         "local-start-api",
         "local-start-api-container",
+        "local-start-api-websocket",
         "migrate-from-cfn",
         "serverless-api"
       ],
@@ -222,6 +223,10 @@
         ],
         "local-start-api-container": [
           "l2"
+        ],
+        "local-start-api-websocket": [
+          "l1",
+          "literal"
         ],
         "migrate-from-cfn": [
           "l2"
@@ -248,6 +253,7 @@
         "export",
         "local-start-api",
         "local-start-api-container",
+        "local-start-api-websocket",
         "migrate-from-cfn",
         "serverless-api"
       ],
@@ -263,6 +269,10 @@
         "local-start-api-container": [
           "l2"
         ],
+        "local-start-api-websocket": [
+          "l1",
+          "literal"
+        ],
         "migrate-from-cfn": [
           "l2"
         ],
@@ -277,6 +287,7 @@
         "export",
         "local-start-api",
         "local-start-api-container",
+        "local-start-api-websocket",
         "migrate-from-cfn",
         "serverless-api"
       ],
@@ -290,6 +301,10 @@
         ],
         "local-start-api-container": [
           "l2"
+        ],
+        "local-start-api-websocket": [
+          "l1",
+          "literal"
         ],
         "migrate-from-cfn": [
           "l2"
@@ -306,6 +321,7 @@
         "export",
         "local-start-api",
         "local-start-api-container",
+        "local-start-api-websocket",
         "migrate-from-cfn",
         "serverless-api"
       ],
@@ -322,6 +338,10 @@
         ],
         "local-start-api-container": [
           "l2"
+        ],
+        "local-start-api-websocket": [
+          "l1",
+          "literal"
         ],
         "migrate-from-cfn": [
           "l2"
@@ -1754,6 +1774,7 @@
         "local-invoke-provided",
         "local-invoke-ruby",
         "local-run-task-from-state",
+        "local-start-api-websocket",
         "log-pipeline",
         "macro-expansion",
         "migrate-from-cfn",
@@ -1805,6 +1826,9 @@
         ],
         "local-run-task-from-state": [
           "l2"
+        ],
+        "local-start-api-websocket": [
+          "literal"
         ],
         "log-pipeline": [
           "l2"
@@ -1962,6 +1986,7 @@
         "local-start-api",
         "local-start-api-container",
         "local-start-api-rest-v1-non-proxy",
+        "local-start-api-websocket",
         "log-pipeline",
         "macro-expansion",
         "microservices",
@@ -2074,6 +2099,10 @@
         ],
         "local-start-api-rest-v1-non-proxy": [
           "l2"
+        ],
+        "local-start-api-websocket": [
+          "l2",
+          "literal"
         ],
         "log-pipeline": [
           "l2"

@@ -465,7 +465,7 @@ Both PRs require:
   / `isPhase2CreatableType` (§4.2).
 - CLAUDE.md updates removing the nested-stack deferral comments from
   both `cdkd import` and `cdkd export` bullets.
-- One new entry under "Recently Implemented" per PR.
+- One new entry in [docs/changelog-cdkd.md](../changelog-cdkd.md) per PR (the per-PR shipped-feature changelog, moved here from CLAUDE.md's "Recently Implemented" section).
 
 ## 12. Risks & mitigations
 
