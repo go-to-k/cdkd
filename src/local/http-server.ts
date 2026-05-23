@@ -179,6 +179,23 @@ export interface StartApiServerOptions {
    * both this and the per-request override are empty.
    */
   defaultRegion?: string;
+  /**
+   * Optional pre-dispatch hook (#462 — WebSocket support). Runs against
+   * EVERY incoming HTTP request BEFORE CORS / route-matching /
+   * authorizer / dispatch. Returns `true` to short-circuit the rest of
+   * the pipeline (the hook has written the full response itself),
+   * `false` to continue normal HTTP dispatch.
+   *
+   * Wired by `cdkd local start-api` on a server hosting a WebSocket
+   * API to intercept `POST/GET/DELETE /@connections/<id>` calls so the
+   * AWS SDK's `apigatewaymanagementapi:PostToConnection` (issued from
+   * inside a Lambda container via `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI`
+   * override) reaches the WebSocket's connection registry.
+   *
+   * The hook is async-safe — `handleRequest` awaits it and treats any
+   * throw as a 502.
+   */
+  preDispatch?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 }
 
 /**
@@ -338,6 +355,25 @@ async function handleRequest(
   opts: StartApiServerOptions
 ): Promise<void> {
   const logger = getLogger().child('start-api');
+
+  // Pre-dispatch hook (#462 — WebSocket support). Runs BEFORE body
+  // read so the hook owns the entire request lifecycle for paths it
+  // claims (the `@connections` POST consumes the body itself, and a
+  // double-read would corrupt the stream). The hook returns `true`
+  // when it handled the request → short-circuit; `false` to fall
+  // through to the normal HTTP pipeline.
+  if (opts.preDispatch) {
+    try {
+      const handled = await opts.preDispatch(req, res);
+      if (handled) return;
+    } catch (err) {
+      logger.error(
+        `preDispatch hook threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+      );
+      if (!res.headersSent) writeError(res, 502);
+      return;
+    }
+  }
 
   // Read the request body (eager, all-in-memory). Local-only — large
   // bodies are not a concern in v1.

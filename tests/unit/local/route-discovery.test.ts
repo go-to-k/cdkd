@@ -591,7 +591,7 @@ describe('discoverRoutes — HTTP API v2', () => {
     });
   });
 
-  it('flags WebSocket protocol APIs as deferred-error unsupported', () => {
+  it('omits WebSocket protocol routes from the HTTP route table (#462 — discovered by sibling pipeline)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'WEBSOCKET' } },
       Integ: {
@@ -611,10 +611,11 @@ describe('discoverRoutes — HTTP API v2', () => {
         },
       },
     });
+    // The HTTP-side discovery no longer emits a stub deferred-501 row;
+    // WebSocket routes are picked up by `discoverWebSocketApis` and
+    // wired through a separate upgrade-event server.
     const routes = discoverRoutes([stack]);
-    expect(routes).toHaveLength(1);
-    expect(routes[0]?.unsupported?.reason).toMatch(/WebSocket APIs are not supported/);
-    expect(routes[0]?.lambdaLogicalId).toBe('');
+    expect(routes).toEqual([]);
   });
 
   it('classifies AWS-recognized IntegrationSubtype routes as serviceIntegration (issue #458)', () => {

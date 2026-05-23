@@ -77,6 +77,10 @@
       "description": "`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container."
     },
     {
+      "tag": "local-websocket-api",
+      "description": "`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane."
+    },
+    {
       "tag": "migrate-from-bare-cfn",
       "description": "`cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire."
     },
@@ -532,6 +536,13 @@
       ]
     },
     {
+      "name": "local-start-api-websocket",
+      "annotated": true,
+      "scenarios": [
+        "local-websocket-api"
+      ]
+    },
+    {
       "name": "local-start-service",
       "annotated": true,
       "scenarios": [
@@ -881,6 +892,13 @@
         "local-invoke-provided",
         "local-invoke-python",
         "local-invoke-ruby"
+      ]
+    },
+    {
+      "scenario": "local-websocket-api",
+      "description": "`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane.",
+      "fixtures": [
+        "local-start-api-websocket"
       ]
     },
     {

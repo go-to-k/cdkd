@@ -167,6 +167,9 @@ importers:
       p-limit:
         specifier: ^5.0.0
         version: 5.0.0
+      ws:
+        specifier: ^8.20.0
+        version: 8.20.0
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -195,6 +198,9 @@ importers:
       '@types/node':
         specifier: ^20.19.0
         version: 20.19.37
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       '@typescript/native-preview':
         specifier: 7.0.0-dev.20260511.1
         version: 7.0.0-dev.20260511.1
@@ -2078,6 +2084,9 @@ packages:
 
   '@types/readdir-glob@1.1.5':
     resolution: {integrity: sha512-raiuEPUYqXu+nvtY2Pe8s8FEmZ3x5yAH4VkLdihcPdalvsHltomrRC9BzuStrJ9yk06470hS0Crw0f1pXqD+Hg==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==, tarball: https://registry.npmjs.org/@types/ws/-/ws-8.18.1.tgz}
 
   '@typescript/native-preview-darwin-arm64@7.0.0-dev.20260511.1':
     resolution: {integrity: sha512-SYrqVOlapDxDG7FzHBIJbfgaix+mXPkYzYGqwpz/TAhoPA7sgbfAoGLaqi3ut9N88C/OYNhEX4tjz/0PC9i1nw==}
@@ -3963,7 +3972,7 @@ packages:
     engines: {node: '>=18'}
 
   ws@8.20.0:
-    resolution: {integrity: sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA==}
+    resolution: {integrity: sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA==, tarball: https://registry.npmjs.org/ws/-/ws-8.20.0.tgz}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -8365,6 +8374,10 @@ snapshots:
   '@types/normalize-package-data@2.4.4': {}
 
   '@types/readdir-glob@1.1.5':
+    dependencies:
+      '@types/node': 20.19.37
+
+  '@types/ws@8.18.1':
     dependencies:
       '@types/node': 20.19.37
 

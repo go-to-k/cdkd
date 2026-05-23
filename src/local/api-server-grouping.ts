@@ -52,7 +52,7 @@ export interface ApiServerGroup {
   /** Human-readable name surfaced in logs (e.g. "MyHttpApi (HTTP API v2)"). */
   readonly displayName: string;
   /** Discriminator on the kind of API. */
-  readonly kind: 'rest-v1' | 'http-api' | 'function-url';
+  readonly kind: 'rest-v1' | 'http-api' | 'function-url' | 'websocket';
   /**
    * Logical ID of the parent API resource (or, for Function URLs, the
    * backing Lambda). Useful for `--api <id>` filtering, CORS lookup,
