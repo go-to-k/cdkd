@@ -1,3 +1,10 @@
+# [0.141.0](https://github.com/go-to-k/cdkd/compare/v0.140.0...v0.141.0) (2026-05-23)
+
+
+### Features
+
+* **state:** schema v6 prep — parentStack/parentLogicalId/parentRegion ([#459](https://github.com/go-to-k/cdkd/issues/459)) ([#546](https://github.com/go-to-k/cdkd/issues/546)) ([c62bad5](https://github.com/go-to-k/cdkd/commit/c62bad54dfd0eca401b51c78a8c933a4c6c9cbf2))
+
 # [0.140.0](https://github.com/go-to-k/cdkd/compare/v0.139.0...v0.140.0) (2026-05-23)
 
 
