@@ -41,6 +41,20 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * CFn destination property names that this provider can apply
+ * in-place via UpdateDestinationCommand. Other destination types
+ * still hard-reject in update() with a tightened error pointing at
+ * the per-shape reverse-mapper follow-up issue (#549).
+ *
+ * Membership grows as each follow-up PR lands. Keep alphabetical
+ * to minimize merge conflicts when multiple follow-ups race.
+ */
+const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
+  'ExtendedS3DestinationConfiguration',
+  'RedshiftDestinationConfiguration',
+]);
+
+/**
  * SDK Provider for AWS Kinesis Firehose resources
  *
  * Supports:
@@ -453,11 +467,7 @@ export class FirehoseProvider implements ResourceProvider {
     }
 
     const activeDest = destKey ?? prevDestKey;
-    const SUPPORTED_DESTINATIONS = new Set([
-      'ExtendedS3DestinationConfiguration',
-      'RedshiftDestinationConfiguration',
-    ]);
-    if (activeDest && !SUPPORTED_DESTINATIONS.has(activeDest)) {
+    if (activeDest && !SUPPORTED_UPDATE_DESTINATIONS.has(activeDest)) {
       // Some other destination type — check whether it actually changed,
       // and reject only if it did. Tags-only diffs against e.g. a Splunk
       // delivery stream should NOT throw.
@@ -961,6 +971,11 @@ export class FirehoseProvider implements ResourceProvider {
       result.CloudWatchLoggingOptions = config[
         'CloudWatchLoggingOptions'
       ] as RedshiftDestinationUpdate['CloudWatchLoggingOptions'];
+    }
+    if (config['SecretsManagerConfiguration'] !== undefined) {
+      result.SecretsManagerConfiguration = config[
+        'SecretsManagerConfiguration'
+      ] as RedshiftDestinationUpdate['SecretsManagerConfiguration'];
     }
     return result;
   }

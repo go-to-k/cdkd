@@ -458,6 +458,52 @@ describe('FirehoseProvider.update — Redshift destination (#549)', () => {
     expect(updates).toHaveLength(0);
   });
 
+  it('round-trips SecretsManagerConfiguration through the Update shape (Redshift Secrets Manager auth)', async () => {
+    // Redshift supports Secrets-Manager-based auth (no Username/Password
+    // inline). The CDK construct surfaces this as
+    // SecretsManagerConfiguration on the Redshift destination. Per the
+    // round-trip rule (`feedback_update_optional_field_undefined_check`),
+    // every field present on the CFn shape must reach AWS unmodified;
+    // dropping SecretsManagerConfiguration would silently break drift-
+    // revert / in-place update for users on Secrets Manager auth.
+    await provider.update(
+      'L',
+      PHYSICAL_ID,
+      RESOURCE_TYPE,
+      {
+        RedshiftDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          ClusterJDBCURL: 'jdbc:redshift://cluster.example.com:5439/db',
+          CopyCommand: { DataTableName: 'logs' },
+          SecretsManagerConfiguration: {
+            Enabled: true,
+            SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:rs-cred-Abc',
+            RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+          },
+        },
+      },
+      {
+        RedshiftDestinationConfiguration: {
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          ClusterJDBCURL: 'jdbc:redshift://cluster.example.com:5439/db',
+          CopyCommand: { DataTableName: 'logs' },
+        },
+      }
+    );
+
+    const updates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
+    const updateShape = input['RedshiftDestinationUpdate'] as Record<string, unknown>;
+    expect(updateShape['SecretsManagerConfiguration']).toEqual({
+      Enabled: true,
+      SecretARN: 'arn:aws:secretsmanager:us-east-1:111:secret:rs-cred-Abc',
+      RoleARN: 'arn:aws:iam::111:role/firehose-secrets-role',
+    });
+  });
+
   it('omits unset CFn keys from the Update shape so AWS-side state is not clobbered', async () => {
     // Only ClusterJDBCURL changes between before/after. The Update
     // payload should carry ONLY the keys present in the new config — no
