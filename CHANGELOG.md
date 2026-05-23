@@ -1,3 +1,10 @@
+## [0.137.2](https://github.com/go-to-k/cdkd/compare/v0.137.1...v0.137.2) (2026-05-23)
+
+
+### Bug Fixes
+
+* **local:** WebSocket robustness MAJORs ([#527](https://github.com/go-to-k/cdkd/issues/527)) ([#539](https://github.com/go-to-k/cdkd/issues/539)) ([b98ac8f](https://github.com/go-to-k/cdkd/commit/b98ac8f8c0ec4bba5f8e46f23f075286e4006a37))
+
 ## [0.137.1](https://github.com/go-to-k/cdkd/compare/v0.137.0...v0.137.1) (2026-05-23)
 
 
