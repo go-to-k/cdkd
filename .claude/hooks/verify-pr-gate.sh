@@ -14,23 +14,73 @@
 # (proposing new rules/hooks/skills for recurring patterns) BEFORE
 # `gh pr create` / `gh pr merge`. The skill said it; the hook
 # enforces it.
+#
+# WHY the cwd-aware resolution matters (cdkd #559): this repo is
+# regularly worked in via `git worktree`, and markgate stores marker
+# state per-worktree at `<git rev-parse --absolute-git-dir>/markgate/`.
+# The pre-#559 implementation derived REPO from `BASH_SOURCE` and
+# always landed on the main working tree, defeating markgate's
+# per-worktree isolation and forcing every parallel agent to converge
+# on the main tree's view (see memory rule
+# feedback_cross_agent_main_tree_contention.md). We now resolve the
+# target working tree from the PreToolUse payload's `cwd` field +
+# leading `cd <path>` + last `gh -C <path>` flag.
 
 set -u
 
-# Resolve repo root from script location (.claude/hooks/verify-pr-gate.sh -> repo root).
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Read the entire stdin payload once; we need both .tool_input.command
+# and .cwd from it.
+input=$(cat 2>/dev/null || true)
 
-# Extract the command from the PreToolUse payload.
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate `gh pr create` and `gh pr merge` invocations -- any other
 # command passes through. Match both `gh pr merge` and
-# `gh pr merge --auto`.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+(create|merge)\b'; then
+# `gh pr merge --auto`. Tolerate an optional `gh -C <path>` between
+# `gh` and `pr` so `gh -C <path> pr create` is also recognised.
+if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|merge)\b'; then
   exit 0
 fi
 
-cd "$REPO" 2>/dev/null || exit 0
+# Resolve where the gh command will actually run (cwd-aware; mirrors
+# non-english-text-gate.sh / integ-local-gate.sh).
+target_dir="${hook_cwd:-$PWD}"
+
+# `cd <path>` at the start of the command shifts the target dir.
+if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+  cd_target="${BASH_REMATCH[1]}"
+  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
+  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+  if [[ "$cd_target" != /* ]]; then
+    cd_target="$target_dir/$cd_target"
+  fi
+  target_dir="$cd_target"
+fi
+
+# Last `gh -C <path>` wins.
+if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
+  c_target=""
+  remaining="$cmd"
+  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
+    c_target="${BASH_REMATCH[1]}"
+    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+  done
+  c_target="${c_target%\"}"; c_target="${c_target#\"}"
+  c_target="${c_target%\'}"; c_target="${c_target#\'}"
+  if [[ "$c_target" != /* ]]; then
+    c_target="$target_dir/$c_target"
+  fi
+  target_dir="$c_target"
+fi
+
+# If the resolved target dir is not a git repo, silently pass — we
+# can't audit what we can't see.
+if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  exit 0
+fi
+
+cd "$target_dir" 2>/dev/null || exit 0
 
 # Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's
 # canonical markgate wins over an older PATH binary; see check-gate.sh for

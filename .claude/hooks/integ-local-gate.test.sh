@@ -109,6 +109,20 @@ run_case "cd <fixture> && gh pr merge matches" 2 \
 run_case "git -C <fixture> merge matches" 2 \
   "$(printf '{"cwd":"/tmp","tool_input":{"command":"git -C %s merge origin/main"}}' "$fixture_repo")"
 
+# 13. `gh -C <fixture> pr merge` resolves via gh -C (cdkd #559).
+#     Previously this hook only parsed `git -C`; the #559 fix adds
+#     parallel `gh -C` parsing so cross-worktree gh invocations route
+#     to the right markgate state.
+run_case "gh -C <fixture> pr merge matches" 2 \
+  "$(printf '{"cwd":"/tmp","tool_input":{"command":"gh -C %s pr merge"}}' "$fixture_repo")"
+
+# 14. `gh -C <side> pr merge --auto` from main-cwd → routes to side.
+side_repo="$TMPDIR/side-repo"
+git init -q -b feature/y "$side_repo"
+git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+run_case "gh -C <side> pr merge --auto from main cwd" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh -C %s pr merge --auto"}}' "$fixture_repo" "$side_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

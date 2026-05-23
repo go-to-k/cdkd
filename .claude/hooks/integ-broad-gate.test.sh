@@ -191,6 +191,43 @@ MARKGATE_MOCK_VERDICT="fresh" run_case "pass: cross-cutting diff + fresh integ-b
   '{"tool_input":{"command":"gh pr merge 900 --squash"},"cwd":"."}' \
   '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
 
+# --- CWD-AWARE cases (cdkd #559) ---
+#
+# These cases verify that the hook resolves the target git working
+# tree from the PreToolUse payload's `cwd` field and from
+# `cd <path>` / `gh -C <path>` in the command. Pre-#559 the hook
+# always landed in the main tree.
+#
+# The cwd-resolution helpers need a real git repo at the target dir
+# to pass `git -C <path> rev-parse --git-dir` (the silent-pass
+# guard). Create two fixture repos for that.
+
+CWD_SIDE_REPO="$TMPDIR/side-worktree"
+CWD_MAIN_REPO="$TMPDIR/main-worktree"
+git init -q -b feature/x "$CWD_SIDE_REPO"
+git -C "$CWD_SIDE_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git init -q -b main "$CWD_MAIN_REPO"
+git -C "$CWD_MAIN_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+
+# cd-from-payload `cwd` field routes the hook to the side worktree;
+# cross-cutting PR + stale marker → block. The block proves the hook
+# reached markgate from the resolved worktree, not from a hardcoded
+# main-tree resolution.
+run_case "block: side worktree cwd + cross-cutting diff" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr merge 1000 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO")" \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
+
+# `cd <side> && gh pr merge` from main cwd: cd target wins, hook
+# operates in side worktree.
+run_case "block: cd <side> && gh pr merge from main cwd" 2 \
+  "$(printf '{"tool_input":{"command":"cd %s && gh pr merge 1001 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
+
+# `gh -C <side> pr merge` from main cwd: -C target wins.
+run_case "block: gh -C <side> pr merge from main cwd" 2 \
+  "$(printf '{"tool_input":{"command":"gh -C %s pr merge 1002 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
+
 # ---- Summary ----
 
 echo ""

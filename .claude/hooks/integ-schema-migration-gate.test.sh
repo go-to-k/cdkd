@@ -262,6 +262,38 @@ run_case "gh pr merge no number, non-schema files passes" 0 \
   '{"files":[{"path":"docs/cli-reference.md"}]}' \
   ''
 
+# --- CWD-AWARE cases (cdkd #559) ----------------------------------
+#
+# Verify that the hook resolves the target git working tree from
+# the payload's `cwd` field / `cd <path>` / `gh -C <path>`.
+# Pre-#559 the hook always landed in the main tree.
+
+CWD_SIDE_REPO="$TMPDIR/side-worktree"
+CWD_MAIN_REPO="$TMPDIR/main-worktree"
+git init -q -b feature/x "$CWD_SIDE_REPO"
+git -C "$CWD_SIDE_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git init -q -b main "$CWD_MAIN_REPO"
+git -C "$CWD_MAIN_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+
+# Reuse the BUMP_DIFF defined earlier (a real version-literal bump).
+# With cwd in side worktree + schema bump + stale marker → block.
+run_case "side worktree cwd + version bump + stale BLOCKS" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr merge 2000 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO")" \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$BUMP_DIFF"
+
+# `cd <side> && gh pr merge` routes to side; schema bump → block.
+run_case "cd <side> && gh pr merge from main cwd + bump BLOCKS" 2 \
+  "$(printf '{"tool_input":{"command":"cd %s && gh pr merge 2001 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$BUMP_DIFF"
+
+# `gh -C <side> pr merge` routes to side.
+run_case "gh -C <side> pr merge + bump BLOCKS" 2 \
+  "$(printf '{"tool_input":{"command":"gh -C %s pr merge 2002 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$BUMP_DIFF"
+
 # --- Summary ------------------------------------------------------
 
 echo ""
