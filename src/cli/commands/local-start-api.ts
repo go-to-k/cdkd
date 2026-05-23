@@ -49,6 +49,7 @@ import {
   type AttachedWebSocketServer,
 } from '../../local/websocket-server.js';
 import { buildMgmtEndpointEnvUrl } from '../../local/websocket-mgmt-api.js';
+import { HOST_GATEWAY_MIN_VERSION, probeHostGatewaySupport } from '../../local/docker-version.js';
 import { warnSsrfRiskyUri } from '../../local/rest-v1-integrations.js';
 import {
   createContainerPool,
@@ -683,6 +684,42 @@ async function localStartApiCommand(
   const wsServers: BootedWebSocketServer[] = [];
   const initialWsApis = initialMaterial.webSocketApis ?? [];
   warnUnsupportedWebSocketApis(initialWsApis, logger);
+
+  // Issue #527 M2: probe Docker server version ONCE per session before
+  // any WebSocket API attaches. The `--add-host=host.docker.internal:host-gateway`
+  // mapping cdkd injects requires Docker 20.10+; older daemons silently
+  // fail with `ENOTFOUND host.docker.internal` at SDK-call time. Only
+  // probe when at least one ATTACHABLE WebSocket API exists — HTTP /
+  // REST-only sessions don't use the host-gateway mapping and shouldn't
+  // pay the docker subprocess hop. `unsupported`-tagged APIs are also
+  // skipped (they never enter the attach loop).
+  const attachableWsApis = initialWsApis.filter((api) => !api.unsupported);
+  if (attachableWsApis.length > 0) {
+    try {
+      const probe = await probeHostGatewaySupport();
+      if (!probe.supported) {
+        throw new Error(
+          `cdkd local start-api requires Docker ${HOST_GATEWAY_MIN_VERSION.major}.${HOST_GATEWAY_MIN_VERSION.minor}+ ` +
+            `for WebSocket API support (--add-host=host.docker.internal:host-gateway needs the 20.10 host-gateway alias). ` +
+            `Detected server version: ${probe.rawVersion || '<empty>'}. ` +
+            `Upgrade Docker, or remove the WebSocket API from this app to fall back to HTTP-only start-api.`
+        );
+      }
+      if (probe.parsed === null) {
+        logger.warn(
+          `Docker server version "${probe.rawVersion}" did not match the canonical "<major>.<minor>" shape; ` +
+            `assuming host-gateway support. If WebSocket containers fail to reach the local server, ` +
+            `verify your Docker-compatible CLI honors --add-host=host.docker.internal:host-gateway.`
+        );
+      }
+    } catch (err) {
+      // Re-throw with our wrapping intact for the "supported=false" case
+      // above; everything else (docker missing, daemon down) bubbles up
+      // with the docker-cmd helper's original message.
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
   for (const api of initialWsApis) {
     // Skip APIs flagged unsupported at discovery — typical cause is a
     // non-NONE `AuthorizationType` on `$connect` (cdkd v1 does not
