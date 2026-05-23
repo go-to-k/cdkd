@@ -4,6 +4,7 @@ import {
   UpdateAutoScalingGroupCommand,
   DeleteAutoScalingGroupCommand,
   DescribeAutoScalingGroupsCommand,
+  type DescribeAutoScalingGroupsCommandOutput,
   DescribeLifecycleHooksCommand,
   DescribeTrafficSourcesCommand,
   DescribeNotificationConfigurationsCommand,
@@ -728,31 +729,15 @@ export class ASGProvider implements ResourceProvider {
     // catches console-side ADDs to a previously-empty list.
     result['MetricsCollection'] = mapEnabledMetricsToCfn(group.EnabledMetrics);
     result['LifecycleHookSpecificationList'] = mapLifecycleHooksToCfn(lifecycleHooks);
-    // TrafficSources is the AWS-side unified view of every traffic
-    // attachment — it overlaps with TargetGroupARNs / LoadBalancerNames
-    // for elbv2 + classic-elb attachments, since the same underlying
-    // attachment is reachable via either API. Storing the overlap in
-    // observedProperties causes a `cdkd drift --revert` to apply the
-    // same attach/detach diff TWICE (once via applyTargetGroupArnsDiff,
-    // once via applyTrafficSourcesDiff), with the second pass operating
-    // on already-modified AWS state and producing inconsistent
-    // [tg1, tg2] residuals — surfaced by tests/integration/
-    // drift-revert-vpc. Filter out entries whose Identifier is already
-    // covered by TargetGroupARNs / LoadBalancerNames so TrafficSources
-    // only carries the residual UNIQUE entries (VPC Lattice, VPC
-    // Endpoint Service, etc.) that don't have a dedicated CFn property.
     // Strip ALL elbv2 / elb entries from TrafficSources — the canonical
-    // attachment state for these types lives in TargetGroupARNs and
-    // LoadBalancerNames respectively. AWS returns inconsistent
-    // snapshots between DescribeAutoScalingGroups (TGs/LBs view) and
-    // DescribeTrafficSources during eventual-consistency windows after
-    // Attach/Detach: a drift-revert that just modified TGs intermittently
-    // sees a stale TS entry referencing the OLD TG ARN (no longer in
-    // tgArnSet, so not Identifier-matched-dedupe) and surfaces it as
-    // drift on the next read. Filtering elbv2 / elb unconditionally is
-    // the right semantic — TS is meant for attachment types without a
-    // dedicated CFn property (VPC Lattice, VPC Endpoint Service, etc.);
-    // every elbv2 / elb entry is redundantly tracked elsewhere.
+    // attachment state for these types lives in TargetGroupARNs /
+    // LoadBalancerNames. TrafficSources is meant for attachment types
+    // without a dedicated CFn property (VPC Lattice, VPC Endpoint
+    // Service). Filtering unconditionally avoids two failure modes
+    // surfaced by tests/integration/drift-revert-vpc (PR #547):
+    // double-attach/detach on revert, and stale TS entries from AWS's
+    // eventual-consistency window after Attach/Detach surfacing as
+    // false drift on the next read.
     const dedupedTrafficSources = trafficSources.filter((t) => {
       if (t.Identifier === undefined) return false;
       if (t.Type === 'elbv2' || t.Type === 'elb') return false;
@@ -783,6 +768,15 @@ export class ASGProvider implements ResourceProvider {
     // rename) and only fall back to Name when ID is absent.
     if (lt.LaunchTemplateId !== undefined) {
       out.LaunchTemplateId = lt.LaunchTemplateId;
+      if (lt.LaunchTemplateName !== undefined) {
+        // User templated BOTH — AWS would reject the resulting Create /
+        // Update otherwise; we silently prefer the ID. Surface the
+        // choice in --verbose so a user wondering why their Name didn't
+        // take effect has an auditable signal.
+        this.logger.debug(
+          `buildLaunchTemplate: both LaunchTemplateId (${lt.LaunchTemplateId}) and LaunchTemplateName (${lt.LaunchTemplateName}) templated; dropping Name (#551)`
+        );
+      }
     } else if (lt.LaunchTemplateName !== undefined) {
       out.LaunchTemplateName = lt.LaunchTemplateName;
     }
@@ -1087,7 +1081,7 @@ export class ASGProvider implements ResourceProvider {
     const deadlineMs = Date.now() + ASGProvider.TG_CONVERGENCE_TIMEOUT_MS;
     let lastObserved: Set<string> = new Set();
     while (Date.now() < deadlineMs) {
-      let resp;
+      let resp: DescribeAutoScalingGroupsCommandOutput | undefined;
       try {
         resp = await this.getClient().send(
           new DescribeAutoScalingGroupsCommand({ AutoScalingGroupNames: [physicalId] })
@@ -1116,8 +1110,13 @@ export class ASGProvider implements ResourceProvider {
     // still sees the SDK-side success; drift can re-report if the
     // propagation is still stuck. Includes observed vs expected so
     // post-mortem doesn't need a re-deploy.
+    // Sort both sides before stringify for visual symmetry — expected
+    // comes from the caller's insertion order, observed from AWS-side
+    // order; eyeballing the diff in logs is easier when both are sorted.
+    const expectedSorted = [...expected].sort();
+    const observedSorted = [...lastObserved].sort();
     this.logger.warn(
-      `applyTargetGroupArnsDiff: TG set did not converge within ${ASGProvider.TG_CONVERGENCE_TIMEOUT_MS}ms for ASG ${physicalId}. expected=${JSON.stringify([...expected])} observed=${JSON.stringify([...lastObserved])}`
+      `applyTargetGroupArnsDiff: TG set did not converge within ${ASGProvider.TG_CONVERGENCE_TIMEOUT_MS}ms for ASG ${physicalId}. expected=${JSON.stringify(expectedSorted)} observed=${JSON.stringify(observedSorted)}`
     );
   }
 
