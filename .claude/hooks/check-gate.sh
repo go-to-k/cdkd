@@ -33,10 +33,21 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # Only gate git commit -- any other command passes through. The
 # matcher tolerates `git -C <path> commit` / `git -c <key>=<val> commit`
 # / `git --no-pager commit` / etc. by allowing zero or more flag tokens
-# between `git` and the `commit` subcommand. Anchored so `commit`
-# appears in the GIT SUBCOMMAND POSITION — not as a substring of a
-# refspec (`<sha>^{commit}`) or pathspec.
-if ! printf '%s' "$cmd" | grep -qE '\bgit([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'; then
+# between `git` and the `commit` subcommand. Line-start anchored
+# (per memory rule feedback_hook_command_match_line_start.md) so
+# `git commit` substrings inside quoted argument bodies
+# (`gh issue create --body "we should run git commit later"`) do
+# NOT false-positive into a hard block. The optional leading
+# `cd <path> &&` prefix preserves the worktree-aware
+# `cd <side> && git commit` chain shape exercised by the cwd-aware
+# test cases — `cd ... &&` at the literal line-start cannot match
+# inside a JSON literal containing `&&` because the line-start anchor
+# requires no leading characters except whitespace. Trailing class
+# `([[:space:]]|$|[|;&\`)])` ensures `commit` appears in the GIT
+# SUBCOMMAND POSITION — not as the prefix of `commit-tree` /
+# `commit-graph`. Single-line `git status && git commit` shapes are
+# an accepted false-negative (per the memory rule's trade-off).
+if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

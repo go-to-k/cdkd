@@ -144,6 +144,26 @@ run_case "git -C <side> commit from main cwd → side wins" 2 stale "$side_repo"
 run_case "fresh marker passes" 0 fresh "$side_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$side_repo")"
 
+# --- LINE-START ANCHORING cases: the matcher MUST NOT fire when the
+#     literal substring `git commit` appears inside a quoted argument
+#     body of an unrelated command. Per memory rule
+#     feedback_hook_command_match_line_start.md — surfaced by the
+#     PR #562 code review.
+
+# 9. `gh issue create --body "...git commit..."` — `git commit` is
+#    inside a quoted body, line starts with `gh`. MUST NOT fire.
+run_case "gh issue body quoting 'git commit' passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh issue create --body \"we should add a git commit hook later\""}}' "$side_repo")"
+
+# 10. `echo "Run: git commit"` — quoted body, line starts with `echo`.
+run_case "echo body quoting 'git commit' passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"Run: git commit -m x\""}}' "$side_repo")"
+
+# 11. `git commit-tree` — `commit-tree` is a separate plumbing
+#     subcommand; the trailing class must exclude `-`.
+run_case "git commit-tree passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit-tree HEAD^{tree} -m x"}}' "$side_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
