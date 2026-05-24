@@ -43,6 +43,9 @@ class ChildNestedStack extends cdk.NestedStack {
       stringValue: 'child-nested-value',
       description: 'cdkd #464 integ - SSM parameter inside the nested child',
     });
+    // Override CDK's auto-generated hash suffix so verify.sh's assertions
+    // pin the logical id directly.
+    (this.param.node.defaultChild as cdk.CfnResource).overrideLogicalId('ChildParam');
   }
 }
 
@@ -51,14 +54,24 @@ export class ImportNestedStackExample extends cdk.Stack {
     super(scope, id, props);
 
     const child = new ChildNestedStack(this, 'Child');
+    // Override CDK's auto-generated logical id
+    // (`ChildNestedStackChildNestedStackResourceC40294CA` style) to a
+    // stable `Child` so the verify.sh assertions can pin both the AWS
+    // tree row AND the cdkd state-key shape
+    // (`cdkd/<parent>~Child/<region>/state.json`) without parsing the
+    // hash suffix.
+    if (child.nestedStackResource) {
+      (child.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
+    }
 
     // Parent-side parameter that references the child's parameter name
     // via `Fn::GetAtt: [Child.NestedStackResource, 'Outputs.<key>']`.
     // CDK auto-synthesizes the GetAtt + the matching child Output when
     // a parent construct references an attribute of a NestedStack child.
-    new ssm.StringParameter(this, 'ParentParam', {
+    const parentParam = new ssm.StringParameter(this, 'ParentParam', {
       stringValue: child.param.parameterName,
       description: 'cdkd #464 integ - parent SSM parameter referencing the child param name',
     });
+    (parentParam.node.defaultChild as cdk.CfnResource).overrideLogicalId('ParentParam');
   }
 }

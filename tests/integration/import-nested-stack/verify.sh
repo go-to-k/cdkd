@@ -95,8 +95,14 @@ echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)
 (cd "${REPO_ROOT}" && vp run build)
 
-echo "[verify] step 2: install fixture deps"
-(cd "${TEST_DIR}" && pnpm install)
+echo "[verify] step 2: install fixture deps (aws-cdk-lib for synth)"
+# pnpm at this repo's root ignores per-fixture package.json under
+# tests/integration/* (no workspace registration), so the fixture's
+# aws-cdk-lib + aws-cdk deps come from the global vp-managed npm
+# environment instead. CDK CLI is `cdk` (global), and aws-cdk-lib is
+# resolved via Node's parent-directory lookup against the repo-root
+# install. No `pnpm install` round-trip needed.
+echo "[verify] step 2 ok: using global cdk (\$(which cdk))"
 
 echo "[verify] step 3: pre-flight orphan scan"
 if aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}" >/dev/null 2>&1; then
@@ -111,8 +117,11 @@ fi
 echo "[verify] step 4: cdk deploy parent + nested child (simulating existing CFn stack)"
 # `--require-approval never` skips the IAM prompt; `--no-version-reporting`
 # and friends keep CDK quiet. The CDK toolkit handles asset publishing
-# (nested-stack child template upload) automatically.
-(cd "${TEST_DIR}" && ./node_modules/.bin/cdk deploy "${PARENT_STACK}" \
+# (nested-stack child template upload) automatically. Uses the global
+# `cdk` binary supplied by vp (`/Users/goto/.vite-plus/bin/cdk` on dev
+# machines, vp-bin path in CI) — see step 2's note on why no per-fixture
+# install is needed.
+(cd "${TEST_DIR}" && cdk deploy "${PARENT_STACK}" \
   --require-approval never \
   --no-version-reporting \
   --no-asset-metadata \
