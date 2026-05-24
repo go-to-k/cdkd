@@ -429,6 +429,16 @@ describe('cdkd state list', () => {
       expect(out).toBe('');
     });
 
+    it('emits `[]\\n` for an empty bucket under --tree --json so consumers can JSON.parse safely', async () => {
+      // JSON mode emits the empty array verbatim (vs ASCII mode's no-output)
+      // so a tool that pipes `cdkd state list --tree --json | jq` never
+      // sees an empty stdin.
+      mockListStacks.mockResolvedValue([]);
+      const out = await runStateList(['list', '--tree', '--json']);
+      expect(out).toBe('[]\n');
+      expect(JSON.parse(out)).toEqual([]);
+    });
+
     it('rejects --tree combined with --long at option-parsing time', async () => {
       // commander's `.conflicts('long')` aborts BEFORE the action runs, so no
       // AWS call should happen. The exitOverride helper turns commander's
@@ -458,6 +468,44 @@ describe('cdkd state list', () => {
 
       const out = await runStateList(['list', '--tree']);
       expect(out).toBe('Ghost~Orphan (us-east-1)\n');
+    });
+
+    it('degrades a single getState failure to a top-level entry without aborting the whole tree', async () => {
+      // One stack's state is unreadable (transient S3 503 / IAM hiccup);
+      // siblings should still render. The unreadable row surfaces at the
+      // root level with no parent link rather than killing the entire view.
+      mockListStacks.mockResolvedValue([
+        { stackName: 'GoodParent', region: 'us-east-1' },
+        { stackName: 'GoodParent~Child', region: 'us-east-1' },
+        { stackName: 'Unreadable', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'GoodParent') {
+          return { state: { resources: {}, lastModified: 0 } };
+        }
+        if (name === 'GoodParent~Child') {
+          return {
+            state: {
+              resources: {},
+              lastModified: 0,
+              parentStack: 'GoodParent',
+              parentLogicalId: 'Child',
+              parentRegion: 'us-east-1',
+            },
+          };
+        }
+        throw new Error('S3 read failed (simulated 503)');
+      });
+
+      const out = await runStateList(['list', '--tree']);
+      expect(out).toBe(
+        [
+          'GoodParent (us-east-1)',
+          '└── GoodParent~Child (us-east-1)',
+          'Unreadable (us-east-1)',
+          '',
+        ].join('\n')
+      );
     });
   });
 });

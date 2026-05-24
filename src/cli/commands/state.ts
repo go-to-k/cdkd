@@ -330,9 +330,11 @@ async function stateListCommand(options: {
  *
  * Loads each state record in parallel to read the v6 `parentStack` /
  * `parentLogicalId` / `parentRegion` fields, then hands the enriched flat
- * list to {@link buildStackTree}. A missing or unreadable state record
- * degrades to a top-level entry (no parent link) — the row still appears
- * in the tree at the root level rather than vanishing.
+ * list to {@link buildStackTree}. A missing state record (NoSuchKey returns
+ * `null` from getState) OR an unreadable one (transient S3 503 / throttle /
+ * per-stack IAM hiccup throws) degrades to a top-level entry (no parent
+ * link) — the row still appears in the tree at the root level rather than
+ * vanishing, and one bad record never kills the whole view.
  *
  * `tree --json` emits the nested {@link import('./state-list-tree.js').StackTreeJson}
  * shape; plain `tree` renders `tree(1)`-style box-drawing.
@@ -350,8 +352,17 @@ async function renderTreeMode(
       if (!ref.region) {
         return { stackName: ref.stackName };
       }
-      const result = await stateBackend.getState(ref.stackName, ref.region);
-      const state = result?.state;
+      // One transient S3 error (503, throttle, single-stack IAM hiccup) should
+      // not kill the whole `--tree` view — degrade to a no-parent-link entry
+      // so the row stays visible at the root level. NoSuchKey returns `null`
+      // from getState already; this catch covers the other failure modes.
+      let state: StackState | undefined;
+      try {
+        const result = await stateBackend.getState(ref.stackName, ref.region);
+        state = result?.state;
+      } catch {
+        return { stackName: ref.stackName, region: ref.region };
+      }
       return {
         stackName: ref.stackName,
         region: ref.region,
