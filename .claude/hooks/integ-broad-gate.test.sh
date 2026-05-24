@@ -64,23 +64,34 @@ exit 1
 MISE_EOF
 chmod +x "$GH_BIN_DIR/mise"
 
-cat > "$GH_BIN_DIR/markgate" <<'MARKGATE_EOF'
+# Trace file: the mocked markgate writes $PWD to this file on every
+# call. Each test case can assert the hook `cd`'d to the resolved
+# target dir before invoking markgate. Mirrors check-gate.test.sh
+# (post-#562) — closes the coverage gap the #562 reviewer flagged
+# (only 4 of 7 cwd-aware test files asserted via $CWD_TRACE_FILE;
+# this is one of the 3 that didn't).
+CWD_TRACE_FILE="$TMPDIR/cwd-trace"
+
+cat > "$GH_BIN_DIR/markgate" <<MARKGATE_EOF
 #!/usr/bin/env bash
-# Mock markgate: verdict pinned by $MARKGATE_MOCK_VERDICT
+# Mock markgate: verdict pinned by \$MARKGATE_MOCK_VERDICT
 # ("fresh" -> verify exits 0; anything else -> verify exits 1 and
 # status prints a parseable stale line). The hook's awk extractor
-# pulls "(reason)" out of `state:` for the error message.
-verdict="${MARKGATE_MOCK_VERDICT:-stale}"
-case "$1" in
+# pulls "(reason)" out of \`state:\` for the error message.
+# Also writes \$PWD to \$CWD_TRACE_FILE so the cwd-aware test cases
+# can assert the hook \`cd\`'d to the resolved target dir.
+echo "\$PWD" >> "$CWD_TRACE_FILE"
+verdict="\${MARKGATE_MOCK_VERDICT:-stale}"
+case "\$1" in
   verify)
-    [ "$verdict" = "fresh" ] && exit 0
+    [ "\$verdict" = "fresh" ] && exit 0
     exit 1
     ;;
   status)
-    if [ "$verdict" = "fresh" ]; then
-      printf 'key:        %s\nstate:      match\n' "$2"
+    if [ "\$verdict" = "fresh" ]; then
+      printf 'key:        %s\nstate:      match\n' "\$2"
     else
-      printf 'key:        %s\nstate:      stale (marker missing)\n' "$2"
+      printf 'key:        %s\nstate:      stale (marker missing)\n' "\$2"
     fi
     exit 0
     ;;
@@ -96,12 +107,19 @@ pass=0
 fail=0
 fail_log=""
 
-# run_case <name> <expect_exit> <payload> <gh_files_json>
+# run_case <name> <expect_exit> <payload> <gh_files_json> [expect_cwd]
 #   payload         — PreToolUse JSON the hook reads from stdin
 #   gh_files_json   — JSON to return from mocked `gh pr view --json files`
 #                     (use empty string to simulate gh failure)
+#   expect_cwd      — optional: the directory the hook should have
+#                     cd'd into before calling markgate. When set, the
+#                     mocked markgate appends $PWD to $CWD_TRACE_FILE
+#                     and we assert it contains expect_cwd. Empty
+#                     skips the cwd assertion (used for pass-through
+#                     cases that never reach markgate).
 run_case() {
-  local name="$1"; local want="$2"; local payload="$3"; local gh_files="$4"
+  local name="$1"; local want="$2"; local payload="$3"; local gh_files="$4"; local expect_cwd="${5:-}"
+  : > "$CWD_TRACE_FILE"
   if [ -n "$gh_files" ]; then
     echo "$gh_files" > "$GH_MOCK_PAYLOAD"
   else
@@ -110,13 +128,24 @@ run_case() {
   local got
   printf '%s' "$payload" | "$HOOK" >/dev/null 2>&1
   got=$?
-  if [[ "$got" == "$want" ]]; then
+
+  local cwd_ok=1
+  if [ -n "$expect_cwd" ]; then
+    if ! grep -qFx "$expect_cwd" "$CWD_TRACE_FILE" 2>/dev/null; then
+      cwd_ok=0
+    fi
+  fi
+
+  if [[ "$got" == "$want" ]] && [ "$cwd_ok" -eq 1 ]; then
     pass=$((pass + 1))
     printf 'OK   %s (exit %s)\n' "$name" "$got"
   else
     fail=$((fail + 1))
-    fail_log+="FAIL $name: want exit $want, got $got\n"
-    fail_log+="  payload: $payload\n"
+    fail_log+="FAIL $name: want exit $want, got $got"
+    if [ "$cwd_ok" -eq 0 ]; then
+      fail_log+="; cwd mismatch (want '$expect_cwd', trace: $(cat "$CWD_TRACE_FILE" 2>/dev/null | tr '\n' '|'))"
+    fi
+    fail_log+="\n  payload: $payload\n"
     printf 'FAIL %s (want %s, got %s)\n' "$name" "$want" "$got"
   fi
 }
@@ -212,20 +241,44 @@ git -C "$CWD_MAIN_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty
 # cd-from-payload `cwd` field routes the hook to the side worktree;
 # cross-cutting PR + stale marker → block. The block proves the hook
 # reached markgate from the resolved worktree, not from a hardcoded
-# main-tree resolution.
+# main-tree resolution. $CWD_TRACE_FILE assertion verifies the hook
+# actually `cd`'d into the resolved target dir before invoking
+# markgate (issue #563 — closes the coverage gap the PR #562
+# reviewer flagged).
 run_case "block: side worktree cwd + cross-cutting diff" 2 \
   "$(printf '{"tool_input":{"command":"gh pr merge 1000 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO")" \
-  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' \
+  "$CWD_SIDE_REPO"
 
 # `cd <side> && gh pr merge` from main cwd: cd target wins, hook
 # operates in side worktree.
 run_case "block: cd <side> && gh pr merge from main cwd" 2 \
   "$(printf '{"tool_input":{"command":"cd %s && gh pr merge 1001 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
-  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' \
+  "$CWD_SIDE_REPO"
 
 # `gh -C <side> pr merge` from main cwd: -C target wins.
 run_case "block: gh -C <side> pr merge from main cwd" 2 \
   "$(printf '{"tool_input":{"command":"gh -C %s pr merge 1002 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}' \
+  "$CWD_SIDE_REPO"
+
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substring `gh pr merge`
+# appears inside a quoted argument body of an unrelated command. Per
+# memory rule feedback_hook_command_match_line_start.md, applied to
+# integ-broad-gate.sh in issue #563 (mirroring the PR #562 fix to
+# check-gate.sh). Even with a cross-cutting PR diff, the quoted-body
+# form must pass through because the matcher fires BEFORE the diff
+# scope check.
+
+run_case "pass: gh issue body quoting 'gh pr merge' (FP)" 0 \
+  '{"tool_input":{"command":"gh issue create --body \"next step: gh pr merge --squash\""},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
+
+run_case "pass: echo body quoting 'gh pr merge' (FP)" 0 \
+  '{"tool_input":{"command":"echo \"after CI: gh pr merge 999 --auto\""},"cwd":"."}' \
   '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
 
 # ---- Summary ----

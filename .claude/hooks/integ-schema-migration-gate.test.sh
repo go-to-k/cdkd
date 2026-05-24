@@ -53,20 +53,29 @@ exit 1
 MISE_EOF
 chmod +x "$GH_BIN_DIR/mise"
 
-# Mock markgate: verdict pinned by $MARKGATE_MOCK_VERDICT.
-cat > "$GH_BIN_DIR/markgate" <<'MARKGATE_EOF'
+# Trace file: the mocked markgate writes $PWD to this file on every
+# call. Each test case can assert the hook `cd`'d to the resolved
+# target dir before invoking markgate. Mirrors check-gate.test.sh
+# (post-#562) — closes the coverage gap the #562 reviewer flagged.
+CWD_TRACE_FILE="$TMPDIR/cwd-trace"
+
+# Mock markgate: verdict pinned by $MARKGATE_MOCK_VERDICT. Also
+# writes $PWD to $CWD_TRACE_FILE so the cwd-aware test cases can
+# assert the hook `cd`'d to the resolved target dir.
+cat > "$GH_BIN_DIR/markgate" <<MARKGATE_EOF
 #!/usr/bin/env bash
-verdict="${MARKGATE_MOCK_VERDICT:-stale}"
-case "$1" in
+echo "\$PWD" >> "$CWD_TRACE_FILE"
+verdict="\${MARKGATE_MOCK_VERDICT:-stale}"
+case "\$1" in
   verify)
-    [ "$verdict" = "fresh" ] && exit 0
+    [ "\$verdict" = "fresh" ] && exit 0
     exit 1
     ;;
   status)
-    if [ "$verdict" = "fresh" ]; then
-      printf 'key:        %s\nstate:      match\n' "$2"
+    if [ "\$verdict" = "fresh" ]; then
+      printf 'key:        %s\nstate:      match\n' "\$2"
     else
-      printf 'key:        %s\nstate:      stale (marker missing)\n' "$2"
+      printf 'key:        %s\nstate:      stale (marker missing)\n' "\$2"
     fi
     exit 0
     ;;
@@ -82,12 +91,19 @@ pass=0
 fail=0
 fail_log=""
 
-# run_case <name> <expect_exit> <payload> <files_json> <diff_text>
+# run_case <name> <expect_exit> <payload> <files_json> <diff_text> [expect_cwd]
 #   payload     - PreToolUse JSON
 #   files_json  - JSON for `gh pr view --json files` (empty -> gh failure)
 #   diff_text   - text for `gh pr diff` (empty -> gh failure)
+#   expect_cwd  - optional: dir the hook should have cd'd into before
+#                 calling markgate. The mocked markgate appends $PWD
+#                 to $CWD_TRACE_FILE; this assertion verifies the
+#                 cwd-aware resolution actually landed there. Empty
+#                 skips the cwd assertion (pass-through cases that
+#                 never reach markgate).
 run_case() {
-  local name="$1"; local want="$2"; local payload="$3"; local files="$4"; local diff="$5"
+  local name="$1"; local want="$2"; local payload="$3"; local files="$4"; local diff="$5"; local expect_cwd="${6:-}"
+  : > "$CWD_TRACE_FILE"
   if [ -n "$files" ]; then
     echo "$files" > "$GH_MOCK_FILES"
   else
@@ -101,13 +117,24 @@ run_case() {
   local got
   printf '%s' "$payload" | "$HOOK" >/dev/null 2>&1
   got=$?
-  if [[ "$got" == "$want" ]]; then
+
+  local cwd_ok=1
+  if [ -n "$expect_cwd" ]; then
+    if ! grep -qFx "$expect_cwd" "$CWD_TRACE_FILE" 2>/dev/null; then
+      cwd_ok=0
+    fi
+  fi
+
+  if [[ "$got" == "$want" ]] && [ "$cwd_ok" -eq 1 ]; then
     pass=$((pass + 1))
     printf 'OK   %s (exit %s)\n' "$name" "$got"
   else
     fail=$((fail + 1))
-    fail_log+="FAIL $name: want exit $want, got $got\n"
-    fail_log+="  payload: $payload\n"
+    fail_log+="FAIL $name: want exit $want, got $got"
+    if [ "$cwd_ok" -eq 0 ]; then
+      fail_log+="; cwd mismatch (want '$expect_cwd', trace: $(cat "$CWD_TRACE_FILE" 2>/dev/null | tr '\n' '|'))"
+    fi
+    fail_log+="\n  payload: $payload\n"
     printf 'FAIL %s (want %s, got %s)\n' "$name" "$want" "$got"
   fi
 }
@@ -277,20 +304,46 @@ git -C "$CWD_MAIN_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty
 
 # Reuse the BUMP_DIFF defined earlier (a real version-literal bump).
 # With cwd in side worktree + schema bump + stale marker → block.
+# $CWD_TRACE_FILE assertion verifies the hook actually `cd`'d into
+# the resolved target dir before invoking markgate (issue #563 —
+# closes the coverage gap the PR #562 reviewer flagged).
 run_case "side worktree cwd + version bump + stale BLOCKS" 2 \
   "$(printf '{"tool_input":{"command":"gh pr merge 2000 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO")" \
   '{"files":[{"path":"src/types/state.ts"}]}' \
-  "$BUMP_DIFF"
+  "$BUMP_DIFF" \
+  "$CWD_SIDE_REPO"
 
 # `cd <side> && gh pr merge` routes to side; schema bump → block.
 run_case "cd <side> && gh pr merge from main cwd + bump BLOCKS" 2 \
   "$(printf '{"tool_input":{"command":"cd %s && gh pr merge 2001 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
   '{"files":[{"path":"src/types/state.ts"}]}' \
-  "$BUMP_DIFF"
+  "$BUMP_DIFF" \
+  "$CWD_SIDE_REPO"
 
 # `gh -C <side> pr merge` routes to side.
 run_case "gh -C <side> pr merge + bump BLOCKS" 2 \
   "$(printf '{"tool_input":{"command":"gh -C %s pr merge 2002 --squash"},"cwd":"%s"}' "$CWD_SIDE_REPO" "$CWD_MAIN_REPO")" \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$BUMP_DIFF" \
+  "$CWD_SIDE_REPO"
+
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substring `gh pr merge`
+# appears inside a quoted argument body of an unrelated command. Per
+# memory rule feedback_hook_command_match_line_start.md, applied to
+# integ-schema-migration-gate.sh in issue #563 (mirroring the PR #562
+# fix to check-gate.sh). Even with a schema-bump diff in the
+# mocked response, the quoted-body form must pass through because
+# the matcher fires BEFORE the file-scope / diff-grep checks.
+
+run_case "gh issue body quoting 'gh pr merge' passes through (FP)" 0 \
+  '{"tool_input":{"command":"gh issue create --body \"next step: gh pr merge --squash\""}}' \
+  '{"files":[{"path":"src/types/state.ts"}]}' \
+  "$BUMP_DIFF"
+
+run_case "echo body quoting 'gh pr merge' passes through (FP)" 0 \
+  '{"tool_input":{"command":"echo \"after CI: gh pr merge 999 --auto\""}}' \
   '{"files":[{"path":"src/types/state.ts"}]}' \
   "$BUMP_DIFF"
 

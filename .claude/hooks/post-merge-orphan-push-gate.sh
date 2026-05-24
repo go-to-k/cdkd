@@ -44,13 +44,18 @@ input=$(cat 2>/dev/null || true)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Only gate `git push` — any other command passes through. `[^|;&]*`
-# matches any flag/value pairs between `git` and the subcommand without
-# crossing pipeline separators, so `git status; git push` matches the
-# second segment via re-positioning. We intentionally do NOT match
-# `git push origin :branch` (delete push) — see explicit deletion check
-# below.
-if ! printf '%s' "$cmd" | grep -qE '\bgit[^|;&]*\bpush\b'; then
+# Only gate `git push` — any other command passes through. Line-start
+# anchored (per memory rule feedback_hook_command_match_line_start.md)
+# so `git push` substrings inside quoted argument bodies
+# (`gh issue create --body "remember to git push"`) do NOT
+# false-positive into a hard block. The optional leading
+# `cd <path> &&` prefix preserves the worktree-aware
+# `cd <side> && git push` chain shape, mirroring check-gate.sh
+# (PR #562 fix pattern). `[^|;&]*` matches any flag/value pairs
+# between `git` and the subcommand without crossing pipeline
+# separators. We intentionally do NOT match `git push origin :branch`
+# (delete push) — see explicit deletion check below.
+if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git[^|;&]*[[:space:]]push([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

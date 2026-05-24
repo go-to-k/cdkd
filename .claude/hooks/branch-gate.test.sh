@@ -145,8 +145,20 @@ run_case "cd <main> && git commit from feature-cwd blocked" 2 \
 run_case "git -C <main> commit blocked" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s commit -m oops"}}' "$feature_repo" "$main_repo")"
 
-# 11. Last `git -C` wins: -C feature first, -C main second.
-run_case "last git -C wins (main last → blocked)" 2 \
+# 11. Single-line `git -C <a> status; git -C <b> commit` — chained
+#     shape where the second `git` is NOT at line-start. With the
+#     line-start anchored matcher (per memory rule
+#     feedback_hook_command_match_line_start.md, issue #563), the
+#     matcher fires on the FIRST `git -C <feature> status` token
+#     (the line-start one), which is not a commit/push subcommand,
+#     so the hook short-circuits at the matcher (exit 0). This is
+#     an ACCEPTED FALSE-NEGATIVE of the line-start tightening — the
+#     trade-off we make to eliminate quoted-body false-positives
+#     (see Part C false-positive cases below). For the agent
+#     workflow this is fine: chained-on-one-line commits to main
+#     are rare; the dominant shape is `cd <repo> && git commit ...`,
+#     which IS line-start matched.
+run_case "single-line chained git -C status; git -C commit (accepted false-negative)" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s status; git -C %s commit -m oops"}}' "$feature_repo" "$feature_repo" "$main_repo")"
 
 # 11b. `git -c <key>=<val> commit` — global `-c` flag before commit
@@ -171,6 +183,25 @@ run_case "missing .cwd does not crash" 0 \
 # 13. Empty stdin payload → cmd empty → allowed (nothing to gate).
 run_case "empty stdin allowed" 0 \
   ''
+
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substrings `git commit` /
+# `git push` appear inside a quoted argument body of an unrelated
+# command. Per memory rule feedback_hook_command_match_line_start.md,
+# applied to branch-gate.sh in issue #563 (mirroring the PR #562 fix
+# to check-gate.sh).
+
+# 14. `gh issue create --body "...git commit..."` on main: the body
+#     mentions `git commit` but the command itself starts with `gh`.
+#     MUST pass through (would otherwise block routine issue creation).
+run_case "gh issue body quoting 'git commit' on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh issue create --body \"we should add a git commit hook later\""}}' "$main_repo")"
+
+# 15. `echo "...git push..."` on main: the body mentions `git push`
+#     but the command starts with `echo`. MUST pass through.
+run_case "echo body quoting 'git push' on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"reminder: git push origin main later\""}}' "$main_repo")"
 
 echo
 echo "Pass: $pass  Fail: $fail"

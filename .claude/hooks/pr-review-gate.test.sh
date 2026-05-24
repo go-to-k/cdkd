@@ -101,13 +101,23 @@ esac
 EOF_GH
 chmod +x "$SHIM_DIR/gh"
 
-# markgate shim: $MARKGATE_FIXTURE controls verify's exit code.
-cat > "$SHIM_DIR/markgate" <<'EOF_MG'
+# Trace file: the mocked markgate writes $PWD to this file on every
+# call. The cwd-aware test cases below (run_case_cwd) can assert the
+# hook `cd`'d to the resolved target dir before invoking markgate.
+# Mirrors check-gate.test.sh (post-#562) — closes the coverage gap
+# the #562 reviewer flagged.
+CWD_TRACE_FILE="$SHIM_DIR/cwd-trace"
+
+# markgate shim: $MARKGATE_FIXTURE controls verify's exit code. Also
+# writes $PWD to $CWD_TRACE_FILE so the cwd-aware test cases can
+# assert the hook `cd`'d to the resolved target dir.
+cat > "$SHIM_DIR/markgate" <<EOF_MG
 #!/usr/bin/env bash
 set -u
-case "${1:-}" in
+echo "\$PWD" >> "$CWD_TRACE_FILE"
+case "\${1:-}" in
   verify)
-    case "${MARKGATE_FIXTURE:-stale}" in
+    case "\${MARKGATE_FIXTURE:-stale}" in
       fresh) exit 0 ;;
       stale) exit 1 ;;
       *) exit 1 ;;
@@ -300,18 +310,25 @@ run_case "gh pr merge <N> --auto + stale marker → block" 2 \
   "gh pr merge 700 --auto"
 
 # 18. Command containing the bare word "merge" BEFORE the actual
-#     `gh pr merge` (typical: an inline `# Wait + merge` comment in
-#     a multi-line Bash script, OR a `git merge` / `npm run merge:foo`
-#     earlier in a `;`-chained command). Pre-fix the `${cmd#*merge}`
-#     short-match landed at the EARLIER `merge` token, and the next
-#     numeric token in the chain (loop counter, exit code, etc.) was
-#     erroneously parsed as the PR number. Post-fix `${cmd##*gh pr merge}`
-#     greedy-strips up to the LAST `gh pr merge` so the parse lands on
-#     the real PR number. Medium-tier fixture + stale marker → must
-#     still BLOCK (exit 2) on the post-fix parse — proving the
-#     comment-bearing shape doesn't fall into the parse-empty
-#     "current branch PR" fail-open path.
-run_case "command with 'merge' word before gh pr merge → still blocks" 2 \
+#     `gh pr merge` in a single-line `;`-chain (typical: an inline
+#     `# Wait + merge` comment in a multi-line Bash script, OR a
+#     `git merge` / `npm run merge:foo` earlier in a `;`-chained
+#     command).
+#
+#     Pre-issue #563 the matcher was `\bgh ... pr merge\b` (word-
+#     boundary), so the line as a whole matched and the
+#     `${cmd##*gh pr merge}` greedy-strip parser then landed on the
+#     correct PR number. Post-#563 the matcher is line-start anchored
+#     (per memory rule feedback_hook_command_match_line_start.md) to
+#     eliminate quoted-body false-positives (the `gh issue create
+#     --body "...gh pr merge..."` shape, see the Part C cases below).
+#     The trade-off is that single-line chained `... ; gh pr merge`
+#     shapes now fall through the matcher (the line starts with
+#     `echo`, not `gh`) — an ACCEPTED FALSE-NEGATIVE of the line-
+#     start tightening. The dominant agent shape is
+#     `cd <worktree> && gh pr merge ...` which IS line-start matched
+#     because of the leading `cd <path> &&` allowance.
+run_case "single-line chained gh pr merge after echo (accepted false-negative)" 0 \
   medium stale "" \
   "echo merge first; for i in 1 2 3; do echo loop; done; gh pr merge 800 --squash"
 
@@ -337,9 +354,17 @@ printf 'med1234567890' > "$CWD_SIDE_REPO/.markgate-pr-review-sha"
 
 # Override run_case to take an explicit cwd. We define a parallel
 # helper below to avoid touching every existing case's signature.
+#
+# Accepts an optional 7th arg, `expect_cwd`, that asserts the hook
+# `cd`'d into the expected dir before invoking markgate (issue #563
+# — closes the coverage gap the PR #562 reviewer flagged). Empty
+# (or omitted) skips the cwd assertion — used for the markgate-fresh
+# pass-through cases where the trace still gets written but the
+# explicit assertion is unnecessary if the caller doesn't pass it.
 run_case_cwd() {
-  local name="$1"; local want="$2"; local gh_fix="$3"; local mg_fix="$4"; local cwd="$5"; local command="$6"
+  local name="$1"; local want="$2"; local gh_fix="$3"; local mg_fix="$4"; local cwd="$5"; local command="$6"; local expect_cwd="${7:-}"
 
+  : > "$CWD_TRACE_FILE"
   local payload
   payload=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$cwd" "$command")
 
@@ -350,13 +375,23 @@ run_case_cwd() {
         GH_FIXTURE="$gh_fix" MARKGATE_FIXTURE="$mg_fix" PATH="$SHIM_DIR:$PATH" "$HOOK" 2>&1)
   got=$?
 
-  if [ "$got" = "$want" ]; then
+  local cwd_ok=1
+  if [ -n "$expect_cwd" ]; then
+    if ! grep -qFx "$expect_cwd" "$CWD_TRACE_FILE" 2>/dev/null; then
+      cwd_ok=0
+    fi
+  fi
+
+  if [ "$got" = "$want" ] && [ "$cwd_ok" -eq 1 ]; then
     pass=$((pass + 1))
     printf 'OK   %s (exit %s)\n' "$name" "$got"
   else
     fail=$((fail + 1))
-    fail_log+="FAIL $name: want exit $want, got $got\n"
-    fail_log+="  cwd: $cwd; command: $command\n"
+    fail_log+="FAIL $name: want exit $want, got $got"
+    if [ "$cwd_ok" -eq 0 ]; then
+      fail_log+="; cwd mismatch (want '$expect_cwd', trace: $(cat "$CWD_TRACE_FILE" 2>/dev/null | tr '\n' '|'))"
+    fi
+    fail_log+="\n  cwd: $cwd; command: $command\n"
     fail_log+="  output : $out\n"
     printf 'FAIL %s (want %s, got %s)\n' "$name" "$want" "$got"
   fi
@@ -364,22 +399,46 @@ run_case_cwd() {
 
 # 19. cwd in side worktree + fresh marker (mocked) + sentinel binding
 #     to PR head sha → pass. Proves the hook reads the SIDE worktree's
-#     sentinel rather than always the main tree's.
+#     sentinel rather than always the main tree's. The 7th arg asserts
+#     markgate was invoked from the SIDE worktree (issue #563).
 run_case_cwd "side worktree cwd + fresh marker + sentinel match → pass" 0 \
-  medium fresh "$CWD_SIDE_REPO" "gh pr merge 1000"
+  medium fresh "$CWD_SIDE_REPO" "gh pr merge 1000" "$CWD_SIDE_REPO"
 
 # 20. cwd in main tree + stale marker → block (sanity that the cwd
 #     resolution doesn't break the existing path).
 run_case_cwd "main tree cwd + stale marker → block" 2 \
-  medium stale "$REPO_ROOT" "gh pr merge 1100"
+  medium stale "$REPO_ROOT" "gh pr merge 1100" "$REPO_ROOT"
 
 # 21. `cd <side> && gh pr merge` from main cwd routes to side → pass.
 run_case_cwd "cd <side> && gh pr merge from main cwd → side wins" 0 \
-  medium fresh "$REPO_ROOT" "cd $CWD_SIDE_REPO && gh pr merge 1200"
+  medium fresh "$REPO_ROOT" "cd $CWD_SIDE_REPO && gh pr merge 1200" "$CWD_SIDE_REPO"
 
 # 22. `gh -C <side> pr merge` from main cwd routes to side → pass.
 run_case_cwd "gh -C <side> pr merge from main cwd → side wins" 0 \
-  medium fresh "$REPO_ROOT" "gh -C $CWD_SIDE_REPO pr merge 1300"
+  medium fresh "$REPO_ROOT" "gh -C $CWD_SIDE_REPO pr merge 1300" "$CWD_SIDE_REPO"
+
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substring `gh pr merge`
+# appears inside a quoted argument body of an unrelated command. Per
+# memory rule feedback_hook_command_match_line_start.md, applied to
+# pr-review-gate.sh in issue #563 (mirroring the PR #562 fix to
+# check-gate.sh). Even with a large/3-axis-tier PR fixture, the
+# quoted-body form must pass through because the matcher fires
+# BEFORE the tier computation.
+
+# 23. `gh issue create --body "...gh pr merge..."`: body mentions
+#     `gh pr merge` but the line starts with `gh issue create`.
+#     MUST pass through.
+run_case "gh issue body quoting 'gh pr merge' passes (FP)" 0 \
+  large stale "" \
+  "gh issue create --body \"next step: gh pr merge --squash\""
+
+# 24. `echo "...gh pr merge..."`: body mentions `gh pr merge` but
+#     the command starts with `echo`. MUST pass through.
+run_case "echo body quoting 'gh pr merge' passes (FP)" 0 \
+  large stale "" \
+  "echo \"after CI: gh pr merge 999 --auto\""
 
 echo
 echo "Pass: $pass  Fail: $fail"
