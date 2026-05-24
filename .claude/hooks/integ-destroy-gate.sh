@@ -11,22 +11,68 @@
 # This is the structural counterpart to the CLAUDE.md rule "Never
 # merge a PR whose destroy path is unverified". The rule said it; the
 # hook enforces it.
+#
+# WHY the cwd-aware resolution matters (cdkd #559): this repo is
+# regularly worked in via `git worktree`, and markgate stores marker
+# state per-worktree at `<git rev-parse --absolute-git-dir>/markgate/`.
+# The pre-#559 implementation derived REPO from `BASH_SOURCE` and
+# always landed on the main working tree, defeating markgate's
+# per-worktree isolation and forcing every parallel agent to converge
+# on the main tree's view (see memory rule
+# feedback_cross_agent_main_tree_contention.md). We now resolve the
+# target working tree from the PreToolUse payload's `cwd` field +
+# leading `cd <path>` + last `gh -C <path>` flag.
 
 set -u
 
-# Resolve repo root from script location (.claude/hooks/integ-destroy-gate.sh -> repo root).
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Read the entire stdin payload once; we need both .tool_input.command
+# and .cwd from it.
+input=$(cat 2>/dev/null || true)
 
-# Extract the command from the PreToolUse payload.
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate `gh pr merge` invocations -- any other command passes
-# through. Match both `gh pr merge` and `gh pr merge --auto`.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+merge\b'; then
+# through. Match both `gh pr merge` and `gh pr merge --auto`. Tolerate
+# an optional `gh -C <path>` between `gh` and `pr`.
+if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge\b'; then
   exit 0
 fi
 
-cd "$REPO" 2>/dev/null || exit 0
+# Resolve where the gh command will actually run (cwd-aware; mirrors
+# verify-pr-gate.sh / non-english-text-gate.sh).
+target_dir="${hook_cwd:-$PWD}"
+
+if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+  cd_target="${BASH_REMATCH[1]}"
+  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
+  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+  if [[ "$cd_target" != /* ]]; then
+    cd_target="$target_dir/$cd_target"
+  fi
+  target_dir="$cd_target"
+fi
+
+if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
+  c_target=""
+  remaining="$cmd"
+  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
+    c_target="${BASH_REMATCH[1]}"
+    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+  done
+  c_target="${c_target%\"}"; c_target="${c_target#\"}"
+  c_target="${c_target%\'}"; c_target="${c_target#\'}"
+  if [[ "$c_target" != /* ]]; then
+    c_target="$target_dir/$c_target"
+  fi
+  target_dir="$c_target"
+fi
+
+if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  exit 0
+fi
+
+cd "$target_dir" 2>/dev/null || exit 0
 
 # Decide whether the diff actually touches deletion logic. The markgate
 # scope (.markgate.yml) is file-level, so it can't tell apart a real

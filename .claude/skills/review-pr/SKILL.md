@@ -100,19 +100,16 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
      # to the PR will invalidate the marker (the next /review-pr run
      # rewrites the sentinel and markgate's digest reports stale).
      #
-     # `git worktree`-aware: cd into the main working tree first so
-     # the sentinel + markgate state land where the gate hook reads
-     # them. The hook resolves its scope via
-     # `git rev-parse --git-common-dir` (the shared `.git` dir, or
-     # the main repo's `.git` from a worktree); markgate's marker
-     # store is per-cwd, so running from a worktree would land in a
-     # different store than the hook checks. `gh pr merge` itself is
-     # working-tree-agnostic — the cwd at merge time may not match
-     # the cwd at marker-set time. cd to the shared main tree to
-     # avoid the divergence.
-     main_tree=$(git rev-parse --path-format=absolute --git-common-dir | xargs dirname)
-     gh pr view <N> --json headRefOid -q .headRefOid > "$main_tree/.markgate-pr-review-sha"
-     ( cd "$main_tree" && mise exec -- markgate set pr-review )
+     # Post-#559 (cwd-aware gate hooks): the sentinel + markgate
+     # state both land in the CURRENT worktree — the same one where
+     # `gh pr merge <N>` will later run. The gate hook resolves the
+     # target worktree from the PreToolUse payload's `cwd` field +
+     # `cd <path>` / `gh -C <path>` in the command, so concurrent
+     # agents in different worktrees no longer collide on a shared
+     # main-tree marker store. Convention: set markers from the
+     # worktree you intend to merge from.
+     gh pr view <N> --json headRefOid -q .headRefOid > .markgate-pr-review-sha
+     mise exec -- markgate set pr-review
      ```
 
    For the `inline` tier, the marker is NOT set — the gate's heuristic

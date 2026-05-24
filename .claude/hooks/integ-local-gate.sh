@@ -40,8 +40,9 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # merge time, mirroring the integ-destroy gate's policy.
 #
 # `[^|;&]*` matches flags / values between `gh`/`git` and the
-# subcommand without crossing pipeline separators.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+merge\b|\bgit[^|;&]*\bmerge\b'; then
+# subcommand without crossing pipeline separators. Tolerate an optional
+# `gh -C <path>` between `gh` and `pr`.
+if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge\b|\bgit[^|;&]*\bmerge\b'; then
   exit 0
 fi
 
@@ -60,11 +61,27 @@ if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
   target_dir="$cd_target"
 fi
 
-# Last `git -C <path>` wins (`gh` doesn't have an equivalent flag).
+# Last `git -C <path>` wins.
 if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
   c_target=""
   remaining="$cmd"
   while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
+    c_target="${BASH_REMATCH[1]}"
+    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+  done
+  c_target="${c_target%\"}"; c_target="${c_target#\"}"
+  c_target="${c_target%\'}"; c_target="${c_target#\'}"
+  if [[ "$c_target" != /* ]]; then
+    c_target="$target_dir/$c_target"
+  fi
+  target_dir="$c_target"
+fi
+
+# Last `gh -C <path>` wins (gh's "run as if from <path>" flag).
+if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
+  c_target=""
+  remaining="$cmd"
+  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
     c_target="${BASH_REMATCH[1]}"
     remaining="${remaining#*"${BASH_REMATCH[0]}"}"
   done

@@ -53,32 +53,55 @@
 
 set -u
 
-# Resolve repo root from script location, accounting for worktrees by
-# preferring the shared `.git` parent (same pattern as
-# pr-review-gate.sh / integ-broad-gate.sh after PR #339).
-SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-if git_common=$(git -C "$SCRIPT_REPO" rev-parse --git-common-dir 2>/dev/null); then
-  case "$git_common" in
-    /*) abs_common="$git_common" ;;
-    *)  abs_common="$SCRIPT_REPO/$git_common" ;;
-  esac
-  REPO="$(cd "$(dirname "$abs_common")" 2>/dev/null && pwd)" || REPO="$SCRIPT_REPO"
-else
-  REPO="$SCRIPT_REPO"
-fi
-
 # Read the PreToolUse payload (command + cwd).
 input=$(cat 2>/dev/null || true)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate `gh pr merge` (including --auto). Every other command,
 # including `gh pr create`, passes through — opening a PR for review
-# should always be allowed.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+merge\b'; then
+# should always be allowed. Tolerate an optional `gh -C <path>` between
+# `gh` and `pr`.
+if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge\b'; then
   exit 0
 fi
 
-cd "$REPO" 2>/dev/null || exit 0
+# Resolve where the gh command will actually run (cwd-aware; cdkd #559
+# — pre-fix the hook resolved REPO from BASH_SOURCE which always
+# landed in the main tree, defeating markgate's per-worktree isolation;
+# see memory rule feedback_cross_agent_main_tree_contention.md).
+target_dir="${hook_cwd:-$PWD}"
+
+if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+  cd_target="${BASH_REMATCH[1]}"
+  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
+  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+  if [[ "$cd_target" != /* ]]; then
+    cd_target="$target_dir/$cd_target"
+  fi
+  target_dir="$cd_target"
+fi
+
+if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
+  c_target=""
+  remaining="$cmd"
+  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
+    c_target="${BASH_REMATCH[1]}"
+    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+  done
+  c_target="${c_target%\"}"; c_target="${c_target#\"}"
+  c_target="${c_target%\'}"; c_target="${c_target#\'}"
+  if [[ "$c_target" != /* ]]; then
+    c_target="$target_dir/$c_target"
+  fi
+  target_dir="$c_target"
+fi
+
+if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  exit 0
+fi
+
+cd "$target_dir" 2>/dev/null || exit 0
 
 # Schema scope: the single file carrying the StackState.version
 # literal type + STATE_SCHEMA_VERSIONS_READABLE constant + every

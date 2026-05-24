@@ -14,20 +14,12 @@ set -u
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr-review-gate.sh"
 SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# Match the hook's worktree-shared sentinel resolution: prefer the main
-# working tree (shared across `git worktree` instances) via
-# `git rev-parse --git-common-dir`. From the main repo this is a no-op;
-# from a worktree this redirects to the parent repo so the test
-# fixture sentinel lands where the hook will actually read it.
-if git_common=$(git -C "$SCRIPT_REPO" rev-parse --git-common-dir 2>/dev/null); then
-  case "$git_common" in
-    /*) abs_common="$git_common" ;;
-    *)  abs_common="$SCRIPT_REPO/$git_common" ;;
-  esac
-  REPO_ROOT="$(cd "$(dirname "$abs_common")" 2>/dev/null && pwd)" || REPO_ROOT="$SCRIPT_REPO"
-else
-  REPO_ROOT="$SCRIPT_REPO"
-fi
+# Post-#559: the hook is cwd-aware, so the sentinel lives in the
+# WORKTREE the test runs from (the worktree containing this hook).
+# Every test payload below uses `cwd = REPO_ROOT` (the worktree
+# itself) so the hook lands on this same dir; the sentinel write
+# below puts the fixture sha where the hook will read it.
+REPO_ROOT="$SCRIPT_REPO"
 
 # Per-run scratch dir for shim binaries; cleaned on EXIT.
 SHIM_DIR="$(mktemp -d)"
@@ -322,6 +314,72 @@ run_case "gh pr merge <N> --auto + stale marker → block" 2 \
 run_case "command with 'merge' word before gh pr merge → still blocks" 2 \
   medium stale "" \
   "echo merge first; for i in 1 2 3; do echo loop; done; gh pr merge 800 --squash"
+
+# --- CWD-AWARE cases (cdkd #559) ---------------------------------------
+#
+# Verify that the hook resolves the target git working tree from the
+# payload's `cwd` field / `cd <path>` / `gh -C <path>` flag, and that
+# the sentinel + markgate state are read from THAT worktree rather
+# than always the main tree. Pre-#559 the hook landed in the main
+# tree via `git rev-parse --git-common-dir`'s parent.
+#
+# Side worktree fixture: a fresh empty git repo with its own sentinel
+# binding to the medium-fixture's `headRefOid` ("med1234567890").
+# When the hook resolves to this side dir, the marker is fresh AND
+# the sentinel matches → pass.
+CWD_TMP="$(mktemp -d)"
+trap 'rm -rf "$SHIM_DIR" "$CWD_TMP"; [ -n "$ORIG_SENTINEL" ] && printf "%s" "$ORIG_SENTINEL" > "$SENTINEL" || rm -f "$SENTINEL"' EXIT
+
+CWD_SIDE_REPO="$CWD_TMP/side-worktree"
+git init -q -b feature/x "$CWD_SIDE_REPO"
+git -C "$CWD_SIDE_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+printf 'med1234567890' > "$CWD_SIDE_REPO/.markgate-pr-review-sha"
+
+# Override run_case to take an explicit cwd. We define a parallel
+# helper below to avoid touching every existing case's signature.
+run_case_cwd() {
+  local name="$1"; local want="$2"; local gh_fix="$3"; local mg_fix="$4"; local cwd="$5"; local command="$6"
+
+  local payload
+  payload=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$cwd" "$command")
+
+  local got out
+  out=$(GH_FIXTURE="$gh_fix" MARKGATE_FIXTURE="$mg_fix" \
+        PATH="$SHIM_DIR:$PATH" \
+        printf '%s' "$payload" | \
+        GH_FIXTURE="$gh_fix" MARKGATE_FIXTURE="$mg_fix" PATH="$SHIM_DIR:$PATH" "$HOOK" 2>&1)
+  got=$?
+
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1))
+    printf 'OK   %s (exit %s)\n' "$name" "$got"
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL $name: want exit $want, got $got\n"
+    fail_log+="  cwd: $cwd; command: $command\n"
+    fail_log+="  output : $out\n"
+    printf 'FAIL %s (want %s, got %s)\n' "$name" "$want" "$got"
+  fi
+}
+
+# 19. cwd in side worktree + fresh marker (mocked) + sentinel binding
+#     to PR head sha → pass. Proves the hook reads the SIDE worktree's
+#     sentinel rather than always the main tree's.
+run_case_cwd "side worktree cwd + fresh marker + sentinel match → pass" 0 \
+  medium fresh "$CWD_SIDE_REPO" "gh pr merge 1000"
+
+# 20. cwd in main tree + stale marker → block (sanity that the cwd
+#     resolution doesn't break the existing path).
+run_case_cwd "main tree cwd + stale marker → block" 2 \
+  medium stale "$REPO_ROOT" "gh pr merge 1100"
+
+# 21. `cd <side> && gh pr merge` from main cwd routes to side → pass.
+run_case_cwd "cd <side> && gh pr merge from main cwd → side wins" 0 \
+  medium fresh "$REPO_ROOT" "cd $CWD_SIDE_REPO && gh pr merge 1200"
+
+# 22. `gh -C <side> pr merge` from main cwd routes to side → pass.
+run_case_cwd "gh -C <side> pr merge from main cwd → side wins" 0 \
+  medium fresh "$REPO_ROOT" "gh -C $CWD_SIDE_REPO pr merge 1300"
 
 echo
 echo "Pass: $pass  Fail: $fail"

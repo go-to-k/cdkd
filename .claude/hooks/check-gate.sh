@@ -6,21 +6,90 @@
 # Each gate is scoped (see .markgate.yml) so edits to tests-only
 # invalidate only `check`, and edits to docs-only invalidate only
 # `docs`. Error messages identify which gate needs re-running.
+#
+# WHY the cwd-aware resolution matters (cdkd #559): this repo is
+# regularly worked in via `git worktree`, and markgate stores marker
+# state per-worktree at `<git rev-parse --absolute-git-dir>/markgate/`.
+# The pre-#559 implementation derived REPO from `BASH_SOURCE` and
+# always landed on the main working tree, defeating markgate's
+# per-worktree isolation and forcing every parallel agent to converge
+# on the main tree's view (see memory rule
+# feedback_cross_agent_main_tree_contention.md). We now resolve the
+# target working tree from the PreToolUse payload's `cwd` field +
+# leading `cd <path>` + last `git -C <path>` flag, exactly mirroring
+# branch-gate.sh / integ-local-gate.sh, so the markgate verify runs
+# against the worktree the commit will actually land in.
 
 set -u
 
-# Resolve repo root from script location (.claude/hooks/check-gate.sh -> repo root).
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Read the entire stdin payload once; we need both .tool_input.command
+# and .cwd from it. Reading via two separate jq invocations would
+# consume stdin twice and the second read would see nothing.
+input=$(cat 2>/dev/null || true)
 
-# Extract the command from the PreToolUse payload.
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Only gate git commit -- any other command passes through.
-if ! printf '%s' "$cmd" | grep -qE '\bgit[[:space:]]+commit\b'; then
+# Only gate git commit -- any other command passes through. The
+# matcher tolerates `git -C <path> commit` / `git -c <key>=<val> commit`
+# / `git --no-pager commit` / etc. by allowing zero or more flag tokens
+# between `git` and the `commit` subcommand. Line-start anchored
+# (per memory rule feedback_hook_command_match_line_start.md) so
+# `git commit` substrings inside quoted argument bodies
+# (`gh issue create --body "we should run git commit later"`) do
+# NOT false-positive into a hard block. The optional leading
+# `cd <path> &&` prefix preserves the worktree-aware
+# `cd <side> && git commit` chain shape exercised by the cwd-aware
+# test cases — `cd ... &&` at the literal line-start cannot match
+# inside a JSON literal containing `&&` because the line-start anchor
+# requires no leading characters except whitespace. Trailing class
+# `([[:space:]]|$|[|;&\`)])` ensures `commit` appears in the GIT
+# SUBCOMMAND POSITION — not as the prefix of `commit-tree` /
+# `commit-graph`. Single-line `git status && git commit` shapes are
+# an accepted false-negative (per the memory rule's trade-off).
+if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 
-cd "$REPO" 2>/dev/null || exit 0
+# Resolve where the git command will actually run (cwd-aware; mirrors
+# branch-gate.sh / integ-local-gate.sh — keep these in sync if either
+# gains new resolution shapes).
+target_dir="${hook_cwd:-$PWD}"
+
+# `cd <path>` at the start of the command shifts the target dir.
+if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+  cd_target="${BASH_REMATCH[1]}"
+  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
+  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+  if [[ "$cd_target" != /* ]]; then
+    cd_target="$target_dir/$cd_target"
+  fi
+  target_dir="$cd_target"
+fi
+
+# `git -C <path>` beats any earlier cd; pick the LAST occurrence.
+if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
+  c_target=""
+  remaining="$cmd"
+  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
+    c_target="${BASH_REMATCH[1]}"
+    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+  done
+  c_target="${c_target%\"}"; c_target="${c_target#\"}"
+  c_target="${c_target%\'}"; c_target="${c_target#\'}"
+  if [[ "$c_target" != /* ]]; then
+    c_target="$target_dir/$c_target"
+  fi
+  target_dir="$c_target"
+fi
+
+# If the resolved target dir is not a git repo, silently pass — we
+# can't audit what we can't see (mirrors branch-gate.sh).
+if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  exit 0
+fi
+
+cd "$target_dir" 2>/dev/null || exit 0
 
 # Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's
 # canonical markgate wins over an older PATH binary (e.g. Homebrew). Falls

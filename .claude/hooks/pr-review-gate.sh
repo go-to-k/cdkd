@@ -24,38 +24,69 @@
 
 set -u
 
-# Resolve repo root from script location.
-SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-# Prefer the main working tree (shared across `git worktree` instances)
-# so markgate marker state is consistent regardless of which worktree
-# triggered the hook. `gh pr merge` is a working-tree-agnostic remote
-# operation, but markgate's marker is stored per-cwd — so the merge
-# command landing in a different worktree from where `/review-pr` ran
-# would see a stale marker. `git rev-parse --git-common-dir` returns
-# the shared `.git` for worktrees (the main repo's `.git`) and a
-# relative `.git` from the main repo itself; its parent is the main
-# working tree in both cases. Falls back to SCRIPT_REPO on any git
-# error so a non-git checkout (rare, but cheap to support) still works.
-if git_common=$(git -C "$SCRIPT_REPO" rev-parse --git-common-dir 2>/dev/null); then
-  case "$git_common" in
-    /*) abs_common="$git_common" ;;
-    *)  abs_common="$SCRIPT_REPO/$git_common" ;;
-  esac
-  REPO="$(cd "$(dirname "$abs_common")" 2>/dev/null && pwd)" || REPO="$SCRIPT_REPO"
-else
-  REPO="$SCRIPT_REPO"
-fi
-
-# Extract the command from the PreToolUse payload.
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+# Read the PreToolUse payload (command + cwd) once — separate jq
+# invocations would consume stdin twice.
+input=$(cat 2>/dev/null || true)
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate `gh pr merge` (incl. --auto). Anything else passes through.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+merge\b'; then
+# Tolerate an optional `gh -C <path>` between `gh` and `pr`.
+if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge\b'; then
   exit 0
 fi
 
-cd "$REPO" 2>/dev/null || exit 0
+# Resolve where the gh command will actually run (cwd-aware; cdkd #559).
+#
+# `gh pr merge` is a working-tree-agnostic remote operation, but
+# markgate's marker is stored per-worktree at
+# `<git rev-parse --absolute-git-dir>/markgate/`. The pre-#559
+# implementation always landed in the main tree (via
+# `git rev-parse --git-common-dir`'s parent), defeating markgate's
+# per-worktree isolation and forcing every parallel agent to converge
+# on the main tree's state — the actual root cause of the cross-agent
+# edit-race documented in memory rule
+# feedback_cross_agent_main_tree_contention.md.
+#
+# Post-#559: the marker lands in the SAME worktree where
+# `/review-pr <N>` ran (via `mise exec -- markgate set pr-review`).
+# The convention shift is: set markers from the worktree you intend to
+# merge from. The sentinel `.markgate-pr-review-sha` is already
+# per-worktree (each worktree has its own root), so concurrent agents
+# on different PRs in different worktrees no longer clobber each
+# other's sentinels.
+target_dir="${hook_cwd:-$PWD}"
+
+if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+  cd_target="${BASH_REMATCH[1]}"
+  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
+  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+  if [[ "$cd_target" != /* ]]; then
+    cd_target="$target_dir/$cd_target"
+  fi
+  target_dir="$cd_target"
+fi
+
+if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
+  c_target=""
+  remaining="$cmd"
+  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
+    c_target="${BASH_REMATCH[1]}"
+    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+  done
+  c_target="${c_target%\"}"; c_target="${c_target#\"}"
+  c_target="${c_target%\'}"; c_target="${c_target#\'}"
+  if [[ "$c_target" != /* ]]; then
+    c_target="$target_dir/$c_target"
+  fi
+  target_dir="$c_target"
+fi
+
+if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  exit 0
+fi
+
+cd "$target_dir" 2>/dev/null || exit 0
 
 # --- Parse the PR number from the command. -----------------------------
 # Accepted shapes (gh pr merge syntax):
