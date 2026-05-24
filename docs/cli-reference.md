@@ -914,13 +914,24 @@ cdkd export                                       # auto-detect single-stack app
 2. Load cdkd state for the target stack; build the
    `(logicalId, physicalId, resourceType)` map.
 3. Refuse if a CFn stack with the destination name already exists, or
-   if any template resource is in the **blocked** set (nested stacks
-   `AWS::CloudFormation::Stack` or template resources without a cdkd
-   state entry). Lambda-backed Custom Resources (`Custom::*` AND
+   if any template resource is in the **blocked** set (template
+   resources without a cdkd state entry; or `AWS::CloudFormation::Stack`
+   rows whose parent cdkd state has no matching nested-stack entry). Lambda-backed Custom Resources (`Custom::*` AND
    `AWS::CloudFormation::CustomResource` — the latter is what
    `new cdk.CustomResource(...)` synthesizes when no `resourceType` is
    passed) are NOT blocked but require `--include-non-importable` to
-   run the 2-phase flow described below.
+   run the 2-phase flow described below. `AWS::CloudFormation::Stack`
+   rows whose parent state has a matching nested-stack entry are
+   classified into a dedicated `nestedStackRows` list (issue
+   [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1): the
+   orchestrator recursively walks the cdkd state tree via
+   `buildCdkdStateStackTree`, surfaces the full leaf-first migration
+   scope, and hard-errors with a clear PR B2 pointer + workarounds
+   (the CFn-side `--include-nested-stacks` IMPORT changeset
+   submission lands in PR B2; until then the user keeps the stack on
+   cdkd or destroys children leaf-first via `cdkd state destroy <child>`
+   and re-exports the flattened parent). `--dry-run` warns instead of
+   throwing so the user sees the full picture without aborting.
 4. Resolve each resource type's primary identifier property name(s) via
    `cloudformation:DescribeType` (with a hardcoded fallback table for
    ~30 single-key types). **Composite primary identifiers**
@@ -1082,9 +1093,13 @@ cdkd export                                       # auto-detect single-stack app
   stack all require the actual ResponseURL POST — a CR backed by a
   return-only Lambda will time out at the CFn 1-hour Custom Resource
   ceiling. Without the flag, the CR types in the template cause the
-  command to abort. `AWS::CloudFormation::Stack` (nested stacks) always
-  blocks (CFn cannot adopt nor recreate them without conflicting with
-  the existing AWS resource). On phase-2 failure, cdkd state is
+  command to abort. `AWS::CloudFormation::Stack` (nested stacks) has
+  partial support as of issue [#464](https://github.com/go-to-k/cdkd/issues/464)
+  PR B1: the dedicated branch + `buildCdkdStateStackTree` walker
+  recursively loads every child state file, validates the tree shape,
+  and surfaces the leaf-first migration order; the CFn `--include-nested-stacks`
+  IMPORT submission lands in PR B2, so the command currently hard-errors
+  (warns in `--dry-run`) with a PR B2 pointer + workarounds. On phase-2 failure, cdkd state is
   preserved and the error message includes the recovery procedure
   (`aws cloudformation create-change-set --change-set-type UPDATE ...`
   followed by `cdkd state orphan`).
