@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   applyImportOverlayForPhase2,
+  buildCdkdStateStackTree,
+  buildImportPlan,
   filterTemplateForImport,
+  flattenCdkdStateTreeLeafFirst,
   hasCompositeIdSplitter,
   injectDeletionPolicyForImport,
   invokePreDeleteHandler,
@@ -14,7 +17,11 @@ import {
   resolveTemplateParameters,
   scanCrossStackReferences,
   splitCompositePhysicalId,
+  type CdkdStateStackTree,
 } from '../../../src/cli/commands/export.js';
+import type { StackState } from '../../../src/types/state.js';
+import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import type { AwsClients } from '../../../src/utils/aws-clients.js';
 
 describe('refuseTransientContextIfUnsafe', () => {
   it('passes through when no context overrides are supplied', () => {
@@ -65,8 +72,14 @@ describe('isNeverImportableType', () => {
     expect(isNeverImportableType('AWS::CDK::Metadata')).toBe(true);
   });
 
-  it('flags nested stacks', () => {
-    expect(isNeverImportableType('AWS::CloudFormation::Stack')).toBe(true);
+  it('does NOT flag nested stacks (handled by dedicated branch in buildImportPlan, issue #464 PR B1)', () => {
+    // Pre-PR-B1: AWS::CloudFormation::Stack was in NEVER_IMPORTABLE_TYPES so any
+    // nested-stack-bearing export aborted at the "block" branch. PR B1 lifts the
+    // entry and routes the row through a dedicated branch in `buildImportPlan`
+    // that populates `nestedStackRows[]`. The CFn-side `--include-nested-stacks`
+    // submission is tracked under PR B2; the orchestrator hard-errors with a
+    // PR B2 pointer in the meantime.
+    expect(isNeverImportableType('AWS::CloudFormation::Stack')).toBe(false);
   });
 
   it('flags every Custom::* type', () => {
@@ -705,9 +718,12 @@ describe('isPhase2CreatableType', () => {
     expect(isPhase2CreatableType('AWS::CloudFormation::CustomResource')).toBe(true);
   });
 
-  it('does NOT match AWS::CloudFormation::Stack (nested stacks stay blocked)', () => {
-    // Nested stack import would create a duplicate, so it is intentionally
-    // NOT in the phase-2 set. PR3 verifies this stays blocked.
+  it('does NOT match AWS::CloudFormation::Stack (nested stacks are not phase-2 creatable)', () => {
+    // Nested stacks are handled by a dedicated branch in `buildImportPlan` that
+    // routes the row through the state-tree walker (issue #464 PR B1) and
+    // ultimately through CFn IMPORT's `--include-nested-stacks` (PR B2). They
+    // are NOT phase-2 creatable — phase 2 would create a duplicate AWS::CFn::Stack
+    // record rather than adopting the existing nested children.
     expect(isPhase2CreatableType('AWS::CloudFormation::Stack')).toBe(false);
   });
 
@@ -1534,5 +1550,326 @@ describe('reportDriftBaselineGaps', () => {
     const calls = logger.warn.mock.calls.map((c) => c[0]).join('\n');
     expect(calls).toMatch(/1 of 2 resource\(s\)/);
     expect(calls).toMatch(/R2/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Issue #464 PR B1 — `cdkd export` recursive nested-stack walker (state side).
+// PR B1 lifts `AWS::CloudFormation::Stack` from `NEVER_IMPORTABLE_TYPES` and
+// routes the row through a dedicated branch in `buildImportPlan` that
+// surfaces a `nestedStackRows: NestedStackRow[]` list. The orchestrator
+// uses `buildCdkdStateStackTree` to recursively load every child state
+// file (fails fast on a torn tree) and then hard-errors with a PR B2
+// pointer — the actual CFn `--include-nested-stacks` IMPORT changeset
+// submission lands in PR B2.
+// -----------------------------------------------------------------------------
+
+/** Build a `StackState` shape matching schema v6, with the minimal fields the tests touch. */
+function makeState(args: {
+  stackName: string;
+  region: string;
+  resources?: Record<string, { resourceType: string; physicalId?: string }>;
+  parentStack?: string;
+  parentLogicalId?: string;
+}): StackState {
+  const resources: StackState['resources'] = {};
+  for (const [logicalId, r] of Object.entries(args.resources ?? {})) {
+    resources[logicalId] = {
+      physicalId: r.physicalId ?? `phy-${logicalId}`,
+      resourceType: r.resourceType,
+      properties: {},
+      attributes: {},
+      dependencies: [],
+    };
+  }
+  return {
+    version: 6,
+    stackName: args.stackName,
+    region: args.region,
+    resources,
+    outputs: {},
+    lastModified: 0,
+    ...(args.parentStack !== undefined && { parentStack: args.parentStack }),
+    ...(args.parentLogicalId !== undefined && { parentLogicalId: args.parentLogicalId }),
+    ...(args.parentStack !== undefined && { parentRegion: args.region }),
+  };
+}
+
+/**
+ * Minimal `S3StateBackend` mock that returns a state record keyed by
+ * `${stackName}|${region}`. Returns `null` for unknown keys so the walker's
+ * missing-child branch can be exercised.
+ */
+function makeStateBackendMock(
+  states: Record<string, StackState>
+): Pick<S3StateBackend, 'getState'> {
+  return {
+    async getState(stackName: string, region: string) {
+      const s = states[`${stackName}|${region}`];
+      if (!s) return null;
+      return { state: s, etag: '"mock"' };
+    },
+  } as unknown as Pick<S3StateBackend, 'getState'>;
+}
+
+describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
+  it('returns a single-node tree when the root has no nested children', async () => {
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Bucket: { resourceType: 'AWS::S3::Bucket' } },
+    });
+    const backend = makeStateBackendMock({ 'Root|us-east-1': root }) as S3StateBackend;
+    const tree = await buildCdkdStateStackTree('Root', 'us-east-1', backend);
+    expect(tree.stackName).toBe('Root');
+    expect(tree.region).toBe('us-east-1');
+    expect(tree.nestedChildren.size).toBe(0);
+    expect(tree.state).toBe(root);
+  });
+
+  it('walks a one-level nested tree (parent -> two children)', async () => {
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: {
+        ChildA: { resourceType: 'AWS::CloudFormation::Stack' },
+        ChildB: { resourceType: 'AWS::CloudFormation::Stack' },
+      },
+    });
+    const childA = makeState({
+      stackName: 'Root~ChildA',
+      region: 'us-east-1',
+      resources: { Param: { resourceType: 'AWS::SSM::Parameter' } },
+      parentStack: 'Root',
+      parentLogicalId: 'ChildA',
+    });
+    const childB = makeState({
+      stackName: 'Root~ChildB',
+      region: 'us-east-1',
+      resources: { Param: { resourceType: 'AWS::SSM::Parameter' } },
+      parentStack: 'Root',
+      parentLogicalId: 'ChildB',
+    });
+    const backend = makeStateBackendMock({
+      'Root|us-east-1': root,
+      'Root~ChildA|us-east-1': childA,
+      'Root~ChildB|us-east-1': childB,
+    }) as S3StateBackend;
+    const tree = await buildCdkdStateStackTree('Root', 'us-east-1', backend);
+    expect([...tree.nestedChildren.keys()].sort()).toEqual(['ChildA', 'ChildB']);
+    expect(tree.nestedChildren.get('ChildA')!.stackName).toBe('Root~ChildA');
+    expect(tree.nestedChildren.get('ChildB')!.stackName).toBe('Root~ChildB');
+  });
+
+  it('recurses into grandchildren (parent -> child -> grandchild)', async () => {
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    const child = makeState({
+      stackName: 'Root~Child',
+      region: 'us-east-1',
+      resources: { Grandchild: { resourceType: 'AWS::CloudFormation::Stack' } },
+      parentStack: 'Root',
+      parentLogicalId: 'Child',
+    });
+    const grandchild = makeState({
+      stackName: 'Root~Child~Grandchild',
+      region: 'us-east-1',
+      resources: { Bucket: { resourceType: 'AWS::S3::Bucket' } },
+      parentStack: 'Root~Child',
+      parentLogicalId: 'Grandchild',
+    });
+    const backend = makeStateBackendMock({
+      'Root|us-east-1': root,
+      'Root~Child|us-east-1': child,
+      'Root~Child~Grandchild|us-east-1': grandchild,
+    }) as S3StateBackend;
+    const tree = await buildCdkdStateStackTree('Root', 'us-east-1', backend);
+    expect(tree.nestedChildren.size).toBe(1);
+    const childNode = tree.nestedChildren.get('Child')!;
+    expect(childNode.nestedChildren.size).toBe(1);
+    const grandNode = childNode.nestedChildren.get('Grandchild')!;
+    expect(grandNode.stackName).toBe('Root~Child~Grandchild');
+    expect(grandNode.nestedChildren.size).toBe(0);
+  });
+
+  it('throws when the root state is missing', async () => {
+    const backend = makeStateBackendMock({}) as S3StateBackend;
+    await expect(buildCdkdStateStackTree('Root', 'us-east-1', backend)).rejects.toThrow(
+      /No cdkd state found for stack 'Root'/
+    );
+  });
+
+  it('throws when a child state is missing (torn tree)', async () => {
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    // Note: NO child state in the mock — simulating a torn tree.
+    const backend = makeStateBackendMock({ 'Root|us-east-1': root }) as S3StateBackend;
+    await expect(buildCdkdStateStackTree('Root', 'us-east-1', backend)).rejects.toThrow(
+      /missing nested-child 'Root~Child'/
+    );
+  });
+});
+
+describe('flattenCdkdStateTreeLeafFirst (issue #464 PR B1)', () => {
+  it('returns a single entry for a leaf-only tree', () => {
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root', region: 'us-east-1' }),
+      nestedChildren: new Map(),
+    };
+    expect(flattenCdkdStateTreeLeafFirst(tree)).toEqual([
+      { stackName: 'Root', region: 'us-east-1' },
+    ]);
+  });
+
+  it('orders leaves before parent (DFS post-order)', () => {
+    const grand: CdkdStateStackTree = {
+      stackName: 'Root~Child~Grand',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root~Child~Grand', region: 'us-east-1' }),
+      nestedChildren: new Map(),
+    };
+    const child: CdkdStateStackTree = {
+      stackName: 'Root~Child',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root~Child', region: 'us-east-1' }),
+      nestedChildren: new Map([['Grand', grand]]),
+    };
+    const root: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root', region: 'us-east-1' }),
+      nestedChildren: new Map([['Child', child]]),
+    };
+    expect(flattenCdkdStateTreeLeafFirst(root)).toEqual([
+      { stackName: 'Root~Child~Grand', region: 'us-east-1' },
+      { stackName: 'Root~Child', region: 'us-east-1' },
+      { stackName: 'Root', region: 'us-east-1' },
+    ]);
+  });
+
+  it('preserves sibling iteration order across multiple children', () => {
+    const a: CdkdStateStackTree = {
+      stackName: 'Root~A',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root~A', region: 'us-east-1' }),
+      nestedChildren: new Map(),
+    };
+    const b: CdkdStateStackTree = {
+      stackName: 'Root~B',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root~B', region: 'us-east-1' }),
+      nestedChildren: new Map(),
+    };
+    const root: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root', region: 'us-east-1' }),
+      nestedChildren: new Map([
+        ['A', a],
+        ['B', b],
+      ]),
+    };
+    expect(flattenCdkdStateTreeLeafFirst(root)).toEqual([
+      { stackName: 'Root~A', region: 'us-east-1' },
+      { stackName: 'Root~B', region: 'us-east-1' },
+      { stackName: 'Root', region: 'us-east-1' },
+    ]);
+  });
+});
+
+describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
+  // `cfnClient` is only consulted by the identifier-resolution path; the
+  // nested-stack branch short-circuits before that. A stub that throws on
+  // any `send` call is sufficient + documents the contract.
+  const cfnClientStub = {
+    send: () => {
+      throw new Error('cfnClient.send should not be called for nested-stack-only templates');
+    },
+  } as unknown as AwsClients['cloudFormation'];
+
+  it('routes AWS::CloudFormation::Stack rows into nestedStackRows[] (not blocked)', async () => {
+    const state = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: {
+        Child: { resourceType: 'AWS::CloudFormation::Stack' },
+      },
+    });
+    const template = {
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+      },
+    };
+    const result = await buildImportPlan(state, template, cfnClientStub, 'Root');
+    expect(result.nestedStackRows).toEqual([{ logicalId: 'Child', childStackName: 'Root~Child' }]);
+    expect(result.blocked).toEqual([]);
+    expect(result.phase1Imports).toEqual([]);
+  });
+
+  it('derives childStackName via `<parent>~<logicalId>` (the v6 state-key shape)', async () => {
+    const state = makeState({
+      stackName: 'MyApp',
+      region: 'us-east-1',
+      resources: {
+        Database: { resourceType: 'AWS::CloudFormation::Stack' },
+        Frontend: { resourceType: 'AWS::CloudFormation::Stack' },
+      },
+    });
+    const template = {
+      Resources: {
+        Database: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
+        Frontend: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
+      },
+    };
+    const result = await buildImportPlan(state, template, cfnClientStub, 'MyApp');
+    expect(result.nestedStackRows.map((r) => r.childStackName).sort()).toEqual([
+      'MyApp~Database',
+      'MyApp~Frontend',
+    ]);
+  });
+
+  it('blocks when the template has a nested-stack row but state has no matching entry', async () => {
+    const state = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      // No Child entry in state — parent state is torn.
+      resources: {},
+    });
+    const template = {
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
+      },
+    };
+    const result = await buildImportPlan(state, template, cfnClientStub, 'Root');
+    expect(result.nestedStackRows).toEqual([]);
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked[0]!.logicalId).toBe('Child');
+    expect(result.blocked[0]!.reason).toMatch(/no matching nested-stack entry on parent 'Root'/);
+  });
+
+  it('blocks when the state row exists but is the wrong resource type (sanity check)', async () => {
+    const state = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      // Wrong type — should not be matched as a nested-stack row.
+      resources: { Child: { resourceType: 'AWS::S3::Bucket' } },
+    });
+    const template = {
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
+      },
+    };
+    const result = await buildImportPlan(state, template, cfnClientStub, 'Root');
+    expect(result.nestedStackRows).toEqual([]);
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked[0]!.reason).toMatch(/no matching nested-stack entry/);
   });
 });

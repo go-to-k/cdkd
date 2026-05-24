@@ -39,6 +39,7 @@ import {
   uploadCfnTemplate,
   type CfnUploadS3ClientOpts,
 } from '../upload-cfn-template.js';
+import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 import {
   parseCfnTemplateWithFormat,
@@ -121,11 +122,6 @@ interface ExportOptions {
  *
  *   - `AWS::CDK::Metadata` is a CDK sentinel; not a real AWS resource and
  *     CFn refuses to import it.
- *   - `AWS::CloudFormation::Stack` is a nested stack reference. Fresh
- *     `cdkd deploy` of nested stacks IS supported (issue #459), but
- *     moving an existing nested-stack hierarchy from cdkd back into
- *     CloudFormation via `cdkd export` is deferred to the
- *     [#464](https://github.com/go-to-k/cdkd/issues/464) follow-up.
  *   - `AWS::CloudFormation::CustomResource` is the CFn resource type CDK
  *     emits for `new cdk.CustomResource(...)` when no `resourceType` is
  *     passed. Functionally identical to `Custom::*` — Lambda-backed,
@@ -135,14 +131,19 @@ interface ExportOptions {
  *     custom-resource state — invocation history lives in the provider
  *     Lambda, not in AWS resource state, so there is nothing to import.
  *
+ * `AWS::CloudFormation::Stack` is **intentionally NOT in this set** — it is
+ * handled by a dedicated branch in {@link buildImportPlan} that routes the
+ * row through the nested-stack tree walker (issue
+ * [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1). The CFn-side
+ * `--include-nested-stacks` IMPORT changeset submission is tracked under
+ * PR B2 — until that lands, the orchestrator hard-errors at submission
+ * time with a clear pointer.
+ *
  * The list is intentionally narrow. Other resource types CFn may not yet
  * support for import are surfaced as errors by the CreateChangeSet call
  * itself; we do not try to maintain a closed allowlist here.
  */
-const NEVER_IMPORTABLE_TYPES = new Set<string>([
-  'AWS::CDK::Metadata',
-  'AWS::CloudFormation::Stack',
-]);
+const NEVER_IMPORTABLE_TYPES = new Set<string>(['AWS::CDK::Metadata']);
 
 export function isNeverImportableType(resourceType: string): boolean {
   if (NEVER_IMPORTABLE_TYPES.has(resourceType)) return true;
@@ -801,20 +802,18 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // Build the import plan: cdkd state × template resources, classified
       // into phase1 (importable) / phase2 (Custom::* CFn will CREATE) /
       // recreateBeforePhase2 (Stage — IMPORT-unsupported, pre-delete + CFn
-      // CREATE in phase 2) / blocked (anything else — aborts the run).
-      const { phase1Imports, phase2Creates, recreateBeforePhase2, blocked } = await buildImportPlan(
-        state,
-        template,
-        awsClients.cloudFormation,
-        {
+      // CREATE in phase 2) / nestedStackRows (AWS::CloudFormation::Stack —
+      // PR B1 detects; PR B2 will submit via --include-nested-stacks) /
+      // blocked (anything else — aborts the run).
+      const { phase1Imports, phase2Creates, recreateBeforePhase2, nestedStackRows, blocked } =
+        await buildImportPlan(state, template, awsClients.cloudFormation, resolvedStackName, {
           recreateImportUnsupported: options.recreateImportUnsupported,
-        }
-      );
+        });
 
-      // `blocked` resources are genuinely unfixable (nested stacks, missing
-      // state, etc.) — nothing the user can do at runtime resolves them.
-      // Hard-fail in both dry-run and real-run paths; printing the plan
-      // here is unhelpful because there is no path forward.
+      // `blocked` resources are genuinely unfixable (missing state, unknown
+      // never-importable types, etc.) — nothing the user can do at runtime
+      // resolves them. Hard-fail in both dry-run and real-run paths; printing
+      // the plan here is unhelpful because there is no path forward.
       if (blocked.length > 0) {
         logger.error('The following resources block migration:');
         for (const b of blocked) {
@@ -825,6 +824,52 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
             `CDK app and re-synthesize.`
         );
+      }
+
+      // Nested-stack rows (issue #464 PR B1): walk the cdkd-state tree to
+      // load every child state file (fails fast on a torn tree) so the
+      // user sees the full migration scope BEFORE the hard-error / dry-run
+      // exit. PR B2 will replace the hard-error with the actual
+      // CFn `--include-nested-stacks` IMPORT changeset submission +
+      // per-child template upload + recursive plan classification.
+      if (nestedStackRows.length > 0) {
+        const nestedStackTree = await buildCdkdStateStackTree(
+          resolvedStackName,
+          targetRegion,
+          stateBackend
+        );
+        const leafFirst = flattenCdkdStateTreeLeafFirst(nestedStackTree);
+        logger.info(
+          `Stack '${resolvedStackName}' contains ${nestedStackRows.length} top-level nested ` +
+            `stack row(s); cdkd state tree spans ${leafFirst.length} stack(s) total ` +
+            `(leaf-first migration order):`
+        );
+        for (const node of leafFirst) {
+          logger.info(`  - cdkd/${node.stackName}/${node.region}/state.json`);
+        }
+        // Same shape as the `phase2Creates + !--include-non-importable` gate
+        // a few lines down: warn-and-return on `--dry-run` so the user sees
+        // the full "what would happen" picture without aborting, hard-error
+        // on real-run so the migration can't accidentally proceed against
+        // a code path that isn't shippable yet. The two failure messages
+        // share the same workaround block.
+        const deferralMessage =
+          `cdkd export does not yet submit nested-stack trees to CloudFormation ` +
+          `(${nestedStackRows.length} top-level nested-stack row(s) detected; ` +
+          `${leafFirst.length} cdkd state record(s) in the tree). ` +
+          `Recursive --include-nested-stacks IMPORT changeset submission is tracked ` +
+          `under issue #464 PR B2. ` +
+          `Workarounds until PR B2 ships:\n` +
+          `  - Keep the stack on cdkd (recommended — nested-stack deploy / destroy / drift ` +
+          `already work via the SDK provider path).\n` +
+          `  - OR destroy the nested children first via 'cdkd state destroy <child>' ` +
+          `(leaf-first), then re-run 'cdkd export <parent>' against the flattened parent.`;
+        if (options.dryRun) {
+          logger.warn(deferralMessage);
+          logger.info('--dry-run: no CloudFormation changeset will be created.');
+          return;
+        }
+        throw new Error(deferralMessage);
       }
 
       if (
@@ -1312,15 +1357,170 @@ interface Phase2CreateEntry {
  * `AWS::CloudFormation::Stack` (nested stacks) is intentionally NOT in
  * this set: CFn would CREATE a duplicate nested stack rather than adopt
  * the existing one, which would conflict with whatever the cdkd state
- * thought it owned. Fresh `cdkd deploy` of nested stacks is supported
- * via the recursive `NestedStackProvider` (#459), but `cdkd export`
- * adoption back into CloudFormation is deferred to the
- * [#464](https://github.com/go-to-k/cdkd/issues/464) follow-up.
+ * thought it owned. Nested-stack rows are handled by a dedicated branch
+ * in {@link buildImportPlan} (issue
+ * [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1) that routes
+ * the row to the cdkd-state-side tree walker. The CFn-side
+ * `--include-nested-stacks` IMPORT changeset submission lands in PR B2.
  *
  * Exported for unit testing.
  */
 export function isPhase2CreatableType(resourceType: string): boolean {
   return isCustomResourceType(resourceType);
+}
+
+/**
+ * Recursive tree of cdkd-state stacks rooted at a parent. Mirror of
+ * `CfnStackResourceTree` (in `retire-cfn-stack.ts`) for the cdkd-state
+ * side: each node carries `(stackName, region, state)` plus `nestedChildren`
+ * keyed by the child's `AWS::CloudFormation::Stack` logical id in the
+ * parent's state.
+ *
+ * Built once per `cdkd export` invocation (issue
+ * [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1 + PR B2) so the
+ * recursive walk over child state files happens up front, before any
+ * AWS-side mutation. Loading the full tree eagerly catches missing-child
+ * state inconsistencies before the orchestrator tries to plan-print or
+ * submit anything.
+ */
+export interface CdkdStateStackTree {
+  /**
+   * For the root: the user-supplied cdkd stack name. For nested children:
+   * the v6 state-key stack-name portion `<parent>~<childLogicalId>` (which
+   * is what `stateBackend.getState(...)` accepts and what
+   * `stateBackend.deleteState(...)` will reap during PR B2's state-cleanup
+   * pass).
+   */
+  stackName: string;
+  /**
+   * Region of the state record. All children inherit the parent's region
+   * today — AWS does not support cross-region nested stacks. The explicit
+   * field is kept per the v6 schema design so a future cross-region
+   * capability does not require another tree-shape bump.
+   */
+  region: string;
+  /** The loaded state record for this node. */
+  state: StackState;
+  /** `childLogicalId → child tree node` for every direct nested child. Empty when the node has no nested children. */
+  nestedChildren: Map<string, CdkdStateStackTree>;
+}
+
+/**
+ * Recursively load the cdkd-state tree rooted at `(rootStackName, region)`.
+ * For every `AWS::CloudFormation::Stack` row in each level's
+ * `state.resources`, derives the child's v6 state key
+ * (`<parent>~<childLogicalId>`) and loads the child state file from S3,
+ * then recurses.
+ *
+ * Throws if any expected child state file is missing — the parent's state
+ * lists a nested-stack row but the child's `cdkd/<parent>~<child>/<region>/state.json`
+ * does not exist. That state-tree inconsistency must be resolved before
+ * any export attempt (typically via `cdkd state orphan <parent>` and a
+ * full re-deploy, or by completing whatever partial operation left the
+ * tree torn).
+ *
+ * Children at each level are loaded sequentially today (not `Promise.all`)
+ * because the failure-mode shape is "fail fast on the first missing
+ * child" rather than "list every missing child" — a single missing-child
+ * pointer is enough for the user to identify the root cause without
+ * fanning out N parallel `getState` calls on a torn tree. PR B2 may
+ * revisit this once the per-child template-fetch / preprocessing /
+ * upload pass dominates the wall-clock cost.
+ *
+ * Exported so the walker can be unit-tested independently of the orchestrator.
+ */
+export async function buildCdkdStateStackTree(
+  rootStackName: string,
+  region: string,
+  stateBackend: S3StateBackend
+): Promise<CdkdStateStackTree> {
+  const rootResult = await stateBackend.getState(rootStackName, region);
+  if (!rootResult) {
+    throw new Error(
+      `No cdkd state found for stack '${rootStackName}' (${region}). ` +
+        `Cannot build nested-stack tree.`
+    );
+  }
+  return walkCdkdStateStackTree(rootStackName, region, rootResult.state, stateBackend);
+}
+
+async function walkCdkdStateStackTree(
+  stackName: string,
+  region: string,
+  state: StackState,
+  stateBackend: S3StateBackend
+): Promise<CdkdStateStackTree> {
+  const nestedChildren = new Map<string, CdkdStateStackTree>();
+  for (const [logicalId, resource] of Object.entries(state.resources)) {
+    if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
+    const childStackName = `${stackName}~${logicalId}`;
+    const childResult = await stateBackend.getState(childStackName, region);
+    if (!childResult) {
+      throw new Error(
+        `cdkd state is missing nested-child '${childStackName}' (${region}). ` +
+          `Parent stack '${stackName}' lists '${logicalId}' as an ` +
+          `${NESTED_STACK_RESOURCE_TYPE} row but no child state file exists at ` +
+          `'cdkd/${childStackName}/${region}/state.json'. The cdkd state tree is ` +
+          `inconsistent — re-deploy the parent stack to refresh, or run ` +
+          `'cdkd state orphan ${stackName}' and re-import.`
+      );
+    }
+    nestedChildren.set(
+      logicalId,
+      await walkCdkdStateStackTree(childStackName, region, childResult.state, stateBackend)
+    );
+  }
+  return { stackName, region, state, nestedChildren };
+}
+
+/**
+ * Flatten a {@link CdkdStateStackTree} into a depth-first list of
+ * `(stackName, region)` pairs in **leaf-first** order — same order PR B2's
+ * state-cleanup pass will use to delete each adopted stack's cdkd state
+ * after the CFn-side IMPORT succeeds (so a mid-walk failure leaves the
+ * earlier parent's state intact for retry).
+ *
+ * Exported so callers (orchestrator user-facing summary, unit tests) can
+ * iterate the tree in the same order without re-implementing the walk.
+ */
+export function flattenCdkdStateTreeLeafFirst(
+  tree: CdkdStateStackTree
+): Array<{ stackName: string; region: string }> {
+  const out: Array<{ stackName: string; region: string }> = [];
+  walk(tree);
+  return out;
+
+  function walk(node: CdkdStateStackTree): void {
+    for (const child of node.nestedChildren.values()) {
+      walk(child);
+    }
+    out.push({ stackName: node.stackName, region: node.region });
+  }
+}
+
+/**
+ * A nested-stack row detected in the parent template + matched against the
+ * parent's cdkd state. Surfaced by {@link buildImportPlan} so the
+ * orchestrator can route the row through the recursive nested-stack
+ * tree walker (issue [#464](https://github.com/go-to-k/cdkd/issues/464)
+ * PR B1 + PR B2) instead of the per-resource IMPORT path.
+ *
+ * Holds only the parent-side row identifiers; the child's full state /
+ * sub-template / further descendants are loaded separately by
+ * {@link buildCdkdStateStackTree}. Keeping the two passes separate means
+ * `buildImportPlan` stays pure (no state-backend I/O) and the tree walker
+ * stays focused on the recursive load.
+ */
+export interface NestedStackRow {
+  /** Logical id of the `AWS::CloudFormation::Stack` row in the parent's template. */
+  logicalId: string;
+  /**
+   * The v6 child state-key's stack-name portion: `<parent>~<childLogicalId>`.
+   * Derived deterministically from `(parentStackName, logicalId)` so the
+   * orchestrator can quote it in user-facing error messages without
+   * round-tripping through {@link buildCdkdStateStackTree}.
+   */
+  childStackName: string;
 }
 
 /**
@@ -1339,17 +1539,26 @@ export function isPhase2CreatableType(resourceType: string): boolean {
  *     phases so CFn's phase-2 CREATE doesn't collide. When the user
  *     passes `--no-recreate-import-unsupported`, these are moved to
  *     `blocked` instead.
+ *   - `nestedStackRows`: `AWS::CloudFormation::Stack` rows in the parent
+ *     template. Surfaced separately because they are handled by the
+ *     nested-stack tree walker, not the per-resource IMPORT path
+ *     (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1 + PR B2).
+ *     The orchestrator currently hard-errors when any are present —
+ *     CFn-side `--include-nested-stacks` IMPORT changeset submission
+ *     lands in PR B2.
  *   - `blocked`: anything else. A non-empty `blocked` aborts the run.
  */
-async function buildImportPlan(
+export async function buildImportPlan(
   state: StackState,
   template: Record<string, unknown>,
   cfnClient: AwsClients['cloudFormation'],
+  parentStackName: string,
   options: { recreateImportUnsupported: boolean } = { recreateImportUnsupported: true }
 ): Promise<{
   phase1Imports: ImportPlanEntry[];
   phase2Creates: Phase2CreateEntry[];
   recreateBeforePhase2: RecreateBeforePhase2Entry[];
+  nestedStackRows: NestedStackRow[];
   blocked: BlockedResource[];
 }> {
   const templateResources = template['Resources'];
@@ -1364,6 +1573,7 @@ async function buildImportPlan(
   const phase1Imports: ImportPlanEntry[] = [];
   const phase2Creates: Phase2CreateEntry[] = [];
   const recreateBeforePhase2: RecreateBeforePhase2Entry[] = [];
+  const nestedStackRows: NestedStackRow[] = [];
   const blocked: BlockedResource[] = [];
   const identifierCache = new Map<string, PrimaryIdentifierCacheEntry>();
 
@@ -1378,12 +1588,42 @@ async function buildImportPlan(
       continue;
     }
 
+    if (resourceType === NESTED_STACK_RESOURCE_TYPE) {
+      // Nested-stack row. Dedicated branch instead of the per-resource
+      // IMPORT path: the AWS-side child stack is adopted via CFn IMPORT's
+      // `--include-nested-stacks` flag (PR B2), not via cdkd's
+      // resource-identifier resolution. Validate the parent state has a
+      // matching row (parent's nested-stack entry carries the cdkd-local
+      // synthesized ARN; absence means the cdkd state tree is missing
+      // the parent → child link).
+      const parentRow = state.resources[logicalId];
+      if (!parentRow || parentRow.resourceType !== NESTED_STACK_RESOURCE_TYPE) {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason:
+            `template has AWS::CloudFormation::Stack row '${logicalId}' but cdkd state has no ` +
+            `matching nested-stack entry on parent '${parentStackName}'. ` +
+            `Re-deploy or re-import the parent stack to refresh state.`,
+        });
+        continue;
+      }
+      nestedStackRows.push({
+        logicalId,
+        childStackName: `${parentStackName}~${logicalId}`,
+      });
+      continue;
+    }
+
     if (isNeverImportableType(resourceType)) {
       if (isPhase2CreatableType(resourceType)) {
         // Custom::* — CFn will CREATE fresh in phase 2.
         phase2Creates.push({ logicalId, resourceType });
       } else {
-        // Nested stacks etc. — hard block.
+        // AWS::CDK::Metadata is already short-circuited above; reaching
+        // this branch means a future type was added to NEVER_IMPORTABLE_TYPES
+        // without phase-2 support. Hard block with a clear pointer so the
+        // failure is debuggable.
         blocked.push({
           logicalId,
           resourceType,
@@ -1458,7 +1698,7 @@ async function buildImportPlan(
     });
   }
 
-  return { phase1Imports, phase2Creates, recreateBeforePhase2, blocked };
+  return { phase1Imports, phase2Creates, recreateBeforePhase2, nestedStackRows, blocked };
 }
 
 /**
