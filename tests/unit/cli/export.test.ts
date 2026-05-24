@@ -2250,6 +2250,39 @@ describe('injectRetainAndRewriteTemplateUrl (issue #464 PR B2)', () => {
       { Key: 'another', Value: 'ok' },
     ]);
   });
+
+  it("filters out AWS-system-reserved `aws:`-prefixed tags (CFn rejects user-supplied aws: tags)", () => {
+    // DescribeStacks on a stack deployed by AWS Service Catalog or
+    // StackSets returns `aws:cloudformation:stack-id` /
+    // `aws:cloudformation:stack-name` / etc. as part of the Tags
+    // collection. Forwarding those verbatim into the parent template
+    // breaks Phase 1B with "Tags starting with 'aws:' are reserved";
+    // the helper must filter them out.
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const childTags = [
+      { Key: 'env', Value: 'prod' },
+      { Key: 'aws:cloudformation:stack-id', Value: 'arn:aws:cloudformation:...' },
+      { Key: 'aws:cloudformation:stack-name', Value: 'MyStack' },
+      { Key: 'team', Value: 'platform' },
+    ];
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url', childTags);
+    const props = result['Properties'] as { Tags: Array<{ Key: string; Value: string }> };
+    expect(props.Tags).toEqual([
+      { Key: 'env', Value: 'prod' },
+      { Key: 'team', Value: 'platform' },
+    ]);
+  });
+
+  it('omits Properties.Tags entirely when child has only `aws:` system tags (no user tags survive the filter)', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const childTags = [
+      { Key: 'aws:cloudformation:stack-id', Value: 'arn:aws:cloudformation:...' },
+      { Key: 'aws:cloudformation:stack-name', Value: 'MyStack' },
+    ];
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url', childTags);
+    const props = result['Properties'] as Record<string, unknown>;
+    expect(props['Tags']).toBeUndefined();
+  });
 });
 
 describe('buildPerStackImportNodes (issue #464 PR B2)', () => {

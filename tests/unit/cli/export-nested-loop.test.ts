@@ -1077,4 +1077,470 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it('Phase 1B failure (after Phase 1A succeeded): error names imported standalone stacks; cdkd state preserved', async () => {
+    const childTemplate = {
+      Resources: {
+        ChildBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b4' } },
+      },
+    };
+    const tmp = mkdtempSync(join(tmpdir(), 'cdkd-export-loop-1b-fail-test-'));
+    try {
+      const childPath = join(tmp, 'Child.template.json');
+      writeFileSync(childPath, JSON.stringify(childTemplate), 'utf-8');
+
+      const root = makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: {
+          ParentBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'parent-bucket' },
+          Child: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'arn:cdkd-local:...',
+          },
+        },
+      });
+      const child = makeState({
+        stackName: 'Root~Child',
+        region: 'us-east-1',
+        resources: { ChildBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'b4' } },
+        parentStack: 'Root',
+        parentLogicalId: 'Child',
+      });
+      const { backend: stateBackend, deleted } = buildStateBackend({
+        'Root|us-east-1': root,
+        'Root~Child|us-east-1': child,
+      });
+      const { manager: lockManager } = buildLockManager();
+      // Phase 1A succeeds for both the leaf child AND the parent; Phase
+      // 1B (the SECOND CreateChangeSet call against 'Root', after the
+      // first 'Root' Phase 1A) is what fails. Distinguish 1A vs 1B by
+      // a per-stack call count.
+      const createChangeSetCallsByStack = new Map<string, number>();
+      const { client: cfnClient, calls } = buildCfnClient({
+        createChangeSet: async (input) => {
+          const stackName = String(input['StackName']);
+          const n = (createChangeSetCallsByStack.get(stackName) ?? 0) + 1;
+          createChangeSetCallsByStack.set(stackName, n);
+          if (stackName === 'Root' && n === 2) {
+            throw new Error(
+              'Simulated nested-adoption failure (e.g. template-match validation)'
+            );
+          }
+          return {};
+        },
+      });
+
+      const rootTemplate = {
+        Resources: {
+          ParentBucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: { BucketName: 'parent-bucket' },
+          },
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://cdk-asset/.../Child.template.json' },
+            Metadata: { 'aws:asset:path': 'Child.template.json' },
+          },
+        },
+      };
+      const tree: CdkdStateStackTree = {
+        stackName: 'Root',
+        region: 'us-east-1',
+        state: root,
+        nestedChildren: new Map([
+          [
+            'Child',
+            {
+              stackName: 'Root~Child',
+              region: 'us-east-1',
+              state: child,
+              nestedChildren: new Map(),
+            },
+          ],
+        ]),
+      };
+
+      await expect(
+        runPerStackImportLoop({
+          rootStackName: 'Root',
+          rootRegion: 'us-east-1',
+          rootStackInfoNestedTemplates: { Child: childPath },
+          rootTemplateFormat: 'json',
+          tree,
+          rootTemplate,
+          cfnStackNameOverrides: { childMap: new Map() },
+          rootParameters: [],
+          deps: {
+            cfnClient,
+            stateBackend,
+            lockManager,
+            uploadOpts: { stateBucket: STATE_BUCKET },
+            lockOwner: 'tester@host:1234',
+          },
+          options: {
+            dryRun: false,
+            yes: true,
+            includeNonImportable: false,
+            recreateImportUnsupported: true,
+          },
+        })
+      ).rejects.toThrow(
+        /Phase 1B \(nested-child adoption\) IMPORT changeset failed for parent 'Root'/
+      );
+
+      // Error message must enumerate stacks that DID succeed (both the
+      // leaf child AND the parent's Phase 1A) so the user knows the
+      // CFn-side state is partial.
+      const matchingCalls = createChangeSetCallsByStack;
+      expect(matchingCalls.get('Root-Child')).toBe(1);
+      expect(matchingCalls.get('Root')).toBe(2);
+
+      // cdkd state preserved across the entire tree (neither leaf nor
+      // root state deleted; user re-runs after fixing the adoption cause).
+      expect(deleted).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runPerStackImportLoop (issue #464 PR B2) — 3-level tree (post-Phase-1B non-root flip)', () => {
+  beforeEach(() => {
+    infoSpy.mockReset();
+    warnSpy.mockReset();
+    errorSpy.mockReset();
+    uploadCfnTemplateMock.mockClear();
+    waitChangeSetCreate.mockReset();
+    waitChangeSetCreate.mockResolvedValue(undefined);
+    waitStackImport.mockReset();
+    waitStackImport.mockResolvedValue(undefined);
+    waitStackUpdate.mockReset();
+    waitStackUpdate.mockResolvedValue(undefined);
+  });
+
+  // A 3-level tree exercises the only otherwise-untested code path:
+  // a non-root, non-leaf parent gets flipped to UPDATE_COMPLETE BOTH
+  // after Phase 1A AND after Phase 1B (so its OWN parent's later
+  // Phase 1B can adopt it). The 2-level happy path only covers
+  // post-Phase-1A flips on the leaf; the post-Phase-1B flip branch
+  // is unreachable until at least one non-root parent has children.
+  it('grandchild + middle parent + root: 5 IMPORT changesets + 3 flips (post-1A + post-1B on middle, post-1A on grandchild)', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdkd-export-loop-3level-test-'));
+    try {
+      // CDK synth shape: root template has nested-stack row 'Middle'
+      // pointing at middle.nested.template.json; middle template has
+      // nested-stack row 'Grandchild' pointing at grand.nested.template.json
+      // (sibling of middle template).
+      const grandTemplate = {
+        Resources: {
+          GrandBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'grand-bucket' } },
+        },
+      };
+      const grandPath = join(tmp, 'Grandchild.nested.template.json');
+      writeFileSync(grandPath, JSON.stringify(grandTemplate), 'utf-8');
+      const middleTemplate = {
+        Resources: {
+          MiddleBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'middle-bucket' } },
+          Grandchild: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://cdk-asset/.../Grandchild.template.json' },
+            Metadata: { 'aws:asset:path': 'Grandchild.nested.template.json' },
+          },
+        },
+      };
+      const middlePath = join(tmp, 'Middle.nested.template.json');
+      writeFileSync(middlePath, JSON.stringify(middleTemplate), 'utf-8');
+      const rootTemplate = {
+        Resources: {
+          RootBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'root-bucket' } },
+          Middle: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://cdk-asset/.../Middle.template.json' },
+            Metadata: { 'aws:asset:path': 'Middle.nested.template.json' },
+          },
+        },
+      };
+
+      const root = makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: {
+          RootBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'root-bucket' },
+          Middle: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:cdkd-local:...' },
+        },
+      });
+      const middle = makeState({
+        stackName: 'Root~Middle',
+        region: 'us-east-1',
+        resources: {
+          MiddleBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'middle-bucket' },
+          Grandchild: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'arn:cdkd-local:...',
+          },
+        },
+        parentStack: 'Root',
+        parentLogicalId: 'Middle',
+      });
+      const grand = makeState({
+        stackName: 'Root~Middle~Grandchild',
+        region: 'us-east-1',
+        resources: { GrandBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'grand-bucket' } },
+        parentStack: 'Root~Middle',
+        parentLogicalId: 'Grandchild',
+      });
+      const { backend: stateBackend, deleted } = buildStateBackend({
+        'Root|us-east-1': root,
+        'Root~Middle|us-east-1': middle,
+        'Root~Middle~Grandchild|us-east-1': grand,
+      });
+      const { manager: lockManager, acquired, released } = buildLockManager();
+      const { client: cfnClient, calls } = buildCfnClient();
+
+      const tree: CdkdStateStackTree = {
+        stackName: 'Root',
+        region: 'us-east-1',
+        state: root,
+        nestedChildren: new Map([
+          [
+            'Middle',
+            {
+              stackName: 'Root~Middle',
+              region: 'us-east-1',
+              state: middle,
+              nestedChildren: new Map([
+                [
+                  'Grandchild',
+                  {
+                    stackName: 'Root~Middle~Grandchild',
+                    region: 'us-east-1',
+                    state: grand,
+                    nestedChildren: new Map(),
+                  },
+                ],
+              ]),
+            },
+          ],
+        ]),
+      };
+
+      const result = await runPerStackImportLoop({
+        rootStackName: 'Root',
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: { Middle: middlePath },
+        rootTemplateFormat: 'json',
+        tree,
+        rootTemplate,
+        cfnStackNameOverrides: { childMap: new Map() },
+        rootParameters: [],
+        deps: {
+          cfnClient,
+          stateBackend,
+          lockManager,
+          uploadOpts: { stateBucket: STATE_BUCKET },
+          lockOwner: 'tester@host:1234',
+        },
+        options: {
+          dryRun: false,
+          yes: true,
+          includeNonImportable: false,
+          recreateImportUnsupported: true,
+        },
+      });
+
+      expect(result.outcome).toBe('success');
+      expect(result.importedStacks.map((s) => s.cfnStackName)).toEqual([
+        'Root-Middle-Grandchild', // leaf-first iter 1 (Phase 1A only)
+        'Root-Middle', // iter 2 (Phase 1A + Phase 1B, with flips before AND after)
+        'Root', // iter 3 (Phase 1A + Phase 1B, root flip suppressed)
+      ]);
+
+      // 5 IMPORT changesets total:
+      //   - Grandchild Phase 1A (leaf)
+      //   - Middle Phase 1A (leaves) + Phase 1B (nested adoption)
+      //   - Root Phase 1A (leaves) + Phase 1B (nested adoption)
+      const createCalls = calls.filter((c) => c.name === 'CreateChangeSet');
+      expect(createCalls.map((c) => c.input['StackName'])).toEqual([
+        'Root-Middle-Grandchild',
+        'Root-Middle',
+        'Root-Middle',
+        'Root',
+        'Root',
+      ]);
+
+      // 3 UpdateStack flips: grandchild (post-1A), middle (post-1A AND
+      // post-1B — the critical post-1B non-root path that's unreachable
+      // in 2-level trees). Root never flips (always suppressed).
+      const updateStackCalls = calls.filter((c) => c.name === 'UpdateStack');
+      expect(updateStackCalls.map((c) => c.input['StackName'])).toEqual([
+        'Root-Middle-Grandchild', // post-Phase-1A flip
+        'Root-Middle', // post-Phase-1A flip
+        'Root-Middle', // post-Phase-1B flip (the previously-untested branch)
+      ]);
+
+      // Both non-root non-leaf parent (Middle) AND leaf grandchild get
+      // child locks pre-acquired; root's lock is held by the outer
+      // exportCommand scope (not by the orchestrator).
+      expect(acquired.map((l) => l.stackName).sort()).toEqual([
+        'Root~Middle',
+        'Root~Middle~Grandchild',
+      ]);
+      expect(released).toHaveLength(2);
+
+      // State deletion: leaf-first across the full tree.
+      expect(deleted).toEqual([
+        { stackName: 'Root~Middle~Grandchild', region: 'us-east-1' },
+        { stackName: 'Root~Middle', region: 'us-east-1' },
+        { stackName: 'Root', region: 'us-east-1' },
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runPerStackImportLoop (issue #464 PR B2) — Phase 2 UPDATE per stack', () => {
+  beforeEach(() => {
+    infoSpy.mockReset();
+    warnSpy.mockReset();
+    errorSpy.mockReset();
+    uploadCfnTemplateMock.mockClear();
+    waitChangeSetCreate.mockReset();
+    waitChangeSetCreate.mockResolvedValue(undefined);
+    waitStackImport.mockReset();
+    waitStackImport.mockResolvedValue(undefined);
+    waitStackUpdate.mockReset();
+    waitStackUpdate.mockResolvedValue(undefined);
+  });
+
+  it('parent + leaf with --include-non-importable: per-stack Phase 2 UPDATE fires only for the stack with CR', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdkd-export-loop-phase2-test-'));
+    try {
+      const childTemplate = {
+        Resources: {
+          ChildBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'child-bucket-cr' } },
+        },
+      };
+      const childPath = join(tmp, 'Child.nested.template.json');
+      writeFileSync(childPath, JSON.stringify(childTemplate), 'utf-8');
+
+      // Parent has 1 leaf (S3) + 1 nested child + 1 Custom Resource.
+      // The Custom Resource triggers per-stack Phase 2 UPDATE on the parent;
+      // the leaf child has no CR so its Phase 2 is skipped.
+      const root = makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: {
+          ParentBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'parent-bucket-cr' },
+          Child: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:cdkd-local:...' },
+          MyCR: { resourceType: 'Custom::Provisioner', physicalId: 'phy-cr' },
+        },
+      });
+      const child = makeState({
+        stackName: 'Root~Child',
+        region: 'us-east-1',
+        resources: { ChildBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'child-bucket-cr' } },
+        parentStack: 'Root',
+        parentLogicalId: 'Child',
+      });
+      const { backend: stateBackend, deleted } = buildStateBackend({
+        'Root|us-east-1': root,
+        'Root~Child|us-east-1': child,
+      });
+      const { manager: lockManager } = buildLockManager();
+      const { client: cfnClient, calls } = buildCfnClient();
+
+      const rootTemplate = {
+        Resources: {
+          ParentBucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: { BucketName: 'parent-bucket-cr' },
+          },
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://cdk-asset/.../Child.template.json' },
+            Metadata: { 'aws:asset:path': 'Child.nested.template.json' },
+          },
+          MyCR: {
+            Type: 'Custom::Provisioner',
+            Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:cr' },
+          },
+        },
+      };
+      const tree: CdkdStateStackTree = {
+        stackName: 'Root',
+        region: 'us-east-1',
+        state: root,
+        nestedChildren: new Map([
+          [
+            'Child',
+            {
+              stackName: 'Root~Child',
+              region: 'us-east-1',
+              state: child,
+              nestedChildren: new Map(),
+            },
+          ],
+        ]),
+      };
+
+      const result = await runPerStackImportLoop({
+        rootStackName: 'Root',
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: { Child: childPath },
+        rootTemplateFormat: 'json',
+        tree,
+        rootTemplate,
+        cfnStackNameOverrides: { childMap: new Map() },
+        rootParameters: [],
+        deps: {
+          cfnClient,
+          stateBackend,
+          lockManager,
+          uploadOpts: { stateBucket: STATE_BUCKET },
+          lockOwner: 'tester@host:1234',
+        },
+        options: {
+          dryRun: false,
+          yes: true,
+          includeNonImportable: true, // opt into the 2-phase per-stack flow
+          recreateImportUnsupported: true,
+        },
+      });
+
+      expect(result.outcome).toBe('success');
+      expect(result.importedStacks).toHaveLength(2);
+
+      // Changeset accounting:
+      //   - Child Phase 1A (1 leaf IMPORT)
+      //   - Root Phase 1A (1 leaf IMPORT)
+      //   - Root Phase 1B (1 nested adoption IMPORT)
+      //   - Root Phase 2 UPDATE (1 CR CREATE) — NEW (the previously-untested path)
+      // Child has no CR, so its Phase 2 UPDATE is correctly skipped.
+      const createCalls = calls.filter((c) => c.name === 'CreateChangeSet');
+      expect(createCalls).toHaveLength(4);
+      expect(createCalls.map((c) => c.input['ChangeSetType'])).toEqual([
+        'IMPORT', // child 1A
+        'IMPORT', // parent 1A
+        'IMPORT', // parent 1B (nested adoption)
+        'UPDATE', // parent Phase 2 (CR CREATE)
+      ]);
+      // Phase 2 template must include the rewritten nested-stack row
+      // (carried over from Phase 1B's rewritten row map) so CFn doesn't
+      // try to remove the just-adopted child on the UPDATE.
+      const phase2 = createCalls[3]!;
+      const phase2Body = String(phase2.input['TemplateBody']);
+      expect(phase2Body).toContain('"DeletionPolicy": "Retain"'); // Retain on nested row preserved
+      expect(phase2Body).toContain('"Type": "Custom::Provisioner"');
+
+      // State deletion only after every stack succeeds.
+      expect(deleted).toEqual([
+        { stackName: 'Root~Child', region: 'us-east-1' },
+        { stackName: 'Root', region: 'us-east-1' },
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });

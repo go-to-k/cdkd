@@ -3811,9 +3811,49 @@ export async function runPerStackImportLoop(args: {
       }
 
       // ---- All stacks IMPORTed: delete cdkd state leaf-first ----
+      // At this point every stack in the tree is CFn-managed. State
+      // deletion is best-effort: a transient S3 error on the Nth call
+      // would leave the first N-1 states deleted while the rest persist,
+      // and re-running `cdkd export` would then hit `assertCfnStackAbsent`
+      // for the already-migrated stacks with no hint of partial state.
+      // Collect failures and re-throw with a summary so the user can
+      // either re-run state deletion manually (via `cdkd state orphan
+      // <stack>` per remaining record) or accept the orphan state until
+      // their next manual cleanup. AWS-side state is unchanged either
+      // way — every stack is CFn-managed, the migration succeeded.
+      const stateDeletionFailures: Array<{ stackName: string; region: string; reason: string }> =
+        [];
       for (const node of leafFirst) {
-        await deps.stateBackend.deleteState(node.stackName, node.region);
-        logger.info(`cdkd state for '${node.stackName}' (${node.region}) removed.`);
+        try {
+          await deps.stateBackend.deleteState(node.stackName, node.region);
+          logger.info(`cdkd state for '${node.stackName}' (${node.region}) removed.`);
+        } catch (err) {
+          stateDeletionFailures.push({
+            stackName: node.stackName,
+            region: node.region,
+            reason: err instanceof Error ? err.message : String(err),
+          });
+          logger.warn(
+            `Failed to delete cdkd state for '${node.stackName}' (${node.region}): ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              `The stack IS CFn-managed; clean up with 'cdkd state orphan ${node.stackName}'.`
+          );
+        }
+      }
+      if (stateDeletionFailures.length > 0) {
+        // The per-failure warnings already named each affected stack;
+        // throw a summary so the orchestrator's caller can surface a
+        // non-zero exit code (the migration succeeded AWS-side but
+        // partial state remains under cdkd).
+        const lines = stateDeletionFailures
+          .map((f) => `  - cdkd/${f.stackName}/${f.region}/state.json: ${f.reason}`)
+          .join('\n');
+        throw new Error(
+          `${stateDeletionFailures.length} cdkd state record(s) could not be deleted after a ` +
+            `successful per-stack IMPORT loop. Every stack in the tree IS CFn-managed (the ` +
+            `migration succeeded AWS-side); orphan state remains under:\n${lines}\n` +
+            `Recover with 'cdkd state orphan <stack>' per record.`
+        );
       }
 
       return { outcome: 'success', importedStacks };
@@ -3898,12 +3938,25 @@ export function injectRetainAndRewriteTemplateUrl(
       : {};
   properties['TemplateURL'] = newTemplateUrl;
   if (childActualTags && childActualTags.length > 0) {
-    // Forward EVERY tag verbatim — AWS validates the full list, not a
-    // subset. Strip undefined Key/Value entries (defensive: SDK types
-    // these as optional even though AWS never returns them blank).
-    properties['Tags'] = childActualTags
-      .filter((t) => t.Key !== undefined && t.Value !== undefined)
-      .map((t) => ({ Key: t.Key, Value: t.Value }));
+    // Forward every user-set tag verbatim — AWS validates the full list,
+    // not a subset. EXCLUDE tags whose Key starts with `aws:` (e.g.
+    // `aws:cloudformation:stack-id` / `aws:cloudformation:stack-name`
+    // auto-added by AWS Service Catalog / StackSets to their managed
+    // stacks). CFn rejects user-supplied tags whose Key starts with
+    // `aws:` with `Tags starting with 'aws:' are reserved`, so a child
+    // re-imported into cdkd from a Service-Catalog-deployed source
+    // would otherwise break Phase 1B's adoption changeset with a
+    // confusing rejection. AWS's "Nested stack import validation"
+    // accepts the absence of system tags from the parent template
+    // (they live only AWS-side and are auto-reattached). Also strip
+    // undefined Key/Value entries (defensive: SDK types these as
+    // optional even though AWS never returns them blank).
+    const forwardable = childActualTags.filter(
+      (t) => t.Key !== undefined && t.Value !== undefined && !t.Key.startsWith('aws:')
+    );
+    if (forwardable.length > 0) {
+      properties['Tags'] = forwardable.map((t) => ({ Key: t.Key, Value: t.Value }));
+    }
   }
   cloned['Properties'] = properties;
   return cloned;
