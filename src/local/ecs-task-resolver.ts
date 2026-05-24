@@ -652,6 +652,19 @@ function extractTaskDefinitionProperties(
     );
   }
 
+  // Issue #544 — `ProxyConfiguration` (custom App Mesh / Envoy bootstrap)
+  // is NOT honored by `cdkd local start-service` / `cdkd local run-task`
+  // in v1. Design § 2 hard-rejects custom Envoy bootstrap; locally we
+  // run the user's containers without the configured proxy and surface
+  // a warn so users aren't surprised by the missing sidecar.
+  if (props['ProxyConfiguration']) {
+    warnings.push(
+      `Task definition '${logicalId}' declares 'ProxyConfiguration' (custom Envoy / App Mesh bootstrap), ` +
+        "which is NOT honored by 'cdkd local start-service' / 'cdkd local run-task' in v1. " +
+        'Local execution will run without the configured proxy. See design doc § 2 for the rationale.'
+    );
+  }
+
   const resources = stack.template.Resources ?? {};
 
   const subContext = buildSubstitutionContextFromImageContext(context);

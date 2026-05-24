@@ -33,6 +33,7 @@ function makeTaskDef(opts: {
   runtimePlatform?: unknown;
   taskRoleArn?: unknown;
   executionRoleArn?: unknown;
+  proxyConfiguration?: unknown;
 }): TemplateResource {
   const containers = opts.containers ?? [
     {
@@ -50,6 +51,7 @@ function makeTaskDef(opts: {
   if (opts.runtimePlatform !== undefined) props['RuntimePlatform'] = opts.runtimePlatform;
   if (opts.taskRoleArn !== undefined) props['TaskRoleArn'] = opts.taskRoleArn;
   if (opts.executionRoleArn !== undefined) props['ExecutionRoleArn'] = opts.executionRoleArn;
+  if (opts.proxyConfiguration !== undefined) props['ProxyConfiguration'] = opts.proxyConfiguration;
   const r: TemplateResource = {
     Type: 'AWS::ECS::TaskDefinition',
     Properties: props,
@@ -118,6 +120,36 @@ describe('resolveEcsTaskTarget', () => {
     const r = resolveEcsTaskTarget('TD', [stack]);
     expect(r.networkMode).toBe('awsvpc');
     expect(r.warnings.some((w) => /awsvpc/i.test(w))).toBe(true);
+  });
+
+  it('Issue #544 — warns when ProxyConfiguration (App Mesh / Envoy) is declared', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        proxyConfiguration: {
+          Type: 'APPMESH',
+          ContainerName: 'envoy',
+          ProxyConfigurationProperties: [
+            { Name: 'AppPorts', Value: '8080' },
+            { Name: 'ProxyEgressPort', Value: '15001' },
+          ],
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    expect(
+      r.warnings.some(
+        (w) =>
+          /ProxyConfiguration/.test(w) &&
+          /NOT honored/.test(w) &&
+          /without the configured proxy/.test(w)
+      )
+    ).toBe(true);
+  });
+
+  it('Issue #544 — does NOT warn about ProxyConfiguration when absent', () => {
+    const stack = buildStack('S1', { TD: makeTaskDef({}) });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    expect(r.warnings.some((w) => /ProxyConfiguration/.test(w))).toBe(false);
   });
 
   it('rejects EFSVolumeConfiguration with a routing hint', () => {

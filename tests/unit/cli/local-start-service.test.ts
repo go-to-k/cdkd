@@ -96,24 +96,32 @@ describe('createLocalStartServiceCommand', () => {
     expect(parsed.opts().pull).toBe(false);
   });
 
-  it('accepts --max-tasks at the subnet-allocator cap (84)', () => {
+  it('accepts --max-tasks at the subnet-allocator cap (83)', () => {
+    // Issue #544 — the cap dropped from 84 to 83 because the
+    // per-replica subnet allocator (`pickSubnetOctet`) skips
+    // SHARED_SVC_SUBNET_OCTET (171) to avoid colliding with the
+    // shared-service network /24.
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '84'], { from: 'user' });
-    expect(parsed.opts().maxTasks).toBe(84);
+    const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '83'], { from: 'user' });
+    expect(parsed.opts().maxTasks).toBe(83);
   });
 
-  it('rejects --max-tasks above the subnet-allocator cap (85)', () => {
+  it('rejects --max-tasks above the subnet-allocator cap (84)', () => {
     // The per-replica subnet allocator in `ecs-service-runner.ts`
-    // (`170 + (index % 84)`) wraps at index 84, collapsing replica 84's
-    // /24 onto replica 0's allocation and causing Docker to reject the
-    // duplicate-subnet network creation. Surfacing the cap at parse
-    // time gives the user an actionable error before any boot work.
+    // (`pickSubnetOctet`) serves 83 distinct octets out of the
+    // link-local /24 range 169.254.170.0..169.254.253.0 (one octet,
+    // SHARED_SVC_SUBNET_OCTET=171, is reserved for the shared-service
+    // network). At index 83 the modulo wraps and collapses the /24
+    // onto an earlier replica's allocation, causing Docker to reject
+    // the duplicate-subnet network creation. Surfacing the cap at
+    // parse time gives the user an actionable error before any boot
+    // work.
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
     expect(() =>
-      fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '85'], { from: 'user' })
-    ).toThrow(/--max-tasks 85 exceeds the per-replica link-local \/24 subnet allocator's range \(84\)/);
+      fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '84'], { from: 'user' })
+    ).toThrow(/--max-tasks 84 exceeds the per-replica link-local \/24 subnet allocator's range \(83\)/);
   });
 
   it('rejects --max-tasks 100 (PR #504 review canonical case)', () => {
@@ -121,6 +129,6 @@ describe('createLocalStartServiceCommand', () => {
     fresh.action(() => {});
     expect(() =>
       fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '100'], { from: 'user' })
-    ).toThrow(/--max-tasks 100 exceeds.*84/);
+    ).toThrow(/--max-tasks 100 exceeds.*83/);
   });
 });

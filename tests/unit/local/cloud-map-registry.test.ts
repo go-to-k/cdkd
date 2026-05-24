@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { CloudMapRegistry } from '../../../src/local/cloud-map-registry.js';
 
 describe('CloudMapRegistry', () => {
@@ -116,6 +116,58 @@ describe('CloudMapRegistry', () => {
       const r = new CloudMapRegistry();
       expect(() => r.registerAlias('', 'a.b')).toThrow(/alias must be a non-empty string/);
       expect(() => r.registerAlias('a', '')).toThrow(/targetFqdn must be a non-empty string/);
+    });
+  });
+
+  describe('registerAlias collision (Issue #544 — first-wins, design § O6)', () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      // The logger routes warn lines through console.warn. Capture them
+      // so we can assert the collision message fires (and does not fire
+      // for idempotent same-source re-register).
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('first-wins on alias DnsName collision (later mapping ignored + warn fires)', () => {
+      const r = new CloudMapRegistry();
+      r.register('namespace.local', 'svcA', { ip: '1.1.1.1', port: 80, ownerKey: 'A:r0' });
+      r.register('namespace.local', 'svcB', { ip: '2.2.2.2', port: 80, ownerKey: 'B:r0' });
+      r.registerAlias('api', 'svcA.namespace.local');
+      // Second registration of the SAME alias to a DIFFERENT target —
+      // first-wins per design § O6, the new mapping is dropped + warn.
+      r.registerAlias('api', 'svcB.namespace.local');
+
+      const endpoints = r.lookupAlias('api');
+      expect(endpoints?.length).toBe(1);
+      expect(endpoints?.[0]?.ip).toBe('1.1.1.1');
+
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(
+        warnMessages.some(
+          (m) => /ClientAlias DnsName collision/.test(m) && /'api'/.test(m) && /first-wins/.test(m)
+        )
+      ).toBe(true);
+    });
+
+    it('idempotent re-register of same-source mapping does not warn', () => {
+      const r = new CloudMapRegistry();
+      r.register('namespace.local', 'svcA', { ip: '1.1.1.1', port: 80, ownerKey: 'A:r0' });
+      r.registerAlias('api', 'svcA.namespace.local');
+      // Same alias → same target re-registered (e.g. a service was
+      // re-resolved after a restart) — no-op, no warn.
+      r.registerAlias('api', 'svcA.namespace.local');
+
+      const endpoints = r.lookupAlias('api');
+      expect(endpoints?.length).toBe(1);
+      expect(endpoints?.[0]?.ip).toBe('1.1.1.1');
+
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(warnMessages.some((m) => /ClientAlias DnsName collision/.test(m))).toBe(false);
     });
   });
 

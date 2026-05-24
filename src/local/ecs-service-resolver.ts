@@ -270,7 +270,11 @@ export function extractServiceProperties(
   // are now first-class. Parse + surface; the registry/runner layer
   // handles cross-service publish + DNS overlay.
   const serviceConnect = extractServiceConnect(props['ServiceConnectConfiguration'], task);
-  const serviceRegistries = extractServiceRegistries(props['ServiceRegistries']);
+  const serviceRegistries = extractServiceRegistries(
+    props['ServiceRegistries'],
+    serviceLogicalId,
+    warnings
+  );
 
   const out: ResolvedEcsService = {
     stack,
@@ -397,8 +401,20 @@ function extractServiceConnect(
  * canonical `Fn::GetAtt: [<CloudMapServiceLogicalId>, 'Arn']` shape;
  * cdkd surfaces the logical id (the AWS-side ARN is irrelevant
  * locally — the registry is in-process).
+ *
+ * Issue #544 — entries with a literal-string `RegistryArn` (rare
+ * locally — would imply the user bound to an existing Cloud Map
+ * service deployed out-of-band) are skipped with a warning, since the
+ * in-process registry cannot resolve an external Cloud Map service
+ * back to its `(namespace, name)` pair. Pre-fix this was a silent
+ * `continue` and the user got no feedback about why the registration
+ * didn't show up.
  */
-function extractServiceRegistries(raw: unknown): ReadonlyArray<ResolvedServiceRegistry> {
+function extractServiceRegistries(
+  raw: unknown,
+  serviceLogicalId: string,
+  warnings: string[]
+): ReadonlyArray<ResolvedServiceRegistry> {
   if (!Array.isArray(raw)) return [];
   const out: ResolvedServiceRegistry[] = [];
   for (const entry of raw) {
@@ -409,7 +425,14 @@ function extractServiceRegistries(raw: unknown): ReadonlyArray<ResolvedServiceRe
     if (typeof registryArn === 'string') {
       // Already a literal ARN (rare locally — would imply the user
       // bound to an existing Cloud Map service deployed out-of-band).
-      // We can't resolve it; surface a warn upstream by skipping.
+      // We can't resolve it via the in-process registry; warn + skip.
+      warnings.push(
+        `ECS Service '${serviceLogicalId}' ServiceRegistries[] entry has a literal-string ` +
+          `RegistryArn ('${registryArn}'); cdkd cannot resolve external Cloud Map services ` +
+          'locally. Skipping this registration; peer services will not discover this endpoint ' +
+          'through the in-process registry. Use Fn::GetAtt: [<CloudMapServiceLogicalId>, "Arn"] ' +
+          'instead so cdkd can resolve the namespace + service name from the synthesized template.'
+      );
       continue;
     }
     if (registryArn && typeof registryArn === 'object' && !Array.isArray(registryArn)) {
