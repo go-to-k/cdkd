@@ -109,6 +109,10 @@
       "description": "NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy)."
     },
     {
+      "tag": "nested-stack-migrate-from-cfn",
+      "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A."
+    },
+    {
       "tag": "rds-aurora-cluster-instance",
       "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family."
     },
@@ -371,6 +375,13 @@
       "annotated": true,
       "scenarios": [
         "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "import-nested-stack",
+      "annotated": true,
+      "scenarios": [
+        "nested-stack-migrate-from-cfn"
       ]
     },
     {
@@ -976,6 +987,13 @@
       "fixtures": [
         "bench-cdk-sample",
         "vpc-nat-gateway"
+      ]
+    },
+    {
+      "scenario": "nested-stack-migrate-from-cfn",
+      "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A.",
+      "fixtures": [
+        "import-nested-stack"
       ]
     },
     {

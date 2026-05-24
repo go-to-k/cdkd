@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**99 / 112 registered SDK Providers** have at least one integ fixture exercising them. 12 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 1 are orphans — registered with neither an integ nor an allow-list rationale.
+**100 / 112 registered SDK Providers** have at least one integ fixture exercising them. 12 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -16,13 +16,9 @@ For each fixture under `tests/integration/<name>/`, the script scans `lib/*.ts` 
 
 L2 detection is a hand-curated lower bound — a missed L2 wrapper produces a false-negative ("type appears uncovered"). When you add a fixture that uses an L2 the matrix does not see, extend `CDK_L2_TO_L1` in [scripts/build-integ-coverage-matrix.ts](../scripts/build-integ-coverage-matrix.ts).
 
-## Orphan providers (1)
+## Orphan providers
 
-These SDK Providers are registered but have NO integ fixture exercising them and NO `// allow-no-integ:` rationale. Each is a real-AWS verification gap — a refactor that breaks one will not surface in any existing integ run. Either back the type with a fixture (literal type id, `Cfn<Type>(` L1, or extend the L2 lookup table) or add a rationale comment on the register line.
-
-| Resource Type |
-|---|
-| `AWS::CloudFormation::Stack` |
+_None._ Every registered SDK Provider has at least one integ fixture or an explicit `// allow-no-integ:` rationale.
 
 ## Allow-listed providers (12)
 
@@ -43,7 +39,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::S3Tables::Table` | see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces. |
 | `AWS::ServiceDiscovery::Service` | drift-revert-vpc covers PrivateDnsNamespace; Service is a sub-resource sharing the same provider. Add an ECS service-discovery integ if a Service-specific real-AWS bug surfaces. |
 
-## Covered providers (99)
+## Covered providers (100)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -65,6 +61,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::AppSync::Resolver` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AutoScaling::AutoScalingGroup` | [`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l1,literal)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
 | `AWS::BedrockAgentCore::Runtime` | [`bedrock-agentcore`](../tests/integration/bedrock-agentcore/) (literal) |
+| `AWS::CloudFormation::Stack` | [`import-nested-stack`](../tests/integration/import-nested-stack/) (literal) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudFront::Distribution` | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) (l2)<br>[`cloudfront-function-url`](../tests/integration/cloudfront-function-url/) (l2)<br>[`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudTrail::Trail` | [`infra-security`](../tests/integration/infra-security/) (l2,literal) |
@@ -141,7 +138,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::SNS::TopicPolicy` | [`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (literal)<br>[`sns-sqs-event`](../tests/integration/sns-sqs-event/) (l2) |
 | `AWS::SQS::Queue` | [`basic`](../tests/integration/basic/) (l1)<br>[`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) (l2)<br>[`bench-sdk`](../tests/integration/bench-sdk/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`data-pipeline`](../tests/integration/data-pipeline/) (l2)<br>[`event-driven`](../tests/integration/event-driven/) (l2)<br>[`eventbridge`](../tests/integration/eventbridge/) (l2)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`microservices`](../tests/integration/microservices/) (l2)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (l2)<br>[`multi-resource`](../tests/integration/multi-resource/) (l2)<br>[`sns-sqs-event`](../tests/integration/sns-sqs-event/) (l2) |
 | `AWS::SQS::QueuePolicy` | [`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (literal) |
-| `AWS::SSM::Parameter` | [`bench-sdk`](../tests/integration/bench-sdk/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`context-test`](../tests/integration/context-test/) (l2)<br>[`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) (l1)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/) (l1)<br>[`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) (l2,literal)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/) (l2)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) (l2)<br>[`legacy-state-migration`](../tests/integration/legacy-state-migration/) (l2)<br>[`microservices`](../tests/integration/microservices/) (l2)<br>[`multi-region-same-stack`](../tests/integration/multi-region-same-stack/) (l2)<br>[`nested-stack`](../tests/integration/nested-stack/) (l2)<br>[`schema-v5-to-v6-migration`](../tests/integration/schema-v5-to-v6-migration/) (l2)<br>[`state-info-command`](../tests/integration/state-info-command/) (l2)<br>[`vpc-lookup`](../tests/integration/vpc-lookup/) (l2) |
+| `AWS::SSM::Parameter` | [`bench-sdk`](../tests/integration/bench-sdk/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`context-test`](../tests/integration/context-test/) (l2)<br>[`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) (l1)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/) (l1)<br>[`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) (l2,literal)<br>[`import-nested-stack`](../tests/integration/import-nested-stack/) (l2,literal)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/) (l2)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) (l2)<br>[`legacy-state-migration`](../tests/integration/legacy-state-migration/) (l2)<br>[`microservices`](../tests/integration/microservices/) (l2)<br>[`multi-region-same-stack`](../tests/integration/multi-region-same-stack/) (l2)<br>[`nested-stack`](../tests/integration/nested-stack/) (l2)<br>[`schema-v5-to-v6-migration`](../tests/integration/schema-v5-to-v6-migration/) (l2)<br>[`state-info-command`](../tests/integration/state-info-command/) (l2)<br>[`vpc-lookup`](../tests/integration/vpc-lookup/) (l2) |
 | `AWS::SecretsManager::Secret` | [`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`event-driven`](../tests/integration/event-driven/) (l2)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/) (l2,literal) |
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | [`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l2,literal)<br>[`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/) (literal) |
 | `AWS::StepFunctions::StateMachine` | [`stepfunctions`](../tests/integration/stepfunctions/) (l2) |

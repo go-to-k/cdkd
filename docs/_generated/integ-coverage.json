@@ -436,6 +436,17 @@
       }
     },
     {
+      "resourceType": "AWS::CloudFormation::Stack",
+      "integs": [
+        "import-nested-stack"
+      ],
+      "signals": {
+        "import-nested-stack": [
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
       "integs": [
         "s3-cloudfront"
@@ -2669,6 +2680,7 @@
         "cross-region-state-bucket",
         "cross-stack-references",
         "deletion-policy-retain",
+        "import-nested-stack",
         "import-value-strong-ref",
         "infra-security",
         "legacy-bucket-name-fallback",
@@ -2698,6 +2710,10 @@
           "l1"
         ],
         "deletion-policy-retain": [
+          "l2",
+          "literal"
+        ],
+        "import-nested-stack": [
           "l2",
           "literal"
         ],
@@ -2798,9 +2814,7 @@
       }
     }
   ],
-  "orphans": [
-    "AWS::CloudFormation::Stack"
-  ],
+  "orphans": [],
   "allowListed": [
     {
       "resourceType": "AWS::Glue::Connection",
