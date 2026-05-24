@@ -787,7 +787,9 @@ async function loadLocksForTree(
   lockManager: LockManager,
   rootLock: LockInfo | null
 ): Promise<CdkdStateStackTreeWithLock> {
-  const rootKey = `${tree.stackName}\0${tree.region}`;
+  const nodeKey = (node: { stackName: string; region: string }): string =>
+    `${node.stackName}\0${node.region}`;
+  const rootKey = nodeKey(tree);
   const flat: CdkdStateStackTree[] = [];
   const collect = (node: CdkdStateStackTree): void => {
     flat.push(node);
@@ -799,7 +801,7 @@ async function loadLocksForTree(
   lockByKey.set(rootKey, rootLock);
   await Promise.all(
     flat.map(async (node) => {
-      const key = `${node.stackName}\0${node.region}`;
+      const key = nodeKey(node);
       if (key === rootKey) return;
       try {
         lockByKey.set(key, await lockManager.getLockInfo(node.stackName, node.region));
@@ -813,7 +815,7 @@ async function loadLocksForTree(
     stackName: node.stackName,
     region: node.region,
     state: node.state,
-    lock: lockByKey.get(`${node.stackName}\0${node.region}`) ?? null,
+    lock: lockByKey.get(nodeKey(node)) ?? null,
     children: [...node.nestedChildren.values()].map(decorate),
   });
   return decorate(tree);
