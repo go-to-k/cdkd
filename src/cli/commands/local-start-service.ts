@@ -93,6 +93,13 @@ async function localStartServiceCommand(
 
   warnIfDeprecatedRegion(options);
 
+  // Commander resolves `--no-pull` to `options.pull = false` (the
+  // default is true). Compute the "should we skip docker pull?" flag
+  // once here so the shared-network creation, the per-target task
+  // boot, and any future call site share one source of truth (Issue
+  // #544 NIT 2).
+  const skipPull = options.pull === false;
+
   if (!targets || targets.length === 0) {
     throw new LocalStartServiceError(
       'cdkd local start-service requires at least one <target>. ' +
@@ -249,7 +256,7 @@ async function localStartServiceCommand(
     try {
       sharedNetwork = await createSharedSvcNetwork({
         prefix: options.cluster,
-        skipPull: options.pull === false,
+        skipPull,
         cluster: options.cluster,
       });
     } catch (err) {
@@ -285,7 +292,14 @@ async function localStartServiceCommand(
     // booted later automatically see earlier services' registrations
     // and have them substituted via `--add-host` at boot.
     for (const pt of perTarget) {
-      pt.controller = await bootOneTarget(pt.target, pt.runState, stacks, options, discovery);
+      pt.controller = await bootOneTarget(
+        pt.target,
+        pt.runState,
+        stacks,
+        options,
+        discovery,
+        skipPull
+      );
     }
 
     const summary = perTarget
@@ -320,7 +334,8 @@ async function bootOneTarget(
   runState: ServiceRunState,
   stacks: StackInfo[],
   options: LocalStartServiceOptions,
-  discovery: ServiceDiscoveryContext
+  discovery: ServiceDiscoveryContext,
+  skipPull: boolean
 ): Promise<ServiceController> {
   const logger = getLogger();
 
@@ -405,7 +420,7 @@ async function bootOneTarget(
   const taskOpts: RunEcsTaskOptions = {
     cluster: options.cluster,
     containerHost: options.containerHost,
-    skipPull: options.pull === false,
+    skipPull,
     keepRunning: false,
     detach: true,
   };
@@ -620,19 +635,23 @@ function parsePositiveInt(raw: string, flagName: string): number {
 
 /**
  * Hard cap on `--max-tasks` driven by the per-replica subnet allocator
- * in `ecs-service-runner.ts:bootReplica` (`170 + (index % 84)`). The
- * `% 84` modulo wraps at index 84, collapsing replica 84's `/24` onto
- * replica 0's allocation. Docker rejects the duplicate-subnet network
- * creation with a cryptic "Pool overlaps with other one on this address
- * space" error 30s into the boot — by which time some early replicas
- * may have spent docker-run budget. Reject at parse time so the user
+ * in `ecs-service-runner.ts:pickSubnetOctet`. The allocator walks the
+ * link-local /24 range `169.254.170.0..169.254.253.0` and **skips 171**
+ * because that octet is owned by the shared-service network
+ * (`SHARED_SVC_SUBNET_OCTET`) — assigning a per-replica network the
+ * same /24 would have docker reject the duplicate-subnet `network
+ * create`. The usable count is therefore 83 (Issue #544); beyond
+ * that, the modulo-wrap collapses replica N's `/24` onto replica 0's
+ * allocation and docker rejects the duplicate-subnet network creation
+ * with a cryptic "Pool overlaps with other one on this address space"
+ * error 30s into the boot — by which time some early replicas may
+ * have spent docker-run budget. Reject at parse time so the user
  * gets an actionable error before any boot work fires.
  *
- * 84 is the count of usable link-local /24 octets in the range
- * `169.254.170.0..169.254.253.0` (255 reserved for broadcast). Raising
- * this requires extending the allocator to walk a different IP range.
+ * Raising this requires extending the allocator to walk a different
+ * IP range.
  */
-export const MAX_TASKS_SUBNET_RANGE_CAP = 84;
+export const MAX_TASKS_SUBNET_RANGE_CAP = 83;
 
 function parseMaxTasks(raw: string): number {
   const parsed = parsePositiveInt(raw, '--max-tasks');

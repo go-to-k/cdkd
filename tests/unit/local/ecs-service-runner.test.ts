@@ -36,12 +36,15 @@ import {
   computeReplicaCount,
   createServiceRunState,
   EcsServiceRunnerError,
+  pickSubnetOctet,
   ServiceController,
   shouldRestart,
   startEcsService,
+  SUBNET_ALLOCATOR_RANGE,
   type ServiceReplicaInstance,
   type ServiceRunnerOptions,
 } from '../../../src/local/ecs-service-runner.js';
+import { SHARED_SVC_SUBNET_OCTET } from '../../../src/local/ecs-network.js';
 import type { ResolvedEcsService } from '../../../src/local/ecs-service-resolver.js';
 import type { EcsRunState } from '../../../src/local/ecs-task-runner.js';
 
@@ -890,6 +893,783 @@ describe('Cloud Map / Service Connect registry integration (Issue #460)', () => 
     expect(registry.lookup('cdkd-local.local', 'frontend-cloudmap')).toBeUndefined();
   });
 });
+
+describe('publishReplicaToCloudMap warn / fallback branches (Issue #544)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // The logger routes warn through console.warn. Capture so we can
+    // assert each warn-bearing branch in publishReplicaToCloudMap.
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('namespace mismatch: warns and still registers under the literal Service Connect namespace', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: 'cdkd-local-svc-r0',
+        sidecarContainerId: 'sidecar-r0',
+        sidecarIp: '169.254.170.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-r0' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+
+    const service: ResolvedEcsService = {
+      serviceName: 'orders',
+      serviceLogicalId: 'OrdersSvc',
+      desiredCount: 1,
+      task: {
+        taskDefinitionLogicalId: 'TD',
+        family: 'orders',
+        containers: [
+          {
+            name: 'app',
+            essential: true,
+            portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+          },
+        ],
+      } as unknown as ResolvedEcsService['task'],
+      stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+      serviceConnect: {
+        namespaceName: 'mismatching.local',
+        services: [
+          {
+            portName: 'orders-api',
+            containerPort: 80,
+            discoveryName: 'orders',
+            clientAliases: [],
+          },
+        ],
+      },
+      serviceRegistries: [],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+
+    const opts: ServiceRunnerOptions = {
+      maxTasks: 83,
+      restartPolicy: 'on-failure',
+      taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+      discovery: {
+        registry,
+        cloudMapIndexByStack: new Map([
+          [
+            'StackA',
+            {
+              namespacesByLogicalId: new Map(),
+              // Only 'matching.local' is in the index — the service's
+              // 'mismatching.local' will trigger the warn branch.
+              namespacesByName: new Map([
+                ['matching.local', { logicalId: 'Ns', name: 'matching.local' }],
+              ]),
+              servicesByLogicalId: new Map(),
+              warnings: [],
+            },
+          ],
+        ]),
+      },
+    };
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    // Registration STILL happened — against the literal namespace.
+    const endpoints = registry.lookup('mismatching.local', 'orders');
+    expect(endpoints?.length).toBe(1);
+    expect(endpoints?.[0]?.ip).toBe('10.0.0.10');
+
+    // Warn fired about the mismatch.
+    const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(
+      warnMessages.some(
+        (m) => /does not match/.test(m) && /mismatching\.local/.test(m)
+      )
+    ).toBe(true);
+
+    await controller.shutdown();
+  });
+
+  it('ServiceRegistries.containerPort undefined: falls back to essential containers first portMapping', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: 'cdkd-local-svc-r0',
+        sidecarContainerId: 'sidecar-r0',
+        sidecarIp: '169.254.170.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-r0' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+
+    const service: ResolvedEcsService = {
+      serviceName: 'frontend',
+      serviceLogicalId: 'FrontendSvc',
+      desiredCount: 1,
+      task: {
+        taskDefinitionLogicalId: 'TD',
+        family: 'frontend',
+        containers: [
+          {
+            name: 'app',
+            essential: true,
+            // First port mapping should be the fallback when
+            // ServiceRegistries[].containerPort is undefined.
+            portMappings: [{ name: 'http', containerPort: 9999, protocol: 'tcp' }],
+          },
+        ],
+      } as unknown as ResolvedEcsService['task'],
+      stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+      // containerPort intentionally omitted — exercises the fallback.
+      serviceRegistries: [{ cloudMapServiceLogicalId: 'CloudMapSvc' }],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+
+    const opts: ServiceRunnerOptions = {
+      maxTasks: 83,
+      restartPolicy: 'on-failure',
+      taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+      discovery: {
+        registry,
+        cloudMapIndexByStack: new Map([
+          [
+            'StackA',
+            {
+              namespacesByLogicalId: new Map(),
+              namespacesByName: new Map(),
+              servicesByLogicalId: new Map([
+                [
+                  'CloudMapSvc',
+                  {
+                    logicalId: 'CloudMapSvc',
+                    namespaceLogicalId: 'Ns',
+                    namespaceName: 'cdkd-local.local',
+                    name: 'frontend-cm',
+                    dnsRecords: [{ type: 'A' as const, ttlSeconds: 60 }],
+                  },
+                ],
+              ]),
+              warnings: [],
+            },
+          ],
+        ]),
+      },
+    };
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    // Port should have fallen back to the essential containers first
+    // port mapping (9999), NOT the missing override (undefined).
+    const endpoints = registry.lookup('cdkd-local.local', 'frontend-cm');
+    expect(endpoints?.length).toBe(1);
+    expect(endpoints?.[0]?.port).toBe(9999);
+
+    await controller.shutdown();
+  });
+
+  it('ServiceRegistries with no resolvable port (no portMappings and no override): warn + skip', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: 'cdkd-local-svc-r0',
+        sidecarContainerId: 'sidecar-r0',
+        sidecarIp: '169.254.170.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-r0' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+
+    const service: ResolvedEcsService = {
+      serviceName: 'frontend',
+      serviceLogicalId: 'FrontendSvc',
+      desiredCount: 1,
+      task: {
+        taskDefinitionLogicalId: 'TD',
+        family: 'frontend',
+        containers: [
+          {
+            name: 'app',
+            essential: true,
+            // Empty portMappings + no ServiceRegistries.containerPort
+            // override => no resolvable port => warn + skip.
+            portMappings: [],
+          },
+        ],
+      } as unknown as ResolvedEcsService['task'],
+      stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+      serviceRegistries: [{ cloudMapServiceLogicalId: 'CloudMapSvc' }],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+
+    const opts: ServiceRunnerOptions = {
+      maxTasks: 83,
+      restartPolicy: 'on-failure',
+      taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+      discovery: {
+        registry,
+        cloudMapIndexByStack: new Map([
+          [
+            'StackA',
+            {
+              namespacesByLogicalId: new Map(),
+              namespacesByName: new Map(),
+              servicesByLogicalId: new Map([
+                [
+                  'CloudMapSvc',
+                  {
+                    logicalId: 'CloudMapSvc',
+                    namespaceLogicalId: 'Ns',
+                    namespaceName: 'cdkd-local.local',
+                    name: 'frontend-cm',
+                    dnsRecords: [{ type: 'A' as const, ttlSeconds: 60 }],
+                  },
+                ],
+              ]),
+              warnings: [],
+            },
+          ],
+        ]),
+      },
+    };
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    // Nothing registered — warn fired and the entry was skipped.
+    expect(registry.lookup('cdkd-local.local', 'frontend-cm')).toBeUndefined();
+    const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(
+      warnMessages.some(
+        (m) => /no resolvable container port/.test(m) && /FrontendSvc/.test(m)
+      )
+    ).toBe(true);
+
+    await controller.shutdown();
+  });
+});
+
+describe('Cross-service Cloud Map ordering (Issue #544 — sequential boot snapshot)', () => {
+  it('second service\'s addHostFlags snapshot includes the first service\'s fqdn (Option A invariant)', async () => {
+    // Mock runTask to also remember the addHostFlags it received per
+    // call, so we can assert the second boots `--add-host` snapshot
+    // contained the first service's fqdn. The implementation snapshots
+    // addHostFlags inside bootReplica BEFORE the per-replica registry
+    // publish runs, so the producer-then-consumer boot order ensures
+    // the consumer sees the producer in its snapshot.
+    const seenAddHostFlags: string[][] = [];
+    mockRunTask.mockImplementation(async (_task, opts, state) => {
+      const o = opts as { addHostFlags?: string[] };
+      seenAddHostFlags.push(o.addHostFlags ? [...o.addHostFlags] : []);
+      const s = state as EcsRunState;
+      const idx = seenAddHostFlags.length - 1;
+      s.network = {
+        networkName: `cdkd-local-svc-r${idx}`,
+        sidecarContainerId: `sidecar-r${idx}`,
+        sidecarIp: '169.254.171.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: `container-r${idx}` });
+    });
+    mockGetContainerIp.mockImplementation(async (_id, _net) => {
+      // Distinct IPs per call so the cross-service overlay is visible.
+      const callCount = mockGetContainerIp.mock.calls.length;
+      return `10.0.0.${10 + callCount}`;
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+
+    function makeOrdersService(): ResolvedEcsService {
+      return {
+        serviceName: 'orders',
+        serviceLogicalId: 'OrdersSvc',
+        desiredCount: 1,
+        task: {
+          taskDefinitionLogicalId: 'OrdersTD',
+          family: 'orders',
+          containers: [
+            {
+              name: 'app',
+              essential: true,
+              portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+            },
+          ],
+        } as unknown as ResolvedEcsService['task'],
+        stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+        serviceConnect: {
+          namespaceName: 'cdkd-local.local',
+          services: [
+            {
+              portName: 'orders-api',
+              containerPort: 80,
+              discoveryName: 'orders',
+              clientAliases: [],
+            },
+          ],
+        },
+        serviceRegistries: [],
+        warnings: [],
+      } as unknown as ResolvedEcsService;
+    }
+
+    function makeFrontendService(): ResolvedEcsService {
+      return {
+        serviceName: 'frontend',
+        serviceLogicalId: 'FrontendSvc',
+        desiredCount: 1,
+        task: {
+          taskDefinitionLogicalId: 'FrontendTD',
+          family: 'frontend',
+          containers: [
+            {
+              name: 'app',
+              essential: true,
+              portMappings: [{ name: 'frontend-api', containerPort: 8080, protocol: 'tcp' }],
+            },
+          ],
+        } as unknown as ResolvedEcsService['task'],
+        stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+        serviceConnect: {
+          namespaceName: 'cdkd-local.local',
+          services: [
+            {
+              portName: 'frontend-api',
+              containerPort: 8080,
+              discoveryName: 'frontend',
+              clientAliases: [],
+            },
+          ],
+        },
+        serviceRegistries: [],
+        warnings: [],
+      } as unknown as ResolvedEcsService;
+    }
+
+    const opts: ServiceRunnerOptions = {
+      maxTasks: 83,
+      restartPolicy: 'on-failure',
+      taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+      discovery: {
+        registry,
+        cloudMapIndexByStack: new Map([
+          [
+            'StackA',
+            {
+              namespacesByLogicalId: new Map(),
+              namespacesByName: new Map([
+                ['cdkd-local.local', { logicalId: 'Ns', name: 'cdkd-local.local' }],
+              ]),
+              servicesByLogicalId: new Map(),
+              warnings: [],
+            },
+          ],
+        ]),
+      },
+    };
+
+    // Boot orders FIRST so it registers before frontend's bootReplica
+    // snapshots the registry into `--add-host` flags.
+    const ordersRunState = createServiceRunState();
+    const ordersCtrl = await startEcsService(makeOrdersService(), opts, ordersRunState);
+
+    const frontendRunState = createServiceRunState();
+    const frontendCtrl = await startEcsService(makeFrontendService(), opts, frontendRunState);
+
+    expect(seenAddHostFlags).toHaveLength(2);
+    // Orders booted first — registry was empty, no --add-host flags.
+    expect(seenAddHostFlags[0]).toEqual([]);
+    // Frontend booted second — snapshot of registry includes orders.
+    const frontendFlags = seenAddHostFlags[1]!;
+    const frontendMap = parseAddHostFlagsLocal(frontendFlags);
+    expect(frontendMap['orders.cdkd-local.local']).toBeDefined();
+
+    await ordersCtrl.shutdown();
+    await frontendCtrl.shutdown();
+  });
+});
+
+describe('watchReplica restart re-registers Cloud Map endpoints (Issue #544)', () => {
+  it('after restart, replica re-publishes its registry handles via bootReplica', async () => {
+    let bootCount = 0;
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      bootCount += 1;
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: `cdkd-local-svc-boot${bootCount}`,
+        sidecarContainerId: `sidecar-${bootCount}`,
+        sidecarIp: '169.254.171.2',
+      } as EcsRunState['network'];
+      s.startedContainers.length = 0;
+      s.startedContainers.push({ name: 'app', id: `container-${bootCount}` });
+    });
+    // Distinct IPs per call so we can tell pre-restart and post-restart
+    // registrations apart.
+    mockGetContainerIp.mockImplementation(async () => {
+      const c = mockGetContainerIp.mock.calls.length;
+      return `10.0.0.${10 + c}`;
+    });
+    // First wait: exit code 1 → triggers restart. Second wait blocks.
+    const exits = [1];
+    let exitIdx = 0;
+    __setWaitForExitImpl(async () => {
+      const code = exits[exitIdx];
+      exitIdx += 1;
+      if (code === undefined) {
+        return new Promise<number>(() => undefined);
+      }
+      return code;
+    });
+    __setSleepImpl(() => new Promise<void>((resolve) => setImmediate(resolve)));
+
+    const { CloudMapRegistry } = await import('../../../src/local/cloud-map-registry.js');
+    const registry = new CloudMapRegistry();
+    const service: ResolvedEcsService = {
+      serviceName: 'orders',
+      serviceLogicalId: 'OrdersSvc',
+      desiredCount: 1,
+      task: {
+        taskDefinitionLogicalId: 'TD',
+        family: 'orders',
+        containers: [
+          {
+            name: 'app',
+            essential: true,
+            portMappings: [{ name: 'orders-api', containerPort: 80, protocol: 'tcp' }],
+          },
+        ],
+      } as unknown as ResolvedEcsService['task'],
+      stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+      serviceConnect: {
+        namespaceName: 'cdkd-local.local',
+        services: [
+          {
+            portName: 'orders-api',
+            containerPort: 80,
+            discoveryName: 'orders',
+            clientAliases: [],
+          },
+        ],
+      },
+      serviceRegistries: [],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+
+    const opts: ServiceRunnerOptions = {
+      maxTasks: 83,
+      restartPolicy: 'on-failure',
+      taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+      discovery: {
+        registry,
+        cloudMapIndexByStack: new Map([
+          [
+            'StackA',
+            {
+              namespacesByLogicalId: new Map(),
+              namespacesByName: new Map([
+                ['cdkd-local.local', { logicalId: 'Ns', name: 'cdkd-local.local' }],
+              ]),
+              servicesByLogicalId: new Map(),
+              warnings: [],
+            },
+          ],
+        ]),
+      },
+    };
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    // Wait for the restart cycle to complete (bootCount >= 2).
+    const deadline = Date.now() + 5000;
+    while (bootCount < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(bootCount).toBeGreaterThanOrEqual(2);
+
+    // After restart completes the registry should once again have an
+    // endpoint for the service — the watcher unregistered the old
+    // handle on restart, and bootReplica re-published a NEW handle.
+    const deadline2 = Date.now() + 2000;
+    while (
+      Date.now() < deadline2 &&
+      (registry.lookup('cdkd-local.local', 'orders')?.length ?? 0) === 0
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const endpoints = registry.lookup('cdkd-local.local', 'orders');
+    expect(endpoints?.length).toBe(1);
+    // The post-restart endpoint owner key includes the new restartCount.
+    // We don't pin the exact IP value (depends on mockGetContainerIp
+    // call ordering across other test branches) — only that SOMETHING
+    // is registered post-restart.
+
+    await controller.shutdown();
+  });
+});
+
+describe('ServiceRegistries literal-string RegistryArn warn (Issue #544)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('extractServiceRegistries warns when a literal string RegistryArn is supplied (no GetAtt)', async () => {
+    // Drive the resolver end-to-end — it is the resolver that builds
+    // the ResolvedServiceRegistry list and emits the warn via the
+    // service-level warnings[] array. This pre-fix path was a silent
+    // continue.
+    const { resolveEcsServiceTarget } = await import(
+      '../../../src/local/ecs-service-resolver.js'
+    );
+    const stack = {
+      stackName: 'StackA',
+      displayName: 'StackA',
+      artifactId: 'StackA',
+      dependencyNames: [],
+      template: {
+        Resources: {
+          TD: {
+            Type: 'AWS::ECS::TaskDefinition',
+            Properties: {
+              Family: 'fam',
+              NetworkMode: 'bridge',
+              ContainerDefinitions: [
+                {
+                  Name: 'app',
+                  Image: 'public.ecr.aws/nginx/nginx:alpine',
+                  PortMappings: [{ ContainerPort: 80, Protocol: 'tcp' }],
+                },
+              ],
+            },
+          },
+          Svc: {
+            Type: 'AWS::ECS::Service',
+            Properties: {
+              TaskDefinition: { Ref: 'TD' },
+              DesiredCount: 1,
+              ServiceRegistries: [
+                {
+                  // Literal-string RegistryArn — the pre-fix branch
+                  // silently dropped this. Post-fix: warn surfaced via
+                  // service.warnings.
+                  RegistryArn:
+                    'arn:aws:servicediscovery:us-east-1:111111111111:service/srv-external',
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as Parameters<typeof resolveEcsServiceTarget>[1][0];
+
+    const service = resolveEcsServiceTarget('StackA:Svc', [stack]);
+    expect(service.serviceRegistries).toEqual([]);
+    expect(
+      service.warnings.some(
+        (w: string) =>
+          /literal-string/.test(w) &&
+          /RegistryArn/.test(w) &&
+          /Fn::GetAtt/.test(w)
+      )
+    ).toBe(true);
+  });
+});
+
+describe('Two services with same ClientAlias.DnsName (Issue #544 — first-wins regression test)', () => {
+  it('second services duplicate ClientAlias is ignored; first-wins binding survives', async () => {
+    let bootCount = 0;
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      bootCount += 1;
+      const s = state as EcsRunState;
+      s.network = {
+        networkName: `cdkd-local-svc-r${bootCount}`,
+        sidecarContainerId: `sidecar-r${bootCount}`,
+        sidecarIp: '169.254.171.2',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: `container-r${bootCount}` });
+    });
+    mockGetContainerIp.mockImplementation(async () => {
+      const c = mockGetContainerIp.mock.calls.length;
+      // svcA at 10.0.0.11; svcB at 10.0.0.12.
+      return `10.0.0.${10 + c}`;
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { CloudMapRegistry } = await import(
+        '../../../src/local/cloud-map-registry.js'
+      );
+      const registry = new CloudMapRegistry();
+
+      const opts: ServiceRunnerOptions = {
+        maxTasks: 83,
+        restartPolicy: 'on-failure',
+        taskOptions: { cluster: 'cdkd-local', containerHost: '127.0.0.1', keepRunning: false },
+        discovery: {
+          registry,
+          cloudMapIndexByStack: new Map([
+            [
+              'StackA',
+              {
+                namespacesByLogicalId: new Map(),
+                namespacesByName: new Map([
+                  ['cdkd-local.local', { logicalId: 'Ns', name: 'cdkd-local.local' }],
+                ]),
+                servicesByLogicalId: new Map(),
+                warnings: [],
+              },
+            ],
+          ]),
+        },
+      };
+
+      // Both services declare ClientAlias.DnsName: 'api' — first-wins.
+      const svcA: ResolvedEcsService = {
+        serviceName: 'svcA',
+        serviceLogicalId: 'SvcA',
+        desiredCount: 1,
+        task: {
+          taskDefinitionLogicalId: 'TD_A',
+          family: 'a',
+          containers: [
+            {
+              name: 'app',
+              essential: true,
+              portMappings: [{ name: 'a-port', containerPort: 80, protocol: 'tcp' }],
+            },
+          ],
+        } as unknown as ResolvedEcsService['task'],
+        stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+        serviceConnect: {
+          namespaceName: 'cdkd-local.local',
+          services: [
+            {
+              portName: 'a-port',
+              containerPort: 80,
+              discoveryName: 'svcA',
+              clientAliases: [{ dnsName: 'api', port: 80 }],
+            },
+          ],
+        },
+        serviceRegistries: [],
+        warnings: [],
+      } as unknown as ResolvedEcsService;
+
+      const svcB: ResolvedEcsService = {
+        serviceName: 'svcB',
+        serviceLogicalId: 'SvcB',
+        desiredCount: 1,
+        task: {
+          taskDefinitionLogicalId: 'TD_B',
+          family: 'b',
+          containers: [
+            {
+              name: 'app',
+              essential: true,
+              portMappings: [{ name: 'b-port', containerPort: 80, protocol: 'tcp' }],
+            },
+          ],
+        } as unknown as ResolvedEcsService['task'],
+        stack: { stackName: 'StackA' } as ResolvedEcsService['stack'],
+        serviceConnect: {
+          namespaceName: 'cdkd-local.local',
+          services: [
+            {
+              portName: 'b-port',
+              containerPort: 80,
+              discoveryName: 'svcB',
+              // Same DnsName 'api' as svcA — the second binding loses.
+              clientAliases: [{ dnsName: 'api', port: 80 }],
+            },
+          ],
+        },
+        serviceRegistries: [],
+        warnings: [],
+      } as unknown as ResolvedEcsService;
+
+      const ctrlA = await startEcsService(svcA, opts, createServiceRunState());
+      const ctrlB = await startEcsService(svcB, opts, createServiceRunState());
+
+      // The alias 'api' resolves to the FIRST service registered (svcA).
+      const aliasEndpoints = registry.lookupAlias('api');
+      expect(aliasEndpoints?.length).toBe(1);
+      // svcA's fqdn was registered with IP 10.0.0.11 (first
+      // mockGetContainerIp call). svcA's first-wins binding for 'api'
+      // points at svcA.cdkd-local.local → 10.0.0.11.
+      expect(aliasEndpoints?.[0]?.ip).toBe('10.0.0.11');
+
+      // The collision warn fired on svcB's attempt.
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(
+        warnMessages.some(
+          (m) => /ClientAlias DnsName collision/.test(m) && /'api'/.test(m)
+        )
+      ).toBe(true);
+
+      await ctrlA.shutdown();
+      await ctrlB.shutdown();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe('pickSubnetOctet (Issue #544 — defensive subnet allocator)', () => {
+  it('skips SHARED_SVC_SUBNET_OCTET so per-replica networks do not collide with the shared network /24', () => {
+    for (let i = 0; i < 200; i += 1) {
+      expect(pickSubnetOctet(i)).not.toBe(SHARED_SVC_SUBNET_OCTET);
+    }
+  });
+
+  it('returns octets in the link-local /24 range (170..253)', () => {
+    for (let i = 0; i < 200; i += 1) {
+      const octet = pickSubnetOctet(i);
+      expect(octet).toBeGreaterThanOrEqual(170);
+      expect(octet).toBeLessThanOrEqual(253);
+    }
+  });
+
+  it('first SUBNET_ALLOCATOR_RANGE slots are all distinct (no within-window wrap collision)', () => {
+    const seen = new Set<number>();
+    for (let i = 0; i < SUBNET_ALLOCATOR_RANGE; i += 1) {
+      seen.add(pickSubnetOctet(i));
+    }
+    expect(seen.size).toBe(SUBNET_ALLOCATOR_RANGE);
+    expect(seen.has(SHARED_SVC_SUBNET_OCTET)).toBe(false);
+  });
+
+  it('slot 0 maps to 170 (pre-existing first-replica baseline preserved)', () => {
+    expect(pickSubnetOctet(0)).toBe(170);
+  });
+
+  it('slot 1 maps to 172 (the slot that pre-fix returned SHARED_SVC_SUBNET_OCTET)', () => {
+    expect(pickSubnetOctet(1)).toBe(172);
+  });
+});
+
+function parseAddHostFlagsLocal(flags: ReadonlyArray<string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < flags.length; i += 2) {
+    if (flags[i] !== '--add-host') continue;
+    const [name, ip] = (flags[i + 1] ?? '').split(':');
+    if (name && ip) out[name] = ip;
+  }
+  return out;
+}
 
 describe('buildNetworkAliasesByContainer', () => {
   function makeService(

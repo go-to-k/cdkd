@@ -11,7 +11,7 @@ import type { ResolvedEcsService } from './ecs-service-resolver.js';
 import type { CloudMapRegistry, RegistrationHandle } from './cloud-map-registry.js';
 import type { CloudMapIndex } from './cloud-map-resolver.js';
 import { getContainerNetworkIp } from './docker-inspect.js';
-import type { TaskNetwork } from './ecs-network.js';
+import { SHARED_SVC_SUBNET_OCTET, type TaskNetwork } from './ecs-network.js';
 
 /**
  * Phase 2 of #262 — long-running ECS Service emulator. Wraps the existing
@@ -208,6 +208,49 @@ export function backoffDelayMs(restartCount: number): number {
   const cap = 30_000;
   const factor = Math.pow(2, Math.min(restartCount, 10));
   return Math.min(base * factor, cap);
+}
+
+/**
+ * Maximum number of replica indices the per-replica subnet allocator
+ * can serve without modulo-wrap collision. The allocator below walks
+ * the link-local /24 range `169.254.170.0..169.254.253.0` (84 octets)
+ * and **skips 171** because that octet is owned by the shared-service
+ * network in design § 5 Option A (see `SHARED_SVC_SUBNET_OCTET`), so
+ * the usable count is 83. The CLI's `--max-tasks` parser enforces this
+ * cap before any boot work fires.
+ */
+export const SUBNET_ALLOCATOR_RANGE = 83;
+
+/**
+ * Defensive per-replica subnet octet allocator (Issue #544). Only used
+ * when callers bypass the CLI's `sharedNetwork` construction — i.e.
+ * test paths that hand-build `ServiceRunnerOptions.discovery` without
+ * `sharedNetwork`, or the bare `cdkd local run-task`-shaped path that
+ * runs one network per task. Production `cdkd local start-service`
+ * runs always go through the shared network (design § 5 Option A) so
+ * this allocator is unreachable in the standard path.
+ *
+ * Returns the second-from-last octet of the per-replica /24 (170 →
+ * `169.254.170.0/24`). Walks the 83-slot output range
+ * `[170, 172, 173, ..., 253]` — 171 is intentionally **skipped**
+ * because it's reserved for the shared-service network sidecar
+ * (`SHARED_SVC_SUBNET_OCTET`), and assigning a per-replica network
+ * the same /24 would have docker reject the duplicate-subnet
+ * `network create` with the cryptic "Pool overlaps with other one on
+ * this address space" error.
+ */
+export function pickSubnetOctet(index: number): number {
+  const slot = ((index % SUBNET_ALLOCATOR_RANGE) + SUBNET_ALLOCATOR_RANGE) % SUBNET_ALLOCATOR_RANGE;
+  // Output sequence: index 0 -> 170, index 1 -> 172, index 2 -> 173, ...
+  // The range [170..253] has 84 entries; we drop one (SHARED_SVC_SUBNET_OCTET)
+  // to keep every replica's subnet disjoint from the shared-service network.
+  const base = 170;
+  const candidate = base + slot;
+  // Skip SHARED_SVC_SUBNET_OCTET by shifting every slot >= its offset
+  // up by one. With base=170 and SHARED_SVC_SUBNET_OCTET=171, this
+  // collapses to "slot 0 -> 170; slot 1+ -> 172..253" but stays
+  // defensive if either constant moves in the future.
+  return candidate < SHARED_SVC_SUBNET_OCTET ? candidate : candidate + 1;
 }
 
 /**
@@ -518,9 +561,13 @@ async function bootReplica(
   //   - Without a shared network (defensive fallback for callers
   //     that bypass the CLI's shared-context construction), the
   //     pre-Option-A formula applies: each replica gets a per-replica
-  //     subnet octet `170 + index` so concurrent replicas don't
-  //     collide on a single /24 — but design § 5 Option B already
-  //     rejected this for cross-service routing reasons.
+  //     subnet octet from `pickSubnetOctet()` so concurrent replicas
+  //     don't collide on a single /24 — but design § 5 Option B
+  //     already rejected this for cross-service routing reasons.
+  //     The allocator skips SHARED_SVC_SUBNET_OCTET (Issue #544) so
+  //     a hand-built ServiceRunnerOptions.discovery that DOES
+  //     pre-create the shared network doesn't collide on the same
+  //     /24 here.
   const sharedNetwork = options.discovery?.sharedNetwork;
   const networkAliasesByContainer = buildNetworkAliasesByContainer(service);
   const perReplicaTaskOptions: RunEcsTaskOptions = {
@@ -535,7 +582,7 @@ async function bootReplica(
     detach: true,
     ...(sharedNetwork
       ? { existingNetwork: sharedNetwork }
-      : { subnetOctet: 170 + (instance.index % 84) }),
+      : { subnetOctet: pickSubnetOctet(instance.index) }),
     ...(addHostFlags.length > 0 ? { addHostFlags } : {}),
     ...(networkAliasesByContainer.size > 0 ? { networkAliasesByContainer } : {}),
   };

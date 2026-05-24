@@ -1,3 +1,5 @@
+import { getLogger } from '../utils/logger.js';
+
 /**
  * Phase 3 of #262 (Issue #460) — in-process Cloud Map / Service Connect
  * service registry consumed by `cdkd local start-service` to surface a
@@ -99,8 +101,13 @@ export class CloudMapRegistry {
   /**
    * Map<alias, fqdn> — secondary index for ClientAlias short forms.
    * Multiple aliases can point at the same fqdn; one alias only points
-   * at one fqdn (last write wins, with a warn surfaced by the resolver
-   * when a cross-namespace collision is detected — see design §O6).
+   * at one fqdn. **First-wins on collision** — consistent with design
+   * §O6's namespace-level first-wins rule for `PrivateDnsNamespace`. A
+   * collision (two services declaring the same `ClientAlias.DnsName`)
+   * emits a `logger.warn` so users can debug "why does
+   * `wget http://api/` reach service B instead of service A" without
+   * silently shadowing the prior binding. Idempotent re-register of
+   * the same `(alias, targetFqdn)` pair is a no-op and does NOT warn.
    */
   private readonly aliasIndex: Map<string, string> = new Map();
 
@@ -142,8 +149,13 @@ export class CloudMapRegistry {
    * suffix). Cloud Map / Service Connect does NOT auto-create such
    * aliases — they're populated by `ClientAliases[].DnsName` entries in
    * the consumer service's `ServiceConnectConfiguration`. Aliases are
-   * scoped per-CLI-invocation and last-write-wins on collision (the
-   * resolver surfaces a `warn` when this happens — see §O6).
+   * scoped per-CLI-invocation and **first-wins on collision** —
+   * consistent with design §O6's namespace-level first-wins rule. The
+   * first registration sticks; later attempts to bind the same alias
+   * to a different fqdn are ignored and a `logger.warn` is emitted so
+   * users can debug "why does `wget http://api/` reach service B
+   * instead of service A". Re-registering the same `(alias,
+   * targetFqdn)` pair is idempotent and does NOT warn.
    *
    * @param alias The bare discovery name (e.g. `orders` for an alias to
    *              `orders.cdkd-local.local`).
@@ -156,6 +168,21 @@ export class CloudMapRegistry {
     }
     if (!targetFqdn) {
       throw new Error('CloudMapRegistry.registerAlias: targetFqdn must be a non-empty string.');
+    }
+    const existing = this.aliasIndex.get(alias);
+    if (existing !== undefined) {
+      // Idempotent re-register from the same source — no-op, no warn.
+      if (existing === targetFqdn) return;
+      // Cross-source collision: first-wins. Keep the existing binding
+      // and surface a warn so users can debug surprising routing.
+      getLogger()
+        .child('cloud-map-registry')
+        .warn(
+          `ClientAlias DnsName collision: '${alias}' was already mapped to '${existing}'; ` +
+            `keeping first-wins binding and ignoring new mapping to '${targetFqdn}'. ` +
+            'Likely cause: two Service Connect services declared the same ClientAlias.DnsName.'
+        );
+      return;
     }
     this.aliasIndex.set(alias, targetFqdn);
   }
