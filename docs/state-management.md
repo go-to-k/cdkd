@@ -980,6 +980,36 @@ Note: `cdkd list` (alias `ls`) lists stacks from the local CDK app via
 synthesis (CDK CLI parity — see README), which is a different question
 from `cdkd state list` (what is registered in the S3 state bucket).
 
+#### Show a Stack's Full State Record (with Nested Children)
+
+```bash
+# Single-stack output: metadata, lock, outputs, every resource
+# (incl. properties — the deepest state subcommand).
+cdkd state show MyStack
+cdkd state show MyStack --json
+
+# Recursively show every nested-stack child under the target stack.
+# Each child's block is appended after the parent's, separated by a
+# blank line and a `Nested stack: <name>` header.
+cdkd state show MyParent --show-nested
+cdkd state show MyParent --show-nested --json
+```
+
+`--show-nested` reuses the same recursive cdkd-state walker as `cdkd export`
+(`buildCdkdStateStackTree`): for every `AWS::CloudFormation::Stack` row in
+the target's `state.resources`, it derives the child key
+(`<parent>~<childLogicalId>`) and loads the child's state file from
+`cdkd/<parent>~<childLogicalId>/<region>/state.json`, recursing. The walk
+fails fast on a torn tree (a parent that lists a nested-stack row but
+whose child state file is missing) with a pointer to remediation
+(`cdkd state orphan <parent>` + re-deploy, or finish whatever partial
+operation tore the tree). The `--json` shape is recursive
+`{state, lock, children: [...]}` so machine consumers see the full tree
+in one document; `children` is always present (empty array on leaves) so
+the key set is stable. Default (no `--show-nested`) preserves the
+single-stack `{state, lock}` shape verbatim — tooling that already
+consumes `cdkd state show --json` keeps working.
+
 #### Inspect the State Bucket Itself
 
 ```bash

@@ -316,7 +316,9 @@ cdkd state resources MyStack --json   # full JSON array
 
 # Show full state record for a stack (metadata, outputs, all resources incl. properties)
 cdkd state show MyStack
-cdkd state show MyStack --json        # raw {state, lock} JSON
+cdkd state show MyStack --json              # raw {state, lock} JSON
+cdkd state show MyParent --show-nested      # recursively show every nested-stack child (#555 A4)
+cdkd state show MyParent --show-nested --json  # tree as nested {state, lock, children: [...]} JSON
 
 # Orphan one or more RESOURCES from cdkd's state (does NOT delete AWS resources).
 # Per-resource, mirrors aws-cdk-cli's `cdk orphan --unstable=orphan`.

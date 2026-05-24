@@ -1,3 +1,10 @@
+# [0.149.0](https://github.com/go-to-k/cdkd/compare/v0.148.0...v0.149.0) (2026-05-24)
+
+
+### Features
+
+* **state-show:** --show-nested recursively prints nested-stack children ([#555](https://github.com/go-to-k/cdkd/issues/555) A4) ([#586](https://github.com/go-to-k/cdkd/issues/586)) ([34b52a6](https://github.com/go-to-k/cdkd/commit/34b52a61e63130bdfc9a588a30f9cb9c91633a3b))
+
 # [0.148.0](https://github.com/go-to-k/cdkd/compare/v0.147.2...v0.148.0) (2026-05-24)
 
 
