@@ -371,6 +371,11 @@
       ]
     },
     {
+      "name": "export-nested-stack",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "full-stack-demo",
       "annotated": true,
       "scenarios": [
@@ -1049,6 +1054,7 @@
   ],
   "orphanScenarios": [],
   "unannotatedFixtures": [
+    "export-nested-stack",
     "nested-stack",
     "nested-stack-deep"
   ]
