@@ -926,14 +926,24 @@ cdkd export                                       # auto-detect single-stack app
    the **per-stack IMPORT loop** (issue
    [#464](https://github.com/go-to-k/cdkd/issues/464) PR B2): the
    orchestrator recursively walks the cdkd state tree via
-   `buildCdkdStateStackTree`, builds one IMPORT changeset per
-   cdkd-managed stack in the tree, and submits them in leaf-first
-   order. Non-leaf parents adopt their just-imported children as
-   nested references via the AWS-docs "Nest an existing stack" pattern:
+   `buildCdkdStateStackTree` and submits IMPORT changesets per
+   cdkd-managed stack in leaf-first order. Leaf stacks get a single
+   CREATE-via-IMPORT changeset; non-leaf parents get two per parent
+   (Phase 1A CREATE-via-IMPORT for the parent's leaf resources only,
+   then Phase 1B UPDATE-via-IMPORT against the now-existing parent to
+   adopt the already-IMPORTed children via the AWS-docs "Nest an
+   existing stack" pattern). Phase 1B injects
    `DeletionPolicy: Retain` plus
    `ResourceIdentifier: { StackId: <child arn> }` plus a `TemplateURL`
    rewritten to point at the child's AWS-canonicalized template
-   fetched via `GetTemplate(Processed)` post-IMPORT. Each
+   fetched via `GetTemplate(Processed)` post-IMPORT plus child Tags
+   forwarded from `DescribeStacks` (AWS's "Nested stack import
+   validation" rejects tag mismatches). Between phases each non-root
+   stack is flipped from `IMPORT_COMPLETE` to `UPDATE_COMPLETE` via a
+   no-op tag-only `UpdateStack` (AWS rejects `IMPORT_COMPLETE` as a
+   non-importable status for nesting; the flip adds a transient
+   `cdkd:nested-export-flip` tag that Phase 1B then forwards verbatim
+   into the parent template). Each
    child cdkd stack `<parent>~<childLogicalId>` becomes its own CFn
    stack named `<parent>-<childLogicalId>` by default (`~` is illegal
    in CFn stack names); per-child overrides via

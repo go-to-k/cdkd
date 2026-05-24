@@ -11,11 +11,13 @@ import {
   DescribeTypeCommand,
   DeleteChangeSetCommand,
   GetTemplateCommand,
+  UpdateStackCommand,
   waitUntilChangeSetCreateComplete,
   waitUntilStackImportComplete,
   waitUntilStackUpdateComplete,
   type ResourceToImport,
   type Parameter,
+  type Tag as CfnTag,
 } from '@aws-sdk/client-cloudformation';
 import {
   appOptions,
@@ -2991,6 +2993,58 @@ async function collectImportFailureSummary(
 }
 
 /**
+ * Flip a CFn stack's status from `IMPORT_COMPLETE` to `UPDATE_COMPLETE`
+ * via a no-op `UpdateStack` with a stack-level tag-only change. Used
+ * after each non-root stack's Phase 1A IMPORT (and after each non-leaf
+ * parent's Phase 1B IMPORT) so the stack can be referenced as a nested
+ * member by its own parent's later Phase 1B adoption.
+ *
+ * Why this is needed: AWS's "Nest an existing stack" IMPORT changeset
+ * validation rejects child stacks in `IMPORT_COMPLETE` status with
+ * `Stack <arn> is not in an importable status, current stack status is
+ * IMPORT_COMPLETE`. The accepted statuses for nesting are
+ * `CREATE_COMPLETE` and `UPDATE_COMPLETE`. A no-op tag-only `UpdateStack`
+ * with `UsePreviousTemplate: true` flips the status without mutating any
+ * resources: the existing template is re-applied verbatim, only the
+ * stack-level Tags collection changes (the timestamp-bearing
+ * `cdkd:nested-export-flip` tag is the only delta). This is the canonical
+ * AWS workaround for the IMPORT_COMPLETE → UPDATE_COMPLETE transition.
+ *
+ * Idempotency: each invocation uses a fresh ISO 8601 timestamp value so
+ * AWS never returns "No updates are to be performed" (which would leave
+ * the stack stuck in `IMPORT_COMPLETE`). The tag accumulates across
+ * retries — harmless and easy to reap manually under the `cdkd:` prefix.
+ *
+ * Exported for unit testing.
+ */
+export async function flipStackToUpdateComplete(
+  cfnClient: AwsClients['cloudFormation'],
+  cfnStackName: string
+): Promise<void> {
+  await cfnClient.send(
+    new UpdateStackCommand({
+      StackName: cfnStackName,
+      UsePreviousTemplate: true,
+      Tags: [
+        {
+          Key: 'cdkd:nested-export-flip',
+          Value: new Date().toISOString(),
+        },
+      ],
+      // Preserve all the standard cdkd export Capabilities (CDK templates
+      // routinely declare IAM resources). The previous template's
+      // capabilities are NOT auto-inherited — the SDK call needs them
+      // explicitly or CFn rejects with `requires capabilities: [...]`.
+      Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
+    })
+  );
+  await waitUntilStackUpdateComplete(
+    { client: cfnClient, maxWaitTime: 1800 },
+    { StackName: cfnStackName }
+  );
+}
+
+/**
  * Fetch a CFn stack's CURRENT template body via the CFn `GetTemplate`
  * `Processed` stage. Used by the non-leaf-parent branch of
  * {@link runPerStackImportLoop} to satisfy the AWS-docs "Nest an existing
@@ -3419,86 +3473,12 @@ export async function runPerStackImportLoop(args: {
             `${plan.nestedStackRows.length} nested-child adoption)`
         );
 
-        // Build the filtered phase-1 template + ResourcesToImport array.
-        const phase1Template = filterTemplateForImport(plan.template, plan.phase1Imports);
-        const resourcesToImport: ResourceToImport[] = plan.phase1Imports.map((entry) => ({
-          ResourceType: entry.resourceType,
-          LogicalResourceId: entry.logicalId,
-          ResourceIdentifier: entry.resourceIdentifier,
-        }));
-
-        // For non-leaf parents: adopt each nested-stack row.
-        for (const row of plan.nestedStackRows) {
-          const childArn = cfnArnByCdkdName.get(row.childStackName);
-          if (!childArn) {
-            throw new Error(
-              `runPerStackImportLoop: nested-stack child '${row.childStackName}' has no ` +
-                `recorded CFn ARN when processing parent '${plan.cdkdName}'. Leaf-first ` +
-                `iteration order should have IMPORTed the child first — this is a cdkd bug.`
-            );
-          }
-          const childCfnName = cfnStackNameOf(row.childStackName);
-
-          // Fetch the just-IMPORTed child's current template (AWS-side
-          // canonicalized) and upload it to the cdkd state bucket so the
-          // parent's nested-stack row's `TemplateURL` points at the
-          // template AWS actually has on file for the child stack — the
-          // AWS-docs "Nest an existing stack" template-match requirement.
-          const childTemplateBody = await fetchCfnStackTemplate(deps.cfnClient, childCfnName);
-          // Format the upload key with parent + child path so leftover
-          // transient objects under `cdkd-migrate-tmp/` are still
-          // attributable on manual cleanup.
-          const uploaded = await uploadCfnTemplate({
-            bucket: deps.uploadOpts.stateBucket,
-            body: childTemplateBody,
-            stackName: `${plan.cdkdName}__nested__${row.logicalId}`,
-            // GetTemplate(Processed) always returns JSON regardless of
-            // the original synth format; the codec accepts either.
-            format: 'json',
-            ...(deps.uploadOpts.s3ClientOpts && { s3ClientOpts: deps.uploadOpts.s3ClientOpts }),
-          });
-          uploadCleanups.push(uploaded.cleanup);
-
-          // Rewrite the parent's filtered template to re-include the
-          // nested-stack row with DeletionPolicy: Retain + the just-uploaded
-          // child TemplateURL. The original row's Properties (Parameters
-          // pass-through, Tags, etc.) are preserved.
-          const originalRow = getResourceFromTemplate(plan.template, row.logicalId);
-          if (!originalRow) {
-            throw new Error(
-              `runPerStackImportLoop: parent template for '${plan.cdkdName}' has no ` +
-                `resource '${row.logicalId}'. State and template are out of sync.`
-            );
-          }
-          const rewrittenRow = injectRetainAndRewriteTemplateUrl(originalRow, uploaded.url);
-          (phase1Template['Resources'] as Record<string, unknown>)[row.logicalId] = rewrittenRow;
-
-          resourcesToImport.push({
-            ResourceType: NESTED_STACK_RESOURCE_TYPE,
-            LogicalResourceId: row.logicalId,
-            ResourceIdentifier: { StackId: childArn },
-          });
-        }
-
-        // Inject DeletionPolicy: Delete on leaf resources lacking one
-        // (matches the existing single-stack path). Nested-stack rows
-        // already have Retain from the rewrite above and are NOT touched
-        // by this helper because it sets `DeletionPolicy: Delete` only
-        // on resources without any DeletionPolicy field.
-        const injectedDeletion = injectDeletionPolicyForImport(phase1Template);
-        if (injectedDeletion > 0) {
-          logger.info(
-            `  Injected DeletionPolicy: Delete on ${injectedDeletion} resource(s) in ` +
-              `'${plan.cdkdName}' (required by CFn IMPORT; matches CDK/CFn default).`
-          );
-        }
-
         // Resolve per-stack Parameters. For the root, use the user-supplied
-        // values. For children, walk the parent's
-        // Properties.Parameters block to forward literal values to the
-        // child IMPORT (intrinsic-valued Parameters are skipped with a
-        // warning — child Parameter Defaults must cover the gap for now;
-        // intrinsic resolution at leaf-IMPORT time is a deferred follow-up).
+        // values. For children, walk the parent's Properties.Parameters
+        // block to forward literal values to the child IMPORT (intrinsic-
+        // valued Parameters are skipped with a warning — child Parameter
+        // Defaults must cover the gap for now; intrinsic resolution at
+        // leaf-IMPORT time is a deferred follow-up).
         let stackParameters: Parameter[];
         if (plan.cdkdName === rootStackName) {
           stackParameters = rootParameters;
@@ -3532,13 +3512,43 @@ export async function runPerStackImportLoop(args: {
           stackParameters = extracted.params;
         }
 
-        // Submit the per-stack IMPORT changeset.
+        // ---- Phase 1A: leaves-only CREATE-via-IMPORT ----
+        // Why 2 phases for non-leaf parents (vs. one combined CREATE-via-IMPORT
+        // that includes the nested-stack adoption): AWS's "Nest an existing
+        // stack" pattern (the only AWS-supported way to adopt an existing
+        // standalone child CFn stack as a nested member of a parent) requires
+        // both the parent AND the child to ALREADY EXIST as standalone CFn
+        // stacks before the adoption changeset runs. A CREATE-via-IMPORT that
+        // both creates the parent AND adopts a child fails at changeset-create
+        // time with "Stack <child-arn> is not in an importable status, current
+        // stack status is IMPORT_COMPLETE" — the AWS-side validator rejects
+        // adopting a fresh-IMPORTed child during parent creation. See
+        // [AWS docs: Nesting an existing stack](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-nested-stacks.html)
+        // — the procedure explicitly assumes "existing standalone stack" for
+        // both. So we always submit the parent in 2 phases: Phase 1A creates
+        // the parent as a standalone stack containing its leaf resources
+        // only; Phase 1B then UPDATE-IMPORTs the now-existing parent to
+        // adopt the nested children.
+        const phase1ATemplate = filterTemplateForImport(plan.template, plan.phase1Imports);
+        const phase1AResources: ResourceToImport[] = plan.phase1Imports.map((entry) => ({
+          ResourceType: entry.resourceType,
+          LogicalResourceId: entry.logicalId,
+          ResourceIdentifier: entry.resourceIdentifier,
+        }));
+        const injectedDeletion = injectDeletionPolicyForImport(phase1ATemplate);
+        if (injectedDeletion > 0) {
+          logger.info(
+            `  Injected DeletionPolicy: Delete on ${injectedDeletion} resource(s) in ` +
+              `'${plan.cdkdName}' (required by CFn IMPORT; matches CDK/CFn default).`
+          );
+        }
+
         try {
           await submitImportChangeSet(
             deps.cfnClient,
             plan.cfnName,
-            phase1Template,
-            resourcesToImport,
+            phase1ATemplate,
+            phase1AResources,
             stackParameters,
             plan.templateFormat,
             deps.uploadOpts
@@ -3553,7 +3563,7 @@ export async function runPerStackImportLoop(args: {
             .map((p) => p.cdkdName)
             .join(', ');
           throw new Error(
-            `IMPORT changeset failed for cdkd stack '${plan.cdkdName}' (CFn name ` +
+            `Phase 1A IMPORT changeset failed for cdkd stack '${plan.cdkdName}' (CFn name ` +
               `'${plan.cfnName}'). Stacks imported successfully so far: ${importedSummary}. ` +
               `Stacks not yet imported (cdkd state preserved): ${remainingSummary}. ` +
               `After resolving the underlying cause, re-run 'cdkd export ${rootStackName}' — ` +
@@ -3564,7 +3574,8 @@ export async function runPerStackImportLoop(args: {
         }
 
         // Capture the just-created CFn stack's ARN for the next parent
-        // iteration's `ResourceIdentifier.StackId` reference.
+        // iteration's `ResourceIdentifier.StackId` reference AND for
+        // Phase 1B below (UPDATE-IMPORT against this same stack).
         const desc = await deps.cfnClient.send(
           new DescribeStacksCommand({ StackName: plan.cfnName })
         );
@@ -3572,7 +3583,7 @@ export async function runPerStackImportLoop(args: {
         if (!cfnArn) {
           throw new Error(
             `runPerStackImportLoop: DescribeStacks returned no StackId for '${plan.cfnName}' ` +
-              `immediately after IMPORT — AWS may be in an unexpected state.`
+              `immediately after Phase 1A IMPORT — AWS may be in an unexpected state.`
           );
         }
         cfnArnByCdkdName.set(plan.cdkdName, cfnArn);
@@ -3582,9 +3593,166 @@ export async function runPerStackImportLoop(args: {
           cfnStackArn: cfnArn,
         });
         logger.info(
-          `  ✓ Phase 1: CFn stack '${plan.cfnName}' created via IMPORT ` +
-            `(${plan.phase1Imports.length} leaf + ${plan.nestedStackRows.length} nested-child).`
+          `  ✓ Phase 1A: CFn stack '${plan.cfnName}' created via IMPORT ` +
+            `(${plan.phase1Imports.length} leaf resource(s)).`
         );
+
+        // Flip the stack's status from IMPORT_COMPLETE to UPDATE_COMPLETE
+        // via a no-op tag-only UpdateStack — unless this stack is the
+        // root (which is never adopted as a nested member by any other
+        // stack). See `flipStackToUpdateComplete` for the rationale (AWS
+        // rejects IMPORT_COMPLETE as a non-importable status when
+        // adopting a stack as a nested member of a parent).
+        if (plan.cdkdName !== rootStackName) {
+          logger.info(
+            `  Flipping '${plan.cfnName}' to UPDATE_COMPLETE so it can be adopted as a ` +
+              `nested member by its parent's Phase 1B...`
+          );
+          await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName);
+        }
+
+        // ---- Phase 1B: UPDATE-via-IMPORT to adopt nested children ----
+        // Skipped for leaf stacks (no nested-stack rows). For non-leaf
+        // parents, submit a second IMPORT changeset against the now-existing
+        // parent that adds the AWS::CloudFormation::Stack rows to the
+        // template AND lists them in ResourcesToImport[] with
+        // ResourceIdentifier: { StackId: <child-arn> } — the AWS-docs
+        // "Nest an existing stack" pattern. Same changeset type as Phase
+        // 1A (IMPORT); AWS infers UPDATE-IMPORT from the existing stack.
+        //
+        // `rewrittenNestedRows` is captured here (vs. inside the
+        // `if`-block) so phase 2's UPDATE template can splice the
+        // Retain-bearing nested-stack rows back in without re-fetching
+        // each child's template via GetTemplate a second time. Empty
+        // for leaf stacks.
+        const rewrittenNestedRows = new Map<string, Record<string, unknown>>();
+        if (plan.nestedStackRows.length > 0) {
+          // Start from the filtered template (leaves only) and add the
+          // nested-stack rows back with DeletionPolicy: Retain + rewritten
+          // TemplateURL pointing at the child's AWS-side template (fetched
+          // via GetTemplate(Processed)).
+          const phase1BTemplate = filterTemplateForImport(plan.template, plan.phase1Imports);
+          injectDeletionPolicyForImport(phase1BTemplate);
+          const phase1BResources: ResourceToImport[] = [];
+
+          for (const row of plan.nestedStackRows) {
+            const childArn = cfnArnByCdkdName.get(row.childStackName);
+            if (!childArn) {
+              throw new Error(
+                `runPerStackImportLoop: nested-stack child '${row.childStackName}' has no ` +
+                  `recorded CFn ARN when processing parent '${plan.cdkdName}'. Leaf-first ` +
+                  `iteration order should have IMPORTed the child first — this is a cdkd bug.`
+              );
+            }
+            const childCfnName = cfnStackNameOf(row.childStackName);
+
+            // Fetch the just-IMPORTed child's current template (AWS-side
+            // canonicalized) and upload it to the cdkd state bucket so the
+            // parent's nested-stack row's `TemplateURL` points at the
+            // template AWS actually has on file for the child stack — the
+            // AWS-docs "Nest an existing stack" template-match requirement.
+            const childTemplateBody = await fetchCfnStackTemplate(deps.cfnClient, childCfnName);
+            const uploaded = await uploadCfnTemplate({
+              bucket: deps.uploadOpts.stateBucket,
+              body: childTemplateBody,
+              stackName: `${plan.cdkdName}__nested__${row.logicalId}`,
+              // GetTemplate(Processed) always returns JSON regardless of
+              // the original synth format; the codec accepts either.
+              format: 'json',
+              ...(deps.uploadOpts.s3ClientOpts && { s3ClientOpts: deps.uploadOpts.s3ClientOpts }),
+            });
+            uploadCleanups.push(uploaded.cleanup);
+
+            // Fetch the child stack's CURRENT tags — the parent's
+            // nested-stack row's `Properties.Tags` must match these per
+            // AWS's "Nested stack import validation" (otherwise the
+            // changeset fails at execute time with "Tags of resource
+            // [<id>] defined in the template don't match..."). The
+            // child's tags include the temporary `cdkd:nested-export-flip`
+            // tag added by `flipStackToUpdateComplete`; forwarding them
+            // verbatim ensures the parent template's row matches the
+            // AWS-side reality at adoption time.
+            const childTagsDesc = await deps.cfnClient.send(
+              new DescribeStacksCommand({ StackName: childCfnName })
+            );
+            const childActualTags = childTagsDesc.Stacks?.[0]?.Tags ?? [];
+
+            const originalRow = getResourceFromTemplate(plan.template, row.logicalId);
+            if (!originalRow) {
+              throw new Error(
+                `runPerStackImportLoop: parent template for '${plan.cdkdName}' has no ` +
+                  `resource '${row.logicalId}'. State and template are out of sync.`
+              );
+            }
+            const rewrittenRow = injectRetainAndRewriteTemplateUrl(
+              originalRow,
+              uploaded.url,
+              childActualTags
+            );
+            (phase1BTemplate['Resources'] as Record<string, unknown>)[row.logicalId] = rewrittenRow;
+            rewrittenNestedRows.set(row.logicalId, rewrittenRow);
+
+            phase1BResources.push({
+              ResourceType: NESTED_STACK_RESOURCE_TYPE,
+              LogicalResourceId: row.logicalId,
+              ResourceIdentifier: { StackId: childArn },
+            });
+          }
+
+          try {
+            await submitImportChangeSet(
+              deps.cfnClient,
+              plan.cfnName,
+              phase1BTemplate,
+              phase1BResources,
+              stackParameters,
+              plan.templateFormat,
+              deps.uploadOpts
+            );
+          } catch (err) {
+            // Phase 1A already succeeded — the parent CFn stack exists with
+            // its leaf resources. Phase 1B (nested adoption) failed. The
+            // child stack(s) are also standalone CFn stacks at this point
+            // (from prior iterations). cdkd state is preserved across the
+            // tree so the user can recover.
+            const importedSummary =
+              importedStacks.length > 0
+                ? importedStacks.map((s) => `${s.cdkdStackName} → ${s.cfnStackName}`).join(', ')
+                : '(none)';
+            throw new Error(
+              `Phase 1B (nested-child adoption) IMPORT changeset failed for parent ` +
+                `'${plan.cdkdName}' (CFn name '${plan.cfnName}'). The parent CFn stack ` +
+                `exists with its ${plan.phase1Imports.length} leaf resource(s); ` +
+                `${plan.nestedStackRows.length} nested-child adoption(s) did NOT complete. ` +
+                `Stacks IMPORTed so far (each is a standalone CFn stack): ${importedSummary}. ` +
+                `cdkd state for every stack in the tree is preserved. To recover: (1) fix the ` +
+                `underlying cause (typically a template-match validation error per AWS-docs ` +
+                `"Nested stack import validation"); (2) clear cdkd state for the migrated stacks ` +
+                `via 'cdkd state orphan <stack>' (do NOT 'cdkd destroy' — that would tear down ` +
+                `the live AWS resources); (3) re-attempt the parent-side nested adoption ` +
+                `manually via the AWS console or CLI per the AWS docs procedure. ` +
+                `Cause: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err instanceof Error ? err : undefined }
+            );
+          }
+          logger.info(
+            `  ✓ Phase 1B: parent '${plan.cfnName}' adopted ${plan.nestedStackRows.length} ` +
+              `nested child(ren) via UPDATE-IMPORT.`
+          );
+
+          // Phase 1B's UPDATE-IMPORT leaves the parent in IMPORT_COMPLETE
+          // again. Flip back to UPDATE_COMPLETE if this parent will itself
+          // be adopted by its OWN parent in a later iteration (i.e. it's
+          // not the root). For the root, the migration is over after
+          // Phase 1B — no further flip needed.
+          if (plan.cdkdName !== rootStackName) {
+            logger.info(
+              `  Flipping '${plan.cfnName}' back to UPDATE_COMPLETE so its own parent's ` +
+                `Phase 1B can adopt it...`
+            );
+            await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName);
+          }
+        }
 
         // ---- Per-stack pre-delete + phase 2 UPDATE ----
         if (plan.recreateBeforePhase2.length > 0) {
@@ -3621,9 +3789,7 @@ export async function runPerStackImportLoop(args: {
           const phase2Template = applyImportOverlayForPhase2(plan.template, plan.phase1Imports);
           for (const row of plan.nestedStackRows) {
             const overlaidResources = phase2Template['Resources'] as Record<string, unknown>;
-            const rewrittenRow = (phase1Template['Resources'] as Record<string, unknown>)[
-              row.logicalId
-            ];
+            const rewrittenRow = rewrittenNestedRows.get(row.logicalId);
             if (rewrittenRow !== undefined) {
               overlaidResources[row.logicalId] = rewrittenRow;
             }
@@ -3696,16 +3862,32 @@ function getResourceFromTemplate(
  * Helper for {@link runPerStackImportLoop}'s non-leaf-parent branch:
  * mutate-clone a nested-stack resource row to (a) inject `DeletionPolicy:
  * Retain` (AWS-docs "Nest an existing stack" requirement so a parent-side
- * rollback does NOT cascade-delete the just-imported child stack) and
- * (b) overwrite `Properties.TemplateURL` to the uploaded child template's
- * S3 URL. All other Properties (Parameters, Tags, NotificationARNs) are
- * preserved from the original row.
+ * rollback does NOT cascade-delete the just-imported child stack), (b)
+ * overwrite `Properties.TemplateURL` to the uploaded child template's S3
+ * URL, and (c) overwrite `Properties.Tags` with the child stack's actual
+ * current tags. The Tags overwrite is required by AWS's "Nested stack
+ * import validation": "The tags for the nested AWS::CloudFormation::Stack
+ * definition in the parent stack template match the tags for the actual
+ * nested stack resource." Without the overwrite, the parent's IMPORT
+ * changeset fails with `Tags of resource [<id>] defined in the template
+ * don't match with the actual tags of <arn>` — most commonly when
+ * {@link flipStackToUpdateComplete} added a `cdkd:nested-export-flip`
+ * tag to the child to escape the IMPORT_COMPLETE status. All other
+ * Properties (Parameters, NotificationARNs) are preserved from the
+ * original row.
+ *
+ * `childActualTags` is the result of `DescribeStacks(<child>).Stacks[0].Tags`
+ * (empty array if the child has no tags). When the child has no actual
+ * tags AND the original row has no Tags Properties either, the
+ * Properties.Tags key is omitted from the output so the parent template
+ * stays minimal (matches the CDK-synth shape for tag-free stacks).
  *
  * Exported for unit testing.
  */
 export function injectRetainAndRewriteTemplateUrl(
   originalRow: Record<string, unknown>,
-  newTemplateUrl: string
+  newTemplateUrl: string,
+  childActualTags?: ReadonlyArray<CfnTag>
 ): Record<string, unknown> {
   const cloned: Record<string, unknown> = { ...originalRow };
   cloned['DeletionPolicy'] = 'Retain';
@@ -3715,6 +3897,14 @@ export function injectRetainAndRewriteTemplateUrl(
       ? { ...(existingProps as Record<string, unknown>) }
       : {};
   properties['TemplateURL'] = newTemplateUrl;
+  if (childActualTags && childActualTags.length > 0) {
+    // Forward EVERY tag verbatim — AWS validates the full list, not a
+    // subset. Strip undefined Key/Value entries (defensive: SDK types
+    // these as optional even though AWS never returns them blank).
+    properties['Tags'] = childActualTags
+      .filter((t) => t.Key !== undefined && t.Value !== undefined)
+      .map((t) => ({ Key: t.Key, Value: t.Value }));
+  }
   cloned['Properties'] = properties;
   return cloned;
 }

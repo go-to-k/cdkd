@@ -86,6 +86,11 @@ const cfnCommands = vi.hoisted(() => {
         super('GetTemplate', input);
       }
     },
+    UpdateStackCommand: class extends FakeCommand {
+      constructor(input: Record<string, unknown>) {
+        super('UpdateStack', input);
+      }
+    },
   };
 });
 
@@ -103,6 +108,7 @@ vi.mock('@aws-sdk/client-cloudformation', async () => {
     DescribeStackEventsCommand: cfnCommands.DescribeStackEventsCommand,
     DeleteChangeSetCommand: cfnCommands.DeleteChangeSetCommand,
     GetTemplateCommand: cfnCommands.GetTemplateCommand,
+    UpdateStackCommand: cfnCommands.UpdateStackCommand,
     waitUntilChangeSetCreateComplete: waitChangeSetCreate,
     waitUntilStackImportComplete: waitStackImport,
     waitUntilStackUpdateComplete: waitStackUpdate,
@@ -386,6 +392,9 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
     // No GetTemplate (no nested adoption) and no uploadCfnTemplate.
     expect(calls.find((c) => c.name === 'GetTemplate')).toBeUndefined();
     expect(uploadCfnTemplateMock).not.toHaveBeenCalled();
+    // No UpdateStack flip: the root is never adopted as a nested member,
+    // so the IMPORT_COMPLETE → UPDATE_COMPLETE transition is unnecessary.
+    expect(calls.find((c) => c.name === 'UpdateStack')).toBeUndefined();
 
     // Per-non-root-child lock acquisition: NONE for a leaf-only tree.
     // (The root's lock is acquired by the outer exportCommand, not the orchestrator.)
@@ -525,30 +534,53 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
     expect(result.importedStacks[1]!.cdkdStackName).toBe('Root');
     expect(result.importedStacks[1]!.cfnStackName).toBe('Root');
 
-    // Two IMPORT changesets: one per stack.
+    // Three IMPORT changesets total: leaf child (Phase 1A, single pass) +
+    // parent (Phase 1A leaves-only CREATE-via-IMPORT then Phase 1B
+    // UPDATE-via-IMPORT for nested-child adoption per AWS's "Nest an
+    // existing stack" 2-step procedure).
     const createCalls = calls.filter((c) => c.name === 'CreateChangeSet');
-    expect(createCalls).toHaveLength(2);
+    expect(createCalls).toHaveLength(3);
+    expect(createCalls.map((c) => c.input['StackName'])).toEqual([
+      'Root-Child', // leaf Phase 1A
+      'Root', // parent Phase 1A (leaves only)
+      'Root', // parent Phase 1B (nested-child adoption via UPDATE-via-IMPORT)
+    ]);
 
-    // Parent's IMPORT must include the child adoption row in ResourcesToImport.
-    const parentImport = createCalls[1]!;
-    const parentResourcesToImport = parentImport.input['ResourcesToImport'] as Array<
+    // Parent's Phase 1A submits ONLY the leaf resource (ParentBucket); the
+    // nested-stack row is intentionally absent here so AWS doesn't try to
+    // create-and-adopt the child in a single CREATE-via-IMPORT changeset
+    // (which it rejects with "Stack <child-arn> is not in an importable
+    // status, current stack status is IMPORT_COMPLETE").
+    const parentPhase1A = createCalls[1]!;
+    const parentPhase1AResources = parentPhase1A.input['ResourcesToImport'] as Array<
       Record<string, unknown>
     >;
-    const adoption = parentResourcesToImport.find(
-      (r) => r['ResourceType'] === 'AWS::CloudFormation::Stack'
-    );
-    expect(adoption).toBeDefined();
-    expect(adoption!['LogicalResourceId']).toBe('Child');
+    expect(parentPhase1AResources).toHaveLength(1);
+    expect(parentPhase1AResources[0]!['ResourceType']).toBe('AWS::S3::Bucket');
+    const parentPhase1ABody = String(parentPhase1A.input['TemplateBody']);
+    expect(parentPhase1ABody).not.toContain('AWS::CloudFormation::Stack');
+
+    // Parent's Phase 1B is the actual nested-child adoption: ResourcesToImport[]
+    // has ONLY the nested-stack row (parent leaves are already imported and
+    // owned by the parent stack from Phase 1A).
+    const parentPhase1B = createCalls[2]!;
+    const parentPhase1BResources = parentPhase1B.input['ResourcesToImport'] as Array<
+      Record<string, unknown>
+    >;
+    expect(parentPhase1BResources).toHaveLength(1);
+    const adoption = parentPhase1BResources[0]!;
+    expect(adoption['ResourceType']).toBe('AWS::CloudFormation::Stack');
+    expect(adoption['LogicalResourceId']).toBe('Child');
     // ResourceIdentifier.StackId must be the child's just-IMPORTed CFn ARN.
-    const childArn = (adoption!['ResourceIdentifier'] as { StackId: string }).StackId;
+    const childArn = (adoption['ResourceIdentifier'] as { StackId: string }).StackId;
     expect(childArn).toContain('stack/Root-Child/');
 
-    // Parent's filtered template must carry the nested-stack row with
+    // Phase 1B's template must carry the nested-stack row with
     // DeletionPolicy: Retain + the rewritten TemplateURL pointing at the
     // uploaded child template.
-    const parentTemplateBody = String(parentImport.input['TemplateBody']);
-    expect(parentTemplateBody).toContain('"DeletionPolicy": "Retain"');
-    expect(parentTemplateBody).toContain(
+    const parentPhase1BBody = String(parentPhase1B.input['TemplateBody']);
+    expect(parentPhase1BBody).toContain('"DeletionPolicy": "Retain"');
+    expect(parentPhase1BBody).toContain(
       'https://state-bucket.s3.amazonaws.com/cdkd-migrate-tmp/Root__nested__Child/template.json'
     );
 
@@ -560,6 +592,17 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
     });
     // GetTemplate was called for the child stack post-IMPORT.
     expect(calls.filter((c) => c.name === 'GetTemplate')).toHaveLength(1);
+
+    // UpdateStack flip: exactly 1 call against the child after its
+    // Phase 1A (flips status from IMPORT_COMPLETE to UPDATE_COMPLETE so
+    // the parent's Phase 1B can adopt it — AWS rejects IMPORT_COMPLETE
+    // as a non-importable status for nesting). Root never gets flipped.
+    const updateStackCalls = calls.filter((c) => c.name === 'UpdateStack');
+    expect(updateStackCalls).toHaveLength(1);
+    expect(updateStackCalls[0]!.input['StackName']).toBe('Root-Child');
+    expect(updateStackCalls[0]!.input['UsePreviousTemplate']).toBe(true);
+    const flipTags = updateStackCalls[0]!.input['Tags'] as Array<{ Key: string }>;
+    expect(flipTags[0]!.Key).toBe('cdkd:nested-export-flip');
 
     // Per-non-root-child lock acquisition: ONE for the leaf child.
     expect(acquired).toEqual([{ stackName: 'Root~Child', region: 'us-east-1' }]);
@@ -587,6 +630,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
       stackName: 'Root',
       region: 'us-east-1',
       resources: {
+        ParentBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'parent-bucket-789' },
         Child: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:cdkd-local:...' },
       },
     });
@@ -608,6 +652,10 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
 
     const rootTemplate = {
       Resources: {
+        ParentBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: { BucketName: 'parent-bucket-789' },
+        },
         Child: {
           Type: 'AWS::CloudFormation::Stack',
           Properties: { TemplateURL: 'https://cdk-asset/.../Child.template.json' },
@@ -663,10 +711,13 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
       'custom-child-name',
       'CustomRootName',
     ]);
+    // 3 calls: leaf (Phase 1A) + parent (Phase 1A leaves-only) + parent
+    // (Phase 1B nested adoption). The per-child override flips both names.
     const createCalls = calls.filter((c) => c.name === 'CreateChangeSet');
     expect(createCalls.map((c) => c.input['StackName'])).toEqual([
-      'custom-child-name',
-      'CustomRootName',
+      'custom-child-name', // leaf Phase 1A
+      'CustomRootName', // parent Phase 1A (leaves only)
+      'CustomRootName', // parent Phase 1B (nested adoption)
     ]);
   });
 });
@@ -1017,7 +1068,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
           },
         })
       ).rejects.toThrow(
-        /IMPORT changeset failed for cdkd stack 'Root~Child' \(CFn name 'Root-Child'\)/
+        /Phase 1A IMPORT changeset failed for cdkd stack 'Root~Child' \(CFn name 'Root-Child'\)/
       );
 
       // NO state was deleted — error preserved cdkd state for retry.

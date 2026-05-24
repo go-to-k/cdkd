@@ -219,12 +219,23 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" -
 fi
 echo "[verify] step 11 ok: both cdkd state files cleared"
 
-echo "[verify] step 12: aws cloudformation delete-stack ${PARENT_STACK} (cascade cleanup)"
+echo "[verify] step 12: aws cloudformation delete-stack (leaf-first)"
+# The parent's nested-stack row has DeletionPolicy: Retain (an AWS-docs
+# "Nest an existing stack" requirement, kept post-import so a future
+# parent-side rollback can't cascade-delete the child). So we explicitly
+# delete the child first, then the parent — the parent's cascade would
+# skip the child due to Retain. Users typically do this via CDK CLI after
+# `cdk destroy <parent>` rewrites the parent template to remove the
+# nested-stack row (which triggers child cleanup as a CFn UPDATE side
+# effect); the raw `aws cloudformation` path used here mirrors the
+# manual recovery flow.
+aws cloudformation delete-stack --stack-name "${CHILD_CFN_STACK}" --region "${REGION}"
+aws cloudformation wait stack-delete-complete --stack-name "${CHILD_CFN_STACK}" --region "${REGION}"
 aws cloudformation delete-stack --stack-name "${PARENT_STACK}" --region "${REGION}"
 aws cloudformation wait stack-delete-complete --stack-name "${PARENT_STACK}" --region "${REGION}"
-echo "[verify] step 12 ok: CFn parent + child cascade-deleted"
+echo "[verify] step 12 ok: CFn child + parent deleted (leaf-first)"
 
-echo "[verify] step 13: assert AWS resources are GONE post-cascade"
+echo "[verify] step 13: assert AWS resources are GONE post-delete"
 if aws ssm get-parameter --name "${PARENT_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "[verify] FAIL: parent SSM parameter ${PARENT_PARAM_NAME} still exists after CFn delete-stack"
   exit 1

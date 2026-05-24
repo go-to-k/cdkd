@@ -2210,6 +2210,46 @@ describe('injectRetainAndRewriteTemplateUrl (issue #464 PR B2)', () => {
     expect(props.TemplateURL).toBe('https://new.url');
     expect(result['DeletionPolicy']).toBe('Retain');
   });
+
+  it('forwards child-actual Tags into Properties.Tags when supplied', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const childTags = [
+      { Key: 'env', Value: 'prod' },
+      { Key: 'cdkd:nested-export-flip', Value: '2026-05-24T10:00:00Z' },
+    ];
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url', childTags);
+    const props = result['Properties'] as { Tags: Array<{ Key: string; Value: string }> };
+    // Tags must match the child stack's actual tags verbatim — AWS's
+    // "Nested stack import validation" validates the full list against
+    // the child stack's current Tags.
+    expect(props.Tags).toEqual([
+      { Key: 'env', Value: 'prod' },
+      { Key: 'cdkd:nested-export-flip', Value: '2026-05-24T10:00:00Z' },
+    ]);
+  });
+
+  it('omits Properties.Tags when child has no actual tags', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url', []);
+    const props = result['Properties'] as Record<string, unknown>;
+    expect(props['Tags']).toBeUndefined();
+  });
+
+  it('filters out tags with undefined Key or Value (defensive against SDK type laxity)', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const childTags = [
+      { Key: 'env', Value: 'prod' },
+      { Key: undefined, Value: 'orphan-value' },
+      { Key: 'orphan-key', Value: undefined },
+      { Key: 'another', Value: 'ok' },
+    ];
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url', childTags);
+    const props = result['Properties'] as { Tags: Array<{ Key: string; Value: string }> };
+    expect(props.Tags).toEqual([
+      { Key: 'env', Value: 'prod' },
+      { Key: 'another', Value: 'ok' },
+    ]);
+  });
 });
 
 describe('buildPerStackImportNodes (issue #464 PR B2)', () => {

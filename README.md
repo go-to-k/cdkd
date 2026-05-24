@@ -586,14 +586,20 @@ the offending resources (or accept abandoning them) first. Nested
 `AWS::CloudFormation::Stack` rows are fully supported as of
 [#464](https://github.com/go-to-k/cdkd/issues/464) PR B2: `cdkd export`
 recursively walks the cdkd state tree, validates every parent → child
-link, and submits **one CloudFormation IMPORT changeset per cdkd-managed
-stack in the tree** in leaf-first order. Non-leaf parents adopt their
-just-imported children as nested references via AWS's
+link, and submits **IMPORT changesets per cdkd-managed stack** in
+leaf-first order — leaf stacks via one CREATE-via-IMPORT changeset, non-leaf
+parents via two changesets (Phase 1A CREATE-via-IMPORT for the parent's
+leaf resources only, then Phase 1B UPDATE-via-IMPORT for the just-imported
+child adoption per AWS's
 ["Nest an existing stack"](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-nested-stacks.html)
-pattern (`DeletionPolicy: Retain` + `ResourceIdentifier: { StackId: <child arn> }`).
-The original "one atomic `--include-nested-stacks` IMPORT changeset"
-design was found infeasible by the 2026-05-24 AWS spike — AWS rejects
-that flag combination with
+pattern with `DeletionPolicy: Retain` plus
+`ResourceIdentifier: { StackId: <child arn> }` plus AWS-validated
+child-Tag forwarding). Between phases cdkd flips each
+stack's status from `IMPORT_COMPLETE` to `UPDATE_COMPLETE` via a no-op
+tag-only `UpdateStack` (AWS rejects `IMPORT_COMPLETE` as a non-importable
+status for nested adoption). The original "one atomic
+`--include-nested-stacks` IMPORT changeset" design was found infeasible
+by the 2026-05-24 AWS spike — AWS rejects that flag combination with
 `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`;
 see [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md)
 §4.0 / §4.3 for the per-stack-loop algorithm. Each child cdkd stack
