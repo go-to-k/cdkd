@@ -46,7 +46,15 @@ const mockGetState =
     (
       stackName: string,
       region: string
-    ) => Promise<{ state: { resources: Record<string, unknown>; lastModified: number } } | null>
+    ) => Promise<{
+      state: {
+        resources: Record<string, unknown>;
+        lastModified: number;
+        parentStack?: string;
+        parentLogicalId?: string;
+        parentRegion?: string;
+      };
+    } | null>
   >();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
@@ -313,5 +321,143 @@ describe('cdkd state list', () => {
     mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
     const { stderr } = await runStateListWithStderr(['list']);
     expect(stderr).not.toMatch(/--region is deprecated/);
+  });
+
+  // #555 A3: parent → child tree rendering.
+  describe('--tree', () => {
+    it('renders a 3-level tree from v6 parentStack / parentRegion fields', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'NestedStackDeep', region: 'us-east-1' },
+        { stackName: 'NestedStackDeep~Child', region: 'us-east-1' },
+        { stackName: 'NestedStackDeep~Child~Grandchild', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'NestedStackDeep') {
+          return { state: { resources: {}, lastModified: 0 } };
+        }
+        if (name === 'NestedStackDeep~Child') {
+          return {
+            state: {
+              resources: {},
+              lastModified: 0,
+              parentStack: 'NestedStackDeep',
+              parentLogicalId: 'Child',
+              parentRegion: 'us-east-1',
+            },
+          };
+        }
+        return {
+          state: {
+            resources: {},
+            lastModified: 0,
+            parentStack: 'NestedStackDeep~Child',
+            parentLogicalId: 'Grandchild',
+            parentRegion: 'us-east-1',
+          },
+        };
+      });
+
+      const out = await runStateList(['list', '--tree']);
+      expect(out).toBe(
+        [
+          'NestedStackDeep (us-east-1)',
+          '└── NestedStackDeep~Child (us-east-1)',
+          '    └── NestedStackDeep~Child~Grandchild (us-east-1)',
+          '',
+        ].join('\n')
+      );
+    });
+
+    it('emits a nested JSON shape with --tree --json', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'Parent') {
+          return { state: { resources: {}, lastModified: 0 } };
+        }
+        return {
+          state: {
+            resources: {},
+            lastModified: 0,
+            parentStack: 'Parent',
+            parentLogicalId: 'Child',
+            parentRegion: 'us-east-1',
+          },
+        };
+      });
+
+      const out = await runStateList(['list', '--tree', '--json']);
+      expect(JSON.parse(out)).toEqual([
+        {
+          stackName: 'Parent',
+          region: 'us-east-1',
+          parentStack: null,
+          parentLogicalId: null,
+          parentRegion: null,
+          children: [
+            {
+              stackName: 'Parent~Child',
+              region: 'us-east-1',
+              parentStack: 'Parent',
+              parentLogicalId: 'Child',
+              parentRegion: 'us-east-1',
+              children: [],
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('renders flat roots when no parent links are present', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Alpha', region: 'us-east-1' },
+        { stackName: 'Bravo', region: 'us-east-1' },
+      ]);
+      mockGetState.mockResolvedValue({
+        state: { resources: {}, lastModified: 0 },
+      });
+
+      const out = await runStateList(['list', '--tree']);
+      expect(out).toBe('Alpha (us-east-1)\nBravo (us-east-1)\n');
+    });
+
+    it('emits nothing for an empty bucket under --tree', async () => {
+      mockListStacks.mockResolvedValue([]);
+      const out = await runStateList(['list', '--tree']);
+      expect(out).toBe('');
+    });
+
+    it('rejects --tree combined with --long at option-parsing time', async () => {
+      // commander's `.conflicts('long')` aborts BEFORE the action runs, so no
+      // AWS call should happen. The exitOverride helper turns commander's
+      // own error path into a thrown CommanderError instead of process.exit.
+      mockListStacks.mockResolvedValue([{ stackName: 'X', region: 'us-east-1' }]);
+      await expect(runStateList(['list', '--tree', '--long'])).rejects.toThrow(
+        /option '--tree' cannot be used with option '-l, --long'/
+      );
+      expect(mockListStacks).not.toHaveBeenCalled();
+    });
+
+    it('promotes an orphan child to root when its parent state is missing', async () => {
+      // Parent record was hand-deleted; the child remains and should still
+      // appear in the tree at the root (rather than vanishing).
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Ghost~Orphan', region: 'us-east-1' },
+      ]);
+      mockGetState.mockResolvedValue({
+        state: {
+          resources: {},
+          lastModified: 0,
+          parentStack: 'Ghost',
+          parentLogicalId: 'Orphan',
+          parentRegion: 'us-east-1',
+        },
+      });
+
+      const out = await runStateList(['list', '--tree']);
+      expect(out).toBe('Ghost~Orphan (us-east-1)\n');
+    });
   });
 });

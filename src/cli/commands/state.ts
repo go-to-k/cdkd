@@ -33,6 +33,13 @@ import { withStackName } from '../../provisioning/resource-name.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import { createStateMigrateCommand } from './state-migrate.js';
+import {
+  buildStackTree,
+  renderStackTreeAscii,
+  stackTreeToJson,
+  type StackTreeEntry,
+  type StackTreeNode,
+} from './state-list-tree.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 
 /**
@@ -214,10 +221,15 @@ function sortRefs(refs: StackStateRef[]): StackStateRef[] {
  *   `version: 1` records (no region) appear as plain `Stack` rows.
  * - `--long`/`-l`: include resource count, last-modified time, and lock status.
  * - `--json`: emit a JSON array (alongside or instead of the long form).
+ * - `--tree`: render parent → child stack tree (issue #555 A3). Loads each
+ *   state record to read the v6 `parentStack` / `parentRegion` fields, then
+ *   reconstructs the hierarchy. Flat default is preserved so tooling that
+ *   greps the existing one-per-line shape keeps working.
  */
 async function stateListCommand(options: {
   long: boolean;
   json: boolean;
+  tree: boolean;
   stateBucket?: string;
   statePrefix: string;
   region?: string;
@@ -231,6 +243,11 @@ async function stateListCommand(options: {
   const setup = await setupStateBackend(options);
   try {
     const refs = sortRefs(await setup.stateBackend.listStacks());
+
+    if (options.tree) {
+      await renderTreeMode(refs, setup.stateBackend, options.json);
+      return;
+    }
 
     // Default mode: `Stack (region)` per line, sorted.
     if (!options.long && !options.json) {
@@ -309,14 +326,79 @@ async function stateListCommand(options: {
 }
 
 /**
+ * Render the parent → child stack tree for `cdkd state list --tree`.
+ *
+ * Loads each state record in parallel to read the v6 `parentStack` /
+ * `parentLogicalId` / `parentRegion` fields, then hands the enriched flat
+ * list to {@link buildStackTree}. A missing or unreadable state record
+ * degrades to a top-level entry (no parent link) — the row still appears
+ * in the tree at the root level rather than vanishing.
+ *
+ * `tree --json` emits the nested {@link import('./state-list-tree.js').StackTreeJson}
+ * shape; plain `tree` renders `tree(1)`-style box-drawing.
+ */
+async function renderTreeMode(
+  refs: readonly StackStateRef[],
+  stateBackend: S3StateBackend,
+  asJson: boolean
+): Promise<void> {
+  const entries: StackTreeEntry[] = await Promise.all(
+    refs.map(async (ref): Promise<StackTreeEntry> => {
+      // Legacy v1 records have no region in the key — getState needs a region
+      // arg, so skip the read and treat them as top-level (parent links were
+      // introduced in v6 anyway, so legacy state can never carry them).
+      if (!ref.region) {
+        return { stackName: ref.stackName };
+      }
+      const result = await stateBackend.getState(ref.stackName, ref.region);
+      const state = result?.state;
+      return {
+        stackName: ref.stackName,
+        region: ref.region,
+        ...(state?.parentStack !== undefined && { parentStack: state.parentStack }),
+        ...(state?.parentLogicalId !== undefined && {
+          parentLogicalId: state.parentLogicalId,
+        }),
+        ...(state?.parentRegion !== undefined && { parentRegion: state.parentRegion }),
+      };
+    })
+  );
+
+  const roots = buildStackTree(entries);
+
+  if (asJson) {
+    process.stdout.write(`${JSON.stringify(stackTreeToJson(roots), null, 2)}\n`);
+    return;
+  }
+
+  if (roots.length === 0) return;
+  const rendered = renderStackTreeAscii(roots, (node: StackTreeNode) =>
+    formatStackRef({ stackName: node.stackName, ...(node.region ? { region: node.region } : {}) })
+  );
+  process.stdout.write(`${rendered}\n`);
+}
+
+/**
  * Create the `state list` subcommand.
  */
 function createStateListCommand(): Command {
+  // --tree owns a different rendering mode from --long (per-stack indented
+  // tree vs per-stack block of metadata); the two don't compose cleanly. Use
+  // Commander's built-in `.conflicts()` so the rejection happens at
+  // option-parsing time, BEFORE any AWS call.
+  const treeOption = new Option(
+    '--tree',
+    'Render parent → child stack tree (loads each state record to read the v6 parent link)'
+  )
+    .default(false)
+    .conflicts('long');
+
   const cmd = new Command('list')
     .alias('ls')
     .description('List stacks registered in the cdkd state bucket')
     .option('-l, --long', 'Show resource count, last-modified time, and lock status', false)
     .option('--json', 'Output as JSON', false)
+    .addOption(treeOption)
     .action(withErrorHandling(stateListCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
