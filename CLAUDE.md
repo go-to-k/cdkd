@@ -44,7 +44,7 @@ vp run typecheck
 
 ## State Schema
 
-State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v6). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` once the [#459](https://github.com/go-to-k/cdkd/issues/459) `NestedStackProvider` follow-up ships; the v6 prep PR added the `parentStack` / `parentLogicalId` / `parentRegion` fields only.
+State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v6). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue [#459](https://github.com/go-to-k/cdkd/issues/459), shipped in PR #548) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue [#464](https://github.com/go-to-k/cdkd/issues/464), this PR) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
 
 ```typescript
 interface StackState {

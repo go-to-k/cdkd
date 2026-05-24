@@ -26,6 +26,65 @@ import {
 } from '../yaml-cfn.js';
 
 /**
+ * Resource type for a CloudFormation nested-stack child. Hoisted as a
+ * constant so the recursive walker, the Retain-injection skip rule, and
+ * the import-side short-circuit all reference the same literal — a typo
+ * in any one of them would otherwise silently break nested-stack support
+ * (the offending row would either be missed by the tree walk or have
+ * Retain injected on it, both of which would orphan the child stack
+ * record on AWS at retire time).
+ */
+export const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+
+/**
+ * Recursive tree of CloudFormation resources rooted at a parent stack.
+ *
+ * Built once per `cdkd import --migrate-from-cloudformation` invocation
+ * (and used by both the per-child state-write walk in `runImport` and the
+ * recursive Retain-injection in `retireCloudFormationStack`), so an
+ * arbitrarily-deep nesting only costs one `DescribeStackResources` round-trip
+ * per stack instead of repeating the walk per consumer.
+ *
+ * Each node's `resources` map is the flat `logicalId → physicalId` view of
+ * the stack's own directly-owned resources (including nested-stack rows,
+ * whose `physicalId` is the child stack ARN). The matching child tree
+ * node lives under `nested[<logicalId>]` — separated so consumers can
+ * walk the tree shape without re-classifying types.
+ */
+export interface CfnStackResourceTree {
+  /**
+   * Stack name as accepted by every CloudFormation API call (`StackName`).
+   * For the root: the user-supplied stack name. For nested children: the
+   * child stack's full ARN returned as `PhysicalResourceId` by AWS —
+   * AWS accepts ARN, stack name, or stack ID interchangeably for the
+   * `StackName` argument, and the ARN is the only identifier we have that
+   * disambiguates a child stack with a colliding short name elsewhere.
+   */
+  stackName: string;
+  /**
+   * Same as `stackName` for the root; the child stack ARN for nested
+   * children. Kept as a separate field so callers that want to surface
+   * the human-readable name (extracted from the ARN's `stack/<name>/<uuid>`
+   * segment) vs. the API-accepted identifier can do so without re-parsing.
+   */
+  physicalId: string;
+  /**
+   * `logicalId → physicalId` for every resource directly owned by this
+   * stack. Includes nested-stack rows (whose `physicalId` is the child
+   * stack ARN) so the flat-map view stays a faithful representation of
+   * what AWS returned.
+   */
+  resources: Map<string, string>;
+  /**
+   * `childLogicalId → child tree node` for every nested-stack resource
+   * directly under this stack. Empty when the stack has no nested children.
+   * Recursion happens here — each child node carries its own `resources`
+   * + `nested` populated by the same walker.
+   */
+  nested: Map<string, CfnStackResourceTree>;
+}
+
+/**
  * UpdateStack TemplateBody hard limit (51,200 bytes). Templates larger than
  * this are uploaded to cdkd's state S3 bucket and submitted via `TemplateURL`
  * instead — see {@link uploadTemplateForUpdateStack}.
@@ -66,6 +125,26 @@ export interface RetireCloudFormationStackOptions {
    * that wrote cdkd state.
    */
   s3ClientOpts?: CfnUploadS3ClientOpts;
+  /**
+   * Pre-built recursive resource tree for the stack being retired. When
+   * supplied, the retire flow walks every nested child's template and
+   * injects `DeletionPolicy: Retain` on each child's leaf resources too —
+   * load-bearing for the `cdkd import --migrate-from-cloudformation`
+   * recursive flow (issue [#464](https://github.com/go-to-k/cdkd/issues/464)),
+   * since AWS CFn's `DeleteStack` cascades into every nested child and
+   * any child resource without Retain would be deleted as a side effect
+   * of retiring the parent.
+   *
+   * When omitted (e.g. `cdkd migrate --from-cfn-stack` against a
+   * hand-authored single-stack template), the retire flow builds the tree
+   * lazily via {@link getCloudFormationResourceTree} on first need —
+   * adding at most one `DescribeStackResources` round-trip per nesting
+   * level, and zero overhead for the non-nested case.
+   *
+   * The tree's root `stackName` must match `cfnStackName`; otherwise the
+   * retire flow throws an invariant error before any AWS mutation runs.
+   */
+  resourceTree?: CfnStackResourceTree;
 }
 
 export type RetireCloudFormationOutcome =
@@ -108,7 +187,14 @@ export async function retireCloudFormationStack(
   options: RetireCloudFormationStackOptions
 ): Promise<RetireCloudFormationOutcome> {
   const logger = getLogger();
-  const { cfnStackName, cfnClient, yes, stateBucket, s3ClientOpts } = options;
+  const { cfnStackName, cfnClient, yes, stateBucket, s3ClientOpts, resourceTree } = options;
+
+  if (resourceTree && resourceTree.stackName !== cfnStackName) {
+    throw new Error(
+      `retireCloudFormationStack: caller-supplied resourceTree.stackName='${resourceTree.stackName}' ` +
+        `does not match cfnStackName='${cfnStackName}'. The tree's root must be the stack being retired.`
+    );
+  }
 
   // ---- Step 1: validate state, capture capabilities ----
   logger.info(`[1/4] Inspecting CloudFormation stack '${cfnStackName}'...`);
@@ -131,13 +217,65 @@ export async function retireCloudFormationStack(
   const capabilities = stack.Capabilities ?? [];
 
   // ---- Step 2: fetch + mutate template ----
+  // GetTemplate up front; the resource tree is only built lazily when
+  // (a) the parent template actually contains nested-stack rows AND (b)
+  // the caller didn't already supply one. The lazy build adds at most
+  // one `DescribeStackResources` round-trip per nesting level, and zero
+  // overhead for the non-nested case (which is the migrate-from-cfn-stack
+  // path's common shape).
   const tpl = await cfnClient.send(
     new GetTemplateCommand({ StackName: cfnStackName, TemplateStage: 'Original' })
   );
   if (!tpl.TemplateBody) {
     throw new Error(`GetTemplate returned no body for '${cfnStackName}'.`);
   }
-  const { body: newBody, modified, format } = injectRetainPolicies(tpl.TemplateBody, cfnStackName);
+  // Cleanups for any transient child-template S3 uploads produced by the
+  // recursive walk. Drained in the same `finally` as the parent's
+  // `s3Cleanup` so the success path AND every failure path reaps every
+  // transient object the recursive walk produced.
+  const nestedCleanups: (() => Promise<void>)[] = [];
+  const hasNestedChildren = templateContainsNestedStackRows(tpl.TemplateBody);
+  let newBody: string;
+  let modified: boolean;
+  let format: TemplateFormat;
+  if (hasNestedChildren) {
+    const tree = resourceTree ?? (await getCloudFormationResourceTree(cfnStackName, cfnClient));
+    try {
+      const recursive = await injectRetainPoliciesRecursive(tpl.TemplateBody, cfnStackName, tree, {
+        cfnClient,
+        stateBucket,
+        ...(s3ClientOpts && { s3ClientOpts }),
+      });
+      newBody = recursive.body;
+      modified = recursive.modified;
+      format = recursive.format;
+      nestedCleanups.push(...recursive.cleanups);
+    } catch (err) {
+      // The recursive walk threw mid-flight; reap every transient upload it
+      // had managed to produce before the throw. RecursiveRetainInjectionError
+      // carries the partial-cleanup array specifically so we don't leak S3
+      // objects when a deep recursion fails (the parent's `finally` block
+      // for the UpdateStack call is unreachable here — `modified` is never
+      // assigned, so the `if (modified)` branch + its `finally` never run).
+      if (err instanceof RecursiveRetainInjectionError) {
+        for (const cleanup of err.cleanups) {
+          try {
+            await cleanup();
+          } catch (cleanupErr) {
+            const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+            logger.warn(
+              `Failed to delete partial nested-template upload from '${stateBucket}' ` +
+                `during error recovery. Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. ` +
+                `Cause: ${msg}`
+            );
+          }
+        }
+      }
+      throw err;
+    }
+  } else {
+    ({ body: newBody, modified, format } = injectRetainPolicies(tpl.TemplateBody, cfnStackName));
+  }
 
   // ---- Confirmation gate (after we know what we're about to change) ----
   if (!yes) {
@@ -155,6 +293,26 @@ export async function retireCloudFormationStack(
   // ---- Step 3: UpdateStack (skipped when nothing changed) ----
   if (!modified) {
     logger.info(`[2/4] Template already has Retain on every resource — skipping UpdateStack.`);
+    // No-modification fast path can still have produced transient uploads
+    // (e.g. a child's recursive walk did not modify the child itself BUT
+    // grandchildren were uploaded). Reap them defensively. In practice
+    // the `injectRetainPoliciesRecursive` "skip upload when child not
+    // modified" rule means this branch is unreachable today, but keeping
+    // the drain wired in means future ordering changes to the recursive
+    // walk cannot silently regress to leaking S3 objects.
+    if (nestedCleanups.length > 0) {
+      for (const cleanup of nestedCleanups) {
+        try {
+          await cleanup();
+        } catch (cleanupErr) {
+          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+          logger.warn(
+            `Failed to delete temporary nested-template upload from '${stateBucket}'. ` +
+              `Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. Cause: ${msg}`
+          );
+        }
+      }
+    }
   } else {
     logger.info(`[2/4] Injected DeletionPolicy=Retain and UpdateReplacePolicy=Retain.`);
     // Pick the UpdateStack input shape based on the modified template's size.
@@ -237,13 +395,20 @@ export async function retireCloudFormationStack(
         );
       }
     } finally {
-      if (s3Cleanup) {
-        // Cleanup is best-effort: a leaked transient template object costs
-        // pennies and lives under the explicitly-named `cdkd-migrate-tmp/`
-        // prefix, so a stale object is easy to identify and reap manually.
-        // The retire flow's success/failure is governed by CFn, not by S3.
+      // Drain transient S3 uploads from BOTH the parent's > 51,200-byte
+      // template upload AND every nested child's upload accumulated by
+      // `injectRetainPoliciesRecursive`. Each cleanup is best-effort —
+      // a leaked transient object costs pennies and lives under the
+      // explicitly-named `cdkd-migrate-tmp/` prefix, so a stale object is
+      // easy to identify and reap manually. The retire flow's
+      // success/failure is governed by CFn, not by S3.
+      const allCleanups: (() => Promise<void>)[] = [
+        ...(s3Cleanup ? [s3Cleanup] : []),
+        ...nestedCleanups,
+      ];
+      for (const cleanup of allCleanups) {
         try {
-          await s3Cleanup();
+          await cleanup();
         } catch (cleanupErr) {
           const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
           logger.warn(
@@ -358,11 +523,68 @@ export function injectRetainPolicies(
     );
   }
 
+  const modified = injectRetainPoliciesOnParsedResources(
+    parsed['Resources'] as Record<string, unknown>
+  );
+  return { body: stringifyCfnTemplate(parsed, format), modified, format };
+}
+
+/**
+ * Cheap sniff: does the template body contain any `AWS::CloudFormation::Stack`
+ * resource rows? Parses + walks `Resources` once (no recursive descent),
+ * tolerating parse failures by returning `false` (the caller's downstream
+ * parse step will surface the same error with a richer message). Used by
+ * {@link retireCloudFormationStack} to decide whether to lazily build the
+ * recursive {@link CfnStackResourceTree} — non-nested templates skip the
+ * extra `DescribeStackResources` round-trip entirely.
+ */
+function templateContainsNestedStackRows(templateBody: string): boolean {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseCfnTemplate(templateBody);
+  } catch {
+    return false;
+  }
+  const resources = parsed['Resources'];
+  if (!resources || typeof resources !== 'object' || Array.isArray(resources)) return false;
+  for (const resource of Object.values(resources as Record<string, unknown>)) {
+    if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
+    if ((resource as Record<string, unknown>)['Type'] === NESTED_STACK_RESOURCE_TYPE) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Mutate an already-parsed `Resources` map in place: set `DeletionPolicy: Retain`
+ * and `UpdateReplacePolicy: Retain` on every leaf resource that doesn't
+ * already have them. Returns the `modified` flag so the caller can decide
+ * whether the round-trip is worth a `stringifyCfnTemplate` re-serialization
+ * (and whether `UpdateStack` is needed at all).
+ *
+ * `AWS::CloudFormation::Stack` resources are **intentionally skipped** — see
+ * issue [#464](https://github.com/go-to-k/cdkd/issues/464) and the design at
+ * [docs/design/464-nested-stacks-export-import.md](../../../docs/design/464-nested-stacks-export-import.md)
+ * §3.4. Retain on a nested-stack row tells AWS CFn's parent-side `DeleteStack`
+ * to NOT cascade-delete the child stack record at all, which would leave a
+ * stranded child stack record on AWS that the user has to clean up manually.
+ * We want the cascade to descend (so child stack records get deleted as the
+ * tree unwinds) while every child's own leaf resources stay because THEIR
+ * Retain was injected on the previous recursion level — the recursive
+ * Retain injection in {@link injectRetainPoliciesRecursive} relies on this
+ * skip rule to behave correctly.
+ *
+ * Shared between the single-template path ({@link injectRetainPolicies}) and
+ * the per-level walk inside {@link injectRetainPoliciesRecursive} so both
+ * sites apply the exact same skip rule with no risk of drift.
+ */
+function injectRetainPoliciesOnParsedResources(resources: Record<string, unknown>): boolean {
   let modified = false;
-  const resources = parsed['Resources'] as Record<string, unknown>;
   for (const [, resource] of Object.entries(resources)) {
     if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
     const r = resource as Record<string, unknown>;
+    if (r['Type'] === NESTED_STACK_RESOURCE_TYPE) continue;
     if (r['DeletionPolicy'] !== 'Retain') {
       r['DeletionPolicy'] = 'Retain';
       modified = true;
@@ -372,6 +594,226 @@ export function injectRetainPolicies(
       modified = true;
     }
   }
+  return modified;
+}
+
+/**
+ * Recursive variant of {@link injectRetainPolicies} that handles a parent
+ * template containing one or more `AWS::CloudFormation::Stack` rows. Issue
+ * [#464](https://github.com/go-to-k/cdkd/issues/464); see
+ * [docs/design/464-nested-stacks-export-import.md](../../../docs/design/464-nested-stacks-export-import.md)
+ * §3.4 for the design rationale.
+ *
+ * For each nested-stack row in the parent template:
+ *   1. `GetTemplate` Original-stage on the corresponding child stack ARN (read
+ *      from the supplied {@link CfnStackResourceTree}, populated up front by
+ *      {@link getCloudFormationResourceTree}).
+ *   2. Recursively process the child template — Retain injection on its
+ *      leaves AND further recursion into any grandchildren.
+ *   3. If the recursion produced a modified child body, upload the modified
+ *      body to the cdkd state bucket via the shared {@link uploadCfnTemplate}
+ *      helper and rewrite the parent's `Properties.TemplateURL` for that
+ *      row to the uploaded URL — so the parent's eventual `UpdateStack`
+ *      cascades into the child with the Retain-bearing template.
+ *
+ * After all nested-stack rows are processed, the parent's own leaf
+ * resources get Retain injected via {@link injectRetainPoliciesOnParsedResources}
+ * — the SAME helper the single-template path uses, applying the same
+ * "skip `AWS::CloudFormation::Stack` rows" rule (those rows must NOT have
+ * Retain or cascade-delete won't descend — see the helper's doc-comment).
+ *
+ * The returned `cleanups` array carries one S3 delete callback per
+ * transient child-template upload made anywhere in the recursive walk.
+ * The caller drains it in a `finally` block around the parent
+ * `UpdateStack` call — CFn fetches each child template synchronously
+ * during `UpdateStack`, so the transient objects can be reaped as soon
+ * as that call returns (success OR failure). When the helper itself
+ * throws mid-walk, the partial uploads accumulated so far are returned
+ * via a thrown {@link RecursiveRetainInjectionError} so the outer
+ * `finally` can still reap them — losing the throw stack vs. the
+ * cleanups would have leaked transient S3 objects.
+ *
+ * Exported so the recursive call can be unit-tested end-to-end (the AWS
+ * round-trips are mocked at the SDK boundary, but the recursion shape
+ * itself is the load-bearing piece).
+ */
+export async function injectRetainPoliciesRecursive(
+  rootTemplateBody: string,
+  rootCfnStackName: string,
+  rootTree: CfnStackResourceTree,
+  deps: {
+    cfnClient: CloudFormationClient;
+    stateBucket: string;
+    s3ClientOpts?: CfnUploadS3ClientOpts;
+  }
+): Promise<{
+  body: string;
+  modified: boolean;
+  format: TemplateFormat;
+  cleanups: (() => Promise<void>)[];
+}> {
+  const cleanups: (() => Promise<void>)[] = [];
+  try {
+    const result = await injectRetainPoliciesRecursiveInternal(
+      rootTemplateBody,
+      rootCfnStackName,
+      rootTree,
+      deps,
+      cleanups
+    );
+    return { ...result, cleanups };
+  } catch (err) {
+    throw new RecursiveRetainInjectionError(
+      err instanceof Error ? err.message : String(err),
+      cleanups,
+      err instanceof Error ? err : undefined
+    );
+  }
+}
+
+/**
+ * Thrown by {@link injectRetainPoliciesRecursive} when the recursive walk
+ * fails partway through. Carries the array of cleanup callbacks for every
+ * successful transient S3 upload made BEFORE the failure so the outer
+ * `finally` in `retireCloudFormationStack` can still reap them.
+ *
+ * Without this, a mid-walk error would lose every accumulated cleanup —
+ * the error path would skip the parent's `finally` block that drains
+ * `nestedCleanups`, leaking N transient S3 objects per failed retire.
+ */
+export class RecursiveRetainInjectionError extends Error {
+  readonly cleanups: (() => Promise<void>)[];
+  override readonly cause?: Error;
+  constructor(message: string, cleanups: (() => Promise<void>)[], cause?: Error) {
+    super(message);
+    this.name = 'RecursiveRetainInjectionError';
+    this.cleanups = cleanups;
+    if (cause) this.cause = cause;
+  }
+}
+
+async function injectRetainPoliciesRecursiveInternal(
+  templateBody: string,
+  cfnStackName: string,
+  tree: CfnStackResourceTree,
+  deps: {
+    cfnClient: CloudFormationClient;
+    stateBucket: string;
+    s3ClientOpts?: CfnUploadS3ClientOpts;
+  },
+  cleanups: (() => Promise<void>)[]
+): Promise<{ body: string; modified: boolean; format: TemplateFormat }> {
+  const format = detectTemplateFormat(templateBody);
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseCfnTemplate(templateBody);
+  } catch (err) {
+    throw new Error(
+      `Template for '${cfnStackName}' is not a valid CloudFormation template. ` +
+        `cdkd's --migrate-from-cloudformation flow supports both JSON and YAML templates ` +
+        `(YAML via a CFn-aware codec that preserves !Ref / !GetAtt / !Sub shorthand). ` +
+        `Cause: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (
+    !('Resources' in parsed) ||
+    typeof parsed['Resources'] !== 'object' ||
+    parsed['Resources'] === null ||
+    Array.isArray(parsed['Resources'])
+  ) {
+    throw new Error(
+      `Template for '${cfnStackName}' has no Resources section — refusing to retire.`
+    );
+  }
+  const resources = parsed['Resources'] as Record<string, unknown>;
+  let modified = false;
+
+  // 1. Recurse into each nested-stack row first. Done before the leaf-level
+  //    Retain injection so we can rewrite `Properties.TemplateURL` and
+  //    flip `modified` to true via the same `modified` accumulator the
+  //    leaf injection uses below.
+  for (const [logicalId, resource] of Object.entries(resources)) {
+    if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
+    const r = resource as Record<string, unknown>;
+    if (r['Type'] !== NESTED_STACK_RESOURCE_TYPE) continue;
+
+    const childNode = tree.nested.get(logicalId);
+    if (!childNode) {
+      throw new Error(
+        `Template for '${cfnStackName}' has nested-stack '${logicalId}' (Type: ` +
+          `${NESTED_STACK_RESOURCE_TYPE}) but the CloudFormation resource tree has no ` +
+          `matching child entry. AWS may have removed the child since DescribeStackResources ` +
+          `ran, or the template was hand-edited mid-flight — re-run \`cdkd import --migrate-from-cloudformation\` ` +
+          `to refresh.`
+      );
+    }
+
+    const childTpl = await deps.cfnClient.send(
+      new GetTemplateCommand({ StackName: childNode.physicalId, TemplateStage: 'Original' })
+    );
+    if (!childTpl.TemplateBody) {
+      throw new Error(
+        `GetTemplate returned no body for nested stack '${logicalId}' ` +
+          `(physicalId='${childNode.physicalId}', parent='${cfnStackName}').`
+      );
+    }
+
+    const childResult = await injectRetainPoliciesRecursiveInternal(
+      childTpl.TemplateBody,
+      childNode.stackName,
+      childNode,
+      deps,
+      cleanups
+    );
+
+    if (childResult.modified) {
+      // Upload the modified child body and rewrite the parent's
+      // TemplateURL to point at it. Done only when the child was actually
+      // mutated — an already-fully-Retain'd child needs no re-upload, and
+      // the parent's pre-existing TemplateURL (pointing at the CDK
+      // asset bucket) is fine as-is. Per-child upload size is bounded by
+      // the same 51,200-byte inline ceiling AND the 1 MB CloudFormation
+      // TemplateURL ceiling that the parent enforces — overflow surfaces
+      // the same hard error.
+      if (childResult.body.length > TEMPLATE_URL_LIMIT) {
+        throw new Error(
+          `Modified nested-stack template for '${logicalId}' is ${childResult.body.length} ` +
+            `bytes, exceeds the CloudFormation TemplateURL limit (${TEMPLATE_URL_LIMIT}). ` +
+            `cdkd state has already been written for the root parent; retire the stack ` +
+            `manually with (1) shrink the child template, then (2) UpdateStack with ` +
+            `Retain policies on the parent and each child, (3) DeleteStack on the parent.`
+        );
+      }
+      const uploaded = await uploadCfnTemplate({
+        bucket: deps.stateBucket,
+        body: childResult.body,
+        // Include both parent + child in the S3 key prefix so leftover
+        // transient objects (cleanup failures) are still traceable to the
+        // exact migration call by humans grepping the bucket.
+        stackName: `${cfnStackName}__nested__${logicalId}`,
+        format: childResult.format,
+        ...(deps.s3ClientOpts && { s3ClientOpts: deps.s3ClientOpts }),
+      });
+      cleanups.push(uploaded.cleanup);
+
+      const propsRaw = r['Properties'];
+      const props =
+        propsRaw && typeof propsRaw === 'object' && !Array.isArray(propsRaw)
+          ? (propsRaw as Record<string, unknown>)
+          : ((r['Properties'] = {}) as Record<string, unknown>);
+      props['TemplateURL'] = uploaded.url;
+      modified = true;
+    }
+  }
+
+  // 2. Inject Retain on every non-nested-stack resource at THIS level.
+  //    Uses the shared helper so the skip rule for `AWS::CloudFormation::Stack`
+  //    rows (must NOT have Retain — see the helper's doc-comment) lives in
+  //    one place.
+  if (injectRetainPoliciesOnParsedResources(resources)) {
+    modified = true;
+  }
+
   return { body: stringifyCfnTemplate(parsed, format), modified, format };
 }
 
@@ -401,6 +843,65 @@ export async function getCloudFormationResourceMapping(
     map.set(r.LogicalResourceId, r.PhysicalResourceId);
   }
   return map;
+}
+
+/**
+ * Recursive variant of {@link getCloudFormationResourceMapping} that returns
+ * the full nested-stack tree rooted at `rootStackName`. For each
+ * `AWS::CloudFormation::Stack` row in the root's resources, recursively
+ * calls `DescribeStackResources(<child ARN>)` (AWS accepts the ARN as
+ * `StackName`) to populate the child node, and so on to arbitrary depth.
+ *
+ * Issue [#464](https://github.com/go-to-k/cdkd/issues/464): the recursive
+ * `cdkd import --migrate-from-cloudformation` flow uses this once at the
+ * top of the import command to drive BOTH (a) per-child state writes
+ * under the v6 state-key shape `cdkd/<parent>~<child>/<region>/state.json`
+ * AND (b) the recursive `injectRetainPoliciesRecursive` walk that retires
+ * the whole tree on AWS without orphaning any resources.
+ *
+ * Children at every level are fetched in parallel via `Promise.all` so an
+ * N-stack-wide tree only takes log(depth) round-trips of wall-clock time
+ * instead of N — load-bearing when a CDK app spreads micro-services across
+ * many nested children.
+ *
+ * Tree node `physicalId` is the AWS-side identifier accepted by every
+ * CFn API call (`DescribeStackResources` / `GetTemplate`). For the root,
+ * that's the user-supplied stack name; for nested children, the child
+ * stack ARN.
+ */
+export async function getCloudFormationResourceTree(
+  rootStackName: string,
+  cfnClient: CloudFormationClient
+): Promise<CfnStackResourceTree> {
+  return walkCfnStackTree(rootStackName, rootStackName, cfnClient);
+}
+
+async function walkCfnStackTree(
+  stackName: string,
+  physicalId: string,
+  cfnClient: CloudFormationClient
+): Promise<CfnStackResourceTree> {
+  const resp = await cfnClient.send(new DescribeStackResourcesCommand({ StackName: physicalId }));
+  const resources = new Map<string, string>();
+  const nestedChildren: { logicalId: string; childArn: string }[] = [];
+  for (const r of resp.StackResources ?? []) {
+    if (!r.LogicalResourceId || !r.PhysicalResourceId) continue;
+    resources.set(r.LogicalResourceId, r.PhysicalResourceId);
+    if (r.ResourceType === NESTED_STACK_RESOURCE_TYPE) {
+      nestedChildren.push({ logicalId: r.LogicalResourceId, childArn: r.PhysicalResourceId });
+    }
+  }
+  const childPairs = await Promise.all(
+    nestedChildren.map(async ({ logicalId, childArn }) => ({
+      logicalId,
+      node: await walkCfnStackTree(childArn, childArn, cfnClient),
+    }))
+  );
+  const nested = new Map<string, CfnStackResourceTree>();
+  for (const { logicalId, node } of childPairs) {
+    nested.set(logicalId, node);
+  }
+  return { stackName, physicalId, resources, nested };
 }
 
 async function confirmPrompt(prompt: string): Promise<boolean> {

@@ -298,11 +298,14 @@ with the three fields populated. Top-level deploys (the common case)
 leave the three fields undefined on every write — the v6 reader treats
 absence as "I am a top-level stack" and degrades cleanly.
 
-`cdkd import --migrate-from-cloudformation` adoption of an existing
-CFn-managed nested-stack hierarchy and `cdkd export` of a
-cdkd-managed nested stack back into CloudFormation are still rejected;
-both are deferred to [#464](https://github.com/go-to-k/cdkd/issues/464).
-Fresh `cdkd deploy` of new nested stacks IS supported.
+`cdkd import --migrate-from-cloudformation` recursively adopts existing
+CFn-managed nested-stack hierarchies as of [#464](https://github.com/go-to-k/cdkd/issues/464)
+PR A — each nested child gets its own v6-keyed state file with all three
+parent-link fields populated, and the source CFn stacks are retired via a
+single parent-side `DeleteStack` cascade after recursive `DeletionPolicy: Retain`
+injection. `cdkd export` of a cdkd-managed nested stack back into
+CloudFormation is still deferred to [#464](https://github.com/go-to-k/cdkd/issues/464)
+PR B. Fresh `cdkd deploy` of new nested stacks has been supported since #459.
 
 ## State Schema
 

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import * as nodePath from 'node:path';
 import * as readline from 'node:readline/promises';
 import { Command } from 'commander';
 import {
@@ -22,7 +23,12 @@ import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-r
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import { readCdkPath } from '../cdk-path.js';
-import { retireCloudFormationStack, getCloudFormationResourceMapping } from './retire-cfn-stack.js';
+import {
+  retireCloudFormationStack,
+  getCloudFormationResourceTree,
+  NESTED_STACK_RESOURCE_TYPE,
+  type CfnStackResourceTree,
+} from './retire-cfn-stack.js';
 import type {
   CloudFormationTemplate,
   ResourceImportInput,
@@ -248,9 +254,16 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     const templateLogicalIds = new Set(resources.map((r) => r.logicalId));
     logger.info(`Found ${resources.length} resource(s) in template`);
 
+    // Recursive tree of CFn resources rooted at the source migration stack.
+    // Populated when `--migrate-from-cloudformation` is set; carries every
+    // nested child's flat resource map AND its own children, so the
+    // per-child state-write walk below and the post-import retire flow
+    // share a single set of AWS round-trips. Stays `undefined` outside
+    // the migration code path so non-migration imports pay no extra cost.
+    let migrationTree: CfnStackResourceTree | undefined;
     if (migrationCfnStackName) {
-      // Pre-populate overrides from the source CFn stack via a single
-      // `DescribeStackResources` call. This is the load-bearing piece that
+      // Pre-populate overrides from the source CFn stack via a recursive
+      // `DescribeStackResources` walk. This is the load-bearing piece that
       // makes `cdk deploy`-managed stacks importable by cdkd without per-
       // resource `--resource <id>=<physical>` flags: cdkd's tag-based auto-
       // lookup can't find those resources (upstream `cdk deploy` doesn't
@@ -260,16 +273,38 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // `--resource-mapping` entries take precedence — they were inserted
       // into `overrides` first. Logical IDs CFn knows about but cdkd's
       // import skips (e.g. `AWS::CDK::Metadata`) are filtered out here.
-      logger.info(`Resolving physical IDs from CloudFormation stack '${migrationCfnStackName}'...`);
-      const cfnMapping = await getCloudFormationResourceMapping(
+      //
+      // Recursive walk added for issue [#464](https://github.com/go-to-k/cdkd/issues/464):
+      // when the source stack carries `AWS::CloudFormation::Stack`
+      // children, we ALSO need their flat resource maps (for per-child
+      // state writes after the root import) AND their children, and so
+      // on. The tree shape is the unit of truth.
+      logger.info(
+        `Resolving physical IDs from CloudFormation stack '${migrationCfnStackName}' (recursive)...`
+      );
+      migrationTree = await getCloudFormationResourceTree(
         migrationCfnStackName,
         awsClients.cloudFormation
       );
+      const cfnMapping = migrationTree.resources;
       let derived = 0;
       let skippedNonImportable = 0;
+      let skippedNestedStackRow = 0;
       for (const [logicalId, physicalId] of cfnMapping) {
         if (!templateLogicalIds.has(logicalId)) {
           skippedNonImportable++;
+          continue;
+        }
+        // Nested-stack rows: the AWS-side physical ID is the child stack
+        // ARN, which is NOT what we want as an import override. The root
+        // parent's state entry for the nested-stack resource carries the
+        // synthesized cdkd-local ARN (matching what `NestedStackProvider.create`
+        // would write at deploy time — design §6), populated by `importOne`'s
+        // short-circuit below. Filter the AWS ARN out here so it doesn't
+        // overwrite the synth-ARN entry.
+        const tmplResource = template.Resources[logicalId];
+        if (tmplResource?.Type === NESTED_STACK_RESOURCE_TYPE) {
+          skippedNestedStackRow++;
           continue;
         }
         if (!overrides.has(logicalId)) {
@@ -277,15 +312,55 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           derived++;
         }
       }
-      const overriddenByUser = cfnMapping.size - derived - skippedNonImportable;
+      const overriddenByUser =
+        cfnMapping.size - derived - skippedNonImportable - skippedNestedStackRow;
       const detail: string[] = [];
       if (overriddenByUser > 0) detail.push(`${overriddenByUser} already overridden by --resource`);
       if (skippedNonImportable > 0)
         detail.push(`${skippedNonImportable} non-importable (e.g. CDKMetadata)`);
+      if (skippedNestedStackRow > 0)
+        detail.push(`${skippedNestedStackRow} nested-stack row(s) handled separately`);
       logger.info(
         `Resolved ${derived} physical ID(s) from CloudFormation` +
           (detail.length > 0 ? ` (${detail.join(', ')})` : '')
       );
+      // Validate template ↔ AWS shape: every nested-stack row in the synth
+      // template MUST have a matching child in the AWS tree, and vice
+      // versa. A mismatch indicates the template was hand-edited mid-flight
+      // or AWS removed a child between the user's last `cdk deploy` and
+      // this `cdkd import` — abort up front rather than partially walking
+      // and leaving the user with one stack's state written and another
+      // stack's state missing.
+      validateNestedStackShape(
+        template,
+        migrationTree,
+        stackInfo.stackName,
+        stackInfo.nestedTemplates ?? {}
+      );
+    }
+
+    // Resolve the caller's AWS account ID via STS when we need it to
+    // synthesize cdkd-local ARNs for nested-stack rows (issue #464). Mirrors
+    // what `deploy.ts` does for the same reason — the synth ARN's account
+    // segment is load-bearing because `NestedStackProvider.create` writes
+    // it into the parent's state at deploy time, and `cdkd diff` would
+    // surface a phantom change otherwise. Only resolved when the migration
+    // tree actually has nested children — non-nested migrations and bare
+    // `cdkd import` paths skip the STS call. Uses the shared `awsClients.sts`
+    // (vs. `new STSClient(...)`) so the active profile / credentials apply
+    // and the test surface mocks once at the AwsClients level.
+    let accountIdForNestedSynth: string | undefined;
+    if (migrationTree && migrationTree.nested.size > 0) {
+      const { GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+      const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
+      if (!identity.Account) {
+        throw new Error(
+          'STS GetCallerIdentity returned no Account — cdkd needs the account ID to ' +
+            'synthesize cdkd-local ARNs for nested-stack rows. Verify the active AWS ' +
+            'credentials are valid (e.g. `aws sts get-caller-identity`).'
+        );
+      }
+      accountIdForNestedSynth = identity.Account;
     }
 
     // Selective vs auto mode. CDK CLI parity: when the user passes
@@ -401,6 +476,37 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
             resourceType: resource.Type,
             outcome: 'skipped-out-of-scope',
             reason: 'not in --resource / --resource-mapping (use --auto to include)',
+          });
+          continue;
+        }
+
+        // Nested-stack short-circuit (issue #464): adopt each
+        // `AWS::CloudFormation::Stack` row with cdkd's synthesized
+        // cdkd-local ARN. `NestedStackProvider` has no `import()` (the
+        // child's state is written out-of-band below in
+        // `importNestedStackChildren`), so without this short-circuit
+        // every nested-stack row would surface as `skipped-no-impl` and
+        // the parent's `Ref <NestedStack>` resolutions would later
+        // mis-resolve at deploy time. Only fires when we have a
+        // matching child in the AWS tree — outside the migration code
+        // path the dispatch falls through to the existing
+        // `skipped-no-impl` (provider has no `import()`).
+        if (
+          resource.Type === NESTED_STACK_RESOURCE_TYPE &&
+          migrationTree &&
+          migrationTree.nested.has(logicalId) &&
+          accountIdForNestedSynth
+        ) {
+          rows.push({
+            logicalId,
+            resourceType: resource.Type,
+            outcome: 'imported',
+            physicalId: synthesizeNestedStackArn(
+              targetRegion,
+              accountIdForNestedSynth,
+              stackInfo.stackName,
+              logicalId
+            ),
           });
           continue;
         }
@@ -524,6 +630,33 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           `Run 'cdkd diff' to see how the imported state lines up with the template.`
       );
 
+      // Recursive per-child state writes (issue #464). For every nested
+      // `AWS::CloudFormation::Stack` resource at this level, recursively
+      // adopt the child stack into its own v6-keyed state file under
+      // `cdkd/<parent>~<childLogicalId>/<region>/state.json` with
+      // `parentStack` / `parentLogicalId` / `parentRegion` populated.
+      // Done AFTER the root state write so a failure in the recursive
+      // walk leaves the user with a working root state record they can
+      // re-run against (each child write is idempotent — the resource
+      // map is rebuilt from CFn's per-child `DescribeStackResources`
+      // response). Children's locks are acquired leaves-first and
+      // released in reverse on both success and failure.
+      if (migrationCfnStackName && migrationTree && accountIdForNestedSynth) {
+        await importNestedStackChildrenRecursive({
+          parentStackName: stackInfo.stackName,
+          parentRegion: targetRegion,
+          parentNestedTemplates: stackInfo.nestedTemplates ?? {},
+          parentTree: migrationTree,
+          stateBackend,
+          lockManager,
+          providerRegistry,
+          templateParser,
+          lockOwner: owner,
+          accountId: accountIdForNestedSynth,
+          logger,
+        });
+      }
+
       // Optional: retire the source CloudFormation stack now that cdkd state
       // is committed. Done AFTER state write so a failure here leaves the
       // user with a working cdkd state record they can re-run against, or
@@ -556,6 +689,11 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           // upload identity matches the one that just wrote cdkd state.
           stateBucket,
           ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
+          // Pass the pre-built tree so the recursive Retain-injection
+          // walk inside `retireCloudFormationStack` reuses our existing
+          // DescribeStackResources calls instead of redoing them. Only
+          // populated in the migration code path.
+          ...(migrationTree && { resourceTree: migrationTree }),
         });
       }
     } finally {
@@ -1244,4 +1382,361 @@ async function captureObservedForImportedResources(
       }
     })
   );
+}
+
+/**
+ * Synthesize the cdkd-local ARN that `NestedStackProvider.create` would write
+ * for a nested-stack resource (design [docs/design/459-nested-stacks.md](../../../docs/design/459-nested-stacks.md)
+ * §3, issue [#464](https://github.com/go-to-k/cdkd/issues/464) §6). Partition
+ * `cdkd-local` is load-bearing — any consumer that misuses this value as a
+ * real AWS ARN fails loudly with "Invalid ARN partition: cdkd-local" rather
+ * than silently using a non-ARN string. The format MUST match
+ * `NestedStackProvider.synthesizeArn` so an import-then-deploy cycle does
+ * not surface phantom property changes on the nested-stack row.
+ */
+function synthesizeNestedStackArn(
+  region: string,
+  accountId: string,
+  parentStackName: string,
+  logicalId: string
+): string {
+  return `arn:cdkd-local:${region}:${accountId}:nested-stack/${parentStackName}/${logicalId}`;
+}
+
+/**
+ * Validate the parent template ↔ AWS CFn tree shape consistency before any
+ * destructive walk begins. Three failure modes are surfaced up front so
+ * the user gets one clear error instead of a partial-success state file
+ * graveyard:
+ *
+ *   1. Synth template has `AWS::CloudFormation::Stack` row at logical id X
+ *      but AWS tree has no child at X — likely the user added a new
+ *      nested child to the CDK code without running `cdk deploy` first.
+ *   2. AWS tree has child at logical id Y but synth template has no
+ *      matching row — the user removed a nested child from the CDK code
+ *      but the live CFn stack still has it (or AWS removed it
+ *      mid-flight).
+ *   3. Synth's `nestedTemplates` index is missing a path for some nested
+ *      row — usually means CDK 2.x didn't emit `Metadata['aws:asset:path']`
+ *      on the row (older CDK versions, or a hand-edited template). Without
+ *      the local template file we can't enumerate the child's resources
+ *      for the per-child state write.
+ *
+ * Mirrors the upstream `cdk import` mismatch UX — "import refuses on a
+ * shape mismatch, fix the shape and re-run."
+ */
+function validateNestedStackShape(
+  template: CloudFormationTemplate,
+  tree: CfnStackResourceTree,
+  parentStackName: string,
+  nestedTemplates: Record<string, string>
+): void {
+  const templateNestedIds = new Set<string>();
+  for (const [logicalId, resource] of Object.entries(template.Resources)) {
+    if (resource.Type === NESTED_STACK_RESOURCE_TYPE) {
+      templateNestedIds.add(logicalId);
+    }
+  }
+  const treeNestedIds = new Set<string>(tree.nested.keys());
+
+  const inTemplateMissingFromAws: string[] = [];
+  for (const id of templateNestedIds) {
+    if (!treeNestedIds.has(id)) inTemplateMissingFromAws.push(id);
+  }
+  const inAwsMissingFromTemplate: string[] = [];
+  for (const id of treeNestedIds) {
+    if (!templateNestedIds.has(id)) inAwsMissingFromTemplate.push(id);
+  }
+  const inTemplateMissingNestedTemplatePath: string[] = [];
+  for (const id of templateNestedIds) {
+    if (!nestedTemplates[id]) inTemplateMissingNestedTemplatePath.push(id);
+  }
+
+  const problems: string[] = [];
+  if (inTemplateMissingFromAws.length > 0) {
+    problems.push(
+      `template has nested-stack row(s) not present in CloudFormation: ` +
+        `[${inTemplateMissingFromAws.join(', ')}] — run \`cdk deploy\` first ` +
+        `so the AWS-side stack matches the synth template`
+    );
+  }
+  if (inAwsMissingFromTemplate.length > 0) {
+    problems.push(
+      `CloudFormation has nested-child stack(s) not present in the synth template: ` +
+        `[${inAwsMissingFromTemplate.join(', ')}] — the CDK code was edited ` +
+        `to remove these children, but the live CFn stack still has them. ` +
+        `Run \`cdk deploy\` to apply the removal, or revert the CDK edit`
+    );
+  }
+  if (inTemplateMissingNestedTemplatePath.length > 0) {
+    problems.push(
+      `synth cloud assembly is missing nested-template asset paths for row(s) ` +
+        `[${inTemplateMissingNestedTemplatePath.join(', ')}] — verify CDK 2.x ` +
+        `\`cdk.NestedStack\` emits Metadata['aws:asset:path'] (default behavior)`
+    );
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `cdkd import --migrate-from-cloudformation: parent stack '${parentStackName}' ` +
+        `template ↔ CloudFormation shape mismatch:\n  - ${problems.join('\n  - ')}`
+    );
+  }
+}
+
+/**
+ * After the root parent stack's cdkd state is written, walk the
+ * `migrationTree.nested` map and adopt every nested child into its own
+ * v6-keyed state file (`cdkd/<parent>~<childLogicalId>/<region>/state.json`).
+ * Recurses into grandchildren via the same walker.
+ *
+ * Per child:
+ *   1. Acquire the child's lock (leaves-first ordering — children are
+ *      processed before each level's sibling iteration completes, so the
+ *      acquire ordering naturally matches the design's "leaves first,
+ *      parent last" rule for the cdkd state lock graph).
+ *   2. Read the child template body from the synth cloud assembly via
+ *      `parentNestedTemplates[<childLogicalId>]` (populated by
+ *      AssemblyReader at synth time — see {@link AssemblyReader.parseStack}).
+ *   3. Enumerate the child's importable resources (same filter as the
+ *      root's `collectImportableResources` — drop `AWS::CDK::Metadata`,
+ *      short-circuit `AWS::CloudFormation::Stack` rows to synth ARNs).
+ *   4. For each child resource: dispatch through `importOne` with the
+ *      child's `(logicalId → physicalId)` overrides from `childTree.resources`.
+ *   5. Build the child's `StackState` with `parentStack` / `parentLogicalId`
+ *      / `parentRegion` populated per state schema v6.
+ *   6. Save state via `stateBackend.saveState('<parent>~<childLogicalId>', ...)`.
+ *   7. Recurse into grandchildren.
+ *
+ * Lock release happens in REVERSE acquisition order in the outer
+ * `finally` of each child — leaves-first acquire / parent-last release on
+ * success, AND parent-last release on failure. Per memory rule
+ * `feedback_destructive_state_test_coverage.md`, the lock-release order
+ * is verified by unit test.
+ */
+async function importNestedStackChildrenRecursive(args: {
+  parentStackName: string;
+  parentRegion: string;
+  /** AssemblyReader-built `childLogicalId → local template file path` index for the parent's direct children. */
+  parentNestedTemplates: Record<string, string>;
+  parentTree: CfnStackResourceTree;
+  stateBackend: S3StateBackend;
+  lockManager: LockManager;
+  providerRegistry: ProviderRegistry;
+  templateParser: TemplateParser;
+  lockOwner: string;
+  accountId: string;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<void> {
+  const {
+    parentStackName,
+    parentRegion,
+    parentNestedTemplates,
+    parentTree,
+    stateBackend,
+    lockManager,
+    providerRegistry,
+    templateParser,
+    lockOwner,
+    accountId,
+    logger,
+  } = args;
+
+  for (const [childLogicalId, childTreeNode] of parentTree.nested) {
+    const childStackName = `${parentStackName}~${childLogicalId}`;
+    const childRegion = parentRegion;
+    const childTemplatePath = parentNestedTemplates[childLogicalId];
+    if (!childTemplatePath) {
+      throw new Error(
+        `cdkd import --migrate-from-cloudformation: missing nested-template ` +
+          `path for '${childLogicalId}' under parent '${parentStackName}' — ` +
+          `validateNestedStackShape should have rejected this; please file a bug.`
+      );
+    }
+
+    logger.info(
+      `Adopting nested stack '${childLogicalId}' as cdkd stack '${childStackName}' ` +
+        `(${childRegion})...`
+    );
+
+    const childTemplate = readNestedChildTemplate(childTemplatePath, childLogicalId);
+
+    await lockManager.acquireLock(childStackName, childRegion, lockOwner, 'import');
+    try {
+      // Compose the child's import overrides from the child tree's flat
+      // resource map. Filter out nested-stack rows (those are
+      // short-circuited to synth ARNs below — same as the root's
+      // dispatch loop) and any logical id not in the child template
+      // (e.g. AWS::CDK::Metadata).
+      const childResources = collectImportableResources(childTemplate);
+      const childTemplateLogicalIds = new Set(childResources.map((r) => r.logicalId));
+      const childOverrides = new Map<string, string>();
+      for (const [logicalId, physicalId] of childTreeNode.resources) {
+        if (!childTemplateLogicalIds.has(logicalId)) continue;
+        const tmplResource = childTemplate.Resources[logicalId];
+        if (tmplResource?.Type === NESTED_STACK_RESOURCE_TYPE) continue;
+        childOverrides.set(logicalId, physicalId);
+      }
+
+      // Dispatch + collect rows (same shape as the root's dispatch loop).
+      const rows: ImportRow[] = [];
+      for (const { logicalId, resource } of childResources) {
+        if (resource.Type === NESTED_STACK_RESOURCE_TYPE && childTreeNode.nested.has(logicalId)) {
+          rows.push({
+            logicalId,
+            resourceType: resource.Type,
+            outcome: 'imported',
+            physicalId: synthesizeNestedStackArn(childRegion, accountId, childStackName, logicalId),
+          });
+          continue;
+        }
+        const outcome = await importOne({
+          logicalId,
+          resource,
+          stackName: childStackName,
+          region: childRegion,
+          providerRegistry,
+          override: childOverrides.get(logicalId),
+          overrides: childOverrides,
+        });
+        rows.push(outcome);
+      }
+
+      // Build child state (auto / whole-stack mode — no pre-existing
+      // selective merge for a fresh nested child). Populate the v6
+      // parent-link fields so `NestedStackProvider.delete`'s child-state
+      // lookup at destroy time, `cdkd state list` / `state show` rendering,
+      // and any future cross-stack consumer scan can navigate the tree.
+      const childStackState = buildStackState(
+        childStackName,
+        childRegion,
+        rows,
+        templateParser,
+        childTemplate,
+        null,
+        false
+      );
+      childStackState.parentStack = parentStackName;
+      childStackState.parentLogicalId = childLogicalId;
+      childStackState.parentRegion = parentRegion;
+
+      // Resolve intrinsics in child Properties (same reason as root —
+      // sub-resource provider deletes read resolved props), populate
+      // observedProperties baseline, then save. Re-uses the same
+      // helpers as the root so behavior stays in sync.
+      await resolveImportedProperties(
+        childStackState,
+        childTemplate,
+        childRegion,
+        stateBackend,
+        logger
+      );
+      await captureObservedForImportedResources(childStackState, providerRegistry, logger);
+
+      await stateBackend.saveState(childStackName, childRegion, childStackState);
+      logger.info(
+        `✓ Nested stack state written: ${childStackName} (${childRegion}) — ` +
+          `${rows.filter((r) => r.outcome === 'imported').length} resource(s) imported.`
+      );
+
+      // Recurse into grandchildren. The recursive call acquires their
+      // own locks; this child's lock stays held until its `finally`
+      // releases it AFTER its descendants' locks are released (matches
+      // the "leaves first, parent last" lock contract — descendants
+      // release first, then this level, then the root in `runImport`'s
+      // outer `finally`).
+      if (childTreeNode.nested.size > 0) {
+        await importNestedStackChildrenRecursive({
+          parentStackName: childStackName,
+          parentRegion: childRegion,
+          // Grandchild template paths live alongside the child template
+          // file via `Metadata['aws:asset:path']` — index them with the
+          // same logic AssemblyReader uses at the parent level.
+          parentNestedTemplates: indexGrandchildTemplatePaths(childTemplate, childTemplatePath),
+          parentTree: childTreeNode,
+          stateBackend,
+          lockManager,
+          providerRegistry,
+          templateParser,
+          lockOwner,
+          accountId,
+          logger,
+        });
+      }
+    } finally {
+      await lockManager.releaseLock(childStackName, childRegion).catch((err) => {
+        logger.warn(
+          `Failed to release lock for nested stack '${childStackName}' (${childRegion}): ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+    }
+  }
+}
+
+/**
+ * Read a nested child's template body from the synth cloud assembly's
+ * sibling file (the path AssemblyReader populates from
+ * `Metadata['aws:asset:path']`). Wraps the I/O + JSON parse failures with
+ * an actionable error that names the offending child logical id.
+ */
+function readNestedChildTemplate(
+  templatePath: string,
+  childLogicalId: string
+): CloudFormationTemplate {
+  // Sync fs reads — import is a rare, single-threaded operation and the
+  // per-child template is bounded by the 1 MB CFn TemplateURL limit, so
+  // the latency is comparable to a few network round-trips. Matching the
+  // pattern `NestedStackProvider.readChildTemplate` uses for the same
+  // reason.
+  let raw: string;
+  try {
+    raw = readFileSync(templatePath, 'utf-8');
+  } catch (err) {
+    throw new Error(
+      `Failed to read nested-stack template for '${childLogicalId}' at ` +
+        `${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  try {
+    return JSON.parse(raw) as CloudFormationTemplate;
+  } catch (err) {
+    throw new Error(
+      `Failed to parse nested-stack template for '${childLogicalId}' at ` +
+        `${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/**
+ * Index a child template's `AWS::CloudFormation::Stack` rows by their
+ * `aws:asset:path` Metadata, mirroring what {@link AssemblyReader.parseStack}
+ * does for the root parent. Grandchild template files are sibling .nested
+ * files of the child template file in the same cdk.out subdirectory.
+ *
+ * Refuses absolute paths for the same reason `NestedStackProvider.indexGrandchildTemplates`
+ * does: an absolute path indicates the synth output was hand-modified or
+ * generated by a non-CDK toolchain — `path.join(dir, '/abs/foo')` would
+ * silently bypass our `dir` resolution and point outside cdk.out.
+ */
+function indexGrandchildTemplatePaths(
+  childTemplate: CloudFormationTemplate,
+  childTemplatePath: string
+): Record<string, string> {
+  const dir = nodePath.dirname(childTemplatePath);
+  const result: Record<string, string> = {};
+  for (const [grandLogicalId, resource] of Object.entries(childTemplate.Resources)) {
+    if (resource.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
+    const meta = resource.Metadata as Record<string, unknown> | undefined;
+    const assetPath = meta?.['aws:asset:path'];
+    if (typeof assetPath !== 'string' || assetPath.length === 0) continue;
+    if (nodePath.isAbsolute(assetPath)) {
+      throw new Error(
+        `cdkd import --migrate-from-cloudformation: grandchild nested-stack ` +
+          `'${grandLogicalId}' has Metadata['aws:asset:path']='${assetPath}' ` +
+          `which is absolute. CDK emits relative asset paths for nested templates.`
+      );
+    }
+    result[grandLogicalId] = nodePath.join(dir, assetPath);
+  }
+  return result;
 }

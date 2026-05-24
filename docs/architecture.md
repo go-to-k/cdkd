@@ -862,7 +862,7 @@ Each layer has clear responsibilities
 ### Current Limitations
 
 1. **CloudFormation Macros**: Not supported
-2. **Nested Stacks**: Supported for fresh `cdkd deploy` via the recursive `NestedStackProvider` (issue [#459](https://github.com/go-to-k/cdkd/issues/459)). `cdkd import` adoption of an existing CFn-managed nested stack and `cdkd export` of a cdkd-managed nested stack back into CloudFormation are deferred to issue [#464](https://github.com/go-to-k/cdkd/issues/464).
+2. **Nested Stacks**: Supported for fresh `cdkd deploy` via the recursive `NestedStackProvider` (issue [#459](https://github.com/go-to-k/cdkd/issues/459)) AND for `cdkd import --migrate-from-cloudformation` recursive adoption of an existing CFn-managed nested-stack hierarchy (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR A — recursive `DescribeStackResources` walk, per-child v6-keyed state writes, recursive `DeletionPolicy: Retain` injection, single parent-side `DeleteStack` cascade). `cdkd export` of a cdkd-managed nested stack back into CloudFormation is still deferred to issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR B.
 3. **Change Sets**: No concept (always executes immediately)
 4. All intrinsic functions are now supported (16/16, including `Fn::GetStackOutput` for same-account cross-region references; cross-account `RoleArn` not yet implemented)
 5. All pseudo parameters are now supported (7/7)

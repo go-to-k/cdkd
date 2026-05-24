@@ -164,6 +164,41 @@ stack name). Pass an explicit value when the names differ:
 cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
 ```
 
+### Nested stacks (recursive walk)
+
+Source CloudFormation stacks that contain `AWS::CloudFormation::Stack`
+children are walked **recursively** (issue [#464](https://github.com/go-to-k/cdkd/issues/464)):
+
+- Step 1 (`DescribeStackResources`) becomes a recursive tree walk:
+  for every nested-stack row, cdkd calls `DescribeStackResources(<child
+  ARN>)` to enumerate the child's resources, and so on to arbitrary
+  depth. Children at every level are fetched in parallel.
+- After the root state is written, cdkd writes **one v6-keyed state
+  file per nested child** at `cdkd/<parent>~<childLogicalId>/<region>/state.json`,
+  with `parentStack` / `parentLogicalId` / `parentRegion` populated per
+  the v6 schema. Grandchildren get `cdkd/<parent>~<child>~<grand>/<region>/state.json`,
+  recursively. Per-child locks are acquired before the write and
+  released in reverse on success or failure.
+- The root parent's state entry for each nested-stack row carries the
+  synthesized cdkd-local ARN (`arn:cdkd-local:<region>:<account>:nested-stack/<parent>/<logicalId>`)
+  — NOT the real AWS child stack ARN. This matches what
+  `NestedStackProvider.create` would write at deploy time, so an
+  import-then-deploy cycle does not surface phantom property changes.
+- Step 4 (`UpdateStack` with Retain injection) is also recursive: for
+  every nested-stack row in the parent template, cdkd fetches the
+  child's template via `GetTemplate`, recursively injects Retain on
+  every non-nested-stack resource at every depth, uploads the modified
+  child template to the cdkd state bucket, and rewrites the parent's
+  `Properties.TemplateURL` to point at it. AWS CFn's parent-side
+  `DeleteStack` cascades into each child — every leaf resource is
+  `Retain`'d (so the AWS resource survives), and the child stack
+  record gets deleted as a side effect.
+
+Synth template ↔ AWS shape is validated up front: a nested-stack row
+in the synth template that has no matching AWS child (or vice versa)
+hard-errors before any state write, naming the offending logical id —
+matching upstream `cdk import`'s mismatch UX.
+
 Limitations:
 
 - **JSON and YAML supported.** The Retain-policy injection in step 4
@@ -184,7 +219,8 @@ Limitations:
   CloudFormation `TemplateURL` ceiling are structurally
   unsubmittable — cdkd fails with a clear error. cdkd state has
   already been written at that point, so re-runs and manual cleanup
-  are both supported.
+  are both supported. The same ceiling applies independently to every
+  uploaded nested-child template.
 - **Not compatible with `--dry-run`.** The post-state-write
   `UpdateStack` + `DeleteStack` are real side-effects and cannot be
   faithfully simulated. Use plain `cdkd import --dry-run` to preview
@@ -195,6 +231,12 @@ Limitations:
   exists in AWS but unmanaged by both CloudFormation and cdkd. cdkd
   warns loudly when this happens; either re-import the missing
   resources first or accept the orphaning intentionally.
+- **Bare `cdkd import` (no migration flag) does NOT recurse.** Without
+  `--migrate-from-cloudformation`, each `AWS::CloudFormation::Stack`
+  row is treated as `unsupported` (the underlying `NestedStackProvider`
+  has no `import()` method). Future work would add per-resource tag-
+  based nested-stack adoption; for now, the migration flag is the only
+  path.
 
 ## After import
 
@@ -362,11 +404,19 @@ for whole-stack adoption.
 
 Resource types whose cdkd provider does not implement `import()` (or
 which have no provider at all) are reported as `unsupported` in the
-import summary and skipped. The most notable case is
-`AWS::CloudFormation::Stack` (nested stacks): cdkd does not deploy
-nested CloudFormation stacks, so importing one is also unsupported.
-CDK Stages — separate top-level stacks under one app — are fine; pass
-the stack's display path or physical name as the positional argument.
+import summary and skipped. CDK Stages — separate top-level stacks
+under one app — are fine; pass the stack's display path or physical
+name as the positional argument.
+
+**Nested CloudFormation stacks (`AWS::CloudFormation::Stack`)**: bare
+`cdkd import` (auto / selective / hybrid mode) still treats each nested-
+stack row as `unsupported` — there is no per-resource `import()` on the
+`NestedStackProvider`. To adopt a parent stack with nested children,
+use `cdkd import --migrate-from-cloudformation` instead, which recursively
+walks the tree, writes one v6-keyed state file per child
+(`cdkd/<parent>~<childLogicalId>/<region>/state.json`), and retires the
+whole tree via a single parent-side `DeleteStack` cascade. See the
+`--migrate-from-cloudformation` section below for details.
 
 `AWS::AutoScaling::AutoScalingGroup` is also currently unsupported —
 the SDK provider exists for create / update / delete / readCurrentState
@@ -399,7 +449,7 @@ table to predict behavior when migrating from `cdk import`.
 | Typo'd logical ID | Aborts with a clear error before any AWS calls. | Aborts with a clear error before any AWS calls — checked against the synthesized template. |
 | Whole-stack tag-based import | **Not supported.** | **cdkd-specific.** With no flags, cdkd looks every resource up by its `aws:cdk:path` tag — the typical case for adopting a stack previously deployed by `cdk deploy`. |
 | Hybrid mode (overrides + tag fallback) | **Not supported.** | **cdkd-specific.** `--auto` together with `--resource` lets listed resources use the explicit physical id while everything else still goes through tag lookup. |
-| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Also unsupported in practice — cdkd does not deploy nested CloudFormation stacks at all (no `AWS::CloudFormation::Stack` provider). The `Stack` resource itself would be reported as `unsupported`. CDK Stages (separate top-level stacks) are fine: pass the stack's display path or physical name as the positional argument. |
+| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Supported via `cdkd import --migrate-from-cloudformation` (issue [#464](https://github.com/go-to-k/cdkd/issues/464)): recursively walks the tree via `DescribeStackResources`, writes one v6-keyed state file per child (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), recursively injects `DeletionPolicy: Retain` into every leaf resource template, then retires the whole tree via a single parent-side `DeleteStack` cascade. Bare `cdkd import` (auto / selective / hybrid mode) still reports each nested-stack row as `unsupported`. CDK Stages (separate top-level stacks) are also fine: pass the stack's display path or physical name as the positional argument. |
 | Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
 | Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` — see [Provider coverage](#provider-coverage) above. For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
 | Confirmation prompt before writing state | n/a (CloudFormation operates atomically). | Yes — cdkd asks before writing the state file. Skip with `--yes`. |
