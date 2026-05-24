@@ -833,10 +833,13 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // CFn `--include-nested-stacks` IMPORT changeset submission +
       // per-child template upload + recursive plan classification.
       if (nestedStackRows.length > 0) {
+        // Pass the already-loaded `state` to skip the redundant
+        // root-state fetch — the orchestrator just read it at line ~770.
         const nestedStackTree = await buildCdkdStateStackTree(
           resolvedStackName,
           targetRegion,
-          stateBackend
+          stateBackend,
+          state
         );
         const leafFirst = flattenCdkdStateTreeLeafFirst(nestedStackTree);
         logger.info(
@@ -1428,20 +1431,34 @@ export interface CdkdStateStackTree {
  * upload pass dominates the wall-clock cost.
  *
  * Exported so the walker can be unit-tested independently of the orchestrator.
+ *
+ * Callers that already loaded the root state record up front (the typical
+ * orchestrator shape — `exportCommand` always reads it via
+ * `stateBackend.getState` before plan-build) can pass it via the optional
+ * `prefetchedRootState` argument to save one S3 round-trip per export run.
+ * Otherwise the walker fetches it itself, matching the standalone-use
+ * signature.
  */
 export async function buildCdkdStateStackTree(
   rootStackName: string,
   region: string,
-  stateBackend: S3StateBackend
+  stateBackend: S3StateBackend,
+  prefetchedRootState?: StackState
 ): Promise<CdkdStateStackTree> {
-  const rootResult = await stateBackend.getState(rootStackName, region);
-  if (!rootResult) {
-    throw new Error(
-      `No cdkd state found for stack '${rootStackName}' (${region}). ` +
-        `Cannot build nested-stack tree.`
-    );
+  let rootState: StackState;
+  if (prefetchedRootState !== undefined) {
+    rootState = prefetchedRootState;
+  } else {
+    const rootResult = await stateBackend.getState(rootStackName, region);
+    if (!rootResult) {
+      throw new Error(
+        `No cdkd state found for stack '${rootStackName}' (${region}). ` +
+          `Cannot build nested-stack tree.`
+      );
+    }
+    rootState = rootResult.state;
   }
-  return walkCdkdStateStackTree(rootStackName, region, rootResult.state, stateBackend);
+  return walkCdkdStateStackTree(rootStackName, region, rootState, stateBackend);
 }
 
 async function walkCdkdStateStackTree(
@@ -1463,6 +1480,23 @@ async function walkCdkdStateStackTree(
           `'cdkd/${childStackName}/${region}/state.json'. The cdkd state tree is ` +
           `inconsistent — re-deploy the parent stack to refresh, or run ` +
           `'cdkd state orphan ${stackName}' and re-import.`
+      );
+    }
+    // Sanity-check the child's recorded region against the walker's
+    // expected region (the parent's region). AWS does not support
+    // cross-region nested stacks today — design §6 — so a mismatch
+    // is either a torn state file (manually edited) or a future
+    // cross-region capability landing without a tree-shape bump. Fail
+    // fast in either case so the orchestrator does not silently
+    // proceed against a parent ↔ child pair whose AWS-side identity
+    // we cannot guarantee.
+    if (childResult.state.region !== undefined && childResult.state.region !== region) {
+      throw new Error(
+        `cdkd state region mismatch: nested-child '${childStackName}' has ` +
+          `state.region='${childResult.state.region}' but its parent '${stackName}' ` +
+          `is being walked against region='${region}'. AWS does not support ` +
+          `cross-region nested stacks; the state tree appears corrupt — ` +
+          `re-deploy the parent stack to refresh.`
       );
     }
     nestedChildren.set(

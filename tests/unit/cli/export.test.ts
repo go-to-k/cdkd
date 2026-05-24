@@ -1598,7 +1598,9 @@ function makeState(args: {
 /**
  * Minimal `S3StateBackend` mock that returns a state record keyed by
  * `${stackName}|${region}`. Returns `null` for unknown keys so the walker's
- * missing-child branch can be exercised.
+ * missing-child branch can be exercised. `migrationPending` is included
+ * (always `undefined` in the mock) to match the real `S3StateBackend.getState`
+ * shape — pre-emptive fidelity even though the walker does not consult it.
  */
 function makeStateBackendMock(
   states: Record<string, StackState>
@@ -1607,7 +1609,7 @@ function makeStateBackendMock(
     async getState(stackName: string, region: string) {
       const s = states[`${stackName}|${region}`];
       if (!s) return null;
-      return { state: s, etag: '"mock"' };
+      return { state: s, etag: '"mock"', migrationPending: undefined };
     },
   } as unknown as Pick<S3StateBackend, 'getState'>;
 }
@@ -1713,6 +1715,61 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     await expect(buildCdkdStateStackTree('Root', 'us-east-1', backend)).rejects.toThrow(
       /missing nested-child 'Root~Child'/
     );
+  });
+
+  it('throws when a child state records a different region (cross-region nested-stack not allowed)', async () => {
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+    });
+    // Child's `state.region` deliberately diverges from the walker's
+    // expected region. AWS does not support cross-region nested stacks
+    // today (design §6) — fail fast rather than silently consume the
+    // mismatched child.
+    const child = makeState({
+      stackName: 'Root~Child',
+      region: 'us-west-2',
+      resources: {},
+      parentStack: 'Root',
+      parentLogicalId: 'Child',
+    });
+    const backend = makeStateBackendMock({
+      'Root|us-east-1': root,
+      // Backend lookup happens on the parent's region, so register the
+      // child under `(Root~Child, us-east-1)`. The mismatch surfaces only
+      // when the walker compares `childResult.state.region` (`us-west-2`)
+      // against the walker's `region` argument (`us-east-1`).
+      'Root~Child|us-east-1': child,
+    }) as S3StateBackend;
+    await expect(buildCdkdStateStackTree('Root', 'us-east-1', backend)).rejects.toThrow(
+      /region mismatch.*state\.region='us-west-2'.*walked against region='us-east-1'/s
+    );
+  });
+
+  it('skips the root-state fetch when prefetchedRootState is supplied', async () => {
+    // The orchestrator typically loads the root state via
+    // `stateBackend.getState` before invoking `buildCdkdStateStackTree`.
+    // The fast-path optional argument lets the walker reuse that
+    // already-loaded state instead of paying a second S3 round-trip.
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Bucket: { resourceType: 'AWS::S3::Bucket' } },
+    });
+    let rootFetchCount = 0;
+    const backend = {
+      async getState(stackName: string, region: string) {
+        if (stackName === 'Root' && region === 'us-east-1') {
+          rootFetchCount++;
+          return { state: root, etag: '"mock"', migrationPending: undefined };
+        }
+        return null;
+      },
+    } as unknown as S3StateBackend;
+    const tree = await buildCdkdStateStackTree('Root', 'us-east-1', backend, root);
+    expect(rootFetchCount).toBe(0);
+    expect(tree.state).toBe(root);
   });
 });
 
@@ -1871,5 +1928,44 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     expect(result.nestedStackRows).toEqual([]);
     expect(result.blocked).toHaveLength(1);
     expect(result.blocked[0]!.reason).toMatch(/no matching nested-stack entry/);
+  });
+
+  it('classifies a mixed template (one phase-1 row + one nested-stack row) without crosstalk', async () => {
+    // Verifies the two branches coexist in a single buildImportPlan run:
+    // a regular importable resource lands in `phase1Imports` while a
+    // sibling AWS::CloudFormation::Stack row lands in `nestedStackRows`.
+    // The cfn-client mock must NOT throw for the bucket's identifier
+    // lookup — override the stub so `DescribeType` returns a schema.
+    const state = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: {
+        Bucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'my-bucket-123' },
+        Child: { resourceType: 'AWS::CloudFormation::Stack' },
+      },
+    });
+    const template = {
+      Resources: {
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket-123' } },
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+      },
+    };
+    // Stubbed `send` only fires for the Bucket's DescribeType lookup; the
+    // nested-stack row short-circuits BEFORE identifier resolution. Return
+    // a schema that resolves AWS::S3::Bucket via the PRIMARY_IDENTIFIER_FALLBACK
+    // path (i.e. throw to force fallback to the BucketName entry).
+    const cfnClient = {
+      send: async () => {
+        throw new Error('DescribeType simulated failure — falls back to PRIMARY_IDENTIFIER_FALLBACK');
+      },
+    } as unknown as AwsClients['cloudFormation'];
+    const result = await buildImportPlan(state, template, cfnClient, 'Root');
+    expect(result.phase1Imports).toHaveLength(1);
+    expect(result.phase1Imports[0]!.logicalId).toBe('Bucket');
+    expect(result.phase1Imports[0]!.resourceIdentifier).toEqual({ BucketName: 'my-bucket-123' });
+    expect(result.nestedStackRows).toEqual([
+      { logicalId: 'Child', childStackName: 'Root~Child' },
+    ]);
+    expect(result.blocked).toEqual([]);
   });
 });
