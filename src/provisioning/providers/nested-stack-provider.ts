@@ -40,6 +40,20 @@ import { getLogger } from '../../utils/logger.js';
  * ARN with `cdkd-local` partition so any downstream consumer that
  * accidentally uses it as a real AWS ARN fails loudly.
  */
+
+/**
+ * Returns `true` when `p` is absolute on the current platform OR begins
+ * with a forward slash. The `startsWith('/')` arm covers the cross-platform
+ * leak where `path.isAbsolute('/abs/foo')` returns `true` on POSIX but
+ * `false` on Windows (Windows absolute paths require a drive letter or
+ * UNC root) — a POSIX-style absolute path embedded in a synth template
+ * generated on Linux and consumed on a Windows host would slip past
+ * `path.isAbsolute()` alone. Exported for unit testing.
+ */
+export function isAbsoluteCrossPlatform(p: string): boolean {
+  return path.isAbsolute(p) || p.startsWith('/');
+}
+
 export class NestedStackProvider implements ResourceProvider {
   private logger = getLogger().child('NestedStackProvider');
 
@@ -501,7 +515,7 @@ export class NestedStackProvider implements ResourceProvider {
       // produces `/abs/foo` (POSIX) which silently bypasses our `dir`
       // resolution and points outside cdk.out. Refuse loudly rather than
       // accept a path we cannot trust.
-      if (path.isAbsolute(assetPath)) {
+      if (isAbsoluteCrossPlatform(assetPath)) {
         throw new Error(
           `NestedStackProvider: nested-stack '${grandLogicalId}' has ` +
             `Metadata['aws:asset:path']='${assetPath}' which is absolute. ` +

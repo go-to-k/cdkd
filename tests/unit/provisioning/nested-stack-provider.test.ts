@@ -3,7 +3,10 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
+import {
+  NestedStackProvider,
+  isAbsoluteCrossPlatform,
+} from '../../../src/provisioning/providers/nested-stack-provider.js';
 import {
   withNestedStackContext,
   type NestedStackProviderContext,
@@ -361,6 +364,27 @@ describe('NestedStackProvider', () => {
           provider.create('Child', 'AWS::CloudFormation::Stack', {})
         )
       ).rejects.toThrow(/which is absolute/);
+    });
+  });
+
+  describe('isAbsoluteCrossPlatform()', () => {
+    // POSIX-style absolute paths are rejected on every platform.
+    // `path.isAbsolute('/abs/foo')` returns `true` on POSIX but `false`
+    // on Windows (Windows absolute paths require a drive letter or UNC
+    // root), so the `startsWith('/')` fallback is what guarantees the
+    // rejection holds when a Linux-synthesized template is consumed on
+    // a Windows host.
+    it('accepts relative paths', () => {
+      expect(isAbsoluteCrossPlatform('foo/bar.json')).toBe(false);
+      expect(isAbsoluteCrossPlatform('./foo/bar.json')).toBe(false);
+      expect(isAbsoluteCrossPlatform('../foo/bar.json')).toBe(false);
+      expect(isAbsoluteCrossPlatform('foo.json')).toBe(false);
+    });
+
+    it('rejects POSIX-style absolute paths regardless of host platform', () => {
+      expect(isAbsoluteCrossPlatform('/abs/foo')).toBe(true);
+      expect(isAbsoluteCrossPlatform('/foo.json')).toBe(true);
+      expect(isAbsoluteCrossPlatform('/')).toBe(true);
     });
   });
 
