@@ -122,7 +122,6 @@ import {
   retireCloudFormationStack,
   injectRetainPolicies,
   injectRetainPoliciesRecursive,
-  getCloudFormationResourceMapping,
   getCloudFormationResourceTree,
   RecursiveRetainInjectionError,
   type CfnStackResourceTree,
@@ -672,52 +671,6 @@ describe('retireCloudFormationStack', () => {
   });
 });
 
-describe('getCloudFormationResourceMapping', () => {
-  it('returns a Map<logicalId, physicalId> for every stack resource', async () => {
-    const { client, calls } = buildCfnClient({
-      DescribeStackResources: {
-        StackResources: [
-          { LogicalResourceId: 'MyBucket', PhysicalResourceId: 'my-actual-bucket' },
-          { LogicalResourceId: 'MyTopic', PhysicalResourceId: 'arn:aws:sns:...:my-topic' },
-        ],
-      },
-    });
-
-    const mapping = await getCloudFormationResourceMapping('S', client as never);
-
-    expect(calls.map((c) => c.name)).toEqual(['DescribeStackResources']);
-    expect(calls[0]!.input['StackName']).toBe('S');
-    expect(mapping.get('MyBucket')).toBe('my-actual-bucket');
-    expect(mapping.get('MyTopic')).toBe('arn:aws:sns:...:my-topic');
-    expect(mapping.size).toBe(2);
-  });
-
-  it('skips entries missing LogicalResourceId or PhysicalResourceId', async () => {
-    const { client } = buildCfnClient({
-      DescribeStackResources: {
-        StackResources: [
-          { LogicalResourceId: 'Good', PhysicalResourceId: 'phys' },
-          { LogicalResourceId: 'NoPhys' }, // mid-create or import-failed
-          { PhysicalResourceId: 'NoLogical' }, // shouldn't happen but defensive
-        ],
-      },
-    });
-
-    const mapping = await getCloudFormationResourceMapping('S', client as never);
-
-    expect([...mapping.entries()]).toEqual([['Good', 'phys']]);
-  });
-
-  it('returns an empty map when the stack has no resources', async () => {
-    const { client } = buildCfnClient({
-      DescribeStackResources: { StackResources: [] },
-    });
-
-    const mapping = await getCloudFormationResourceMapping('Empty', client as never);
-    expect(mapping.size).toBe(0);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // PR for issue #464 — recursive nested-stack support tests
 // ---------------------------------------------------------------------------
@@ -846,6 +799,50 @@ describe('getCloudFormationResourceTree', () => {
     await getCloudFormationResourceTree('Root', { send } as never);
     expect(inflight.max).toBeGreaterThanOrEqual(2);
   });
+
+  it('propagates child-level DescribeStackResources failures via Promise.all rejection', async () => {
+    // Sibling children are fetched via `Promise.all` for parallelism —
+    // if ANY child-level DescribeStackResources rejects, the rejection
+    // must propagate out of the walker (caller's `cdkd import
+    // --migrate-from-cloudformation` flow aborts before any state write
+    // / Retain injection runs). Without this, a transient child-level
+    // AWS failure would silently produce a partial tree and downstream
+    // `validateNestedStackShape` would surface as a confusing
+    // "BOnly was reported by AWS but the synth template only lists
+    // AOnly" mismatch.
+    const childAArn = 'arn:aws:cloudformation:...:stack/ChildA/uuid-a';
+    const childBArn = 'arn:aws:cloudformation:...:stack/ChildB/uuid-b';
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      const stackName = cmd.input['StackName'] as string;
+      if (stackName === 'Root') {
+        return {
+          StackResources: [
+            {
+              LogicalResourceId: 'ChildA',
+              PhysicalResourceId: childAArn,
+              ResourceType: 'AWS::CloudFormation::Stack',
+            },
+            {
+              LogicalResourceId: 'ChildB',
+              PhysicalResourceId: childBArn,
+              ResourceType: 'AWS::CloudFormation::Stack',
+            },
+          ],
+        };
+      }
+      if (stackName === childAArn) {
+        return { StackResources: [] };
+      }
+      if (stackName === childBArn) {
+        throw new Error('AWS: ChildB disappeared');
+      }
+      throw new Error(`Unexpected DescribeStackResources for '${stackName}'`);
+    });
+
+    await expect(
+      getCloudFormationResourceTree('Root', { send } as never)
+    ).rejects.toThrow(/AWS: ChildB disappeared/);
+  });
 });
 
 describe('injectRetainPoliciesRecursive', () => {
@@ -943,6 +940,205 @@ describe('injectRetainPoliciesRecursive', () => {
       'https://example.com/old-child.json'
     );
     expect(result.modified).toBe(true);
+  });
+
+  it('depth-2 (parent → child → grandchild) → recursive injection on every level + grandchild upload + parent + child URL rewrites', async () => {
+    // Verifies that the recursion goes more than one level deep — that is,
+    // the child's own `injectRetainPoliciesRecursiveInternal` call walks
+    // into ITS nested-stack rows the same way the root parent's call does.
+    // Concretely: a depth-2 tree (P → Child → Grandchild) should produce
+    // (a) two `GetTemplate` round-trips (child + grandchild), (b) two
+    // PutObject uploads (modified child body + modified grandchild body),
+    // (c) Retain injected on every non-nested-stack resource at every
+    // level, (d) `TemplateURL` rewritten on the parent's Child row AND
+    // on the child's Grandchild row.
+    const childArn = 'arn:aws:cloudformation:...:stack/Child/uuid-c';
+    const grandchildArn = 'arn:aws:cloudformation:...:stack/Grandchild/uuid-g';
+    const parentBody = JSON.stringify({
+      Resources: {
+        ParentBucket: { Type: 'AWS::S3::Bucket' },
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'https://example.com/old-child.json' },
+        },
+      },
+    });
+    const childBody = JSON.stringify({
+      Resources: {
+        ChildBucket: { Type: 'AWS::S3::Bucket' },
+        Grandchild: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'https://example.com/old-grandchild.json' },
+        },
+      },
+    });
+    const grandchildBody = JSON.stringify({
+      Resources: { GrandchildBucket: { Type: 'AWS::S3::Bucket' } },
+    });
+    const tree: CfnStackResourceTree = {
+      stackName: 'P',
+      physicalId: 'P',
+      resources: new Map([['ParentBucket', 'pb'], ['Child', childArn]]),
+      nested: new Map([
+        [
+          'Child',
+          {
+            stackName: childArn,
+            physicalId: childArn,
+            resources: new Map([['ChildBucket', 'cb'], ['Grandchild', grandchildArn]]),
+            nested: new Map([
+              [
+                'Grandchild',
+                {
+                  stackName: grandchildArn,
+                  physicalId: grandchildArn,
+                  resources: new Map([['GrandchildBucket', 'gb']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          },
+        ],
+      ]),
+    };
+
+    const cfnCalls: { name: string; StackName: string }[] = [];
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      cfnCalls.push({ name: cmd._name, StackName: cmd.input['StackName'] as string });
+      if (cmd._name === 'GetTemplate') {
+        const stackName = cmd.input['StackName'];
+        if (stackName === childArn) return { TemplateBody: childBody };
+        if (stackName === grandchildArn) return { TemplateBody: grandchildBody };
+      }
+      throw new Error(`Unexpected CFn command: ${cmd._name}(${JSON.stringify(cmd.input)})`);
+    });
+
+    const result = await injectRetainPoliciesRecursive(parentBody, 'P', tree, {
+      cfnClient: { send } as never,
+      stateBucket: 'state-bucket',
+    });
+
+    // CFn: one GetTemplate per nesting level (child + grandchild). Order
+    // doesn't matter for correctness, but the existing depth-1 test
+    // pins order so we do too — depth-first: child first, then
+    // grandchild (which is awaited inside the child's recursion).
+    expect(cfnCalls.map((c) => c.name)).toEqual(['GetTemplate', 'GetTemplate']);
+    expect(cfnCalls.map((c) => c.StackName).sort()).toEqual([childArn, grandchildArn].sort());
+
+    // S3: one PutObject per uploaded transient (modified child body +
+    // modified grandchild body).
+    const puts = s3SendCalls.filter((c) => c.name === 'PutObject');
+    expect(puts).toHaveLength(2);
+    const keys = puts.map((p) => String(p.input['Key']));
+    expect(keys.some((k) => k.includes('__nested__Child'))).toBe(true);
+    expect(keys.some((k) => k.includes('__nested__Grandchild'))).toBe(true);
+    // Caller receives 2 cleanup callbacks to drain in `finally`.
+    expect(result.cleanups).toHaveLength(2);
+
+    // Parent body: Retain on ParentBucket, NOT on Child (skip rule),
+    // TemplateURL on the Child row rewritten away from the original.
+    const parsedParent = JSON.parse(result.body);
+    expect(parsedParent.Resources.ParentBucket.DeletionPolicy).toBe('Retain');
+    expect(parsedParent.Resources.ParentBucket.UpdateReplacePolicy).toBe('Retain');
+    expect(parsedParent.Resources.Child.DeletionPolicy).toBeUndefined();
+    expect(parsedParent.Resources.Child.UpdateReplacePolicy).toBeUndefined();
+    expect(parsedParent.Resources.Child.Properties.TemplateURL).toMatch(/^https:\/\//);
+    expect(parsedParent.Resources.Child.Properties.TemplateURL).not.toBe(
+      'https://example.com/old-child.json'
+    );
+
+    // Child body inside the uploaded transient: Retain on ChildBucket,
+    // NOT on Grandchild (skip rule), TemplateURL on the Grandchild row
+    // rewritten away from the original.
+    const childPut = puts.find((p) => String(p.input['Key']).includes('__nested__Child'))!;
+    const parsedChild = JSON.parse(childPut.input['Body'] as string);
+    expect(parsedChild.Resources.ChildBucket.DeletionPolicy).toBe('Retain');
+    expect(parsedChild.Resources.ChildBucket.UpdateReplacePolicy).toBe('Retain');
+    expect(parsedChild.Resources.Grandchild.DeletionPolicy).toBeUndefined();
+    expect(parsedChild.Resources.Grandchild.UpdateReplacePolicy).toBeUndefined();
+    expect(parsedChild.Resources.Grandchild.Properties.TemplateURL).toMatch(/^https:\/\//);
+    expect(parsedChild.Resources.Grandchild.Properties.TemplateURL).not.toBe(
+      'https://example.com/old-grandchild.json'
+    );
+
+    // Grandchild body inside the uploaded transient: Retain on
+    // GrandchildBucket (leaf-level Retain injection at depth 2).
+    const grandchildPut = puts.find((p) =>
+      String(p.input['Key']).includes('__nested__Grandchild')
+    )!;
+    const parsedGrandchild = JSON.parse(grandchildPut.input['Body'] as string);
+    expect(parsedGrandchild.Resources.GrandchildBucket.DeletionPolicy).toBe('Retain');
+    expect(parsedGrandchild.Resources.GrandchildBucket.UpdateReplacePolicy).toBe('Retain');
+
+    expect(result.modified).toBe(true);
+  });
+
+  it('rejects when modified nested-stack template exceeds the 1 MB CloudFormation TemplateURL limit', async () => {
+    // Defensive guard against a 1 MB+ child template — the
+    // CloudFormation `TemplateURL` ceiling is structurally non-negotiable,
+    // so the recursive flow must reject up front before any S3 upload
+    // happens (a transient over 1 MB would be a wasted round-trip we
+    // couldn't submit anyway, AND the size check must precede the
+    // upload so `cleanups` carries 0 entries on the rejection path).
+    const childArn = 'arn:aws:cloudformation:...:stack/Child/uuid-big';
+    const parentBody = JSON.stringify({
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'x' },
+        },
+      },
+    });
+    // Pad the child template so the post-Retain-injection body crosses
+    // 1 MB. The `Description` field is forwarded verbatim through the
+    // CFn parse/stringify roundtrip, so stuffing 1.1 MB of `a`s in
+    // Properties.Description guarantees overflow.
+    const padding = 'a'.repeat(1_100_000);
+    const childBody = JSON.stringify({
+      Resources: {
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: { Description: padding } },
+      },
+    });
+    const tree: CfnStackResourceTree = {
+      stackName: 'P',
+      physicalId: 'P',
+      resources: new Map([['Child', childArn]]),
+      nested: new Map([
+        [
+          'Child',
+          {
+            stackName: childArn,
+            physicalId: childArn,
+            resources: new Map([['Bucket', 'b']]),
+            nested: new Map(),
+          },
+        ],
+      ]),
+    };
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      if (cmd._name === 'GetTemplate') return { TemplateBody: childBody };
+      throw new Error(`Unexpected CFn command: ${cmd._name}`);
+    });
+
+    let thrown: unknown;
+    try {
+      await injectRetainPoliciesRecursive(parentBody, 'P', tree, {
+        cfnClient: { send } as never,
+        stateBucket: 'state-bucket',
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Wrapped in RecursiveRetainInjectionError so caller's `finally` can
+    // still drain whatever cleanups accumulated (zero in this case, since
+    // the size check fires BEFORE the upload).
+    expect(thrown).toBeInstanceOf(RecursiveRetainInjectionError);
+    const err = thrown as RecursiveRetainInjectionError;
+    expect(err.message).toMatch(/exceeds the CloudFormation TemplateURL limit/);
+    expect(err.cleanups).toHaveLength(0);
+    // No PutObject ever issued — the size guard runs before upload.
+    expect(s3SendCalls.filter((c) => c.name === 'PutObject')).toHaveLength(0);
   });
 
   it('throws RecursiveRetainInjectionError carrying partial cleanups on mid-walk failure', async () => {

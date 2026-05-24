@@ -3,6 +3,14 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+// Type-only import — erased at runtime, so it does NOT trigger the
+// `vi.mock('../../../src/cli/commands/retire-cfn-stack.js', ...)` factory
+// below. Re-typing the hoisted `mockGetCfnResourceTree` spy against the
+// real `CfnStackResourceTree` interface keeps the mock and source in
+// sync — drift between the mocked tree shape and the real interface
+// would otherwise surface as a runtime crash only when a test exercises
+// a yet-unmocked field.
+import type { CfnStackResourceTree } from '../../../src/cli/commands/retire-cfn-stack.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
@@ -61,35 +69,31 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 const mockRetireCloudFormationStack = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<{ outcome: string }>>()
 );
-const mockGetCfnResourceMapping = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<Map<string, string>>>()
-);
-// Mock for the recursive tree walker added in PR for issue #464. The
-// returned shape mirrors `CfnStackResourceTree` from retire-cfn-stack.ts —
-// every test that doesn't exercise nested-stack rows can rely on the
-// default empty-tree return below (the import.ts dispatch loop only
-// fires nested-stack short-circuit logic when `tree.nested.size > 0`,
-// so an empty Map keeps the existing test surface unchanged).
+// Mock for the recursive tree walker added in PR for issue #464. Typed
+// directly against the real `CfnStackResourceTree` interface (imported
+// type-only above) so any drift between the source shape and what tests
+// stub here is caught at compile time. Every test that doesn't exercise
+// nested-stack rows can rely on the default empty-tree return wired up
+// in `beforeEach` below (the import.ts dispatch loop only fires
+// nested-stack short-circuit logic when `tree.nested.size > 0`, so an
+// empty Map keeps the existing test surface unchanged).
 const mockGetCfnResourceTree = vi.hoisted(() =>
-  vi.fn<
-    (...args: unknown[]) => Promise<{
-      stackName: string;
-      physicalId: string;
-      resources: Map<string, string>;
-      nested: Map<string, unknown>;
-    }>
-  >()
+  vi.fn<(...args: unknown[]) => Promise<CfnStackResourceTree>>()
 );
-vi.mock('../../../src/cli/commands/retire-cfn-stack.js', () => ({
-  retireCloudFormationStack: mockRetireCloudFormationStack,
-  getCloudFormationResourceMapping: mockGetCfnResourceMapping,
-  getCloudFormationResourceTree: mockGetCfnResourceTree,
-  // The shared NESTED_STACK_RESOURCE_TYPE constant used by import.ts to
-  // detect `AWS::CloudFormation::Stack` rows. Must match the real value
-  // exported from retire-cfn-stack.ts or the dispatch-loop short-circuit
-  // would silently mis-trigger.
-  NESTED_STACK_RESOURCE_TYPE: 'AWS::CloudFormation::Stack',
-}));
+vi.mock('../../../src/cli/commands/retire-cfn-stack.js', async () => {
+  // Pull the real module's `NESTED_STACK_RESOURCE_TYPE` constant via
+  // `vi.importActual` so the test mock can't silently drift from the
+  // production value — any change to the constant in retire-cfn-stack.ts
+  // is automatically reflected here.
+  const actual = await vi.importActual<typeof import('../../../src/cli/commands/retire-cfn-stack.js')>(
+    '../../../src/cli/commands/retire-cfn-stack.js'
+  );
+  return {
+    retireCloudFormationStack: mockRetireCloudFormationStack,
+    getCloudFormationResourceTree: mockGetCfnResourceTree,
+    NESTED_STACK_RESOURCE_TYPE: actual.NESTED_STACK_RESOURCE_TYPE,
+  };
+});
 
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 const mockGetState = vi.fn<
@@ -221,8 +225,6 @@ describe('cdkd import', () => {
     readlineClose.mockReset();
     mockRetireCloudFormationStack.mockReset();
     mockRetireCloudFormationStack.mockResolvedValue({ outcome: 'retired' });
-    mockGetCfnResourceMapping.mockReset();
-    mockGetCfnResourceMapping.mockResolvedValue(new Map());
     mockGetCfnResourceTree.mockReset();
     mockGetCfnResourceTree.mockResolvedValue({
       stackName: 'S',
@@ -1302,11 +1304,9 @@ describe('cdkd import', () => {
       mockHasProvider.mockReturnValue(true);
       const importSpy = vi.fn(async () => ({ physicalId: cfnPhysical, attributes: {} }));
       mockGetProvider.mockReturnValue({ import: importSpy });
-      // PR for issue #464 replaced the flat `getCloudFormationResourceMapping`
-      // call with the recursive `getCloudFormationResourceTree` walker —
-      // the migration code path now consumes `tree.resources` instead of
-      // a bare Map. Top-level migration tests don't exercise nesting, so
-      // `nested` stays empty.
+      // Migration code path consumes `tree.resources` from the recursive
+      // `getCloudFormationResourceTree` walker. Top-level migration tests
+      // don't exercise nesting, so `nested` stays empty.
       mockGetCfnResourceTree.mockResolvedValue({
         stackName: 'S',
         physicalId: 'S',
@@ -1494,12 +1494,15 @@ describe('cdkd import', () => {
       mockGetProvider.mockReturnValue({
         import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
       });
-      mockGetCfnResourceMapping.mockResolvedValue(
-        new Map([
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'S',
+        physicalId: 'S',
+        resources: new Map([
           ['MyBucket', 'b-physical'],
           ['Untouched', 'u-physical'],
-        ])
-      );
+        ]),
+        nested: new Map(),
+      });
 
       await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
 
@@ -1814,6 +1817,255 @@ describe('cdkd import', () => {
             (c) => (c as unknown[])[0] === 'P'
           );
           expect(rootReleases).toHaveLength(1);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
+      it('errors with clear message when STS GetCallerIdentity returns no Account', async () => {
+        // The recursive nested-stack flow needs the caller's AWS account ID
+        // to synthesize the cdkd-local ARN it writes into the parent's
+        // state for the nested-stack row (mirrors what
+        // `NestedStackProvider.create` does at deploy time — issue #464).
+        // When STS returns no `Account`, the flow must abort up front with
+        // an actionable message instead of silently writing a malformed
+        // ARN downstream.
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-sts-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          (await import('node:fs')).writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {} } },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+          });
+          const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['B', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+          // Override the STS GetCallerIdentity response for this single
+          // call — return an empty object (no `Account` field).
+          stsSend.mockResolvedValueOnce({} as never);
+
+          await expect(
+            runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+          ).rejects.toThrow();
+          const lastError = String(errorSpy.mock.calls.at(-1)?.[0]);
+          expect(lastError).toMatch(/STS GetCallerIdentity returned no Account/);
+          // Bail-out happens before any state write or retire round-trip.
+          expect(mockSaveState).not.toHaveBeenCalled();
+          expect(mockRetireCloudFormationStack).not.toHaveBeenCalled();
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
+      it('writes child state recursively for depth-2 (grandchild) nested stacks', async () => {
+        // Verifies `importNestedStackChildrenRecursive` recurses past the
+        // first level — for a Parent → Child → Grandchild tree, three
+        // `saveState` calls must land: one for the root, one for the
+        // child (keyed `P~Child`), one for the grandchild (keyed
+        // `P~Child~Grandchild`). Each child carries the v6 parent-link
+        // fields pointing one level up.
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-d2-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          const grandchildTemplatePath = join(tmpdirPath, 'Grandchild.nested.template.json');
+          // Grandchild leaf template.
+          (await import('node:fs')).writeFileSync(
+            grandchildTemplatePath,
+            JSON.stringify({
+              Resources: {
+                GrandchildBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+              },
+            })
+          );
+          // Child template carries one leaf bucket + the grandchild
+          // nested-stack row. Metadata['aws:asset:path'] is what
+          // `indexGrandchildTemplatePaths` reads to find the grandchild
+          // file on disk — use the leaf filename so `path.join(dir, ...)`
+          // resolves to the actual file.
+          (await import('node:fs')).writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Resources: {
+                ChildBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+                Grandchild: {
+                  Type: 'AWS::CloudFormation::Stack',
+                  Properties: { TemplateURL: 'x' },
+                  Metadata: { 'aws:asset:path': 'Grandchild.nested.template.json' },
+                },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
+          });
+          const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid-c';
+          const grandchildArn =
+            'arn:aws:cloudformation:us-east-1:123:stack/Grandchild/uuid-g';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([
+                    ['ChildBucket', 'cb-real'],
+                    ['Grandchild', grandchildArn],
+                  ]),
+                  nested: new Map([
+                    [
+                      'Grandchild',
+                      {
+                        stackName: grandchildArn,
+                        physicalId: grandchildArn,
+                        resources: new Map([['GrandchildBucket', 'gb-real']]),
+                        nested: new Map(),
+                      },
+                    ],
+                  ]),
+                },
+              ],
+            ]),
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          // Three saveState calls — root, child, grandchild.
+          const saveCalls = mockSaveState.mock.calls.map((c) => (c as unknown[])[0]);
+          expect(saveCalls).toContain('P');
+          expect(saveCalls).toContain('P~Child');
+          expect(saveCalls).toContain('P~Child~Grandchild');
+
+          // Region is propagated parent → child → grandchild.
+          const grandSave = mockSaveState.mock.calls.find(
+            (c) => (c as unknown[])[0] === 'P~Child~Grandchild'
+          ) as unknown as [
+            string,
+            string,
+            {
+              parentStack?: string;
+              parentLogicalId?: string;
+              parentRegion?: string;
+              resources: Record<string, unknown>;
+            },
+          ];
+          expect(grandSave[1]).toBe('us-east-1');
+          // Parent-link fields point one level up (NOT to the root).
+          expect(grandSave[2].parentStack).toBe('P~Child');
+          expect(grandSave[2].parentLogicalId).toBe('Grandchild');
+          expect(grandSave[2].parentRegion).toBe('us-east-1');
+          expect(Object.keys(grandSave[2].resources)).toContain('GrandchildBucket');
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
+      it('rejects absolute aws:asset:path on grandchild nested templates', async () => {
+        // `indexGrandchildTemplatePaths` refuses absolute paths on
+        // grandchild nested-stack rows — `path.join(dir, '/abs/foo')`
+        // would silently bypass the cloud assembly's directory and
+        // point outside cdk.out, so the recursive walker fails up front
+        // with a clear error.
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-abs-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          // Child carries a grandchild nested-stack row with an absolute
+          // `aws:asset:path`.
+          (await import('node:fs')).writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Resources: {
+                Grandchild: {
+                  Type: 'AWS::CloudFormation::Stack',
+                  Properties: { TemplateURL: 'x' },
+                  Metadata: { 'aws:asset:path': '/abs/foo.json' },
+                },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
+          });
+          const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+          const grandchildArn =
+            'arn:aws:cloudformation:us-east-1:123:stack/Grandchild/uuid';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['Grandchild', grandchildArn]]),
+                  nested: new Map([
+                    [
+                      'Grandchild',
+                      {
+                        stackName: grandchildArn,
+                        physicalId: grandchildArn,
+                        resources: new Map(),
+                        nested: new Map(),
+                      },
+                    ],
+                  ]),
+                },
+              ],
+            ]),
+          });
+
+          await expect(
+            runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+          ).rejects.toThrow();
+          const lastError = String(errorSpy.mock.calls.at(-1)?.[0]);
+          expect(lastError).toMatch(/grandchild nested-stack/);
+          expect(lastError).toMatch(/absolute/);
+          expect(lastError).toMatch(/Grandchild/);
         } finally {
           rmSync(tmpdirPath, { recursive: true, force: true });
         }

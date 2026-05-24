@@ -839,37 +839,14 @@ async function injectRetainPoliciesRecursiveInternal(
 }
 
 /**
- * Ask CloudFormation directly which physical id corresponds to each logical
- * id in the named stack. Used by `cdkd import --migrate-from-cloudformation`
- * to side-step cdkd's tag-based auto-lookup (which can't find resources
- * deployed by upstream `cdk deploy` — that flow doesn't propagate
- * `aws:cdk:path` as an AWS tag, and AWS reserves the `aws:` tag prefix so
- * we can't add it ourselves either).
+ * Walk a CloudFormation stack and every nested child recursively, returning
+ * the full {@link CfnStackResourceTree} rooted at `rootStackName`. Used by
+ * `cdkd import --migrate-from-cloudformation` to drive BOTH per-child state
+ * writes AND the recursive `injectRetainPoliciesRecursive` walk — both
+ * consumers share this single `DescribeStackResources` tree so an
+ * arbitrarily-deep nesting only costs one round-trip per stack.
  *
- * Pulls the entire stack with `DescribeStackResources` (one round-trip,
- * unbounded result by spec — CFn caps stacks at 500 resources). Resources
- * whose `PhysicalResourceId` is missing (rare; typically an import-failed
- * resource or `AWS::CDK::Metadata`) are skipped silently — the caller
- * already iterates the synthesized template separately and will surface
- * those as `skipped-no-impl` / `skipped-not-found`.
- */
-export async function getCloudFormationResourceMapping(
-  cfnStackName: string,
-  cfnClient: CloudFormationClient
-): Promise<Map<string, string>> {
-  const resp = await cfnClient.send(new DescribeStackResourcesCommand({ StackName: cfnStackName }));
-  const map = new Map<string, string>();
-  for (const r of resp.StackResources ?? []) {
-    if (!r.LogicalResourceId || !r.PhysicalResourceId) continue;
-    map.set(r.LogicalResourceId, r.PhysicalResourceId);
-  }
-  return map;
-}
-
-/**
- * Recursive variant of {@link getCloudFormationResourceMapping} that returns
- * the full nested-stack tree rooted at `rootStackName`. For each
- * `AWS::CloudFormation::Stack` row in the root's resources, recursively
+ * For each `AWS::CloudFormation::Stack` row in the root's resources, recursively
  * calls `DescribeStackResources(<child ARN>)` (AWS accepts the ARN as
  * `StackName`) to populate the child node, and so on to arbitrary depth.
  *
