@@ -927,11 +927,17 @@ cdkd export                                       # auto-detect single-stack app
    orchestrator recursively walks the cdkd state tree via
    `buildCdkdStateStackTree`, surfaces the full leaf-first migration
    scope, and hard-errors with a clear PR B2 pointer + workarounds
-   (the CFn-side `--include-nested-stacks` IMPORT changeset
-   submission lands in PR B2; until then the user keeps the stack on
-   cdkd or destroys children leaf-first via `cdkd state destroy <child>`
-   and re-exports the flattened parent). `--dry-run` warns instead of
-   throwing so the user sees the full picture without aborting.
+   (the CFn-side per-stack IMPORT loop submission lands in PR B2; the
+   original "one atomic `--include-nested-stacks` IMPORT changeset"
+   design was found infeasible by the 2026-05-24 AWS spike — AWS
+   rejects that flag combination with
+   `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`;
+   see [docs/design/464-nested-stacks-export-import.md](design/464-nested-stacks-export-import.md)
+   §4.0 / §4.3 for the per-stack-loop redesign; until B2 lands the
+   user keeps the stack on cdkd or destroys children leaf-first via
+   `cdkd state destroy <child>` and re-exports the flattened parent).
+   `--dry-run` warns instead of throwing so the user sees the full
+   picture without aborting.
 4. Resolve each resource type's primary identifier property name(s) via
    `cloudformation:DescribeType` (with a hardcoded fallback table for
    ~30 single-key types). **Composite primary identifiers**
@@ -1097,9 +1103,13 @@ cdkd export                                       # auto-detect single-stack app
   partial support as of issue [#464](https://github.com/go-to-k/cdkd/issues/464)
   PR B1: the dedicated branch + `buildCdkdStateStackTree` walker
   recursively loads every child state file, validates the tree shape,
-  and surfaces the leaf-first migration order; the CFn `--include-nested-stacks`
-  IMPORT submission lands in PR B2, so the command currently hard-errors
-  (warns in `--dry-run`) with a PR B2 pointer + workarounds. On phase-2 failure, cdkd state is
+  and surfaces the leaf-first migration order; the CFn per-stack IMPORT
+  loop submission lands in PR B2 (the original
+  `--include-nested-stacks` design was found infeasible by the
+  2026-05-24 AWS spike — see [design/464-nested-stacks-export-import.md](design/464-nested-stacks-export-import.md)
+  §4.0 / §4.3 for the per-stack-loop redesign), so the command
+  currently hard-errors (warns in `--dry-run`) with a PR B2 pointer +
+  workarounds. On phase-2 failure, cdkd state is
   preserved and the error message includes the recovery procedure
   (`aws cloudformation create-change-set --change-set-type UPDATE ...`
   followed by `cdkd state orphan`).
