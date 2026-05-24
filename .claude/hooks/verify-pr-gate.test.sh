@@ -143,6 +143,25 @@ run_case "fresh marker in side worktree passes" 0 fresh "$side_repo" \
 run_case "gh pr merge --auto matches" 2 stale "$side_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --auto"}}' "$side_repo")"
 
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substrings `gh pr create`
+# / `gh pr merge` appear inside a quoted argument body of an unrelated
+# command. Per memory rule feedback_hook_command_match_line_start.md,
+# applied to verify-pr-gate.sh in issue #563 (mirroring the PR #562
+# fix to check-gate.sh).
+
+# 12. `gh issue create --body "...gh pr create..."`: the body mentions
+#     `gh pr create` but the line starts with `gh issue create`, not
+#     `gh pr create`. MUST pass through.
+run_case "gh issue body quoting 'gh pr create' passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh issue create --body \"next step: gh pr create from this branch\""}}' "$side_repo")"
+
+# 13. `echo "...gh pr merge..."`: the body mentions `gh pr merge` but
+#     the command starts with `echo`. MUST pass through.
+run_case "echo body quoting 'gh pr merge' passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"after CI green: gh pr merge --squash\""}}' "$side_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

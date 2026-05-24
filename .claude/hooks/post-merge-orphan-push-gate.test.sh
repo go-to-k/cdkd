@@ -187,6 +187,30 @@ run_case "git push origin :branch (deletion) → pass through" 0 \
   "$del_payload" \
   "$merged_match"
 
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substring `git push`
+# appears inside a quoted argument body of an unrelated command.
+# Per memory rule feedback_hook_command_match_line_start.md, applied
+# to post-merge-orphan-push-gate.sh in issue #563 (mirroring the
+# PR #562 fix to check-gate.sh).
+
+# `gh issue create --body "...git push..."`: the body mentions
+# `git push` but the command itself starts with `gh`. MUST pass
+# through (would otherwise block routine issue creation even when
+# the branch IS a merged-PR head).
+fp_body_payload=$(printf '{"cwd":"%s","tool_input":{"command":"gh issue create --body \"remember to git push after merge\""}}' "$feature_repo")
+run_case "gh issue body quoting 'git push' passes through" 0 \
+  "$fp_body_payload" \
+  "$merged_match"
+
+# `echo "...git push..."`: the body mentions `git push` but the
+# command starts with `echo`. MUST pass through.
+fp_echo_payload=$(printf '{"cwd":"%s","tool_input":{"command":"echo \"warning: git push to merged branch creates orphan\""}}' "$feature_repo")
+run_case "echo body quoting 'git push' passes through" 0 \
+  "$fp_echo_payload" \
+  "$merged_match"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

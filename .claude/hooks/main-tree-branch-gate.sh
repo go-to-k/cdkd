@@ -47,12 +47,20 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Match `git switch` / `git checkout` in the subcommand position.
-# Reuses the branch-gate flag-token grammar so `git -C <path> switch`
-# / `git -c <key>=<val> switch` / etc. all qualify.
+# Line-start anchored (per memory rule
+# feedback_hook_command_match_line_start.md) so `git switch` /
+# `git checkout` substrings inside quoted argument bodies
+# (`gh issue create --body "remember to git switch back"`) do NOT
+# false-positive into a hard block. The optional leading
+# `cd <path> &&` prefix preserves the worktree-aware
+# `cd <main> && git switch <feat>` chain shape, mirroring
+# check-gate.sh (PR #562 fix pattern). Reuses the branch-gate
+# flag-token grammar so `git -C <path> switch` /
+# `git -c <key>=<val> switch` / etc. all qualify.
 #
 # We deliberately do NOT match `git worktree` — `git worktree add`
 # is the sanctioned escape and must always pass.
-if ! printf '%s' "$cmd" | grep -qE '\bgit([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])'; then
+if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

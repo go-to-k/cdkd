@@ -41,12 +41,23 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # `--grep=push` query.
 #
 # Anchors:
-#   `\bgit`                   — `git` as a whole word, so `gitlab` /
-#                               `mygit` don't trip the gate. The leading
-#                               `\b` also makes `$(git commit)` and
-#                               `` `git commit` `` match because the
-#                               opening `(` / backtick is a non-word
-#                               boundary.
+#   `^[[:space:]]*(cd[[:space:]]+...&&[[:space:]]*)?git`
+#                             — line-start anchored (per memory rule
+#                               feedback_hook_command_match_line_start.md)
+#                               so `git commit` / `git push` substrings
+#                               inside quoted argument bodies
+#                               (`gh issue create --body "we should add
+#                               git commit hook later"`) do NOT
+#                               false-positive into a hard block. The
+#                               optional leading `cd <path> &&` prefix
+#                               preserves the worktree-aware
+#                               `cd <side> && git commit` chain shape —
+#                               `cd ... &&` at the literal line-start
+#                               cannot match inside a JSON literal
+#                               containing `&&` because the line-start
+#                               anchor requires no leading characters
+#                               except whitespace. Mirrors check-gate.sh
+#                               (PR #562 fix pattern).
 #   `([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*`
 #                             — zero or more "flag tokens": each flag
 #                               (`-X` or `--foo[=val]`) optionally
@@ -58,10 +69,13 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 #                               `commit.gpgSign=false` (a `-c` value)
 #                               is NOT counted as the subcommand;
 #                               also recognizes pipeline / subshell
-#                               separators so `$(git commit)`,
-#                               `git status; git commit`,
+#                               separators so `git status; git commit`,
 #                               `` `git push` `` all match.
-if ! printf '%s' "$cmd" | grep -qE '\bgit([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])'; then
+#                               `$(git commit)` / backtick-wrapped
+#                               forms are an accepted false-negative
+#                               of the line-start tightening (per the
+#                               memory rule's trade-off).
+if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

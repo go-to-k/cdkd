@@ -39,7 +39,14 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # command passes through. Match both `gh pr merge` and
 # `gh pr merge --auto`. Tolerate an optional `gh -C <path>` between
 # `gh` and `pr` so `gh -C <path> pr create` is also recognised.
-if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|merge)\b'; then
+# Line-start anchored (per memory rule
+# feedback_hook_command_match_line_start.md) so `gh pr create` /
+# `gh pr merge` substrings inside quoted argument bodies
+# (`echo "next step: gh pr create"`) do NOT false-positive into a
+# hard block. The optional leading `cd <path> &&` prefix preserves
+# the worktree-aware `cd <side> && gh pr create` chain shape,
+# mirroring check-gate.sh (PR #562 fix pattern).
+if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

@@ -39,10 +39,17 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # even when the local integ marker is stale; the gate only fires at
 # merge time, mirroring the integ-destroy gate's policy.
 #
-# `[^|;&]*` matches flags / values between `gh`/`git` and the
-# subcommand without crossing pipeline separators. Tolerate an optional
-# `gh -C <path>` between `gh` and `pr`.
-if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge\b|\bgit[^|;&]*\bmerge\b'; then
+# Line-start anchored (per memory rule
+# feedback_hook_command_match_line_start.md) so `gh pr merge` /
+# `git merge` substrings inside quoted argument bodies
+# (`echo "remember to gh pr merge later"`) do NOT false-positive
+# into a hard block. The optional leading `cd <path> &&` prefix
+# preserves the worktree-aware `cd <side> && gh pr merge` /
+# `cd <side> && git merge` chain shapes, mirroring check-gate.sh
+# (PR #562 fix pattern). `[^|;&]*` matches flags / values between
+# `gh`/`git` and the subcommand without crossing pipeline separators.
+# Tolerate an optional `gh -C <path>` between `gh` and `pr`.
+if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])|^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

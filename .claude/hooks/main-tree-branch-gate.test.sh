@@ -125,6 +125,28 @@ run_case "git switch - in main tree blocked conservatively" 2 \
 run_case "non-repo target dir passes through" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git switch foo"}}' "$TMPDIR")"
 
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substrings `git switch`
+# / `git checkout` appear inside a quoted argument body of an
+# unrelated command. Per memory rule
+# feedback_hook_command_match_line_start.md, applied to
+# main-tree-branch-gate.sh in issue #563 (mirroring the PR #562
+# fix to check-gate.sh).
+
+# 19. `gh issue create --body "...git switch..."` in main tree: the
+#     body mentions `git switch` but the command itself starts with
+#     `gh`. MUST pass through (would otherwise block routine issue
+#     creation from the main tree).
+run_case "gh issue body quoting 'git switch' in main tree allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh issue create --body \"remember to git switch back to main after\""}}' "$main_repo")"
+
+# 20. `echo "...git checkout..."` in main tree: the body mentions
+#     `git checkout` but the command starts with `echo`. MUST pass
+#     through.
+run_case "echo body quoting 'git checkout' in main tree allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"tip: git checkout -b some-feature in a worktree\""}}' "$main_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

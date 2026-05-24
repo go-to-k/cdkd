@@ -123,6 +123,25 @@ git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 
 run_case "gh -C <side> pr merge --auto from main cwd" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh -C %s pr merge --auto"}}' "$fixture_repo" "$side_repo")"
 
+# --- LINE-START ANCHORING cases (issue #563) ---
+#
+# The matcher MUST NOT fire when the literal substrings `gh pr merge`
+# / `git merge` appear inside a quoted argument body of an unrelated
+# command. Per memory rule feedback_hook_command_match_line_start.md,
+# applied to integ-local-gate.sh in issue #563 (mirroring the PR #562
+# fix to check-gate.sh).
+
+# 15. `gh issue create --body "...gh pr merge..."`: body mentions
+#     `gh pr merge` but the line starts with `gh issue create`.
+#     MUST pass through.
+run_case "gh issue body quoting 'gh pr merge' passes through" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh issue create --body \"next step: gh pr merge --squash\""}}' "$fixture_repo")"
+
+# 16. `echo "...git merge..."`: body mentions `git merge` but the
+#     command starts with `echo`. MUST pass through.
+run_case "echo body quoting 'git merge' passes through" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"reminder: git merge origin/main when ready\""}}' "$fixture_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
