@@ -311,6 +311,61 @@ export class StackTerminationProtectionError extends CdkdError {
 }
 
 /**
+ * `cdkd destroy <child>` refused because the named stack is a nested
+ * child of another stack. Mirrors CloudFormation's `you can't directly
+ * destroy a nested stack` semantic — destroying the child without
+ * touching the parent would leave the parent's `AWS::CloudFormation::Stack`
+ * record pointing at non-existent resources, and the parent's next
+ * deploy would silently try to re-create them.
+ *
+ * Detected by reading the loaded state's v6 `parentStack` field — only
+ * state files written by `NestedStackProvider.create` (or by the
+ * recursive `cdkd import --migrate-from-cloudformation` walk) carry
+ * this field; top-level stacks have `parentStack: undefined` and pass
+ * the guard unchanged.
+ *
+ * Fires from `cdkd destroy` AFTER state load but BEFORE lock
+ * acquisition or any per-resource delete, so the refusal is cheap.
+ * Surfaced as a per-stack failure (wrapped in {@link PartialFailureError},
+ * exit code 2) in multi-stack runs — siblings continue.
+ *
+ * Bypass paths (both intentional escape hatches):
+ *
+ *  1. `cdkd destroy <parent>` — the normal cascading-destroy path; the
+ *     parent's reverse-DAG walks into the child via
+ *     `NestedStackProvider.delete` and removes both layers atomically.
+ *  2. `cdkd state destroy <child>` — state-only destroy with no parent
+ *     coupling check. The state-driven entry point intentionally
+ *     bypasses this guard for the same reason `cdkd state destroy`
+ *     bypasses `terminationProtection`: it's the "I know what I'm
+ *     doing" path for cleaning up state when synth is unavailable or
+ *     the user accepts leaving the parent's reference dangling.
+ */
+export class NestedStackChildDirectDestroyError extends CdkdError {
+  public readonly stackName: string;
+  public readonly parentStack: string;
+  public readonly parentLogicalId?: string;
+
+  constructor(stackName: string, parentStack: string, parentLogicalId?: string, cause?: Error) {
+    const logicalIdSuffix = parentLogicalId ? ` (parent's logical id: ${parentLogicalId})` : '';
+    super(
+      `Stack '${stackName}' is a nested child of '${parentStack}'${logicalIdSuffix}; ` +
+        `directly destroying a nested stack is not supported. ` +
+        `Either run 'cdkd destroy ${parentStack}' to cascade-delete this child along with its parent, ` +
+        `or run 'cdkd state destroy ${stackName}' if you intentionally want to leave the parent's ` +
+        `reference dangling (the state-only escape hatch).`,
+      'NESTED_STACK_CHILD_DIRECT_DESTROY',
+      cause
+    );
+    this.stackName = stackName;
+    this.parentStack = parentStack;
+    if (parentLogicalId !== undefined) this.parentLogicalId = parentLogicalId;
+    this.name = 'NestedStackChildDirectDestroyError';
+    Object.setPrototypeOf(this, NestedStackChildDirectDestroyError.prototype);
+  }
+}
+
+/**
  * One consumer that still references the producer being destroyed via
  * `Fn::ImportValue`. Surfaced inside {@link StackHasActiveImportsError}.
  */
