@@ -106,6 +106,11 @@ function makeState(overrides: Partial<StackState> = {}): { state: StackState } {
       resources: overrides.resources ?? {},
       outputs: overrides.outputs ?? {},
       lastModified: overrides.lastModified ?? Date.UTC(2026, 3, 29, 10, 23, 45),
+      ...(overrides.parentStack !== undefined && { parentStack: overrides.parentStack }),
+      ...(overrides.parentLogicalId !== undefined && {
+        parentLogicalId: overrides.parentLogicalId,
+      }),
+      ...(overrides.parentRegion !== undefined && { parentRegion: overrides.parentRegion }),
     },
   };
 }
@@ -294,5 +299,212 @@ describe('cdkd state show', () => {
     const parsed = JSON.parse(out);
 
     expect(parsed.lock).toBeNull();
+  });
+
+  // #555 A4: recursive child stack rendering.
+  describe('--show-nested', () => {
+    it('appends a Nested stack block per child in DFS order (3-level deep)', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'NestedStackDeep', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'NestedStackDeep') {
+          return makeState({
+            stackName: 'NestedStackDeep',
+            resources: {
+              Child: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::NestedStackDeep~Child',
+              }),
+            },
+          });
+        }
+        if (name === 'NestedStackDeep~Child') {
+          return makeState({
+            stackName: 'NestedStackDeep~Child',
+            parentStack: 'NestedStackDeep',
+            parentLogicalId: 'Child',
+            parentRegion: 'us-east-1',
+            resources: {
+              Grandchild: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::NestedStackDeep~Child~Grandchild',
+              }),
+            },
+          });
+        }
+        return makeState({
+          stackName: 'NestedStackDeep~Child~Grandchild',
+          parentStack: 'NestedStackDeep~Child',
+          parentLogicalId: 'Grandchild',
+          parentRegion: 'us-east-1',
+          resources: {
+            Leaf: makeResource({ resourceType: 'AWS::S3::Bucket', physicalId: 'leaf-bkt' }),
+          },
+        });
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'NestedStackDeep', '--show-nested']);
+
+      // Parent block first.
+      expect(out).toContain('Stack: NestedStackDeep');
+      // Then each child as its own `Nested stack: <name>` block in DFS order.
+      const childIdx = out.indexOf('Nested stack: NestedStackDeep~Child');
+      const grandchildIdx = out.indexOf('Nested stack: NestedStackDeep~Child~Grandchild');
+      expect(childIdx).toBeGreaterThan(-1);
+      expect(grandchildIdx).toBeGreaterThan(childIdx);
+      // Each child block carries the v6 parent link.
+      expect(out).toContain('  Parent: NestedStackDeep (us-east-1), logical id: Child');
+      expect(out).toContain(
+        '  Parent: NestedStackDeep~Child (us-east-1), logical id: Grandchild'
+      );
+      // Grandchild's own resource is rendered too.
+      expect(out).toContain('Leaf');
+      expect(out).toContain('  Type: AWS::S3::Bucket');
+    });
+
+    it('is a no-op on a leaf with no nested children (single-stack output)', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Leaf', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue(
+        makeState({
+          stackName: 'Leaf',
+          resources: { Bkt: makeResource({ resourceType: 'AWS::S3::Bucket' }) },
+        })
+      );
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'Leaf', '--show-nested']);
+
+      expect(out).toContain('Stack: Leaf');
+      expect(out).not.toContain('Nested stack:');
+    });
+
+    it('shows only the child block when invoked against a child directly (no grandchildren)', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      mockGetState.mockResolvedValue(
+        makeState({
+          stackName: 'Parent~Child',
+          parentStack: 'Parent',
+          parentLogicalId: 'Child',
+          parentRegion: 'us-east-1',
+          resources: { Q: makeResource({ resourceType: 'AWS::SQS::Queue' }) },
+        })
+      );
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'Parent~Child', '--show-nested']);
+
+      expect(out).toContain('Stack: Parent~Child');
+      expect(out).toContain('  Parent: Parent (us-east-1), logical id: Child');
+      expect(out).not.toContain('Nested stack:');
+    });
+
+    it('emits a nested {state, lock, children} JSON shape', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Parent', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'Parent') {
+          return makeState({
+            stackName: 'Parent',
+            resources: {
+              Child: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::Parent~Child',
+              }),
+            },
+          });
+        }
+        return makeState({
+          stackName: 'Parent~Child',
+          parentStack: 'Parent',
+          parentLogicalId: 'Child',
+          parentRegion: 'us-east-1',
+          resources: { R: makeResource({ resourceType: 'AWS::IAM::Role', physicalId: 'r-1' }) },
+        });
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'Parent', '--show-nested', '--json']);
+      const parsed = JSON.parse(out);
+
+      expect(parsed.state.stackName).toBe('Parent');
+      expect(parsed.lock).toBeNull();
+      expect(parsed.children).toHaveLength(1);
+      expect(parsed.children[0].state.stackName).toBe('Parent~Child');
+      expect(parsed.children[0].state.parentStack).toBe('Parent');
+      expect(parsed.children[0].lock).toBeNull();
+      // Stable key set: `children: []` on leaves rather than omitted.
+      expect(parsed.children[0].children).toEqual([]);
+    });
+
+    it('combines with --stack-region to disambiguate when same name lives in two regions', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Parent', region: 'us-west-2' },
+        { stackName: 'Parent', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name, region) => {
+        if (name === 'Parent' && region === 'us-east-1') {
+          return makeState({
+            stackName: 'Parent',
+            region: 'us-east-1',
+            resources: {
+              Child: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::Parent~Child',
+              }),
+            },
+          });
+        }
+        if (name === 'Parent~Child' && region === 'us-east-1') {
+          return makeState({
+            stackName: 'Parent~Child',
+            region: 'us-east-1',
+            parentStack: 'Parent',
+            parentLogicalId: 'Child',
+            parentRegion: 'us-east-1',
+          });
+        }
+        return null;
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow([
+        'show',
+        'Parent',
+        '--show-nested',
+        '--stack-region',
+        'us-east-1',
+      ]);
+
+      expect(out).toContain('Stack: Parent');
+      expect(out).toContain('  Region: us-east-1');
+      expect(out).toContain('Nested stack: Parent~Child');
+    });
+
+    it('fails fast on a torn tree (parent lists nested-stack row but child state missing)', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Parent', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'Parent') {
+          return makeState({
+            stackName: 'Parent',
+            resources: {
+              GhostChild: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::Parent~GhostChild',
+              }),
+            },
+          });
+        }
+        return null;
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      await expect(
+        runStateShow(['show', 'Parent', '--show-nested'])
+      ).rejects.toThrow();
+
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toMatch(/missing nested-child 'Parent~GhostChild'/);
+    });
   });
 });

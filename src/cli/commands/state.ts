@@ -40,6 +40,7 @@ import {
   type StackTreeEntry,
   type StackTreeNode,
 } from './state-list-tree.js';
+import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 
 /**
@@ -612,12 +613,19 @@ function createStateResourcesCommand(): Command {
  *
  * - Default: human-readable multi-line format.
  * - `--json`: a `{state, lock}` object containing the raw `StackState` plus
- *   the lock record (or null).
+ *   the lock record (or null). With `--show-nested`, the object additionally
+ *   carries a `children` array of the same shape recursively.
+ * - `--show-nested` (issue #555 A4): when the stack contains
+ *   `AWS::CloudFormation::Stack` rows, recursively load every child state
+ *   record (`cdkd/<parent>~<childLogicalId>/<region>/state.json`) and append
+ *   its block after the parent's. No-op when the stack has no nested
+ *   children.
  */
 async function stateShowCommand(
   stackName: string,
   options: {
     json: boolean;
+    showNested: boolean;
     stateBucket?: string;
     statePrefix: string;
     region?: string;
@@ -654,6 +662,25 @@ async function stateShowCommand(
       );
     }
 
+    if (options.showNested) {
+      const tree = await buildCdkdStateStackTree(
+        stackName,
+        ref.region,
+        setup.stateBackend,
+        stateResult.state
+      );
+      const treeWithLocks = await loadLocksForTree(tree, setup.lockManager, lockInfo);
+
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(treeToShowJson(treeWithLocks), null, 2)}\n`);
+        return;
+      }
+
+      const lines = renderTreeWithChildren(treeWithLocks);
+      process.stdout.write(`${lines.join('\n')}\n`);
+      return;
+    }
+
     if (options.json) {
       process.stdout.write(
         `${JSON.stringify({ state: stateResult.state, lock: lockInfo }, null, 2)}\n`
@@ -661,62 +688,180 @@ async function stateShowCommand(
       return;
     }
 
-    const state = stateResult.state;
-    const lines: string[] = [];
-
-    lines.push(`Stack: ${state.stackName}`);
-    if (state.region) lines.push(`  Region: ${state.region}`);
-    lines.push(`  Version: ${state.version}`);
-    lines.push(`  Last Modified: ${new Date(state.lastModified).toISOString()}`);
-    lines.push(`  Lock: ${formatLockSummary(lockInfo)}`);
-
-    const outputEntries = Object.entries(state.outputs ?? {});
-    if (outputEntries.length > 0) {
-      lines.push('');
-      lines.push('Outputs:');
-      for (const [k, v] of outputEntries) {
-        lines.push(`  ${k}: ${formatAttributeValue(v)}`);
-      }
-    }
-
-    const resourceEntries = Object.entries(state.resources ?? {}).sort(([a], [b]) =>
-      a.localeCompare(b)
-    );
-    lines.push('');
-    lines.push(`Resources (${resourceEntries.length}):`);
-    for (const [logicalId, resource] of resourceEntries) {
-      lines.push('');
-      lines.push(logicalId);
-      lines.push(`  Type: ${resource.resourceType}`);
-      lines.push(`  PhysicalID: ${resource.physicalId}`);
-      const deps = resource.dependencies ?? [];
-      lines.push(`  Dependencies: ${deps.length > 0 ? deps.join(', ') : '(none)'}`);
-
-      const attrEntries = Object.entries(resource.attributes ?? {});
-      if (attrEntries.length === 0) {
-        lines.push('  Attributes: (none)');
-      } else {
-        lines.push('  Attributes:');
-        for (const [k, v] of attrEntries) {
-          lines.push(`    ${k}: ${formatAttributeValue(v)}`);
-        }
-      }
-
-      const propEntries = Object.entries(resource.properties ?? {});
-      if (propEntries.length === 0) {
-        lines.push('  Properties: (none)');
-      } else {
-        lines.push('  Properties:');
-        for (const [k, v] of propEntries) {
-          lines.push(`    ${k}: ${formatAttributeValue(v)}`);
-        }
-      }
-    }
-
-    process.stdout.write(`${lines.join('\n')}\n`);
+    process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo).join('\n')}\n`);
   } finally {
     setup.dispose();
   }
+}
+
+/**
+ * Render one stack's state record as a human-readable multi-line block —
+ * the shared body used by both the single-stack default output and each
+ * nested child rendered under `--show-nested`.
+ */
+function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[] {
+  const lines: string[] = [];
+
+  lines.push(`Stack: ${state.stackName}`);
+  if (state.region) lines.push(`  Region: ${state.region}`);
+  lines.push(`  Version: ${state.version}`);
+  lines.push(`  Last Modified: ${new Date(state.lastModified).toISOString()}`);
+  lines.push(`  Lock: ${formatLockSummary(lockInfo)}`);
+  if (state.parentStack !== undefined) {
+    const parentRegionStr = state.parentRegion ? ` (${state.parentRegion})` : '';
+    const logicalIdStr =
+      state.parentLogicalId !== undefined ? `, logical id: ${state.parentLogicalId}` : '';
+    lines.push(`  Parent: ${state.parentStack}${parentRegionStr}${logicalIdStr}`);
+  }
+
+  const outputEntries = Object.entries(state.outputs ?? {});
+  if (outputEntries.length > 0) {
+    lines.push('');
+    lines.push('Outputs:');
+    for (const [k, v] of outputEntries) {
+      lines.push(`  ${k}: ${formatAttributeValue(v)}`);
+    }
+  }
+
+  const resourceEntries = Object.entries(state.resources ?? {}).sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
+  lines.push('');
+  lines.push(`Resources (${resourceEntries.length}):`);
+  for (const [logicalId, resource] of resourceEntries) {
+    lines.push('');
+    lines.push(logicalId);
+    lines.push(`  Type: ${resource.resourceType}`);
+    lines.push(`  PhysicalID: ${resource.physicalId}`);
+    const deps = resource.dependencies ?? [];
+    lines.push(`  Dependencies: ${deps.length > 0 ? deps.join(', ') : '(none)'}`);
+
+    const attrEntries = Object.entries(resource.attributes ?? {});
+    if (attrEntries.length === 0) {
+      lines.push('  Attributes: (none)');
+    } else {
+      lines.push('  Attributes:');
+      for (const [k, v] of attrEntries) {
+        lines.push(`    ${k}: ${formatAttributeValue(v)}`);
+      }
+    }
+
+    const propEntries = Object.entries(resource.properties ?? {});
+    if (propEntries.length === 0) {
+      lines.push('  Properties: (none)');
+    } else {
+      lines.push('  Properties:');
+      for (const [k, v] of propEntries) {
+        lines.push(`    ${k}: ${formatAttributeValue(v)}`);
+      }
+    }
+  }
+  return lines;
+}
+
+/**
+ * One node of the nested-stack tree augmented with its lock record — built
+ * by {@link loadLocksForTree} so the renderers see `state + lock` in one
+ * shape regardless of depth.
+ */
+interface CdkdStateStackTreeWithLock {
+  stackName: string;
+  region: string;
+  state: StackState;
+  lock: LockInfo | null;
+  children: CdkdStateStackTreeWithLock[];
+}
+
+/**
+ * Walk a {@link CdkdStateStackTree} and resolve every non-root node's lock
+ * record in parallel (one `getLockInfo` per child). The root's lock was
+ * already fetched alongside its state so it's threaded through as an
+ * argument rather than re-fetched.
+ *
+ * A transient lock-read failure on one child degrades to `null` so a
+ * missing-lock-key race on one child does not kill the whole
+ * `--show-nested` render.
+ */
+async function loadLocksForTree(
+  tree: CdkdStateStackTree,
+  lockManager: LockManager,
+  rootLock: LockInfo | null
+): Promise<CdkdStateStackTreeWithLock> {
+  const rootKey = `${tree.stackName}\0${tree.region}`;
+  const flat: CdkdStateStackTree[] = [];
+  const collect = (node: CdkdStateStackTree): void => {
+    flat.push(node);
+    for (const child of node.nestedChildren.values()) collect(child);
+  };
+  collect(tree);
+
+  const lockByKey = new Map<string, LockInfo | null>();
+  lockByKey.set(rootKey, rootLock);
+  await Promise.all(
+    flat.map(async (node) => {
+      const key = `${node.stackName}\0${node.region}`;
+      if (key === rootKey) return;
+      try {
+        lockByKey.set(key, await lockManager.getLockInfo(node.stackName, node.region));
+      } catch {
+        lockByKey.set(key, null);
+      }
+    })
+  );
+
+  const decorate = (node: CdkdStateStackTree): CdkdStateStackTreeWithLock => ({
+    stackName: node.stackName,
+    region: node.region,
+    state: node.state,
+    lock: lockByKey.get(`${node.stackName}\0${node.region}`) ?? null,
+    children: [...node.nestedChildren.values()].map(decorate),
+  });
+  return decorate(tree);
+}
+
+/**
+ * Render the parent's block followed by every descendant in DFS order,
+ * each separated by a blank line and prefixed with a `Nested stack: ...`
+ * header so the user can scan the tree top-down in one screen.
+ *
+ * Children are rendered flat (column 0) rather than indented — the
+ * existing single-stack output is already verbose with 2-space indent,
+ * and stacking another layer makes it hard to read.
+ */
+function renderTreeWithChildren(root: CdkdStateStackTreeWithLock): string[] {
+  const lines: string[] = [];
+  lines.push(...renderStateBlock(root.state, root.lock));
+  appendDescendants(root.children, lines);
+  return lines;
+}
+
+function appendDescendants(children: readonly CdkdStateStackTreeWithLock[], out: string[]): void {
+  for (const child of children) {
+    out.push('');
+    out.push(`Nested stack: ${child.stackName}`);
+    out.push(...renderStateBlock(child.state, child.lock));
+    appendDescendants(child.children, out);
+  }
+}
+
+/**
+ * JSON-friendly shape for `state show --show-nested --json`: the same
+ * `{state, lock}` object the non-nested mode emits, plus a `children`
+ * array of the same shape recursively. `children` is always present
+ * (empty array on leaves) so consumers see a stable key set.
+ */
+interface StateShowJson {
+  state: StackState;
+  lock: LockInfo | null;
+  children: StateShowJson[];
+}
+
+function treeToShowJson(node: CdkdStateStackTreeWithLock): StateShowJson {
+  return {
+    state: node.state,
+    lock: node.lock,
+    children: node.children.map(treeToShowJson),
+  };
 }
 
 /**
@@ -727,6 +872,11 @@ function createStateShowCommand(): Command {
     .description('Show the full cdkd state record for a stack (metadata, outputs, resources)')
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .option('--json', 'Output the raw state and lock as JSON', false)
+    .option(
+      '--show-nested',
+      'Recursively show every nested-stack child under the target stack (issue #555 A4)',
+      false
+    )
     .addOption(stackRegionOption())
     .action(withErrorHandling(stateShowCommand));
 
