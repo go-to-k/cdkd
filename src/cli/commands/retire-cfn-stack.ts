@@ -286,6 +286,27 @@ export async function retireCloudFormationStack(
     );
     if (!ok) {
       logger.info('CloudFormation stack retirement cancelled. cdkd state is unaffected.');
+      // The recursive Retain-injection walk may have already uploaded
+      // one or more transient child-template bodies to the cdkd state
+      // bucket BEFORE the user said "no" to this prompt. Drain them
+      // here so a cancelled retire does not leak S3 objects under the
+      // `cdkd-migrate-tmp/` prefix — same best-effort + per-cleanup
+      // error log as the post-UpdateStack `finally` drains below.
+      // Failure mode this fixes: a parent stack with nested children
+      // run with `--migrate-from-cloudformation` interactively (no
+      // `--yes`), user declines, transient child uploads orphaned.
+      for (const cleanup of nestedCleanups) {
+        try {
+          await cleanup();
+        } catch (cleanupErr) {
+          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+          logger.warn(
+            `Failed to delete temporary nested-template upload from '${stateBucket}' ` +
+              `during cancel cleanup. Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. ` +
+              `Cause: ${msg}`
+          );
+        }
+      }
       return { outcome: 'cancelled' };
     }
   }

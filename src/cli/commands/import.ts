@@ -1490,10 +1490,17 @@ function validateNestedStackShape(
  * Recurses into grandchildren via the same walker.
  *
  * Per child:
- *   1. Acquire the child's lock (leaves-first ordering — children are
- *      processed before each level's sibling iteration completes, so the
- *      acquire ordering naturally matches the design's "leaves first,
- *      parent last" rule for the cdkd state lock graph).
+ *   1. Acquire the child's lock. Order across the full tree is
+ *      **parent-first acquire, leaves-first release** (each level's
+ *      `finally` releases its child lock before sibling iteration
+ *      continues, and the root lock is the outermost — held by
+ *      `runImport`'s `try` / `finally`). This is the conventional
+ *      hierarchical lock pattern: parent-first acquire prevents a
+ *      second cdkd import from racing past the root lock; leaves-first
+ *      release on success/failure means a mid-walk error never strands
+ *      a child lock past its scope. Design §3.3 wording ("leaves first,
+ *      parent last") is preserved as the RELEASE order; the acquire
+ *      order is parent-first to keep the lock graph deadlock-free.
  *   2. Read the child template body from the synth cloud assembly via
  *      `parentNestedTemplates[<childLogicalId>]` (populated by
  *      AssemblyReader at synth time — see {@link AssemblyReader.parseStack}).

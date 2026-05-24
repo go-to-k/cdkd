@@ -1732,6 +1732,93 @@ describe('cdkd import', () => {
         }
       });
 
+      it('releases the per-child lock in finally even when provider.import throws mid-walk', async () => {
+        // Memory rule `feedback_destructive_state_test_coverage.md`:
+        // failure paths of state-mutating code must verify the cleanup
+        // contract holds. Here: `importNestedStackChildrenRecursive`
+        // acquires the child's lock before its per-resource dispatch
+        // loop and releases it in `finally` — if `importOne` (via
+        // `provider.import`) throws mid-walk, the lock MUST still be
+        // released before the error propagates up.
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-failure-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          (await import('node:fs')).writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Resources: {
+                Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          // Make the child's import throw — `importOne` catches at the
+          // provider level and returns a `failed` row (not a thrown
+          // exception), so we need to fail in a way that bubbles UP
+          // past the dispatch loop. Easiest: throw from `provider.import`
+          // BUT the `importOne` catch wraps it as `failed`, never
+          // throws. So instead force a state-save failure (downstream
+          // of the dispatch loop, inside the lock-protected scope) by
+          // making mockSaveState throw on the child stack name.
+          const bucketImportSpy = vi.fn(async () => ({ physicalId: 'b', attributes: {} }));
+          mockGetProvider.mockReturnValue({ import: bucketImportSpy });
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', 'arn:..:stack/Child/u']]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: 'arn:..:stack/Child/u',
+                  physicalId: 'arn:..:stack/Child/u',
+                  resources: new Map([['Bucket', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+          // saveState throws ONLY for the child stack (parent's save
+          // succeeds first); the child's `finally` should still release
+          // the child's lock before the error propagates to runImport's
+          // outer finally.
+          mockSaveState.mockImplementation((stackName: unknown) => {
+            if (stackName === 'P~Child') {
+              return Promise.reject(new Error('synthetic child saveState failure'));
+            }
+            return Promise.resolve('etag');
+          });
+
+          await expect(
+            runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+          ).rejects.toThrow();
+
+          // Per-child lock was acquired then released, even though
+          // child saveState threw — this is the load-bearing assertion.
+          const childAcquires = mockAcquireLock.mock.calls.filter(
+            (c) => (c as unknown[])[0] === 'P~Child'
+          );
+          const childReleases = mockReleaseLock.mock.calls.filter(
+            (c) => (c as unknown[])[0] === 'P~Child'
+          );
+          expect(childAcquires).toHaveLength(1);
+          expect(childReleases).toHaveLength(1);
+          // Root lock also released (runImport's outer finally).
+          const rootReleases = mockReleaseLock.mock.calls.filter(
+            (c) => (c as unknown[])[0] === 'P'
+          );
+          expect(rootReleases).toHaveLength(1);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
       it('rejects when synth template ↔ AWS tree have mismatched nested-stack ids', async () => {
         const tmpl = template({
           AOnly: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },

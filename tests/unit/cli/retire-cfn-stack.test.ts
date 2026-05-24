@@ -1101,4 +1101,72 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
       })
     ).rejects.toThrow(/resourceTree.stackName='WrongName' does not match cfnStackName='Right'/);
   });
+
+  it('drains nested-template uploads when the user cancels at the confirmation prompt', async () => {
+    // Regression for the code-reviewer-flagged leak on PR #564:
+    // when `injectRetainPoliciesRecursive` had already uploaded one or
+    // more transient child-template bodies BEFORE the interactive
+    // confirmation prompt fired, a user `n` answer would return
+    // `outcome: 'cancelled'` without draining the cleanups — leaking
+    // S3 objects under the `cdkd-migrate-tmp/` prefix.
+    const childArn = 'arn:aws:cloudformation:...:stack/Child/uuid';
+    const parentBody = JSON.stringify({
+      Resources: {
+        P: { Type: 'AWS::S3::Bucket', Properties: {} },
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'https://old/child.json' },
+        },
+      },
+    });
+    const childBody = JSON.stringify({
+      Resources: { C: { Type: 'AWS::S3::Bucket', Properties: {} } },
+    });
+    const tree: CfnStackResourceTree = {
+      stackName: 'Parent',
+      physicalId: 'Parent',
+      resources: new Map([
+        ['P', 'p'],
+        ['Child', childArn],
+      ]),
+      nested: new Map([
+        [
+          'Child',
+          {
+            stackName: childArn,
+            physicalId: childArn,
+            resources: new Map([['C', 'c']]),
+            nested: new Map(),
+          },
+        ],
+      ]),
+    };
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      // First GetTemplate = parent, second = child. The recursive walk
+      // pre-fetches both BEFORE the prompt fires.
+      GetTemplate: (() => {
+        let n = 0;
+        return () => ({ TemplateBody: ++n === 1 ? parentBody : childBody });
+      })(),
+    });
+    // User declines the prompt.
+    readlineQuestion.mockResolvedValue('n');
+
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'Parent',
+      cfnClient: client as never,
+      yes: false,
+      stateBucket: 'state-bucket',
+      resourceTree: tree,
+    });
+
+    expect(result).toEqual({ outcome: 'cancelled' });
+    // Child template was uploaded (PutObject) AND deleted (DeleteObject)
+    // — the cancel path must reap the leak before returning.
+    const puts = s3SendCalls.filter((c) => c.name === 'PutObject');
+    const deletes = s3SendCalls.filter((c) => c.name === 'DeleteObject');
+    expect(puts.length).toBeGreaterThanOrEqual(1);
+    expect(deletes.length).toBe(puts.length);
+  });
 });
