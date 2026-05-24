@@ -455,6 +455,43 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     expect(messages).toMatch(/1 resource error/);
   });
 
+  it('--all in synth-success mode does NOT trigger upfront refusal (children filtered out of candidateStacks; parent cascades through normal NestedStackProvider.delete path)', async () => {
+    // The whole point of synth-success + `--all` is that ONLY top-level
+    // stacks (appStacks) are destroyed; nested children are unreachable
+    // through this code path because they aren't in candidateStacks. The
+    // upfront-by-name refusal only fires for EXPLICIT named patterns, not
+    // for `--all`. Verifies no false-positive A2 refusal on the most
+    // common multi-stack destroy flow.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('NestedStackExample', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'NestedStackExample', region: 'us-east-1' },
+      { stackName: 'NestedStackExample~Child', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => {
+      if (name === 'NestedStackExample~Child') {
+        return {
+          state: makeChildStackState('NestedStackExample~Child', 'NestedStackExample', 'Child'),
+          etag: '"x"',
+        };
+      }
+      return { state: makeStackState(name), etag: '"x"' };
+    });
+
+    await runDestroy(['destroy', '--all', '--yes']);
+
+    // Parent dispatched to runner; child invisible to --all in synth-success.
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('NestedStackExample');
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).not.toMatch(/nested child of/);
+  });
+
   it('refuses synth-success direct child destroy (the typical user-types-child path)', async () => {
     // synth-success path: appStacks contains only the parent (CDK top-level).
     // The child appears in state but is FILTERED OUT of candidateStacks by

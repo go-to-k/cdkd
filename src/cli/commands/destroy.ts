@@ -248,6 +248,14 @@ async function destroyCommand(
         for (const pattern of stackPatterns) {
           if (pattern.includes('*') || pattern.includes('?') || pattern.includes('/')) continue;
           if (!allStateNamesSet.has(pattern)) continue;
+          // Single-region MVP per design §3 (`parentRegion === region` until
+          // cross-region nested stacks ship). For v6 state — which is the
+          // only state that has `parentStack` set, and therefore the only
+          // state the refusal below acts on — `region` is always populated,
+          // so the `?? region` tail is defensive against a hand-edited
+          // legacy state file rather than a code path v6 writers reach.
+          // A future cross-region extension should mirror the multi-region
+          // disambiguation logic in the per-stack loop below.
           const refRegion = allStateRefs.find((r) => r.stackName === pattern)?.region ?? region;
           const stateOnlyResult = await stateBackend.getState(pattern, refRegion);
           if (stateOnlyResult?.state.parentStack) {
