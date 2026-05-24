@@ -66,6 +66,8 @@ export function buildStackTree(entries: readonly StackTreeEntry[]): StackTreeNod
   const cmp = (a: StackTreeNode, b: StackTreeNode): number => {
     if (a.stackName < b.stackName) return -1;
     if (a.stackName > b.stackName) return 1;
+    // Sort legacy v1 records (no region) last. AWS region strings are ASCII,
+    // so U+FFFF can never collide with a real region value.
     const ar = a.region ?? '￿';
     const br = b.region ?? '￿';
     if (ar < br) return -1;
