@@ -1,3 +1,10 @@
+## [0.147.2](https://github.com/go-to-k/cdkd/compare/v0.147.1...v0.147.2) (2026-05-24)
+
+
+### Bug Fixes
+
+* **local:** close Service Connect / Cloud Map review nits ([#577](https://github.com/go-to-k/cdkd/issues/577)) ([1e97aea](https://github.com/go-to-k/cdkd/commit/1e97aea677da26c150f104f3b1c55a20966300cf))
+
 ## [0.147.1](https://github.com/go-to-k/cdkd/compare/v0.147.0...v0.147.1) (2026-05-24)
 
 
