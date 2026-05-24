@@ -438,11 +438,15 @@
     {
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
+        "export-nested-stack",
         "import-nested-stack",
         "nested-stack",
         "nested-stack-deep"
       ],
       "signals": {
+        "export-nested-stack": [
+          "literal"
+        ],
         "import-nested-stack": [
           "literal"
         ],
@@ -2688,6 +2692,7 @@
         "cross-region-state-bucket",
         "cross-stack-references",
         "deletion-policy-retain",
+        "export-nested-stack",
         "import-nested-stack",
         "import-value-strong-ref",
         "infra-security",
@@ -2719,6 +2724,10 @@
           "l1"
         ],
         "deletion-policy-retain": [
+          "l2",
+          "literal"
+        ],
+        "export-nested-stack": [
           "l2",
           "literal"
         ],
