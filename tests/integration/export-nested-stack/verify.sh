@@ -71,7 +71,7 @@ cleanup() {
   # Belt-and-braces: scrub any leftover SSM parameters / cdkd state
   # even when destroy already cleaned up.
   for p in $(aws ssm describe-parameters --region "${REGION}" \
-    --parameter-filters "Key=Name,Option=Contains,Values=cdkd-exportnestedstack" \
+    --parameter-filters "Key=Name,Option=Contains,Values=CdkdExportNestedStack" \
     --query 'Parameters[].Name' --output text 2>/dev/null || true); do
     echo "[verify] cleanup: aws ssm delete-parameter ${p}"
     aws ssm delete-parameter --name "${p}" --region "${REGION}" || true
@@ -169,7 +169,7 @@ echo "[verify] step 9 ok: cdkd destroy exited 0"
 
 echo "[verify] step 10: assert AWS resources are GONE"
 for p in $(aws ssm describe-parameters --region "${REGION}" \
-  --parameter-filters "Key=Name,Option=Contains,Values=cdkd-exportnestedstack" \
+  --parameter-filters "Key=Name,Option=Contains,Values=CdkdExportNestedStack" \
   --query 'Parameters[].Name' --output text 2>/dev/null || true); do
   echo "[verify] FAIL: leftover SSM parameter ${p}"
   exit 1
