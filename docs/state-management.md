@@ -944,6 +944,8 @@ aws s3api get-object \
 # Display all stacks present in the state bucket (cdkd-native)
 cdkd state list
 cdkd state ls --long          # include resource count, last-modified, lock status
+cdkd state list --tree        # parent → child stack tree for nested stacks
+cdkd state list --tree --json # tree as nested JSON for tooling
 
 # Or, low-level via the AWS CLI:
 aws s3 ls s3://cdkd-state-bucket/cdkd/ --recursive \
@@ -952,6 +954,22 @@ aws s3 ls s3://cdkd-state-bucket/cdkd/ --recursive \
   | sed 's|cdkd/||; s|/state.json||'
 # Output: <stackName>/<region>, one row per (stackName, region) pair.
 ```
+
+`--tree` walks each state record's v6 `parentStack` / `parentRegion` fields
+(populated by `NestedStackProvider.create` and recursive
+`cdkd import --migrate-from-cloudformation`) to render `tree(1)`-style
+box-drawing of the parent → child hierarchy:
+
+```text
+NestedStackDeep (us-east-1)
+└── NestedStackDeep~Child (us-east-1)
+    └── NestedStackDeep~Child~Grandchild (us-east-1)
+```
+
+Flat output is preserved as the default so scripts that grep
+`cdkd state list` still work. Children whose parent state record is missing
+(parent destroyed out-of-band, or state hand-deleted) surface at the root
+level — they stay visible rather than vanishing.
 
 Note: `cdkd list` (alias `ls`) lists stacks from the local CDK app via
 synthesis (CDK CLI parity — see README), which is a different question

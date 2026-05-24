@@ -306,6 +306,8 @@ cdkd state info --state-bucket my-bucket  # explicit bucket; reports Source: --s
 cdkd state list
 cdkd state ls --long          # include resource count, last-modified, lock status
 cdkd state list --json        # JSON output (alone, or combined with --long)
+cdkd state list --tree        # parent → child stack tree (nested stacks; #555 A3)
+cdkd state list --tree --json # tree as nested JSON
 
 # List resources of a single stack from state
 cdkd state resources MyStack          # aligned columns: LogicalID, Type, PhysicalID
