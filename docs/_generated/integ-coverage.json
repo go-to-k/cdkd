@@ -439,10 +439,14 @@
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
         "import-nested-stack",
+        "nested-stack",
         "nested-stack-deep"
       ],
       "signals": {
         "import-nested-stack": [
+          "literal"
+        ],
+        "nested-stack": [
           "literal"
         ],
         "nested-stack-deep": [

@@ -61,7 +61,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::AppSync::Resolver` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AutoScaling::AutoScalingGroup` | [`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l1,literal)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
 | `AWS::BedrockAgentCore::Runtime` | [`bedrock-agentcore`](../tests/integration/bedrock-agentcore/) (literal) |
-| `AWS::CloudFormation::Stack` | [`import-nested-stack`](../tests/integration/import-nested-stack/) (literal)<br>[`nested-stack-deep`](../tests/integration/nested-stack-deep/) (literal) |
+| `AWS::CloudFormation::Stack` | [`import-nested-stack`](../tests/integration/import-nested-stack/) (literal)<br>[`nested-stack`](../tests/integration/nested-stack/) (literal)<br>[`nested-stack-deep`](../tests/integration/nested-stack-deep/) (literal) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudFront::Distribution` | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) (l2)<br>[`cloudfront-function-url`](../tests/integration/cloudfront-function-url/) (l2)<br>[`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudTrail::Trail` | [`infra-security`](../tests/integration/infra-security/) (l2,literal) |
