@@ -3,18 +3,24 @@ import {
   applyImportOverlayForPhase2,
   buildCdkdStateStackTree,
   buildImportPlan,
+  buildPerStackImportNodes,
+  cdkd2cfnStackName,
+  extractChildImportParameters,
   filterTemplateForImport,
   flattenCdkdStateTreeLeafFirst,
   hasCompositeIdSplitter,
   injectDeletionPolicyForImport,
+  injectRetainAndRewriteTemplateUrl,
   invokePreDeleteHandler,
   isImportUnsupportedRecreatableType,
   isNeverImportableType,
   isPhase2CreatableType,
+  parseCfnChildStackNameOverrides,
   parseParameterOverrides,
   refuseTransientContextIfUnsafe,
   reportDriftBaselineGaps,
   resolveTemplateParameters,
+  runPerStackImportLoop,
   scanCrossStackReferences,
   splitCompositePhysicalId,
   type CdkdStateStackTree,
@@ -1967,5 +1973,448 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
       { logicalId: 'Child', childStackName: 'Root~Child' },
     ]);
     expect(result.blocked).toEqual([]);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Issue #464 PR B2 — `cdkd export` per-stack IMPORT loop helpers.
+// PR B2 ships the full cdkd → CFn migration for nested-stack trees. These
+// tests cover the small, pure helpers underpinning the orchestrator. The
+// orchestrator itself (`runPerStackImportLoop`) is exercised in
+// `export-nested-loop.test.ts` (separate file so AWS SDK + uploadCfnTemplate
+// vi.mocks don't leak into the rest of export.test.ts).
+// -----------------------------------------------------------------------------
+
+describe('cdkd2cfnStackName (issue #464 PR B2)', () => {
+  it('passes through CFn-compatible stack names', () => {
+    expect(cdkd2cfnStackName('MyApp')).toBe('MyApp');
+    expect(cdkd2cfnStackName('My-App-Stack')).toBe('My-App-Stack');
+    expect(cdkd2cfnStackName('Root123')).toBe('Root123');
+  });
+
+  it("substitutes '~' with '-' for the v6 nested-child name shape", () => {
+    expect(cdkd2cfnStackName('Root~Child')).toBe('Root-Child');
+    expect(cdkd2cfnStackName('Root~Child~Grandchild')).toBe('Root-Child-Grandchild');
+  });
+
+  it('handles every cdkd state-key form the v6 schema produces', () => {
+    // Mixed-case + digits + hyphens already in the cdkd name. The mapping
+    // should only touch `~` — everything else passes through.
+    expect(cdkd2cfnStackName('MyApp-Prod~Database123')).toBe('MyApp-Prod-Database123');
+  });
+});
+
+describe('parseCfnChildStackNameOverrides (issue #464 PR B2)', () => {
+  it('returns an empty map when the flag is unset', () => {
+    expect(parseCfnChildStackNameOverrides(undefined).size).toBe(0);
+    expect(parseCfnChildStackNameOverrides([]).size).toBe(0);
+  });
+
+  it('parses a single override', () => {
+    const map = parseCfnChildStackNameOverrides(['MyApp~Database=my-app-db']);
+    expect(map.get('MyApp~Database')).toBe('my-app-db');
+    expect(map.size).toBe(1);
+  });
+
+  it('parses multiple overrides', () => {
+    const map = parseCfnChildStackNameOverrides([
+      'MyApp~DatabaseA=my-app-db-a',
+      'MyApp~DatabaseB=my-app-db-b',
+    ]);
+    expect(map.get('MyApp~DatabaseA')).toBe('my-app-db-a');
+    expect(map.get('MyApp~DatabaseB')).toBe('my-app-db-b');
+  });
+
+  it("rejects entries without '='", () => {
+    expect(() => parseCfnChildStackNameOverrides(['MyApp~Database'])).toThrow(
+      /not in <cdkdName>=<cfnName> form/
+    );
+  });
+
+  it('rejects empty cdkdName', () => {
+    expect(() => parseCfnChildStackNameOverrides(['=foo'])).toThrow(
+      /empty cdkd stack name/
+    );
+  });
+
+  it('rejects empty cfnName', () => {
+    expect(() => parseCfnChildStackNameOverrides(['MyApp~Database='])).toThrow(
+      /empty CFn stack name/
+    );
+  });
+
+  it('rejects CFn names that violate the CFn naming constraint', () => {
+    // CFn stack names must match [a-zA-Z][-a-zA-Z0-9]* — no '~', '_', '.', '/'.
+    expect(() => parseCfnChildStackNameOverrides(['x=MyApp_Database'])).toThrow(
+      /must match \[a-zA-Z\]/
+    );
+    expect(() => parseCfnChildStackNameOverrides(['x=MyApp.Database'])).toThrow(
+      /must match \[a-zA-Z\]/
+    );
+    expect(() => parseCfnChildStackNameOverrides(['x=MyApp~Database'])).toThrow(
+      /must match \[a-zA-Z\]/
+    );
+    expect(() => parseCfnChildStackNameOverrides(['x=1MyApp'])).toThrow(
+      /must match \[a-zA-Z\]/
+    );
+  });
+
+  it('rejects duplicate cdkdName keys (no silent last-wins)', () => {
+    expect(() =>
+      parseCfnChildStackNameOverrides(['MyApp~Db=a', 'MyApp~Db=b'])
+    ).toThrow(/duplicate override for cdkd stack 'MyApp~Db'/);
+  });
+});
+
+describe('extractChildImportParameters (issue #464 PR B2)', () => {
+  it('returns empty when the parent has no nested-stack row', () => {
+    const parentTemplate = { Resources: {} };
+    const result = extractChildImportParameters(parentTemplate, 'Child');
+    expect(result.params).toEqual([]);
+    expect(result.intrinsicSkipped).toEqual([]);
+  });
+
+  it("returns empty when the row has no Properties.Parameters", () => {
+    const parentTemplate = {
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
+      },
+    };
+    expect(extractChildImportParameters(parentTemplate, 'Child').params).toEqual([]);
+  });
+
+  it('forwards literal-string Parameter values', () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            Parameters: { Env: 'prod', Region: 'us-east-1' },
+          },
+        },
+      },
+    };
+    const result = extractChildImportParameters(parentTemplate, 'Child');
+    expect(result.params).toEqual([
+      { ParameterKey: 'Env', ParameterValue: 'prod' },
+      { ParameterKey: 'Region', ParameterValue: 'us-east-1' },
+    ]);
+    expect(result.intrinsicSkipped).toEqual([]);
+  });
+
+  it('coerces numbers and booleans to strings', () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Count: 42, Enabled: true } },
+        },
+      },
+    };
+    const result = extractChildImportParameters(parentTemplate, 'Child');
+    expect(result.params).toEqual([
+      { ParameterKey: 'Count', ParameterValue: '42' },
+      { ParameterKey: 'Enabled', ParameterValue: 'true' },
+    ]);
+  });
+
+  it('skips intrinsic-valued Parameters with a warning list', () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            Parameters: {
+              Literal: 'hello',
+              FromRef: { Ref: 'OtherParam' },
+              FromGetAtt: { 'Fn::GetAtt': ['OtherResource', 'Arn'] },
+            },
+          },
+        },
+      },
+    };
+    const result = extractChildImportParameters(parentTemplate, 'Child');
+    expect(result.params).toEqual([{ ParameterKey: 'Literal', ParameterValue: 'hello' }]);
+    expect(result.intrinsicSkipped).toEqual(['FromRef', 'FromGetAtt']);
+  });
+
+  it('tolerates malformed Properties.Parameters (Array / null)', () => {
+    expect(
+      extractChildImportParameters(
+        { Resources: { Child: { Type: 'X', Properties: { Parameters: null } } } },
+        'Child'
+      ).params
+    ).toEqual([]);
+    expect(
+      extractChildImportParameters(
+        { Resources: { Child: { Type: 'X', Properties: { Parameters: [] } } } },
+        'Child'
+      ).params
+    ).toEqual([]);
+  });
+});
+
+describe('injectRetainAndRewriteTemplateUrl (issue #464 PR B2)', () => {
+  it('adds DeletionPolicy: Retain on a row that has no DeletionPolicy', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url');
+    expect(result['DeletionPolicy']).toBe('Retain');
+  });
+
+  it('overwrites any existing DeletionPolicy with Retain', () => {
+    const row = {
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: { TemplateURL: 'old' },
+      DeletionPolicy: 'Delete',
+    };
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url');
+    expect(result['DeletionPolicy']).toBe('Retain');
+  });
+
+  it('rewrites Properties.TemplateURL to the new value', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url');
+    const props = result['Properties'] as { TemplateURL: string };
+    expect(props.TemplateURL).toBe('https://new.url');
+  });
+
+  it('preserves other Properties (Parameters, Tags, NotificationARNs)', () => {
+    const row = {
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: {
+        TemplateURL: 'old',
+        Parameters: { Env: 'prod' },
+        Tags: [{ Key: 'k', Value: 'v' }],
+        NotificationARNs: ['arn:aws:sns:...'],
+      },
+    };
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url');
+    const props = result['Properties'] as Record<string, unknown>;
+    expect(props['Parameters']).toEqual({ Env: 'prod' });
+    expect(props['Tags']).toEqual([{ Key: 'k', Value: 'v' }]);
+    expect(props['NotificationARNs']).toEqual(['arn:aws:sns:...']);
+  });
+
+  it('does NOT mutate the input row (returns a new object)', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'old' } };
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url');
+    expect(result).not.toBe(row);
+    expect((row['Properties'] as { TemplateURL: string }).TemplateURL).toBe('old');
+    expect(row['DeletionPolicy']).toBeUndefined();
+  });
+
+  it('handles missing Properties (synthesizes the field)', () => {
+    const row = { Type: 'AWS::CloudFormation::Stack' };
+    const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url');
+    const props = result['Properties'] as { TemplateURL: string };
+    expect(props.TemplateURL).toBe('https://new.url');
+    expect(result['DeletionPolicy']).toBe('Retain');
+  });
+});
+
+describe('buildPerStackImportNodes (issue #464 PR B2)', () => {
+  // The helper takes a CdkdStateStackTree (loaded via buildCdkdStateStackTree)
+  // plus the root template + per-logical-id absolute paths to nested-child
+  // templates and recursively reads each child template from disk. We use a
+  // real tmpdir so `readNestedChildTemplateFile`'s I/O path runs unmocked.
+  let tmpRoot: string;
+  beforeEach(async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    tmpRoot = mkdtempSync(join(tmpdir(), 'cdkd-export-pernode-test-'));
+    // Helper for tests to write child / grandchild template fixtures.
+    (globalThis as Record<string, unknown>)['__writeFixtureForBuildPerStackImportNodesTest'] = (
+      relPath: string,
+      content: Record<string, unknown>
+    ): string => {
+      const abs = join(tmpRoot, relPath);
+      writeFileSync(abs, JSON.stringify(content), 'utf-8');
+      return abs;
+    };
+  });
+  afterEach(async () => {
+    const { rmSync } = await import('node:fs');
+    rmSync(tmpRoot, { recursive: true, force: true });
+    delete (globalThis as Record<string, unknown>)['__writeFixtureForBuildPerStackImportNodesTest'];
+  });
+
+  function fixturePath(relPath: string, content: Record<string, unknown>): string {
+    return (
+      globalThis as Record<
+        string,
+        (relPath: string, content: Record<string, unknown>) => string
+      >
+    )['__writeFixtureForBuildPerStackImportNodesTest']!(relPath, content);
+  }
+
+  it('returns a single entry for a leaf-only tree', () => {
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root', region: 'us-east-1' }),
+      nestedChildren: new Map(),
+    };
+    const rootTemplate = { Resources: { Bucket: { Type: 'AWS::S3::Bucket' } } };
+    const nodes = buildPerStackImportNodes('Root', rootTemplate, {}, 'json', tree);
+    expect(nodes.size).toBe(1);
+    expect(nodes.get('Root')!.template).toBe(rootTemplate);
+    expect(nodes.get('Root')!.templateFormat).toBe('json');
+  });
+
+  it('loads a child template via the nested-template path index', () => {
+    const childTemplate = { Resources: { Param: { Type: 'AWS::SSM::Parameter' } } };
+    const childPath = fixturePath('child.template.json', childTemplate);
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+      }),
+      nestedChildren: new Map([
+        [
+          'Child',
+          {
+            stackName: 'Root~Child',
+            region: 'us-east-1',
+            state: makeState({
+              stackName: 'Root~Child',
+              region: 'us-east-1',
+              parentStack: 'Root',
+              parentLogicalId: 'Child',
+            }),
+            nestedChildren: new Map(),
+          },
+        ],
+      ]),
+    };
+    const rootTemplate = {
+      Resources: { Child: { Type: 'AWS::CloudFormation::Stack' } },
+    };
+    const nodes = buildPerStackImportNodes(
+      'Root',
+      rootTemplate,
+      { Child: childPath },
+      'json',
+      tree
+    );
+    expect(nodes.size).toBe(2);
+    expect(nodes.get('Root~Child')!.template).toEqual(childTemplate);
+  });
+
+  it('recurses into grandchildren via the child template Metadata', () => {
+    const grandTemplate = { Resources: { Bucket: { Type: 'AWS::S3::Bucket' } } };
+    const grandPath = fixturePath('grand.template.json', grandTemplate);
+    // The child template references the grand template via aws:asset:path.
+    // Path is relative to the CHILD template's directory (so we use the
+    // same tmpRoot — both files are siblings).
+    const childTemplate = {
+      Resources: {
+        Grand: {
+          Type: 'AWS::CloudFormation::Stack',
+          Metadata: { 'aws:asset:path': 'grand.template.json' },
+        },
+      },
+    };
+    const childPath = fixturePath('child.template.json', childTemplate);
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: { Child: { resourceType: 'AWS::CloudFormation::Stack' } },
+      }),
+      nestedChildren: new Map([
+        [
+          'Child',
+          {
+            stackName: 'Root~Child',
+            region: 'us-east-1',
+            state: makeState({
+              stackName: 'Root~Child',
+              region: 'us-east-1',
+              resources: { Grand: { resourceType: 'AWS::CloudFormation::Stack' } },
+              parentStack: 'Root',
+              parentLogicalId: 'Child',
+            }),
+            nestedChildren: new Map([
+              [
+                'Grand',
+                {
+                  stackName: 'Root~Child~Grand',
+                  region: 'us-east-1',
+                  state: makeState({
+                    stackName: 'Root~Child~Grand',
+                    region: 'us-east-1',
+                    parentStack: 'Root~Child',
+                    parentLogicalId: 'Grand',
+                  }),
+                  nestedChildren: new Map(),
+                },
+              ],
+            ]),
+          },
+        ],
+      ]),
+    };
+    const rootTemplate = {
+      Resources: { Child: { Type: 'AWS::CloudFormation::Stack' } },
+    };
+    const nodes = buildPerStackImportNodes(
+      'Root',
+      rootTemplate,
+      { Child: childPath },
+      'json',
+      tree
+    );
+    expect(nodes.size).toBe(3);
+    expect(nodes.get('Root~Child~Grand')!.template).toEqual(grandTemplate);
+  });
+
+  it('throws when a child has cdkd state but no nested-template path on the parent', () => {
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'Root', region: 'us-east-1' }),
+      nestedChildren: new Map([
+        [
+          'Child',
+          {
+            stackName: 'Root~Child',
+            region: 'us-east-1',
+            state: makeState({ stackName: 'Root~Child', region: 'us-east-1' }),
+            nestedChildren: new Map(),
+          },
+        ],
+      ]),
+    };
+    const rootTemplate = {
+      Resources: { Child: { Type: 'AWS::CloudFormation::Stack' } },
+    };
+    expect(() =>
+      buildPerStackImportNodes('Root', rootTemplate, {}, 'json', tree)
+    ).toThrow(/no Metadata\['aws:asset:path'\] in the parent template/);
+  });
+
+  it('throws when the tree root does not match the supplied rootStackName', () => {
+    const tree: CdkdStateStackTree = {
+      stackName: 'NotRoot',
+      region: 'us-east-1',
+      state: makeState({ stackName: 'NotRoot', region: 'us-east-1' }),
+      nestedChildren: new Map(),
+    };
+    expect(() =>
+      buildPerStackImportNodes('Root', {}, {}, 'json', tree)
+    ).toThrow(/tree root 'NotRoot' does not match expected root stack name 'Root'/);
+  });
+
+  // Suppress noisy `runPerStackImportLoop` import — the orchestrator is
+  // tested in `export-nested-loop.test.ts`. Reference here keeps the
+  // import-list's intent grep-able.
+  it('runPerStackImportLoop is exported (orchestrator covered in export-nested-loop.test.ts)', () => {
+    expect(typeof runPerStackImportLoop).toBe('function');
   });
 });

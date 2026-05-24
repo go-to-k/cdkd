@@ -253,11 +253,9 @@ per-stack loop.
 lifted from `NEVER_IMPORTABLE_TYPES` in
 [src/cli/commands/export.ts](../../src/cli/commands/export.ts) and
 routed through the dedicated branch in `buildImportPlan` that populates
-`nestedStackRows: NestedStackRow[]`. The orchestrator currently
-hard-errors (warns in `--dry-run`) with a clear PR B2 pointer when
-`nestedStackRows.length > 0`.
-
-PR B2 replaces the hard-error with the per-stack IMPORT loop in §4.3.
+`nestedStackRows: NestedStackRow[]`. The orchestrator's PR B1 hard-error
+on `nestedStackRows.length > 0` has been replaced (PR B2) by the
+per-stack IMPORT loop in §4.3.
 
 ### 4.3. Per-stack IMPORT loop (REVISED 2026-05-24 per §4.0 spike)
 
@@ -583,18 +581,35 @@ disjoint migration directions.
    recursive state walker + `flattenCdkdStateTreeLeafFirst`; orchestrator
    hard-errors (warns in `--dry-run`) when nested-stack rows present.
    No CFn-side write path. ~700 LOC in `src/cli/commands/export.ts` + tests.
-3. **PR B2** 🔄 **redesigned 2026-05-24 per §4.0 spike**: full `cdkd export`
-   recursive support — per-stack IMPORT loop per §4.3 (leaf-first). NOT
-   the original "one atomic --include-nested-stacks IMPORT changeset"
-   design (AWS rejects that combination with
+3. **PR B2** ✅ **shipped**: full `cdkd export` recursive support —
+   per-stack IMPORT loop per §4.3 (leaf-first). NOT the original "one
+   atomic --include-nested-stacks IMPORT changeset" design (AWS rejects
+   that combination with
    `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`).
    Each cdkd-managed stack in the tree becomes its own CFn stack via a
    separate IMPORT changeset; non-leaf parents use the AWS-docs "Nest
-   an existing stack" pattern to adopt the just-created child CFn stacks
-   as nested references. Estimated ~1000-1500 LOC + new
-   `tests/integration/export-nested-stack/` real-AWS fixture + 3-axis
-   review. Splittable into B2a (leaf-only IMPORT) + B2b (parent-with-nested
-   IMPORT) if reviewer-load needs trimming.
+   an existing stack" pattern (`DeletionPolicy: Retain` plus
+   `ResourceIdentifier: { StackId: <child-cfn-arn> }` plus a rewritten
+   `TemplateURL` pointing at the child's `GetTemplate(Processed)`
+   output) to adopt the just-created child CFn stacks as nested
+   references. Shipped: `runPerStackImportLoop` orchestrator in
+   [src/cli/commands/export.ts](../../src/cli/commands/export.ts) plus
+   the helper surface (`cdkd2cfnStackName` / `parseCfnChildStackNameOverrides`
+   / `extractChildImportParameters` / `injectRetainAndRewriteTemplateUrl`
+   / `buildPerStackImportNodes` / `submitImportChangeSet` /
+   `fetchCfnStackTemplate`); new `--cfn-child-stack-name` CLI flag for
+   per-child name overrides; new
+   [tests/integration/export-nested-stack/](../../tests/integration/export-nested-stack/)
+   real-AWS fixture (parent + 1 nested child, 2 SSM Parameters per
+   stack) that asserts the IMPORT loop ends with both CFn stacks
+   adopted via `DescribeStackResources(Child)` PhysicalResourceId =
+   child stack ARN AND `DescribeStacks(<child-arn>).ParentId` /
+   `RootId` matching the parent's ARN. Per-child Parameter resolution
+   is literal-string-only for v1 — intrinsic-valued Parameters from
+   the parent's `Properties.Parameters` block are skipped with a
+   warning, and the child template's Parameter Defaults must cover
+   them; full intrinsic resolution at leaf-IMPORT time is tracked as
+   a follow-up.
 
 PR B2 requires (a) CLAUDE.md updates removing the nested-stack deferral
 comments from the `cdkd export` bullet, (b) a new entry in

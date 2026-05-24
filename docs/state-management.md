@@ -304,8 +304,13 @@ PR A — each nested child gets its own v6-keyed state file with all three
 parent-link fields populated, and the source CFn stacks are retired via a
 single parent-side `DeleteStack` cascade after recursive `DeletionPolicy: Retain`
 injection. `cdkd export` of a cdkd-managed nested stack back into
-CloudFormation is still deferred to [#464](https://github.com/go-to-k/cdkd/issues/464)
-PR B. Fresh `cdkd deploy` of new nested stacks has been supported since #459.
+CloudFormation is supported as of [#464](https://github.com/go-to-k/cdkd/issues/464)
+PR B2 — the orchestrator submits one IMPORT changeset per cdkd-managed
+stack in leaf-first order, non-leaf parents adopt their just-imported
+children via the AWS-docs "Nest an existing stack" pattern, and cdkd
+state for every stack in the tree is deleted leaf-first after the
+CFn-side IMPORT loop completes. Fresh `cdkd deploy` of new nested
+stacks has been supported since #459.
 
 ## State Schema
 
