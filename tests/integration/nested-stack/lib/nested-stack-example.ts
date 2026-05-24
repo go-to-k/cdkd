@@ -25,6 +25,13 @@ class ChildNestedStack extends cdk.NestedStack {
   constructor(scope: Construct, id: string, props?: cdk.NestedStackProps) {
     super(scope, id, props);
 
+    // Pin the AWS::CloudFormation::Stack logical id so the cdkd state key
+    // (`<parent>~<logicalId>`) matches the README's documented `~Child`
+    // shape instead of the CDK auto-generated `~<Name>NestedStack<Name>
+    // NestedStackResource<hash>` compound. See memory rule
+    // `feedback_cdk_nested_stack_overridelogical_id.md` + issue #575.
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
+
     this.bucket = new s3.Bucket(this, 'Bucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
