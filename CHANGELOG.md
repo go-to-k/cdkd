@@ -1,3 +1,10 @@
+# [0.147.0](https://github.com/go-to-k/cdkd/compare/v0.146.1...v0.147.0) (2026-05-24)
+
+
+### Features
+
+* **export:** recursive nested-stack tree walker ([#464](https://github.com/go-to-k/cdkd/issues/464) PR B1) ([#571](https://github.com/go-to-k/cdkd/issues/571)) ([a58618b](https://github.com/go-to-k/cdkd/commit/a58618bf33584347167aea7226e853e37471f332))
+
 ## [0.146.1](https://github.com/go-to-k/cdkd/compare/v0.146.0...v0.146.1) (2026-05-24)
 
 
