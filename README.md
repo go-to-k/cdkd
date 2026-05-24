@@ -585,21 +585,31 @@ The Custom Resource Lambda must be idempotent AND must POST to
 `event.ResponseURL` per the cfn-response protocol. Without the flag,
 the command refuses to proceed and the user is expected to destroy
 the offending resources (or accept abandoning them) first. Nested
-`AWS::CloudFormation::Stack` rows have partial support as of
-[#464](https://github.com/go-to-k/cdkd/issues/464) PR B1: `cdkd export`
+`AWS::CloudFormation::Stack` rows are fully supported as of
+[#464](https://github.com/go-to-k/cdkd/issues/464) PR B2: `cdkd export`
 recursively walks the cdkd state tree, validates every parent → child
-link, and surfaces the full leaf-first migration scope to the user;
-the CFn-side per-stack IMPORT loop submission itself is deferred to
-PR B2 (the original "one atomic `--include-nested-stacks` IMPORT
-changeset" design was found infeasible by the 2026-05-24 AWS spike —
-AWS rejects that flag combination with
+link, and submits **IMPORT changesets per cdkd-managed stack** in
+leaf-first order — leaf stacks via one CREATE-via-IMPORT changeset, non-leaf
+parents via two changesets (Phase 1A CREATE-via-IMPORT for the parent's
+leaf resources only, then Phase 1B UPDATE-via-IMPORT for the just-imported
+child adoption per AWS's
+["Nest an existing stack"](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-nested-stacks.html)
+pattern with `DeletionPolicy: Retain` plus
+`ResourceIdentifier: { StackId: <child arn> }` plus AWS-validated
+child-Tag forwarding). Between phases cdkd flips each
+stack's status from `IMPORT_COMPLETE` to `UPDATE_COMPLETE` via a no-op
+tag-only `UpdateStack` (AWS rejects `IMPORT_COMPLETE` as a non-importable
+status for nested adoption). The original "one atomic
+`--include-nested-stacks` IMPORT changeset" design was found infeasible
+by the 2026-05-24 AWS spike — AWS rejects that flag combination with
 `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`;
 see [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md)
-§4.0), so the command warns on `--dry-run` / hard-errors on real run
-with a clear pointer + workaround (keep on cdkd, or destroy children
-leaf-first via `cdkd state destroy <child>` and re-export the
-flattened parent). Fresh `cdkd deploy` of nested
-stacks works via [#459](https://github.com/go-to-k/cdkd/issues/459).
+§4.0 / §4.3 for the per-stack-loop algorithm. Each child cdkd stack
+(`<parent>~<childLogicalId>`) becomes its own CFn stack named
+`<parent>-<childLogicalId>` by default (`~` is illegal in CFn stack
+names); override per child with `--cfn-child-stack-name '<cdkd>=<cfn>'`
+(repeatable). Fresh `cdkd deploy` of nested stacks works via
+[#459](https://github.com/go-to-k/cdkd/issues/459).
 
 ```bash
 cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
@@ -607,6 +617,10 @@ cdkd export MyStack --cfn-stack-name MyStack-CFn
 cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
 cdkd export MyStack --template path.json      # skip synth, use a pre-rendered template (JSON or YAML — format auto-detected)
 cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn-CREATE Custom Resources
+
+# Nested-stack tree (parent + children). Default child CFn names: '<parent>-<childLogicalId>'.
+cdkd export MyApp                             # leaf-first per-stack IMPORT loop
+cdkd export MyApp --cfn-child-stack-name 'MyApp~Database=my-app-db'   # per-child name override
 ```
 
 Accepts JSON and YAML templates. YAML round-trips through a CFn-aware codec
