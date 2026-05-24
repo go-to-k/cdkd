@@ -38,6 +38,20 @@ Hard-rejected at boot with an actionable error (mirrors PR 8a's class-4
   v1 emulates the AWS-managed Service Connect config only. The user-supplied
   Envoy `bootstrap.yaml` shape varies enough that auto-translating it is a
   separate concern.
+
+  *Carve-out from the "hard-rejected" intro above*: this bullet is
+  implemented as a resolver `warnings.push(...)` (warn-and-continue), not
+  a throw — unlike the sibling `PublicDnsNamespace` / `HttpNamespace`
+  non-goals which DO throw `EcsTaskResolutionError` at boot. The asymmetry
+  is intentional: CDK ECS L2 constructs (e.g. `appmesh.VirtualNode`'s
+  `addToTaskDefinition`) auto-inject `ProxyConfiguration` at synth time, so
+  a hard reject would refuse to run common app shapes locally even when the
+  proxy is not load-bearing for the dev's test. Warning surfaces the
+  divergence to the user while letting the business container run.
+  Honoring `proxyConfiguration` end-to-end is deferred to Layer B (Envoy
+  sidecar). See [PR #577](https://github.com/go-to-k/cdkd/pull/577) +
+  [issue #578](https://github.com/go-to-k/cdkd/issues/578) for the
+  divergence history.
 - **mTLS / TLS termination** between services. Service Connect supports TLS
   termination at the Envoy sidecar (when the user attaches a `tlsConfiguration`);
   v1 routes plaintext only.
