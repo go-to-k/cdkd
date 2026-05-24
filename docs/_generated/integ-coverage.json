@@ -2803,6 +2803,17 @@
       }
     },
     {
+      "resourceType": "AWS::ServiceDiscovery::Service",
+      "integs": [
+        "local-ecs-service-connect"
+      ],
+      "signals": {
+        "local-ecs-service-connect": [
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::StepFunctions::StateMachine",
       "integs": [
         "stepfunctions"
@@ -2871,10 +2882,6 @@
     {
       "resourceType": "AWS::S3Tables::Table",
       "rationale": "see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces."
-    },
-    {
-      "resourceType": "AWS::ServiceDiscovery::Service",
-      "rationale": "drift-revert-vpc covers PrivateDnsNamespace; Service is a sub-resource sharing the same provider. Add an ECS service-discovery integ if a Service-specific real-AWS bug surfaces."
     }
   ],
   "unknownTypesInIntegs": [

@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**100 / 112 registered SDK Providers** have at least one integ fixture exercising them. 12 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**101 / 112 registered SDK Providers** have at least one integ fixture exercising them. 11 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -20,7 +20,7 @@ L2 detection is a hand-curated lower bound — a missed L2 wrapper produces a fa
 
 _None._ Every registered SDK Provider has at least one integ fixture or an explicit `// allow-no-integ:` rationale.
 
-## Allow-listed providers (12)
+## Allow-listed providers (11)
 
 Registered without an integ fixture, with an explicit `// allow-no-integ: <rationale>` comment on the register line in [src/provisioning/register-providers.ts](../src/provisioning/register-providers.ts). The hook accepts these — but each is a deliberate verification gap and should be revisited if a real-AWS bug surfaces against the type.
 
@@ -37,9 +37,8 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
 | `AWS::S3Tables::Namespace` | existing s3-tables integ exercises only TableBucket. Namespace + Table are sub-resources sharing the same provider; unit roundtrip + parent-bucket integ suffice for now. |
 | `AWS::S3Tables::Table` | see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces. |
-| `AWS::ServiceDiscovery::Service` | drift-revert-vpc covers PrivateDnsNamespace; Service is a sub-resource sharing the same provider. Add an ECS service-discovery integ if a Service-specific real-AWS bug surfaces. |
 
-## Covered providers (100)
+## Covered providers (101)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -141,6 +140,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::SSM::Parameter` | [`bench-sdk`](../tests/integration/bench-sdk/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`context-test`](../tests/integration/context-test/) (l2)<br>[`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) (l1)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/) (l1)<br>[`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) (l2,literal)<br>[`import-nested-stack`](../tests/integration/import-nested-stack/) (l2,literal)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/) (l2)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) (l2)<br>[`legacy-state-migration`](../tests/integration/legacy-state-migration/) (l2)<br>[`microservices`](../tests/integration/microservices/) (l2)<br>[`multi-region-same-stack`](../tests/integration/multi-region-same-stack/) (l2)<br>[`nested-stack`](../tests/integration/nested-stack/) (l2)<br>[`nested-stack-deep`](../tests/integration/nested-stack-deep/) (l2)<br>[`schema-v5-to-v6-migration`](../tests/integration/schema-v5-to-v6-migration/) (l2)<br>[`state-info-command`](../tests/integration/state-info-command/) (l2)<br>[`vpc-lookup`](../tests/integration/vpc-lookup/) (l2) |
 | `AWS::SecretsManager::Secret` | [`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`event-driven`](../tests/integration/event-driven/) (l2)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/) (l2,literal) |
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | [`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l2,literal)<br>[`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/) (literal) |
+| `AWS::ServiceDiscovery::Service` | [`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/) (literal) |
 | `AWS::StepFunctions::StateMachine` | [`stepfunctions`](../tests/integration/stepfunctions/) (l2) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
