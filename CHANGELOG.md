@@ -1,3 +1,10 @@
+## [0.146.1](https://github.com/go-to-k/cdkd/compare/v0.146.0...v0.146.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **nested-stack:** cross-platform absolute-path check in indexGrandchildTemplates ([#570](https://github.com/go-to-k/cdkd/issues/570)) ([a0a1c4a](https://github.com/go-to-k/cdkd/commit/a0a1c4aee95960f020661bc46b130279cc510506))
+
 # [0.146.0](https://github.com/go-to-k/cdkd/compare/v0.145.1...v0.146.0) (2026-05-24)
 
 
