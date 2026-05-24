@@ -1,3 +1,10 @@
+# [0.146.0](https://github.com/go-to-k/cdkd/compare/v0.145.1...v0.146.0) (2026-05-24)
+
+
+### Features
+
+* **import:** recursive nested-stack support for --migrate-from-cloudformation ([#464](https://github.com/go-to-k/cdkd/issues/464) PR A) ([#564](https://github.com/go-to-k/cdkd/issues/564)) ([b281165](https://github.com/go-to-k/cdkd/commit/b281165b8a68e5bbfecee68ecc7998abf7cbdf46))
+
 ## [0.145.1](https://github.com/go-to-k/cdkd/compare/v0.145.0...v0.145.1) (2026-05-24)
 
 
