@@ -587,11 +587,16 @@ the offending resources (or accept abandoning them) first. Nested
 [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1: `cdkd export`
 recursively walks the cdkd state tree, validates every parent → child
 link, and surfaces the full leaf-first migration scope to the user;
-the CFn-side `--include-nested-stacks` IMPORT changeset submission
-itself is deferred to PR B2, so the command warns on `--dry-run` /
-hard-errors on real run with a clear pointer + workaround (keep on
-cdkd, or destroy children leaf-first via `cdkd state destroy <child>`
-and re-export the flattened parent). Fresh `cdkd deploy` of nested
+the CFn-side per-stack IMPORT loop submission itself is deferred to
+PR B2 (the original "one atomic `--include-nested-stacks` IMPORT
+changeset" design was found infeasible by the 2026-05-24 AWS spike —
+AWS rejects that flag combination with
+`ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`;
+see [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md)
+§4.0), so the command warns on `--dry-run` / hard-errors on real run
+with a clear pointer + workaround (keep on cdkd, or destroy children
+leaf-first via `cdkd state destroy <child>` and re-export the
+flattened parent). Fresh `cdkd deploy` of nested
 stacks works via [#459](https://github.com/go-to-k/cdkd/issues/459).
 
 ```bash

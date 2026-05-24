@@ -23,8 +23,13 @@ After #459 lands, both `cdkd import --migrate-from-cloudformation` and
   state-key shape, then runs the existing post-state-write retire-CFn dance
   on every nested stack in dependency order (leaves first, parent last).
 - **`cdkd export <ParentStack>`** hands the cdkd-managed parent + every
-  nested child back to CloudFormation in one atomic `--include-nested-stacks`
-  IMPORT changeset; AWS resources are unchanged across the migration.
+  nested child back to CloudFormation via a per-stack IMPORT loop
+  (leaf-first; see §4.3) — each cdkd-managed stack becomes its own CFn
+  stack, and non-leaf parents adopt their just-created CFn child stacks
+  as nested references via the AWS-docs "Nest an existing stack" pattern.
+  AWS resources are unchanged across the migration. The original
+  "one atomic `--include-nested-stacks` IMPORT changeset" design was
+  found infeasible by the 2026-05-24 spike (§4.0).
 
 Both directions support arbitrary nesting depth (parent → child → grandchild).
 
@@ -59,15 +64,17 @@ re-confirmed against AWS docs / API responses BEFORE implementation.
   `TemplateURL`, `TimeoutInMinutes`. Pre-implementation: confirm via
   `aws cloudformation describe-type --type RESOURCE --type-name
   AWS::CloudFormation::Stack`.
-- **`CreateChangeSet --change-set-type IMPORT --include-nested-stacks`**:
-  CFn IMPORT changesets accept nested-stack children when
-  `--include-nested-stacks` is passed. Each child's template is fetched
-  from its `TemplateURL` (must be an S3 URL CFn can read with the caller's
-  credentials, OR inline `TemplateBody` for the parent only). The
-  changeset's `ResourcesToImport[]` lists EVERY adopted resource across
-  the family, with each `ResourceIdentifier` mapping to the right
-  resource. The whole tree IMPORTs atomically — partial failure rolls
-  back the entire changeset.
+- **`CreateChangeSet --change-set-type IMPORT --include-nested-stacks`** —
+  **NOT SUPPORTED by AWS** (empirically confirmed 2026-05-24 spike — see
+  §4.0): AWS rejects this combination with
+  `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`.
+  The original §4.3 design ("one atomic --include-nested-stacks IMPORT
+  changeset adopts the whole tree") is therefore infeasible. PR B2 uses
+  the per-stack IMPORT loop in §4.3 instead, which submits a separate
+  IMPORT changeset per stack in leaf-first order and uses the AWS-docs
+  ["Nest an existing stack"](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-nested-stacks.html)
+  pattern for non-leaf parents to adopt their just-created CFn child
+  stacks as nested references.
 - **`DescribeStackResources(<parent>)`** returns one row per top-level
   resource of `<parent>`, including each nested child as `ResourceType =
   'AWS::CloudFormation::Stack'` with `PhysicalResourceId = <child stack
@@ -172,99 +179,174 @@ is at parse-time so the user sees the gate before printPlan would run.
 
 ## 4. `cdkd export <ParentStack>` — recursive
 
+### 4.0. AWS-side constraint discovered by 2026-05-24 spike
+
+**Important:** the original §4.3 ("single atomic `--include-nested-stacks`
+IMPORT changeset adopts the whole tree") is **infeasible** — empirically
+verified against real AWS:
+
+```text
+$ aws cloudformation create-change-set \
+    --stack-name SpikeCfnNestedAdopt \
+    --change-set-name spike-test \
+    --change-set-type IMPORT \
+    --include-nested-stacks \
+    --template-body file://parent.json \
+    --resources-to-import file://leaf-resources.json \
+    --region us-east-1
+
+ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT.
+```
+
+The AWS docs page [resource-import-nested-stacks.html](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-nested-stacks.html)
+states verbatim: "**CloudFormation only supports one level of nesting using
+`resource import`.** This means that you can't import a stack into a child
+stack or import a stack that has children."
+
+What IS supported by AWS:
+
+- "Nest an existing stack" pattern: an existing parent CFn stack can ADOPT
+  an existing child CFn stack as a nested resource via IMPORT changeset. The
+  parent's template is updated to add an `AWS::CloudFormation::Stack` resource
+  with `DeletionPolicy: Retain`, and the IMPORT changeset's
+  `ResourcesToImport[]` entry maps the row to the existing child's `StackId`.
+- Plain per-stack IMPORT: each cdkd-managed stack can be IMPORTed into a
+  fresh top-level CFn stack via a regular IMPORT changeset (the existing
+  cdkd export code path for non-nested stacks already does this).
+
+What is NOT supported:
+
+- `--include-nested-stacks true` on an IMPORT changeset (AWS hard-rejects).
+- Creating NEW nested-stack CFn records (via TemplateURL) in the same
+  changeset that ADOPTS leaf resources.
+- Importing a stack hierarchy beyond one level of nesting.
+
+This rules out the original "one atomic changeset" design entirely. PR B2
+must use the **per-stack IMPORT loop** in §4.3 below — submit a SEPARATE
+IMPORT changeset for each stack in the tree, leaf-first, using the
+AWS-docs "Nest an existing stack" pattern for non-leaf parents to bind
+their just-created CFn child stacks as nested references.
+
+PR B1 (#571) already shipped the state-tree walker
+(`buildCdkdStateStackTree` / `flattenCdkdStateTreeLeafFirst`) and the
+`nestedStackRows` branch in `buildImportPlan`. PR B2's per-stack loop
+reuses both — they were designed compatibly with whichever submission
+strategy AWS supports.
+
 ### 4.1. Walk
 
-After `buildImportPlan(...)` classifies the parent's resources, cdkd
-walks `state.resources[<id>].resourceType === 'AWS::CloudFormation::Stack'`
-entries:
+**Status: SHIPPED in PR B1 (#571)** — `buildCdkdStateStackTree(rootStackName, region, stateBackend)`
+in [src/cli/commands/export.ts](../../src/cli/commands/export.ts)
+recursively loads every child state file from
+`cdkd/<parent>~<childLogicalId>/<region>/state.json`, fails fast on a
+torn tree, and `flattenCdkdStateTreeLeafFirst` returns the tree in
+leaf-first order — same order PR B2's per-stack IMPORT loop will use.
 
-1. For each nested child, derive its v6 state key
-   (`<parent>~<child-logical-id>`) and load that child's state file.
-2. Re-synth the child's template from the CDK app. (The cloud assembly
-   already contains every nested child's template as a separate
-   `<ChildAssetHash>.nested.template.json` file under `cdk.out` — see
-   `AssemblyReader` for how cdkd already locates nested templates for
-   deploy.)
-3. Run `buildImportPlan` recursively against each child's state ×
-   template.
-4. Aggregate the plans into a single tree-shaped plan structure:
-   `{ root: ParentPlan, children: { <ChildLogicalId>: ChildPlan, ... } }`.
+The `buildImportPlan` extension surfacing
+`nestedStackRows: NestedStackRow[]` shipped in PR B1 too. Each row
+carries `{ logicalId, childStackName }` — sufficient to drive the
+per-stack loop.
 
 ### 4.2. Removal of `NEVER_IMPORTABLE_TYPES` gate
 
-Two source-code sites currently hard-block `AWS::CloudFormation::Stack`:
+**Status: SHIPPED in PR B1 (#571)** — `AWS::CloudFormation::Stack` was
+lifted from `NEVER_IMPORTABLE_TYPES` in
+[src/cli/commands/export.ts](../../src/cli/commands/export.ts) and
+routed through the dedicated branch in `buildImportPlan` that populates
+`nestedStackRows: NestedStackRow[]`. The orchestrator currently
+hard-errors (warns in `--dry-run`) with a clear PR B2 pointer when
+`nestedStackRows.length > 0`.
 
-- `src/cli/commands/import.ts` `NEVER_IMPORTABLE_TYPES` (line ~139).
-- `src/cli/commands/export.ts` `isPhase2CreatableType` docstring (line
-  ~1305) AND the parent `buildImportPlan` flow.
+PR B2 replaces the hard-error with the per-stack IMPORT loop in §4.3.
 
-Both must be lifted post-#459, since `AWS::CloudFormation::Stack` IS
-deployable (#459) AND importable into CFn via `--include-nested-stacks`
-(this issue). The lift is gated: cdkd state schema v6 + at least one
-nested-stack code path actually shipped. A pre-v6 binary attempting to
-import a nested-stack-bearing template should fail clearly with an
-"upgrade cdkd" error — same migration pattern as v1→v2 / v2→v3 / etc.
+### 4.3. Per-stack IMPORT loop (REVISED 2026-05-24 per §4.0 spike)
 
-### 4.3. Submission via `--include-nested-stacks`
+**Algorithm**:
 
-Phase 1 IMPORT changeset:
+```text
+walk leaf-first across the tree (using flattenCdkdStateTreeLeafFirst):
+  for each stack S in leaf-first order:
+    if S is a LEAF (no nested children of its own):
+      submit a single-stack IMPORT changeset for S — same code path
+      as today's non-nested export, no changes needed beyond:
+        - the CFn stack name is derived from S.stackName via a
+          configurable mapping (proposal: identity by default;
+          `--cfn-stack-name <pattern>` can override per-child)
+      record the resulting child CFn stack ARN keyed by S.stackName
+    else (S is a NON-LEAF parent):
+      synthesize S's template AS-IS from cdk.out
+      for each `AWS::CloudFormation::Stack` row R in S.template.Resources:
+        verify the corresponding child stack S' (where S'.parentLogicalId = R.logicalId)
+          has been successfully IMPORTed in this loop iteration
+        rewrite R.TemplateURL → the just-deployed child stack's actual
+          template URL (cdk.out path uploaded via uploadCfnTemplate)
+        add R to ResourcesToImport[] with:
+          ResourceType: AWS::CloudFormation::Stack
+          LogicalResourceId: R.logicalId  (bare — the row's own id in S.template)
+          ResourceIdentifier: { StackId: <child stack ARN from prior loop step> }
+        inject DeletionPolicy: Retain on R (so a parent-side rollback
+          does NOT cascade-delete the child stack — design §3.4)
+      add S's own leaf resources to ResourcesToImport[] via the
+        existing buildImportPlan path
+      submit single-stack IMPORT changeset for S
+      record the resulting parent CFn stack ARN keyed by S.stackName
+  on success of every stack: delete cdkd state leaf-first
+```
 
-1. The parent template gets the existing phase-1 preprocessing (strip
-   Outputs, inject `DeletionPolicy: Delete`, overlay literal-mismatch
-   `ResourceIdentifier` onto Properties — all unchanged).
-2. Each child template gets the SAME phase-1 preprocessing.
-3. Each child template is uploaded to S3 via the standard `uploadCfnTemplate`
-   helper (single source of truth for the cdkd-migrate-tmp/ key prefix + the
-   > 51,200-byte routing matrix — `<= 51,200` inline → reject (CFn requires
-   `TemplateURL` for nested children), `(51,200, 1,048,576]` → S3 upload,
-   `> 1,048,576` → hard-error). Nested children must always go via
-   `TemplateURL` regardless of size, because CFn IMPORT's
-   `--include-nested-stacks` requires each child's template to be
-   reachable by URL.
-4. The parent template's `AWS::CloudFormation::Stack.Properties.TemplateURL`
-   is rewritten to the uploaded URL (parent goes inline OR via TemplateURL
-   per the standard matrix).
-5. `CreateChangeSet --change-set-type IMPORT --include-nested-stacks` is
-   called with the parent's TemplateBody / TemplateURL and a single
-   `ResourcesToImport[]` listing EVERY resource across the family (the
-   root parent's resources + each nested child's resources, with each
-   `LogicalResourceId` qualified by its parent stack path per CFn's
-   nested-resource addressing). The CFn API resolves the addressing
-   automatically when the parent template carries `AWS::CloudFormation::Stack`
-   resources whose `TemplateURL` points at the child templates.
-6. `waitUntilChangeSetCreateComplete` → `ExecuteChangeSet` →
-   `waitUntilStackImportComplete` (a single waiter for the whole tree —
-   AWS reports nested-stack IMPORT completion at the root only).
+This pattern matches the AWS-docs ["Nest an existing
+stack"](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-nested-stacks.html#resource-import-nested-stacks-cli)
+flow exactly — adopting an existing child CFn stack as a nested
+reference of a (just-created via IMPORT) parent CFn stack.
 
-The transient S3 upload set is drained in `finally` (success AND every
-failure path) — same cleanup contract the non-nested path already has.
+**Per-changeset template handling**:
 
-### 4.4. Phase 2 UPDATE
+- Phase-1 preprocessing (Outputs strip, DeletionPolicy: Delete on leaves,
+  ResourceIdentifier overlay) — applied PER stack, NOT once for the
+  whole tree.
+- Per-child template upload via `uploadCfnTemplate` — same helper PR A
+  uses for the retire-CFn flow. Each stack's child-rewritten template is
+  uploaded under `cdkd-migrate-tmp/<root-parent>/<ts>-<child-path>.{json,yaml}`
+  for traceability; the cleanup contract is the same accumulator pattern
+  PR A's `RecursiveRetainInjectionError` uses.
 
-If any child contains a non-importable resource (`Custom::*`,
-`AWS::CloudFormation::CustomResource`), the parent's phase-2 UPDATE
-changeset re-submits the FULL synth template (Outputs restored, every
-nested child's TemplateURL pointing at a fresh S3 upload). CFn CREATEs the
-Custom Resources in whichever child they live in. This is just the
-existing phase-2 behavior — the only extension is that the parent's
-TemplateURL rewrite path must handle every nested child's template
-upload, with the same `finally`-block cleanup.
+### 4.4. Phase 2 UPDATE (per stack)
+
+For each stack S that contains Custom Resources (`Custom::*` or
+`AWS::CloudFormation::CustomResource`), submit a phase-2 UPDATE
+changeset for S alone — same as today's per-stack behavior. The
+per-stack loop in §4.3 means phase-2 is also per-stack; no tree-wide
+coordination needed.
 
 ### 4.5. State cleanup
 
-On success, cdkd deletes state for every adopted stack in **leaf-first**
-order — sibling-children, then deeper-children, then parent. Same lock
-ordering as §3.3 (leaves first, parent last). On any failure mid-flow,
-state is preserved for every stack whose CFn IMPORT didn't complete, and
-the error message names exactly which stacks moved to CFn and which
-remain on cdkd — so the user can finish manually.
+**Order**: same leaf-first DFS as §4.3 — for each successfully-IMPORTed
+stack, `stateBackend.deleteState(stackName, region)` after the parent's
+IMPORT confirms.
+
+**Failure semantics**: each per-stack IMPORT is independent. If leaf A
+succeeds but its parent fails:
+
+- A is now a standalone CFn stack (no longer nested under what was the
+  cdkd parent)
+- A's cdkd state IS deleted
+- The cdkd parent's state IS preserved
+- The error message names: A is on CFn; B (the parent) is still on cdkd
+  with all its other leaf resources intact
+- User recovery: re-run `cdkd export <parent>` once the underlying
+  cause is fixed. The parent's `AWS::CloudFormation::Stack` row pointing
+  at A will now adopt A as a nested reference (since A is an existing
+  CFn stack).
+
+This is strictly more user-friendly than the all-or-nothing atomic
+design — partial success is observable AND recoverable.
 
 ### 4.6. Cross-stack consumer scan
 
-The existing `Fn::GetStackOutput` cross-stack consumer scan extends to
-the FULL family — any other cdkd stack referencing ANY stack in the
-exported tree (root, child, grandchild) surfaces in the warn / strict
-list. Default behavior is still warn; `--strict-cross-stack` refuses.
+**Status: scope-compatible with PR B1's existing
+`scanCrossStackReferences`** — no design change. The scan walks every
+cdkd stack in the CDK app and flags `Fn::GetStackOutput` references to
+any stack in the family-being-exported (root or any child or
+grandchild). Default warn; `--strict-cross-stack` refuses.
 
 ## 5. State schema dependency on #459
 
@@ -310,9 +392,9 @@ shape in this doc adopts that choice — no other change is required.
 
 ### 7.1. Child stack with a `Transform:` macro
 
-Hard-error at plan time. Message: "Child stack '<ChildLogicalId>' uses
-the '<MacroName>' macro. cdkd's export / import doesn't yet pre-expand
-macros — tracking under issue W4-3. Remove the macro or wait for W4-3."
+Hard-error at plan time. Message: ``Child stack `<ChildLogicalId>` uses
+the `<MacroName>` macro. cdkd's export / import doesn't yet pre-expand
+macros — tracking under issue W4-3. Remove the macro or wait for W4-3.``
 
 ### 7.2. Cyclic parent/child references
 
@@ -377,34 +459,72 @@ shape is one file per cdkd-managed CFn stack and partial migration would
 leave the cdkd↔CFn boundary inside a parent-child relationship — a
 state-consistency hazard."
 
-## 9. Open questions (blocked on #459 vs independent)
+## 9. Open questions — resolution log
 
-### Blocked on #459
+### Blocked on #459 — all RESOLVED by #459 shipping
 
-- Q1: Final separator in v6 state key (`~` vs `::` vs `__`). §5.
+- Q1: Final separator in v6 state key — **RESOLVED**: `~` (per #459 PR
+  #548 + verified in PR A integ).
 - Q2: Exact shape of the synthesized cdkd-local ARN that
-  `NestedStackProvider.create` writes for `Ref <NestedStack>`. §6.
+  `NestedStackProvider.create` writes for `Ref <NestedStack>` —
+  **RESOLVED**: `arn:cdkd-local:<region>:<account>:nested-stack/<parent>/<logicalId>`
+  (the `cdkd-local` partition is load-bearing per #459 design).
 - Q3: Whether `cdkd state list` renders the tree (parent → child) or
-  flat — affects how `cdkd export` plan-printing surfaces multi-level
-  trees.
+  flat — **DEFERRED**: PR B does not need this; tree-rendering follow-up
+  tracked under a separate issue.
 
 ### Independent of #459
 
-- Q4: Upstream `cdk import` nested-stack semantics (§8). Verify via
-  `aws-cdk-cli` source before implementation.
-- Q5: Whether `cdkd export --include-nested-stacks` flag should be
-  explicit (matches CFn API surface; users may be familiar) or implicit
-  (cdkd always passes it when any nested child is present). Default
-  recommendation: **implicit** — fewer flags for users, matches
-  `--include-non-importable`'s semantic.
+- Q4: Upstream `cdk import` nested-stack semantics — **RESOLVED by PR A
+  (#564) side-effect**: upstream `cdk import` does NOT walk recursively
+  (per-stack invocation); cdkd's recursive walk is a deliberate
+  divergence already documented under "Nested CloudFormation stacks"
+  in [docs/import.md](../import.md).
+- Q5: ~~Whether `cdkd export --include-nested-stacks` flag should be
+  explicit or implicit~~ — **MOOT per 2026-05-24 spike** (§4.0): AWS
+  rejects `IncludeNestedStacks` on IMPORT changesets entirely
+  (`ValidationError: IncludeNestedStacks is not supported for changeSet
+  type: IMPORT`). The flag does not exist in cdkd's surface as a result.
 - Q6: Confirm `AWS::CloudFormation::Stack` `primaryIdentifier` is
-  single-field `[StackId]` via `aws cloudformation describe-type`
-  (per memory rule `feedback_describe_type_before_cfn_handler.md`). If
-  AWS publishes a composite primary identifier, add an entry to
-  `COMPOSITE_ID_SPLITTERS` and update §2 + §6.
-- Q7: Test strategy for the post-import recursive `injectRetainPolicies`
-  walk — unit test with mocked `GetTemplate` returning a multi-level
-  tree, plus the real-AWS integ described in §10.
+  single-field `[StackId]` — **RESOLVED by PR A**: empirically confirmed
+  single-field; no `COMPOSITE_ID_SPLITTERS` entry needed for
+  AWS::CloudFormation::Stack.
+- Q7: Test strategy for the post-import recursive
+  `injectRetainPolicies` walk — **RESOLVED by PR A**: shipped at
+  [tests/unit/cli/retire-cfn-stack.test.ts](../../tests/unit/cli/retire-cfn-stack.test.ts)
+  (9 added tests covering flat / 3-level / parallel sibling fetch /
+  partial-cleanup propagation) + real-AWS integ at
+  [tests/integration/import-nested-stack/](../../tests/integration/import-nested-stack/).
+
+### New open questions for PR B2 (per-stack IMPORT loop)
+
+- Q8: CFn stack name mapping. Each cdkd-managed stack in the tree
+  becomes its own CFn stack via PR B2's per-stack IMPORT loop. The
+  cdkd stack name for a child is `<parent>~<childLogicalId>`. Does
+  that name shape work for the CFn stack name field? CFn stack names
+  must match `[a-zA-Z][-a-zA-Z0-9]*` (no `~` permitted). So a literal
+  pass-through fails. **Proposal**: replace `~` with `-` for the CFn
+  side: `<parent>-<childLogicalId>` (matches CFn's own auto-naming
+  scheme `<Parent>-<ChildLogicalId>-<RandomSuffix>` minus the suffix).
+  PR B2 must also surface a `--cfn-stack-name <root-name>=<cfn-name>`
+  override per child for users who want explicit names.
+- Q9: AWS-docs "Nest an existing stack" pattern requires the parent
+  template's `AWS::CloudFormation::Stack` resource to have
+  `DeletionPolicy: Retain`. PR B2's parent-IMPORT changeset must inject
+  this. Does CFn validate that the row's `TemplateURL` matches the
+  existing child stack's CURRENT template (the AWS-docs page implies
+  "template-match validation" in §"Nested stack import validation")?
+  PR B2 must upload each child stack's actual current template (read
+  via CFn `GetTemplate` after the child IMPORT completes) to the
+  parent's nested-stack `TemplateURL` field. The first integ run of
+  `tests/integration/export-nested-stack/` will confirm.
+- Q10: Phase-2 ordering. When stack S has Custom Resources AND nested
+  children, does S's phase-2 UPDATE run before or after each child's
+  phase-2 UPDATE? The natural extension of the per-stack loop is:
+  each stack runs phase-1 IMPORT followed by phase-2 UPDATE before
+  moving to the next stack. PR B2 should confirm this is correct
+  via the integ (a fixture with a Custom Resource in a deeply-nested
+  child).
 
 ## 10. Test strategy
 
@@ -447,25 +567,40 @@ merge — per memory rule `feedback_cross_cutting_needs_broad_integ.md`.
 
 ## 11. Implementation order
 
-Two implementable PRs after #459 lands. Each is self-contained and
+Implementable PRs after #459 landed. Each is self-contained and
 mergeable independently — `cdkd import` and `cdkd export` users have
-disjoint migration directions:
+disjoint migration directions.
 
-1. **PR A**: `cdkd import --migrate-from-cloudformation` recursive
-   support. Walks `DescribeStackResources` recursively, writes child
-   state under v6 keys, recursively retires CFn at the end. ~400 LOC
+1. **PR A** ✅ **shipped as #564**: `cdkd import --migrate-from-cloudformation`
+   recursive support. Walks `DescribeStackResources` recursively, writes
+   child state under v6 keys, recursively retires CFn at the end. ~400 LOC
    in `src/cli/commands/import.ts` + `src/cli/commands/retire-cfn-stack.ts`.
-2. **PR B**: `cdkd export` recursive support. Walks state +
-   re-synth-fetches child templates, uploads each via `uploadCfnTemplate`,
-   submits one `--include-nested-stacks` IMPORT changeset. ~500 LOC in
-   `src/cli/commands/export.ts`.
+2. **PR B1** ✅ **shipped as #571**: `cdkd export` partial nested-stack
+   support — state-tree walker + plan branch + hard-error UX. Lifts
+   `AWS::CloudFormation::Stack` from `NEVER_IMPORTABLE_TYPES`; adds
+   dedicated branch in `buildImportPlan` populating
+   `nestedStackRows: NestedStackRow[]`; adds `buildCdkdStateStackTree`
+   recursive state walker + `flattenCdkdStateTreeLeafFirst`; orchestrator
+   hard-errors (warns in `--dry-run`) when nested-stack rows present.
+   No CFn-side write path. ~700 LOC in `src/cli/commands/export.ts` + tests.
+3. **PR B2** 🔄 **redesigned 2026-05-24 per §4.0 spike**: full `cdkd export`
+   recursive support — per-stack IMPORT loop per §4.3 (leaf-first). NOT
+   the original "one atomic --include-nested-stacks IMPORT changeset"
+   design (AWS rejects that combination with
+   `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`).
+   Each cdkd-managed stack in the tree becomes its own CFn stack via a
+   separate IMPORT changeset; non-leaf parents use the AWS-docs "Nest
+   an existing stack" pattern to adopt the just-created child CFn stacks
+   as nested references. Estimated ~1000-1500 LOC + new
+   `tests/integration/export-nested-stack/` real-AWS fixture + 3-axis
+   review. Splittable into B2a (leaf-only IMPORT) + B2b (parent-with-nested
+   IMPORT) if reviewer-load needs trimming.
 
-Both PRs require:
-- The `AWS::CloudFormation::Stack` removal from `NEVER_IMPORTABLE_TYPES`
-  / `isPhase2CreatableType` (§4.2).
-- CLAUDE.md updates removing the nested-stack deferral comments from
-  both `cdkd import` and `cdkd export` bullets.
-- One new entry in [docs/changelog-cdkd.md](../changelog-cdkd.md) per PR (the per-PR shipped-feature changelog, moved here from CLAUDE.md's "Recently Implemented" section).
+PR B2 requires (a) CLAUDE.md updates removing the nested-stack deferral
+comments from the `cdkd export` bullet, (b) a new entry in
+[docs/changelog-cdkd.md](../changelog-cdkd.md), and (c) the integ
+fixture above. The `NEVER_IMPORTABLE_TYPES` / `isPhase2CreatableType`
+lift (§4.2) is ALREADY done in PR B1.
 
 ## 12. Risks & mitigations
 

@@ -152,7 +152,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **CI/CD** | AWS::CodeBuild::Project | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Compute** | AWS::AutoScaling::AutoScalingGroup | SDK Provider | ✅ |
-| **CloudFormation** | AWS::CloudFormation::Stack (nested stacks; fresh deploy + recursive `cdkd import --migrate-from-cloudformation` adoption; `cdkd export` recursive state-tree walker landed in [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1 — CFn `--include-nested-stacks` IMPORT changeset submission deferred to PR B2) | SDK Provider | ✅ |
+| **CloudFormation** | AWS::CloudFormation::Stack (nested stacks; fresh deploy + recursive `cdkd import --migrate-from-cloudformation` adoption; `cdkd export` recursive state-tree walker landed in [#464](https://github.com/go-to-k/cdkd/issues/464) PR B1 — CFn-side per-stack IMPORT loop submission deferred to PR B2; original "one atomic `--include-nested-stacks` IMPORT" design found infeasible by 2026-05-24 AWS spike, redesigned per [design §4.0/§4.3](design/464-nested-stacks-export-import.md)) | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |
 
