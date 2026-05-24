@@ -16,6 +16,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
+  NestedStackChildDirectDestroyError,
   PartialFailureError,
   StackTerminationProtectionError,
   withErrorHandling,
@@ -205,6 +206,13 @@ async function destroyCommand(
 
     const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
 
+    // Aggregate error counts across stacks so a single partial failure
+    // anywhere in the run propagates to a non-zero exit (PartialFailureError
+    // → exit code 2). Mirrors `cdkd state destroy`'s totalErrors handling.
+    // Hoisted out of the per-stack loop so the upfront nested-child-by-name
+    // refusal (after the empty-match gate below) can use the same accumulator.
+    let totalErrors = 0;
+
     let stackNames: string[];
     if (options.all) {
       // --all: destroy all stacks in the current app
@@ -226,6 +234,39 @@ async function destroyCommand(
     }
 
     if (stackNames.length === 0) {
+      // Special-case: when a user explicitly names a stack that doesn't appear
+      // in candidateStacks but DOES exist in state with `parentStack` set, we
+      // hit "No matching stacks found" — misleading, since the state file
+      // exists but the synth-success filter excludes nested children (they
+      // aren't CDK top-level stacks). Detect that case and surface the
+      // dedicated A2 refusal so the user gets a clear "destroy the parent
+      // instead" message instead of the generic miss. Only fires for
+      // explicit, non-wildcard names — wildcards still get the generic miss
+      // (they aren't a clear "destroy this specific child" intent).
+      if (stackPatterns.length > 0) {
+        const allStateNamesSet = new Set(allStateRefs.map((r) => r.stackName));
+        for (const pattern of stackPatterns) {
+          if (pattern.includes('*') || pattern.includes('?') || pattern.includes('/')) continue;
+          if (!allStateNamesSet.has(pattern)) continue;
+          const refRegion = allStateRefs.find((r) => r.stackName === pattern)?.region ?? region;
+          const stateOnlyResult = await stateBackend.getState(pattern, refRegion);
+          if (stateOnlyResult?.state.parentStack) {
+            const err = new NestedStackChildDirectDestroyError(
+              pattern,
+              stateOnlyResult.state.parentStack,
+              stateOnlyResult.state.parentLogicalId
+            );
+            logger.error(`  ✗ ${err.message}`);
+            totalErrors++;
+          }
+        }
+        if (totalErrors > 0) {
+          throw new PartialFailureError(
+            `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
+              `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry.`
+          );
+        }
+      }
       logger.info('No matching stacks found in state');
       return;
     }
@@ -250,14 +291,9 @@ async function destroyCommand(
       stateRefsByName.set(ref.stackName, arr);
     }
 
-    // 3. Process each stack via the shared destroy runner.
-    // Aggregate error counts across stacks so a single partial failure
-    // anywhere in the run propagates to a non-zero exit (PartialFailureError
-    // → exit code 2). Without this aggregation, runDestroyForStack would
-    // log "(N deleted, M errors) — State preserved" and the command would
-    // still exit 0, which masks failures from CI / bench scripts. Mirrors
-    // `cdkd state destroy`'s totalErrors handling.
-    let totalErrors = 0;
+    // 3. Process each stack via the shared destroy runner. The cross-stack
+    // `totalErrors` accumulator is declared above (before the empty-match
+    // gate) so the upfront nested-child-by-name refusal can also contribute.
     for (const stackName of stackNames) {
       logger.info(`\nPreparing to destroy stack: ${stackName}`);
 
@@ -317,6 +353,31 @@ async function destroyCommand(
       const stateResult = await stateBackend.getState(stackName, stackTargetRegion);
       if (!stateResult) {
         logger.warn(`No state found for stack ${stackName}, skipping`);
+        continue;
+      }
+
+      // Nested-stack child-only destroy refusal (#555 A2 / design §7). A
+      // state record with `parentStack` set was written by
+      // `NestedStackProvider.create` (or recursive `cdkd import
+      // --migrate-from-cloudformation`) as a child of another stack;
+      // directly destroying it without going through the parent would
+      // leave the parent's `AWS::CloudFormation::Stack` record pointing
+      // at gone-from-AWS resources, and the parent's next deploy would
+      // silently try to re-create them. Mirrors CFn's own "can't
+      // directly destroy a nested stack" semantic. `cdkd state destroy`
+      // intentionally bypasses this guard — that's the documented
+      // state-only escape hatch for users who accept the dangling
+      // parent reference. Multi-stack runs (--all) count this as a
+      // per-stack failure so siblings continue and the aggregated count
+      // surfaces as PartialFailureError (exit 2).
+      if (stateResult.state.parentStack) {
+        const err = new NestedStackChildDirectDestroyError(
+          stackName,
+          stateResult.state.parentStack,
+          stateResult.state.parentLogicalId
+        );
+        logger.error(`  ✗ ${err.message}`);
+        totalErrors++;
         continue;
       }
 

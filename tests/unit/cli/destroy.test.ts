@@ -306,3 +306,263 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(messages).toMatch(/1 resource error/);
   });
 });
+
+// ----- #555 A2: nested-stack child-only direct destroy refusal -----
+
+/**
+ * Build a v6 `StackState` carrying the `parentStack` / `parentLogicalId` /
+ * `parentRegion` triple, matching what `NestedStackProvider.create`
+ * writes for a nested child. The guard reads `parentStack` to decide
+ * whether to refuse direct destroy.
+ */
+function makeChildStackState(
+  stackName: string,
+  parentStack: string,
+  parentLogicalId: string,
+  region = 'us-east-1'
+): StackState {
+  return {
+    version: 6,
+    stackName,
+    region,
+    parentStack,
+    parentLogicalId,
+    parentRegion: region,
+    resources: {
+      Bucket: {
+        physicalId: `${stackName.toLowerCase().replace(/~/g, '-')}-bucket`,
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    },
+    outputs: {},
+    lastModified: 0,
+  };
+}
+
+describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockListStacks.mockReset();
+    mockGetState.mockReset();
+    mockVerifyBucketExists.mockReset();
+    mockVerifyBucketExists.mockResolvedValue();
+    mockRunDestroyForStack.mockReset();
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: '',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 1,
+      errorCount: 0,
+    });
+    mockSynthesize.mockReset();
+    errorSpy.mockReset();
+    infoSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  it('refuses to destroy a nested child stack directly and exits with code 2', async () => {
+    // Synth fails (no app available) so the candidate list comes from state —
+    // this is the path that lets a user accidentally target a child directly
+    // (synth-success mode filters children out since they are not in appStacks).
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([
+      { stackName: 'NestedStackExample~Child', region: 'us-east-1' },
+    ]);
+    mockGetState.mockResolvedValue({
+      state: makeChildStackState('NestedStackExample~Child', 'NestedStackExample', 'Child'),
+      etag: '"x"',
+    });
+
+    await expect(
+      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+    ).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+
+    // Guard fires BEFORE runDestroyForStack — no per-resource deletes attempted.
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(/NestedStackExample~Child/);
+    expect(messages).toMatch(/nested child of 'NestedStackExample'/);
+    // Error suggests both bypass paths: parent destroy AND state destroy escape hatch.
+    expect(messages).toMatch(/cdkd destroy NestedStackExample/);
+    expect(messages).toMatch(/cdkd state destroy NestedStackExample~Child/);
+    // The parent's logical id helps the user identify which child this is when
+    // a parent has multiple nested stacks with similar physical-key shapes.
+    expect(messages).toMatch(/parent's logical id: Child/);
+  });
+
+  it('proceeds to destroy a top-level stack with no parentStack field set', async () => {
+    // A normal top-level stack — v6 schema, but no nested-stack metadata —
+    // must NOT trigger the guard.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Plain', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Plain', region: 'us-east-1' }]);
+    // makeStackState defaults to version: 1 — also exercises that the guard
+    // tolerates pre-v6 states (parentStack is undefined on them).
+    mockGetState.mockResolvedValue({ state: makeStackState('Plain'), etag: '"x"' });
+
+    await runDestroy(['destroy', 'Plain', '--yes']);
+
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('Plain');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('--all with a parent + a nested child surfaced from state: parent destroys, child counts as failure (exit 2)', async () => {
+    // Synth fails so the fallback path includes the nested child in
+    // candidateStacks. The parent has no parentStack and proceeds; the
+    // child is refused.
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([
+      { stackName: 'NestedStackExample', region: 'us-east-1' },
+      { stackName: 'NestedStackExample~Child', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => {
+      if (name === 'NestedStackExample~Child') {
+        return {
+          state: makeChildStackState('NestedStackExample~Child', 'NestedStackExample', 'Child'),
+          etag: '"x"',
+        };
+      }
+      return { state: makeStackState(name), etag: '"x"' };
+    });
+
+    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+
+    // Parent destroyed; child refused.
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('NestedStackExample');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(/NestedStackExample~Child/);
+    expect(messages).toMatch(/nested child of 'NestedStackExample'/);
+    expect(messages).toMatch(/1 resource error/);
+  });
+
+  it('refuses synth-success direct child destroy (the typical user-types-child path)', async () => {
+    // synth-success path: appStacks contains only the parent (CDK top-level).
+    // The child appears in state but is FILTERED OUT of candidateStacks by
+    // the `appStacks.filter(stateNames.has)` pass, so matchStacks returns
+    // empty. Pre-A2 the user saw a misleading "No matching stacks found in
+    // state" message even though the state file existed. Post-A2 the
+    // upfront-by-name guard catches the case and surfaces the dedicated
+    // refusal with the parent's name.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('NestedStackExample', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'NestedStackExample', region: 'us-east-1' },
+      { stackName: 'NestedStackExample~Child', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string) => {
+      if (name === 'NestedStackExample~Child') {
+        return {
+          state: makeChildStackState('NestedStackExample~Child', 'NestedStackExample', 'Child'),
+          etag: '"x"',
+        };
+      }
+      return null;
+    });
+
+    await expect(
+      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+    ).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+
+    // Refusal surfaced, no per-resource delete attempted.
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(/nested child of 'NestedStackExample'/);
+    expect(messages).toMatch(/cdkd destroy NestedStackExample/);
+    expect(messages).toMatch(/cdkd state destroy NestedStackExample~Child/);
+  });
+
+  it('wildcard pattern that matches only a child does NOT trigger the upfront refusal (generic miss is correct)', async () => {
+    // The upfront-by-name refusal only fires for explicit, exact-name patterns
+    // — wildcards / display paths don't carry the "destroy this specific
+    // child" intent and fall through to the generic "No matching stacks"
+    // miss. This guards against the refusal firing on `cdkd destroy "My*"`
+    // when a child happens to match.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('NestedStackExample', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'NestedStackExample', region: 'us-east-1' },
+      { stackName: 'NestedStackExample~Child', region: 'us-east-1' },
+    ]);
+    // matchStacks against a wildcard would match the parent (in candidateStacks)
+    // — so set up the parent's state too. The point of THIS test is the
+    // wildcard branch: a `Nope~*` wildcard matches no candidate-list entries
+    // (the child is excluded from candidateStacks) and we want the generic
+    // miss, not the A2 refusal.
+    mockGetState.mockImplementation(async (name: string) => {
+      if (name === 'NestedStackExample~Child') {
+        return {
+          state: makeChildStackState('NestedStackExample~Child', 'NestedStackExample', 'Child'),
+          etag: '"x"',
+        };
+      }
+      return null;
+    });
+
+    // Wildcard miss — falls through to generic "no matching" log, no exit.
+    await runDestroy(['destroy', 'Nope~*', '--yes']);
+
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
+    // No refusal message — generic miss only.
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).not.toMatch(/nested child of/);
+  });
+
+  it('omits parent logical id from the message when v6 state lacks parentLogicalId', async () => {
+    // Defense-in-depth case: a v6 state record where only `parentStack` is
+    // populated (e.g. a hypothetical future writer that defers the logical
+    // id, or hand-edited state). The guard must still fire on parentStack,
+    // and the message should omit the "(parent's logical id: ...)" tail
+    // rather than render `undefined`.
+    mockSynthesize.mockRejectedValue(new Error('synth unavailable'));
+    mockListStacks.mockResolvedValue([
+      { stackName: 'NestedStackExample~Child', region: 'us-east-1' },
+    ]);
+    const childStateNoLogicalId = makeChildStackState(
+      'NestedStackExample~Child',
+      'NestedStackExample',
+      'placeholder'
+    );
+    // Strip the logical id to simulate the missing-field case.
+    delete (childStateNoLogicalId as { parentLogicalId?: string }).parentLogicalId;
+    mockGetState.mockResolvedValue({ state: childStateNoLogicalId, etag: '"x"' });
+
+    await expect(
+      runDestroy(['destroy', 'NestedStackExample~Child', '--yes'])
+    ).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toMatch(/nested child of 'NestedStackExample'/);
+    expect(messages).not.toMatch(/parent's logical id/);
+    expect(messages).not.toMatch(/undefined/);
+  });
+});
