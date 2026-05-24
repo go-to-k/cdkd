@@ -123,6 +123,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).',
   'migrate-from-bare-cfn':
     '`cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire.',
+  'nested-stack-migrate-from-cfn':
+    'CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A.',
   'cfn-macro-expansion':
     'CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`.',
 
