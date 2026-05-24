@@ -1,3 +1,10 @@
+## [0.145.1](https://github.com/go-to-k/cdkd/compare/v0.145.0...v0.145.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **hooks:** make markgate gate hooks cwd-aware ([#559](https://github.com/go-to-k/cdkd/issues/559)) ([#562](https://github.com/go-to-k/cdkd/issues/562)) ([9fd262f](https://github.com/go-to-k/cdkd/commit/9fd262f8445b479b7b7e6af386f552733b010098))
+
 # [0.145.0](https://github.com/go-to-k/cdkd/compare/v0.144.0...v0.145.0) (2026-05-23)
 
 
