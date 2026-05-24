@@ -438,10 +438,14 @@
     {
       "resourceType": "AWS::CloudFormation::Stack",
       "integs": [
-        "import-nested-stack"
+        "import-nested-stack",
+        "nested-stack-deep"
       ],
       "signals": {
         "import-nested-stack": [
+          "literal"
+        ],
+        "nested-stack-deep": [
           "literal"
         ]
       }
@@ -2688,6 +2692,7 @@
         "microservices",
         "multi-region-same-stack",
         "nested-stack",
+        "nested-stack-deep",
         "schema-v5-to-v6-migration",
         "state-info-command",
         "vpc-lookup"
@@ -2736,6 +2741,9 @@
           "l2"
         ],
         "nested-stack": [
+          "l2"
+        ],
+        "nested-stack-deep": [
           "l2"
         ],
         "schema-v5-to-v6-migration": [

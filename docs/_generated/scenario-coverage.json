@@ -643,6 +643,11 @@
       "scenarios": []
     },
     {
+      "name": "nested-stack-deep",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "orphan-resource",
       "annotated": true,
       "scenarios": []
@@ -1044,6 +1049,7 @@
   ],
   "orphanScenarios": [],
   "unannotatedFixtures": [
-    "nested-stack"
+    "nested-stack",
+    "nested-stack-deep"
   ]
 }
