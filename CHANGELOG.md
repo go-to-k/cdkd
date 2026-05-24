@@ -1,3 +1,10 @@
+## [0.147.1](https://github.com/go-to-k/cdkd/compare/v0.147.0...v0.147.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **destroy:** refuse cdkd destroy on nested-stack children ([#555](https://github.com/go-to-k/cdkd/issues/555) A2) ([#572](https://github.com/go-to-k/cdkd/issues/572)) ([b1ccc36](https://github.com/go-to-k/cdkd/commit/b1ccc366414eaccb90e6060e15d2005b77b613b0))
+
 # [0.147.0](https://github.com/go-to-k/cdkd/compare/v0.146.1...v0.147.0) (2026-05-24)
 
 
