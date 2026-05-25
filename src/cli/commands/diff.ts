@@ -66,13 +66,18 @@ async function diffCommand(
 ): Promise<void> {
   const logger = getLogger();
 
-  if (options.verbose) {
-    logger.setLevel('debug');
-  } else if (options.json) {
+  if (options.json) {
     // Keep stdout clean for machine consumers: suppress info/debug progress
     // chatter so only the JSON payload lands on stdout. Warnings / errors
-    // still surface (stderr).
+    // still surface (stderr). --json wins even when --verbose is ALSO set —
+    // clean JSON on stdout is the point of --json; if the user wants debug
+    // output too, they should drop --json and run twice (or pipe stderr
+    // separately). The previous precedence (verbose wins) interleaved debug
+    // chatter into stdout via console.info / console.debug and corrupted
+    // the JSON payload for any tooling that parsed it.
     logger.setLevel('warn');
+  } else if (options.verbose) {
+    logger.setLevel('debug');
   }
 
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
