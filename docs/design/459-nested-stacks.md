@@ -575,12 +575,21 @@ unsupported), so there's nothing to migrate from.
    "Known Limitations" in CLAUDE.md.
 3. **`TimeoutInMinutes` / `NotificationARNs` Properties silently
    ignored.** Documented above.
-4. **No CFn-side change-set preview for the child.** `cdkd diff
-   <parent>` shows the parent's `AWS::CloudFormation::Stack` diff
-   (TemplateURL change, Parameters change). It does NOT recursively
-   diff the child against the deployed child state in v1. This is a
-   real gap relative to `cdk diff` and is filed as a v2 follow-up
-   under the W4-6 umbrella.
+4. **No CFn-side change-set preview for the child.** ✅ RESOLVED
+   ([#555](https://github.com/go-to-k/cdkd/issues/555) A5). Plain `cdkd
+   diff <parent>` still shows only the parent's
+   `AWS::CloudFormation::Stack` row diff (TemplateURL / Parameters
+   change) — matching `cdk diff`, which does not descend either. The new
+   `cdkd diff <parent> --recursive` opt-in recursively diffs every
+   nested-stack child against its own deployed cdkd state
+   (`cdkd/<parent>~<childLogicalId>/<region>/state.json`) and prints each
+   under a `Nested stack: <name>` header in DFS order, previewing the
+   full next deploy (undeployed child → all-CREATE; child removed from the
+   CDK code → recursive all-DELETE). `--recursive --json` emits the nested
+   `{stack, region, changes, children: [...]}` tree, and `--fail` (parity
+   with `cdk diff --fail`) exits 1 on any tree-wide change so CI can gate
+   on it. Implemented in
+   [src/cli/commands/diff-recursive.ts](../../src/cli/commands/diff-recursive.ts).
 
 ---
 

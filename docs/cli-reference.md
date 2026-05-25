@@ -478,6 +478,40 @@ then assumes a role from those base credentials. Use both together
 when the IAM principal lives in profile A and the deploy role lives
 in account B that profile A trusts.
 
+## `cdkd diff`
+
+`cdkd diff [<stacks...>]` synthesizes the CDK app and reports the
+per-resource CREATE / UPDATE / DELETE changes the next `cdkd deploy`
+would apply, comparing the synth template against cdkd's S3 state.
+
+- `--recursive` (issue [#555](https://github.com/go-to-k/cdkd/issues/555)
+  A5) — recurse into every `AWS::CloudFormation::Stack` row and diff each
+  nested-stack child against its **own** deployed state
+  (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), in DFS order.
+  Default is non-recursive, matching `cdk diff` (which shows the parent's
+  nested-stack row as a single `TemplateURL` / `Parameters` change with no
+  descent). Each child's block is printed under a `Nested stack: <name>`
+  header (the full `~`-joined state name, matching `cdkd state show
+  --show-nested`). The walk previews the full next deploy: a nested child
+  with no state file yet diffs as all-CREATE; a nested stack removed from
+  the CDK code (present in state, absent from the template) diffs as
+  all-DELETE recursively.
+- `--fail` — exit `1` when any change is detected (parity with `cdk diff
+  --fail`). With `--recursive`, considers the whole nested-stack tree, so
+  CI can gate on tree-wide drift with a single `cdkd diff <parent>
+  --recursive --fail`. Without `--fail`, `cdkd diff` always exits `0` even
+  when changes are present (parity with `cdk diff`'s default).
+- `--json` — emit the diff as JSON instead of human-readable text. A flat
+  array of `{stack, region, changes: [...], children: [...]}` records (one
+  per target stack); with `--recursive`, `children` is populated with the
+  same nested shape recursively. `NO_CHANGE` resources are omitted;
+  `children` is always present (empty on leaves) so the key set is stable.
+  Progress logging is suppressed so stdout carries only the JSON payload.
+
+Like every non-bootstrap command, `--region` is deprecated and ignored.
+Stack selection (`<stacks...>` / `--all` / wildcards / display paths)
+follows the same rules as `cdkd deploy` / `cdkd destroy`.
+
 ## `cdkd drift`
 
 `cdkd drift [<stack>...]` detects drift between cdkd's S3 state
@@ -869,7 +903,7 @@ CI / bench scripts can react without grepping log output:
 | Exit | Meaning | Emitted by |
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
-| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
+| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected**, and **`cdkd diff --fail` exits `1` when any change is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
 | `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures), `cdkd publish-assets` (per-stack asset publish failures) |
 
 The implementation hangs off a `PartialFailureError` class in

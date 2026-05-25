@@ -10,90 +10,36 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
-import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
-
-const INTRINSIC_KEYS = new Set([
-  'Ref',
-  'Fn::Sub',
-  'Fn::GetAtt',
-  'Fn::Join',
-  'Fn::Select',
-  'Fn::Split',
-  'Fn::If',
-  'Fn::ImportValue',
-  'Fn::FindInMap',
-  'Fn::Base64',
-  'Fn::GetAZs',
-  'Fn::Equals',
-  'Fn::And',
-  'Fn::Or',
-  'Fn::Not',
-]);
-
-function isIntrinsic(value: unknown): boolean {
-  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-  const keys = Object.keys(value as Record<string, unknown>);
-  return keys.length === 1 && INTRINSIC_KEYS.has(keys[0]!);
-}
+import {
+  buildDiffTree,
+  diffTreeToJson,
+  renderDiffTree,
+  treeHasChanges,
+  type DiffTreeNode,
+} from './diff-recursive.js';
 
 /**
- * Strip unchanged and intrinsic-only values from a diff value.
- *
- * Recursively compares `value` against `other` and keeps only the keys
- * whose values actually differ (excluding intrinsic vs resolved mismatches).
- * This produces a minimal diff showing only real changes.
+ * Signals that `cdkd diff --fail` detected at least one change. Carries no
+ * message — the diff report was already printed before throwing, so the
+ * handler only needs the exit code. Mirrors `cdkd drift`'s
+ * `DriftDetectedError` (exit 1 = "non-zero outcome", not "command crashed").
  */
-function stripUnchangedValues(value: unknown, other: unknown): unknown {
-  // Primitives or nulls: return as-is (the caller already determined these differ)
-  if (value === null || value === undefined || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value;
+class DiffDetectedError extends CdkdError {
+  readonly silent: boolean = true;
 
-  // If value itself is an intrinsic, omit it (it's not a real change)
-  if (isIntrinsic(value)) return undefined;
-  // If the other side is an intrinsic, the resolved value on this side is not a real change
-  if (isIntrinsic(other)) return undefined;
-
-  if (other === null || other === undefined || typeof other !== 'object' || Array.isArray(other)) {
-    return value;
+  constructor() {
+    super('diff detected', 'DIFF_DETECTED');
+    this.name = 'DiffDetectedError';
+    Object.setPrototypeOf(this, DiffDetectedError.prototype);
   }
-
-  const valObj = value as Record<string, unknown>;
-  const otherObj = other as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-
-  for (const key of Object.keys(valObj)) {
-    const v = valObj[key];
-    const o = otherObj[key];
-
-    // If either side is intrinsic for this key, skip (not a real change)
-    if (isIntrinsic(v) || isIntrinsic(o)) continue;
-
-    // If values are deeply equal, skip
-    if (JSON.stringify(v) === JSON.stringify(o)) continue;
-
-    // Recurse for nested objects
-    if (typeof v === 'object' && v !== null && typeof o === 'object' && o !== null) {
-      const filtered = stripUnchangedValues(v, o);
-      if (filtered !== undefined && JSON.stringify(filtered) !== '{}') {
-        result[key] = filtered;
-      }
-    } else {
-      result[key] = v;
-    }
-  }
-
-  return Object.keys(result).length > 0 ? result : value;
 }
 
 /**
@@ -108,6 +54,9 @@ async function diffCommand(
     statePrefix: string;
     stack?: string;
     all?: boolean;
+    recursive?: boolean;
+    fail?: boolean;
+    json?: boolean;
     region?: string;
     profile?: string;
     roleArn?: string;
@@ -119,6 +68,11 @@ async function diffCommand(
 
   if (options.verbose) {
     logger.setLevel('debug');
+  } else if (options.json) {
+    // Keep stdout clean for machine consumers: suppress info/debug progress
+    // chatter so only the JSON payload lands on stdout. Warnings / errors
+    // still surface (stderr).
+    logger.setLevel('warn');
   }
 
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
@@ -208,105 +162,47 @@ async function diffCommand(
       ...(options.profile && { profile: options.profile }),
     });
     const diffCalculator = new DiffCalculator();
-    const intrinsicResolver = new IntrinsicFunctionResolver(region);
+    const recursive = options.recursive ?? false;
 
-    // 4. Calculate and display diff for each stack
+    // 4. Build a diff tree per target stack (nested children only when --recursive).
+    const trees: DiffTreeNode[] = [];
     for (const stackInfo of targetStacks) {
       logger.info(`\nCalculating diff for stack: ${stackInfo.stackName}`);
-
-      const template = stackInfo.template;
       // Stack region drives the state key. Falls back to the CLI region only
       // when synth couldn't determine a region (e.g. env-agnostic stacks).
       const stackRegion = stackInfo.region || region;
-
-      // Load current state
-      const stateResult = await stateBackend.getState(stackInfo.stackName, stackRegion);
-      const currentState = stateResult
-        ? stateResult.state
-        : {
-            stackName: stackInfo.stackName,
-            region: stackRegion,
-            resources: {},
-            outputs: {},
-            version: STATE_SCHEMA_VERSION_CURRENT,
-            lastModified: Date.now(),
-          };
-      if (!stateResult) {
-        logger.debug(`No existing state for ${stackInfo.stackName} (${stackRegion})`);
-      }
-
-      // Calculate diff. A best-effort intrinsic resolver lets us detect changes
-      // buried inside intrinsics (e.g. Fn::Join literal args) against resolved
-      // values in state. Resolution failures fall back to the unresolved value.
-      const diffResolveFn = (value: unknown) =>
-        intrinsicResolver.resolve(value, {
-          template,
-          resources: currentState.resources,
-          stateBackend,
+      trees.push(
+        await buildDiffTree({
           stackName: stackInfo.stackName,
-        });
-      const changes = await diffCalculator.calculateDiff(currentState, template, diffResolveFn);
+          displayName: stackInfo.stackName,
+          region: stackRegion,
+          template: stackInfo.template,
+          nestedTemplates: stackInfo.nestedTemplates ?? {},
+          recursive,
+          stateBackend,
+          diffCalculator,
+        })
+      );
+    }
 
-      // Display changes
-      if (changes.size === 0) {
-        logger.info('\n✓ No changes detected');
-        continue;
-      }
-
-      logger.info(`\nStack ${stackInfo.stackName}:`);
-
-      let createCount = 0;
-      let updateCount = 0;
-      let deleteCount = 0;
-
-      for (const [logicalId, change] of changes.entries()) {
-        switch (change.changeType) {
-          case 'CREATE':
-            createCount++;
-            logger.info(`  [+] ${logicalId} (${change.resourceType})`);
-            break;
-          case 'UPDATE': {
-            updateCount++;
-            logger.info(`  [~] ${logicalId} (${change.resourceType})`);
-            if (change.propertyChanges && change.propertyChanges.length > 0) {
-              for (const propChange of change.propertyChanges) {
-                const requiresReplace = propChange.requiresReplacement
-                  ? ' [requires replacement]'
-                  : '';
-                // Strip unchanged and intrinsic values to show only actual changes
-                const oldFiltered = stripUnchangedValues(propChange.oldValue, propChange.newValue);
-                const newFiltered = stripUnchangedValues(propChange.newValue, propChange.oldValue);
-                const indent = '              ';
-                const oldStr = (JSON.stringify(oldFiltered, null, 2) ?? 'undefined').replace(
-                  /\n/g,
-                  `\n${indent}`
-                );
-                const newStr = (JSON.stringify(newFiltered, null, 2) ?? 'undefined').replace(
-                  /\n/g,
-                  `\n${indent}`
-                );
-                logger.info(`      - ${propChange.path}:${requiresReplace}`);
-                logger.info(`          old: ${oldStr}`);
-                logger.info(`          new: ${newStr}`);
-              }
-            }
-            if (change.attributeChanges && change.attributeChanges.length > 0) {
-              for (const attrChange of change.attributeChanges) {
-                logger.info(`      - ${attrChange.attribute}: [metadata only, no AWS API call]`);
-                logger.info(`          old: ${attrChange.oldValue ?? '(unset)'}`);
-                logger.info(`          new: ${attrChange.newValue ?? '(unset)'}`);
-              }
-            }
-            break;
-          }
-          case 'DELETE':
-            deleteCount++;
-            logger.info(`  [-] ${logicalId} (${change.resourceType})`);
-            break;
+    // 5. Emit results — JSON payload (nested when --recursive) or human blocks.
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(trees.map(diffTreeToJson), null, 2)}\n`);
+    } else {
+      for (const tree of trees) {
+        if (!treeHasChanges(tree)) {
+          logger.info(`\n✓ No changes detected for stack ${tree.stackName}`);
+          continue;
         }
+        renderDiffTree(tree, true, (msg) => logger.info(msg));
       }
+    }
 
-      logger.info(`\n${createCount} to create, ${updateCount} to update, ${deleteCount} to delete`);
+    // 6. --fail (CDK parity with `cdk diff --fail`): exit 1 when any change is
+    // detected. With --recursive this covers the whole nested-stack tree, so
+    // CI can gate on tree-wide drift.
+    if (options.fail && trees.some(treeHasChanges)) {
+      throw new DiffDetectedError();
     }
   } finally {
     awsClients.destroy();
@@ -324,6 +220,21 @@ export function createDiffCommand(): Command {
       "Stack name(s) to diff. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
     )
     .option('--all', 'Diff all stacks', false)
+    .option(
+      '--recursive',
+      'Recurse into each AWS::CloudFormation::Stack row and diff every nested-stack child against its own deployed state (DFS order). Default is non-recursive, matching cdk diff.',
+      false
+    )
+    .option(
+      '--fail',
+      'Exit with code 1 when any change is detected (matches cdk diff --fail). With --recursive, considers the whole nested-stack tree.',
+      false
+    )
+    .option(
+      '--json',
+      'Output the diff as JSON (nested tree shape when combined with --recursive)',
+      false
+    )
     .action(withErrorHandling(diffCommand));
 
   // Add options
