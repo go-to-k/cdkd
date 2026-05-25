@@ -1,3 +1,10 @@
+# [0.151.0](https://github.com/go-to-k/cdkd/compare/v0.150.2...v0.151.0) (2026-05-25)
+
+
+### Features
+
+* **diff:** recursive nested-stack child diff ([#555](https://github.com/go-to-k/cdkd/issues/555) A5) ([#595](https://github.com/go-to-k/cdkd/issues/595)) ([dc767a5](https://github.com/go-to-k/cdkd/commit/dc767a5cb36bdfa6812f333a0e0393ff48d48695))
+
 ## [0.150.2](https://github.com/go-to-k/cdkd/compare/v0.150.1...v0.150.2) (2026-05-25)
 
 
