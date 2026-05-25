@@ -459,6 +459,28 @@ describe('AssemblyReader', () => {
       expect(byName.get('Unguarded')?.terminationProtection).toBe(false);
       expect(byName.get('Plain')?.terminationProtection).toBeUndefined();
     });
+
+    it('rejects an absolute aws:asset:path on a nested-stack row (PR #595 review nit)', () => {
+      // CDK emits relative paths for nested templates; an absolute path
+      // bypasses the assemblyDir scoping (`join('/tmp/cdk.out', '/etc/passwd')`
+      // → `/etc/passwd` on POSIX). Mirror the deeper diff-recursive guard at
+      // synth time so the top-level walk fails fast too.
+      const manifest = createSampleManifest();
+      const templateWithAbsoluteNested = {
+        Resources: {
+          ChildStack: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': '/abs/path/child.template.json' },
+            Properties: {},
+          },
+        },
+      };
+      vi.mocked(readFileSync).mockReturnValueOnce(JSON.stringify(templateWithAbsoluteNested));
+
+      expect(() => reader.getAllStacks('/tmp/cdk.out', manifest)).toThrow(SynthesisError);
+      vi.mocked(readFileSync).mockReturnValueOnce(JSON.stringify(templateWithAbsoluteNested));
+      expect(() => reader.getAllStacks('/tmp/cdk.out', manifest)).toThrow(/absolute/);
+    });
   });
 
   describe('getStack', () => {
