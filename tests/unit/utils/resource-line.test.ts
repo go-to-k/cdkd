@@ -11,9 +11,9 @@ describe('formatResourceLine', () => {
     expect(formatResourceLine('created', id, type)).toBe(`${green('✓')} ${body} ${green('created')}`);
   });
 
-  it('formats an updated line with a yellow tilde and yellow verb', () => {
+  it('formats an updated line with a yellow check and yellow verb', () => {
     expect(formatResourceLine('updated', id, type)).toBe(
-      `${yellow('~')} ${body} ${yellow('updated')}`
+      `${yellow('✓')} ${body} ${yellow('updated')}`
     );
   });
 
@@ -21,15 +21,23 @@ describe('formatResourceLine', () => {
     expect(formatResourceLine('deleted', id, type)).toBe(`${green('✓')} ${body} ${red('deleted')}`);
   });
 
-  it('uses a check, never a cross, for a successful delete', () => {
-    // Regression guard: a successful delete must not look like the
-    // "✗ Failed to delete" error path. The glyph is a green check.
-    const line = formatResourceLine('deleted', id, type);
-    expect(line).toContain('✓');
-    expect(line).not.toContain('✗');
-    expect(line).toContain(green('✓'));
-    expect(line).not.toContain(red('✗'));
+  it('applies a verb override while keeping the op glyph and color', () => {
+    expect(formatResourceLine('updated', id, type, 'updated (metadata)')).toBe(
+      `${yellow('✓')} ${body} ${yellow('updated (metadata)')}`
+    );
   });
+
+  it.each(['created', 'updated', 'deleted'] as const)(
+    'uses a check, never a cross, for a successful %s',
+    (op) => {
+      // Regression guard: a successful op must not look like the
+      // "✗ Failed to delete" error path. Every op renders a check.
+      const line = formatResourceLine(op, id, type);
+      expect(line).toContain('✓');
+      expect(line).not.toContain('✗');
+      expect(line).not.toContain(red('✗'));
+    }
+  );
 
   it('embeds the logical id and resource type', () => {
     const line = formatResourceLine('deleted', id, type);

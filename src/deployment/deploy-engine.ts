@@ -1634,7 +1634,7 @@ export class DeployEngine {
             const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
             renderer.removeTask(logicalId);
             this.logger.info(
-              `${attrPrefix}${yellow('~')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('updated (metadata)')}`
+              `${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
             );
             break;
           }
