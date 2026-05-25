@@ -1,3 +1,10 @@
+## [0.152.1](https://github.com/go-to-k/cdkd/compare/v0.152.0...v0.152.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **deploy:** stop DagBuilder warning on a Ref to a template Parameter ([#600](https://github.com/go-to-k/cdkd/issues/600)) ([3ec8982](https://github.com/go-to-k/cdkd/commit/3ec89820950970f92266434197376626e316775b))
+
 # [0.152.0](https://github.com/go-to-k/cdkd/compare/v0.151.1...v0.152.0) (2026-05-25)
 
 
