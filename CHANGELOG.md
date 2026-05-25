@@ -1,3 +1,10 @@
+## [0.152.2](https://github.com/go-to-k/cdkd/compare/v0.152.1...v0.152.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* **destroy:** show a check for deleted resources instead of a cross (and align deploy's updated glyph) ([#601](https://github.com/go-to-k/cdkd/issues/601)) ([8d56690](https://github.com/go-to-k/cdkd/commit/8d566907c5ddfe62790405f950b8be0ea5228d15))
+
 ## [0.152.1](https://github.com/go-to-k/cdkd/compare/v0.152.0...v0.152.1) (2026-05-25)
 
 
