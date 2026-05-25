@@ -134,9 +134,21 @@ vi.mock('../../../src/cli/upload-cfn-template.js', async () => {
   };
 });
 
+// Mock the interactive confirmation prompt so the `--yes`-false cancellation
+// path is reachable in tests. Default answer is 'n' (cancel); every test that
+// passes `yes: true` skips the prompt entirely, so the default is inert there.
+const readlineQuestion = vi.hoisted(() => vi.fn(async () => 'n'));
+vi.mock('node:readline/promises', () => ({
+  createInterface: () => ({
+    question: readlineQuestion,
+    close: vi.fn(),
+  }),
+}));
+
 import {
   buildCdkdStateStackTree,
   runPerStackImportLoop,
+  flipStackToUpdateComplete,
   type CdkdStateStackTree,
 } from '../../../src/cli/commands/export.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -301,10 +313,19 @@ function buildLockManager(opts?: { acquireFn?: (stackName: string) => Promise<bo
   const acquired: Array<{ stackName: string; region: string }> = [];
   const released: Array<{ stackName: string; region: string }> = [];
   const manager = {
-    async acquireLock(stackName: string, region: string) {
+    // The orchestrator switched to `acquireLockWithRetry` (#589 Minor 2),
+    // which throws (does NOT return false) on terminal acquisition failure.
+    // Mirror that contract so the lock-contention test exercises the real
+    // error-wrapping path. No real retry/delay — `acquireFn` resolves the
+    // terminal outcome synchronously for the test.
+    async acquireLockWithRetry(stackName: string, region: string) {
       const ok = opts?.acquireFn ? await opts.acquireFn(stackName) : true;
-      if (ok) acquired.push({ stackName, region });
-      return ok;
+      if (!ok) {
+        throw new Error(
+          `Failed to acquire lock for stack '${stackName}' (${region}) after retries.`
+        );
+      }
+      acquired.push({ stackName, region });
     },
     async releaseLock(stackName: string, region: string) {
       released.push({ stackName, region });
@@ -1542,5 +1563,258 @@ describe('runPerStackImportLoop (issue #464 PR B2) — Phase 2 UPDATE per stack'
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('flipStackToUpdateComplete (issue #589 Minor 1) — tag-value uniqueness', () => {
+  beforeEach(() => {
+    waitStackUpdate.mockReset();
+    waitStackUpdate.mockResolvedValue(undefined);
+  });
+
+  it('emits a distinct cdkd:nested-export-flip tag value on each call', async () => {
+    const updateInputs: Record<string, unknown>[] = [];
+    const cfnClient = {
+      send: vi.fn(async (cmd: { _name: string; input: Record<string, unknown> }) => {
+        if (cmd._name === 'UpdateStack') updateInputs.push(cmd.input);
+        return {};
+      }),
+    } as unknown as AwsClients['cloudFormation'];
+
+    // Two back-to-back flips on the same stack — the failure mode this guards
+    // against is two flips landing within the same millisecond (e.g. an SDK
+    // transient-error retry) emitting identical tag values, which AWS rejects
+    // with "No updates are to be performed".
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack');
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack');
+
+    expect(updateInputs).toHaveLength(2);
+    const tag0 = (updateInputs[0]!['Tags'] as Array<{ Key: string; Value: string }>)[0]!;
+    const tag1 = (updateInputs[1]!['Tags'] as Array<{ Key: string; Value: string }>)[0]!;
+    expect(tag0.Key).toBe('cdkd:nested-export-flip');
+    expect(tag1.Key).toBe('cdkd:nested-export-flip');
+    // The UUID suffix guarantees uniqueness regardless of clock resolution.
+    expect(tag0.Value).not.toBe(tag1.Value);
+    // Shape: ISO-8601 timestamp + '-' + 8-hex UUID slice.
+    expect(tag0.Value).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z-[0-9a-f]{8}$/);
+    expect(tag1.Value).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z-[0-9a-f]{8}$/);
+  });
+});
+
+describe('runPerStackImportLoop (issue #589) — review-residual coverage', () => {
+  beforeEach(() => {
+    infoSpy.mockReset();
+    warnSpy.mockReset();
+    errorSpy.mockReset();
+    uploadCfnTemplateMock.mockClear();
+    readlineQuestion.mockClear();
+    waitChangeSetCreate.mockReset();
+    waitChangeSetCreate.mockResolvedValue(undefined);
+    waitStackImport.mockReset();
+    waitStackImport.mockResolvedValue(undefined);
+    waitStackUpdate.mockReset();
+    waitStackUpdate.mockResolvedValue(undefined);
+  });
+
+  let tmpRoot: string;
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'cdkd-export-loop-589-'));
+  });
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // Minor 3 + Test gap 5: a parent whose nested-stack row passes an
+  // intrinsic-valued Parameter (`{Ref: ...}`) to its child triggers BOTH the
+  // per-iteration warn AND the post-loop aggregate summary warn.
+  it('warns per-stack AND re-prints an aggregate summary for intrinsic-skipped Parameters', async () => {
+    const childTemplate = {
+      Resources: {
+        ChildBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'child-589' } },
+      },
+    };
+    const childPath = join(tmpRoot, 'Child.nested.template.json');
+    writeFileSync(childPath, JSON.stringify(childTemplate), 'utf-8');
+
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: {
+        ParentBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'parent-589' },
+        Child: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:cdkd-local:...' },
+      },
+    });
+    const child = makeState({
+      stackName: 'Root~Child',
+      region: 'us-east-1',
+      resources: { ChildBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'child-589' } },
+      parentStack: 'Root',
+      parentLogicalId: 'Child',
+    });
+    const { backend: stateBackend } = buildStateBackend({
+      'Root|us-east-1': root,
+      'Root~Child|us-east-1': child,
+    });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient } = buildCfnClient();
+
+    const rootTemplate = {
+      Resources: {
+        ParentBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'parent-589' } },
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            TemplateURL: 'https://cdk-asset/.../Child.template.json',
+            // Mixed literal + intrinsic Parameters: only the intrinsic one
+            // (RefValued) is skipped and surfaced in the aggregate summary.
+            Parameters: { LiteralEnv: 'prod', RefValued: { Ref: 'SomeParentParam' } },
+          },
+          Metadata: { 'aws:asset:path': 'Child.nested.template.json' },
+        },
+      },
+    };
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: root,
+      nestedChildren: new Map([
+        [
+          'Child',
+          { stackName: 'Root~Child', region: 'us-east-1', state: child, nestedChildren: new Map() },
+        ],
+      ]),
+    };
+
+    const result = await runPerStackImportLoop({
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { Child: childPath },
+      rootTemplateFormat: 'json',
+      tree,
+      rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    });
+
+    expect(result.outcome).toBe('success');
+
+    const warnText = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    // Per-iteration warn names the skipped intrinsic param for the child.
+    expect(warnText).toContain("Child 'Root~Child': skipping intrinsic-valued Parameter(s)");
+    expect(warnText).toContain('RefValued');
+    // Post-loop aggregate summary names the affected stack + its param.
+    expect(warnText).toContain('1 stack(s) had intrinsic-valued Parameter(s) skipped at IMPORT');
+    expect(warnText).toContain('Root~Child (RefValued)');
+  });
+
+  // Test gap 1: cdkd-bug guard — DescribeStacks returns a stack with no
+  // StackId immediately after a successful Phase 1A IMPORT. AWS would never
+  // do this legitimately, but the guard must fire with the documented message.
+  it('throws when post-IMPORT DescribeStacks returns no StackId', async () => {
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'b-no-id' } },
+    });
+    const { backend: stateBackend, deleted } = buildStateBackend({ 'Root|us-east-1': root });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient } = buildCfnClient({
+      describeStacksPostImport: async (stackName: string) => ({
+        Stacks: [{ StackName: stackName, StackId: undefined }],
+      }),
+    });
+
+    await expect(
+      runPerStackImportLoop({
+        rootStackName: 'Root',
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: {},
+        rootTemplateFormat: 'json',
+        tree: { stackName: 'Root', region: 'us-east-1', state: root, nestedChildren: new Map() },
+        rootTemplate: {
+          Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b-no-id' } } },
+        },
+        cfnStackNameOverrides: { childMap: new Map() },
+        rootParameters: [],
+        deps: {
+          cfnClient,
+          stateBackend,
+          lockManager,
+          uploadOpts: { stateBucket: STATE_BUCKET },
+          lockOwner: 'tester@host:1234',
+        },
+        options: {
+          dryRun: false,
+          yes: true,
+          includeNonImportable: false,
+          recreateImportUnsupported: true,
+        },
+      })
+    ).rejects.toThrow(/DescribeStacks returned no StackId for 'Root'/);
+
+    // The failure is post-IMPORT but pre-state-deletion — no state removed.
+    expect(deleted).toEqual([]);
+  });
+
+  // Test gap 4: the interactive confirmation prompt cancellation path. All
+  // other tests pass `yes: true`; this one passes `yes: false` and answers
+  // 'n' to the mocked prompt, expecting a clean 'cancelled' outcome.
+  it('cancels (no AWS write, no state deletion) when the user declines the prompt', async () => {
+    readlineQuestion.mockResolvedValueOnce('n');
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'b-cancel' } },
+    });
+    const { backend: stateBackend, deleted } = buildStateBackend({ 'Root|us-east-1': root });
+    const { manager: lockManager, acquired } = buildLockManager();
+    const { client: cfnClient, calls } = buildCfnClient();
+
+    const result = await runPerStackImportLoop({
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree: { stackName: 'Root', region: 'us-east-1', state: root, nestedChildren: new Map() },
+      rootTemplate: {
+        Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b-cancel' } } },
+      },
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: false,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    });
+
+    expect(result.outcome).toBe('cancelled');
+    expect(result.importedStacks).toEqual([]);
+    // No changeset submitted, no state deleted, no child lock acquired.
+    expect(calls.filter((c) => c.name === 'CreateChangeSet')).toEqual([]);
+    expect(deleted).toEqual([]);
+    expect(acquired).toEqual([]);
+    expect(readlineQuestion).toHaveBeenCalledTimes(1);
   });
 });
