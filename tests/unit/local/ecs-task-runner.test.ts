@@ -118,6 +118,58 @@ describe('buildDockerRunArgs', () => {
     expect(args.join(' ')).toContain('127.0.0.1:80:80/tcp');
   });
 
+  it('omits ALL -p flags when skipHostPortPublish is true (Issue #585 multi-replica)', () => {
+    const c = makeContainer({
+      portMappings: [
+        { name: 'api', containerPort: 80, hostPort: 8081, protocol: 'tcp' },
+        { name: 'admin', containerPort: 9000, protocol: 'tcp' },
+      ],
+    });
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'cdkd-local-svc-shared',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      skipHostPortPublish: true,
+    });
+    // No `-p` at all — both the explicit-hostPort and the
+    // defaulted-hostPort mappings are dropped.
+    expect(args).not.toContain('-p');
+    // The container still joins the network so peer comms works.
+    expect(args).toContain('--network');
+    expect(args).toContain('--network-alias');
+  });
+
+  it('emits -p normally when skipHostPortPublish is false (single-replica default)', () => {
+    const c = makeContainer({
+      portMappings: [{ name: 'api', containerPort: 80, hostPort: 8081, protocol: 'tcp' }],
+    });
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      skipHostPortPublish: false,
+    });
+    const pFlag = args.indexOf('-p');
+    expect(pFlag).toBeGreaterThan(-1);
+    expect(args[pFlag + 1]).toBe('127.0.0.1:8081:80/tcp');
+  });
+
   it('threads metadata env + secrets + template env into the -e block', () => {
     const c = makeContainer({
       name: 'svc',

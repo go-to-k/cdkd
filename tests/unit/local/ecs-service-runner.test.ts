@@ -46,7 +46,7 @@ import {
 } from '../../../src/local/ecs-service-runner.js';
 import { SHARED_SVC_SUBNET_OCTET } from '../../../src/local/ecs-network.js';
 import type { ResolvedEcsService } from '../../../src/local/ecs-service-resolver.js';
-import type { EcsRunState } from '../../../src/local/ecs-task-runner.js';
+import type { EcsRunState, RunEcsTaskOptions } from '../../../src/local/ecs-task-runner.js';
 
 beforeEach(() => {
   mockCleanup.mockReset();
@@ -662,6 +662,72 @@ describe('startEcsService / bootReplica lifecycle', () => {
     await controller.shutdown();
     // 3 cleanup calls — one per replica.
     expect(mockCleanup).toHaveBeenCalledTimes(3);
+  });
+
+  it('sets skipHostPortPublish on every replica when replicaCount > 1 (Issue #585)', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = { name: 'n', endpointsContainerId: 'sidecar' } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-x' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const service = makeService(2);
+    const opts = makeOptions();
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    expect(mockRunTask).toHaveBeenCalledTimes(2);
+    for (const call of mockRunTask.mock.calls) {
+      const taskOpts = call[1] as RunEcsTaskOptions;
+      expect(taskOpts.skipHostPortPublish).toBe(true);
+    }
+
+    await controller.shutdown();
+  });
+
+  it('leaves skipHostPortPublish unset for a single-replica service (Issue #585)', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = { name: 'n', endpointsContainerId: 'sidecar' } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-x' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const service = makeService(1);
+    const opts = makeOptions();
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    expect(mockRunTask).toHaveBeenCalledTimes(1);
+    const taskOpts = mockRunTask.mock.calls[0]![1] as RunEcsTaskOptions;
+    expect(taskOpts.skipHostPortPublish).toBeUndefined();
+
+    await controller.shutdown();
+  });
+
+  it('keeps host-port publish when DesiredCount>1 is clamped to a single replica by --max-tasks (Issue #585)', async () => {
+    // DesiredCount: 2 but --max-tasks: 1 → only ONE replica boots, so
+    // there is no host-port collision and the single replica keeps its
+    // host-port publish. The gate must key off the EFFECTIVE replica
+    // count, not the raw template DesiredCount.
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = { name: 'n', endpointsContainerId: 'sidecar' } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-x' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const service = makeService(2);
+    const opts = makeOptions({ maxTasks: 1 });
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    expect(mockRunTask).toHaveBeenCalledTimes(1);
+    const taskOpts = mockRunTask.mock.calls[0]![1] as RunEcsTaskOptions;
+    expect(taskOpts.skipHostPortPublish).toBeUndefined();
+
+    await controller.shutdown();
   });
 });
 

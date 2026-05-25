@@ -1176,6 +1176,20 @@ single /24 — the same metadata-endpoint sidecar starts at
 `ECS_CONTAINER_METADATA_URI_V4` is rewritten to point at its own
 replica's sidecar.
 
+> **Host-port publishing and multi-replica services.** A
+> **single-replica** service publishes its container `PortMappings` to
+> the host (`-p <container-host>:<hostPort>:<containerPort>`) so you can
+> `curl localhost:<port>` from the host. A **multi-replica** service
+> (effective replica count > 1 after the `--max-tasks` clamp) does NOT
+> publish host ports: N replicas all map the same container port, so a
+> fixed host-port publish would make the 2nd+ replica fail to boot with
+> `Bind for 127.0.0.1:<port> failed: port is already allocated`. This
+> matches production — real ECS Service Connect / `awsvpc` tasks have
+> per-task ENIs and never share a host port. Peers still reach a
+> multi-replica service by container IP / network alias on the shared
+> docker network; to hit a specific replica from the host, `docker exec`
+> into it or read its IP from `docker inspect`.
+
 ### `local start-service` target resolution
 
 Same grammar as `local run-task`:
@@ -1220,7 +1234,7 @@ hangs.
 
 | Deferred | Tracked in / Why |
 | --- | --- |
-| Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up PR — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach them via their published container ports. |
+| Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up PR — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach a single-replica service via its published container ports, or any replica via its docker network IP / alias (multi-replica services skip the host-port publish — see the host-port note above). |
 | `--watch` / `--reload` (rolling deployment on file change) | Follow-up PR — mirrors `cdkd local start-api --watch` semantics; needs container-pool-style hot reload across replicas. |
 | Envoy sidecar (L7 routing / retries / circuit breaking / mTLS) | Deferred follow-up — Cloud Map DNS overlay (closed via [#460](https://github.com/go-to-k/cdkd/issues/460)) covers ~80% of debugging use cases; the missing 20% requires the AWS-published Envoy image (~120MB / task). DNS-only mode is the default; an opt-in `--envoy` flag will ship with the sidecar. |
 | Rolling deployment strategy (`DeploymentConfiguration.MaximumPercent` etc.) | Follow-up — meaningful only with the LB emulator. |
