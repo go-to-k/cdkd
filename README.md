@@ -245,6 +245,9 @@ cdkd deploy MyStack \
 
 # Show diff (what would change)
 cdkd diff MyStack
+cdkd diff MyParent --recursive       # also diff every nested-stack child vs its own state (#555 A5)
+cdkd diff MyParent --recursive --json  # nested {stack, changes, children: [...]} JSON
+cdkd diff MyStack --fail             # exit 1 when any change is detected (CI gate; matches cdk diff --fail)
 
 # Detect drift between cdkd state and AWS reality (state-only; no synth)
 # Exits 0 with no drift, 1 when drift is detected, 2 on partial revert failure.
