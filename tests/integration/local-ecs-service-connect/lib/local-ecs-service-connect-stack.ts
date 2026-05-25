@@ -6,24 +6,28 @@ import { Construct } from 'constructs';
  * Fixture for `cdkd local start-service` Service Connect + Cloud Map
  * emulation (Issue #460 — Phase 3 of #262).
  *
- * Two ECS Services sharing one Cloud Map namespace via Service Connect:
+ * Two ECS Services sharing one Cloud Map namespace via Service Connect,
+ * each at `desiredCount: 2` (#579 item (1), unblocked by the #585
+ * multi-replica host-port fix):
  *   - `orders` exposes a busybox netcat HTTP echo on port 80, named
  *     `orders-api` in its port mapping. Service Connect ClientAlias
- *     maps the bare `orders` short-name to that port. `desiredCount: 1`
- *     — producer-side multi-replica needs cdkd source work (per-replica
- *     host port allocation) before it can ship; tracked as a follow-up
- *     to #579. The OrdersTask publishes an explicit `hostPort: 8081`
- *     (see L101-109 comment) and cdkd's docker-runner always passes
- *     `-p host:container`, so a second replica would collide on host
- *     port 8081 today.
+ *     maps the bare `orders` short-name to that port. `desiredCount: 2`
+ *     exercises the producer side of the #585 fix: the OrdersTask
+ *     publishes an EXPLICIT `hostPort: 8081`, so this service proves
+ *     cdkd skips the `-p` host-port publish for a multi-replica service
+ *     even when the TaskDefinition declares an explicit host port (the
+ *     2nd replica would otherwise collide on host port 8081).
  *   - `frontend` is the consumer — it has Service Connect enabled too
  *     (so its own `frontend-api` is published), but the integ asserts
- *     it can reach `orders` via the `--add-host` DNS overlay cdkd
- *     injects from the shared Cloud Map registry. `desiredCount: 1`
- *     — frontend ALSO hits the docker-runner host-port-publish bug
- *     described above (containerPort 8080 → defaulted hostPort 8080
- *     → 2 replicas collide). The full #579 item (1) defer note is in
- *     the OrdersService inline comment.
+ *     BOTH replicas can reach `orders` via the `--add-host` DNS overlay
+ *     cdkd injects from the shared Cloud Map registry. `desiredCount: 2`
+ *     exercises the OMITTED-hostPort side of the #585 fix (frontend's
+ *     port mapping has no `hostPort`, which cdkd would otherwise default
+ *     to `containerPort` 8080 and collide on the 2nd replica) AND the
+ *     first-replica-wins alias resolution: both frontend replicas
+ *     inherit the same shared Cloud Map registry snapshot, so they must
+ *     resolve `orders` / `orders.cdkd-sc.local` to the SAME (first
+ *     registered) orders replica IP.
  *
  * Item (2) of #579 adds an `AWS::ServiceDiscovery::Service` resource
  * (`orders-discovery`) attached to the existing namespace, plus a
@@ -104,13 +108,15 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
           essential: true,
           // PortMappings.Name is the linchpin — Service Connect
           // references it via `Services[].PortName`. `hostPort: 8081`
-          // is set explicitly because cdkd's `docker run -p` would
-          // otherwise bind host port 80 (= containerPort by default),
-          // which fails to start on Docker Desktop 20.x (the container
-          // sits in `Created` state instead of erroring out). Peer
-          // discovery between containers goes through the per-task
-          // docker network on `containerPort: 80`, so the host-side
-          // mapping is irrelevant to what this integ asserts.
+          // is set explicitly so this multi-replica fixture exercises
+          // the EXPLICIT-hostPort branch of the #585 host-port-skip fix:
+          // with `desiredCount: 2`, cdkd skips the `-p` publish entirely
+          // for every replica, so neither the explicit 8081 nor a
+          // defaulted 80 is bound to the host (the 2nd replica would
+          // otherwise collide on host port 8081). Peer discovery between
+          // containers goes through the shared docker network on
+          // `containerPort: 80`, so dropping the host-side mapping does
+          // not affect what this integ asserts.
           portMappings: [
             { name: 'orders-api', containerPort: 80, hostPort: 8081, protocol: 'tcp' },
           ],
@@ -135,18 +141,14 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
     new ecs.CfnService(this, 'OrdersService', {
       cluster: cluster.ref,
       taskDefinition: ordersTask.ref,
-      // OrdersService stays at desiredCount: 1 — its TaskDefinition
-      // publishes an explicit `hostPort: 8081` (see L101-109 comment on
-      // OrdersTask) and cdkd's docker-runner currently always passes
-      // `-p host:container`, so two replicas would collide on host port
-      // 8081 ("Bind for 127.0.0.1:8081 failed: port is already
-      // allocated"). Producer-side multi-replica needs per-replica host
-      // port allocation in cdkd source — deferred to a follow-up issue
-      // for #579 (see PR body). FrontendService below DOES go
-      // desiredCount: 2 (no hostPort published, no collision), which
-      // exercises the per-replica subnet octet allocator + alias
-      // first-wins on the consumer side.
-      desiredCount: 1,
+      // OrdersService runs desiredCount: 2 (#579 item (1)). Its
+      // TaskDefinition publishes an EXPLICIT `hostPort: 8081`, so this
+      // service proves the #585 fix skips the `-p` host-port publish for
+      // a multi-replica service even with an explicit host port — the
+      // 2nd replica would otherwise fail with "Bind for 127.0.0.1:8081
+      // failed: port is already allocated". The shared docker network
+      // carries peer discovery on containerPort 80 regardless.
+      desiredCount: 2,
       launchType: 'EC2',
       serviceConnectConfiguration: {
         enabled: true,
@@ -205,19 +207,16 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
     new ecs.CfnService(this, 'FrontendService', {
       cluster: cluster.ref,
       taskDefinition: frontendTask.ref,
-      // FrontendService stays at desiredCount: 1 — same reason as
-      // OrdersService above. FrontendTask's portMappings omits
-      // `hostPort`, but cdkd's docker-runner defaults `hostPort` to
-      // `containerPort` (=8080) when omitted and always passes
-      // `-p host:container`, so two frontend replicas would collide
-      // on host port 8080 ("Bind for 127.0.0.1:8080 failed: port is
-      // already allocated"). #579 item (1) (desiredCount: 2 on EITHER
-      // service) requires cdkd source work — per-replica host port
-      // allocation OR an opt-out for the host-port publish — deferred
-      // to a follow-up issue. This integ fixture currently exercises
-      // only #579 item (2) (ServiceRegistries[] / Cloud Map service
-      // registration), which works fine at desiredCount: 1.
-      desiredCount: 1,
+      // FrontendService runs desiredCount: 2 (#579 item (1)).
+      // FrontendTask's portMappings OMITS `hostPort`, which cdkd would
+      // otherwise default to `containerPort` (=8080); the #585 fix skips
+      // the `-p` publish for this multi-replica service so the 2nd
+      // replica does not collide on host port 8080. Two frontend
+      // replicas also exercise first-replica-wins alias resolution:
+      // both consumers inherit the same shared Cloud Map registry
+      // snapshot, so both resolve `orders` to the SAME orders replica IP
+      // (asserted in verify.sh).
+      desiredCount: 2,
       launchType: 'EC2',
       serviceConnectConfiguration: {
         enabled: true,
