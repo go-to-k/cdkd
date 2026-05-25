@@ -1,5 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import { bold, cyan, gray, green, red, yellow } from '../utils/colors.js';
+import { formatResourceLine } from '../utils/resource-line.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
 import { ProvisioningError, ResourceTimeoutError } from '../utils/error-handler.js';
 import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -1582,7 +1583,7 @@ export class DeployEngine {
         const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
         renderer.removeTask(logicalId);
         this.logger.info(
-          `${createPrefix}${green('✓')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${green('created')}`
+          `${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`
         );
         break;
       }
@@ -1827,7 +1828,7 @@ export class DeployEngine {
           const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
           renderer.removeTask(logicalId);
           this.logger.info(
-            `${updatePrefix}${yellow('~')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('updated')}`
+            `${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`
           );
         }
         break;
@@ -1900,7 +1901,7 @@ export class DeployEngine {
         const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
         renderer.removeTask(logicalId);
         this.logger.info(
-          `${deletePrefix}${red('✗')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${red('deleted')}`
+          `${deletePrefix}${formatResourceLine('deleted', logicalId, resourceType)}`
         );
         break;
       }
