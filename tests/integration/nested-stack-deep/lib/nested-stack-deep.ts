@@ -26,7 +26,12 @@ class GrandchildNestedStack extends cdk.NestedStack {
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Grandchild');
 
     this.param = new ssm.StringParameter(this, 'Param', {
-      stringValue: 'cdkd-nested-stack-deep-grandchild-value',
+      // The value is env-overridable so the A5 `verify.sh` can re-synth with a
+      // changed grandchild value and assert `cdkd diff --recursive` detects the
+      // UPDATE deep in the tree (synth-vs-state) without a second deploy. Unset
+      // (the deploy default) keeps the stable baseline value.
+      stringValue:
+        process.env['CDKD_INTEG_GRANDCHILD_VALUE'] ?? 'cdkd-nested-stack-deep-grandchild-value',
       description: 'cdkd nested-stack-deep integ - grandchild SSM parameter',
     });
   }
