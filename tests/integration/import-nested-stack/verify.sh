@@ -49,6 +49,15 @@ STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 PARENT_STATE_KEY="cdkd/${PARENT_STACK}/${REGION}/state.json"
 CHILD_STATE_KEY="cdkd/${PARENT_STACK}~Child/${REGION}/state.json"
 
+# Captured in step 6 once describe-stack-resources resolves the physical
+# names. Initialized empty so the cleanup trap can reference them under
+# `set -u` even when it fires before step 6. cleanup() deletes by these exact
+# physical names — far more robust than the logical-id Contains sweep, whose
+# filter has to track the deploy path's naming scheme by hand (it was wrong
+# from the start here; see #584).
+PARENT_PARAM_NAME=""
+CHILD_PARAM_NAME=""
+
 echo "[verify] region=${REGION} parent=${PARENT_STACK} state-bucket=${STATE_BUCKET}"
 
 cleanup() {
@@ -77,17 +86,22 @@ cleanup() {
     aws cloudformation delete-stack --stack-name "${PARENT_STACK}" --region "${REGION}" || true
     aws cloudformation wait stack-delete-complete --stack-name "${PARENT_STACK}" --region "${REGION}" || true
   fi
-  # 3. Belt-and-braces: scrub any leftover SSM parameters / cdkd state
-  #    even when both 1 and 2 already cleaned up.
-  # Unlike export-nested-stack (which deploys via cdkd, whose
-  # generateResourceName stack-name-prefixes the parameter so a single
-  # Contains=CdkdExportNestedStack filter matches), this fixture deploys
-  # via upstream `cdk deploy`, so CloudFormation auto-generates the SSM
-  # parameter names as `CFN-ParentParam-<rand>` / `CFN-ChildParam-<rand>`
-  # — there is NO stack-name token to filter on. SSM describe-parameters
-  # Contains also accepts only ONE value per filter, so sweep each
-  # logical-id token separately. (The old `cdkd-importnestedstack` filter
-  # — and a `CdkdImportNestedStack` variant — match nothing here.)
+  # 3a. Primary SSM reap: delete by the exact physical names captured in
+  #     step 6. This is naming-scheme-independent, so it cannot rot the way
+  #     the Contains sweep below did. Empty until step 6 runs, so a trap that
+  #     fires earlier falls through to 3b.
+  for n in "${PARENT_PARAM_NAME}" "${CHILD_PARAM_NAME}"; do
+    [ -n "${n}" ] || continue
+    echo "[verify] cleanup: aws ssm delete-parameter ${n}"
+    aws ssm delete-parameter --name "${n}" --region "${REGION}" 2>/dev/null || true
+  done
+  # 3b. Last-resort fuzzy fallback for the case where the trap fired before
+  #     step 6 captured the names. This fixture deploys via upstream
+  #     `cdk deploy`, so CloudFormation auto-generates the SSM names as
+  #     `CFN-ParentParam-<rand>` / `CFN-ChildParam-<rand>` — there is NO
+  #     stack-name token to filter on, and SSM Contains accepts only ONE
+  #     value per filter, so sweep each logical-id token separately. (3a is
+  #     the durable fix; this stays as a belt-and-braces backstop.)
   for token in ParentParam ChildParam; do
     for p in $(aws ssm describe-parameters --region "${REGION}" \
       --parameter-filters "Key=Name,Option=Contains,Values=${token}" \
