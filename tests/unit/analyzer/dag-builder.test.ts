@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { DependencyError } from '../../../src/utils/error-handler.js';
@@ -330,6 +330,53 @@ describe('DagBuilder', () => {
       const graph = dagBuilder.buildGraph(template);
       expect(graph.nodeCount()).toBe(1);
       expect(graph.edgeCount()).toBe(0);
+    });
+
+    it('warns on a genuinely dangling Ref (not a resource, not a Parameter)', () => {
+      const warnSpy = vi.spyOn(
+        (dagBuilder as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger,
+        'warn'
+      );
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Bucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: { BucketName: { Ref: 'NonExistentResource' } },
+          },
+        },
+      };
+      dagBuilder.buildGraph(template);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("depends on NonExistentResource, but NonExistentResource not found")
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT warn (and adds no edge) for a Ref to a template Parameter', () => {
+      const warnSpy = vi.spyOn(
+        (dagBuilder as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger,
+        'warn'
+      );
+      const template: CloudFormationTemplate = {
+        Parameters: {
+          StageParam: { Type: 'String' },
+        },
+        Resources: {
+          Param: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { Ref: 'StageParam' } },
+          },
+        },
+      };
+      const graph = dagBuilder.buildGraph(template);
+      // The Parameter is not a graph node, so the Ref produces no edge — but
+      // it must NOT be reported as a missing dependency.
+      expect(graph.nodeCount()).toBe(1);
+      expect(graph.edgeCount()).toBe(0);
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('StageParam not found in template')
+      );
+      warnSpy.mockRestore();
     });
   });
 
