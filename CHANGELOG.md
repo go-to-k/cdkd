@@ -1,3 +1,10 @@
+## [0.150.1](https://github.com/go-to-k/cdkd/compare/v0.150.0...v0.150.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **local:** skip host-port publish for multi-replica services ([#590](https://github.com/go-to-k/cdkd/issues/590)) ([23e966d](https://github.com/go-to-k/cdkd/commit/23e966d0f1fd2a24362852434cb31aaf2b000ed9))
+
 # [0.150.0](https://github.com/go-to-k/cdkd/compare/v0.149.0...v0.150.0) (2026-05-24)
 
 
