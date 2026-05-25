@@ -1,3 +1,10 @@
+## [0.151.1](https://github.com/go-to-k/cdkd/compare/v0.151.0...v0.151.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **diff:** close PR [#595](https://github.com/go-to-k/cdkd/issues/595) review nits (--json/--verbose + asset-path guard) ([#598](https://github.com/go-to-k/cdkd/issues/598)) ([02fa8af](https://github.com/go-to-k/cdkd/commit/02fa8af7cae7483ff062d347c9783b5ff601e65b))
+
 # [0.151.0](https://github.com/go-to-k/cdkd/compare/v0.150.2...v0.151.0) (2026-05-25)
 
 
