@@ -198,6 +198,28 @@ describe('diffTreeToJson', () => {
     expect(json.children[0]!.changes[0]!.changeType).toBe('CREATE');
     expect(json.children[0]!.children).toEqual([]);
   });
+
+  it('carries attributeChanges (DeletionPolicy flip) through to JSON', () => {
+    const node: DiffTreeNode = {
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      changes: changeMap([
+        {
+          logicalId: 'Bucket',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          attributeChanges: [{ attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' }],
+        },
+      ]),
+      children: [],
+    };
+    const json = diffTreeToJson(node);
+    expect(json.changes[0]!.attributeChanges).toEqual([
+      { attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' },
+    ]);
+    expect(json.changes[0]!.propertyChanges).toBeUndefined();
+  });
 });
 
 describe('renderDiffTree', () => {
@@ -243,6 +265,38 @@ describe('renderDiffTree', () => {
     const lines: string[] = [];
     renderDiffTree(root, true, (m) => lines.push(m));
     expect(lines).toEqual([]);
+  });
+
+  it('renders [requires replacement], attribute changes, and prunes unchanged/intrinsic nested keys', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Bucket',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        propertyChanges: [
+          {
+            path: 'Config',
+            // 'keep' is unchanged, 'ref' is an intrinsic on both sides, only 'changed' differs.
+            oldValue: { keep: 'same', changed: 'old', ref: { Ref: 'X' } },
+            newValue: { keep: 'same', changed: 'new', ref: { Ref: 'X' } },
+            requiresReplacement: true,
+          },
+        ],
+        attributeChanges: [{ attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' }],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text).toContain('[requires replacement]');
+    expect(text).toContain('DeletionPolicy: [metadata only, no AWS API call]');
+    expect(text).toContain('old: Delete');
+    expect(text).toContain('new: Retain');
+    // stripUnchangedValues kept only the changed key, dropped 'keep' (equal) and 'ref' (intrinsic).
+    expect(text).toContain('"changed"');
+    expect(text).not.toContain('"keep"');
+    expect(text).not.toContain('"ref"');
   });
 });
 

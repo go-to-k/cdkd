@@ -48,10 +48,14 @@ const EMPTY_TEMPLATE: CloudFormationTemplate = { Resources: {} };
  * True when an absolute path is given. CDK emits relative asset paths for
  * nested templates (siblings of the parent template in `cdk.out`); an
  * absolute path means the synth output was hand-modified or produced by a
- * non-CDK toolchain. Mirrors the same guard in
- * `src/provisioning/providers/nested-stack-provider.ts` (kept local so the
- * CLI layer does not import from the provisioning layer; the two are tiny
- * and a future refactor could unify them).
+ * non-CDK toolchain. Kept local so the CLI layer does not import from the
+ * provisioning layer.
+ *
+ * A hardened variant of the guard in
+ * `src/provisioning/providers/nested-stack-provider.ts` — in addition to
+ * `path.isAbsolute`, it also rejects Windows drive-letter (`C:\` / `C:/`)
+ * and UNC (`\\server`) paths that `path.isAbsolute` misses when running on
+ * a POSIX host. A future refactor could unify the two on this stricter form.
  */
 function isAbsoluteCrossPlatform(p: string): boolean {
   return path.isAbsolute(p) || /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\');
@@ -216,7 +220,7 @@ export async function buildDiffTree(args: {
   // Template-present children, in template order (CREATE / UPDATE / present).
   const templateChildIds = new Set<string>();
   for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
-    if (resource.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
+    if (resource?.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
     templateChildIds.add(logicalId);
     const childTemplatePath = nestedTemplates[logicalId];
     if (!childTemplatePath) {
