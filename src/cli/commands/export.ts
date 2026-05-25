@@ -1,6 +1,7 @@
 import * as readline from 'node:readline/promises';
 import { readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
 import {
   CreateChangeSetCommand,
@@ -160,6 +161,19 @@ interface ExportOptions {
  * itself; we do not try to maintain a closed allowlist here.
  */
 const NEVER_IMPORTABLE_TYPES = new Set<string>(['AWS::CDK::Metadata']);
+
+/**
+ * Per-non-root-child lock-acquisition retry budget for the nested-stack
+ * export loop (`runPerStackImportLoop`). `acquireLockWithRetry` retries
+ * `maxRetries` times with `retryDelay` between attempts, so the total wait
+ * ceiling is `maxRetries * retryDelay` ≈ 30s. A genuinely-active concurrent
+ * cdkd run on a child is awaited briefly instead of failing instantly;
+ * `acquireLock`'s own expired-lock auto-cleanup (30-min TTL) covers the
+ * crashed-previous-run case. 30s keeps an interactive `cdkd export` snappy
+ * even across a multi-level tree (each child waits at most this ceiling).
+ */
+const CHILD_LOCK_RETRY_MAX_ATTEMPTS = 6;
+const CHILD_LOCK_RETRY_DELAY_MS = 5000;
 
 export function isNeverImportableType(resourceType: string): boolean {
   if (NEVER_IMPORTABLE_TYPES.has(resourceType)) return true;
@@ -1641,10 +1655,29 @@ export function flattenCdkdStateTreeLeafFirst(
  * Top-level cdkd stack names that already conform to CFn's character set
  * are passed through unchanged — `cdkd2cfnStackName('MyApp') === 'MyApp'`.
  *
+ * The post-substitution result is validated against the same CFn
+ * stack-name regex `parseCfnChildStackNameOverrides` enforces
+ * (`[a-zA-Z][-a-zA-Z0-9]*`). The `~` → `-` swap only handles the v6
+ * separator; a cdkd name that is otherwise CFn-illegal (leading digit /
+ * underscore, embedded `.` or `/`, etc.) would still pass through and
+ * surface as an opaque CFn API rejection deep inside the IMPORT loop.
+ * Throwing here surfaces the problem at orchestrator pre-flight time with
+ * an actionable pointer at the `--cfn-stack-name` / `--cfn-child-stack-name`
+ * override escape hatch.
+ *
  * Issue #464 design §9 Q8.
  */
 export function cdkd2cfnStackName(cdkdStackName: string): string {
-  return cdkdStackName.replace(/~/g, '-');
+  const cfnName = cdkdStackName.replace(/~/g, '-');
+  if (!/^[a-zA-Z][-a-zA-Z0-9]*$/.test(cfnName)) {
+    throw new Error(
+      `cdkd stack name '${cdkdStackName}' maps to CFn stack name '${cfnName}', which violates ` +
+        `the CloudFormation stack-name constraint [a-zA-Z][-a-zA-Z0-9]* (must start with a ` +
+        `letter; no '_', '.', '/', or other special characters). Supply an explicit name via ` +
+        `--cfn-stack-name (root) or --cfn-child-stack-name '<cdkdName>=<cfnName>' (nested child).`
+    );
+  }
+  return cfnName;
 }
 
 /**
@@ -3010,10 +3043,15 @@ async function collectImportFailureSummary(
  * `cdkd:nested-export-flip` tag is the only delta). This is the canonical
  * AWS workaround for the IMPORT_COMPLETE → UPDATE_COMPLETE transition.
  *
- * Idempotency: each invocation uses a fresh ISO 8601 timestamp value so
- * AWS never returns "No updates are to be performed" (which would leave
- * the stack stuck in `IMPORT_COMPLETE`). The tag accumulates across
- * retries — harmless and easy to reap manually under the `cdkd:` prefix.
+ * Idempotency: each invocation uses a fresh ISO 8601 timestamp PLUS an
+ * 8-char random UUID slice as the tag value so AWS never returns "No
+ * updates are to be performed" (which would leave the stack stuck in
+ * `IMPORT_COMPLETE`). The timestamp alone is insufficient — two rapid
+ * back-to-back flips on the same stack within the same millisecond (e.g.
+ * a retry after a transient SDK error) would otherwise emit identical
+ * values; the UUID suffix guarantees uniqueness regardless of clock
+ * resolution. The tag accumulates across retries — harmless and easy to
+ * reap manually under the `cdkd:` prefix.
  *
  * Exported for unit testing.
  */
@@ -3028,7 +3066,7 @@ export async function flipStackToUpdateComplete(
       Tags: [
         {
           Key: 'cdkd:nested-export-flip',
-          Value: new Date().toISOString(),
+          Value: `${new Date().toISOString()}-${randomUUID().slice(0, 8)}`,
         },
       ],
       // Preserve all the standard cdkd export Capabilities (CDK templates
@@ -3442,18 +3480,29 @@ export async function runPerStackImportLoop(args: {
   try {
     for (const node of leafFirst) {
       if (node.stackName === rootStackName) continue;
-      const acquired = await deps.lockManager.acquireLock(
-        node.stackName,
-        node.region,
-        deps.lockOwner,
-        'export'
-      );
-      if (!acquired) {
+      // Retry briefly (≈30s ceiling) so a genuinely-active concurrent run is
+      // awaited rather than failing the whole tree migration instantly; an
+      // expired lock from a crashed previous run is auto-cleaned by
+      // `acquireLock` (30-min TTL) on the first attempt. `acquireLockWithRetry`
+      // throws (it does NOT return false) on terminal failure — wrap it to
+      // preserve the actionable "no changeset submitted; state unchanged"
+      // message + the force-unlock pointer.
+      try {
+        await deps.lockManager.acquireLockWithRetry(
+          node.stackName,
+          node.region,
+          deps.lockOwner,
+          'export',
+          CHILD_LOCK_RETRY_MAX_ATTEMPTS,
+          CHILD_LOCK_RETRY_DELAY_MS
+        );
+      } catch (err) {
         throw new Error(
           `Could not acquire lock for nested-stack child '${node.stackName}' (${node.region}) — ` +
-            `another cdkd process holds it. Wait for it to finish, or run ` +
+            `another cdkd process held it through the retry window. Wait for it to finish, or run ` +
             `'cdkd force-unlock ${node.stackName}' if you are certain no other process is active. ` +
-            `No CloudFormation changeset has been submitted; cdkd state is unchanged.`
+            `No CloudFormation changeset has been submitted; cdkd state is unchanged.`,
+          { cause: err instanceof Error ? err : undefined }
         );
       }
       acquiredChildLocks.push({ stackName: node.stackName, region: node.region });
@@ -3463,6 +3512,13 @@ export async function runPerStackImportLoop(args: {
     const cfnArnByCdkdName = new Map<string, string>();
     const uploadCleanups: Array<() => Promise<void>> = [];
     const importedStacks: ImportedStackRecord[] = [];
+    // Session-scoped accumulator of intrinsic-valued Parameters skipped per
+    // child (cdkdName → param names). The per-iteration `logger.warn` below
+    // scrolls past under `--yes`; this drives a single aggregate summary at
+    // the end of the success path so the user isn't left hunting back
+    // through the log for which stacks need their child template Defaults
+    // verified.
+    const sessionIntrinsicSkipped = new Map<string, string[]>();
 
     try {
       for (let i = 0; i < perStackPlans.length; i++) {
@@ -3502,6 +3558,7 @@ export async function runPerStackImportLoop(args: {
           }
           const extracted = extractChildImportParameters(parentPlan.template, parentLogicalId);
           if (extracted.intrinsicSkipped.length > 0) {
+            sessionIntrinsicSkipped.set(plan.cdkdName, extracted.intrinsicSkipped);
             logger.warn(
               `  Child '${plan.cdkdName}': skipping intrinsic-valued Parameter(s) ` +
                 `${extracted.intrinsicSkipped.join(', ')} (intrinsic-resolution at leaf-IMPORT ` +
@@ -3638,6 +3695,16 @@ export async function runPerStackImportLoop(args: {
           for (const row of plan.nestedStackRows) {
             const childArn = cfnArnByCdkdName.get(row.childStackName);
             if (!childArn) {
+              // Defensive cdkd-bug guard, intentionally untested: unreachable
+              // via the normal flow. `flattenCdkdStateTreeLeafFirst` guarantees
+              // every nested child is IMPORTed (and recorded in
+              // `cfnArnByCdkdName`) before its parent's Phase 1B runs, and
+              // `buildImportPlan` derives `row.childStackName` from the same
+              // `state.resources` nested entries the tree walk reads — so a
+              // recorded-ARN miss can only arise if those two invariants
+              // diverge in a future refactor. The leaf-first ordering itself is
+              // covered by the 3-level-tree test (Grandchild → Middle → Root
+              // CreateChangeSet order) in export-nested-loop.test.ts.
               throw new Error(
                 `runPerStackImportLoop: nested-stack child '${row.childStackName}' has no ` +
                   `recorded CFn ARN when processing parent '${plan.cdkdName}'. Leaf-first ` +
@@ -3679,6 +3746,13 @@ export async function runPerStackImportLoop(args: {
 
             const originalRow = getResourceFromTemplate(plan.template, row.logicalId);
             if (!originalRow) {
+              // Defensive cdkd-bug guard, intentionally untested: unreachable
+              // via the normal flow. `row.logicalId` comes from
+              // `buildImportPlan(plan.template)`, which produced this
+              // nested-stack row by iterating `plan.template.Resources` — so a
+              // re-read of the same template object is guaranteed to find it.
+              // A miss can only arise if `plan.template` is mutated between
+              // plan-build and this read, which the orchestrator never does.
               throw new Error(
                 `runPerStackImportLoop: parent template for '${plan.cdkdName}' has no ` +
                   `resource '${row.logicalId}'. State and template are out of sync.`
@@ -3700,6 +3774,13 @@ export async function runPerStackImportLoop(args: {
           }
 
           try {
+            // Phase 1B's outer template is serialized in the user's synth
+            // format (`plan.templateFormat` — may be YAML when the user passed
+            // `--template foo.yaml`), while each nested-child `TemplateURL` it
+            // references points at a JSON body (GetTemplate(Processed) always
+            // returns JSON, uploaded with `format: 'json'` above). AWS detects
+            // each URL's format independently of the outer template's, so the
+            // mixed YAML-parent / JSON-child shape is intentional and safe.
             await submitImportChangeSet(
               deps.cfnClient,
               plan.cfnName,
@@ -3853,6 +3934,24 @@ export async function runPerStackImportLoop(args: {
             `successful per-stack IMPORT loop. Every stack in the tree IS CFn-managed (the ` +
             `migration succeeded AWS-side); orphan state remains under:\n${lines}\n` +
             `Recover with 'cdkd state orphan <stack>' per record.`
+        );
+      }
+
+      // Aggregate summary of intrinsic-valued Parameters skipped across the
+      // tree. The per-stack warns above scroll past under `--yes`; re-print
+      // a single consolidated line at the end so the user has one place to
+      // confirm every affected child's template carries the needed Parameter
+      // Default values (CFn rejects the IMPORT otherwise — and intrinsic
+      // resolution at leaf-IMPORT time is a deferred follow-up).
+      if (sessionIntrinsicSkipped.size > 0) {
+        const detail = [...sessionIntrinsicSkipped.entries()]
+          .map(([cdkdName, params]) => `${cdkdName} (${params.join(', ')})`)
+          .join('; ');
+        logger.warn(
+          `${sessionIntrinsicSkipped.size} stack(s) had intrinsic-valued Parameter(s) skipped at ` +
+            `IMPORT time: ${detail}. Verify each child template's Parameter Default values cover ` +
+            `these before the first 'cdk deploy' — intrinsic resolution at leaf-IMPORT time is a ` +
+            `deferred follow-up.`
         );
       }
 

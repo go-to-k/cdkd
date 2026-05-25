@@ -73,11 +73,14 @@ cleanup() {
   fi
   # 2. cdkd-managed state path: if the export never reached the
   #    state-cleanup step, destroy the cdkd-managed copy so the AWS
-  #    resources go away. Best-effort.
-  if [ -f "${REPO_ROOT}/dist/cli.js" ] && aws s3api head-object \
-      --bucket "${STATE_BUCKET}" \
-      --key "${PARENT_STATE_KEY}" \
-      --region "${REGION}" >/dev/null 2>&1; then
+  #    resources go away. Best-effort. Fire when EITHER the parent OR the
+  #    child state exists: a trap on INT/TERM mid-deploy can leave only the
+  #    child state written (NestedStackProvider.create persists it before
+  #    the parent finishes), and cdkd destroy <parent> still tears the whole
+  #    tree down (the SSM sweep below is the final backstop either way).
+  if [ -f "${REPO_ROOT}/dist/cli.js" ] && { \
+      aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PARENT_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1 || \
+      aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; }; then
     echo "[verify] cleanup: cdkd destroy ${PARENT_STACK}"
     ${CLI} destroy "${PARENT_STACK}" \
       --state-bucket "${STATE_BUCKET}" \
@@ -85,8 +88,13 @@ cleanup() {
   fi
   # 3. Belt-and-braces: scrub any leftover SSM parameters / cdkd state
   #    keys.
+  # SSM describe-parameters Contains is CASE-SENSITIVE; this fixture deploys
+  # via cdkd, whose generateResourceName stack-name-prefixes the parameter
+  # (CdkdExportNestedStack-...), so the lowercase form never matched and the
+  # sweep silently reaped nothing. Match the actual prefix. (Originally
+  # fixed in #583, regressed by the PR B2 rewrite in #588; re-applied here.)
   for p in $(aws ssm describe-parameters --region "${REGION}" \
-    --parameter-filters "Key=Name,Option=Contains,Values=cdkdexportnestedstack" \
+    --parameter-filters "Key=Name,Option=Contains,Values=CdkdExportNestedStack" \
     --query 'Parameters[].Name' --output text 2>/dev/null || true); do
     echo "[verify] cleanup: aws ssm delete-parameter ${p}"
     aws ssm delete-parameter --name "${p}" --region "${REGION}" || true
@@ -112,6 +120,15 @@ if aws cloudformation describe-stacks --stack-name "${CHILD_CFN_STACK}" --region
 fi
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PARENT_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
   echo "[verify] FAIL: cdkd state ${PARENT_STATE_KEY} already exists — clean up first"
+  echo "[verify]       run: aws s3 rm s3://${STATE_BUCKET}/${PARENT_STATE_KEY}"
+  exit 1
+fi
+# Symmetric child-state check: a prior partial failure can leave an orphan
+# child state at cdkd/<Parent>~Child/<region>/state.json without the parent
+# key, which the parent-only scan above would miss.
+if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: cdkd state ${CHILD_STATE_KEY} already exists — clean up first"
+  echo "[verify]       run: aws s3 rm s3://${STATE_BUCKET}/${CHILD_STATE_KEY}"
   exit 1
 fi
 

@@ -79,11 +79,22 @@ cleanup() {
   fi
   # 3. Belt-and-braces: scrub any leftover SSM parameters / cdkd state
   #    even when both 1 and 2 already cleaned up.
-  for p in $(aws ssm describe-parameters --region "${REGION}" \
-    --parameter-filters "Key=Name,Option=Contains,Values=cdkd-importnestedstack" \
-    --query 'Parameters[].Name' --output text 2>/dev/null || true); do
-    echo "[verify] cleanup: aws ssm delete-parameter ${p}"
-    aws ssm delete-parameter --name "${p}" --region "${REGION}" || true
+  # Unlike export-nested-stack (which deploys via cdkd, whose
+  # generateResourceName stack-name-prefixes the parameter so a single
+  # Contains=CdkdExportNestedStack filter matches), this fixture deploys
+  # via upstream `cdk deploy`, so CloudFormation auto-generates the SSM
+  # parameter names as `CFN-ParentParam-<rand>` / `CFN-ChildParam-<rand>`
+  # — there is NO stack-name token to filter on. SSM describe-parameters
+  # Contains also accepts only ONE value per filter, so sweep each
+  # logical-id token separately. (The old `cdkd-importnestedstack` filter
+  # — and a `CdkdImportNestedStack` variant — match nothing here.)
+  for token in ParentParam ChildParam; do
+    for p in $(aws ssm describe-parameters --region "${REGION}" \
+      --parameter-filters "Key=Name,Option=Contains,Values=${token}" \
+      --query 'Parameters[].Name' --output text 2>/dev/null || true); do
+      echo "[verify] cleanup: aws ssm delete-parameter ${p}"
+      aws ssm delete-parameter --name "${p}" --region "${REGION}" || true
+    done
   done
   aws s3 rm "s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" --region "${REGION}" 2>/dev/null || true
   aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" --region "${REGION}" 2>/dev/null || true

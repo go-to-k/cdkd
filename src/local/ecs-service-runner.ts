@@ -570,6 +570,16 @@ async function bootReplica(
   //     /24 here.
   const sharedNetwork = options.discovery?.sharedNetwork;
   const networkAliasesByContainer = buildNetworkAliasesByContainer(service);
+  // Issue #585 — when this service boots more than one replica, every
+  // replica maps the same container port, so a fixed host-port publish
+  // makes the 2nd+ replica fail with `port is already allocated`. Drop
+  // the `-p` flag for multi-replica services; peers still reach this
+  // service by IP / network alias on the shared docker network. Gated
+  // on the EFFECTIVE replica count (clamped by `--max-tasks`), not the
+  // raw template DesiredCount — a DesiredCount: 2 service capped to 1
+  // replica boots a single container and keeps its host-port publish.
+  const replicaCount = computeReplicaCount(service.desiredCount, options.maxTasks);
+  const skipHostPortPublish = replicaCount > 1;
   const perReplicaTaskOptions: RunEcsTaskOptions = {
     ...options.taskOptions,
     cluster: perReplicaCluster,
@@ -580,6 +590,7 @@ async function bootReplica(
     // whether the SERVICE runs in the background; the per-replica
     // detach is internal plumbing.
     detach: true,
+    ...(skipHostPortPublish ? { skipHostPortPublish: true } : {}),
     ...(sharedNetwork
       ? { existingNetwork: sharedNetwork }
       : { subnetOctet: pickSubnetOctet(instance.index) }),
