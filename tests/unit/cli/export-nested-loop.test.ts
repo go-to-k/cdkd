@@ -1585,8 +1585,8 @@ describe('flipStackToUpdateComplete (issue #589 Minor 1) — tag-value uniquenes
     // against is two flips landing within the same millisecond (e.g. an SDK
     // transient-error retry) emitting identical tag values, which AWS rejects
     // with "No updates are to be performed".
-    await flipStackToUpdateComplete(cfnClient, 'My-Stack');
-    await flipStackToUpdateComplete(cfnClient, 'My-Stack');
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack', []);
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack', []);
 
     expect(updateInputs).toHaveLength(2);
     const tag0 = (updateInputs[0]!['Tags'] as Array<{ Key: string; Value: string }>)[0]!;
@@ -1598,6 +1598,33 @@ describe('flipStackToUpdateComplete (issue #589 Minor 1) — tag-value uniquenes
     // Shape: ISO-8601 timestamp + '-' + 8-hex UUID slice.
     expect(tag0.Value).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z-[0-9a-f]{8}$/);
     expect(tag1.Value).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z-[0-9a-f]{8}$/);
+    // No Parameters passed → the UpdateStack omits the field entirely.
+    expect(updateInputs[0]!['Parameters']).toBeUndefined();
+  });
+
+  it('re-supplies the stack Parameters on the no-op UpdateStack (#464 — no-Default param fix)', async () => {
+    // Regression for the real-AWS bug the export-nested-stack integ surfaced:
+    // once a child stack declares a no-`Default` Parameter (fed by a
+    // parent-side Ref), a `UsePreviousTemplate: true` flip with NO Parameters
+    // is rejected by CFn with `Parameters: [X] must have values`. The flip
+    // must re-send the resolved Parameters as a no-op.
+    const updateInputs: Record<string, unknown>[] = [];
+    const cfnClient = {
+      send: vi.fn(async (cmd: { _name: string; input: Record<string, unknown> }) => {
+        if (cmd._name === 'UpdateStack') updateInputs.push(cmd.input);
+        return {};
+      }),
+    } as unknown as AwsClients['cloudFormation'];
+
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack', [
+      { ParameterKey: 'StageParam', ParameterValue: 'prod' },
+    ]);
+
+    expect(updateInputs).toHaveLength(1);
+    expect(updateInputs[0]!['UsePreviousTemplate']).toBe(true);
+    expect(updateInputs[0]!['Parameters']).toEqual([
+      { ParameterKey: 'StageParam', ParameterValue: 'prod' },
+    ]);
   });
 });
 

@@ -3083,16 +3083,29 @@ async function collectImportFailureSummary(
  * resolution. The tag accumulates across retries — harmless and easy to
  * reap manually under the `cdkd:` prefix.
  *
+ * `parameters` must be the SAME Parameters the stack was just IMPORTed
+ * with: a `UsePreviousTemplate: true` update on a stack that declares
+ * Parameters (especially no-`Default` ones fed by a parent-side `Ref`)
+ * is rejected by CFn with `Parameters: [X] must have values` unless every
+ * Parameter is re-supplied. We re-send the resolved values verbatim (a
+ * true no-op — same template, same params, only the flip Tag changes).
+ * Empty array = the stack has no Parameters, so the field is omitted.
+ *
  * Exported for unit testing.
  */
 export async function flipStackToUpdateComplete(
   cfnClient: AwsClients['cloudFormation'],
-  cfnStackName: string
+  cfnStackName: string,
+  parameters: Parameter[]
 ): Promise<void> {
   await cfnClient.send(
     new UpdateStackCommand({
       StackName: cfnStackName,
       UsePreviousTemplate: true,
+      // Re-supply the stack's Parameters (no-op values) so the
+      // UsePreviousTemplate update validates against a template that
+      // declares no-`Default` Parameters. Omitted when the stack has none.
+      ...(parameters.length > 0 && { Parameters: parameters }),
       Tags: [
         {
           Key: 'cdkd:nested-export-flip',
@@ -3896,7 +3909,7 @@ export async function runPerStackImportLoop(args: {
             `  Flipping '${plan.cfnName}' to UPDATE_COMPLETE so it can be adopted as a ` +
               `nested member by its parent's Phase 1B...`
           );
-          await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName);
+          await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
         }
 
         // ---- Phase 1B: UPDATE-via-IMPORT to adopt nested children ----
@@ -4062,7 +4075,7 @@ export async function runPerStackImportLoop(args: {
               `  Flipping '${plan.cfnName}' back to UPDATE_COMPLETE so its own parent's ` +
                 `Phase 1B can adopt it...`
             );
-            await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName);
+            await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
           }
         }
 
