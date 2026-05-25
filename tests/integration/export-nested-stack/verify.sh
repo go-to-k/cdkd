@@ -44,6 +44,14 @@ STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 PARENT_STATE_KEY="cdkd/${PARENT_STACK}/${REGION}/state.json"
 CHILD_STATE_KEY="cdkd/${CHILD_CDKD_STACK}/${REGION}/state.json"
 
+# Captured in step 5 once the cdkd state read succeeds. Initialized empty so
+# the cleanup trap can reference them under `set -u` even when it fires before
+# step 5. cleanup() deletes by these exact physical names — far more robust
+# than the name-prefix Contains sweep, whose filter has to track the deploy
+# path's naming scheme by hand (it has silently rotted twice; see #583/#588).
+PARENT_PARAM_NAME=""
+CHILD_PARAM_NAME=""
+
 echo "[verify] region=${REGION} parent=${PARENT_STACK} child-cfn=${CHILD_CFN_STACK} state-bucket=${STATE_BUCKET}"
 
 cleanup() {
@@ -86,13 +94,22 @@ cleanup() {
       --state-bucket "${STATE_BUCKET}" \
       --force 2>&1 || true
   fi
-  # 3. Belt-and-braces: scrub any leftover SSM parameters / cdkd state
-  #    keys.
-  # SSM describe-parameters Contains is CASE-SENSITIVE; this fixture deploys
-  # via cdkd, whose generateResourceName stack-name-prefixes the parameter
-  # (CdkdExportNestedStack-...), so the lowercase form never matched and the
-  # sweep silently reaped nothing. Match the actual prefix. (Originally
-  # fixed in #583, regressed by the PR B2 rewrite in #588; re-applied here.)
+  # 3a. Primary SSM reap: delete by the exact physical names captured in
+  #     step 5. This is naming-scheme-independent, so it cannot rot the way
+  #     the Contains sweep below has. Empty until step 5 runs, so a trap that
+  #     fires earlier falls through to 3b.
+  for n in "${PARENT_PARAM_NAME}" "${CHILD_PARAM_NAME}"; do
+    [ -n "${n}" ] || continue
+    echo "[verify] cleanup: aws ssm delete-parameter ${n}"
+    aws ssm delete-parameter --name "${n}" --region "${REGION}" 2>/dev/null || true
+  done
+  # 3b. Last-resort fuzzy fallback for the case where the trap fired before
+  #     step 5 captured the names. SSM describe-parameters Contains is
+  #     CASE-SENSITIVE; this fixture deploys via cdkd, whose
+  #     generateResourceName stack-name-prefixes the parameter
+  #     (CdkdExportNestedStack-...), so match that prefix. (This filter was
+  #     wrong/regressed in #583/#588; 3a is the durable fix, this stays as a
+  #     belt-and-braces backstop.)
   for p in $(aws ssm describe-parameters --region "${REGION}" \
     --parameter-filters "Key=Name,Option=Contains,Values=CdkdExportNestedStack" \
     --query 'Parameters[].Name' --output text 2>/dev/null || true); do
