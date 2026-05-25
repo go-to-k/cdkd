@@ -66,6 +66,19 @@ jobs:
             exit 1
           fi
 
+      # Fail CI when src/provisioning/unsupported-types.generated.ts is stale
+      # relative to docs/_generated/provider-coverage.json (tier3). The runtime
+      # pre-flight reads the generated module, so it must track the audit cache.
+      # Same shape as the integ-coverage / scenario-coverage staleness guards.
+      - name: unsupported-types module is up-to-date
+        run: |
+          vp run gen:unsupported-types
+          if ! git diff --quiet -- src/provisioning/unsupported-types.generated.ts; then
+            echo "::error::src/provisioning/unsupported-types.generated.ts is stale — run \`vp run gen:unsupported-types\` and commit the regenerated module"
+            git --no-pager diff -- src/provisioning/unsupported-types.generated.ts
+            exit 1
+          fi
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test

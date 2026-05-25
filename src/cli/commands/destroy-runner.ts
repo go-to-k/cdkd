@@ -113,6 +113,13 @@ export interface DestroyRunnerContext {
    * checks ignore this field and always scan state.json directly.
    */
   exportIndexStore?: ExportIndexStore;
+
+  /**
+   * Escape-hatch resource types (from `--allow-unsupported-types`). Applied to
+   * both the caller's registry and any region-scoped registry the runner spins
+   * up, so a stack deployed with the flag can also be destroyed.
+   */
+  allowUnsupportedTypes?: string[];
 }
 
 /**
@@ -372,6 +379,9 @@ export async function runDestroyForStack(
     destroyProviderRegistry = new ProviderRegistry();
     registerAllProviders(destroyProviderRegistry);
     destroyProviderRegistry.setCustomResourceResponseBucket(ctx.stateBucket);
+    if (ctx.allowUnsupportedTypes?.length) {
+      destroyProviderRegistry.allowUnsupportedTypes(ctx.allowUnsupportedTypes);
+    }
   }
 
   logger.info(`\nAcquiring lock for stack ${stackName}...`);

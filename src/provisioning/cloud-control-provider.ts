@@ -18,6 +18,7 @@ import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { assertRegionMatch, type DeleteContext } from './region-check.js';
+import { isNonProvisionable } from './unsupported-types.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -816,7 +817,10 @@ export class CloudControlProvider implements ResourceProvider {
   static isSupportedResourceType(resourceType: string): boolean {
     // Common resource types that are NOT supported by Cloud Control API
     const unsupportedTypes = new Set([
-      // IAM (most types not supported)
+      // IAM (most types not supported by Cloud Control; cdkd ships SDK
+      // providers for these instead). AWS::IAM::ManagedPolicy stays here for
+      // now: a dedicated SDK provider (the verified path) is added in a
+      // follow-up PR, which makes it Tier 1 and wins over this blocklist.
       'AWS::IAM::Role',
       'AWS::IAM::Policy',
       'AWS::IAM::ManagedPolicy',
@@ -857,6 +861,15 @@ export class CloudControlProvider implements ResourceProvider {
       resourceType.startsWith('Custom::') ||
       resourceType.startsWith('AWS::CloudFormation::CustomResource')
     ) {
+      return false;
+    }
+
+    // AWS-declared NON_PROVISIONABLE (provider-coverage tier3): AWS itself
+    // reports that Cloud Control cannot create/update/delete these, and cdkd
+    // has no SDK provider for them. Reject so pre-flight fails fast with an
+    // actionable message instead of letting the optimistic fallthrough below
+    // reach an opaque mid-deploy Cloud Control CreateResource failure.
+    if (isNonProvisionable(resourceType)) {
       return false;
     }
 

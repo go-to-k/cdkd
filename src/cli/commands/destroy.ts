@@ -53,6 +53,7 @@ async function destroyCommand(
     removeProtection?: boolean;
     verbose: boolean;
     context?: string[];
+    allowUnsupportedTypes?: string[];
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -132,6 +133,12 @@ async function destroyCommand(
 
     // Configure custom resource response handling via S3
     providerRegistry.setCustomResourceResponseBucket(stateBucket);
+
+    // Escape hatch: types deployed with --allow-unsupported-types must also be
+    // destroyable, so route them through Cloud Control here too.
+    if (options.allowUnsupportedTypes?.length) {
+      providerRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
+    }
 
     // 2. Resolve stacks to destroy (CDK CLI compatible behavior)
     // Always synth to determine which stacks belong to this CDK app.
@@ -433,6 +440,9 @@ async function destroyCommand(
             skipConfirmation: options.yes || options.force,
             removeProtection: options.removeProtection === true,
             exportIndexStore,
+            ...(options.allowUnsupportedTypes?.length && {
+              allowUnsupportedTypes: options.allowUnsupportedTypes,
+            }),
             ...(options.resourceWarnAfter?.globalMs !== undefined && {
               resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
             }),

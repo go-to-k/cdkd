@@ -531,6 +531,26 @@ export const aggressiveVpcParallelOption = new Option(
 /**
  * Deploy options
  */
+/**
+ * Escape hatch for the pre-flight unsupported-type rejection. Comma-separated
+ * (and repeatable) resource types that cdkd will attempt via Cloud Control
+ * even though it reports them unsupported (AWS NON_PROVISIONABLE). Shared by
+ * `cdkd deploy` and `cdkd destroy` so a stack deployed with the flag can also
+ * be destroyed. Per-type (not blanket) so the user explicitly names each type.
+ */
+export const allowUnsupportedTypesOption = new Option(
+  '--allow-unsupported-types <types>',
+  'Comma-separated resource types to attempt via Cloud Control even though cdkd reports ' +
+    'them unsupported (AWS NON_PROVISIONABLE). Escape hatch — Cloud Control will likely ' +
+    'still fail. Example: --allow-unsupported-types AWS::Foo::Bar,AWS::Baz::Qux'
+).argParser((value: string, previous: string[] | undefined) => {
+  const parsed = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...(previous ?? []), ...parsed];
+});
+
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)
@@ -589,6 +609,7 @@ export const deployOptions = [
     '-e, --exclusively',
     'Only deploy requested stacks, do not include dependencies'
   ).default(false),
+  allowUnsupportedTypesOption,
   ...resourceTimeoutOptions,
 ];
 
@@ -700,4 +721,5 @@ export const destroyOptions = [
       'AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, and ' +
       'AWS::ElasticLoadBalancingV2::LoadBalancer.'
   ).default(false),
+  allowUnsupportedTypesOption,
 ];
