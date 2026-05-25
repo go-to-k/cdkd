@@ -1,3 +1,10 @@
+## [0.150.2](https://github.com/go-to-k/cdkd/compare/v0.150.1...v0.150.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* **export:** nested-stack IMPORT-loop review-residual cleanup ([#589](https://github.com/go-to-k/cdkd/issues/589)) ([#592](https://github.com/go-to-k/cdkd/issues/592)) ([cbb2539](https://github.com/go-to-k/cdkd/commit/cbb25392d0b21d4ae863a48e4cd2ba474634e031))
+
 ## [0.150.1](https://github.com/go-to-k/cdkd/compare/v0.150.0...v0.150.1) (2026-05-25)
 
 
