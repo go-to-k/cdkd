@@ -2002,6 +2002,25 @@ describe('cdkd2cfnStackName (issue #464 PR B2)', () => {
     // should only touch `~` — everything else passes through.
     expect(cdkd2cfnStackName('MyApp-Prod~Database123')).toBe('MyApp-Prod-Database123');
   });
+
+  it('throws when the mapped name violates the CFn stack-name constraint (#589 Nit 1)', () => {
+    // The `~` → `-` swap does not rescue a name that is otherwise illegal:
+    // leading underscore / digit, or an embedded '.' / '/'. These would
+    // otherwise surface as an opaque CFn API rejection deep in the IMPORT
+    // loop — fail fast at the mapping with a pointer at the override flags.
+    expect(() => cdkd2cfnStackName('_foo')).toThrow(/violates the CloudFormation stack-name/);
+    expect(() => cdkd2cfnStackName('1foo')).toThrow(/violates the CloudFormation stack-name/);
+    expect(() => cdkd2cfnStackName('foo.bar')).toThrow(/violates the CloudFormation stack-name/);
+    expect(() => cdkd2cfnStackName('foo/bar')).toThrow(/violates the CloudFormation stack-name/);
+    // A `~`-bearing name whose non-separator characters are otherwise illegal
+    // still throws after the substitution (`_db` stays illegal).
+    expect(() => cdkd2cfnStackName('MyApp~_db')).toThrow(/violates the CloudFormation stack-name/);
+  });
+
+  it('error message points at the override escape hatch (#589 Nit 1)', () => {
+    expect(() => cdkd2cfnStackName('_foo')).toThrow(/--cfn-stack-name/);
+    expect(() => cdkd2cfnStackName('_foo')).toThrow(/--cfn-child-stack-name/);
+  });
 });
 
 describe('parseCfnChildStackNameOverrides (issue #464 PR B2)', () => {
