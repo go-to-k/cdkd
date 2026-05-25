@@ -61,6 +61,13 @@ export class DagBuilder {
 
     this.logger.debug(`Total nodes: ${resourceIds.length}`);
 
+    // Template Parameter names — a `Ref: <ParameterName>` is a reference to a
+    // CFn Parameter, NOT to a resource, so it must not be treated as a missing
+    // dependency. (Pseudo-parameters like AWS::Region are already filtered out
+    // upstream by `extractDependencies`; this handles user-declared Parameters,
+    // e.g. nested-stack children whose Parameters are fed by the parent.)
+    const parameterNames = new Set(Object.keys(template.Parameters ?? {}));
+
     // Add edges for dependencies
     let edgeCount = 0;
     let relaxedEdgeCount = 0;
@@ -92,6 +99,11 @@ export class DagBuilder {
           graph.setEdge(depId, logicalId); // depId -> logicalId (logicalId depends on depId)
           edgeCount++;
           this.logger.debug(`Added edge: ${depId} -> ${logicalId}`);
+        } else if (parameterNames.has(depId)) {
+          // `Ref` to a template Parameter, not a resource — no graph edge and
+          // no warning. (Common in nested-stack children whose Parameters are
+          // supplied by the parent via Properties.Parameters.)
+          this.logger.debug(`Skipped Parameter reference: ${logicalId} -> ${depId}`);
         } else {
           this.logger.warn(
             `Resource ${logicalId} depends on ${depId}, but ${depId} not found in template`
