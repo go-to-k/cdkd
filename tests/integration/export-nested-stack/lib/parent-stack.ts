@@ -12,7 +12,13 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *
  * Shape: one `cdk.Stack` parent containing one `cdk.NestedStack` child.
  * Both stacks carry one `AWS::SSM::Parameter` each (cheap, fast,
- * region-agnostic, no cross-stack consumer plumbing needed).
+ * region-agnostic, no cross-stack consumer plumbing needed). The child
+ * additionally declares a no-`Default` CFn Parameter (`StageParam`) fed by
+ * the parent via `{Ref: Stage}` — this exercises the #464 follow-up's
+ * intrinsic Parameter resolution at leaf-IMPORT time (the child IMPORT
+ * would fail with `Parameters [StageParam] must have values` if cdkd did
+ * not resolve the parent-side Ref before submitting the standalone child
+ * IMPORT changeset).
  *
  * Test flow (see verify.sh):
  *   1. `cdkd deploy` parent + child (NOT `cdk deploy` — PR B2 exercises
@@ -49,8 +55,26 @@ class ChildNestedStack extends cdk.NestedStack {
 
   constructor(scope: Construct, id: string, props?: cdk.NestedStackProps) {
     super(scope, id, props);
+
+    // A no-`Default` CFn Parameter on the CHILD template, fed by the parent
+    // via `{Ref: Stage}` (see the parent below). This is the scenario the
+    // #464 follow-up (intrinsic Parameter resolution at leaf-IMPORT time)
+    // exists for: CFn's atomic nested-stack create resolved such Refs
+    // implicitly, but cdkd's per-stack leaf-first IMPORT submits the child
+    // as a standalone stack, so cdkd must resolve `{Ref: Stage}` against the
+    // parent's resolved Parameters itself. Before the follow-up, the child
+    // IMPORT failed with `Parameters [StageParam] must have values` because
+    // the intrinsic was skipped and StageParam has no Default. The whole
+    // verify.sh `cdkd export` step is therefore the live test of the fix.
+    const stageParam = new cdk.CfnParameter(this, 'StageParam', {
+      type: 'String',
+      description: 'cdkd #464 follow-up - no-Default child Parameter fed by the parent-side Ref',
+    });
+
     this.param = new ssm.StringParameter(this, 'ChildParam', {
-      stringValue: 'child-nested-value',
+      // Value reflects the resolved StageParam so the resolution is observable
+      // end-to-end (deploy-time resolution sets it; export does not change it).
+      stringValue: stageParam.valueAsString,
       description: 'cdkd #464 PR B2 export integ - SSM parameter inside the nested child',
     });
     (this.param.node.defaultChild as cdk.CfnResource).overrideLogicalId('ChildParam');
@@ -61,7 +85,20 @@ export class ExportNestedStackExample extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const child = new ChildNestedStack(this, 'Child');
+    // Parent CFn Parameter (with a Default so both `cdkd deploy` and
+    // `cdkd export` work without `--parameter`). Its value flows down to the
+    // child's no-Default `StageParam` via the nested-stack `parameters` prop,
+    // which CDK synthesizes as `Child.Properties.Parameters.StageParam =
+    // {Ref: Stage}` on the parent's `AWS::CloudFormation::Stack` row.
+    const stage = new cdk.CfnParameter(this, 'Stage', {
+      type: 'String',
+      default: 'prod',
+      description: 'cdkd #464 follow-up - parent Parameter fed down to the child via {Ref: Stage}',
+    });
+
+    const child = new ChildNestedStack(this, 'Child', {
+      parameters: { StageParam: stage.valueAsString },
+    });
     // Override CDK's auto-generated logical id
     // (`ChildNestedStackChildNestedStackResourceC40294CA` style) to a
     // stable `Child` so the verify.sh assertions can pin both the AWS

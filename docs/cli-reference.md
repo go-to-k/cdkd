@@ -984,11 +984,13 @@ cdkd export                                       # auto-detect single-stack app
    `--cfn-child-stack-name '<cdkdName>=<cfnName>'` (repeatable).
    Per-child Parameters are forwarded from the parent template's
    `AWS::CloudFormation::Stack.Properties.Parameters` block — literal
-   string / number / boolean values pass through; intrinsic-valued
-   Parameters (`{Ref: ...}` / `{Fn::GetAtt: ...}`) are skipped with a
-   warning (the child template's Parameter Defaults must cover them
-   until intrinsic resolution at leaf-IMPORT time ships in a follow-up
-   PR). The original "one atomic `--include-nested-stacks` IMPORT
+   string / number / boolean values pass through, and intrinsic-valued
+   Parameters (`{Ref: <ParentParam>}` / `{Fn::GetAtt: [ParentResource,
+   Attr]}`) are resolved at IMPORT time against the parent's resolved
+   Parameters + cdkd state (a root-first pre-pass, since a child's
+   Parameters resolve against its parent's). A value cdkd cannot resolve
+   degrades to a warning and the child template's Parameter `Default`
+   must cover it. The original "one atomic `--include-nested-stacks` IMPORT
    changeset" design was found infeasible by the 2026-05-24 AWS spike —
    AWS rejects that flag combination with
    `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`;
