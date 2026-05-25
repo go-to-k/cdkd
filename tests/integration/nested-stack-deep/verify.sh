@@ -147,7 +147,8 @@ for root in data:
 assert gc is not None, f"grandchild stack {target} not found in nested JSON tree"
 assert gc["changes"], f"grandchild {target} changes array is empty"
 assert any(c["changeType"] == "UPDATE" for c in gc["changes"]), "expected an UPDATE change on the grandchild"
-print(f"  OK: grandchild {target} carries {len(gc[\"changes\"])} change(s) in --json output")
+count = len(gc["changes"])
+print(f"  OK: grandchild {target} carries {count} change(s) in --json output")
 '
 
 # --------------------------------------------------------------------
