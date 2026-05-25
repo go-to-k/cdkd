@@ -1585,8 +1585,8 @@ describe('flipStackToUpdateComplete (issue #589 Minor 1) — tag-value uniquenes
     // against is two flips landing within the same millisecond (e.g. an SDK
     // transient-error retry) emitting identical tag values, which AWS rejects
     // with "No updates are to be performed".
-    await flipStackToUpdateComplete(cfnClient, 'My-Stack');
-    await flipStackToUpdateComplete(cfnClient, 'My-Stack');
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack', []);
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack', []);
 
     expect(updateInputs).toHaveLength(2);
     const tag0 = (updateInputs[0]!['Tags'] as Array<{ Key: string; Value: string }>)[0]!;
@@ -1598,6 +1598,33 @@ describe('flipStackToUpdateComplete (issue #589 Minor 1) — tag-value uniquenes
     // Shape: ISO-8601 timestamp + '-' + 8-hex UUID slice.
     expect(tag0.Value).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z-[0-9a-f]{8}$/);
     expect(tag1.Value).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z-[0-9a-f]{8}$/);
+    // No Parameters passed → the UpdateStack omits the field entirely.
+    expect(updateInputs[0]!['Parameters']).toBeUndefined();
+  });
+
+  it('re-supplies the stack Parameters on the no-op UpdateStack (#464 — no-Default param fix)', async () => {
+    // Regression for the real-AWS bug the export-nested-stack integ surfaced:
+    // once a child stack declares a no-`Default` Parameter (fed by a
+    // parent-side Ref), a `UsePreviousTemplate: true` flip with NO Parameters
+    // is rejected by CFn with `Parameters: [X] must have values`. The flip
+    // must re-send the resolved Parameters as a no-op.
+    const updateInputs: Record<string, unknown>[] = [];
+    const cfnClient = {
+      send: vi.fn(async (cmd: { _name: string; input: Record<string, unknown> }) => {
+        if (cmd._name === 'UpdateStack') updateInputs.push(cmd.input);
+        return {};
+      }),
+    } as unknown as AwsClients['cloudFormation'];
+
+    await flipStackToUpdateComplete(cfnClient, 'My-Stack', [
+      { ParameterKey: 'StageParam', ParameterValue: 'prod' },
+    ]);
+
+    expect(updateInputs).toHaveLength(1);
+    expect(updateInputs[0]!['UsePreviousTemplate']).toBe(true);
+    expect(updateInputs[0]!['Parameters']).toEqual([
+      { ParameterKey: 'StageParam', ParameterValue: 'prod' },
+    ]);
   });
 });
 
@@ -1627,7 +1654,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
   // Minor 3 + Test gap 5: a parent whose nested-stack row passes an
   // intrinsic-valued Parameter (`{Ref: ...}`) to its child triggers BOTH the
   // per-iteration warn AND the post-loop aggregate summary warn.
-  it('warns per-stack AND re-prints an aggregate summary for intrinsic-skipped Parameters', async () => {
+  it('warns per-stack AND re-prints an aggregate summary for UNRESOLVABLE intrinsic Parameters', async () => {
     const childTemplate = {
       Resources: {
         ChildBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'child-589' } },
@@ -1665,8 +1692,12 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
           Type: 'AWS::CloudFormation::Stack',
           Properties: {
             TemplateURL: 'https://cdk-asset/.../Child.template.json',
-            // Mixed literal + intrinsic Parameters: only the intrinsic one
-            // (RefValued) is skipped and surfaced in the aggregate summary.
+            // Mixed literal + intrinsic Parameters. RefValued points at a
+            // parent Parameter that is NOT in rootParameters ([] below), so
+            // the resolver cannot resolve it and it degrades to the
+            // warn + aggregate-summary path (the intrinsic resolution added
+            // in the #464 follow-up resolves Refs only when the target is
+            // present; this exercises the unresolvable fallback).
             Parameters: { LiteralEnv: 'prod', RefValued: { Ref: 'SomeParentParam' } },
           },
           Metadata: { 'aws:asset:path': 'Child.nested.template.json' },
@@ -1712,12 +1743,116 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
     expect(result.outcome).toBe('success');
 
     const warnText = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    // Per-iteration warn names the skipped intrinsic param for the child.
-    expect(warnText).toContain("Child 'Root~Child': skipping intrinsic-valued Parameter(s)");
+    // Per-stack warn names the unresolvable intrinsic param for the child.
+    expect(warnText).toContain("Child 'Root~Child': could not resolve intrinsic-valued Parameter(s)");
     expect(warnText).toContain('RefValued');
     // Post-loop aggregate summary names the affected stack + its param.
-    expect(warnText).toContain('1 stack(s) had intrinsic-valued Parameter(s) skipped at IMPORT');
+    expect(warnText).toContain(
+      '1 stack(s) had intrinsic-valued Parameter(s) that cdkd could not resolve at IMPORT'
+    );
     expect(warnText).toContain('Root~Child (RefValued)');
+  });
+
+  // The #464 follow-up: a parent-side {Ref: <rootParam>} child Parameter now
+  // RESOLVES against the resolved root Parameters and reaches the child's
+  // IMPORT changeset (instead of being skipped). End-to-end proof that the
+  // root-first pre-pass is wired into runPerStackImportLoop.
+  it('resolves a parent-side {Ref: rootParam} child Parameter into the child IMPORT changeset', async () => {
+    const childTemplate = {
+      Resources: {
+        ChildBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'child-resolve' } },
+      },
+    };
+    const childPath = join(tmpRoot, 'Child.nested.template.json');
+    writeFileSync(childPath, JSON.stringify(childTemplate), 'utf-8');
+
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: {
+        Child: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:cdkd-local:...' },
+      },
+    });
+    const child = makeState({
+      stackName: 'Root~Child',
+      region: 'us-east-1',
+      resources: { ChildBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'child-resolve' } },
+      parentStack: 'Root',
+      parentLogicalId: 'Child',
+    });
+    const { backend: stateBackend } = buildStateBackend({
+      'Root|us-east-1': root,
+      'Root~Child|us-east-1': child,
+    });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient, calls } = buildCfnClient();
+
+    const rootTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            TemplateURL: 'https://cdk-asset/.../Child.template.json',
+            // The child Parameter `Stage` is fed by a parent-side Ref to the
+            // root Parameter `StageParam` (no Default needed on the child).
+            Parameters: { Stage: { Ref: 'StageParam' } },
+          },
+          Metadata: { 'aws:asset:path': 'Child.nested.template.json' },
+        },
+      },
+    };
+    const tree: CdkdStateStackTree = {
+      stackName: 'Root',
+      region: 'us-east-1',
+      state: root,
+      nestedChildren: new Map([
+        [
+          'Child',
+          { stackName: 'Root~Child', region: 'us-east-1', state: child, nestedChildren: new Map() },
+        ],
+      ]),
+    };
+
+    const result = await runPerStackImportLoop({
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { Child: childPath },
+      rootTemplateFormat: 'json',
+      tree,
+      rootTemplate,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [{ ParameterKey: 'StageParam', ParameterValue: 'production' }],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    });
+
+    expect(result.outcome).toBe('success');
+
+    // No "could not resolve" warning fired — the Ref resolved cleanly.
+    const warnText = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnText).not.toContain('could not resolve intrinsic-valued Parameter');
+
+    // The child's Phase 1A IMPORT changeset carries the RESOLVED Parameter.
+    const childCreate = calls.find(
+      (c) => c.name === 'CreateChangeSet' && c.input['StackName'] === 'Root-Child'
+    );
+    expect(childCreate).toBeDefined();
+    const childParams = childCreate!.input['Parameters'] as Array<{
+      ParameterKey: string;
+      ParameterValue: string;
+    }>;
+    expect(childParams).toEqual([{ ParameterKey: 'Stage', ParameterValue: 'production' }]);
   });
 
   // Test gap 1: cdkd-bug guard — DescribeStacks returns a stack with no

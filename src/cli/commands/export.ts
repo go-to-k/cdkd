@@ -35,6 +35,10 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import {
+  IntrinsicFunctionResolver,
+  type ResolverContext,
+} from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import {
@@ -1644,6 +1648,32 @@ export function flattenCdkdStateTreeLeafFirst(
 }
 
 /**
+ * Flatten a {@link CdkdStateStackTree} into a depth-first list of
+ * `(stackName, region)` pairs in **root-first** order — the inverse of
+ * {@link flattenCdkdStateTreeLeafFirst}. Used by the parameter-resolution
+ * pre-pass in `runPerStackImportLoop` (issue #464 follow-up): each child's
+ * intrinsic-valued Parameters resolve against its parent's already-resolved
+ * Parameters, so the parent must be visited first.
+ *
+ * Exported so callers (orchestrator parameter pre-pass, unit tests) can
+ * iterate the tree in the same order without re-implementing the walk.
+ */
+export function flattenCdkdStateTreeRootFirst(
+  tree: CdkdStateStackTree
+): Array<{ stackName: string; region: string }> {
+  const out: Array<{ stackName: string; region: string }> = [];
+  walk(tree);
+  return out;
+
+  function walk(node: CdkdStateStackTree): void {
+    out.push({ stackName: node.stackName, region: node.region });
+    for (const child of node.nestedChildren.values()) {
+      walk(child);
+    }
+  }
+}
+
+/**
  * Map a cdkd stack name to a CloudFormation-compatible stack name.
  *
  * Required because the cdkd v6 state-key form `<parent>~<childLogicalId>`
@@ -3053,16 +3083,29 @@ async function collectImportFailureSummary(
  * resolution. The tag accumulates across retries — harmless and easy to
  * reap manually under the `cdkd:` prefix.
  *
+ * `parameters` must be the SAME Parameters the stack was just IMPORTed
+ * with: a `UsePreviousTemplate: true` update on a stack that declares
+ * Parameters (especially no-`Default` ones fed by a parent-side `Ref`)
+ * is rejected by CFn with `Parameters: [X] must have values` unless every
+ * Parameter is re-supplied. We re-send the resolved values verbatim (a
+ * true no-op — same template, same params, only the flip Tag changes).
+ * Empty array = the stack has no Parameters, so the field is omitted.
+ *
  * Exported for unit testing.
  */
 export async function flipStackToUpdateComplete(
   cfnClient: AwsClients['cloudFormation'],
-  cfnStackName: string
+  cfnStackName: string,
+  parameters: Parameter[]
 ): Promise<void> {
   await cfnClient.send(
     new UpdateStackCommand({
       StackName: cfnStackName,
       UsePreviousTemplate: true,
+      // Re-supply the stack's Parameters (no-op values) so the
+      // UsePreviousTemplate update validates against a template that
+      // declares no-`Default` Parameters. Omitted when the stack has none.
+      ...(parameters.length > 0 && { Parameters: parameters }),
       Tags: [
         {
           Key: 'cdkd:nested-export-flip',
@@ -3127,15 +3170,16 @@ export async function fetchCfnStackTemplate(
  * cdkd must forward those values — otherwise the child template's
  * `Parameters` block goes unresolved and CFn rejects the changeset.
  *
- * Only literal-string Parameter values are forwarded today. Intrinsic
- * values (`{Ref: ...}` / `{Fn::GetAtt: ...}` referencing the parent's
- * own resources) are skipped with a `logger.warn`; if the child Parameter
- * has no `Default`, CFn will reject the IMPORT with a clear error. The
- * intrinsic-resolution path is a deferred follow-up (tracked under #464
- * post-PR-B2 backlog) because resolving parent-side intrinsics at
- * leaf-IMPORT time requires the deploy engine's full
- * `IntrinsicFunctionResolver` against the parent's own (yet-to-be-IMPORTed)
- * state — not in PR B2's scope.
+ * This helper only classifies literal-string / number / boolean values
+ * (forwarded directly) vs. intrinsic values (`{Ref: ...}` /
+ * `{Fn::GetAtt: ...}` referencing the parent's own resources), which it
+ * reports in `intrinsicSkipped`. Intrinsic resolution itself is layered on
+ * top by {@link resolveChildImportParameters}, which runs the deploy
+ * engine's `IntrinsicFunctionResolver` against the parent's state and only
+ * falls back to "skip" (the original behavior) when the resolver cannot
+ * handle a value. Callers that want resolved Parameters should use
+ * {@link resolveChildImportParameters}; this sync helper stays for the
+ * literal-classification step and its existing unit tests.
  *
  * Exported for unit testing.
  */
@@ -3171,6 +3215,215 @@ export function extractChildImportParameters(
     }
   }
   return { params: out, intrinsicSkipped };
+}
+
+/**
+ * Async wrapper around {@link extractChildImportParameters} that resolves
+ * intrinsic-valued (`{Ref: ...}` / `{Fn::GetAtt: ...}` / `Fn::Sub` etc.)
+ * Parameters via the deploy engine's {@link IntrinsicFunctionResolver}
+ * before falling back to the warn+skip path. This is the closing-loop
+ * for the per-stack IMPORT design: CFn's atomic nested-stack create
+ * implicitly resolved these against the parent's own scope, but cdkd's
+ * leaf-first per-stack IMPORT loop submits each child as a standalone
+ * stack — so AWS has no parent context to resolve against, and cdkd must
+ * do the resolution itself.
+ *
+ * Behavior (Option 1 — CDK-compatible graceful degradation):
+ *   - For each entry that {@link extractChildImportParameters} reported as
+ *     `intrinsicSkipped`, look up the original intrinsic value in the
+ *     parent template and call `resolver.resolve(value, parentContext)`.
+ *   - On success: coerce the resolved scalar (string / number / boolean /
+ *     array-of-strings) to a CFn Parameter string and append to `params`.
+ *   - On throw OR on unsupported result shape (object / null / undefined):
+ *     keep the key in `intrinsicSkipped` — the orchestrator's existing
+ *     warn-then-fall-back-to-child-Default path takes over (matches the
+ *     pre-resolver behavior for unresolvable cases, so adding the resolver
+ *     never makes a working scenario regress).
+ *
+ * The `parentContext` must be built from the PARENT's data — its template,
+ * its cdkd state's `resources` (for `Ref` to parent resources and
+ * `Fn::GetAtt` to parent resource attributes), and its already-resolved
+ * Parameter values (for `Ref` to parent Parameters). For nested grandparent
+ * chains, the parent's resolved Parameters themselves come from the
+ * top-down pre-pass in {@link buildResolvedParametersPerStack} — that's
+ * why parameter resolution must happen ROOT-FIRST (parent before child),
+ * even though the IMPORT loop itself is leaf-first.
+ *
+ * Exported for unit testing.
+ */
+export async function resolveChildImportParameters(
+  parentTemplate: Record<string, unknown>,
+  parentResolverContext: ResolverContext,
+  childLogicalId: string,
+  resolver: IntrinsicFunctionResolver
+): Promise<{ params: Parameter[]; intrinsicSkipped: string[] }> {
+  const base = extractChildImportParameters(parentTemplate, childLogicalId);
+  if (base.intrinsicSkipped.length === 0) {
+    return base;
+  }
+  // Re-walk the parent template to recover the original intrinsic values
+  // for each `intrinsicSkipped` key (the base helper threw away the values
+  // when classifying as non-literal — that helper stays unchanged for
+  // back-compat with its existing sync unit tests).
+  const resources = parentTemplate['Resources'];
+  if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
+    return base;
+  }
+  const row = (resources as Record<string, unknown>)[childLogicalId];
+  if (!row || typeof row !== 'object' || Array.isArray(row)) {
+    return base;
+  }
+  const props = (row as { Properties?: unknown }).Properties;
+  if (!props || typeof props !== 'object' || Array.isArray(props)) {
+    return base;
+  }
+  const rawParams = (props as { Parameters?: unknown }).Parameters;
+  if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
+    return base;
+  }
+
+  const resolvedParams: Parameter[] = [...base.params];
+  const stillSkipped: string[] = [];
+  for (const key of base.intrinsicSkipped) {
+    const intrinsicValue = (rawParams as Record<string, unknown>)[key];
+    try {
+      const result = await resolver.resolve(intrinsicValue, parentResolverContext);
+      if (result === undefined || result === null) {
+        stillSkipped.push(key);
+        continue;
+      }
+      if (typeof result === 'string') {
+        resolvedParams.push({ ParameterKey: key, ParameterValue: result });
+      } else if (typeof result === 'number' || typeof result === 'boolean') {
+        resolvedParams.push({ ParameterKey: key, ParameterValue: String(result) });
+      } else if (Array.isArray(result)) {
+        // CFn Parameter `Type: CommaDelimitedList` accepts comma-joined
+        // strings — match CFn's wire shape for an array-typed Parameter.
+        // Each element is coerced to string first to tolerate mixed shapes.
+        resolvedParams.push({
+          ParameterKey: key,
+          ParameterValue: (result as unknown[]).map((e) => String(e)).join(','),
+        });
+      } else {
+        // Resolved to an object (e.g. a nested intrinsic that didn't fully
+        // collapse, or a structured shape CFn Parameters cannot carry).
+        // Treat as unresolvable — keep in skipped so the warn+fallback path
+        // surfaces it.
+        stillSkipped.push(key);
+      }
+    } catch {
+      // Resolver threw (most commonly: `Ref` to a Parameter not present in
+      // context, `Fn::GetAtt` to a resource attr cdkd state didn't capture,
+      // or an unsupported intrinsic shape). Fall back to the pre-resolver
+      // behavior — keep in skipped, the orchestrator's existing warn path
+      // tells the user to verify the child template's Defaults cover it.
+      stillSkipped.push(key);
+    }
+  }
+  return { params: resolvedParams, intrinsicSkipped: stillSkipped };
+}
+
+/** Minimal per-stack shape {@link buildResolvedParametersPerStack} reads. */
+export interface ResolvedParamsStackNode {
+  cdkdName: string;
+  template: Record<string, unknown>;
+  state: StackState;
+}
+
+/**
+ * Top-down (root-first) pre-pass that resolves each cdkd stack's
+ * child-IMPORT Parameters BEFORE the leaf-first IMPORT loop runs (issue
+ * #464 follow-up — intrinsic Parameter resolution at leaf-IMPORT time).
+ *
+ * Why a separate pre-pass instead of resolving inline in the leaf-first
+ * loop: a child's intrinsic-valued Parameter (`{Ref: ParentParam}`) resolves
+ * against its PARENT's resolved Parameter values, and for a 3-level tree the
+ * middle stack's Parameters are themselves resolved from the root's. So the
+ * resolution dependency runs root → leaf, the opposite direction from the
+ * IMPORT submission order (leaf → root). Resolving everything up front in
+ * root-first order means each child always sees its parent's
+ * already-resolved Parameters in `paramsByCdkdName`.
+ *
+ * Returns:
+ *   - `paramsByCdkdName`: cdkdName → the CFn Parameters to submit for that
+ *     stack's IMPORT. The root maps to `rootParameters` verbatim (CLI
+ *     overrides + template defaults, resolved by the caller already); each
+ *     non-root maps to its parent-extracted + intrinsic-resolved values.
+ *   - `intrinsicSkippedByCdkdName`: cdkdName → the Parameter names that
+ *     STILL could not be resolved (resolver threw / unsupported shape), for
+ *     the orchestrator's per-stack warn + aggregate summary.
+ *
+ * Exported for unit testing.
+ */
+export async function buildResolvedParametersPerStack(args: {
+  rootStackName: string;
+  rootParameters: Parameter[];
+  perStackNodes: ResolvedParamsStackNode[];
+  tree: CdkdStateStackTree;
+  resolver: IntrinsicFunctionResolver;
+  stateBackend?: S3StateBackend;
+}): Promise<{
+  paramsByCdkdName: Map<string, Parameter[]>;
+  intrinsicSkippedByCdkdName: Map<string, string[]>;
+}> {
+  const paramsByCdkdName = new Map<string, Parameter[]>();
+  const intrinsicSkippedByCdkdName = new Map<string, string[]>();
+  // Root submits the caller-resolved Parameters (CLI overrides / defaults).
+  paramsByCdkdName.set(args.rootStackName, args.rootParameters);
+
+  const nodeByName = new Map(args.perStackNodes.map((n) => [n.cdkdName, n]));
+  for (const ref of flattenCdkdStateTreeRootFirst(args.tree)) {
+    if (ref.stackName === args.rootStackName) continue;
+    const node = nodeByName.get(ref.stackName);
+    if (!node) {
+      throw new Error(
+        `buildResolvedParametersPerStack: tree node '${ref.stackName}' has no per-stack ` +
+          `template/state entry. This is a cdkd bug.`
+      );
+    }
+    const parentLogicalId = node.state.parentLogicalId;
+    const parentStackName = node.state.parentStack;
+    if (!parentLogicalId || !parentStackName) {
+      throw new Error(
+        `buildResolvedParametersPerStack: child '${node.cdkdName}' state is missing ` +
+          `parentLogicalId / parentStack (v6 fields). Re-deploy or re-import the parent stack.`
+      );
+    }
+    const parentNode = nodeByName.get(parentStackName);
+    if (!parentNode) {
+      throw new Error(
+        `buildResolvedParametersPerStack: child '${node.cdkdName}' references parent ` +
+          `'${parentStackName}' which is not in the per-stack node list — tree shape is inconsistent.`
+      );
+    }
+    // The parent's resolved Parameter VALUES are the lookup table for any
+    // `Ref: <ParentParam>` in the child's Parameters block. Root-first order
+    // guarantees the parent was already processed.
+    const parentParamValues: Record<string, unknown> = {};
+    for (const p of paramsByCdkdName.get(parentStackName) ?? []) {
+      if (p.ParameterKey !== undefined) parentParamValues[p.ParameterKey] = p.ParameterValue;
+    }
+    const parentResolverContext: ResolverContext = {
+      // The runtime value is always a real CFn template (it has Resources);
+      // TS can't narrow `Record<string, unknown>` to CloudFormationTemplate.
+      template: parentNode.template as unknown as ResolverContext['template'],
+      resources: parentNode.state.resources,
+      parameters: parentParamValues,
+      stackName: parentNode.cdkdName,
+      ...(args.stateBackend && { stateBackend: args.stateBackend }),
+    };
+    const { params, intrinsicSkipped } = await resolveChildImportParameters(
+      parentNode.template,
+      parentResolverContext,
+      parentLogicalId,
+      args.resolver
+    );
+    paramsByCdkdName.set(node.cdkdName, params);
+    if (intrinsicSkipped.length > 0) {
+      intrinsicSkippedByCdkdName.set(node.cdkdName, intrinsicSkipped);
+    }
+  }
+  return { paramsByCdkdName, intrinsicSkippedByCdkdName };
 }
 
 /**
@@ -3512,13 +3765,38 @@ export async function runPerStackImportLoop(args: {
     const cfnArnByCdkdName = new Map<string, string>();
     const uploadCleanups: Array<() => Promise<void>> = [];
     const importedStacks: ImportedStackRecord[] = [];
-    // Session-scoped accumulator of intrinsic-valued Parameters skipped per
-    // child (cdkdName → param names). The per-iteration `logger.warn` below
-    // scrolls past under `--yes`; this drives a single aggregate summary at
-    // the end of the success path so the user isn't left hunting back
-    // through the log for which stacks need their child template Defaults
-    // verified.
-    const sessionIntrinsicSkipped = new Map<string, string[]>();
+
+    // Resolve every stack's child-IMPORT Parameters up front, ROOT-FIRST: a
+    // child's intrinsic-valued Parameters (`{Ref: ParentParam}` /
+    // `{Fn::GetAtt: [ParentResource, Attr]}`) resolve against its PARENT's
+    // already-resolved Parameters + cdkd state — the opposite direction from
+    // the leaf-first IMPORT order below, so a separate top-down pre-pass is
+    // required (see `buildResolvedParametersPerStack`). `sessionIntrinsicSkipped`
+    // collects the Parameters that STILL could not be resolved after the
+    // resolver pass (resolver threw / unsupported shape), for the per-stack
+    // warn + the aggregate summary at the end of the success path. The root
+    // submits `rootParameters` verbatim.
+    const paramResolver = new IntrinsicFunctionResolver(rootRegion);
+    const { paramsByCdkdName, intrinsicSkippedByCdkdName: sessionIntrinsicSkipped } =
+      await buildResolvedParametersPerStack({
+        rootStackName,
+        rootParameters,
+        perStackNodes: perStackPlans.map((p) => ({
+          cdkdName: p.cdkdName,
+          template: p.template,
+          state: p.state,
+        })),
+        tree,
+        resolver: paramResolver,
+        stateBackend: deps.stateBackend,
+      });
+    for (const [cdkdName, skipped] of sessionIntrinsicSkipped) {
+      logger.warn(
+        `  Child '${cdkdName}': could not resolve intrinsic-valued Parameter(s) ` +
+          `${skipped.join(', ')} at IMPORT time. The child template's Parameter Default ` +
+          `values must cover these — otherwise CFn will reject the IMPORT.`
+      );
+    }
 
     try {
       for (let i = 0; i < perStackPlans.length; i++) {
@@ -3529,45 +3807,11 @@ export async function runPerStackImportLoop(args: {
             `${plan.nestedStackRows.length} nested-child adoption)`
         );
 
-        // Resolve per-stack Parameters. For the root, use the user-supplied
-        // values. For children, walk the parent's Properties.Parameters
-        // block to forward literal values to the child IMPORT (intrinsic-
-        // valued Parameters are skipped with a warning — child Parameter
-        // Defaults must cover the gap for now; intrinsic resolution at
-        // leaf-IMPORT time is a deferred follow-up).
-        let stackParameters: Parameter[];
-        if (plan.cdkdName === rootStackName) {
-          stackParameters = rootParameters;
-        } else {
-          const parentLogicalId = plan.state.parentLogicalId;
-          const parentStackName = plan.state.parentStack;
-          if (!parentLogicalId || !parentStackName) {
-            throw new Error(
-              `runPerStackImportLoop: child '${plan.cdkdName}' state is missing ` +
-                `parentLogicalId / parentStack (v6 fields). Re-deploy or re-import the ` +
-                `parent stack to refresh.`
-            );
-          }
-          const parentPlan = perStackPlans.find((p) => p.cdkdName === parentStackName);
-          if (!parentPlan) {
-            throw new Error(
-              `runPerStackImportLoop: child '${plan.cdkdName}' references parent ` +
-                `'${parentStackName}' which is not in the per-stack plan list — tree shape is ` +
-                `inconsistent.`
-            );
-          }
-          const extracted = extractChildImportParameters(parentPlan.template, parentLogicalId);
-          if (extracted.intrinsicSkipped.length > 0) {
-            sessionIntrinsicSkipped.set(plan.cdkdName, extracted.intrinsicSkipped);
-            logger.warn(
-              `  Child '${plan.cdkdName}': skipping intrinsic-valued Parameter(s) ` +
-                `${extracted.intrinsicSkipped.join(', ')} (intrinsic-resolution at leaf-IMPORT ` +
-                `time is a deferred follow-up). The child template's Parameter Default values ` +
-                `must cover these — otherwise CFn will reject the IMPORT.`
-            );
-          }
-          stackParameters = extracted.params;
-        }
+        // Per-stack Parameters were resolved up front by the root-first
+        // pre-pass above (the root maps to the user-supplied values; each
+        // child's intrinsic-valued Parameters were resolved against its
+        // parent's state, with any unresolvable ones already warned about).
+        const stackParameters = paramsByCdkdName.get(plan.cdkdName) ?? [];
 
         // ---- Phase 1A: leaves-only CREATE-via-IMPORT ----
         // Why 2 phases for non-leaf parents (vs. one combined CREATE-via-IMPORT
@@ -3665,7 +3909,7 @@ export async function runPerStackImportLoop(args: {
             `  Flipping '${plan.cfnName}' to UPDATE_COMPLETE so it can be adopted as a ` +
               `nested member by its parent's Phase 1B...`
           );
-          await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName);
+          await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
         }
 
         // ---- Phase 1B: UPDATE-via-IMPORT to adopt nested children ----
@@ -3831,7 +4075,7 @@ export async function runPerStackImportLoop(args: {
               `  Flipping '${plan.cfnName}' back to UPDATE_COMPLETE so its own parent's ` +
                 `Phase 1B can adopt it...`
             );
-            await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName);
+            await flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters);
           }
         }
 
@@ -3937,21 +4181,21 @@ export async function runPerStackImportLoop(args: {
         );
       }
 
-      // Aggregate summary of intrinsic-valued Parameters skipped across the
-      // tree. The per-stack warns above scroll past under `--yes`; re-print
-      // a single consolidated line at the end so the user has one place to
-      // confirm every affected child's template carries the needed Parameter
-      // Default values (CFn rejects the IMPORT otherwise — and intrinsic
-      // resolution at leaf-IMPORT time is a deferred follow-up).
+      // Aggregate summary of intrinsic-valued Parameters that could NOT be
+      // resolved across the tree (cdkd resolves `Ref` / `Fn::GetAtt` against
+      // the parent's state up front; this lists only the residue the
+      // resolver could not handle). The per-stack warns above scroll past
+      // under `--yes`; re-print a single consolidated line at the end so the
+      // user has one place to confirm every affected child's template carries
+      // the needed Parameter Default values (CFn rejects the IMPORT otherwise).
       if (sessionIntrinsicSkipped.size > 0) {
         const detail = [...sessionIntrinsicSkipped.entries()]
           .map(([cdkdName, params]) => `${cdkdName} (${params.join(', ')})`)
           .join('; ');
         logger.warn(
-          `${sessionIntrinsicSkipped.size} stack(s) had intrinsic-valued Parameter(s) skipped at ` +
-            `IMPORT time: ${detail}. Verify each child template's Parameter Default values cover ` +
-            `these before the first 'cdk deploy' — intrinsic resolution at leaf-IMPORT time is a ` +
-            `deferred follow-up.`
+          `${sessionIntrinsicSkipped.size} stack(s) had intrinsic-valued Parameter(s) that cdkd ` +
+            `could not resolve at IMPORT time: ${detail}. Verify each child template's Parameter ` +
+            `Default values cover these before the first 'cdk deploy'.`
         );
       }
 

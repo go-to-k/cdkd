@@ -4,10 +4,13 @@ import {
   buildCdkdStateStackTree,
   buildImportPlan,
   buildPerStackImportNodes,
+  buildResolvedParametersPerStack,
   cdkd2cfnStackName,
   extractChildImportParameters,
   filterTemplateForImport,
   flattenCdkdStateTreeLeafFirst,
+  flattenCdkdStateTreeRootFirst,
+  resolveChildImportParameters,
   hasCompositeIdSplitter,
   injectDeletionPolicyForImport,
   injectRetainAndRewriteTemplateUrl,
@@ -28,6 +31,10 @@ import {
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
+import {
+  IntrinsicFunctionResolver,
+  type ResolverContext,
+} from '../../../src/deployment/intrinsic-function-resolver.js';
 
 describe('refuseTransientContextIfUnsafe', () => {
   it('passes through when no context overrides are supplied', () => {
@@ -2170,6 +2177,292 @@ describe('extractChildImportParameters (issue #464 PR B2)', () => {
         'Child'
       ).params
     ).toEqual([]);
+  });
+});
+
+describe('flattenCdkdStateTreeRootFirst (issue #464 follow-up)', () => {
+  function leaf(stackName: string): CdkdStateStackTree {
+    return {
+      stackName,
+      region: 'us-east-1',
+      state: {} as StackState,
+      nestedChildren: new Map(),
+    };
+  }
+
+  it('visits parent before children (inverse of leaf-first)', () => {
+    const grandchild = leaf('Root~Middle~Grandchild');
+    const middle: CdkdStateStackTree = {
+      ...leaf('Root~Middle'),
+      nestedChildren: new Map([['Grandchild', grandchild]]),
+    };
+    const root: CdkdStateStackTree = {
+      ...leaf('Root'),
+      nestedChildren: new Map([['Middle', middle]]),
+    };
+    expect(flattenCdkdStateTreeRootFirst(root).map((n) => n.stackName)).toEqual([
+      'Root',
+      'Root~Middle',
+      'Root~Middle~Grandchild',
+    ]);
+    // Sanity: it is the exact reverse-ish of leaf-first for this linear tree.
+    expect(flattenCdkdStateTreeLeafFirst(root).map((n) => n.stackName)).toEqual([
+      'Root~Middle~Grandchild',
+      'Root~Middle',
+      'Root',
+    ]);
+  });
+});
+
+describe('resolveChildImportParameters (issue #464 follow-up — intrinsic Parameter resolution)', () => {
+  const resolver = new IntrinsicFunctionResolver('us-east-1');
+
+  function parentCtx(overrides?: Partial<ResolverContext>): ResolverContext {
+    return {
+      template: { Resources: {} } as unknown as ResolverContext['template'],
+      resources: {},
+      parameters: {},
+      stackName: 'Root',
+      ...overrides,
+    };
+  }
+
+  it('passes literals through unchanged (no resolver work needed)', async () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Env: 'prod', Count: 3 } },
+        },
+      },
+    };
+    const result = await resolveChildImportParameters(
+      parentTemplate,
+      parentCtx(),
+      'Child',
+      resolver
+    );
+    expect(result.params).toEqual([
+      { ParameterKey: 'Env', ParameterValue: 'prod' },
+      { ParameterKey: 'Count', ParameterValue: '3' },
+    ]);
+    expect(result.intrinsicSkipped).toEqual([]);
+  });
+
+  it('resolves {Ref: ParentParam} against the parent resolved Parameters', async () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Stage: { Ref: 'StageParam' } } },
+        },
+      },
+    };
+    const result = await resolveChildImportParameters(
+      parentTemplate,
+      parentCtx({ parameters: { StageParam: 'production' } }),
+      'Child',
+      resolver
+    );
+    expect(result.params).toEqual([{ ParameterKey: 'Stage', ParameterValue: 'production' }]);
+    expect(result.intrinsicSkipped).toEqual([]);
+  });
+
+  it('resolves {Fn::GetAtt: [ParentResource, Attr]} against the parent state attributes', async () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { TableArn: { 'Fn::GetAtt': ['MyTable', 'Arn'] } } },
+        },
+      },
+    };
+    const result = await resolveChildImportParameters(
+      parentTemplate,
+      parentCtx({
+        resources: {
+          MyTable: {
+            physicalId: 'my-table',
+            resourceType: 'AWS::DynamoDB::Table',
+            properties: {},
+            attributes: { Arn: 'arn:aws:dynamodb:us-east-1:123:table/my-table' },
+            dependencies: [],
+          },
+        },
+      }),
+      'Child',
+      resolver
+    );
+    expect(result.params).toEqual([
+      { ParameterKey: 'TableArn', ParameterValue: 'arn:aws:dynamodb:us-east-1:123:table/my-table' },
+    ]);
+    expect(result.intrinsicSkipped).toEqual([]);
+  });
+
+  it('falls back to intrinsicSkipped when the resolver cannot resolve (Ref to unknown)', async () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            Parameters: { Good: 'literal', Bad: { Ref: 'NoSuchParamOrResource' } },
+          },
+        },
+      },
+    };
+    const result = await resolveChildImportParameters(
+      parentTemplate,
+      parentCtx(),
+      'Child',
+      resolver
+    );
+    // The literal still forwards; the unresolvable Ref degrades to skipped.
+    expect(result.params).toEqual([{ ParameterKey: 'Good', ParameterValue: 'literal' }]);
+    expect(result.intrinsicSkipped).toEqual(['Bad']);
+  });
+
+  it('mixes resolved + unresolvable in one block', async () => {
+    const parentTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            Parameters: {
+              FromRef: { Ref: 'KnownParam' },
+              FromBadGetAtt: { 'Fn::GetAtt': ['NoSuchResource', 'Arn'] },
+            },
+          },
+        },
+      },
+    };
+    const result = await resolveChildImportParameters(
+      parentTemplate,
+      parentCtx({ parameters: { KnownParam: 'v1' } }),
+      'Child',
+      resolver
+    );
+    expect(result.params).toEqual([{ ParameterKey: 'FromRef', ParameterValue: 'v1' }]);
+    expect(result.intrinsicSkipped).toEqual(['FromBadGetAtt']);
+  });
+});
+
+describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first pre-pass)', () => {
+  const resolver = new IntrinsicFunctionResolver('us-east-1');
+
+  function node(
+    cdkdName: string,
+    template: Record<string, unknown>,
+    parent?: { stack: string; logicalId: string }
+  ): { cdkdName: string; template: Record<string, unknown>; state: StackState } {
+    const state = {
+      version: 6,
+      stackName: cdkdName,
+      region: 'us-east-1',
+      resources: {},
+      outputs: {},
+      lastModified: 0,
+      ...(parent && {
+        parentStack: parent.stack,
+        parentLogicalId: parent.logicalId,
+        parentRegion: 'us-east-1',
+      }),
+    } as StackState;
+    return { cdkdName, template, state };
+  }
+
+  function treeNode(stackName: string, children: Map<string, CdkdStateStackTree>): CdkdStateStackTree {
+    return { stackName, region: 'us-east-1', state: {} as StackState, nestedChildren: children };
+  }
+
+  it('resolves a 3-level Ref chain root -> middle -> grandchild', async () => {
+    // Root passes its `Stage` param down to Middle (logical id `Middle`);
+    // Middle passes the same down to Grandchild (logical id `Grandchild`).
+    const rootTemplate = {
+      Resources: {
+        Middle: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Stage: { Ref: 'StageParam' } } },
+        },
+      },
+    };
+    const middleTemplate = {
+      Resources: {
+        Grandchild: {
+          Type: 'AWS::CloudFormation::Stack',
+          // Middle forwards its own `Stage` param (a Parameter of Middle's
+          // template) down to the grandchild.
+          Properties: { Parameters: { Stage: { Ref: 'Stage' } } },
+        },
+      },
+    };
+    const grandchildTemplate = { Resources: {} };
+
+    const tree = treeNode(
+      'Root',
+      new Map([
+        [
+          'Middle',
+          treeNode(
+            'Root~Middle',
+            new Map([['Grandchild', treeNode('Root~Middle~Grandchild', new Map())]])
+          ),
+        ],
+      ])
+    );
+
+    const { paramsByCdkdName, intrinsicSkippedByCdkdName } = await buildResolvedParametersPerStack({
+      rootStackName: 'Root',
+      rootParameters: [{ ParameterKey: 'StageParam', ParameterValue: 'prod' }],
+      perStackNodes: [
+        node('Root', rootTemplate),
+        node('Root~Middle', middleTemplate, { stack: 'Root', logicalId: 'Middle' }),
+        node('Root~Middle~Grandchild', grandchildTemplate, {
+          stack: 'Root~Middle',
+          logicalId: 'Grandchild',
+        }),
+      ],
+      tree,
+      resolver,
+    });
+
+    // Root submits its CLI params verbatim.
+    expect(paramsByCdkdName.get('Root')).toEqual([
+      { ParameterKey: 'StageParam', ParameterValue: 'prod' },
+    ]);
+    // Middle's `Stage` resolves from Root's `StageParam` = 'prod'.
+    expect(paramsByCdkdName.get('Root~Middle')).toEqual([
+      { ParameterKey: 'Stage', ParameterValue: 'prod' },
+    ]);
+    // Grandchild's `Stage` resolves from Middle's resolved `Stage` = 'prod'
+    // (the transitive chain — proves root-first ordering is load-bearing).
+    expect(paramsByCdkdName.get('Root~Middle~Grandchild')).toEqual([
+      { ParameterKey: 'Stage', ParameterValue: 'prod' },
+    ]);
+    expect(intrinsicSkippedByCdkdName.size).toBe(0);
+  });
+
+  it('records unresolvable Parameters in intrinsicSkippedByCdkdName', async () => {
+    const rootTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { Bad: { Ref: 'MissingParam' } } },
+        },
+      },
+    };
+    const tree = treeNode('Root', new Map([['Child', treeNode('Root~Child', new Map())]]));
+    const { paramsByCdkdName, intrinsicSkippedByCdkdName } = await buildResolvedParametersPerStack({
+      rootStackName: 'Root',
+      rootParameters: [],
+      perStackNodes: [
+        node('Root', rootTemplate),
+        node('Root~Child', { Resources: {} }, { stack: 'Root', logicalId: 'Child' }),
+      ],
+      tree,
+      resolver,
+    });
+    expect(paramsByCdkdName.get('Root~Child')).toEqual([]);
+    expect(intrinsicSkippedByCdkdName.get('Root~Child')).toEqual(['Bad']);
   });
 });
 
