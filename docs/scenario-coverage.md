@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**34 / 34 canonical scenarios** have at least one integ fixture exercising them. **101 / 104 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**35 / 35 canonical scenarios** have at least one integ fixture exercising them. **102 / 105 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (34 scenarios)
+## Per-scenario coverage (35 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -44,6 +44,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `lambda-vpc-subnet-sg-deletion-order` | Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `legacy-bucket-name-fallback` | New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution. | [`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) |
 | `local-apigateway-server` | `cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool. | [`local-start-api`](../tests/integration/local-start-api/)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/)<br>[`local-start-api-rest-v1-non-proxy`](../tests/integration/local-start-api-rest-v1-non-proxy/) |
+| `local-ecs-awsvpc` | `cdkd local run-task` ECS TaskDefinition declaring `NetworkMode: awsvpc` — accepted and mapped to a docker bridge network with a startup warn (#461; docker cannot emulate ENI-per-task). | [`local-run-task-awsvpc`](../tests/integration/local-run-task-awsvpc/) |
 | `local-ecs-service` | `cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown. | [`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/)<br>[`local-start-service`](../tests/integration/local-start-service/) |
 | `local-ecs-service-connect` | `cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460). | [`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/) |
 | `local-ecs-task` | `cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar. | [`local-run-task`](../tests/integration/local-run-task/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`local-run-task-multi-container`](../tests/integration/local-run-task-multi-container/) |

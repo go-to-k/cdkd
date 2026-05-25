@@ -1537,6 +1537,7 @@
         "ecs-fargate",
         "local-ecs-service-connect",
         "local-run-task",
+        "local-run-task-awsvpc",
         "local-run-task-from-state",
         "local-run-task-multi-container",
         "local-start-service"
@@ -1550,6 +1551,10 @@
         ],
         "local-run-task": [
           "l2"
+        ],
+        "local-run-task-awsvpc": [
+          "l2",
+          "literal"
         ],
         "local-run-task-from-state": [
           "l1",
