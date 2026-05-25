@@ -1,3 +1,10 @@
+# [0.152.0](https://github.com/go-to-k/cdkd/compare/v0.151.1...v0.152.0) (2026-05-25)
+
+
+### Features
+
+* **export:** resolve intrinsic child Parameters at leaf-IMPORT time ([#464](https://github.com/go-to-k/cdkd/issues/464)) ([#599](https://github.com/go-to-k/cdkd/issues/599)) ([28fa364](https://github.com/go-to-k/cdkd/commit/28fa3641cdcb5e858ddc2c6e239f56148d5b0628))
+
 ## [0.151.1](https://github.com/go-to-k/cdkd/compare/v0.151.0...v0.151.1) (2026-05-25)
 
 
