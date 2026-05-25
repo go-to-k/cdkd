@@ -180,6 +180,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool.',
   'local-ecs-task':
     '`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar.',
+  'local-ecs-awsvpc':
+    '`cdkd local run-task` ECS TaskDefinition declaring `NetworkMode: awsvpc` — accepted and mapped to a docker bridge network with a startup warn (#461; docker cannot emulate ENI-per-task).',
   'local-ecs-service':
     '`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.',
   'local-ecs-service-connect':
