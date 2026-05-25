@@ -51,6 +51,23 @@ export interface RunEcsTaskOptions {
   envOverrides?: Record<string, Record<string, string | null> | undefined>;
   /** Host IP to bind published container ports to. Default `127.0.0.1`. */
   containerHost: string;
+  /**
+   * When true, the runner omits EVERY `-p <hostPort>:<containerPort>`
+   * flag from `docker run` (Issue #585). Set by `cdkd local
+   * start-service` for multi-replica services: N replicas of one
+   * service all map the same container port, so publishing a fixed host
+   * port makes the 2nd+ replica fail to boot with `Bind for
+   * 127.0.0.1:<port> failed: port is already allocated` — true whether
+   * the TaskDefinition declares an explicit `hostPort` or omits it (cdkd
+   * defaults the omitted host port to `containerPort`). Peer comms still
+   * works via container IP / network alias on the shared docker network
+   * (the production-like path — real ECS Service Connect / awsvpc tasks
+   * have per-task ENIs and never share a host port), so dropping the
+   * host-port publish is the correct local analogue. Single-replica
+   * services leave this unset so `curl localhost:<port>` from the host
+   * still works.
+   */
+  skipHostPortPublish?: boolean;
   /** Optional STS-issued temp credentials to expose via the metadata sidecar (`--assume-task-role`). */
   taskCredentials?: {
     accessKeyId: string;
@@ -338,6 +355,7 @@ export async function runEcsTask(
         platformOverride: options.platformOverride,
         region: options.region,
         sidecarIp: state.network.sidecarIp,
+        ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
         ...(options.addHostFlags && options.addHostFlags.length > 0
           ? { addHostFlags: options.addHostFlags }
           : {}),
@@ -797,6 +815,13 @@ interface BuildDockerRunArgs {
    */
   sidecarIp?: string;
   /**
+   * Issue #585 — when true, omit EVERY `-p <hostPort>:<containerPort>`
+   * flag. Set by `cdkd local start-service` for multi-replica services
+   * so the 2nd+ replica does not collide on a shared host port (see the
+   * matching field on {@link RunEcsTaskOptions} for the full rationale).
+   */
+  skipHostPortPublish?: boolean;
+  /**
    * Issue #460 — extra `--add-host name:ip` flag pairs forwarded
    * verbatim to `docker run`. Used by the Cloud Map overlay so
    * `<discoveryName>.<namespace>` (and bare ClientAlias short forms)
@@ -865,9 +890,17 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
     );
   }
 
-  for (const pm of container.portMappings) {
-    const hostPort = pm.hostPort ?? pm.containerPort;
-    args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
+  // Issue #585 — multi-replica services skip the host-port publish.
+  // N replicas of one service all map the same container port; binding
+  // a fixed host port makes the 2nd+ replica fail with `port is already
+  // allocated`. Peer comms still works via container IP / network alias
+  // on the shared docker network (production-like — real ECS Service
+  // Connect tasks have per-task ENIs and never share a host port).
+  if (!opts.skipHostPortPublish) {
+    for (const pm of container.portMappings) {
+      const hostPort = pm.hostPort ?? pm.containerPort;
+      args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
+    }
   }
 
   // Mounts: walk the container's `MountPoints` and look up the matching
