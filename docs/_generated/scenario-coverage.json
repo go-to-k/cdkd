@@ -143,6 +143,11 @@
   ],
   "fixtures": [
     {
+      "name": "acm-certificate",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "alb",
       "annotated": true,
       "scenarios": []
@@ -1072,6 +1077,7 @@
   ],
   "orphanScenarios": [],
   "unannotatedFixtures": [
+    "acm-certificate",
     "export-nested-stack",
     "nested-stack",
     "nested-stack-deep"

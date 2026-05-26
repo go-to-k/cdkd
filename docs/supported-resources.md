@@ -128,6 +128,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **DNS** | AWS::Route53::HostedZone | SDK Provider | ✅ |
 | **DNS** | AWS::Route53::RecordSet | SDK Provider | ✅ |
 | **Security** | AWS::WAFv2::WebACL | SDK Provider | ✅ |
+| **Security** | AWS::CertificateManager::Certificate | SDK Provider | ✅ |
 | **Auth** | AWS::Cognito::UserPool | SDK Provider | ✅ |
 | **Cache** | AWS::ElastiCache::CacheCluster | SDK Provider | ✅ |
 | **Cache** | AWS::ElastiCache::SubnetGroup | SDK Provider | ✅ |

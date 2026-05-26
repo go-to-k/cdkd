@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**35 / 35 canonical scenarios** have at least one integ fixture exercising them. **102 / 105 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**35 / 35 canonical scenarios** have at least one integ fixture exercising them. **102 / 106 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -66,10 +66,11 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 
-## Un-annotated fixtures (3)
+## Un-annotated fixtures (4)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
+- [`acm-certificate`](../tests/integration/acm-certificate/)
 - [`export-nested-stack`](../tests/integration/export-nested-stack/)
 - [`nested-stack`](../tests/integration/nested-stack/)
 - [`nested-stack-deep`](../tests/integration/nested-stack-deep/)

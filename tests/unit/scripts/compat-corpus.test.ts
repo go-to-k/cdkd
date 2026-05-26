@@ -52,7 +52,7 @@ describe('isRuntimeSupported (replica of ProviderRegistry.hasProvider)', () => {
   });
   it('rejects blocklisted types with no SDK provider', () => {
     expect(isRuntimeSupported('AWS::CloudFormation::WaitCondition', sdk)).toBe(false);
-    expect(isRuntimeSupported('AWS::CertificateManager::Certificate', sdk)).toBe(false);
+    expect(isRuntimeSupported('AWS::CloudFormation::WaitConditionHandle', sdk)).toBe(false);
   });
   it('optimistically accepts any other AWS:: type (the silent-tier3 trap)', () => {
     expect(isRuntimeSupported('AWS::AppMesh::GatewayRoute', sdk)).toBe(true);

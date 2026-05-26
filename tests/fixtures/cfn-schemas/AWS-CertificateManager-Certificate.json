@@ -1,0 +1,27 @@
+{
+  "resourceType": "AWS::CertificateManager::Certificate",
+  "generatedAt": "2026-05-26",
+  "properties": [
+    "CertificateAuthorityArn",
+    "CertificateExport",
+    "CertificateTransparencyLoggingPreference",
+    "DomainName",
+    "DomainValidationOptions",
+    "Id",
+    "KeyAlgorithm",
+    "SubjectAlternativeNames",
+    "Tags",
+    "ValidationMethod"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "CertificateAuthorityArn",
+    "DomainName",
+    "DomainValidationOptions",
+    "KeyAlgorithm",
+    "SubjectAlternativeNames",
+    "ValidationMethod"
+  ]
+}

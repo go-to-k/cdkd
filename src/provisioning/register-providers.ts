@@ -66,6 +66,7 @@ import { S3TablesProvider } from './providers/s3-tables-provider.js';
 import { ECRProvider } from './providers/ecr-provider.js';
 import { ASGProvider } from './providers/asg-provider.js';
 import { NestedStackProvider } from './providers/nested-stack-provider.js';
+import { ACMCertificateProvider } from './providers/acm-certificate-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -202,6 +203,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // Cognito
   registry.register('AWS::Cognito::UserPool', new CognitoUserPoolProvider());
+
+  // ACM (Certificate Manager)
+  registry.register('AWS::CertificateManager::Certificate', new ACMCertificateProvider());
 
   // ElastiCache
   const elasticacheProvider = new ElastiCacheProvider();
