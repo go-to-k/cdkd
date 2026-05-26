@@ -1,3 +1,10 @@
+## [0.159.1](https://github.com/go-to-k/cdkd/compare/v0.159.0...v0.159.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **local:** return 403 for REST v1 AWS_IAM rejection ([#625](https://github.com/go-to-k/cdkd/issues/625)) ([#630](https://github.com/go-to-k/cdkd/issues/630)) ([5ab51cf](https://github.com/go-to-k/cdkd/commit/5ab51cf2d5d4b484e2ad7eecb28d5e6a54067fd8))
+
 # [0.159.0](https://github.com/go-to-k/cdkd/compare/v0.158.1...v0.159.0) (2026-05-26)
 
 
