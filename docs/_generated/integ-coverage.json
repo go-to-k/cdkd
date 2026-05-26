@@ -638,6 +638,7 @@
         "dynamodb-streams",
         "full-stack-demo",
         "lambda",
+        "local-invoke-from-cfn-stack",
         "local-run-task-from-state",
         "multi-resource",
         "multi-stack-deps",
@@ -665,6 +666,9 @@
           "l2"
         ],
         "lambda": [
+          "l2"
+        ],
+        "local-invoke-from-cfn-stack": [
           "l2"
         ],
         "local-run-task-from-state": [
@@ -2043,6 +2047,7 @@
         "local-invoke-buildkit",
         "local-invoke-container",
         "local-invoke-dotnet",
+        "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-layers",
@@ -2134,6 +2139,9 @@
         ],
         "local-invoke-dotnet": [
           "l1",
+          "l2"
+        ],
+        "local-invoke-from-cfn-stack": [
           "l2"
         ],
         "local-invoke-from-state": [

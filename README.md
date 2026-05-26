@@ -459,14 +459,20 @@ IDs into intrinsic-valued properties (`Ref` / `Fn::GetAtt` / `Fn::Sub` /
 via STS, AND `Fn::ImportValue` / `Fn::GetStackOutput` against the
 persistent exports index for cross-stack references — same-account /
 same-region); without it, intrinsic values are dropped with a per-key
-warning (matches `sam local *` semantics).
+warning (matches `sam local *` semantics). For CDK apps deployed via
+the upstream CDK CLI (`cdk deploy` → CloudFormation), pass
+`--from-cfn-stack [<cfn-stack-name>]` instead: cdkd reads the deployed
+CFn stack via `DescribeStackResources` + `ListExports` and substitutes
+`Ref` / `Fn::ImportValue` against the same code path (`Fn::GetAtt` is
+warn-and-dropped in v1). Mutually exclusive with `--from-state`.
 
 ### `local invoke`
 
 ```bash
-cdkd local invoke MyStack/MyApi/Handler           # one-shot invoke
+cdkd local invoke MyStack/MyApi/Handler              # one-shot invoke
 cdkd local invoke MyStack/Handler --event events/get.json
-cdkd local invoke MyStack/Handler --from-state    # recover deployed env vars
+cdkd local invoke MyStack/Handler --from-state       # cdkd-deployed: recover deployed env vars
+cdkd local invoke MyStack/Handler --from-cfn-stack   # cdk-deployed (CFn): same flow via DescribeStackResources
 ```
 
 Supports every current AWS Lambda runtime (Node.js / Python / Ruby /

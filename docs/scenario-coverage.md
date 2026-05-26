@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**35 / 35 canonical scenarios** have at least one integ fixture exercising them. **102 / 107 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**36 / 36 canonical scenarios** have at least one integ fixture exercising them. **103 / 108 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (35 scenarios)
+## Per-scenario coverage (36 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -48,9 +48,10 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `local-ecs-service` | `cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown. | [`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/)<br>[`local-start-service`](../tests/integration/local-start-service/) |
 | `local-ecs-service-connect` | `cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460). | [`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/) |
 | `local-ecs-task` | `cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar. | [`local-run-task`](../tests/integration/local-run-task/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`local-run-task-multi-container`](../tests/integration/local-run-task-multi-container/) |
+| `local-from-cfn-stack-substitution` | `cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). | [`local-invoke-from-cfn-stack`](../tests/integration/local-invoke-from-cfn-stack/) |
 | `local-from-state-substitution` | `cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters. | [`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/) |
 | `local-lambda-rie-container` | `cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution. | [`local-invoke-buildkit`](../tests/integration/local-invoke-buildkit/)<br>[`local-invoke-container`](../tests/integration/local-invoke-container/)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/) |
-| `local-lambda-rie-zip` | `cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container. | [`local-invoke`](../tests/integration/local-invoke/)<br>[`local-invoke-dotnet`](../tests/integration/local-invoke-dotnet/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-invoke-java`](../tests/integration/local-invoke-java/)<br>[`local-invoke-layers`](../tests/integration/local-invoke-layers/)<br>[`local-invoke-provided`](../tests/integration/local-invoke-provided/)<br>[`local-invoke-python`](../tests/integration/local-invoke-python/)<br>[`local-invoke-ruby`](../tests/integration/local-invoke-ruby/) |
+| `local-lambda-rie-zip` | `cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container. | [`local-invoke`](../tests/integration/local-invoke/)<br>[`local-invoke-dotnet`](../tests/integration/local-invoke-dotnet/)<br>[`local-invoke-from-cfn-stack`](../tests/integration/local-invoke-from-cfn-stack/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-invoke-java`](../tests/integration/local-invoke-java/)<br>[`local-invoke-layers`](../tests/integration/local-invoke-layers/)<br>[`local-invoke-provided`](../tests/integration/local-invoke-provided/)<br>[`local-invoke-python`](../tests/integration/local-invoke-python/)<br>[`local-invoke-ruby`](../tests/integration/local-invoke-ruby/) |
 | `local-websocket-api` | `cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane. | [`local-start-api-websocket`](../tests/integration/local-start-api-websocket/) |
 | `migrate-from-bare-cfn` | `cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire. | [`migrate-from-bare-cfn`](../tests/integration/migrate-from-bare-cfn/) |
 | `migrate-from-cfn-handover` | CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack). | [`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |

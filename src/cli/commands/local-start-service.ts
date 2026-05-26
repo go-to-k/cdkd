@@ -36,7 +36,11 @@ import {
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { cleanupEcsRun, type RunEcsTaskOptions } from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
-import { buildCrossStackResolver, loadStateForStack } from './local-state-loader.js';
+import {
+  createLocalStateProvider,
+  rejectExplicitCfnStackWithMultipleStacks,
+} from './local-state-source.js';
+import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
 import { CloudMapRegistry } from '../../local/cloud-map-registry.js';
 import { buildCloudMapIndex, type CloudMapIndex } from '../../local/cloud-map-resolver.js';
@@ -66,7 +70,19 @@ interface LocalStartServiceOptions {
   maxTasks: number;
   /** Restart-on-exit policy: 'on-failure' (default), 'always', or 'none'. */
   restartPolicy: 'on-failure' | 'always' | 'none';
+  /**
+   * Issue #264: read cdkd's S3 state for the target stack so the resolver
+   * can substitute intrinsic-valued references (`Fn::Sub` / `Fn::GetAtt` /
+   * `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput`) in container images,
+   * env vars, secrets, and role ARNs.
+   */
   fromState: boolean;
+  /**
+   * Issue #606: alternative state source. Reads physical IDs from a
+   * deployed CloudFormation stack via `DescribeStackResources` instead
+   * of cdkd's S3 state. Mutually exclusive with `--from-state`.
+   */
+  fromCfnStack?: string | boolean;
   stateBucket?: string;
   statePrefix: string;
   stackRegion?: string;
@@ -106,6 +122,16 @@ async function localStartServiceCommand(
         "Pass one or more service paths like 'Stack/Orders' 'Stack/Frontend'."
     );
   }
+
+  // Issue #606: reject explicit `--from-cfn-stack <name>` when multiple
+  // service targets are booted in one invocation. The explicit name
+  // would apply to every target and silently mismap logical IDs across
+  // siblings that happen to share a `Ref` key. Bare `--from-cfn-stack`
+  // is fine (each target uses its own cdkd stack name as the CFn name).
+  // Conservative bound: a multi-target invocation always counts as
+  // "multiple stacks" here even if every target maps to the same
+  // underlying cdkd stack, because we don't have the synth result yet.
+  rejectExplicitCfnStackWithMultipleStacks(options, targets.length);
 
   // Per-target run-state + controller, plus a shared Cloud Map
   // registry across every service. Building everything upfront and
@@ -337,9 +363,48 @@ async function bootOneTarget(
   discovery: ServiceDiscoveryContext,
   skipPull: boolean
 ): Promise<ServiceController> {
+  // Issue #606: pick the right LocalStateProvider per target (the cdkd
+  // stack name varies per target). The provider is disposed in the
+  // outer `finally` below so the AWS client allocated by either
+  // implementation is closed even if `applyCrossStackResolverToTask`
+  // throws mid-substitution. `createLocalStateProvider` returns
+  // `undefined` when neither `--from-state` nor `--from-cfn-stack` was
+  // set; the substitution paths short-circuit on `undefined` then.
+  const parsed = parseEcsTarget(target);
+  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  const stateProvider = createLocalStateProvider(
+    options,
+    candidate?.stackName ?? '',
+    candidate?.region
+  );
+
+  try {
+    return await runOneTarget(
+      target,
+      runState,
+      stacks,
+      options,
+      discovery,
+      skipPull,
+      stateProvider
+    );
+  } finally {
+    if (stateProvider) stateProvider.dispose();
+  }
+}
+
+async function runOneTarget(
+  target: string,
+  runState: ServiceRunState,
+  stacks: StackInfo[],
+  options: LocalStartServiceOptions,
+  discovery: ServiceDiscoveryContext,
+  skipPull: boolean,
+  stateProvider: LocalStateProvider | undefined
+): Promise<ServiceController> {
   const logger = getLogger();
 
-  const imageContext = await buildEcsImageResolutionContext(target, stacks, options);
+  const imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider);
   const service = resolveEcsServiceTarget(target, stacks, imageContext);
   logger.info(
     `Target: ${service.stack.stackName}/${service.serviceLogicalId} ` +
@@ -360,38 +425,29 @@ async function bootOneTarget(
   // Cross-stack env / secret resolution post-pass (mirrors local-run-task).
   const taskStack = stacks.find((s) => s.stackName === service.stack.stackName) ?? service.stack;
   const taskNeeds = detectEcsImageResolutionNeeds(taskStack);
-  if (options.fromState && taskNeeds.needsCrossStackResolver) {
+  if (stateProvider && taskNeeds.needsCrossStackResolver) {
     const consumerRegion =
       options.region ??
       process.env['AWS_REGION'] ??
       process.env['AWS_DEFAULT_REGION'] ??
       service.stack.region ??
       'us-east-1';
-    const built = await buildCrossStackResolver(consumerRegion, {
-      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
-      statePrefix: options.statePrefix,
-      ...(options.region !== undefined && { region: options.region }),
-      ...(options.profile !== undefined && { profile: options.profile }),
-    });
-    if (built) {
-      try {
-        const subContext: SubstitutionContext = {
-          resources: imageContext?.stateResources ?? {},
-          ...(imageContext?.pseudoParameters && {
-            pseudoParameters: imageContext.pseudoParameters,
-          }),
-          consumerRegion,
-          crossStackResolver: built.resolver,
-        };
-        await applyCrossStackResolverToTask(service.task, subContext);
-      } finally {
-        built.dispose();
-      }
+    const resolver = await stateProvider.buildCrossStackResolver(consumerRegion);
+    if (resolver) {
+      const subContext: SubstitutionContext = {
+        resources: imageContext?.stateResources ?? {},
+        ...(imageContext?.pseudoParameters && {
+          pseudoParameters: imageContext.pseudoParameters,
+        }),
+        consumerRegion,
+        crossStackResolver: resolver,
+      };
+      await applyCrossStackResolverToTask(service.task, subContext);
     }
-  } else if (!options.fromState && taskNeeds.needsCrossStackResolver) {
+  } else if (!stateProvider && taskNeeds.needsCrossStackResolver) {
     logger.warn(
       'Container Environment / Secrets entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
-        'Pass --from-state to substitute them against deployed cdkd state.'
+        'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against deployed state.'
     );
   }
 
@@ -496,7 +552,8 @@ async function assumeTaskRole(
 async function buildEcsImageResolutionContext(
   target: string,
   stacks: StackInfo[],
-  options: LocalStartServiceOptions
+  options: LocalStartServiceOptions,
+  stateProvider: LocalStateProvider | undefined
 ): Promise<EcsImageResolutionContext | undefined> {
   const logger = getLogger();
   const parsed = parseEcsTarget(target);
@@ -514,7 +571,7 @@ async function buildEcsImageResolutionContext(
 
   const ctx: EcsImageResolutionContext = {};
 
-  const wantsPseudoForEnvOrSecret = options.fromState && needs.needsEnvOrSecretSubstitution;
+  const wantsPseudoForEnvOrSecret = !!stateProvider && needs.needsEnvOrSecretSubstitution;
   if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
     const region =
       options.region ??
@@ -548,25 +605,19 @@ async function buildEcsImageResolutionContext(
   }
 
   const wantsState = needs.needsStateResources || needs.needsEnvOrSecretSubstitution;
-  if (options.fromState && wantsState) {
-    const loaded = await loadStateForStack(candidate.stackName, candidate.region, {
-      ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
-      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
-      statePrefix: options.statePrefix,
-      ...(options.region !== undefined && { region: options.region }),
-      ...(options.profile !== undefined && { profile: options.profile }),
-    });
+  if (stateProvider && wantsState) {
+    const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
-      ctx.stateResources = loaded.state.resources;
+      ctx.stateResources = loaded.resources;
     }
-  } else if (!options.fromState && needs.needsStateResources) {
+  } else if (!stateProvider && needs.needsStateResources) {
     logger.warn(
-      'Container Image references a same-stack AWS::ECR::Repository. Pass --from-state to substitute the deployed repository URI.'
+      'Container Image references a same-stack AWS::ECR::Repository. Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute the deployed repository URI.'
     );
-  } else if (!options.fromState && needs.needsEnvOrSecretSubstitution) {
+  } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
     logger.warn(
       'Container Environment / Secrets entries contain CloudFormation intrinsics. ' +
-        'Pass --from-state to substitute them against the deployed cdkd state.'
+        'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against the deployed cdkd state.'
     );
   }
 
@@ -760,8 +811,19 @@ export function createLocalStartServiceCommand(): Command {
     )
     .addOption(
       new Option(
+        '--from-cfn-stack [cfn-stack-name]',
+        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+          'in container env vars / secrets / image URIs with the deployed physical IDs / exports. ' +
+          'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
+          'Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. ' +
+          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+      )
+    )
+    .addOption(
+      new Option(
         '--stack-region <region>',
-        'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
+        'Region of the state record to read. Used with --from-state when the same stack name has state in multiple regions, ' +
+          'and with --from-cfn-stack as the CFn client region (cdkd does not have a separate --cfn-stack-region flag).'
       )
     )
     .action(withErrorHandling(localStartServiceCommand));

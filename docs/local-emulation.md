@@ -125,9 +125,10 @@ in the resolved stack so the user can copy/paste a valid one.
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
 | `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery---from-state) below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. **Mutually exclusive with `--from-state`** — pick one source. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `DescribeStackResources` does not return per-attribute values). See [CloudFormation-driven env recovery (`--from-cfn-stack`)](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
-| `--stack-region <region>` | auto | Region of the cdkd state record to read. Required when the same stack name has state in multiple regions. Only used with `--from-state`. |
+| `--stack-region <region>` | auto | Region of the state record to read. Required for `--from-state` when the same stack name has state in multiple regions. Also drives the CFn client region for `--from-cfn-stack` (cdkd does not have a separate `--cfn-stack-region` flag). |
 
 ### Environment variables
 
@@ -223,6 +224,82 @@ cdkd local invoke MyStack/MyApi/Handler --from-state --stack-region us-west-2
 cdkd local invoke MyStack/MyApi/Handler --from-state \
   --env-vars '{"Parameters":{"DEBUG":"1"}}'
 ```
+
+### CloudFormation-driven env recovery (`--from-cfn-stack`)
+
+`--from-state` only works when the target stack was deployed via `cdkd
+deploy` — cdkd reads its own S3 state and that state only exists for
+cdkd-deployed stacks. For CDK apps deployed via the upstream CDK CLI
+(`cdk deploy` → CloudFormation), use `--from-cfn-stack` instead: cdkd
+calls `cloudformation:DescribeStackResources` against the named CFn
+stack to populate the same per-logical-id physical-id map that
+`--from-state` would have built from cdkd state, then runs the existing
+substitution engine against it.
+
+```bash
+# Bare flag — uses the cdkd stack name as the CFn stack name
+# (typical for CDK apps where they match).
+cdk deploy MyStack
+cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack
+
+# Explicit CFn stack name — use when the deployed CFn stack name
+# differs from the cdkd / CDK display name (e.g. when CDK's `stackName`
+# prop was overridden).
+cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack MyExplicitCfnStackName
+
+# Cross-region CFn stack — --stack-region drives the CFn client region.
+cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack --stack-region eu-west-1
+```
+
+**What's resolved**: `Ref: <LogicalId>` against
+`DescribeStackResources` (one CFn API call per stack) and
+`Fn::ImportValue: <ExportName>` against `cloudformation:ListExports`
+(paginated, memoized for one substitution pass).
+
+**`Fn::GetAtt` is warn-and-dropped** in v1. CFn's
+`DescribeStackResources` does NOT return per-attribute values — it only
+exposes `(LogicalResourceId, PhysicalResourceId, ResourceType)`
+triplets. Recovering per-attribute values would require provider-
+specific describe calls (e.g. `GetQueueAttributes` for SQS, `GetFunction`
+for Lambda), which is out of scope for the v1 cut. Override the
+affected env var via `--env-vars` if the value is critical.
+
+**`Fn::GetStackOutput` is rejected** with a clear warn naming the cdkd-
+vs-CFn gap: it's a cdkd-specific intrinsic with no CloudFormation
+equivalent (CFn cross-stack vocabulary is `Fn::ImportValue` against an
+explicit `Outputs.<name>.Export` block). Use `Fn::ImportValue` or pass
+`--from-state` instead.
+
+**Mutually exclusive with `--from-state`** — the CLI rejects the
+combination at parse time. The two flags target different state
+sources (cdkd's S3 state vs CloudFormation); asking for both is
+ambiguous about which wins.
+
+**Region handling**: the CFn client is region-bound at construction
+time using the precedence `--stack-region` > `--region` > `AWS_REGION`
+> `AWS_DEFAULT_REGION` > the synth-derived stack region. There is
+intentionally no separate `--cfn-stack-region` flag — `--stack-region`
+does double duty. When NONE of these signals is set the CLI **throws**
+with a remediation message (distinct from `--from-state`'s silent
+`us-east-1` fallback; CFn `DescribeStackResources` queries a specific
+region and silently picking `us-east-1` would query the wrong stack
+environment).
+
+**Multi-stack guard**: `local start-api` / `local start-service` route
+multiple stacks in one invocation. Bare `--from-cfn-stack` works there
+because each routed stack uses its own cdkd stack name as the CFn
+stack name. **Explicit `--from-cfn-stack <name>` is rejected** when
+more than one stack is routed (the explicit name would apply to every
+routed stack and silently mismap `Ref` lookups whose logical IDs
+happen to collide between siblings). Use bare `--from-cfn-stack` for
+multi-stack apps, or run one cdkd invocation per stack.
+
+**Failure modes**: `DescribeStackResources` failures (stack not found,
+access denied, throttling) degrade to a per-key warn + drop, same UX as
+the `--from-state` warn-and-fall-back path. `ListExports` failures only
+affect `Fn::ImportValue` resolution; same-stack `Ref` substitutions
+still succeed because they only need the `DescribeStackResources`
+result.
 
 ### Asset resolution
 
@@ -530,9 +607,10 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
 | `--from-state` | off | Read cdkd S3 state for every routed stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in Lambda env vars with the deployed physical IDs / attributes. Off by default — keeps the pre-PR literal-only / warn-and-drop behavior. Mirrors `cdkd local invoke --from-state` and `cdkd local run-task --from-state`. Re-runs against fresh state on every hot-reload firing (`--watch`). State load failures degrade per-stack to warn-and-fall-back so a missing or unreadable state file never aborts the server. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name per routed stack; pass an explicit value when a single CFn stack should serve every routed stack. **Mutually exclusive with `--from-state`**. `Fn::GetAtt` is warn-and-dropped in v1. Same warn-and-drop semantics as `cdkd local invoke --from-cfn-stack`. |
 | `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
-| `--stack-region <region>` | auto | Region of the cdkd state record to read. Required when the same stack name has state in multiple regions. Only used with `--from-state`. |
+| `--stack-region <region>` | auto | Region of the state record to read. Required for `--from-state` when the same stack name has state in multiple regions. Also drives the CFn client region for `--from-cfn-stack`. |
 | `--mtls-truststore <path>` | unset | PEM-encoded CA bundle for client-certificate verification. When set, the server switches from HTTP to HTTPS and the TLS handshake rejects clients whose certificate doesn't chain to one of these CAs. Must be set together with `--mtls-cert` + `--mtls-key`; partial flag sets are rejected. See the "mTLS (mutual TLS)" section below for the openssl recipe + event-shape details. |
 | `--mtls-cert <path>` | unset | PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. Must be set together with `--mtls-truststore` + `--mtls-key`. |
 | `--mtls-key <path>` | unset | PEM-encoded server private key matching `--mtls-cert`. Must be set together with `--mtls-truststore` + `--mtls-cert`. |
@@ -995,7 +1073,8 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdkd substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
 | `--from-state` | off | Load cdkd S3 state for the target stack and substitute deployed values into (a) `Fn::Sub` / `Fn::GetAtt` ECR image URIs that reference a same-stack `AWS::ECR::Repository`, AND (b) intrinsic-valued `ContainerDefinitions[].Environment[].Value` + `Secrets[].ValueFrom` entries (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`). Without this flag, env / secret intrinsics are dropped with a per-key warning (matching `cdkd local invoke --from-state` semantics). See "ECR image resolution" and "Env / Secrets substitution" below. Off by default. The stack must have been deployed via `cdkd deploy` first. |
-| `--stack-region <region>` | unset | Region of the cdkd state record to read (used with `--from-state` when the same stack name has state in multiple regions). |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. **Mutually exclusive with `--from-state`**. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `DescribeStackResources` does not return per-attribute values). |
+| `--stack-region <region>` | unset | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR for cross-account / centralized registry pulls. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull` on every container whose `Image` resolves to an `<acct>.dkr.ecr.<region>.amazonaws.com/...` URI. Required when the caller's identity does not already have cross-account access to the target repository. Same-account / same-region pulls do not need this flag. No-op when `--no-pull` is set. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
@@ -1219,7 +1298,8 @@ error.
 | `--platform <p>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |
 | `--from-state` | off | Read cdkd S3 state and substitute intrinsic-valued env / secret / role-ARN / volume entries against the deployed cdkd state. Same shape as `cdkd local run-task --from-state`. |
-| `--stack-region <region>` | — | Region of the cdkd state record to read (used with `--from-state` when the same stack name has state in multiple regions). |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name (per target when multiple `<targets...>` are supplied). **Mutually exclusive with `--from-state`**. `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkd local run-task --from-cfn-stack`. |
+| `--stack-region <region>` | — | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
 
 ### `local start-service` lifecycle
 
