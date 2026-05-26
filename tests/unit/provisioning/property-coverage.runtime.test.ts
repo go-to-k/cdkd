@@ -79,7 +79,10 @@ describe('findSilentDropProperties', () => {
 
   it('sorts results alphabetically by property name', () => {
     const cov = getPropertyCoverage('AWS::Lambda::Function');
-    if (!cov || cov.silentDrop.size < 2) return;
+    if (!cov) throw new Error('AWS::Lambda::Function should have a coverage record');
+    if (cov.silentDrop.size < 2) {
+      throw new Error('AWS::Lambda::Function should declare ≥2 silent-drop properties');
+    }
     const keys = Array.from(cov.silentDrop.keys());
     const reversed = [...keys].reverse();
     const props = Object.fromEntries(reversed.map((k) => [k, 'x']));
@@ -107,12 +110,18 @@ describe('PROPERTY_COVERAGE_BY_TYPE shape', () => {
 /**
  * Find a (type, property, rationale) triple from the generated coverage map
  * so the tests below stay declarative against whichever silent-drop type the
- * generator surfaces today. Returns null if every Tier 1 type is fully
- * handled (= property coverage caught up — the runtime check is a no-op).
+ * generator surfaces today. Throws if every Tier 1 type is fully handled —
+ * at that point the runtime reject path has no exercise input and these
+ * tests would silently no-op, masking regressions. Today the generated map
+ * carries 469 silent-drop entries, so this is far from triggering; the
+ * throw exists so the tests fail loudly when (eventually) every gap is
+ * closed and a different test shape is required.
  */
-function pickSilentDropFixture():
-  | { resourceType: string; property: string; rationale: string }
-  | null {
+function pickSilentDropFixture(): {
+  resourceType: string;
+  property: string;
+  rationale: string;
+} {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
     const first = cov.silentDrop.entries().next();
     if (!first.done) {
@@ -120,7 +129,33 @@ function pickSilentDropFixture():
       return { resourceType, property, rationale };
     }
   }
-  return null;
+  throw new Error(
+    'PROPERTY_COVERAGE_BY_TYPE has no silent-drop entries — every Tier 1 ' +
+      'type is fully handled. Update these tests to exercise the reject path ' +
+      'against a synthetic fixture instead of the generated map.'
+  );
+}
+
+/**
+ * Find a (type, propA, propB) triple where the type has ≥2 silent-drop
+ * entries — used by tests that need to verify per-property granularity.
+ * Throws (rather than silently skipping) so a regression in the generated
+ * map fails the suite loudly. Today many Tier 1 types satisfy this (e.g.
+ * AWS::Lambda::Function has 15 silent-drop entries), so the throw is the
+ * safe default.
+ */
+function pickSilentDropPair(): { resourceType: string; propA: string; propB: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    if (cov.silentDrop.size >= 2) {
+      const sorted = Array.from(cov.silentDrop.keys()).sort((x, y) => x.localeCompare(y));
+      return { resourceType, propA: sorted[0]!, propB: sorted[1]! };
+    }
+  }
+  throw new Error(
+    'PROPERTY_COVERAGE_BY_TYPE has no type with ≥2 silent-drop entries — ' +
+      'these tests assume at least one type with multiple gaps. Update them ' +
+      'to use a synthetic fixture instead of the generated map.'
+  );
 }
 
 describe('ProviderRegistry.validateResourceProperties', () => {
@@ -148,7 +183,6 @@ describe('ProviderRegistry.validateResourceProperties', () => {
 
   it('throws on a silent-drop with property name + rationale + re-run command + issue link', () => {
     const fx = pickSilentDropFixture();
-    if (!fx) return;
     const registry = new ProviderRegistry();
     let message = '';
     try {
@@ -174,7 +208,6 @@ describe('ProviderRegistry.validateResourceProperties', () => {
 
   it('honors the --allow-unsupported-properties escape hatch (per type+property)', () => {
     const fx = pickSilentDropFixture();
-    if (!fx) return;
     const registry = new ProviderRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
     expect(() =>
@@ -191,40 +224,22 @@ describe('ProviderRegistry.validateResourceProperties', () => {
   it('only allows the named entry, not all properties of the same type', () => {
     // Pick a type with two silent-drop entries so we can verify per-property
     // (not per-type) granularity of the escape hatch.
-    let pair: { resourceType: string; allowed: string; denied: string } | null = null;
-    for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-      if (cov.silentDrop.size >= 2) {
-        const keys = Array.from(cov.silentDrop.keys());
-        pair = { resourceType, allowed: keys[0]!, denied: keys[1]! };
-        break;
-      }
-    }
-    if (!pair) return;
+    const pair = pickSilentDropPair();
     const registry = new ProviderRegistry();
-    registry.allowUnsupportedProperties([`${pair.resourceType}:${pair.allowed}`]);
+    registry.allowUnsupportedProperties([`${pair.resourceType}:${pair.propA}`]);
     expect(() =>
       registry.validateResourceProperties([
         {
           logicalId: 'X',
           resourceType: pair.resourceType,
-          properties: { [pair.allowed]: 'x', [pair.denied]: 'y' },
+          properties: { [pair.propA]: 'x', [pair.propB]: 'y' },
         },
       ])
-    ).toThrow(new RegExp(pair.denied));
+    ).toThrow(new RegExp(pair.propB));
   });
 
   it('groups errors by logical ID + sorts properties alphabetically within each', () => {
-    let pair: { resourceType: string; propA: string; propB: string } | null = null;
-    for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-      if (cov.silentDrop.size >= 2) {
-        const keys = Array.from(cov.silentDrop.keys());
-        // Sort to pick A < B alphabetically so we can assert order.
-        const [a, b] = [...keys].sort((x, y) => x.localeCompare(y));
-        pair = { resourceType, propA: a!, propB: b! };
-        break;
-      }
-    }
-    if (!pair) return;
+    const pair = pickSilentDropPair();
     const registry = new ProviderRegistry();
     let message = '';
     try {
@@ -247,11 +262,13 @@ describe('ProviderRegistry.validateResourceProperties', () => {
 
   it('throws on a mixed template — flags only the silent-drop resource', () => {
     const fx = pickSilentDropFixture();
-    if (!fx) return;
     const registry = new ProviderRegistry();
     const lambdaCov = getPropertyCoverage('AWS::Lambda::Function');
-    const lambdaHandled = lambdaCov ? Array.from(lambdaCov.handled)[0] : undefined;
-    if (!lambdaHandled) return;
+    if (!lambdaCov) throw new Error('AWS::Lambda::Function should have a coverage record');
+    const lambdaHandled = Array.from(lambdaCov.handled)[0];
+    if (!lambdaHandled) {
+      throw new Error('AWS::Lambda::Function should declare at least one handled property');
+    }
     let message = '';
     try {
       registry.validateResourceProperties([
@@ -275,7 +292,6 @@ describe('ProviderRegistry.validateResourceProperties', () => {
 
   it('deduplicates re-run command entries when the same type+prop appears in multiple resources', () => {
     const fx = pickSilentDropFixture();
-    if (!fx) return;
     const registry = new ProviderRegistry();
     let message = '';
     try {

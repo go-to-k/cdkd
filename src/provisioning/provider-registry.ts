@@ -313,7 +313,9 @@ function renderPropertyCoverageError(
     entry.props.push({ property: e.property, rationale: e.rationale });
   }
   const sections: string[] = [];
-  for (const [logicalId, { resourceType, props }] of byLogicalId) {
+  const sortedLogicalIds = [...byLogicalId.keys()].sort((a, b) => a.localeCompare(b));
+  for (const logicalId of sortedLogicalIds) {
+    const { resourceType, props } = byLogicalId.get(logicalId)!;
     const sortedProps = [...props].sort((a, b) => a.property.localeCompare(b.property));
     const propLines = sortedProps
       .map(({ property, rationale }) => {

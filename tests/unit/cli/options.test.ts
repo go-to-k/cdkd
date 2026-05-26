@@ -655,6 +655,27 @@ describe('parseAllowUnsupportedPropertiesToken', () => {
     ).toThrow(/Invalid --allow-unsupported-properties value/);
   });
 
+  it('rejects a lowercase-initial property name (CFn property names are PascalCase)', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() =>
+      parseAllowUnsupportedPropertiesToken(
+        'AWS::Lambda::Function:loggingConfig',
+        undefined
+      )
+    ).toThrow(/PascalCase/);
+  });
+
+  it('rejects Custom:: tokens (Custom resources have no Tier-1 silent drop)', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() =>
+      parseAllowUnsupportedPropertiesToken('Custom::Foo:Bar', undefined)
+    ).toThrow(/Custom:: resources are routed through cfn-response/);
+  });
+
   it('trims whitespace around tokens', async () => {
     const { parseAllowUnsupportedPropertiesToken } = await import(
       '../../../src/cli/options.js'

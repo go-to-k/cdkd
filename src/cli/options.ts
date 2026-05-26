@@ -575,10 +575,16 @@ export const allowUnsupportedTypesOption = new Option(
  * by name.
  *
  * Format-checks each token against `<Namespace>::<Service>::<Type>:<Prop>`
- * so a typo aborts at parse time instead of being silently added to the
- * allowlist with no effect.
+ * with both halves PascalCase, so a typo aborts at parse time instead of
+ * being silently added to the allowlist with no effect.
+ *
+ * The check is Tier-1-only by design (Cloud Control forwards every property
+ * to AWS, so there is no write-side silent drop for Tier 2 / Custom). A
+ * `Custom::Foo:Bar` token is therefore always a user mistake — it would be
+ * added to the allowlist but never consulted at runtime. Reject it at parse
+ * time so the user sees the error immediately.
  */
-const RESOURCE_PROPERTY_FORMAT = /^[A-Z][A-Za-z0-9]+(::[A-Z][A-Za-z0-9]+)+:[A-Za-z][A-Za-z0-9]*$/;
+const RESOURCE_PROPERTY_FORMAT = /^[A-Z][A-Za-z0-9]+(::[A-Z][A-Za-z0-9]+)+:[A-Z][A-Za-z0-9]*$/;
 
 export function parseAllowUnsupportedPropertiesToken(
   value: string,
@@ -592,7 +598,16 @@ export function parseAllowUnsupportedPropertiesToken(
     if (!RESOURCE_PROPERTY_FORMAT.test(token)) {
       throw new Error(
         `Invalid --allow-unsupported-properties value "${token}": expected ` +
-          `<ResourceType>:<PropertyName> (e.g. AWS::Lambda::Function:LoggingConfig).`
+          `<ResourceType>:<PropertyName> with PascalCase on both halves ` +
+          `(e.g. AWS::Lambda::Function:LoggingConfig).`
+      );
+    }
+    if (token.startsWith('Custom::')) {
+      throw new Error(
+        `Invalid --allow-unsupported-properties value "${token}": Custom:: ` +
+          `resources are routed through cfn-response and have no write-side ` +
+          `silent drop at cdkd, so the flag would have no effect. Use ` +
+          `--allow-unsupported-types for type-level escape hatches instead.`
       );
     }
   }
