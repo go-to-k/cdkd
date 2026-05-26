@@ -108,7 +108,11 @@ echo "    OK: state.version == 6 after v6 deploy"
 # v6 doesn't know about the field; if it leaked there, the integ tells us
 # that the chosen V6_CDKD_VERSION is actually v7+ and we picked the wrong
 # pre-PR pin.
-if echo "${V6_STATE}" | jq -e '.resources.MigrationProbe | has("provisionedBy")' >/dev/null; then
+# Lookup is by resourceType (CDK appends a hash to the logical id so
+# the bare `MigrationProbe` key doesn't exist — it's e.g.
+# `MigrationProbe165C9E89`).
+V6_HAS_PROVISIONED_BY=$(echo "${V6_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::SSM::Parameter") | .value | has("provisionedBy")] | first')
+if [ "${V6_HAS_PROVISIONED_BY}" = "true" ]; then
   echo "FAIL: v6 binary wrote provisionedBy on the resource (= wrong V6_CDKD_VERSION pin)" >&2
   echo "${V6_STATE}" | jq .
   exit 1
@@ -157,13 +161,13 @@ echo "    OK: state.version == 7 after v7 deploy (transparent upgrade)"
 # record MUST carry provisionedBy: 'sdk'. This is the load-bearing
 # assertion of #614 — the new binary explicitly stamps the routing layer
 # on every resource so the next update / destroy is deterministic.
-PROVISIONED=$(echo "${V7_STATE}" | jq -r '.resources.MigrationProbe.provisionedBy // ""')
+PROVISIONED=$(echo "${V7_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::SSM::Parameter") | .value.provisionedBy // ""] | first')
 if [ "${PROVISIONED}" != "sdk" ]; then
-  echo "FAIL: resources.MigrationProbe.provisionedBy is '${PROVISIONED}', expected 'sdk'" >&2
+  echo "FAIL: SSM Parameter resource has provisionedBy='${PROVISIONED}', expected 'sdk'" >&2
   echo "${V7_STATE}" | jq .
   exit 1
 fi
-echo "    OK: resources.MigrationProbe.provisionedBy == 'sdk' (correct routing)"
+echo "    OK: SSM Parameter resource has provisionedBy == 'sdk' (correct routing)"
 
 # The AWS resource must still be there — deploy-then-redeploy is a UPDATE
 # with a string-value diff only; the SSM parameter survives the update.

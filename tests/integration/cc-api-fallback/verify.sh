@@ -68,22 +68,25 @@ if [ -z "${STATE}" ]; then
 fi
 
 # --- Assertion 1: state.provisionedBy on the Lambda is 'cc-api' -------
-PROVISIONED=$(echo "${STATE}" | jq -r '.resources.SilentDropLambda.provisionedBy // ""')
+# Lookup by resourceType (CDK appends a hash to the logical id; the
+# bare `SilentDropLambda` key does not exist — it's e.g.
+# `SilentDropLambdaXXXXXXXX`).
+PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${PROVISIONED}" != "cc-api" ]; then
-  echo "FAIL: resources.SilentDropLambda.provisionedBy is '${PROVISIONED}', expected 'cc-api'" >&2
+  echo "FAIL: Lambda resource has provisionedBy='${PROVISIONED}', expected 'cc-api' (auto-route should have fired on LoggingConfig)" >&2
   echo "${STATE}" | jq .
   exit 1
 fi
-echo "    OK: resources.SilentDropLambda.provisionedBy == 'cc-api' (auto-route fired)"
+echo "    OK: Lambda resource provisionedBy == 'cc-api' (auto-route fired)"
 
 # --- Assertion 2: state.provisionedBy on the IAM Role is 'sdk' (heterogeneous) ---
-ROLE_PROVISIONED=$(echo "${STATE}" | jq -r '.resources.FnRole.provisionedBy // ""')
+ROLE_PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::Role") | .value.provisionedBy // ""] | first')
 if [ "${ROLE_PROVISIONED}" != "sdk" ]; then
-  echo "FAIL: resources.FnRole.provisionedBy is '${ROLE_PROVISIONED}', expected 'sdk'" >&2
+  echo "FAIL: IAM Role resource has provisionedBy='${ROLE_PROVISIONED}', expected 'sdk'" >&2
   echo "${STATE}" | jq .
   exit 1
 fi
-echo "    OK: resources.FnRole.provisionedBy == 'sdk' (heterogeneous routing in one stack)"
+echo "    OK: IAM Role resource provisionedBy == 'sdk' (heterogeneous routing in one stack)"
 
 # --- Assertion 3: LoggingConfig actually reached AWS ----------------------
 LOG_CONFIG=$(aws lambda get-function-configuration \
