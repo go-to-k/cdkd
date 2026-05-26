@@ -387,6 +387,23 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::CertificateManager::Certificate',
+    {
+      handled: new Set<string>([
+        'CertificateAuthorityArn',
+        'CertificateExport',
+        'CertificateTransparencyLoggingPreference',
+        'DomainName',
+        'DomainValidationOptions',
+        'KeyAlgorithm',
+        'SubjectAlternativeNames',
+        'Tags',
+        'ValidationMethod',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::CloudFormation::Stack',
     {
       handled: new Set<string>(['Parameters', 'TemplateURL']),
