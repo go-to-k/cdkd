@@ -112,6 +112,7 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::LakeFormation::DataLakeSettings',
   'AWS::LakeFormation::Permissions',
   'AWS::LakeFormation::Resource',
+  'AWS::LicenseManager::License',
   'AWS::ManagedBlockchain::Member',
   'AWS::ManagedBlockchain::Node',
   'AWS::MediaConvert::JobTemplate',
