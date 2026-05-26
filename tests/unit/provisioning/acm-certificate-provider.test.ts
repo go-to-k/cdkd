@@ -185,6 +185,40 @@ describe('ACMCertificateProvider', () => {
         })
       ).rejects.toThrow(/VALIDATION_TIMED_OUT/);
     });
+
+    it.each(['FAILED', 'INACTIVE', 'REVOKED', 'EXPIRED'] as const)(
+      'throws when status is terminal: %s',
+      async (status) => {
+        process.env['CDKD_NO_WAIT'] = '';
+        mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+        mockSend.mockResolvedValueOnce({ Certificate: { Status: status } });
+
+        await expect(
+          provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+            DomainName: 'example.com',
+            ValidationMethod: 'DNS',
+          })
+        ).rejects.toThrow(new RegExp(status));
+      }
+    );
+
+    it('throws "did not reach ISSUED" when polling cap exhausts', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      // maxPollAttempts=10 was set in beforeEach. Feed PENDING_VALIDATION 11+ times.
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      for (let i = 0; i < 12; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+        });
+      }
+
+      await expect(
+        provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+          DomainName: 'example.com',
+          ValidationMethod: 'DNS',
+        })
+      ).rejects.toThrow(/did not reach ISSUED/);
+    });
   });
 
   describe('update', () => {
@@ -269,6 +303,29 @@ describe('ACMCertificateProvider', () => {
       const removed = callsOfType(RemoveTagsFromCertificateCommand)[0].input;
       expect(removed.Tags).toEqual([{ Key: 'owner' }]);
     });
+
+    it('skips UpdateCertificateOptions when CT / Export did not change (tags-only update)', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        {
+          DomainName: 'example.com',
+          CertificateTransparencyLoggingPreference: 'ENABLED',
+          Tags: [{ Key: 'a', Value: '1' }],
+        },
+        {
+          DomainName: 'example.com',
+          CertificateTransparencyLoggingPreference: 'ENABLED',
+          Tags: [{ Key: 'a', Value: '0' }],
+        }
+      );
+
+      expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
+      expect(callsOfType(AddTagsToCertificateCommand)).toHaveLength(1);
+    });
   });
 
   describe('delete', () => {
@@ -348,6 +405,31 @@ describe('ACMCertificateProvider', () => {
         await provider.readCurrentState(ARN, 'MyCert', 'AWS::CertificateManager::Certificate')
       ).toBeUndefined();
     });
+
+    it('omits CT / Export from the snapshot when AWS Options is undefined', async () => {
+      mockSend.mockResolvedValueOnce({
+        Certificate: {
+          DomainName: 'example.com',
+          KeyAlgorithm: 'RSA_2048',
+          // No `Options` field at all.
+        },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: [] });
+
+      const result = await provider.readCurrentState(
+        ARN,
+        'MyCert',
+        'AWS::CertificateManager::Certificate'
+      );
+
+      expect(result).toBeDefined();
+      expect(result!['DomainName']).toBe('example.com');
+      expect(result!['KeyAlgorithm']).toBe('RSA_2048');
+      // Neither CT nor Export are emitted — important for drift comparator
+      // not to fire false drift on a cert deployed without Options.
+      expect('CertificateTransparencyLoggingPreference' in result!).toBe(false);
+      expect('CertificateExport' in result!).toBe(false);
+    });
   });
 
   describe('getDriftUnknownPaths', () => {
@@ -411,6 +493,30 @@ describe('ACMCertificateProvider', () => {
 
       const result = await provider.import!(makeInput());
       expect(result?.physicalId).toBe(ARN);
+    });
+
+    it('paginates ListCertificates via NextToken when the cdkPath match is on page 2', async () => {
+      // Page 1: no match.
+      mockSend.mockResolvedValueOnce({
+        CertificateSummaryList: [
+          { CertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/page1' },
+        ],
+        NextToken: 'page2',
+      });
+      mockSend.mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'Other/X' }] });
+      // Page 2: match.
+      mockSend.mockResolvedValueOnce({
+        CertificateSummaryList: [{ CertificateArn: ARN }],
+      });
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyCert' }],
+      });
+
+      const result = await provider.import!(makeInput());
+      expect(result?.physicalId).toBe(ARN);
+      const lists = callsOfType(ListCertificatesCommand);
+      expect(lists).toHaveLength(2);
+      expect(lists[1].input.NextToken).toBe('page2');
     });
 
     it('returns null when no certificate matches the cdkPath', async () => {

@@ -10,6 +10,8 @@ import {
   UpdateCertificateOptionsCommand,
   ResourceNotFoundException,
   type DomainValidation,
+  type RequestCertificateRequest,
+  type CertificateOptions,
 } from '@aws-sdk/client-acm';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -146,7 +148,9 @@ export class ACMCertificateProvider implements ResourceProvider {
     }
 
     try {
-      const response = await this.acmClient.send(new RequestCertificateCommand(input as never));
+      const response = await this.acmClient.send(
+        new RequestCertificateCommand(input as unknown as RequestCertificateRequest)
+      );
       const certificateArn = response.CertificateArn;
       if (!certificateArn) {
         throw new ProvisioningError(
@@ -247,7 +251,7 @@ export class ACMCertificateProvider implements ResourceProvider {
           await this.acmClient.send(
             new UpdateCertificateOptionsCommand({
               CertificateArn: physicalId,
-              Options: options as never,
+              Options: options as CertificateOptions,
             })
           );
           this.logger.debug(`Updated certificate Options on ${physicalId}`);
@@ -505,7 +509,17 @@ export class ACMCertificateProvider implements ResourceProvider {
           this.logger.debug(`ACM certificate ${certificateArn} is ISSUED`);
           return;
         }
-        if (status === 'FAILED' || status === 'VALIDATION_TIMED_OUT') {
+        // Every terminal-failure status: validation timed out, validation
+        // failed, or the cert was administratively disabled / revoked / let
+        // expire while we were polling. Looping past any of these would just
+        // time out with a misleading "did not reach ISSUED" message.
+        if (
+          status === 'FAILED' ||
+          status === 'VALIDATION_TIMED_OUT' ||
+          status === 'INACTIVE' ||
+          status === 'REVOKED' ||
+          status === 'EXPIRED'
+        ) {
           throw new Error(
             `ACM certificate ${logicalId} (${certificateArn}) entered terminal status ${status} during validation. ` +
               `Check ACM console / DNS records to diagnose.`
@@ -521,10 +535,13 @@ export class ACMCertificateProvider implements ResourceProvider {
           `ACM certificate ${certificateArn} status: ${status} (attempt ${attempt}/${this.maxPollAttempts})`
         );
 
-        // Interruptible sleep, check SIGINT every second.
+        // Interruptible sleep, check SIGINT every second (or the full
+        // interval if it's < 1s, so test runs with `CDKD_ACM_POLL_INTERVAL_MS=50`
+        // don't waste a full second per attempt).
         const sleepEnd = Date.now() + this.pollIntervalMs;
+        const tickMs = Math.min(1000, this.pollIntervalMs);
         while (Date.now() < sleepEnd && !interrupted) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, tickMs));
         }
       }
 
