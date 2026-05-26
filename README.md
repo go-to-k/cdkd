@@ -211,105 +211,6 @@ matrix (`--concurrency`, `--no-aggressive-vpc-parallel`,
 including the synth-driven per-resource `cdkd orphan <constructPath>`
 variant, and stage / wildcard pattern matching.
 
-## Importing existing resources
-
-`cdkd import` adopts AWS resources that are already deployed (via
-`cdk deploy`, manual creation, or another tool) into cdkd state so the
-next `cdkd deploy` updates them in-place instead of CREATEing duplicates.
-
-`cdkd import --migrate-from-cloudformation` extends this to migrate a
-**whole CloudFormation stack** off CFn in a single command: cdkd reads
-the source CFn stack's `(logicalId, physicalId)` mappings, adopts every
-resource into cdkd state, then retires the source CFn stack (injects
-`DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every
-resource → `UpdateStack` → `DeleteStack`) so the AWS resources stay
-intact but are no longer tracked by CFn. After the command finishes,
-the stack is managed by `cdkd deploy`. This is the reverse direction
-of `cdkd export` (see below).
-
-```bash
-# Adopt a whole stack previously deployed by cdk deploy (tag-based auto-lookup).
-cdkd import MyStack --yes
-
-# Adopt only specific resources (CDK CLI parity).
-cdkd import MyStack --resource MyBucket=my-bucket-name
-
-# Migrate off CloudFormation in one shot — adopt + retire the source CFn stack.
-cdkd import MyStack --migrate-from-cloudformation --yes
-```
-
-See **[docs/import.md](docs/import.md)** for the full guide: three import
-modes (auto / selective / hybrid), `--resource-mapping` CDK CLI
-compatibility, CloudFormation migration flow, provider coverage, and the
-parity matrix vs upstream `cdk import`.
-
-## Exporting a stack back to CloudFormation
-
-`cdkd export` is the mirror of `cdkd import`: it hands a cdkd-managed
-stack back to CloudFormation via a CFn `ChangeSetType=IMPORT` changeset.
-AWS resources are unchanged across the migration; cdkd state for the
-exported stack is deleted on success. From then on the stack is managed
-by `cdk deploy` / `aws cloudformation`. Accepts JSON and YAML templates
-(shorthand intrinsics round-trip).
-
-```bash
-cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
-cdkd export MyStack --cfn-stack-name MyStack-CFn
-cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
-cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn-CREATE Custom Resources
-cdkd export MyApp                             # nested-stack tree: leaf-first per-stack IMPORT loop
-```
-
-**Lambda-backed Custom Resources** (`Custom::*` /
-`AWS::CloudFormation::CustomResource`) are NOT directly CFn-importable.
-`--include-non-importable` opts into a 2-phase migration that re-CREATEs
-them through CFn — the Custom Resource Lambda must be idempotent.
-**Nested stacks** are supported via a leaf-first per-stack IMPORT loop
-(AWS rejects `--include-nested-stacks` for IMPORT changesets).
-
-See **[docs/import.md](docs/import.md)** for the full guide — Custom Resource
-2-phase flow, nested-stack adoption mechanics (`--cfn-child-stack-name`
-per-child overrides, AWS's "Nest an existing stack" pattern), and the
-design rationale at [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md).
-
-## Drift detection
-
-`cdkd drift` (state-driven; no synth) compares each managed resource
-against AWS reality and reports divergence — including console-side
-changes to keys you did NOT template (S3 public-access-block, IAM Role
-tags, Lambda env keys, etc.).
-
-```bash
-cdkd drift                       # auto-detect single stack, exit 1 if drift
-cdkd drift MyStack --json        # machine-readable, for CI gating
-cdkd drift MyStack --accept --yes   # state ← AWS (catch up after a console edit)
-cdkd drift MyStack --revert --yes   # AWS ← state (undo a console edit)
-cdkd state refresh-observed MyStack # populate the drift baseline without redeploying
-```
-
-See **[docs/cli-reference.md `cdkd drift`](docs/cli-reference.md#cdkd-drift)**
-for the full reference: `--no-capture-observed-state` deploy opt-out
-(per-command vs per-project, mid-flight reversibility), v2→v3 state
-upgrade flow, exit codes, and what changes when capture is off.
-
-## Orphan vs destroy
-
-`destroy` deletes the AWS resources **and** the state record;
-`orphan` deletes **only** the state record (AWS resources stay
-intact, just no longer tracked by cdkd). Mirrors aws-cdk-cli's
-`cdk orphan`.
-
-Two `orphan` variants at different granularities:
-
-- `cdkd orphan <constructPath>...` — synth-driven, **per-resource**.
-  Rewrites every sibling reference (Ref / Fn::GetAtt / Fn::Sub /
-  dependencies) so the next deploy doesn't re-create the orphan.
-- `cdkd state orphan <stack>...` — state-driven, **whole-stack**.
-  Removes the entire state record. Works without the CDK app.
-
-Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
-(state-driven, no synth) delete AWS resources + state.
-
 ## `--no-wait`: skip async-resource waits
 
 CloudFront / RDS / ElastiCache / NAT Gateway typically take 1–15
@@ -417,6 +318,105 @@ Mid-deploy state is also saved per-resource as work completes, so even
 if cdkd itself crashes between the failure and the rollback, the state
 file accurately reflects what's on AWS and a follow-up `cdkd destroy`
 won't orphan anything.
+
+## Importing existing resources
+
+`cdkd import` adopts AWS resources that are already deployed (via
+`cdk deploy`, manual creation, or another tool) into cdkd state so the
+next `cdkd deploy` updates them in-place instead of CREATEing duplicates.
+
+`cdkd import --migrate-from-cloudformation` extends this to migrate a
+**whole CloudFormation stack** off CFn in a single command: cdkd reads
+the source CFn stack's `(logicalId, physicalId)` mappings, adopts every
+resource into cdkd state, then retires the source CFn stack (injects
+`DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every
+resource → `UpdateStack` → `DeleteStack`) so the AWS resources stay
+intact but are no longer tracked by CFn. After the command finishes,
+the stack is managed by `cdkd deploy`. This is the reverse direction
+of `cdkd export` (see below).
+
+```bash
+# Adopt a whole stack previously deployed by cdk deploy (tag-based auto-lookup).
+cdkd import MyStack --yes
+
+# Adopt only specific resources (CDK CLI parity).
+cdkd import MyStack --resource MyBucket=my-bucket-name
+
+# Migrate off CloudFormation in one shot — adopt + retire the source CFn stack.
+cdkd import MyStack --migrate-from-cloudformation --yes
+```
+
+See **[docs/import.md](docs/import.md)** for the full guide: three import
+modes (auto / selective / hybrid), `--resource-mapping` CDK CLI
+compatibility, CloudFormation migration flow, provider coverage, and the
+parity matrix vs upstream `cdk import`.
+
+## Exporting a stack back to CloudFormation
+
+`cdkd export` is the mirror of `cdkd import`: it hands a cdkd-managed
+stack back to CloudFormation via a CFn `ChangeSetType=IMPORT` changeset.
+AWS resources are unchanged across the migration; cdkd state for the
+exported stack is deleted on success. From then on the stack is managed
+by `cdk deploy` / `aws cloudformation`. Accepts JSON and YAML templates
+(shorthand intrinsics round-trip).
+
+```bash
+cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
+cdkd export MyStack --cfn-stack-name MyStack-CFn
+cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
+cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn-CREATE Custom Resources
+cdkd export MyApp                             # nested-stack tree: leaf-first per-stack IMPORT loop
+```
+
+**Lambda-backed Custom Resources** (`Custom::*` /
+`AWS::CloudFormation::CustomResource`) are NOT directly CFn-importable.
+`--include-non-importable` opts into a 2-phase migration that re-CREATEs
+them through CFn — the Custom Resource Lambda must be idempotent.
+**Nested stacks** are supported via a leaf-first per-stack IMPORT loop
+(AWS rejects `--include-nested-stacks` for IMPORT changesets).
+
+See **[docs/import.md](docs/import.md)** for the full guide — Custom Resource
+2-phase flow, nested-stack adoption mechanics (`--cfn-child-stack-name`
+per-child overrides, AWS's "Nest an existing stack" pattern), and the
+design rationale at [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md).
+
+## Drift detection
+
+`cdkd drift` (state-driven; no synth) compares each managed resource
+against AWS reality and reports divergence — including console-side
+changes to keys you did NOT template (S3 public-access-block, IAM Role
+tags, Lambda env keys, etc.).
+
+```bash
+cdkd drift                       # auto-detect single stack, exit 1 if drift
+cdkd drift MyStack --json        # machine-readable, for CI gating
+cdkd drift MyStack --accept --yes   # state ← AWS (catch up after a console edit)
+cdkd drift MyStack --revert --yes   # AWS ← state (undo a console edit)
+cdkd state refresh-observed MyStack # populate the drift baseline without redeploying
+```
+
+See **[docs/cli-reference.md `cdkd drift`](docs/cli-reference.md#cdkd-drift)**
+for the full reference: `--no-capture-observed-state` deploy opt-out
+(per-command vs per-project, mid-flight reversibility), v2→v3 state
+upgrade flow, exit codes, and what changes when capture is off.
+
+## Orphan vs destroy
+
+`destroy` deletes the AWS resources **and** the state record;
+`orphan` deletes **only** the state record (AWS resources stay
+intact, just no longer tracked by cdkd). Mirrors aws-cdk-cli's
+`cdk orphan`.
+
+Two `orphan` variants at different granularities:
+
+- `cdkd orphan <constructPath>...` — synth-driven, **per-resource**.
+  Rewrites every sibling reference (Ref / Fn::GetAtt / Fn::Sub /
+  dependencies) so the next deploy doesn't re-create the orphan.
+- `cdkd state orphan <stack>...` — state-driven, **whole-stack**.
+  Removes the entire state record. Works without the CDK app.
+
+Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
+(state-driven, no synth) delete AWS resources + state.
 
 ## VPC route DependsOn relaxation (on by default)
 
