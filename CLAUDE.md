@@ -44,11 +44,11 @@ vp run typecheck
 
 ## State Schema
 
-State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v6). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue [#459](https://github.com/go-to-k/cdkd/issues/459), shipped in PR #548) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue [#464](https://github.com/go-to-k/cdkd/issues/464), this PR) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
+State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v7). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue [#459](https://github.com/go-to-k/cdkd/issues/459), shipped in PR #548) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue [#464](https://github.com/go-to-k/cdkd/issues/464), this PR) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   stackName: string;
   region?: string;
   resources: Record<string, ResourceState>;
@@ -69,10 +69,11 @@ interface ResourceState {
   dependencies: string[];
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
+  provisionedBy?: 'sdk' | 'cc-api'; // v7+: routing layer (absent = SDK legacy default)
 }
 ```
 
-Full per-field semantics (v1-v6 migration story, `observedProperties` / `deletionPolicy` / `parentStack` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
+Full per-field semantics (v1-v7 migration story, `observedProperties` / `deletionPolicy` / `parentStack` / `provisionedBy` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
 
 ## Provider Pattern
 

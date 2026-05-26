@@ -146,11 +146,15 @@ describe('DeployEngine — provider.getMinResourceTimeoutMs() lifts the deadline
         ),
     };
 
+    const pickProvider = (type: string) =>
+      type === 'AWS::CloudFormation::CustomResource' ? crProvider : s3Provider;
     const mockProviderRegistry = {
-      getProvider: vi.fn().mockImplementation((type: string) => {
-        if (type === 'AWS::CloudFormation::CustomResource') return crProvider;
-        return s3Provider;
-      }),
+      getProvider: vi.fn().mockImplementation(pickProvider),
+      getProviderFor: vi.fn().mockImplementation(({ resourceType }: { resourceType: string }) => ({
+        provider: pickProvider(resourceType),
+        provisionedBy: 'sdk',
+      })),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
       getCloudControlProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),

@@ -134,10 +134,17 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 // Provider registry: hoisted spies so each test can configure has/get + provider.import.
 const mockHasProvider = vi.hoisted(() => vi.fn<(t: string) => boolean>());
 const mockGetProvider = vi.hoisted(() => vi.fn<(t: string) => unknown>());
+// #614: import.ts now consults `getProviderFor` for the observed-properties
+// capture path (legacy `getProvider` is still used for `provider.import()`).
+// Wrap the existing get-by-type mock so test fixtures stay declarative.
+const mockGetProviderFor = vi.hoisted(() =>
+  vi.fn<(input: { resourceType: string }) => unknown>()
+);
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
     hasProvider: mockHasProvider,
     getProvider: mockGetProvider,
+    getProviderFor: mockGetProviderFor,
   })),
 }));
 
@@ -221,6 +228,14 @@ describe('cdkd import', () => {
     mockSynthesize.mockReset();
     mockHasProvider.mockReset();
     mockGetProvider.mockReset();
+    mockGetProviderFor.mockReset();
+    // Default routing for the #614 observed-properties pass: every
+    // resource type proxies through the test's `mockGetProvider` mock and
+    // is recorded as SDK-managed (matches every test's expectation).
+    mockGetProviderFor.mockImplementation(({ resourceType }: { resourceType: string }) => ({
+      provider: mockGetProvider(resourceType),
+      provisionedBy: 'sdk',
+    }));
     readlineQuestion.mockReset();
     readlineClose.mockReset();
     mockRetireCloudFormationStack.mockReset();

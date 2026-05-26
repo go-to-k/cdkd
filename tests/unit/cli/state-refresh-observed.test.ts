@@ -79,9 +79,18 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 
 const mockRegistryGetProvider = vi.fn<(resourceType: string) => unknown>();
 const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>().mockReturnValue(false);
+// #614: state refresh-observed now calls `getProviderFor` (legacy
+// `getProvider` is still used by other state subcommands).
+const mockRegistryGetProviderFor = vi
+  .fn<(input: { resourceType: string }) => unknown>()
+  .mockImplementation((input) => ({
+    provider: mockRegistryGetProvider(input.resourceType),
+    provisionedBy: 'sdk',
+  }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
     getProvider: mockRegistryGetProvider,
+    getProviderFor: mockRegistryGetProviderFor,
     shouldSkipResource: mockRegistryShouldSkip,
     setCustomResourceResponseBucket: vi.fn(),
   })),

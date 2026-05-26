@@ -1035,6 +1035,11 @@ function buildStackState(
       properties: tmplResource.Properties ?? {},
       attributes: {},
       dependencies: [...deps],
+      // v7+ (#614): every imported resource is owned by its SDK Provider
+      // (the import() method lives on SDK Providers). Explicit so the
+      // post-import drift / destroy paths route through the SDK provider
+      // without falling back to the absent-field "sdk legacy default".
+      provisionedBy: 'sdk',
     };
   }
   return {
@@ -1358,7 +1363,10 @@ async function captureObservedForImportedResources(
   await Promise.all(
     entries.map(async ([logicalId, resource]) => {
       try {
-        const provider = providerRegistry.getProvider(resource.resourceType);
+        const provider = providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
         if (!provider.readCurrentState) return;
         const observed = await provider.readCurrentState(
           resource.physicalId,

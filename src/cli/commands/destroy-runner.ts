@@ -516,7 +516,16 @@ export async function runDestroyForStack(
         const baseLabel = `Deleting ${logicalId} (${resource.resourceType})`;
         renderer.addTask(logicalId, baseLabel);
         try {
-          const provider = destroyProviderRegistry.getProvider(resource.resourceType);
+          // Schema v7+ (#614): route DELETE via state-recorded
+          // `provisionedBy` so a CC-managed resource is deleted via Cloud
+          // Control even if the SDK provider has since gained coverage.
+          // Pre-v7 state has `provisionedBy: undefined` which the registry
+          // treats as legacy `'sdk'` semantics (matches behavior before
+          // this PR shipped).
+          const provider = destroyProviderRegistry.getProviderFor({
+            resourceType: resource.resourceType,
+            provisionedBy: resource.provisionedBy,
+          }).provider;
 
           // Per-resource-type overrides (v2) win over the global default.
           // Resolution order:

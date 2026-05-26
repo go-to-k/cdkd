@@ -131,6 +131,8 @@ describe('DeployEngine — per-resource-type timeout resolution (#91 v2)', () =>
 
     const mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(provider),
+      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
       getCloudControlProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),

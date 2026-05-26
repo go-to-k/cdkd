@@ -66,6 +66,8 @@ describe('DeployEngine - Resource Replacement', () => {
 
   let mockProviderRegistry: {
     getProvider: ReturnType<typeof vi.fn>;
+    getProviderFor: ReturnType<typeof vi.fn>;
+    getRegisteredTypes: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
     validateResourceProperties: ReturnType<typeof vi.fn>;
   };
@@ -144,6 +146,10 @@ describe('DeployEngine - Resource Replacement', () => {
 
     mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(mockProvider),
+      // #614 routing: tests in this file exercise SDK-Provider paths only,
+      // so getProviderFor always returns the mock provider tagged as 'sdk'.
+      getProviderFor: vi.fn().mockReturnValue({ provider: mockProvider, provisionedBy: 'sdk' }),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     };

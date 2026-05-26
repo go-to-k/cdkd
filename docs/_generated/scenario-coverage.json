@@ -224,6 +224,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-api-fallback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []
@@ -757,6 +762,11 @@
       ]
     },
     {
+      "name": "schema-v6-to-v7-migration",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "serverless-api",
       "annotated": true,
       "scenarios": []
@@ -1113,9 +1123,11 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "acm-certificate",
+    "cc-api-fallback",
     "export-nested-stack",
     "iam-managed-policy",
     "nested-stack",
-    "nested-stack-deep"
+    "nested-stack-deep",
+    "schema-v6-to-v7-migration"
   ]
 }

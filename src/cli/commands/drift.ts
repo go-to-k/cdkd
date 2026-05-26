@@ -390,7 +390,14 @@ async function runDriftForStack(
 
       let provider;
       try {
-        provider = providerRegistry.getProvider(resource.resourceType);
+        // Schema v7+ (#614): route reads via state-recorded
+        // `provisionedBy` so a CC-managed resource is read through Cloud
+        // Control's `readCurrentState`. Pre-v7 state has
+        // `provisionedBy: undefined` which preserves legacy SDK routing.
+        provider = providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
       } catch {
         outcomes.push({
           kind: 'unsupported',
@@ -810,7 +817,13 @@ async function runRevert(
           );
           return;
         }
-        const provider: ResourceProvider = providerRegistry.getProvider(outcome.resourceType);
+        // Schema v7+ (#614): route the revert update through the
+        // state-recorded layer so a CC-managed resource is reverted via
+        // Cloud Control.
+        const provider: ResourceProvider = providerRegistry.getProviderFor({
+          resourceType: outcome.resourceType,
+          provisionedBy: stateResource.provisionedBy,
+        }).provider;
         // The baseline drift was computed against — `observedProperties`
         // when present, else `properties` — is the right "desired" value
         // to push back to AWS. Using `properties` alone would push the

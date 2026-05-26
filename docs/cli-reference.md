@@ -461,55 +461,54 @@ cdkd destroy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::
 
 ## `--allow-unsupported-properties` (deploy)
 
-cdkd also rejects deploys at pre-flight when the template uses **top-level
-CFn properties** that cdkd's SDK provider would silently drop on write.
-Example: AWS adds `LoggingConfig` to `AWS::Lambda::Function`, CDK adds
-support, you write it in your CDK code — but `LambdaFunctionProvider.create()`
-does not read it yet, so the property would be silently dropped at deploy
-time. The deployed Lambda would be missing the field with no error
-surfaced. The pre-flight catches this so you see the gap before any AWS
-call runs.
+When a CDK template uses a **top-level CFn property** that cdkd's SDK
+provider would silently drop on write (e.g. AWS adds `LoggingConfig` to
+`AWS::Lambda::Function`, CDK adds support, you write it in your CDK code,
+but `LambdaFunctionProvider.create()` does not read it yet), cdkd **auto-routes
+the resource through Cloud Control API** by default (issue #614). Cloud
+Control forwards the full property map to AWS verbatim, so the silent
+drop is closed without any user intervention — the field reaches AWS.
+
+The routing decision is recorded on the resource's state record as
+`provisionedBy: 'cc-api'` and stays sticky for the resource's lifetime
+(`cdkd drift`, `cdkd destroy`, etc. route through the same layer that
+created it — even if cdkd later adds first-class SDK provider support
+for the property). `cdkd state show <stack>` displays the
+`ProvisionedBy:` field so you can audit which layer owns each resource.
 
 The set of handled vs silently-dropped properties is generated from the
 CFn schema fixtures + each SDK provider's `handledProperties` /
 `unhandledByDesign` declarations into the runtime at
 `src/provisioning/property-coverage.generated.ts` (`vp run gen:property-coverage`;
 CI fails if it drifts). Coverage is per Tier 1 (SDK provider) type only —
-Tier 2 (Cloud Control fallback) types forward the full property map to
-AWS, so no write-side silent drop is possible there.
+Tier 2 (Cloud Control fallback) types already forward the full property
+map to AWS, so the auto-route is a no-op for them.
 
-When pre-flight hits a silent drop, the error groups by logical ID, names
-each silently-dropped property with its rationale, a 1-click pre-filled
-GitHub issue link to request support, and the exact re-run command:
+When the auto-route fires, cdkd logs an info line per affected resource:
 
 ```text
-cdkd would silently drop these properties at deploy time:
-
-  MyLambda (AWS::Lambda::Function):
-    - LoggingConfig
-        not yet implemented by cdkd
-        Request support: https://github.com/go-to-k/cdkd/issues/new?title=...
-
-These properties exist in your CDK code but cdkd will not write them to
-AWS. The deployed resource will be missing these fields.
-
-To proceed anyway (accepts the silent drop), re-run with:
-  --allow-unsupported-properties AWS::Lambda::Function:LoggingConfig
+[info] MyLambda (AWS::Lambda::Function): routing via Cloud Control API
+       (cdkd's SDK Provider does not yet wire LoggingConfig — CC API will
+        forward the full property map. Override via
+        --allow-unsupported-properties AWS::Lambda::Function:LoggingConfig.)
 ```
 
-`--allow-unsupported-properties <entries>` is the **escape hatch**: a
-comma-separated (and repeatable) list of `<ResourceType>:<PropertyName>`
-tokens to accept as silently dropped. Per type+property pair (not blanket)
-so you explicitly acknowledge each silent drop. The flag is `deploy`-only —
-destroy uses the per-resource physical ID, not the template properties.
+### `--allow-unsupported-properties <entries>` (override)
+
+The flag is the **opt-out** from the default CC auto-route. Each entry
+is a `<ResourceType>:<PropertyName>` token (comma-separated and
+repeatable); the flag pins the resource to the SDK provider path and
+**accepts the silent drop** for the named property. A warn line is
+logged so the silent drop is auditable.
 
 ```bash
 cdkd deploy MyStack --allow-unsupported-properties AWS::Lambda::Function:LoggingConfig,AWS::Lambda::Function:SnapStart
 ```
 
-The error message itself is the migration guide: copy the printed re-run
-command verbatim, or follow the 1-click issue link to request first-class
-support so future deploys do not need the flag.
+Per type+property pair (not blanket) so you explicitly acknowledge each
+silent drop. The flag is `deploy`-only — destroy uses the per-resource
+physical ID and the state-recorded `provisionedBy` layer, not the
+template properties.
 
 Properties that do not appear in the CFn schema pass through silently —
 these are usually `addPropertyOverride` escape hatches or typos, both of
@@ -517,75 +516,65 @@ which CFn itself tolerates. Read-only properties (AWS-managed Arns, Ids,
 etc.) also pass through silently; you cannot set them from the template
 side and they are no-ops if they appear there.
 
-### When to use this flag (safety-valve guidance)
+### When to use the override flag (auto-route opt-out guidance)
 
-The flag is the **safety valve** for situations where cdkd's fail-fast
-pre-flight is too strict for your immediate needs. cdkd defaults to
-fail-fast because silent drop is a real bug class (the deployed resource
-is missing fields the user wrote); the flag lets you accept the drop
-explicitly when the alternative is worse.
-
-The contract is: *cdkd promises to tell you about silent drops instead
-of hiding them. You then choose what to do — wait, work around, recreate,
-or explicitly accept the drop.* The flag is the "explicitly accept" branch.
-It does not change cdkd's behavior; it changes what cdkd warns you about.
+The auto-route is the default because silent drop is a real bug class
+(the deployed resource is missing fields the user wrote). Cloud Control
+closes the bug by forwarding the full property map. The flag is the
+**opt-out** for situations where you specifically want the SDK provider
+path even at the cost of the silent drop.
 
 #### Use the flag when
 
-- **Mid-life update on an existing SDK-managed resource that you cannot
-  recreate.** AWS added a new property, CDK supports it, but cdkd's
-  provider has not caught up yet. Recreating the resource is unacceptable
-  (stateful data, downtime, ARN references from other stacks). The flag
-  accepts the silent drop until provider support lands.
-- **You are prototyping** and the missing field does not affect what you
-  are testing.
-- **You filed an upstream issue** (the error message contains a 1-click
-  pre-filled GitHub issue link) and want to continue your work while
-  waiting for the fix.
+- **You need the SDK provider's fast synchronous-AWS-call path** and the
+  dropped property is non-essential for your use case (e.g. a structural
+  CDK construct emits a property you do not care about).
+- **A Cloud Control side-effect bothers you** — e.g. CC names a resource
+  differently than cdkd's SDK provider would have, and you want the SDK
+  naming convention to win.
+- **You have an existing SDK-managed resource** (`provisionedBy: 'sdk'`)
+  that you want to keep on the SDK path even after a new property
+  appears in the template. Without the flag, the next deploy would
+  auto-route it through CC (the routing decision re-evaluates per
+  deploy — only a resource whose state already says `'cc-api'` is
+  sticky to CC; a still-SDK resource with new silent-drop properties
+  re-routes).
 
 #### Do NOT use the flag when
 
 - **The dropped property is security-meaningful** — e.g. `KmsKeyArn`,
   `MonitoringRoleArn`, `MasterUserSecret`, IAM policy attachments,
   resource-policy fields, encryption settings, TLS configuration.
-  Silent drop here is a real-world incident: the resource will be
-  deployed without the security control you intended, often without an
-  obvious failure mode at runtime.
-- **The dropped property's absence silently changes runtime behavior**
-  that your tests do not catch — e.g. `LoggingConfig` changing log
-  format, `ReservedConcurrentExecutions` removing throttling
-  protection, `DeadLetterConfig` removing retry destination.
-- **You can recreate the resource.** A fresh `cdkd destroy <stack>
-  && cdkd deploy <stack>` cycle is preferable to accepting a silent
-  drop on a long-lived resource — recreated resources will be wired
-  via whatever path cdkd's pre-flight allows next deploy.
+  Silent drop here is a real-world incident. Without the flag, the
+  auto-route closes the silent drop by sending the property to AWS via
+  CC; with the flag, you opt back into the silent drop.
+- **You are prototyping** and don't care about routing — the default
+  auto-route already gets the property to AWS.
 
 #### Decision summary
 
 | Situation | Recommended action |
 | --- | --- |
-| Fresh deploy, no state yet, can recreate | Wait for provider support, or accept silent drop with the flag |
-| Existing resource, recreation acceptable | `cdkd destroy <stack> && cdkd deploy <stack>` — fresh creation goes through the path cdkd currently supports |
-| Existing resource, recreation NOT acceptable | This flag (per-property opt-in), acknowledging silent drop |
-| Property is security-meaningful | Pause the deploy. File an issue (1-click link in the error). Wait for provider support OR downgrade the requirement until support lands. Do **not** use the flag. |
-| You are not sure whether the property is security-meaningful | Default to "do not use the flag" — read the AWS docs for that property first |
+| Fresh deploy, template uses a silent-drop property | Default auto-route via Cloud Control (no flag needed) |
+| Existing CC-managed resource, want to stay on CC | Default routing (sticky) — no flag needed |
+| Existing SDK-managed resource, new silent-drop property appears | Default re-routes through CC. To stay on SDK, use `--allow-unsupported-properties` |
+| You explicitly want SDK semantics + accept the silent drop | This flag |
+| Property is security-meaningful | Do not use the flag — let the CC auto-route close the silent drop |
 
 #### What the flag is NOT
 
 - **NOT** a request to cdkd to start handling the property. The provider
-  is unchanged; the property is still silently dropped at write time.
-  The deployed resource is missing the field.
-- **NOT** a way to retry an unsupported deploy. The "support" never
-  arrives via the flag — it arrives via a provider PR or a future
-  Cloud Control fallback.
+  is unchanged; with the flag, the property is silently dropped at write
+  time. (Without the flag, the resource takes the CC route and the
+  property reaches AWS verbatim.)
 - **NOT** persisted in cdkd state. Every deploy must pass the flag if
-  the silent drop is still relevant; rotating the flag out only works
-  once the provider catches up.
+  the override is still desired; the resource's `provisionedBy` state
+  field reflects the routing actually used at last deploy.
 
 cdkd is currently a dev/test tool (see "Important Notes" in CLAUDE.md);
-the safety valve is the right escape hatch for that audience. For
-production workloads, use the AWS CDK CLI until cdkd's property
-coverage matches your needs.
+the CC auto-route closes a long-standing silent-drop bug class by
+default. For production workloads, use the AWS CDK CLI until cdkd's
+property coverage matches your needs.
 
 ## `--role-arn`
 

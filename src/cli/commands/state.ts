@@ -734,6 +734,11 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     lines.push(logicalId);
     lines.push(`  Type: ${resource.resourceType}`);
     lines.push(`  PhysicalID: ${resource.physicalId}`);
+    // v7+ (#614): show the provisioning layer so users can see which
+    // resources took the Cloud Control auto-route. Absent on pre-v7
+    // state — print "(sdk, legacy default)" so the absence is explicit.
+    const provisionedBy = resource.provisionedBy ?? '(sdk, legacy default)';
+    lines.push(`  ProvisionedBy: ${provisionedBy}`);
     const deps = resource.dependencies ?? [];
     lines.push(`  Dependencies: ${deps.length > 0 ? deps.join(', ') : '(none)'}`);
 
@@ -1779,7 +1784,10 @@ async function refreshObservedForStack(
     for (const [, resource] of entries) {
       let provider;
       try {
-        provider = providerRegistry.getProvider(resource.resourceType);
+        provider = providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
       } catch {
         wouldUnsupported++;
         continue;
@@ -1811,7 +1819,10 @@ async function refreshObservedForStack(
         }
         let provider;
         try {
-          provider = providerRegistry.getProvider(resource.resourceType);
+          provider = providerRegistry.getProviderFor({
+            resourceType: resource.resourceType,
+            provisionedBy: resource.provisionedBy,
+          }).provider;
         } catch {
           unsupported++;
           return;

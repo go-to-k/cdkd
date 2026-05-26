@@ -1824,6 +1824,7 @@
       "integs": [
         "appsync",
         "batch",
+        "cc-api-fallback",
         "composite-stack",
         "diff-intrinsic-target-change",
         "drift-revert",
@@ -1851,6 +1852,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "cc-api-fallback": [
           "l2"
         ],
         "composite-stack": [
@@ -2030,6 +2034,7 @@
         "apigateway",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-api-fallback",
         "cloudfront-function-url",
         "composite-stack",
         "custom-resource-provider",
@@ -2086,6 +2091,9 @@
         ],
         "cache-streaming": [
           "l2"
+        ],
+        "cc-api-fallback": [
+          "l1"
         ],
         "cloudfront-function-url": [
           "l2"
@@ -2749,6 +2757,7 @@
         "nested-stack",
         "nested-stack-deep",
         "schema-v5-to-v6-migration",
+        "schema-v6-to-v7-migration",
         "state-info-command",
         "vpc-lookup"
       ],
@@ -2809,6 +2818,9 @@
           "l2"
         ],
         "schema-v5-to-v6-migration": [
+          "l2"
+        ],
+        "schema-v6-to-v7-migration": [
           "l2"
         ],
         "state-info-command": [

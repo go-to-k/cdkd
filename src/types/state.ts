@@ -36,15 +36,35 @@
  *       nested-stack children). This prep PR adds the type bump alone —
  *       the `NestedStackProvider` that consumes the fields lands in a
  *       follow-up.
+ * - 7 — adds `ResourceState.provisionedBy: 'sdk' | 'cc-api'` to support
+ *       per-resource Cloud Control API routing for silent-drop properties
+ *       (issue [#614](https://github.com/go-to-k/cdkd/issues/614)). When
+ *       a fresh deploy detects a silent-drop top-level CFn property on a
+ *       Tier 1 type, the resource is routed through Cloud Control API
+ *       (which forwards the full property map to AWS) instead of the SDK
+ *       Provider (which would drop the field). The state record's
+ *       `provisionedBy: 'cc-api'` then sticks for subsequent
+ *       deploy / drift / destroy operations on that resource — old
+ *       state with the field absent defaults to SDK Provider (matches
+ *       pre-v7 behavior). A v6 reader sees the field but doesn't know
+ *       what it means and would route a CC-managed resource through
+ *       the SDK Provider on update / destroy → silent data corruption
+ *       (mid-life provider swap). The bump from 6 to 7 forces a v6
+ *       reader to fail with a clear "upgrade cdkd" error instead.
+ *       v7 writers always emit `provisionedBy` explicitly (`'sdk'` or
+ *       `'cc-api'`); resources read from v6 state with the field
+ *       absent are treated as `'sdk'` (legacy default) and the next
+ *       write persists it explicitly. Layout superset of v6; only the
+ *       resource-level shape grew.
  *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 6;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -52,7 +72,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 6;
  * forward-migration, and an unknown / future version triggers an explicit
  * "upgrade cdkd" error in the parser.
  */
-export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5, 6];
+export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5, 6, 7];
 
 /**
  * One `Fn::ImportValue` reference recorded during a consumer stack's
@@ -218,6 +238,31 @@ export interface ResourceState {
    * (schema v5+). Same semantics as `deletionPolicy` above.
    */
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+
+  /**
+   * Which provisioning layer owns this resource (schema v7+, issue
+   * [#614](https://github.com/go-to-k/cdkd/issues/614)).
+   *
+   * - `'sdk'` — SDK Provider (the cdkd-preferred fast path: direct
+   *   synchronous AWS SDK calls per resource type, no polling).
+   * - `'cc-api'` — Cloud Control API (the fallback path: async polling
+   *   create/update/delete via the unified CloudControlClient). Routed
+   *   automatically when the resource's template uses a top-level CFn
+   *   property the SDK Provider would silently drop. CC API forwards
+   *   the full property map to AWS, closing the silent-drop bug.
+   *
+   * Absent / `undefined` means SDK Provider (legacy v6-and-earlier
+   * default — every resource pre-#614 was SDK-managed). v7 writers always
+   * emit the field explicitly so the routing decision is durable.
+   *
+   * The field is **sticky**: once a resource is `'cc-api'`, subsequent
+   * SDK Provider backfills (issue #609) do NOT auto-migrate it back to
+   * SDK. Avoids physical-ID churn + destroy + recreate cycles on every
+   * backfill release. User-initiated migration in either direction lives
+   * under issue #615 (`--recreate-via-cc-api`) and a future CC → SDK
+   * counterpart.
+   */
+  provisionedBy?: 'sdk' | 'cc-api' | undefined;
 }
 
 /**

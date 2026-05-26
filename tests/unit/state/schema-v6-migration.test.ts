@@ -15,8 +15,11 @@ import {
  * auto-migration round-trip against real AWS.
  */
 describe('State schema v6 — parent-stack tracking for nested-stack adoption', () => {
-  it('current schema version is 6', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(6);
+  it('readers still accept v6 after the v7 bump (forward-compat invariant)', () => {
+    // v7 is current as of #614 — the field-shape assertions below still
+    // exercise v6's `parentStack` / `parentLogicalId` / `parentRegion`
+    // additions because those fields remain part of every v6+ shape.
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(6);
   });
 
   it('readers accept every prior version + v6', () => {

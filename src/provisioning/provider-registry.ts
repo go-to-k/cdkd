@@ -3,15 +3,78 @@ import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
 import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
-import { findSilentDropProperties, unsupportedPropertyIssueUrl } from './property-coverage.js';
+import { findActionableSilentDrops, findSilentDropProperties } from './property-coverage.js';
 
 /**
- * Provider registry for managing resource providers
+ * The provisioning layer that owns a particular resource: SDK Provider
+ * (cdkd's preferred fast path) or Cloud Control API (the fallback path).
+ * Persisted on `ResourceState.provisionedBy` for v7+ state files; legacy
+ * v6-and-earlier records have the field absent which is treated as
+ * `'sdk'` semantically.
+ */
+export type ProvisionedBy = 'sdk' | 'cc-api';
+
+/**
+ * The routing decision returned by {@link ProviderRegistry.getProviderFor}.
+ * Carries the chosen provider, the layer label to persist on the resource's
+ * state record, and (when an SDK Provider was bypassed in favor of Cloud
+ * Control because of silent-drop properties) the list of property names
+ * that drove the decision — surfaced by deploy / diff plan rendering and
+ * used by {@link ProviderRegistry.findAutoRouteHits} so the user sees WHY
+ * a particular resource is taking the CC route.
+ */
+export interface ProviderRoutingDecision {
+  provider: ResourceProvider;
+  provisionedBy: ProvisionedBy;
+  ccRouteReason?: { properties: string[] };
+}
+
+/**
+ * Input shape for {@link ProviderRegistry.getProviderFor}. `properties`
+ * drives the silent-drop check (only consulted on a fresh deploy);
+ * `provisionedBy` is the **sticky** state-recorded layer for an existing
+ * resource (load-bearing — once a resource is `'cc-api'`, mid-life updates
+ * MUST stay on CC even if the property-coverage backfill closes the gap).
+ */
+export interface GetProviderForInput {
+  resourceType: string;
+  properties?: Record<string, unknown> | undefined;
+  provisionedBy?: ProvisionedBy | undefined;
+}
+
+/**
+ * One auto-route hit returned by {@link ProviderRegistry.findAutoRouteHits}.
+ * Used by `reportSilentDropDecisions` (info-log surface) and by the plan
+ * renderer's `[via CC API: <reason>]` audit tag.
+ */
+export interface AutoRouteHit {
+  logicalId: string;
+  resourceType: string;
+  properties: string[];
+}
+
+/**
+ * Provider registry for managing resource providers.
  *
- * Implements a fallback strategy:
- * 1. Try specific SDK provider if registered for this resource type
- * 2. Fall back to Cloud Control API if resource type is supported
- * 3. Throw error if no provider available
+ * Selection strategy for a fresh resource (see {@link getProviderFor}):
+ * 1. Custom Resource (`Custom::*` / `AWS::CloudFormation::CustomResource`)
+ *    → Custom Resource provider (recorded as `provisionedBy: 'sdk'`).
+ * 2. Existing-state `provisionedBy: 'cc-api'` → Cloud Control (sticky).
+ * 3. SDK Provider registered, no silent-drop properties (after the
+ *    `--allow-unsupported-properties` override filter) → SDK Provider.
+ * 4. SDK Provider registered, silent-drop properties present, NOT all
+ *    in the allow set → Cloud Control (auto-route, info-logged).
+ * 5. SDK Provider registered, silent-drop properties present, ALL in
+ *    the allow set → SDK Provider (the user explicitly accepted the
+ *    silent drop, warn-logged).
+ * 6. No SDK Provider, Cloud Control supports the type → Cloud Control.
+ * 7. `--allow-unsupported-types` escape hatch → Cloud Control optimistically.
+ * 8. Otherwise → throw (no provider available).
+ *
+ * Tier 3 (`NON_PROVISIONABLE`) types are rejected earlier by
+ * {@link validateResourceTypes}; the silent-drop auto-route only fires for
+ * Tier 1 types whose SDK Provider declares `handledProperties` and where
+ * Cloud Control is guaranteed to be a viable alternative.
  */
 export class ProviderRegistry {
   private logger = getLogger().child('ProviderRegistry');
@@ -44,10 +107,12 @@ export class ProviderRegistry {
   /**
    * Escape hatch for the `--allow-unsupported-properties` CLI flag. Each entry
    * is a `<ResourceType>:<PropertyName>` token (e.g.
-   * `AWS::Lambda::Function:LoggingConfig`). Named entries bypass the
-   * property-level silent-drop pre-flight reject for that exact type+property
-   * pair. Per-type-property (not blanket) so the user explicitly acknowledges
-   * each silent drop they accept.
+   * `AWS::Lambda::Function:LoggingConfig`). As of issue
+   * [#614](https://github.com/go-to-k/cdkd/issues/614), the flag now means
+   * "force the SDK Provider path and accept the silent drop" — the default
+   * for an un-flagged silent-drop property is to auto-route the resource
+   * through Cloud Control instead. Per-type-property (not blanket) so the
+   * user explicitly acknowledges each silent drop they accept.
    */
   allowUnsupportedProperties(entries: Iterable<string>): void {
     for (const entry of entries) {
@@ -95,54 +160,105 @@ export class ProviderRegistry {
   }
 
   /**
-   * Get provider for a resource type
+   * Resolve the provider for a resource using the full routing decision
+   * matrix (see class docstring). The returned object carries the chosen
+   * provider, the `provisionedBy` layer label to persist on the resource's
+   * state record, and (for the CC auto-route case) the names of the
+   * silent-drop properties that drove the decision so callers can render
+   * `[via CC API: <reason>]` plan annotations.
    *
-   * Selection strategy:
-   * 1. If specific SDK provider is registered, use it
-   * 2. Otherwise, use Cloud Control API if supported
-   * 3. Throw error if no provider available
-   *
-   * @param resourceType CloudFormation resource type
-   * @returns Provider instance
-   * @throws Error if no provider available
+   * @throws Error if no provider can be found for the type.
    */
-  getProvider(resourceType: string): ResourceProvider {
-    // 1. Check for specific SDK provider
+  getProviderFor(input: GetProviderForInput): ProviderRoutingDecision {
+    const { resourceType, properties, provisionedBy } = input;
+
+    // 1. Custom Resource — has no SDK/CC dichotomy, but we record it as
+    //    `'sdk'` so the state field is always populated on v7+ writes.
+    if (isCustomResource(resourceType)) {
+      this.logger.debug(`Using Custom Resource provider for ${resourceType}`);
+      return { provider: this.customResourceProvider, provisionedBy: 'sdk' };
+    }
+
+    // 2. Sticky: an existing resource recorded as `provisionedBy: 'cc-api'`
+    //    stays on Cloud Control regardless of whether the SDK Provider has
+    //    since gained coverage. Avoids physical-ID churn / destroy+recreate
+    //    cycles on every backfill release.
+    if (provisionedBy === 'cc-api') {
+      this.logger.debug(
+        `Routing ${resourceType} via Cloud Control (state-recorded provisionedBy=cc-api)`
+      );
+      return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
+    }
+
+    // 3-5. SDK Provider registered: silent-drop check decides between SDK
+    //      Provider and the CC API auto-route.
     const specificProvider = this.providers.get(resourceType);
     if (specificProvider) {
-      this.logger.debug(`Using specific SDK provider for ${resourceType}`);
-      return specificProvider;
+      const actionableDrops = findActionableSilentDrops(
+        resourceType,
+        properties,
+        this.allowedUnsupportedProperties
+      );
+      if (actionableDrops.length === 0) {
+        // No silent drops, or every drop is in the allow set → SDK Provider.
+        this.logger.debug(`Using specific SDK provider for ${resourceType}`);
+        return { provider: specificProvider, provisionedBy: 'sdk' };
+      }
+      // Silent drops exist that the user has NOT opted into via the override
+      // → auto-route through Cloud Control (which forwards the full property
+      // map to AWS, closing the silent-drop bug). Closes issue #614.
+      this.logger.debug(
+        `Auto-routing ${resourceType} via Cloud Control (silent-drop properties: ${actionableDrops
+          .map((d) => d.property)
+          .join(', ')})`
+      );
+      return {
+        provider: this.cloudControlProvider,
+        provisionedBy: 'cc-api',
+        ccRouteReason: { properties: actionableDrops.map((d) => d.property) },
+      };
     }
 
-    // 2. Check if Cloud Control API supports this resource type
+    // 6. No SDK Provider — try Cloud Control if it supports the type.
     if (CloudControlProvider.isSupportedResourceType(resourceType)) {
       this.logger.debug(`Using Cloud Control API provider for ${resourceType}`);
-      return this.cloudControlProvider;
+      return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
     }
 
-    // 3. Check if it's a custom resource (Custom:: prefix or AWS::CloudFormation::CustomResource)
-    if (
-      resourceType.startsWith('Custom::') ||
-      resourceType === 'AWS::CloudFormation::CustomResource'
-    ) {
-      this.logger.debug(`Using Custom Resource provider for ${resourceType}`);
-      return this.customResourceProvider;
-    }
-
-    // 4. Escape hatch: user explicitly allowed this unsupported type — try
-    // Cloud Control optimistically (likely fails for NON_PROVISIONABLE types).
+    // 7. Escape hatch: user explicitly allowed this unsupported type — try
+    //    Cloud Control optimistically (likely fails for NON_PROVISIONABLE).
     if (this.allowedUnsupportedTypes.has(resourceType)) {
       this.logger.debug(
         `Routing escape-hatch-allowed type ${resourceType} through Cloud Control API`
       );
-      return this.cloudControlProvider;
+      return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
     }
 
-    // 5. No provider available
+    // 8. No provider available.
     throw new Error(
       `No provider available for resource type: ${resourceType}. ` +
         `This resource type is not supported by Cloud Control API and no SDK provider is registered.`
     );
+  }
+
+  /**
+   * Legacy entry point that returns just the provider. Delegates to
+   * {@link getProviderFor} with no properties / no state-recorded layer —
+   * which means silent-drop auto-routing CANNOT fire (no template to
+   * inspect) and `provisionedBy === undefined` is treated as SDK semantics
+   * (legacy default). Use {@link getProviderFor} when the caller has
+   * properties / state — otherwise a CC-managed existing resource will get
+   * an SDK Provider on its update / delete path, which is the
+   * silent-data-corruption hazard that v7's schema bump is meant to
+   * prevent.
+   *
+   * Kept on the public surface for the destroy / drift / state-refresh
+   * paths whose call sites only know the resource type (the caller should
+   * still thread `provisionedBy` from state when it's available; this
+   * shape is only safe for type-only callers).
+   */
+  getProvider(resourceType: string): ResourceProvider {
+    return this.getProviderFor({ resourceType }).provider;
   }
 
   /**
@@ -167,8 +283,7 @@ export class ProviderRegistry {
     return (
       this.providers.has(resourceType) ||
       CloudControlProvider.isSupportedResourceType(resourceType) ||
-      resourceType.startsWith('Custom::') ||
-      resourceType === 'AWS::CloudFormation::CustomResource'
+      isCustomResource(resourceType)
     );
   }
 
@@ -246,96 +361,143 @@ export class ProviderRegistry {
   }
 
   /**
-   * Pre-flight reject: walk every resource in the template and identify
-   * top-level CFn properties cdkd's SDK provider would silently drop on
-   * write. Throws with a per-resource per-property breakdown + the exact
-   * `--allow-unsupported-properties` re-run command. No-op for Tier 2 (Cloud
-   * Control) types — CC forwards the full property map to AWS, so cdkd has
-   * no write-side silent drop for those.
+   * Walk every resource in the template and identify top-level CFn
+   * properties cdkd's SDK provider would silently drop on write. As of
+   * issue [#614](https://github.com/go-to-k/cdkd/issues/614), this method
+   * **no longer throws** — silent drops now auto-route the resource through
+   * Cloud Control API by default (see {@link getProviderFor}). The method
+   * is retained on the name `validateResourceProperties` so existing deploy
+   * call sites continue to work; it now emits info-level routing decisions
+   * for each silent-drop resource, plus warn-level lines for resources
+   * where the user explicitly opted into the silent drop via
+   * `--allow-unsupported-properties`.
    *
    * Must be called AFTER {@link validateResourceTypes} — type-level errors
-   * are reported first. For a type allowed via `--allow-unsupported-types`,
-   * the type-level check passes and this property check is a no-op
-   * (`findSilentDropProperties` returns `[]` for non-Tier-1 / unknown types).
+   * are still hard rejects. For a type allowed via `--allow-unsupported-types`,
+   * the property check is a no-op (`findSilentDropProperties` returns `[]`
+   * for non-Tier-1 / unknown types).
+   *
+   * @see findAutoRouteHits for the pure-functional pre-deploy plan-builder
+   *      that returns the same information without logging.
    */
   validateResourceProperties(
     resources: Iterable<{
       logicalId: string;
       resourceType: string;
       properties: Record<string, unknown> | undefined;
+      provisionedBy?: 'sdk' | 'cc-api' | undefined;
     }>
   ): void {
-    const errors: Array<{
+    this.reportSilentDropDecisions(resources);
+  }
+
+  /**
+   * Info-log every silent-drop routing decision (auto-route via CC API) and
+   * warn-log every silent drop the user explicitly opted into via
+   * `--allow-unsupported-properties` (forced SDK path, the property will
+   * be dropped). Pure side-effect — does not mutate state and never throws.
+   *
+   * Issue [#614](https://github.com/go-to-k/cdkd/issues/614). Replaces the
+   * pre-v0.16x throw path: silent drops are now a routing signal, not an
+   * error.
+   *
+   * When the optional `provisionedBy` (from existing state) is `'cc-api'`,
+   * the auto-route info line is demoted to `debug` — the resource has been
+   * on CC for at least one prior deploy, so the routing decision is
+   * **continuation of sticky state, not a fresh auto-route**. Surfacing the
+   * info line every deploy would be repetitive noise. The warn line for
+   * explicit `--allow-unsupported-properties` overrides is NOT demoted —
+   * that override is an active user choice for THIS deploy and should
+   * surface every time.
+   */
+  reportSilentDropDecisions(
+    resources: Iterable<{
       logicalId: string;
       resourceType: string;
-      property: string;
-      rationale: string;
-    }> = [];
-    for (const { logicalId, resourceType, properties } of resources) {
+      properties: Record<string, unknown> | undefined;
+      provisionedBy?: 'sdk' | 'cc-api' | undefined;
+    }>
+  ): void {
+    for (const { logicalId, resourceType, properties, provisionedBy } of resources) {
       const drops = findSilentDropProperties(resourceType, properties);
-      for (const { property, rationale } of drops) {
+      if (drops.length === 0) continue;
+
+      const overridden: string[] = [];
+      const autoRouted: string[] = [];
+      for (const { property } of drops) {
         const allowKey = `${resourceType}:${property}`;
-        if (this.allowedUnsupportedProperties.has(allowKey)) continue;
-        errors.push({ logicalId, resourceType, property, rationale });
+        if (this.allowedUnsupportedProperties.has(allowKey)) {
+          overridden.push(property);
+        } else {
+          autoRouted.push(property);
+        }
+      }
+
+      if (autoRouted.length > 0) {
+        const propList = autoRouted.join(', ');
+        const overrideHint = autoRouted.map((p) => `${resourceType}:${p}`).join(',');
+        const message =
+          `${logicalId} (${resourceType}): routing via Cloud Control API ` +
+          `(cdkd's SDK Provider does not yet wire ${propList} — CC API will ` +
+          `forward the full property map. Override via ` +
+          `--allow-unsupported-properties ${overrideHint}.)`;
+        if (provisionedBy === 'cc-api') {
+          // Sticky continuation — already on CC from a prior deploy.
+          // Debug-only to avoid repetitive noise on every redeploy.
+          this.logger.debug(message);
+        } else {
+          this.logger.info(message);
+        }
+      }
+      if (overridden.length > 0) {
+        const propList = overridden.join(', ');
+        this.logger.warn(
+          `${logicalId} (${resourceType}): ${propList} will be silently dropped ` +
+            `(--allow-unsupported-properties override accepted). Remove the ` +
+            `override to route this resource via Cloud Control API instead.`
+        );
       }
     }
-    if (errors.length === 0) return;
-    throw new Error(renderPropertyCoverageError(errors));
+  }
+
+  /**
+   * Pure-functional discovery of every resource whose template uses one or
+   * more silent-drop properties that are NOT in the
+   * `--allow-unsupported-properties` allow set — i.e. every resource that
+   * {@link getProviderFor} would auto-route via Cloud Control. Returned
+   * entries carry the silent-drop property names so plan / diff renderers
+   * can show `[via CC API: LoggingConfig]`.
+   *
+   * Does NOT log or throw. Use {@link reportSilentDropDecisions} for the
+   * side-effecting info / warn surface.
+   */
+  findAutoRouteHits(
+    resources: Iterable<{
+      logicalId: string;
+      resourceType: string;
+      properties: Record<string, unknown> | undefined;
+    }>
+  ): AutoRouteHit[] {
+    const hits: AutoRouteHit[] = [];
+    for (const { logicalId, resourceType, properties } of resources) {
+      const actionable = findActionableSilentDrops(
+        resourceType,
+        properties,
+        this.allowedUnsupportedProperties
+      );
+      if (actionable.length === 0) continue;
+      hits.push({
+        logicalId,
+        resourceType,
+        properties: actionable.map((d) => d.property),
+      });
+    }
+    return hits;
   }
 }
 
-/**
- * Render the actionable pre-flight error for property-level silent drops.
- * Groups by logical ID, sorts properties within each resource, and emits
- * a comma-joined `--allow-unsupported-properties` re-run command with
- * deduplicated `Type:Prop` entries (the same type appearing in two
- * resources only needs one entry — the flag is per-type-prop, not
- * per-resource).
- */
-function renderPropertyCoverageError(
-  errors: Array<{
-    logicalId: string;
-    resourceType: string;
-    property: string;
-    rationale: string;
-  }>
-): string {
-  const byLogicalId = new Map<
-    string,
-    { resourceType: string; props: Array<{ property: string; rationale: string }> }
-  >();
-  for (const e of errors) {
-    let entry = byLogicalId.get(e.logicalId);
-    if (!entry) {
-      entry = { resourceType: e.resourceType, props: [] };
-      byLogicalId.set(e.logicalId, entry);
-    }
-    entry.props.push({ property: e.property, rationale: e.rationale });
-  }
-  const sections: string[] = [];
-  const sortedLogicalIds = [...byLogicalId.keys()].sort((a, b) => a.localeCompare(b));
-  for (const logicalId of sortedLogicalIds) {
-    const { resourceType, props } = byLogicalId.get(logicalId)!;
-    const sortedProps = [...props].sort((a, b) => a.property.localeCompare(b.property));
-    const propLines = sortedProps
-      .map(({ property, rationale }) => {
-        const issueUrl = unsupportedPropertyIssueUrl(resourceType, property);
-        return (
-          `    - ${property}\n` + `        ${rationale}\n` + `        Request support: ${issueUrl}`
-        );
-      })
-      .join('\n');
-    sections.push(`  ${logicalId} (${resourceType}):\n${propLines}`);
-  }
-  const dedupRerun = Array.from(new Set(errors.map((e) => `${e.resourceType}:${e.property}`))).join(
-    ','
-  );
+function isCustomResource(resourceType: string): boolean {
   return (
-    `cdkd would silently drop these properties at deploy time:\n\n` +
-    sections.join('\n\n') +
-    `\n\nThese properties exist in your CDK code but cdkd will not write them to ` +
-    `AWS. The deployed resource will be missing these fields.\n\n` +
-    `To proceed anyway (accepts the silent drop), re-run with:\n` +
-    `  --allow-unsupported-properties ${dedupRerun}`
+    resourceType.startsWith('Custom::') || resourceType === 'AWS::CloudFormation::CustomResource'
   );
 }
