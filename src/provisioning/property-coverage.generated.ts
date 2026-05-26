@@ -1356,6 +1356,22 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::IAM::ManagedPolicy',
+    {
+      handled: new Set<string>([
+        'Description',
+        'Groups',
+        'ManagedPolicyName',
+        'Path',
+        'PolicyDocument',
+        'Roles',
+        'Tags',
+        'Users',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::IAM::Policy',
     {
       handled: new Set<string>(['Groups', 'PolicyDocument', 'PolicyName', 'Roles', 'Users']),
