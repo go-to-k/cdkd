@@ -227,6 +227,46 @@ describe('IAMManagedPolicyProvider', () => {
       expect(detachedRoles).toEqual(['r1']);
     });
 
+    it('replaces the policy when Path changes', async () => {
+      const newArn = 'arn:aws:iam::123456789012:policy/new/MyManagedPolicy';
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });
+      // delete() path
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: ARN } });
+      mockSend.mockResolvedValueOnce({ IsTruncated: false });
+      mockSend.mockResolvedValueOnce({ Versions: [], IsTruncated: false });
+      mockSend.mockResolvedValueOnce({});
+
+      const result = await provider.update(
+        'MyManagedPolicy',
+        ARN,
+        'AWS::IAM::ManagedPolicy',
+        { PolicyDocument: POLICY_DOC, Path: '/new/' },
+        { PolicyDocument: POLICY_DOC, Path: '/' }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe(newArn);
+    });
+
+    it('replaces the policy when Description changes (Description is immutable)', async () => {
+      const newArn = 'arn:aws:iam::123456789012:policy/MyManagedPolicy';
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: ARN } });
+      mockSend.mockResolvedValueOnce({ IsTruncated: false });
+      mockSend.mockResolvedValueOnce({ Versions: [], IsTruncated: false });
+      mockSend.mockResolvedValueOnce({});
+
+      const result = await provider.update(
+        'MyManagedPolicy',
+        ARN,
+        'AWS::IAM::ManagedPolicy',
+        { PolicyDocument: POLICY_DOC, Description: 'new desc' },
+        { PolicyDocument: POLICY_DOC, Description: 'old desc' }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+    });
+
     it('replaces the policy when ManagedPolicyName changes', async () => {
       const newArn = 'arn:aws:iam::123456789012:policy/Renamed';
       // create() path: CreatePolicy
@@ -420,19 +460,6 @@ describe('IAMManagedPolicyProvider', () => {
 
     it('resolves a knownPhysicalId given as a name via ListPolicies(Scope:Local)', async () => {
       mockSend.mockResolvedValueOnce({
-        Policies: [{ PolicyName: 'OtherName', Arn: 'arn:aws:iam::123456789012:policy/Other' }],
-        IsTruncated: false,
-      });
-      mockSend.mockResolvedValueOnce({
-        Policies: [{ PolicyName: 'MyManagedPolicy', Arn: ARN }],
-        IsTruncated: false,
-      });
-      // Call once: first response will be used since first ListPolicies includes "OtherName".
-      // We arranged the mock so the loop finds "MyManagedPolicy" on the second iteration.
-      // But our impl returns on the first call's match if it has the right name. So
-      // simplify: only one response with the matching entry.
-      mockSend.mockReset();
-      mockSend.mockResolvedValueOnce({
         Policies: [
           { PolicyName: 'Other', Arn: 'arn:aws:iam::123456789012:policy/Other' },
           { PolicyName: 'MyManagedPolicy', Arn: ARN },
@@ -443,6 +470,36 @@ describe('IAMManagedPolicyProvider', () => {
       const result = await provider.import!(makeInput({ knownPhysicalId: 'MyManagedPolicy' }));
       expect(result).toEqual({ physicalId: ARN, attributes: { PolicyArn: ARN } });
       expect(callsOfType(ListPoliciesCommand)[0].input.Scope).toBe('Local');
+    });
+
+    it('paginates ListPolicies when resolving a knownPhysicalId by name', async () => {
+      // First page: no match, IsTruncated=true with a Marker.
+      mockSend.mockResolvedValueOnce({
+        Policies: [{ PolicyName: 'OtherA', Arn: 'arn:aws:iam::123456789012:policy/OtherA' }],
+        IsTruncated: true,
+        Marker: 'page2',
+      });
+      // Second page: match.
+      mockSend.mockResolvedValueOnce({
+        Policies: [{ PolicyName: 'MyManagedPolicy', Arn: ARN }],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import!(makeInput({ knownPhysicalId: 'MyManagedPolicy' }));
+      expect(result?.physicalId).toBe(ARN);
+      const lists = callsOfType(ListPoliciesCommand);
+      expect(lists).toHaveLength(2);
+      expect(lists[1].input.Marker).toBe('page2');
+    });
+
+    it('refuses to adopt an AWS-managed policy via explicit ARN override', async () => {
+      await expect(
+        provider.import!(
+          makeInput({ knownPhysicalId: 'arn:aws:iam::aws:policy/AdministratorAccess' })
+        )
+      ).rejects.toThrow(/AWS-managed policy/);
+      // No GetPolicy call before the refusal.
+      expect(callsOfType(GetPolicyCommand)).toHaveLength(0);
     });
 
     it('returns null when an ARN override does not exist on AWS', async () => {

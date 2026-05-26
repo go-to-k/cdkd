@@ -492,8 +492,21 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'ManagedPolicyName');
     if (explicit) {
-      // If the override is already an ARN, trust it (verify exists).
+      // If the override is already an ARN, trust it (verify exists). But
+      // refuse AWS-managed policies (`arn:aws:iam::aws:policy/...`) outright —
+      // adopting one would let cdkd's destroy path attempt `DeletePolicy`
+      // (always rejected by IAM) but only AFTER `detachAllPrincipals` has
+      // forcibly detached the policy from every user / role / group in the
+      // account. That's a major foot-gun (think `AdministratorAccess`); the
+      // tag-based fallback path is already guarded by `Scope: 'Local'`, and
+      // the explicit-ARN path needs the same guard.
       if (explicit.startsWith('arn:')) {
+        if (explicit.startsWith('arn:aws:iam::aws:')) {
+          throw new Error(
+            `Refusing to import AWS-managed policy ${explicit}: cdkd only adopts customer-managed policies. ` +
+              `If you need to attach an AWS-managed policy to a role / user / group, reference it via ManagedPolicyArns on the principal instead.`
+          );
+        }
         try {
           await this.iamClient.send(new GetPolicyCommand({ PolicyArn: explicit }));
           return { physicalId: explicit, attributes: { PolicyArn: explicit } };
