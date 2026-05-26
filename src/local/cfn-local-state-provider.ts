@@ -1,0 +1,353 @@
+/**
+ * `CfnLocalStateProvider` — implementation of {@link LocalStateProvider}
+ * backed by a deployed CloudFormation stack. Powers `cdkd local *
+ * --from-cfn-stack` (issue #606).
+ *
+ * The shape mirrors the SAM CLI's `sam local invoke --stack-name X`
+ * behavior: reach into a deployed CFn stack via `DescribeStackResources`
+ * to look up physical IDs of every same-stack resource, then make those
+ * IDs available to the existing `state-resolver.ts` substitution engine.
+ * This lets `cdkd local *` substitute env vars / secrets / images that
+ * reference deployed resources in a CDK app deployed via the upstream
+ * CDK CLI (`cdk deploy` → CloudFormation) WITHOUT first migrating the
+ * stack to cdkd.
+ *
+ * Wire-format mapping:
+ *
+ *   - `Ref: <LogicalId>` → resolved via the synthetic `ResourceState`
+ *     map built from `DescribeStackResources.StackResources[]` (one
+ *     entry per `(LogicalResourceId, PhysicalResourceId, ResourceType)`
+ *     tuple).
+ *   - `Fn::GetAtt: [<LogicalId>, <Attr>]` → **warn-and-drop**. CFn's
+ *     `DescribeStackResources` does NOT return per-attribute values
+ *     and the v1 policy (issue #606 recommendation (a)) is to surface
+ *     a per-key warn instead of pulling in the full provisioning layer
+ *     to call provider-specific describe APIs (e.g. `GetQueueAttributes`
+ *     for SQS, `GetFunction` for Lambda). Users override the affected
+ *     env var via `--env-vars` if the value is critical.
+ *   - `Fn::ImportValue: <exportName>` → resolved via `ListExports`
+ *     (paginated). Same-region only — CFn exports are region-scoped.
+ *   - `Fn::GetStackOutput` → rejected with a clear pointer that the
+ *     intrinsic is cdkd-specific (CFn has no equivalent — exports +
+ *     outputs are the only cross-stack vocabulary CFn understands).
+ *   - Stack outputs (consumed by both `Fn::GetStackOutput` and the
+ *     cross-stack-resolver's index-miss fallback) → sourced from
+ *     `DescribeStacks.Outputs[]`.
+ *
+ * Region handling: the provider takes a single region at construction
+ * time (the `cdkd local *` commands resolve this from
+ * `--stack-region` > `--region` > `AWS_REGION` > the synth-derived
+ * region per the existing `--from-state` precedence). Cross-region
+ * `Fn::ImportValue` is out of scope for v1 (CFn's `ListExports` is
+ * region-scoped; a future PR can add a multi-region scan if real
+ * usage justifies it).
+ *
+ * AWS API contract notes:
+ *
+ *   - `DescribeStackResources` is unpaginated up to 500 resources (CFn's
+ *     hard stack cap). One call suffices for the entire stack.
+ *   - `DescribeStacks` is unpaginated when called with `StackName`.
+ *   - `ListExports` is paginated; the provider walks `NextToken` until
+ *     the page set is exhausted.
+ */
+
+import {
+  CloudFormationClient,
+  DescribeStackResourcesCommand,
+  DescribeStacksCommand,
+  ListExportsCommand,
+} from '@aws-sdk/client-cloudformation';
+import { getLogger } from '../utils/logger.js';
+import type { ResourceState } from '../types/state.js';
+import type { CrossStackResolver } from './state-resolver.js';
+import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
+
+export interface CfnLocalStateProviderOptions {
+  /**
+   * CFn stack name to read physical IDs / outputs from. Required; the
+   * CLI layer resolves the bare-vs-explicit form (`--from-cfn-stack`
+   * with no value → uses the cdkd stack name) before calling the
+   * provider.
+   */
+  cfnStackName: string;
+  /**
+   * AWS region the CFn stack lives in. Reused from `--stack-region`
+   * per issue #606 recommendation (no separate `--cfn-stack-region` flag).
+   */
+  region: string;
+  /**
+   * Optional AWS profile name. Captured for interface parity with the
+   * S3 provider's option set; matches the project-wide convention
+   * (see `AwsClients` in [src/utils/aws-clients.ts](../utils/aws-clients.ts))
+   * that profile is NOT passed directly to the AWS SDK client — users
+   * set `AWS_PROFILE` (or `AWS_PROFILE`-equivalent) in their
+   * environment and the SDK's default credential chain picks it up.
+   * If you genuinely need this option threaded into the
+   * `CloudFormationClient` config, open an issue against `cdkd local *`;
+   * this is dead through the whole codebase today.
+   */
+  profile?: string;
+}
+
+export class CfnLocalStateProvider implements LocalStateProvider {
+  // erasableSyntaxOnly forbids parameter-property shorthand; declare
+  // fields explicitly + assign in the body.
+  public readonly label = '--from-cfn-stack';
+  private readonly cfnStackName: string;
+  private readonly region: string;
+  // The CFn client is constructed lazily on the first `load` /
+  // `buildCrossStackResolver` call so a CLI invocation that never
+  // exercises the provider (e.g. when the synth template has no
+  // intrinsic-valued env vars) doesn't open a needless client.
+  private client: CloudFormationClient | undefined;
+  private readonly clientOptions: { region: string; profile?: string };
+
+  constructor(opts: CfnLocalStateProviderOptions) {
+    this.cfnStackName = opts.cfnStackName;
+    this.region = opts.region;
+    this.clientOptions = { region: opts.region };
+    if (opts.profile !== undefined) this.clientOptions.profile = opts.profile;
+  }
+
+  private getClient(): CloudFormationClient {
+    if (!this.client) {
+      // Profile threading mirrors `AwsClients` in src/utils/aws-clients.ts:
+      // the project-wide convention is to NOT pass `profile` directly to
+      // the SDK client. Users select a profile via `AWS_PROFILE` (or
+      // equivalent) and the SDK's default credential chain picks it up.
+      // The `profile` option exists on this provider's option set only
+      // for interface parity with the S3 provider — see
+      // `CfnLocalStateProviderOptions.profile` for the full rationale.
+      this.client = new CloudFormationClient({ region: this.region });
+    }
+    return this.client;
+  }
+
+  /**
+   * Load the deployed CFn stack's resources + outputs and return them
+   * as a synthetic `LocalStateRecord` (matching the shape the existing
+   * S3-state-driven path produces). `synthRegion` is accepted for
+   * interface parity with the S3 provider but ignored here — the
+   * provider is region-bound at construction time.
+   *
+   * Best-effort: on any CFn API failure (stack not found, access
+   * denied, throttling) the provider logs a warn and returns
+   * `undefined`. The caller then falls back to the PR 1 warn-and-drop
+   * behavior on every intrinsic-valued env var.
+   */
+  public async load(
+    _stackName: string,
+    _synthRegion: string | undefined
+  ): Promise<LocalStateRecord | undefined> {
+    const logger = getLogger();
+    const client = this.getClient();
+
+    let resourceMap: Record<string, ResourceState>;
+    try {
+      const resp = await client.send(
+        new DescribeStackResourcesCommand({ StackName: this.cfnStackName })
+      );
+      resourceMap = buildResourceStateMap(resp.StackResources ?? []);
+    } catch (err) {
+      logger.warn(
+        `${this.label}: DescribeStackResources(${this.cfnStackName}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Was the stack deployed in region '${this.region}'? Falling back.`
+      );
+      return undefined;
+    }
+
+    let outputs: Record<string, string>;
+    try {
+      const resp = await client.send(new DescribeStacksCommand({ StackName: this.cfnStackName }));
+      const stack = resp.Stacks?.[0];
+      if (!stack) {
+        logger.warn(
+          `${this.label}: DescribeStacks(${this.cfnStackName}) returned no stack; outputs will be empty.`
+        );
+        outputs = {};
+      } else {
+        outputs = buildOutputsMap(stack.Outputs ?? []);
+      }
+    } catch (err) {
+      logger.warn(
+        `${this.label}: DescribeStacks(${this.cfnStackName}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Outputs will be empty (Fn::GetStackOutput cannot resolve).`
+      );
+      outputs = {};
+    }
+
+    return {
+      resources: resourceMap,
+      outputs,
+      region: this.region,
+    };
+  }
+
+  /**
+   * Build a `CrossStackResolver` that resolves `Fn::ImportValue` via
+   * `cloudformation:ListExports`. `Fn::GetStackOutput` is rejected here
+   * — it's a cdkd-specific intrinsic with no CFn-side equivalent, and
+   * the user-visible error message names the right intrinsic
+   * (`Fn::ImportValue`) for that use case.
+   *
+   * `consumerRegion` is accepted for interface parity with the S3
+   * provider but the `CfnLocalStateProvider` only resolves exports in
+   * the region the stack lives in (which is the same region the
+   * consumer Lambda runs in for the common single-region use case).
+   * A future PR can extend this to multi-region by walking the SDK's
+   * partition-aware region list.
+   */
+  public async buildCrossStackResolver(
+    _consumerRegion: string
+  ): Promise<CrossStackResolver | undefined> {
+    const logger = getLogger();
+    const client = this.getClient();
+    const label = this.label;
+    const region = this.region;
+    // Memoize the exports map across multiple `Fn::ImportValue` lookups
+    // in one substitution pass so a multi-import env block doesn't pay
+    // N round-trips to ListExports.
+    let cachedExports: Map<string, string> | undefined;
+
+    const ensureExports = async (): Promise<Map<string, string> | undefined> => {
+      if (cachedExports) return cachedExports;
+      const result = await fetchAllExports(client).catch((err: unknown) => {
+        logger.warn(
+          `${label}: ListExports (${region}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+            `Fn::ImportValue intrinsics will warn-and-drop.`
+        );
+        return undefined;
+      });
+      if (result) cachedExports = result;
+      return result;
+    };
+
+    return {
+      async resolveImport(exportName: string): Promise<string | undefined> {
+        const map = await ensureExports();
+        if (!map) return undefined;
+        return map.get(exportName);
+      },
+      async resolveGetStackOutput(
+        producerStack: string,
+        producerRegion: string,
+        outputName: string
+      ): Promise<string | undefined> {
+        // `Fn::GetStackOutput` is a cdkd-specific intrinsic that reads
+        // the producer stack's state.json directly from S3. There is
+        // no CFn-side equivalent (CFn templates use `Fn::ImportValue`
+        // + an explicit `Outputs.<name>.Export`); rather than silently
+        // returning undefined we surface a logger.warn naming the
+        // intrinsic and the producer so the user sees why the env var
+        // dropped. The `state-resolver.ts` async path turns the
+        // `undefined` into its own per-key warn with the standard
+        // "output not found in producer stack state" message, so
+        // skipping the warn here would mask the cdkd-vs-CFn nature
+        // of the gap.
+        logger.warn(
+          `${label}: Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}) is a cdkd-specific intrinsic with no CloudFormation equivalent. ` +
+            `Use Fn::ImportValue against an exported output instead, or deploy the producer stack via cdkd deploy and use --from-state.`
+        );
+        return undefined;
+      },
+    };
+  }
+
+  public dispose(): void {
+    if (this.client) {
+      this.client.destroy();
+      this.client = undefined;
+    }
+  }
+}
+
+/**
+ * Build the synthetic per-logical-id resource map from
+ * `DescribeStackResources` output. Each `ResourceState` carries the
+ * physical id (covers `Ref`) and the resource type; `attributes` is
+ * left empty per issue #606's (a) recommendation — the warn-and-drop
+ * policy on unresolvable `Fn::GetAtt` is the v1 contract. The other
+ * `ResourceState` fields (`properties`, `dependencies`, etc.) are
+ * also left empty since the substituter doesn't read them.
+ *
+ * Exported for unit testing.
+ */
+export function buildResourceStateMap(
+  stackResources: Array<{
+    LogicalResourceId?: string | undefined;
+    PhysicalResourceId?: string | undefined;
+    ResourceType?: string | undefined;
+  }>
+): Record<string, ResourceState> {
+  const out: Record<string, ResourceState> = {};
+  for (const r of stackResources) {
+    // CFn occasionally returns half-populated entries for mid-create
+    // resources or sentinels like `AWS::CDK::Metadata`. Skip them —
+    // they have no usable physical id, and the substituter would
+    // report `Ref: <id>` as unresolved with a clearer error.
+    if (!r.LogicalResourceId || !r.PhysicalResourceId || !r.ResourceType) {
+      continue;
+    }
+    out[r.LogicalResourceId] = {
+      physicalId: r.PhysicalResourceId,
+      resourceType: r.ResourceType,
+      properties: {},
+      attributes: {},
+      dependencies: [],
+    };
+  }
+  return out;
+}
+
+/**
+ * Build the outputs map from `DescribeStacks.Outputs[]`. CFn outputs
+ * are stringly typed at the wire level (key + value, with the value
+ * always a string), so the cast is safe.
+ *
+ * Exported for unit testing.
+ */
+export function buildOutputsMap(
+  outputs: Array<{ OutputKey?: string | undefined; OutputValue?: string | undefined }>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const o of outputs) {
+    if (o.OutputKey === undefined || o.OutputValue === undefined) continue;
+    out[o.OutputKey] = o.OutputValue;
+  }
+  return out;
+}
+
+/**
+ * Walk `ListExports` until every page is consumed and return the
+ * `Name -> Value` map. Same-region only (CFn exports are
+ * region-scoped); the caller picks the region at provider
+ * construction time.
+ *
+ * Exported for unit testing.
+ */
+export async function fetchAllExports(client: CloudFormationClient): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let nextToken: string | undefined;
+  // Safety bound — CFn allows at most ~200 exports per account/region,
+  // so 50 pages of 100 each is well above the realistic ceiling.
+  // Defends against a hypothetical pagination bug returning the same
+  // NextToken in a loop.
+  let pages = 0;
+  do {
+    const resp = await client.send(
+      new ListExportsCommand({ ...(nextToken !== undefined && { NextToken: nextToken }) })
+    );
+    for (const exp of resp.Exports ?? []) {
+      if (exp.Name === undefined || exp.Value === undefined) continue;
+      out.set(exp.Name, exp.Value);
+    }
+    nextToken = resp.NextToken;
+    pages += 1;
+    if (pages > 50) {
+      throw new Error(
+        'ListExports pagination exceeded 50 pages — likely a malformed NextToken loop.'
+      );
+    }
+  } while (nextToken !== undefined);
+  return out;
+}

@@ -17,7 +17,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
-import { buildCrossStackResolver, loadStateForStack } from './local-state-loader.js';
+import { createLocalStateProvider } from './local-state-source.js';
 import {
   resolveLambdaTarget,
   type ResolvedImageLambda,
@@ -142,12 +142,24 @@ interface LocalInvokeOptions {
    * flag is not set.
    */
   fromState: boolean;
+  /**
+   * Issue #606: alternative state source for CDK apps deployed via the
+   * upstream CDK CLI (`cdk deploy` → CloudFormation). Reads the named
+   * CFn stack via `DescribeStackResources` to populate physical IDs.
+   * Mutually exclusive with `--from-state`. Commander maps:
+   *   - flag absent → `undefined`
+   *   - `--from-cfn-stack` (bare) → `true` (use the cdkd stack name)
+   *   - `--from-cfn-stack <name>` → `'<name>'`
+   */
+  fromCfnStack?: string | boolean;
   stateBucket?: string;
   statePrefix: string;
   /**
    * Region of the state record to read. Required when the same stack
    * name has state in multiple regions. Mirrors `cdkd state show
-   * --stack-region`.
+   * --stack-region`. Also drives the CFn client's region when
+   * `--from-cfn-stack` is set (issue #606 — no separate
+   * `--cfn-stack-region` flag).
    */
   stackRegion?: string;
 }
@@ -328,65 +340,68 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     let stateAudit: StateEnvSubstitutionAudit | undefined;
     let templateEnv = getTemplateEnv(lambda.resource);
     let stateForRoleHint: StackState | undefined;
-    // Tracks the cross-stack resolver's owned AWS clients so the outer
-    // `finally` can close them even on error paths. Initialized lazily
-    // — only allocated when the env actually contains a cross-stack
-    // intrinsic.
-    let crossStackDispose: (() => void) | undefined;
-    if (options.fromState) {
-      const loaded = await loadStateForStack(lambda.stack.stackName, lambda.stack.region, {
-        ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
-        ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
-        statePrefix: options.statePrefix,
-        ...(options.region !== undefined && { region: options.region }),
-        ...(options.profile !== undefined && { profile: options.profile }),
-      });
-      if (loaded) {
-        stateForRoleHint = loaded.state;
-        const subContext: SubstitutionContext = {
-          resources: loaded.state.resources,
-          consumerRegion: loaded.region,
-        };
-        if (envHasIntrinsicValue(templateEnv)) {
-          const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
-          if (pseudo) subContext.pseudoParameters = pseudo;
-        }
-        // Issue #454 — build the cross-stack resolver only when the env
-        // actually references `Fn::ImportValue` / `Fn::GetStackOutput`.
-        // The resolver opens an additional S3 client / loads the per-region
-        // exports index; literal + same-stack-intrinsic env maps shouldn't
-        // pay that cost.
-        if (envHasCrossStackIntrinsic(templateEnv)) {
-          const built = await buildCrossStackResolver(loaded.region, {
-            ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
-            statePrefix: options.statePrefix,
-            ...(options.region !== undefined && { region: options.region }),
-            ...(options.profile !== undefined && { profile: options.profile }),
-          });
-          if (built) {
-            subContext.crossStackResolver = built.resolver;
-            crossStackDispose = built.dispose;
+    // Issue #606: pick the right LocalStateProvider for the supplied
+    // flags. `--from-state` and `--from-cfn-stack` are mutually
+    // exclusive — the helper throws when both are set. Returns
+    // `undefined` when neither is set (skip the substitution pass
+    // entirely; PR 1 warn-and-drop behavior is preserved).
+    const stateProvider = createLocalStateProvider(
+      options,
+      lambda.stack.stackName,
+      lambda.stack.region
+    );
+    if (stateProvider) {
+      try {
+        const loaded = await stateProvider.load(lambda.stack.stackName, lambda.stack.region);
+        if (loaded) {
+          // Synthetic StackState shape consumed by the legacy
+          // `--assume-role` hint path. Sufficient for
+          // `resolveExecutionRoleArnFromState`, which only touches
+          // `state.resources[...].properties.Role` /
+          // `attributes.Arn`. The CFn provider leaves both empty per
+          // its v1 contract, so the auto-resolve fallback warns
+          // exactly as it would for a partially-populated cdkd state.
+          stateForRoleHint = {
+            version: 1,
+            stackName: lambda.stack.stackName,
+            resources: loaded.resources,
+            outputs: loaded.outputs,
+            lastModified: 0,
+          };
+          const subContext: SubstitutionContext = {
+            resources: loaded.resources,
+            consumerRegion: loaded.region,
+          };
+          if (envHasIntrinsicValue(templateEnv)) {
+            const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
+            if (pseudo) subContext.pseudoParameters = pseudo;
           }
-        }
-        try {
+          // Issue #454 — build the cross-stack resolver only when the env
+          // actually references `Fn::ImportValue` / `Fn::GetStackOutput`.
+          // The resolver opens an additional client; literal + same-stack-
+          // intrinsic env maps shouldn't pay that cost.
+          if (envHasCrossStackIntrinsic(templateEnv)) {
+            const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
+            if (resolver) {
+              subContext.crossStackResolver = resolver;
+            }
+          }
           const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
           templateEnv = env;
           stateAudit = audit;
+          const label = stateProvider.label;
           for (const key of audit.resolvedKeys) {
-            logger.debug(`--from-state: substituted env var ${key} from cdkd state`);
+            logger.debug(`${label}: substituted env var ${key}`);
           }
           for (const { key, reason } of audit.unresolved) {
             logger.warn(
-              `--from-state: could not substitute env var ${key} (${reason}). ` +
+              `${label}: could not substitute env var ${key} (${reason}). ` +
                 `Override it via --env-vars or it will be dropped.`
             );
           }
-        } finally {
-          if (crossStackDispose) {
-            crossStackDispose();
-            crossStackDispose = undefined;
-          }
         }
+      } finally {
+        stateProvider.dispose();
       }
     }
 
@@ -404,7 +419,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
       logger.warn(
         `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-          `Override it with --env-vars (e.g. {"${lambda.logicalId}":{"${key}":"<literal>"}}) or pass --from-state to recover deployed values.`
+          `Override it with --env-vars (e.g. {"${lambda.logicalId}":{"${key}":"<literal>"}}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
       );
     }
 
@@ -1444,8 +1459,18 @@ export function createLocalCommand(): Command {
     )
     .addOption(
       new Option(
+        '--from-cfn-stack [cfn-stack-name]',
+        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+          'in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream ' +
+          'CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when CFn stack name differs. ' +
+          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+      )
+    )
+    .addOption(
+      new Option(
         '--stack-region <region>',
-        'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
+        'Region of the state record to read. Used with --from-state when the same stack name has state in multiple regions, ' +
+          'and with --from-cfn-stack as the CFn client region (cdkd does not have a separate --cfn-stack-region flag).'
       )
     )
     .action(withErrorHandling(localInvokeCommand));

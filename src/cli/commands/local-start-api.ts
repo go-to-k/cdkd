@@ -19,7 +19,10 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
-import { loadStateForStack } from './local-state-loader.js';
+import {
+  createLocalStateProvider,
+  rejectExplicitCfnStackWithMultipleStacks,
+} from './local-state-source.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import type { StackState } from '../../types/state.js';
@@ -157,6 +160,16 @@ interface LocalStartApiOptions {
    * is preserved when the flag is unset.
    */
   fromState: boolean;
+  /**
+   * Issue #606: alternative state source. Reads physical IDs from a
+   * deployed CloudFormation stack via `DescribeStackResources` instead
+   * of cdkd's S3 state. Mutually exclusive with `--from-state`.
+   * Commander maps:
+   *   - flag absent → `undefined`
+   *   - `--from-cfn-stack` (bare) → `true` (use the cdkd stack name per routed stack)
+   *   - `--from-cfn-stack <name>` → `'<name>'` (single named CFn stack)
+   */
+  fromCfnStack?: string | boolean;
   /**
    * Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically
    * verified (foreign access-key-id, or no local AWS credentials) to
@@ -435,17 +448,19 @@ async function localStartApiCommand(
       for (const [k, v] of m) corsConfigByApiId.set(k, v);
     }
 
-    // `--from-state`: load cdkd's S3 state for every routed stack once
-    // per synth (= initial boot AND every hot-reload firing). We do this
-    // outside the per-Lambda loop so a stack with N reachable Lambdas
-    // only pays one state-load round-trip. Pseudo parameters are also
-    // resolved once per stack — STS GetCallerIdentity is account-wide
-    // so the bag is identical across same-region stacks, but the
-    // partition / URL suffix can differ if stacks span partitions.
-    // Per-stack failures degrade to warn-and-fall-back (PR 1 behavior is
-    // preserved) so a missing or unreadable state file never aborts the
-    // server boot.
-    const stateByStack = options.fromState
+    // `--from-state` / `--from-cfn-stack` (issue #606): load deployed
+    // state for every routed stack once per synth (= initial boot AND
+    // every hot-reload firing). We do this outside the per-Lambda loop
+    // so a stack with N reachable Lambdas only pays one state-load
+    // round-trip. Pseudo parameters are also resolved once per stack —
+    // STS GetCallerIdentity is account-wide so the bag is identical
+    // across same-region stacks, but the partition / URL suffix can
+    // differ if stacks span partitions. Per-stack failures degrade to
+    // warn-and-fall-back (the PR 1 behavior is preserved) so a missing
+    // or unreadable state file never aborts the server boot.
+    const stateSourceActive =
+      options.fromState || (options.fromCfnStack !== undefined && options.fromCfnStack !== false);
+    const stateByStack = stateSourceActive
       ? await loadStateForRoutedStacks(targetStacks, routes, routesWithAuth, options)
       : new Map<string, StackStateBundle>();
 
@@ -2402,13 +2417,14 @@ export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | unde
 }
 
 /**
- * Load cdkd's S3 state for every stack that owns a routed Lambda. Once
+ * Load deployed state for every stack that owns a routed Lambda. Once
  * per `synthesizeAndBuild` pass (initial boot + every reload), so a
  * Lambda's per-spec build does not pay one round-trip per Lambda. Per-
  * stack failures (no state, ambiguous region, bucket resolution error)
- * degrade to warn-and-fall-back via {@link loadStateForStack} — the
- * affected stack's reachable Lambdas behave as if `--from-state` were
- * not set, while sibling stacks with loadable state still substitute.
+ * degrade to warn-and-fall-back via the active `LocalStateProvider` —
+ * the affected stack's reachable Lambdas behave as if `--from-state` /
+ * `--from-cfn-stack` were not set, while sibling stacks with loadable
+ * state still substitute.
  *
  * Pseudo parameters are resolved per stack and only when at least one
  * reachable Lambda in that stack has an intrinsic-valued env entry
@@ -2456,25 +2472,55 @@ async function loadStateForRoutedStacks(
     return false;
   };
 
+  // Issue #606: route through `createLocalStateProvider` so the same
+  // code path drives both `--from-state` (S3) and `--from-cfn-stack`
+  // (CFn). One provider PER reachable stack — bare `--from-cfn-stack`
+  // uses the cdkd stack name per routed stack, so the dispatcher needs
+  // each stack's name at construction time. Each provider is disposed
+  // after its `load` call returns so the AWS client tied to that
+  // provider doesn't outlive the boot pass.
+  //
+  // Reject explicit `--from-cfn-stack <name>` when multiple cdkd stacks
+  // are routed: the explicit name would apply to every routed stack
+  // and silently misresolve `Ref` lookups when logical IDs happen to
+  // collide between siblings (see local-state-source.ts for the
+  // rationale). Bare `--from-cfn-stack` is safe because each routed
+  // stack uses its own cdkd stack name.
+  rejectExplicitCfnStackWithMultipleStacks(options, reachableStackNames.size);
   for (const stackName of reachableStackNames) {
     const stack = stacks.find((s) => s.stackName === stackName);
     if (!stack) continue;
-    const loaded = await loadStateForStack(stack.stackName, stack.region, {
-      ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
-      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
-      statePrefix: options.statePrefix,
-      ...(options.region !== undefined && { region: options.region }),
-      ...(options.profile !== undefined && { profile: options.profile }),
-    });
-    if (!loaded) continue;
+    const provider = createLocalStateProvider(options, stack.stackName, stack.region);
+    if (!provider) continue;
+    try {
+      const loaded = await provider.load(stack.stackName, stack.region);
+      if (!loaded) continue;
 
-    const bundle: StackStateBundle = { state: loaded.state };
-    if (stackHasIntrinsicEnv(stackName)) {
-      const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
-      if (pseudo) bundle.pseudoParameters = pseudo;
+      // Synthesize a `StackState` shape from the provider's
+      // `LocalStateRecord` so the downstream `buildContainerSpec` path
+      // (which reads `stateBundle.state.resources`) keeps working
+      // verbatim. Outputs is an unused field at this call site but
+      // populated for completeness; the StackState `version` /
+      // `lastModified` carry placeholder values — the
+      // sync `substituteEnvVarsFromState` resolver only reads
+      // `resources`.
+      const syntheticState: StackState = {
+        version: 1,
+        stackName: stack.stackName,
+        resources: loaded.resources,
+        outputs: loaded.outputs,
+        lastModified: 0,
+      };
+      const bundle: StackStateBundle = { state: syntheticState };
+      if (stackHasIntrinsicEnv(stackName)) {
+        const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
+        if (pseudo) bundle.pseudoParameters = pseudo;
+      }
+      out.set(stackName, bundle);
+      logger.debug(`${provider.label}: loaded state for ${stackName} (${loaded.region})`);
+    } finally {
+      provider.dispose();
     }
-    out.set(stackName, bundle);
-    logger.debug(`--from-state: loaded state for ${stackName} (${loaded.region})`);
   }
   return out;
 }
@@ -2488,7 +2534,7 @@ async function loadStateForRoutedStacks(
  * region takes priority).
  *
  * Region precedence: `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` >
- * the state record's region (returned by `loadStateForStack`).
+ * the state record's region (returned by the active `LocalStateProvider`).
  */
 async function resolvePseudoParametersForStartApi(
   stateRegion: string,
@@ -2671,8 +2717,19 @@ export function createLocalStartApiCommand(): Command {
     )
     .addOption(
       new Option(
+        '--from-cfn-stack [cfn-stack-name]',
+        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+          'in Lambda env vars with the deployed physical IDs / exports. ' +
+          'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
+          'Bare form uses the cdkd stack name per routed stack; pass an explicit value when a single CFn stack should serve every routed stack. ' +
+          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+      )
+    )
+    .addOption(
+      new Option(
         '--stack-region <region>',
-        'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
+        'Region of the state record to read. Used with --from-state when the same stack name has state in multiple regions, ' +
+          'and with --from-cfn-stack as the CFn client region (cdkd does not have a separate --cfn-stack-region flag).'
       )
     )
     .addOption(

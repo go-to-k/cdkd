@@ -73,6 +73,10 @@
       "description": "`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar."
     },
     {
+      "tag": "local-from-cfn-stack-substitution",
+      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`)."
+    },
+    {
       "tag": "local-from-state-substitution",
       "description": "`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters."
     },
@@ -487,6 +491,14 @@
       "name": "local-invoke-dotnet",
       "annotated": true,
       "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-from-cfn-stack",
+      "annotated": true,
+      "scenarios": [
+        "local-from-cfn-stack-substitution",
         "local-lambda-rie-zip"
       ]
     },
@@ -945,6 +957,13 @@
       ]
     },
     {
+      "scenario": "local-from-cfn-stack-substitution",
+      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).",
+      "fixtures": [
+        "local-invoke-from-cfn-stack"
+      ]
+    },
+    {
       "scenario": "local-from-state-substitution",
       "description": "`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.",
       "fixtures": [
@@ -967,6 +986,7 @@
       "fixtures": [
         "local-invoke",
         "local-invoke-dotnet",
+        "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-layers",
