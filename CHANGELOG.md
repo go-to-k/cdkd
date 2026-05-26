@@ -1,3 +1,10 @@
+## [0.159.3](https://github.com/go-to-k/cdkd/compare/v0.159.2...v0.159.3) (2026-05-26)
+
+
+### Bug Fixes
+
+* **local:** recognize Fn::Join Code.ImageUri in start-api ([#627](https://github.com/go-to-k/cdkd/issues/627)) ([#632](https://github.com/go-to-k/cdkd/issues/632)) ([9e8158f](https://github.com/go-to-k/cdkd/commit/9e8158f3c20addab640d722bf3519fe0032e72ac))
+
 ## [0.159.2](https://github.com/go-to-k/cdkd/compare/v0.159.1...v0.159.2) (2026-05-26)
 
 
