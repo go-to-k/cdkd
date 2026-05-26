@@ -1,3 +1,10 @@
+# [0.159.0](https://github.com/go-to-k/cdkd/compare/v0.158.1...v0.159.0) (2026-05-26)
+
+
+### Features
+
+* **local:** support Function URL AuthType: AWS_IAM via existing SigV4 verifier ([#624](https://github.com/go-to-k/cdkd/issues/624)) ([3f80a97](https://github.com/go-to-k/cdkd/commit/3f80a978d6464c446fadd907bebd8b43140371b0))
+
 ## [0.158.1](https://github.com/go-to-k/cdkd/compare/v0.158.0...v0.158.1) (2026-05-26)
 
 
