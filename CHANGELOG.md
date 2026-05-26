@@ -1,3 +1,10 @@
+# [0.154.0](https://github.com/go-to-k/cdkd/compare/v0.153.0...v0.154.0) (2026-05-26)
+
+
+### Features
+
+* **provisioning:** fail fast on NON_PROVISIONABLE (tier3) resource types at pre-flight ([#603](https://github.com/go-to-k/cdkd/issues/603)) ([39e72c3](https://github.com/go-to-k/cdkd/commit/39e72c3e804464f73ecd950646008e06465d8b04))
+
 # [0.153.0](https://github.com/go-to-k/cdkd/compare/v0.152.2...v0.153.0) (2026-05-26)
 
 
