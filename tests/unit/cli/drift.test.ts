@@ -74,9 +74,20 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 const mockRegistryGetProvider = vi.fn<(resourceType: string) => unknown>();
 const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>().mockReturnValue(false);
 const mockRegistrySetCustomBucket = vi.fn();
+// #614: drift's new code path uses `getProviderFor({resourceType, provisionedBy})`
+// instead of `getProvider(type)`. Wrap the existing `getProvider` mock so
+// the routing-decision shape is returned with `provisionedBy: 'sdk'`
+// (legacy default; the test fixtures don't set state.provisionedBy).
+const mockRegistryGetProviderFor = vi
+  .fn<(input: { resourceType: string }) => unknown>()
+  .mockImplementation((input) => ({
+    provider: mockRegistryGetProvider(input.resourceType),
+    provisionedBy: 'sdk',
+  }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
     getProvider: mockRegistryGetProvider,
+    getProviderFor: mockRegistryGetProviderFor,
     shouldSkipResource: mockRegistryShouldSkip,
     setCustomResourceResponseBucket: mockRegistrySetCustomBucket,
   })),

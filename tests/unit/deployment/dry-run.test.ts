@@ -65,6 +65,8 @@ describe('DeployEngine - Dry Run Mode', () => {
 
   let mockProviderRegistry: {
     getProvider: ReturnType<typeof vi.fn>;
+    getProviderFor: ReturnType<typeof vi.fn>;
+    getRegisteredTypes: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
     validateResourceProperties: ReturnType<typeof vi.fn>;
   };
@@ -124,6 +126,8 @@ describe('DeployEngine - Dry Run Mode', () => {
 
     mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(mockProvider),
+      getProviderFor: vi.fn().mockReturnValue({ provider: mockProvider, provisionedBy: 'sdk' }),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     };
@@ -546,6 +550,10 @@ describe('DeployEngine - Dry Run Mode', () => {
         }
       );
       mockProviderRegistry.getProvider.mockReturnValue(mockProvider);
+      mockProviderRegistry.getProviderFor.mockReturnValue({
+        provider: mockProvider,
+        provisionedBy: 'sdk',
+      });
       mockProviderRegistry.validateResourceTypes.mockReturnValue(undefined);
       mockProvider.create.mockResolvedValue({
         physicalId: 'new-physical-id',

@@ -56,6 +56,29 @@ export function findSilentDropProperties(
 }
 
 /**
+ * Same as {@link findSilentDropProperties} but filters out entries whose
+ * `<Type>:<Prop>` key is in the supplied allow set (the
+ * `--allow-unsupported-properties` user override). Returned drops are the
+ * ones that should drive CC API auto-routing (issue
+ * [#614](https://github.com/go-to-k/cdkd/issues/614)) — silent drops
+ * the user has explicitly opted-into via the override are removed so the
+ * resource stays on the SDK Provider path.
+ *
+ * Mirrors `findSilentDropProperties`'s sort + early-return behavior:
+ * returns `[]` for Tier 2 / Custom / unknown types, undefined / empty
+ * `templateProperties`, or when every drop is in `allowedKeys`.
+ */
+export function findActionableSilentDrops(
+  resourceType: string,
+  templateProperties: Record<string, unknown> | undefined,
+  allowedKeys: ReadonlySet<string>
+): Array<{ property: string; rationale: string }> {
+  const drops = findSilentDropProperties(resourceType, templateProperties);
+  if (drops.length === 0) return drops;
+  return drops.filter(({ property }) => !allowedKeys.has(`${resourceType}:${property}`));
+}
+
+/**
  * A 1-click pre-filled GitHub issue link requesting cdkd support for a
  * specific top-level property on a resource type. Surfaced in the pre-flight
  * error so a user hitting a silent drop lands directly in the "request

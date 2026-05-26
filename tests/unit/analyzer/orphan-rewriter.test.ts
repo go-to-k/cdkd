@@ -17,6 +17,10 @@ function fakeRegistry(
   };
   return {
     getProvider: vi.fn(() => provider as ResourceProvider),
+    // #614: orphan-rewriter now routes via getProviderFor (sticky
+    // provisionedBy from state). The test fixtures don't set
+    // provisionedBy, so legacy SDK semantics apply.
+    getProviderFor: vi.fn(() => ({ provider: provider as ResourceProvider, provisionedBy: 'sdk' })),
   } as unknown as ProviderRegistry;
 }
 

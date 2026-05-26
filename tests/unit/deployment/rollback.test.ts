@@ -128,6 +128,8 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
 
     const mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(mockProvider),
+      getProviderFor: vi.fn().mockReturnValue({ provider: mockProvider, provisionedBy: 'sdk' }),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
       getCloudControlProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),

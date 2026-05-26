@@ -21,7 +21,6 @@ import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
-import { CloudControlProvider } from '../provisioning/cloud-control-provider.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { IMPLICIT_DELETE_DEPENDENCIES } from '../analyzer/implicit-delete-deps.js';
 import { withRetry } from './retry.js';
@@ -1445,6 +1444,12 @@ export class DeployEngine {
     //      `--resource-timeout 1h`.
     //   3. CLI global default (`--resource-timeout 30m`).
     //   4. compile-time default (DEFAULT_RESOURCE_*_MS).
+    //
+    // `getProvider` here only consults the resource type (no template
+    // properties / no state-recorded layer) — it's used solely to read
+    // `getMinResourceTimeoutMs`. The real routing decision (which can
+    // promote a Tier 1 resource to Cloud Control under #614) happens
+    // inside `provisionResourceBody` via `getProviderFor`.
     const provider = this.providerRegistry.getProvider(resourceType);
     const providerMinTimeoutMs = provider.getMinResourceTimeoutMs?.() ?? 0;
     const warnAfterMs =
@@ -1535,7 +1540,13 @@ export class DeployEngine {
     progress?: { current: number; total: number }
   ): Promise<void> {
     const resourceType = change.resourceType;
-    const provider = this.providerRegistry.getProvider(resourceType);
+    // Existing state record (UPDATE / DELETE) — load-bearing for the
+    // sticky `provisionedBy` routing introduced in #614: a resource
+    // first created via Cloud Control (because its template had
+    // silent-drop properties at the time) stays on Cloud Control for
+    // every subsequent update / delete, even if the SDK provider has
+    // since gained property coverage.
+    const existingState = stateResources[logicalId];
     const renderer = getLiveRenderer();
 
     switch (change.changeType) {
@@ -1558,17 +1569,28 @@ export class DeployEngine {
           unknown
         >;
 
-        // Safety net: if SDK provider doesn't handle all template properties,
-        // fall back to CC API for create to ensure no properties are silently dropped
-        const { provider: createProvider, properties: createProps } =
-          this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+        // #614 routing: consult the registry with the resolved properties.
+        // If the SDK provider would silent-drop a top-level key (and the
+        // user has not overridden it via `--allow-unsupported-properties`),
+        // we auto-route via Cloud Control API. The chosen `provisionedBy`
+        // is persisted on state so the next update / delete uses the
+        // same layer.
+        const createDecision = this.providerRegistry.getProviderFor({
+          resourceType,
+          properties: resolvedProps,
+        });
+        const createProvider = createDecision.provider;
+        const createProps =
+          createDecision.provisionedBy === 'cc-api'
+            ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+            : resolvedProps;
 
         const result = await this.withRetry(
           () => createProvider.create(logicalId, resourceType, createProps),
           logicalId,
           undefined,
           undefined,
-          provider
+          createProvider
         );
 
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
@@ -1583,10 +1605,11 @@ export class DeployEngine {
           ...(result.attributes && { attributes: result.attributes }),
           ...(dependencies && dependencies.length > 0 && { dependencies }),
           ...templateAttrs,
+          provisionedBy: createDecision.provisionedBy,
         };
 
         this.kickOffObservedCapture(
-          provider,
+          createProvider,
           logicalId,
           result.physicalId,
           resourceType,
@@ -1604,7 +1627,7 @@ export class DeployEngine {
       }
 
       case 'UPDATE': {
-        const currentResource = stateResources[logicalId];
+        const currentResource = existingState;
         if (!currentResource) {
           throw new Error(`Cannot update ${logicalId}: resource not found in state`);
         }
@@ -1676,20 +1699,37 @@ export class DeployEngine {
             `Replacing ${logicalId} (${resourceType}) - immutable properties changed: ${replacedProps}`
           );
 
+          // The new (replacement) resource gets a fresh routing decision —
+          // a property the SDK provider used to silent-drop may now be
+          // wired, or vice versa. The OLD resource's delete uses the
+          // state-recorded layer (sticky) so a CC-managed legacy is
+          // deleted via CC even if the template now would land on SDK.
+          const replaceDecision = this.providerRegistry.getProviderFor({
+            resourceType,
+            properties: resolvedProps,
+          });
+          const replaceProvider = replaceDecision.provider;
+          const replaceProps =
+            replaceDecision.provisionedBy === 'cc-api'
+              ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+              : resolvedProps;
+
           // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
           this.logger.info(`  Creating new ${logicalId}...`);
-          const { provider: replaceProvider, properties: replaceProps } =
-            this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
           const createResult = await this.withRetry(
             () => replaceProvider.create(logicalId, resourceType, replaceProps),
             logicalId,
             undefined,
             undefined,
-            provider
+            replaceProvider
           );
 
           // 2. Delete old resource (after successful CREATE)
           const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
+          const oldDeleteProvider = this.providerRegistry.getProviderFor({
+            resourceType,
+            provisionedBy: currentResource.provisionedBy,
+          }).provider;
 
           if (updateReplacePolicy === 'Retain') {
             this.logger.info(
@@ -1698,7 +1738,7 @@ export class DeployEngine {
           } else {
             this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
             try {
-              await provider.delete(
+              await oldDeleteProvider.delete(
                 logicalId,
                 currentResource.physicalId,
                 resourceType,
@@ -1720,10 +1760,11 @@ export class DeployEngine {
             ...(createResult.attributes && { attributes: createResult.attributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
+            provisionedBy: replaceDecision.provisionedBy,
           };
 
           this.kickOffObservedCapture(
-            provider,
+            replaceProvider,
             logicalId,
             createResult.physicalId,
             resourceType,
@@ -1738,14 +1779,31 @@ export class DeployEngine {
             `${replacePrefix}${yellow('↻')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`
           );
         } else {
-          // Normal update (in-place)
+          // Normal update (in-place).
+          //
+          // For an existing resource, the layer is sticky: if it was first
+          // created via Cloud Control (because of silent-drop properties at
+          // CREATE time), the update stays on Cloud Control. If it was
+          // SDK-managed and the user has since added a silent-drop property,
+          // we re-evaluate via `getProviderFor` — which will auto-route
+          // through Cloud Control as long as the user hasn't overridden
+          // via `--allow-unsupported-properties`. Once a resource flips
+          // to CC mid-life, it stays there (the state record's
+          // `provisionedBy: 'cc-api'` written below sticks).
           this.logger.debug(`Updating ${logicalId} (${resourceType})`);
-
-          // Safety net: fall back to CC API if SDK provider doesn't handle all properties
-          const { provider: updateProvider, properties: updateProps } =
-            this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+          const updateDecision = this.providerRegistry.getProviderFor({
+            resourceType,
+            properties: resolvedProps,
+            provisionedBy: currentResource.provisionedBy,
+          });
+          const updateProvider = updateDecision.provider;
+          const updateProps =
+            updateDecision.provisionedBy === 'cc-api'
+              ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+              : resolvedProps;
 
           let result;
+          let resultProvisionedBy = updateDecision.provisionedBy;
           try {
             result = await this.withRetry(
               () =>
@@ -1759,7 +1817,7 @@ export class DeployEngine {
               logicalId,
               undefined,
               undefined,
-              provider
+              updateProvider
             );
           } catch (updateError) {
             // If UPDATE is not supported (e.g., CC API UnsupportedActionException),
@@ -1773,7 +1831,7 @@ export class DeployEngine {
                 `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
               );
               try {
-                await provider.delete(
+                await updateProvider.delete(
                   logicalId,
                   currentResource.physicalId,
                   resourceType,
@@ -1796,20 +1854,29 @@ export class DeployEngine {
                   throw deleteError;
                 }
               }
-              const { provider: replProvider, properties: replProps } =
-                this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+              // The replacement create gets a fresh routing decision.
+              const replDecision = this.providerRegistry.getProviderFor({
+                resourceType,
+                properties: resolvedProps,
+              });
+              const replProvider = replDecision.provider;
+              const replProps =
+                replDecision.provisionedBy === 'cc-api'
+                  ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+                  : resolvedProps;
               const createResult = await this.withRetry(
                 () => replProvider.create(logicalId, resourceType, replProps),
                 logicalId,
                 undefined,
                 undefined,
-                provider
+                replProvider
               );
               result = {
                 physicalId: createResult.physicalId,
                 attributes: createResult.attributes,
                 wasReplaced: true,
               };
+              resultProvisionedBy = replDecision.provisionedBy;
             } else {
               throw updateError;
             }
@@ -1828,10 +1895,11 @@ export class DeployEngine {
             ...(result.attributes && { attributes: result.attributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
+            provisionedBy: resultProvisionedBy,
           };
 
           this.kickOffObservedCapture(
-            provider,
+            updateProvider,
             logicalId,
             result.physicalId,
             resourceType,
@@ -1850,7 +1918,7 @@ export class DeployEngine {
       }
 
       case 'DELETE': {
-        const currentResource = stateResources[logicalId];
+        const currentResource = existingState;
         if (!currentResource) {
           throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
         }
@@ -1874,11 +1942,19 @@ export class DeployEngine {
           break;
         }
 
+        // Schema v7+: route DELETE through the layer recorded on state
+        // (`provisionedBy: 'cc-api'` → Cloud Control; absent / `'sdk'`
+        // → SDK provider — legacy default).
+        const deleteProvider = this.providerRegistry.getProviderFor({
+          resourceType,
+          provisionedBy: currentResource.provisionedBy,
+        }).provider;
+
         this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
         try {
           await this.withRetry(
             () =>
-              provider.delete(
+              deleteProvider.delete(
                 logicalId,
                 currentResource.physicalId,
                 resourceType,
@@ -1888,7 +1964,7 @@ export class DeployEngine {
             logicalId,
             3, // fewer retries for DELETE
             5_000,
-            provider
+            deleteProvider
           );
         } catch (deleteError) {
           const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
@@ -2075,68 +2151,31 @@ export class DeployEngine {
   }
 
   /**
-   * Select the appropriate provider for create/update, falling back to CC API
-   * if the SDK provider doesn't handle all template properties.
+   * Prepare a property map for a Cloud Control API call. When a Tier 1
+   * resource is routed via Cloud Control (either because the user's
+   * template hit silent-drop properties under #614 or because the resource
+   * is sticky-routed via `provisionedBy: 'cc-api'`), CC requires the full
+   * property map — including identifier-like fields (`BucketName`,
+   * `RoleName`, etc.) that the SDK provider would have auto-generated.
+   * This helper threads the property prep through the registered SDK
+   * provider's `preparePropertiesForFallback` hook when defined, falling
+   * back to `applyDefaultNameForFallback` (which mints stack-prefixed
+   * names matching what the SDK provider would have done) otherwise.
    *
-   * This safety net prevents properties from being silently dropped when an SDK
-   * provider only maps a subset of CloudFormation properties.
-   *
-   * DELETE always uses the SDK provider (force-delete, cleanup, etc.).
+   * No-ops for types with no registered SDK provider (Tier 2 / CC-native).
    */
-  private selectProviderWithSafetyNet(
-    sdkProvider: ResourceProvider,
+  private preparePropertiesForCcApi(
     resourceType: string,
     resolvedProps: Record<string, unknown>,
     logicalId: string
-  ): { provider: ResourceProvider; properties: Record<string, unknown> } {
-    const handledSet = sdkProvider.handledProperties?.get(resourceType);
-    if (!handledSet) {
-      // Provider doesn't declare handledProperties for this type — assume full coverage
-      return { provider: sdkProvider, properties: resolvedProps };
+  ): Record<string, unknown> {
+    const sdkProvider = this.providerRegistry.getRegisteredTypes().includes(resourceType)
+      ? this.providerRegistry.getProvider(resourceType)
+      : undefined;
+    if (sdkProvider?.preparePropertiesForFallback) {
+      return sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps);
     }
-
-    const templateProps = Object.keys(resolvedProps);
-    const unhandledProps = templateProps.filter((p) => !handledSet.has(p));
-
-    if (unhandledProps.length === 0) {
-      // All properties are handled by the SDK provider
-      return { provider: sdkProvider, properties: resolvedProps };
-    }
-
-    // There are unhandled properties — try to fall back to CC API
-    if (
-      CloudControlProvider.isSupportedResourceType(resourceType) &&
-      !sdkProvider.disableCcApiFallback
-    ) {
-      this.logger.info(
-        `${logicalId}: SDK provider does not handle [${unhandledProps.join(', ')}] — falling back to CC API for create/update`
-      );
-
-      // Apply default name generation so CC API uses the same names SDK provider would have.
-      // If the provider has custom pre-processing, use that instead.
-      const fallbackProps = sdkProvider.preparePropertiesForFallback
-        ? sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps)
-        : applyDefaultNameForFallback(logicalId, resourceType, resolvedProps);
-
-      return {
-        provider: this.providerRegistry.getCloudControlProvider(),
-        properties: fallbackProps,
-      };
-    }
-
-    // CC API fallback not available — fail to prevent silent property loss
-    const reason = sdkProvider.disableCcApiFallback
-      ? 'CC API fallback is disabled for this provider (known CC API issues)'
-      : `CC API does not support ${resourceType}`;
-    throw new ProvisioningError(
-      `SDK provider for ${resourceType} does not handle properties [${unhandledProps.join(', ')}] ` +
-        `and ${reason}. ` +
-        `These properties would be silently dropped. ` +
-        `Please update the SDK provider to handle all required properties.`,
-      resourceType,
-      logicalId,
-      ''
-    );
+    return applyDefaultNameForFallback(logicalId, resourceType, resolvedProps);
   }
 
   /**

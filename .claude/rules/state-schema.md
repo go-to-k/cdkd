@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema (StackState v1-v6 interface, observedProperties / deletionPolicy / parentStack semantics)
+description: cdkd S3 state schema (StackState v1-v7 interface, observedProperties / deletionPolicy / parentStack / provisionedBy semantics)
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -9,7 +9,7 @@ paths:
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption)
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614)
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
@@ -36,6 +36,7 @@ interface ResourceState {
   dependencies: string[];                   // For proper deletion order
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
+  provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = SDK legacy default)
 }
 ```
 
@@ -59,6 +60,42 @@ wins and the template stays a back-compat fallback; `cdkd state destroy`
 pre-v5 state on `cdkd state destroy` therefore stays at the pre-fix
 "delete every resource in state" behavior until a redeploy under v5
 populates the field.
+
+**`provisionedBy`** (schema v7+, issue
+[#614](https://github.com/go-to-k/cdkd/issues/614)) is the per-resource
+provisioning-layer label: `'sdk'` (cdkd's preferred fast path, direct
+synchronous AWS SDK calls per resource type) or `'cc-api'` (the Cloud
+Control API fallback path, async polling create/update/delete via the
+unified CloudControlClient). Pre-#614 every resource was implicitly
+SDK-managed; the absent / `undefined` field on v6-and-earlier state
+records is treated by the v7 binary as "legacy SDK" (matches pre-#614
+behavior). v7 writers always emit the field explicitly so the routing
+decision is durable across deploys.
+
+Routing decision matrix (`ProviderRegistry.getProviderFor`, called by
+the deploy / drift / destroy / state-show paths):
+
+1. Custom Resources (`Custom::*` / `AWS::CloudFormation::CustomResource`)
+   → Custom Resource provider, recorded as `'sdk'`.
+2. Existing-state `provisionedBy: 'cc-api'` (sticky) → Cloud Control.
+3. SDK Provider registered AND no silent-drop properties (after
+   `--allow-unsupported-properties` filter) → SDK Provider.
+4. SDK Provider registered AND template uses silent-drop properties
+   NOT covered by the allow set → Cloud Control (auto-route, info log).
+5. SDK Provider registered AND every silent-drop property IS in the
+   allow set → SDK Provider (the user explicitly accepted the silent
+   drop, warn log).
+6. No SDK Provider AND Cloud Control supports the type → Cloud Control.
+7. `--allow-unsupported-types` escape hatch → Cloud Control optimistically.
+
+The field is **sticky**: once a resource is `'cc-api'`, subsequent SDK
+Provider backfills (issue #609) do NOT auto-migrate it back. Avoids
+physical-ID churn + destroy + recreate cycles on every backfill
+release. User-initiated CC → SDK migration lives under #615 (or a
+future counterpart). `cdkd destroy` consults the field to pick the
+delete path; `cdkd drift` consults it to pick `readCurrentState`;
+`cdkd state show` displays `ProvisionedBy: sdk | cc-api | (sdk, legacy default)`
+for the absent-field case so users can audit the routing.
 
 **`parentStack` / `parentLogicalId` / `parentRegion`** (schema v6+, issue
 [#459](https://github.com/go-to-k/cdkd/issues/459)) are populated on

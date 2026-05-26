@@ -155,7 +155,14 @@ class AttributeFetcher {
 
     let provider;
     try {
-      provider = this.providerRegistry.getProvider(orphan.resourceType);
+      // Route via state-recorded `provisionedBy` (#614 schema v7+) so a
+      // CC-managed orphan resolves Fn::GetAtt through Cloud Control's
+      // getAttribute. Pre-v7 state has `provisionedBy: undefined` which
+      // preserves legacy SDK routing.
+      provider = this.providerRegistry.getProviderFor({
+        resourceType: orphan.resourceType,
+        provisionedBy: orphan.provisionedBy,
+      }).provider;
     } catch (err) {
       return {
         ok: false,

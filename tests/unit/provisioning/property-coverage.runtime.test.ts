@@ -4,21 +4,27 @@
  * Distinct from `property-coverage.test.ts` (the offline / Issue #391 test
  * layer that enforces every provider declares `handledProperties` /
  * `unhandledByDesign` consistently with the CFn schema fixture). This file
- * exercises the runtime helpers that drive `ProviderRegistry.validateResourceProperties`:
+ * exercises the runtime helpers:
  *   - `getPropertyCoverage` (lookup)
  *   - `findSilentDropProperties` (per-resource silent-drop detection)
+ *   - `findActionableSilentDrops` (silent drops minus the override allow-set)
  *   - `unsupportedPropertyIssueUrl` (1-click GitHub issue link)
- *   - `ProviderRegistry.validateResourceProperties` (per-template throw with
- *     actionable error message + escape hatch via `--allow-unsupported-properties`)
+ *
+ * The throw-based `ProviderRegistry.validateResourceProperties` tests were
+ * removed when #614 reversed the silent-drop policy: the method now
+ * auto-routes via Cloud Control API + info-logs instead of throwing. The
+ * info-/warn-log shape is covered by
+ * `provider-registry-report-silent-drops.test.ts`; the routing decisions
+ * are covered by `provider-registry-cc-routing.test.ts`.
  */
 import { describe, it, expect } from 'vite-plus/test';
 import {
   PROPERTY_COVERAGE_BY_TYPE,
+  findActionableSilentDrops,
   findSilentDropProperties,
   getPropertyCoverage,
   unsupportedPropertyIssueUrl,
 } from '../../../src/provisioning/property-coverage.js';
-import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 
 describe('getPropertyCoverage', () => {
   it('returns a record for a Tier 1 SDK-provider type', () => {
@@ -158,209 +164,45 @@ function pickSilentDropPair(): { resourceType: string; propA: string; propB: str
   );
 }
 
-describe('ProviderRegistry.validateResourceProperties', () => {
-  it('no-op on an empty template', () => {
-    const registry = new ProviderRegistry();
-    expect(() => registry.validateResourceProperties([])).not.toThrow();
-  });
-
-  it('no-op when every property is handled', () => {
-    const registry = new ProviderRegistry();
-    const cov = getPropertyCoverage('AWS::Lambda::Function');
-    if (!cov) throw new Error('AWS::Lambda::Function should have a coverage record');
-    const handledKey = Array.from(cov.handled)[0];
-    if (!handledKey) throw new Error('Lambda Function should declare at least one handled property');
-    expect(() =>
-      registry.validateResourceProperties([
-        {
-          logicalId: 'MyLambda',
-          resourceType: 'AWS::Lambda::Function',
-          properties: { [handledKey]: 'x' },
-        },
-      ])
-    ).not.toThrow();
-  });
-
-  it('throws on a silent-drop with property name + rationale + re-run command + issue link', () => {
+describe('findActionableSilentDrops (#614)', () => {
+  it('returns the full set when allowedKeys is empty', () => {
     const fx = pickSilentDropFixture();
-    const registry = new ProviderRegistry();
-    let message = '';
-    try {
-      registry.validateResourceProperties([
-        {
-          logicalId: 'MyResource',
-          resourceType: fx.resourceType,
-          properties: { [fx.property]: 'x' },
-        },
-      ]);
-    } catch (e) {
-      message = (e as Error).message;
-    }
-    expect(message).toContain('cdkd would silently drop these properties');
-    expect(message).toContain('MyResource');
-    expect(message).toContain(fx.resourceType);
-    expect(message).toContain(fx.property);
-    expect(message).toContain(fx.rationale);
-    expect(message).toContain('--allow-unsupported-properties');
-    expect(message).toContain(`${fx.resourceType}:${fx.property}`);
-    expect(message).toContain('github.com/go-to-k/cdkd/issues/new');
+    const drops = findActionableSilentDrops(
+      fx.resourceType,
+      { [fx.property]: 'x' },
+      new Set()
+    );
+    expect(drops).toHaveLength(1);
+    expect(drops[0]?.property).toBe(fx.property);
   });
 
-  it('honors the --allow-unsupported-properties escape hatch (per type+property)', () => {
+  it('filters out drops whose <Type>:<Prop> key is in allowedKeys', () => {
     const fx = pickSilentDropFixture();
-    const registry = new ProviderRegistry();
-    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
-    expect(() =>
-      registry.validateResourceProperties([
-        {
-          logicalId: 'MyResource',
-          resourceType: fx.resourceType,
-          properties: { [fx.property]: 'x' },
-        },
-      ])
-    ).not.toThrow();
+    const drops = findActionableSilentDrops(
+      fx.resourceType,
+      { [fx.property]: 'x' },
+      new Set([`${fx.resourceType}:${fx.property}`])
+    );
+    expect(drops).toEqual([]);
   });
 
-  it('only allows the named entry, not all properties of the same type', () => {
-    // Pick a type with two silent-drop entries so we can verify per-property
-    // (not per-type) granularity of the escape hatch.
+  it('only filters by the exact <Type>:<Prop> token — siblings remain', () => {
     const pair = pickSilentDropPair();
-    const registry = new ProviderRegistry();
-    registry.allowUnsupportedProperties([`${pair.resourceType}:${pair.propA}`]);
-    expect(() =>
-      registry.validateResourceProperties([
-        {
-          logicalId: 'X',
-          resourceType: pair.resourceType,
-          properties: { [pair.propA]: 'x', [pair.propB]: 'y' },
-        },
-      ])
-    ).toThrow(new RegExp(pair.propB));
+    const drops = findActionableSilentDrops(
+      pair.resourceType,
+      { [pair.propA]: 'x', [pair.propB]: 'y' },
+      new Set([`${pair.resourceType}:${pair.propA}`])
+    );
+    expect(drops.map((d) => d.property)).toEqual([pair.propB]);
   });
 
-  it('groups errors by logical ID + sorts properties alphabetically within each', () => {
+  it('preserves alphabetical sort from findSilentDropProperties', () => {
     const pair = pickSilentDropPair();
-    const registry = new ProviderRegistry();
-    let message = '';
-    try {
-      registry.validateResourceProperties([
-        {
-          logicalId: 'AlphaResource',
-          resourceType: pair.resourceType,
-          properties: { [pair.propB]: 'x', [pair.propA]: 'y' },
-        },
-      ]);
-    } catch (e) {
-      message = (e as Error).message;
-    }
-    expect(message).toContain('AlphaResource');
-    const idxA = message.indexOf(pair.propA);
-    const idxB = message.indexOf(pair.propB);
-    expect(idxA).toBeGreaterThan(-1);
-    expect(idxB).toBeGreaterThan(idxA);
-  });
-
-  it('sorts logical IDs alphabetically across resources in the error message', () => {
-    const fx = pickSilentDropFixture();
-    const registry = new ProviderRegistry();
-    let message = '';
-    try {
-      // Pass insertion order Zeta -> Alpha to confirm the renderer sorts.
-      registry.validateResourceProperties([
-        {
-          logicalId: 'ZetaResource',
-          resourceType: fx.resourceType,
-          properties: { [fx.property]: 'x' },
-        },
-        {
-          logicalId: 'AlphaResource',
-          resourceType: fx.resourceType,
-          properties: { [fx.property]: 'y' },
-        },
-      ]);
-    } catch (e) {
-      message = (e as Error).message;
-    }
-    const idxAlpha = message.indexOf('AlphaResource');
-    const idxZeta = message.indexOf('ZetaResource');
-    expect(idxAlpha).toBeGreaterThan(-1);
-    expect(idxZeta).toBeGreaterThan(-1);
-    expect(idxAlpha).toBeLessThan(idxZeta);
-  });
-
-  it('throws on a mixed template — flags only the silent-drop resource', () => {
-    const fx = pickSilentDropFixture();
-    const registry = new ProviderRegistry();
-    const lambdaCov = getPropertyCoverage('AWS::Lambda::Function');
-    if (!lambdaCov) throw new Error('AWS::Lambda::Function should have a coverage record');
-    const lambdaHandled = Array.from(lambdaCov.handled)[0];
-    if (!lambdaHandled) {
-      throw new Error('AWS::Lambda::Function should declare at least one handled property');
-    }
-    let message = '';
-    try {
-      registry.validateResourceProperties([
-        {
-          logicalId: 'GoodLambda',
-          resourceType: 'AWS::Lambda::Function',
-          properties: { [lambdaHandled]: 'x' },
-        },
-        {
-          logicalId: 'BadResource',
-          resourceType: fx.resourceType,
-          properties: { [fx.property]: 'x' },
-        },
-      ]);
-    } catch (e) {
-      message = (e as Error).message;
-    }
-    expect(message).toContain('BadResource');
-    expect(message).not.toContain('GoodLambda');
-  });
-
-  it('deduplicates re-run command entries when the same type+prop appears in multiple resources', () => {
-    const fx = pickSilentDropFixture();
-    const registry = new ProviderRegistry();
-    let message = '';
-    try {
-      registry.validateResourceProperties([
-        {
-          logicalId: 'R1',
-          resourceType: fx.resourceType,
-          properties: { [fx.property]: 'x' },
-        },
-        {
-          logicalId: 'R2',
-          resourceType: fx.resourceType,
-          properties: { [fx.property]: 'y' },
-        },
-      ]);
-    } catch (e) {
-      message = (e as Error).message;
-    }
-    expect(message).toContain('R1');
-    expect(message).toContain('R2');
-    // Re-run command should mention the type+prop pair exactly once.
-    const flagSegment = message.slice(message.indexOf('--allow-unsupported-properties'));
-    const occurrences = flagSegment.split(`${fx.resourceType}:${fx.property}`).length - 1;
-    expect(occurrences).toBe(1);
-  });
-
-  it('skips Tier 2 / unknown / Custom resource types (no Tier 1 coverage = no drop)', () => {
-    const registry = new ProviderRegistry();
-    expect(() =>
-      registry.validateResourceProperties([
-        {
-          logicalId: 'MyCustom',
-          resourceType: 'Custom::Foo',
-          properties: { Anything: 'goes' },
-        },
-        {
-          logicalId: 'MyMadeUp',
-          resourceType: 'AWS::Made::Up',
-          properties: { Anything: 'goes' },
-        },
-      ])
-    ).not.toThrow();
+    const drops = findActionableSilentDrops(
+      pair.resourceType,
+      { [pair.propB]: 'x', [pair.propA]: 'y' },
+      new Set()
+    );
+    expect(drops.map((d) => d.property)).toEqual([pair.propA, pair.propB]);
   });
 });
