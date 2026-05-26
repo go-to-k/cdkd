@@ -67,6 +67,7 @@ describe('DeployEngine - Resource Replacement', () => {
   let mockProviderRegistry: {
     getProvider: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
+    validateResourceProperties: ReturnType<typeof vi.fn>;
   };
 
   const stackName = 'test-stack';
@@ -144,6 +145,7 @@ describe('DeployEngine - Resource Replacement', () => {
     mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(mockProvider),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
   });
 

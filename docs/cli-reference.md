@@ -459,6 +459,64 @@ cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::B
 cdkd destroy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
 ```
 
+## `--allow-unsupported-properties` (deploy)
+
+cdkd also rejects deploys at pre-flight when the template uses **top-level
+CFn properties** that cdkd's SDK provider would silently drop on write.
+Example: AWS adds `LoggingConfig` to `AWS::Lambda::Function`, CDK adds
+support, you write it in your CDK code — but `LambdaFunctionProvider.create()`
+does not read it yet, so the property would be silently dropped at deploy
+time. The deployed Lambda would be missing the field with no error
+surfaced. The pre-flight catches this so you see the gap before any AWS
+call runs.
+
+The set of handled vs silently-dropped properties is generated from the
+CFn schema fixtures + each SDK provider's `handledProperties` /
+`unhandledByDesign` declarations into the runtime at
+`src/provisioning/property-coverage.generated.ts` (`vp run gen:property-coverage`;
+CI fails if it drifts). Coverage is per Tier 1 (SDK provider) type only —
+Tier 2 (Cloud Control fallback) types forward the full property map to
+AWS, so no write-side silent drop is possible there.
+
+When pre-flight hits a silent drop, the error groups by logical ID, names
+each silently-dropped property with its rationale, a 1-click pre-filled
+GitHub issue link to request support, and the exact re-run command:
+
+```text
+cdkd would silently drop these properties at deploy time:
+
+  MyLambda (AWS::Lambda::Function):
+    - LoggingConfig
+        not yet implemented by cdkd
+        Request support: https://github.com/go-to-k/cdkd/issues/new?title=...
+
+These properties exist in your CDK code but cdkd will not write them to
+AWS. The deployed resource will be missing these fields.
+
+To proceed anyway (accepts the silent drop), re-run with:
+  --allow-unsupported-properties AWS::Lambda::Function:LoggingConfig
+```
+
+`--allow-unsupported-properties <entries>` is the **escape hatch**: a
+comma-separated (and repeatable) list of `<ResourceType>:<PropertyName>`
+tokens to accept as silently dropped. Per type+property pair (not blanket)
+so you explicitly acknowledge each silent drop. The flag is `deploy`-only —
+destroy uses the per-resource physical ID, not the template properties.
+
+```bash
+cdkd deploy MyStack --allow-unsupported-properties AWS::Lambda::Function:LoggingConfig,AWS::Lambda::Function:SnapStart
+```
+
+The error message itself is the migration guide: copy the printed re-run
+command verbatim, or follow the 1-click issue link to request first-class
+support so future deploys do not need the flag.
+
+Properties that do not appear in the CFn schema pass through silently —
+these are usually `addPropertyOverride` escape hatches or typos, both of
+which CFn itself tolerates. Read-only properties (AWS-managed Arns, Ids,
+etc.) also pass through silently; you cannot set them from the template
+side and they are no-ops if they appear there.
+
 ## `--role-arn`
 
 Assume a different IAM role for cdkd's AWS API calls. Equivalent env

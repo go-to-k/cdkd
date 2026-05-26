@@ -132,6 +132,7 @@ describe('DeployEngine — provider.disableOuterRetry bypasses withRetry', () =>
       getProvider: vi.fn().mockReturnValue(provider),
       getCloudControlProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
 
     const template: CloudFormationTemplate = {

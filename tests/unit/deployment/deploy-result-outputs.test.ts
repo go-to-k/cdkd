@@ -52,6 +52,7 @@ describe('DeployEngine - DeployResult.outputs', () => {
   let mockProviderRegistry: {
     getProvider: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
+    validateResourceProperties: ReturnType<typeof vi.fn>;
   };
 
   const stackName = 'MyStack';
@@ -98,6 +99,7 @@ describe('DeployEngine - DeployResult.outputs', () => {
     mockProviderRegistry = {
       getProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
   });
 

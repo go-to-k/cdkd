@@ -66,6 +66,7 @@ describe('DeployEngine - Dry Run Mode', () => {
   let mockProviderRegistry: {
     getProvider: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
+    validateResourceProperties: ReturnType<typeof vi.fn>;
   };
 
   const stackName = 'test-stack';
@@ -124,6 +125,7 @@ describe('DeployEngine - Dry Run Mode', () => {
     mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(mockProvider),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
   });
 

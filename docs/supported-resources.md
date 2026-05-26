@@ -32,6 +32,38 @@ cached audit marks Tier 3 that AWS has since made provisionable), re-run with
 `--allow-unsupported-types <Type,...>` — a per-type, comma-separated list on
 both `cdkd deploy` and `cdkd destroy`.
 
+## Property-level coverage (Tier 1 SDK providers)
+
+A type being on this list means cdkd's SDK provider can create / update /
+delete the resource — it does NOT guarantee every CFn property is written
+to AWS. AWS adds new properties to existing resource types regularly
+(e.g. `LoggingConfig` / `SnapStart` on `AWS::Lambda::Function`), and a
+provider that does not yet read the new property would silently drop it on
+write — your deployed resource would be missing the field with no error
+surfaced.
+
+cdkd rejects this at **pre-flight**. For every Tier 1 type, the runtime
+compares each top-level template property against the provider's declared
+`handledProperties` (= written to AWS) / `unhandledByDesign` (= not written,
+with a rationale) sets. Any unhandled top-level property in the CFn schema
+triggers a fast-fail with the silently-dropped property name, the
+rationale, a 1-click GitHub issue link to request support, and the exact
+`--allow-unsupported-properties <ResourceType>:<PropertyName>` re-run
+command. See [docs/cli-reference.md `--allow-unsupported-properties`](cli-reference.md#--allow-unsupported-properties-deploy)
+for the escape hatch.
+
+Coverage data is generated from the CFn schema fixtures + each SDK
+provider's declarations into the runtime at
+`src/provisioning/property-coverage.generated.ts` (`vp run gen:property-coverage`;
+CI fails if it drifts). Tier 2 (Cloud Control) types are NOT in the map:
+Cloud Control forwards the full property map to AWS, so there is no
+write-side silent drop at cdkd for those.
+
+Properties not in the CFn schema (likely `addPropertyOverride` escape
+hatches or typos) pass through silently — CFn itself tolerates them.
+Read-only properties (AWS-managed Arns, Ids, etc.) also pass through
+silently; they cannot be set from the template side.
+
 ## Three-tier coverage report
 
 For a full machine-checked view of every public AWS CFn resource type

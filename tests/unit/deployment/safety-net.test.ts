@@ -91,6 +91,7 @@ describe('DeployEngine - Safety Net (CC API Fallback)', () => {
     getProvider: ReturnType<typeof vi.fn>;
     getCloudControlProvider: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
+    validateResourceProperties: ReturnType<typeof vi.fn>;
   };
 
   const stackName = 'test-stack';
@@ -163,6 +164,7 @@ describe('DeployEngine - Safety Net (CC API Fallback)', () => {
       getProvider: vi.fn().mockReturnValue(mockSdkProvider),
       getCloudControlProvider: vi.fn().mockReturnValue(mockCcApiProvider),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
   });
 

@@ -236,6 +236,10 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-unsupported-types.ts',
         cache: false,
       },
+      'gen:property-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-property-coverage.ts',
+        cache: false,
+      },
       'compat-corpus': {
         command: 'node --experimental-strip-types scripts/compat-corpus.ts',
         cache: false,

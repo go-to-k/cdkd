@@ -130,6 +130,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
       getProvider: vi.fn().mockReturnValue(mockProvider),
       getCloudControlProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
 
     return new DeployEngine(
