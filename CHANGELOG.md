@@ -1,3 +1,10 @@
+# [0.160.0](https://github.com/go-to-k/cdkd/compare/v0.159.3...v0.160.0) (2026-05-26)
+
+
+### Features
+
+* **provisioning:** Cloud Control API auto-fallback for silent-drop properties ([#633](https://github.com/go-to-k/cdkd/issues/633)) ([e06313d](https://github.com/go-to-k/cdkd/commit/e06313da8fa595c9835760d927e545cd5bce6147))
+
 ## [0.159.3](https://github.com/go-to-k/cdkd/compare/v0.159.2...v0.159.3) (2026-05-26)
 
 
