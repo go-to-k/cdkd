@@ -71,6 +71,7 @@ async function deployCommand(
     yes: boolean;
     verbose: boolean;
     context?: string[];
+    allowUnsupportedTypes?: string[];
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -401,6 +402,9 @@ async function deployCommand(
       const stackProviderRegistry = new ProviderRegistry();
       registerAllProviders(stackProviderRegistry);
       stackProviderRegistry.setCustomResourceResponseBucket(stateBucket, baseRegion);
+      if (options.allowUnsupportedTypes?.length) {
+        stackProviderRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
+      }
 
       try {
         // Pre-flight migration check for --no-prefix-user-supplied-names.

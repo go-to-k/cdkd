@@ -2,6 +2,7 @@ import type { ResourceProvider } from '../types/resource.js';
 import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
+import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
 
 /**
  * Provider registry for managing resource providers
@@ -17,10 +18,25 @@ export class ProviderRegistry {
   private cloudControlProvider: CloudControlProvider;
   private customResourceProvider: CustomResourceProvider;
   private skipResourceTypes = new Set<string>();
+  private allowedUnsupportedTypes = new Set<string>();
 
   constructor() {
     this.cloudControlProvider = new CloudControlProvider();
     this.customResourceProvider = new CustomResourceProvider();
+  }
+
+  /**
+   * Escape hatch for the `--allow-unsupported-types` CLI flag. Named types
+   * bypass the pre-flight unsupported-type rejection and are routed through
+   * Cloud Control optimistically (which will likely still fail for genuinely
+   * NON_PROVISIONABLE types — but the choice is the user's). Per-type rather
+   * than a blanket flag so the user explicitly acknowledges each type.
+   */
+  allowUnsupportedTypes(resourceTypes: Iterable<string>): void {
+    for (const resourceType of resourceTypes) {
+      this.allowedUnsupportedTypes.add(resourceType);
+      this.logger.debug(`Allowing unsupported resource type via escape hatch: ${resourceType}`);
+    }
   }
 
   /**
@@ -96,7 +112,16 @@ export class ProviderRegistry {
       return this.customResourceProvider;
     }
 
-    // 4. No provider available
+    // 4. Escape hatch: user explicitly allowed this unsupported type — try
+    // Cloud Control optimistically (likely fails for NON_PROVISIONABLE types).
+    if (this.allowedUnsupportedTypes.has(resourceType)) {
+      this.logger.debug(
+        `Routing escape-hatch-allowed type ${resourceType} through Cloud Control API`
+      );
+      return this.cloudControlProvider;
+    }
+
+    // 5. No provider available
     throw new Error(
       `No provider available for resource type: ${resourceType}. ` +
         `This resource type is not supported by Cloud Control API and no SDK provider is registered.`
@@ -116,6 +141,10 @@ export class ProviderRegistry {
   hasProvider(resourceType: string): boolean {
     // Skipped resources are considered as "having a provider" to avoid validation errors
     if (this.shouldSkipResource(resourceType)) {
+      return true;
+    }
+    // Escape-hatch-allowed types are treated as available (routed to Cloud Control).
+    if (this.allowedUnsupportedTypes.has(resourceType)) {
       return true;
     }
     return (
@@ -152,6 +181,11 @@ export class ProviderRegistry {
     if (CloudControlProvider.isSupportedResourceType(resourceType)) {
       return 'cloud-control';
     }
+    // Escape-hatch-allowed types are routed through Cloud Control by
+    // getProvider/hasProvider; keep this method consistent.
+    if (this.allowedUnsupportedTypes.has(resourceType)) {
+      return 'cloud-control';
+    }
     return null;
   }
 
@@ -173,11 +207,19 @@ export class ProviderRegistry {
     }
 
     if (unsupportedTypes.length > 0) {
+      const details = unsupportedTypes
+        .map((type) => {
+          const reason = isNonProvisionable(type)
+            ? 'AWS reports this type as NON_PROVISIONABLE (Cloud Control API cannot manage it) and cdkd has no SDK provider for it.'
+            : "cdkd does not currently support this type — no SDK provider is registered, and the type is either on cdkd's Cloud Control blocklist (pending a dedicated SDK provider) or is not an AWS:: namespace.";
+          return `  - ${type}\n      ${reason}\n      Request support: ${unsupportedTypeIssueUrl(type)}`;
+        })
+        .join('\n');
       throw new Error(
-        `The following resource types are not supported:\n` +
-          unsupportedTypes.map((type) => `  - ${type}`).join('\n') +
-          `\n\nThese resource types are not supported by Cloud Control API and no SDK provider is registered.\n` +
-          `Please report this issue at https://github.com/go-to-k/cdkd/issues so we can add SDK provider support.`
+        `The following resource types are not supported by cdkd:\n` +
+          details +
+          `\n\nTo attempt deployment anyway (Cloud Control will likely fail for NON_PROVISIONABLE types), ` +
+          `re-run with: --allow-unsupported-types ${unsupportedTypes.join(',')}`
       );
     }
 

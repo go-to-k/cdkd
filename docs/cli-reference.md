@@ -419,6 +419,46 @@ underlying provider activity.
 Note: `--resource-warn-after` must be less than `--resource-timeout`.
 Reversed values are rejected at parse time.
 
+## `--allow-unsupported-types` (deploy + destroy)
+
+cdkd rejects genuinely-unsupported resource types at **pre-flight** —
+before any resource is touched — instead of letting them fail mid-deploy
+with an opaque Cloud Control error. A type is "unsupported" when AWS
+reports it as `ProvisioningType: NON_PROVISIONABLE` (the provider-coverage
+**Tier 3** set: Cloud Control API cannot create/update/delete it) AND cdkd
+has no SDK provider for it. The Tier 3 set is generated from the audit
+cache into the runtime at `src/provisioning/unsupported-types.generated.ts`
+(`vp run gen:unsupported-types`; CI fails if it drifts).
+
+When pre-flight hits one, the error names each type, the reason, a 1-click
+pre-filled GitHub issue link to request support, and the exact re-run
+command:
+
+```text
+The following resource types are not supported by cdkd:
+  - AWS::AppMesh::Mesh
+      AWS reports this type as NON_PROVISIONABLE (Cloud Control API cannot
+      manage it) and cdkd has no SDK provider for it.
+      Request support: https://github.com/go-to-k/cdkd/issues/new?title=...
+
+To attempt deployment anyway (Cloud Control will likely fail for
+NON_PROVISIONABLE types), re-run with: --allow-unsupported-types AWS::AppMesh::Mesh
+```
+
+`--allow-unsupported-types <types>` is the **escape hatch**: a
+comma-separated (and repeatable) list of types to attempt via Cloud
+Control anyway. It is per-type rather than a blanket override so you
+explicitly acknowledge each type. Useful mainly for a type the cached
+audit marks Tier 3 that AWS has since made provisionable (regenerate the
+audit with `vp run audit:coverage:regenerate` for the permanent fix). It
+is available on both `cdkd deploy` and `cdkd destroy` (and `cdkd state
+destroy`) so a stack deployed with the flag can also be torn down.
+
+```bash
+cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
+cdkd destroy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
+```
+
 ## `--role-arn`
 
 Assume a different IAM role for cdkd's AWS API calls. Equivalent env

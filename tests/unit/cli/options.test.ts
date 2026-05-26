@@ -535,3 +535,52 @@ describe('cli/options.ts', () => {
     });
   });
 });
+
+describe('parseAllowUnsupportedTypesToken', () => {
+  it('parses a single AWS:: resource type', async () => {
+    const { parseAllowUnsupportedTypesToken } = await import('../../../src/cli/options.js');
+    expect(parseAllowUnsupportedTypesToken('AWS::AppMesh::Mesh', undefined)).toEqual([
+      'AWS::AppMesh::Mesh',
+    ]);
+  });
+
+  it('splits a comma-separated value', async () => {
+    const { parseAllowUnsupportedTypesToken } = await import('../../../src/cli/options.js');
+    expect(
+      parseAllowUnsupportedTypesToken('AWS::AppMesh::Mesh,AWS::Budgets::Budget', undefined)
+    ).toEqual(['AWS::AppMesh::Mesh', 'AWS::Budgets::Budget']);
+  });
+
+  it('accumulates across repeated invocations (commander --flag x --flag y)', async () => {
+    const { parseAllowUnsupportedTypesToken } = await import('../../../src/cli/options.js');
+    const first = parseAllowUnsupportedTypesToken('AWS::AppMesh::Mesh', undefined);
+    const second = parseAllowUnsupportedTypesToken('AWS::Budgets::Budget', first);
+    expect(second).toEqual(['AWS::AppMesh::Mesh', 'AWS::Budgets::Budget']);
+  });
+
+  it('accepts the Custom:: namespace', async () => {
+    const { parseAllowUnsupportedTypesToken } = await import('../../../src/cli/options.js');
+    expect(parseAllowUnsupportedTypesToken('Custom::Foo', undefined)).toEqual(['Custom::Foo']);
+  });
+
+  it('rejects a typo with no :: separator', async () => {
+    const { parseAllowUnsupportedTypesToken } = await import('../../../src/cli/options.js');
+    expect(() => parseAllowUnsupportedTypesToken('justaname', undefined)).toThrow(
+      /Invalid --allow-unsupported-types value/
+    );
+  });
+
+  it('rejects a hyphenated typo (not a valid CFn type segment)', async () => {
+    const { parseAllowUnsupportedTypesToken } = await import('../../../src/cli/options.js');
+    expect(() => parseAllowUnsupportedTypesToken('AppMesh::Mesh-typo', undefined)).toThrow(
+      /Invalid --allow-unsupported-types value/
+    );
+  });
+
+  it('trims whitespace around tokens', async () => {
+    const { parseAllowUnsupportedTypesToken } = await import('../../../src/cli/options.js');
+    expect(
+      parseAllowUnsupportedTypesToken(' AWS::AppMesh::Mesh , AWS::Budgets::Budget ', undefined)
+    ).toEqual(['AWS::AppMesh::Mesh', 'AWS::Budgets::Budget']);
+  });
+});

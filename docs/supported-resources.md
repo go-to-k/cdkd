@@ -17,9 +17,20 @@ cdkd uses a hybrid approach:
 - **Cloud Control API** — fallback for any resource type without a
   dedicated SDK Provider. Requires async polling.
 
-If a resource type has no SDK Provider AND is not supported by Cloud
-Control API, cdkd cannot deploy it. The deploy fails with a clear error
-message naming the unsupported type.
+If a resource type has no SDK Provider AND AWS reports it as
+`ProvisioningType: NON_PROVISIONABLE` (Tier 3 — Cloud Control API cannot
+manage it), cdkd **rejects it at pre-flight** before any resource is touched,
+with a clear per-type error naming the type, the reason, and a 1-click
+pre-filled GitHub issue link to request support. The Tier 3 set is generated
+from the provider-coverage audit into the runtime
+(`src/provisioning/unsupported-types.generated.ts`, regenerated via
+`vp run gen:unsupported-types`).
+
+To attempt deployment anyway (Cloud Control will likely still fail for a
+genuinely NON_PROVISIONABLE type, but this is the escape hatch for a type the
+cached audit marks Tier 3 that AWS has since made provisionable), re-run with
+`--allow-unsupported-types <Type,...>` — a per-type, comma-separated list on
+both `cdkd deploy` and `cdkd destroy`.
 
 ## Three-tier coverage report
 

@@ -10,6 +10,7 @@ import {
   deprecatedRegionOption,
   stateOptions,
   resourceTimeoutOptions,
+  allowUnsupportedTypesOption,
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
   type ResourceTimeoutOption,
@@ -1094,6 +1095,7 @@ async function stateDestroyCommand(
     profile?: string;
     roleArn?: string;
     verbose: boolean;
+    allowUnsupportedTypes?: string[];
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -1120,6 +1122,9 @@ async function stateDestroyCommand(
   const providerRegistry = new ProviderRegistry();
   registerAllProviders(providerRegistry);
   providerRegistry.setCustomResourceResponseBucket(setup.bucket);
+  if (options.allowUnsupportedTypes?.length) {
+    providerRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
+  }
 
   try {
     // Resolve target stack names from S3 (no synth). After PR 1, listStacks
@@ -1265,6 +1270,9 @@ async function stateDestroyCommand(
               skipConfirmation: options.yes || options.all === true,
               removeProtection: options.removeProtection === true,
               exportIndexStore: setup.exportIndexStore,
+              ...(options.allowUnsupportedTypes?.length && {
+                allowUnsupportedTypes: options.allowUnsupportedTypes,
+              }),
               ...(options.resourceWarnAfter?.globalMs !== undefined && {
                 resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
               }),
@@ -1335,9 +1343,12 @@ function createStateDestroyCommand(): Command {
     )
     .action(withErrorHandling(stateDestroyCommand));
 
-  [...commonOptions, ...stateOptions, ...resourceTimeoutOptions].forEach((opt) =>
-    cmd.addOption(opt)
-  );
+  [
+    ...commonOptions,
+    ...stateOptions,
+    ...resourceTimeoutOptions,
+    allowUnsupportedTypesOption,
+  ].forEach((opt) => cmd.addOption(opt));
 
   // --region is deprecated on every state subcommand (PR 5). Accepted for
   // backward compatibility; warning emitted at runtime.
