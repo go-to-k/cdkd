@@ -138,16 +138,19 @@ export interface DiscoveredRoute {
    * non-AWS_PROXY REST v1 integrations (`MOCK` not matching the CORS
    * preflight shape, `AWS`, `HTTP`, `HTTP_PROXY`), HTTP API v2
    * service integrations (`IntegrationSubtype` set), WebSocket APIs,
-   * Function URLs with `AuthType !== 'NONE'` or with an
-   * `InvokeMode` value outside `BUFFERED` / `RESPONSE_STREAM`, and
-   * routes whose Lambda Arn intrinsic cannot be resolved against the
-   * same template. (Function URLs with `InvokeMode: RESPONSE_STREAM`
-   * are normal routes dispatched via the streaming protocol — #467.)
+   * Function URLs with an unrecognized `AuthType` (anything other than
+   * `'NONE'` / `'AWS_IAM'`) or with an `InvokeMode` value outside
+   * `BUFFERED` / `RESPONSE_STREAM`, and routes whose Lambda Arn
+   * intrinsic cannot be resolved against the same template. (Function
+   * URLs with `InvokeMode: RESPONSE_STREAM` are normal routes dispatched
+   * via the streaming protocol — #467. Function URLs with
+   * `AuthType: AWS_IAM` are normal routes verified through the same
+   * SigV4 pipeline as REST v1 AWS_IAM — #621.)
    *
    * Mutually exclusive with {@link DiscoveredRoute.mockCors}. When set,
    * `lambdaLogicalId` may be the empty string (we never need to dispatch
-   * to it); the field is preserved when it COULD be resolved (e.g.
-   * Function URL with `AuthType: AWS_IAM` still knows its Lambda).
+   * to it); the field is preserved when it COULD be resolved (e.g. an
+   * `AuthType` cdkd doesn't recognize still knows its Lambda).
    */
   unsupported?: { reason: string };
   /**
@@ -1109,9 +1112,14 @@ function classifyServiceIntegrationRoute(
  *     JSON prelude — `{statusCode, headers, cookies?}` — followed by 8
  *     NULL bytes and then the raw body chunks). The HTTP server pipes
  *     the chunks to the client with `Transfer-Encoding: chunked` (#467).
- *   - `AuthType !== 'NONE'` (e.g. `AWS_IAM`) → deferred-error
- *     unsupported. Boot proceeds; HTTP 501 + `reason` at request time.
- *     IAM auth would need SigV4 verification cdkd cannot emulate.
+ *   - `AuthType === 'AWS_IAM'` → normal route. The `IamAuthorizer` is
+ *     attached at the authorizer-resolver pass (`detectAuthorizer` in
+ *     `authorizer-resolver.ts`) so the HTTP server runs the same SigV4
+ *     verification it ships for REST v1 `AuthorizationType: 'AWS_IAM'`
+ *     (PR #447). Signature verification only — no IAM policy emulation.
+ *   - `AuthType` other than `'NONE'` / `'AWS_IAM'` (defensive — AWS docs
+ *     only define those two values) → deferred-error unsupported. Boot
+ *     proceeds; HTTP 501 + `reason` at request time.
  *
  * The Lambda Arn intrinsic resolution still **hard-errors** when it
  * cannot pin down a same-template Lambda — Function URLs have no other
@@ -1153,8 +1161,15 @@ function discoverFunctionUrl(
     declaredAt: `${stackName}/${logicalId}`,
   };
 
+  // AuthType: AWS_IAM is supported via the same SigV4 verification path
+  // that REST v1 `AuthorizationType: 'AWS_IAM'` uses (PR #447). The
+  // `IamAuthorizer` descriptor is attached later by `detectAuthorizer`
+  // in `authorizer-resolver.ts` — no per-route field set here. Anything
+  // other than the two AWS-documented values (`NONE` / `AWS_IAM`) is
+  // rejected as deferred-error unsupported so a future API shape change
+  // surfaces at request time rather than silently mis-routing.
   const authType = props['AuthType'];
-  if (authType !== 'NONE') {
+  if (authType !== 'NONE' && authType !== 'AWS_IAM') {
     return [
       {
         ...baseRoute,
@@ -1162,7 +1177,7 @@ function discoverFunctionUrl(
         unsupported: {
           reason: `${stackName}/${logicalId}: AuthType '${String(
             authType
-          )}' is not supported (only NONE — IAM auth requires SigV4 verification cdkd cannot emulate locally).`,
+          )}' is not a recognized Function URL auth type (expected 'NONE' or 'AWS_IAM').`,
         },
       },
     ];

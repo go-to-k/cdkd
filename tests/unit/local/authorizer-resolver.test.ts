@@ -521,6 +521,54 @@ describe('attachAuthorizers', () => {
     });
   });
 
+  it('attaches the iam authorizer kind on a Function URL with AuthType: AWS_IAM (#621)', () => {
+    const stack = buildStack('S', {
+      Url: {
+        Type: 'AWS::Lambda::Url',
+        Properties: { AuthType: 'AWS_IAM', TargetFunctionArn: { Ref: 'Fn' } },
+      },
+    });
+    const route: DiscoveredRoute = {
+      method: 'ANY',
+      pathPattern: '/{proxy+}',
+      lambdaLogicalId: 'Fn',
+      source: 'function-url',
+      apiVersion: 'v2',
+      stage: '$default',
+      apiStackName: 'S',
+      declaredAt: 'S/Url',
+      invokeMode: 'BUFFERED',
+    };
+    const out = attachAuthorizers([stack], [route]);
+    expect(out[0]?.authorizer).toEqual({
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: 'S/Url',
+    });
+  });
+
+  it('attaches no authorizer on a Function URL with AuthType: NONE', () => {
+    const stack = buildStack('S', {
+      Url: {
+        Type: 'AWS::Lambda::Url',
+        Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn' } },
+      },
+    });
+    const route: DiscoveredRoute = {
+      method: 'ANY',
+      pathPattern: '/{proxy+}',
+      lambdaLogicalId: 'Fn',
+      source: 'function-url',
+      apiVersion: 'v2',
+      stage: '$default',
+      apiStackName: 'S',
+      declaredAt: 'S/Url',
+      invokeMode: 'BUFFERED',
+    };
+    const out = attachAuthorizers([stack], [route]);
+    expect(out[0]?.authorizer).toBeUndefined();
+  });
+
   // Issue #431: authorizer Lambda Arn unresolvable (cross-stack /
   // imported / unsupported intrinsic shape) used to abort boot for the
   // whole API. Now the route is flipped to `unsupported` with the

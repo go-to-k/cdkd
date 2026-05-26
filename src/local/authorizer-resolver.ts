@@ -729,9 +729,38 @@ function detectAuthorizer(
   if (resource.Type === 'AWS::ApiGatewayV2::Route') {
     return detectHttpApiAuthorizer(resource, logicalId, stack);
   }
-  // Function URLs have AuthType: NONE only (route-discovery already
-  // hard-errors on IAM); no authorizer to attach.
+  if (resource.Type === 'AWS::Lambda::Url') {
+    return detectFunctionUrlAuthorizer(resource, logicalId, stack);
+  }
   return undefined;
+}
+
+/**
+ * Function URL (`AWS::Lambda::Url`) authorizer detection (issue #621).
+ *
+ * `AuthType: 'AWS_IAM'` uses the same SigV4 mechanism REST v1 ships
+ * (PR #447), so we route through the same `IamAuthorizer` descriptor and
+ * let the HTTP server's existing `if (authorizer.kind === 'iam')`
+ * request-time branch run `verifySigV4`. Like REST v1 AWS_IAM, no IAM
+ * policy emulation — signature verification only.
+ *
+ * `AuthType: 'NONE'` (and any non-AWS_IAM AuthType that
+ * `route-discovery.ts` already flipped to `unsupported`) returns
+ * `undefined` so the route runs without an authorizer pass.
+ */
+function detectFunctionUrlAuthorizer(
+  urlResource: TemplateResource,
+  urlLogicalId: string,
+  stack: StackInfo
+): AuthorizerInfo | undefined {
+  const props = urlResource.Properties ?? {};
+  const authType = props['AuthType'];
+  if (authType !== 'AWS_IAM') return undefined;
+  return {
+    kind: 'iam',
+    logicalId: 'AWS_IAM',
+    declaredAt: `${stack.stackName}/${urlLogicalId}`,
+  };
 }
 
 function detectRestV1Authorizer(

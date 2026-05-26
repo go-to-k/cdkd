@@ -441,10 +441,12 @@ export class StackHasActiveImportsError extends CdkdError {
 /**
  * Signals that `cdkd local start-api`'s route discovery hit an unsupported
  * shape — non-AWS_PROXY integration, ApiGwV2 service integration
- * (`IntegrationSubtype` set), WebSocket protocol, Lambda::Url with
- * `AuthType !== 'NONE'`, or an unsupported intrinsic function in
- * `IntegrationUri`. (Lambda::Url with `InvokeMode: RESPONSE_STREAM` is
- * a normal route dispatched via the streaming protocol — #467.)
+ * (`IntegrationSubtype` set), WebSocket protocol, Lambda::Url with an
+ * unrecognized `AuthType` (anything other than `'NONE'` / `'AWS_IAM'`),
+ * or an unsupported intrinsic function in `IntegrationUri`. (Lambda::Url
+ * with `InvokeMode: RESPONSE_STREAM` is a normal route dispatched via
+ * the streaming protocol — #467. Lambda::Url with `AuthType: 'AWS_IAM'`
+ * is a normal route verified through the SigV4 pipeline — #621.)
  *
  * The message names every offending route and points the user at the
  * deferred follow-up PR (8b for authorizers, etc.). Hard-error at

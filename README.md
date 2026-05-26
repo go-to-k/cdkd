@@ -455,7 +455,8 @@ cdkd local start-api --from-state                    # OR --from-cfn-stack
 REST v1 + HTTP API v2 + Function URL with all integration kinds
 (AWS_PROXY / MOCK / HTTP_PROXY / HTTP / AWS Lambda non-proxy via
 hand-rolled VTL), authorizers (Lambda / Cognito / HTTP v2 JWT /
-REST v1 AWS_IAM SigV4), CORS, stage variables, `--watch` hot reload.
+AWS_IAM SigV4 on REST v1 + Function URL), CORS, stage variables,
+`--watch` hot reload.
 
 ### `local run-task`
 

@@ -910,7 +910,7 @@ describe('discoverRoutes — Function URL', () => {
     });
   });
 
-  it('flags AuthType !== NONE as deferred-error unsupported (preserves lambdaLogicalId)', () => {
+  it('synthesizes a normal route for AuthType: AWS_IAM (#621 — SigV4 verified at request time)', () => {
     const stack = buildStack('S', {
       Url: {
         Type: 'AWS::Lambda::Url',
@@ -919,7 +919,27 @@ describe('discoverRoutes — Function URL', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes).toHaveLength(1);
-    expect(routes[0]?.unsupported?.reason).toMatch(/AWS_IAM/);
+    // Not flipped to unsupported anymore — Function URL AWS_IAM rides
+    // the same SigV4 verifier that REST v1 AWS_IAM ships (PR #447).
+    // The IamAuthorizer descriptor is attached later by
+    // `attachAuthorizers` in `authorizer-resolver.ts`.
+    expect(routes[0]?.unsupported).toBeUndefined();
+    expect(routes[0]?.lambdaLogicalId).toBe('Fn');
+    expect(routes[0]?.apiVersion).toBe('v2');
+    expect(routes[0]?.invokeMode).toBe('BUFFERED');
+  });
+
+  it('flags unknown AuthType as deferred-error unsupported with a clear message', () => {
+    const stack = buildStack('S', {
+      Url: {
+        Type: 'AWS::Lambda::Url',
+        Properties: { AuthType: 'CUSTOM', TargetFunctionArn: { Ref: 'Fn' } },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]?.unsupported?.reason).toMatch(/CUSTOM/);
+    expect(routes[0]?.unsupported?.reason).toMatch(/expected 'NONE' or 'AWS_IAM'/);
     // The Lambda IS known on Function URLs even when unsupported;
     // unlike REST v1 MOCK / unresolvable Arn cases, Function URLs always
     // identify their backing Lambda.
@@ -1148,6 +1168,11 @@ describe('discoverRoutes — deferred-error unsupported (multi-route)', () => {
     // Post-#457: MOCK is no longer unsupported (the dispatcher handles
     // it). The fixture uses an AWS-integration-to-S3 (non-Lambda service)
     // case, which remains unsupported in v1.
+    // Post-#621: Function URL `AuthType: 'AWS_IAM'` is no longer
+    // unsupported — it routes through the SigV4 verifier. The Function
+    // URL row in this fixture uses an unrecognized `AuthType: 'CUSTOM'`
+    // value instead so the deferred-unsupported behavior is still
+    // exercised here.
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       M1: {
@@ -1164,7 +1189,7 @@ describe('discoverRoutes — deferred-error unsupported (multi-route)', () => {
       },
       U1: {
         Type: 'AWS::Lambda::Url',
-        Properties: { AuthType: 'AWS_IAM', TargetFunctionArn: { Ref: 'Fn' } },
+        Properties: { AuthType: 'CUSTOM', TargetFunctionArn: { Ref: 'Fn' } },
       },
     });
     const routes = discoverRoutes([stack]);
