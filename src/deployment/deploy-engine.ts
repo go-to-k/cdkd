@@ -36,6 +36,14 @@ interface CompletedOperation {
   changeType: 'CREATE' | 'UPDATE' | 'DELETE';
   /** Resource type (e.g., "AWS::S3::Bucket") */
   resourceType: string;
+  /**
+   * Provisioning layer the resource ran on. Load-bearing for rollback
+   * dispatch — a CC-routed CREATE must roll back via the CC provider's
+   * delete, NOT the SDK provider's (#614). Populated from the routing
+   * decision (CREATE) or from the previous state (UPDATE / DELETE).
+   * `undefined` falls back to legacy SDK semantics for legacy state.
+   */
+  provisionedBy?: 'sdk' | 'cc-api' | undefined;
   /** Previous resource state (for UPDATE rollback) */
   previousState?: ResourceState | undefined;
   /** Physical ID of newly created resource (for CREATE rollback) */
@@ -595,17 +603,25 @@ export class DeployEngine {
       this.providerRegistry.validateResourceTypes(resourceTypes);
       this.logger.debug(`All resource types validated`);
 
-      // 3.5. Validate top-level resource properties (property-level pre-flight).
-      // Rejects deploys whose templates use top-level CFn properties cdkd's SDK
-      // provider does NOT write to AWS (silent drop). Escape hatch:
-      // `--allow-unsupported-properties Type:Prop,...`. Skips AWS::CDK::Metadata
-      // (filtered by the same predicate as the type set).
+      // 3.5. Report top-level resource property routing decisions
+      // (#614). For each resource using a silent-drop top-level property,
+      // info-log that cdkd is auto-routing it via Cloud Control (which
+      // forwards the full property map). For each resource explicitly
+      // opted out via `--allow-unsupported-properties Type:Prop`, warn
+      // that the silent drop has been accepted. No throw — the legacy
+      // PR #608 fail-fast was reversed by #614 to a default-on
+      // auto-route. Skips AWS::CDK::Metadata (filtered by the same
+      // predicate as the type set).
       const resourcesForPropertyCheck = Object.entries(template.Resources || {})
         .filter(([, r]) => r.Type !== 'AWS::CDK::Metadata')
         .map(([logicalId, r]) => ({
           logicalId,
           resourceType: r.Type,
           properties: r.Properties,
+          // Thread the state-recorded routing layer so already-sticky CC
+          // resources demote the info-log to debug (avoids "routing via
+          // Cloud Control API" repeated on every redeploy).
+          provisionedBy: currentState.resources[logicalId]?.provisionedBy,
         }));
       this.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
       this.logger.debug(`All resource properties validated`);
@@ -950,6 +966,14 @@ export class DeployEngine {
                 logicalId,
                 changeType: change.changeType as 'CREATE' | 'UPDATE',
                 resourceType: change.resourceType,
+                // Snapshot the routing layer just landed on the resource
+                // (CREATE = the auto-route decision; UPDATE = the state's
+                // sticky / re-evaluated layer). Threads into rollback so a
+                // CC-routed CREATE rolls back via the CC delete path —
+                // closing the silent-data-corruption hazard the v7 schema
+                // bump was designed to prevent.
+                provisionedBy:
+                  newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
                 previousState,
                 physicalId: newResources[logicalId]?.physicalId,
                 properties: newResources[logicalId]?.properties,
@@ -1023,6 +1047,7 @@ export class DeployEngine {
                 logicalId,
                 changeType: 'DELETE',
                 resourceType: change.resourceType,
+                provisionedBy: previousState?.provisionedBy,
                 previousState,
               });
 
@@ -1327,7 +1352,13 @@ export class DeployEngine {
           this.logger.info(
             `  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})`
           );
-          const provider = this.providerRegistry.getProvider(op.resourceType);
+          // Route via the SAME provider the CREATE landed on (#614). Without
+          // threading `provisionedBy`, a CC-routed CREATE would roll back
+          // via the SDK provider — wrong API, wrong identifier semantics.
+          const { provider } = this.providerRegistry.getProviderFor({
+            resourceType: op.resourceType,
+            provisionedBy: op.provisionedBy,
+          });
           await provider.delete(op.logicalId, op.physicalId, op.resourceType, op.properties, {
             expectedRegion: this.stackRegion,
           });
@@ -1350,7 +1381,13 @@ export class DeployEngine {
           this.logger.info(
             `  Rollback: Restoring ${op.logicalId} (${op.resourceType}) to previous state`
           );
-          const provider = this.providerRegistry.getProvider(op.resourceType);
+          // Route via the provider that owns the resource right now per
+          // state (#614). For a CC-managed resource being rolled back, the
+          // SDK provider would have the wrong patch semantics.
+          const { provider } = this.providerRegistry.getProviderFor({
+            resourceType: op.resourceType,
+            provisionedBy: op.provisionedBy,
+          });
           const currentResource = stateResources[op.logicalId];
 
           if (!currentResource) {

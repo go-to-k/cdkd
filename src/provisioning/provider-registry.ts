@@ -385,6 +385,7 @@ export class ProviderRegistry {
       logicalId: string;
       resourceType: string;
       properties: Record<string, unknown> | undefined;
+      provisionedBy?: 'sdk' | 'cc-api' | undefined;
     }>
   ): void {
     this.reportSilentDropDecisions(resources);
@@ -399,15 +400,25 @@ export class ProviderRegistry {
    * Issue [#614](https://github.com/go-to-k/cdkd/issues/614). Replaces the
    * pre-v0.16x throw path: silent drops are now a routing signal, not an
    * error.
+   *
+   * When the optional `provisionedBy` (from existing state) is `'cc-api'`,
+   * the auto-route info line is demoted to `debug` — the resource has been
+   * on CC for at least one prior deploy, so the routing decision is
+   * **continuation of sticky state, not a fresh auto-route**. Surfacing the
+   * info line every deploy would be repetitive noise. The warn line for
+   * explicit `--allow-unsupported-properties` overrides is NOT demoted —
+   * that override is an active user choice for THIS deploy and should
+   * surface every time.
    */
   reportSilentDropDecisions(
     resources: Iterable<{
       logicalId: string;
       resourceType: string;
       properties: Record<string, unknown> | undefined;
+      provisionedBy?: 'sdk' | 'cc-api' | undefined;
     }>
   ): void {
-    for (const { logicalId, resourceType, properties } of resources) {
+    for (const { logicalId, resourceType, properties, provisionedBy } of resources) {
       const drops = findSilentDropProperties(resourceType, properties);
       if (drops.length === 0) continue;
 
@@ -425,12 +436,18 @@ export class ProviderRegistry {
       if (autoRouted.length > 0) {
         const propList = autoRouted.join(', ');
         const overrideHint = autoRouted.map((p) => `${resourceType}:${p}`).join(',');
-        this.logger.info(
+        const message =
           `${logicalId} (${resourceType}): routing via Cloud Control API ` +
-            `(cdkd's SDK Provider does not yet wire ${propList} — CC API will ` +
-            `forward the full property map. Override via ` +
-            `--allow-unsupported-properties ${overrideHint}.)`
-        );
+          `(cdkd's SDK Provider does not yet wire ${propList} — CC API will ` +
+          `forward the full property map. Override via ` +
+          `--allow-unsupported-properties ${overrideHint}.)`;
+        if (provisionedBy === 'cc-api') {
+          // Sticky continuation — already on CC from a prior deploy.
+          // Debug-only to avoid repetitive noise on every redeploy.
+          this.logger.debug(message);
+        } else {
+          this.logger.info(message);
+        }
       }
       if (overridden.length > 0) {
         const propList = overridden.join(', ');

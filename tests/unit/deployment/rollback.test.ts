@@ -303,4 +303,139 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
     expect(finalSavedState.resources['C']).toBeUndefined();
     expect(finalSavedState.resources['B']).toBeDefined();
   });
+
+  it('CC-routed CREATE rollback dispatches via the CC provider, not the SDK provider (#614)', async () => {
+    // A CREATE that auto-routed to CC API (because the template had a
+    // silent-drop property) must roll back via the CC provider's delete.
+    // Pre-#614, rollback used `getProvider(resourceType)` which is the
+    // SDK provider — a CC-managed Lambda being rolled back via the SDK
+    // would try to delete with the wrong API + wrong identifier
+    // semantics. This test pins the threading of `provisionedBy` from
+    // the routing decision into `CompletedOperation` and into the
+    // rollback dispatch.
+    const template: CloudFormationTemplate = {
+      Resources: {
+        CcRouted: { Type: 'AWS::Lambda::Function', Properties: {} },
+        Failing: { Type: 'AWS::S3::Bucket', Properties: {} },
+      },
+    };
+    const changes = new Map<string, ResourceChange>([
+      ['CcRouted', makeChange('CcRouted', 'AWS::Lambda::Function')],
+      ['Failing', makeChange('Failing', 'AWS::S3::Bucket')],
+    ]);
+
+    // The two providers track their delete calls separately so the test
+    // can assert WHICH provider rolled back the CC-routed resource.
+    const sdkProvider = createSdkProvider(new Set(['Failing']));
+    const ccDeleteCalls: string[] = [];
+    const ccProvider = {
+      create: vi.fn().mockImplementation((logicalId: string) =>
+        Promise.resolve({ physicalId: `cc-phys-${logicalId}`, attributes: {} })
+      ),
+      update: vi.fn().mockResolvedValue({ physicalId: 'cc-phys-x', wasReplaced: false }),
+      delete: vi.fn().mockImplementation(async (logicalId: string) => {
+        ccDeleteCalls.push(logicalId);
+      }),
+    };
+
+    const mockStateBackendLocal = {
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 7,
+          stackName,
+          resources: {},
+          outputs: {},
+          lastModified: Date.now(),
+        } satisfies StackState,
+        etag: 'etag-0',
+      }),
+      saveState: vi.fn().mockResolvedValue('etag-1'),
+    };
+
+    const mockLockManager = {
+      acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+      releaseLock: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const mockDagBuilder = {
+      buildGraph: vi.fn().mockReturnValue({}),
+      getExecutionLevels: vi.fn().mockReturnValue([['CcRouted', 'Failing']]),
+      getDirectDependencies: vi.fn(() => []),
+    };
+
+    const mockDiffCalculator = {
+      calculateDiff: vi.fn().mockResolvedValue(changes),
+      hasChanges: vi.fn().mockReturnValue(true),
+      filterByType: vi.fn().mockImplementation(
+        (chs: Map<string, ResourceChange>, type: string) =>
+          [...chs.values()].filter((c) => c.changeType === type)
+      ),
+    };
+
+    // The registry routes CcRouted via CC (provisionedBy='cc-api') and
+    // Failing via SDK. The rollback path must then route CcRouted's
+    // delete back to the CC provider via `provisionedBy: 'cc-api'`.
+    const mockProviderRegistry = {
+      getProvider: vi.fn().mockReturnValue(sdkProvider),
+      getProviderFor: vi.fn().mockImplementation(
+        (input: { resourceType: string; provisionedBy?: 'sdk' | 'cc-api' }) => {
+          if (input.provisionedBy === 'cc-api') {
+            return { provider: ccProvider, provisionedBy: 'cc-api' };
+          }
+          if (input.resourceType === 'AWS::Lambda::Function') {
+            // Fresh CREATE → routes to CC because of (notional) silent-drop.
+            return {
+              provider: ccProvider,
+              provisionedBy: 'cc-api',
+              ccRouteReason: { properties: ['LoggingConfig'] },
+            };
+          }
+          return { provider: sdkProvider, provisionedBy: 'sdk' };
+        }
+      ),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
+      getCloudControlProvider: vi.fn(),
+      validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
+    };
+
+    const engine = new DeployEngine(
+      mockStateBackendLocal as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      { concurrency: 4, noRollback: false },
+      'us-east-1'
+    );
+
+    await expect(engine.deploy(stackName, template)).rejects.toThrow(
+      /Failed to create resource Failing/
+    );
+
+    // Both providers' create() ran: CcRouted via CC, Failing via SDK.
+    expect(ccProvider.create).toHaveBeenCalledWith(
+      'CcRouted',
+      'AWS::Lambda::Function',
+      expect.any(Object)
+    );
+    expect(sdkProvider.create).toHaveBeenCalledWith(
+      'Failing',
+      'AWS::S3::Bucket',
+      expect.any(Object)
+    );
+
+    // The rollback delete for CcRouted MUST have gone through the CC
+    // provider, not the SDK provider. This is the load-bearing
+    // assertion that closes the silent-data-corruption hazard #614's
+    // schema bump was meant to prevent.
+    expect(ccDeleteCalls).toContain('CcRouted');
+    expect(sdkProvider.delete).not.toHaveBeenCalledWith(
+      'CcRouted',
+      expect.any(String),
+      expect.any(String),
+      expect.any(Object),
+      expect.any(Object)
+    );
+  });
 });

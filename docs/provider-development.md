@@ -1104,7 +1104,7 @@ See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](../tests/unit/pr
 
 ### 3c. `handledProperties` ↔ CFn schema coverage check (issue #391)
 
-Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string>>` field naming the CFn template properties it knows how to wire to its AWS API calls. The deploy engine's `selectProviderWithSafetyNet` consults that set at runtime — a template carrying a property NOT in the set falls back to Cloud Control API (when available) or fails loudly.
+Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string>>` field naming the CFn template properties it knows how to wire to its AWS API calls. The provider registry's `getProviderFor` consults that set at routing time — a template carrying a property NOT in the set is auto-routed via Cloud Control API (which forwards the full property map to AWS, closing the silent-drop bug — see #614). `--allow-unsupported-properties Type:Prop` is the per-property opt-out that forces the SDK Provider path and accepts the silent drop.
 
 That's a **runtime** safety net. It doesn't help during development. A provider author who simply forgets to list a property in `handledProperties` AND forgets to wire it in `create()` / `update()` ships a silent bug — exactly what PR #370 (ApiGateway::Method dropped 15+ fields) demonstrated.
 
