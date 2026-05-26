@@ -141,7 +141,7 @@ export class ECSProvider implements ResourceProvider {
         'CapacityProviderStrategy',
         'DeploymentConfiguration',
         'PlacementConstraints',
-        'PlacementStrategy',
+        'PlacementStrategies',
         'PlatformVersion',
         'HealthCheckGracePeriodSeconds',
         'SchedulingStrategy',
@@ -150,6 +150,27 @@ export class ECSProvider implements ResourceProvider {
         'EnableExecuteCommand',
         'ServiceRegistries',
         'Tags',
+      ]),
+    ],
+  ]);
+
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::ECS::Service',
+      new Map<string, string>([
+        [
+          'Role',
+          'Legacy classic-ELB service-linked-role override; AWS uses the AWSServiceRoleForECS service-linked role automatically since 2017',
+        ],
+      ]),
+    ],
+    [
+      'AWS::ECS::TaskDefinition',
+      new Map<string, string>([
+        [
+          'InferenceAccelerators',
+          'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',
+        ],
       ]),
     ],
   ]);
@@ -659,7 +680,8 @@ export class ECSProvider implements ResourceProvider {
           placementConstraints: properties['PlacementConstraints'] as
             | PlacementConstraint[]
             | undefined,
-          placementStrategy: properties['PlacementStrategy'] as PlacementStrategy[] | undefined,
+          placementStrategy: (properties['PlacementStrategies'] ??
+            properties['PlacementStrategy']) as PlacementStrategy[] | undefined,
           platformVersion: properties['PlatformVersion'] as string | undefined,
           healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
             | number
@@ -742,7 +764,8 @@ export class ECSProvider implements ResourceProvider {
           placementConstraints: properties['PlacementConstraints'] as
             | PlacementConstraint[]
             | undefined,
-          placementStrategy: properties['PlacementStrategy'] as PlacementStrategy[] | undefined,
+          placementStrategy: (properties['PlacementStrategies'] ??
+            properties['PlacementStrategy']) as PlacementStrategy[] | undefined,
           platformVersion: properties['PlatformVersion'] as string | undefined,
           healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
             | number
@@ -1383,12 +1406,21 @@ export class ECSProvider implements ResourceProvider {
     // emit: only surface PlacementStrategy when LaunchType is EC2 (or
     // EXTERNAL) — Fargate services cannot legally have one, so the emit
     // would never detect a real console-side change anyway.
+    // CFn schema spells this property `PlacementStrategies` (plural);
+    // AWS API uses the singular `placementStrategy`. Emit BOTH names so
+    // drift comparison works for state files written by either name —
+    // pre-#613-fix templates that wrote the legacy `PlacementStrategy`
+    // AND post-fix templates that use the CFn-canonical
+    // `PlacementStrategies` both round-trip cleanly.
     if (s.launchType === 'EC2' || s.launchType === 'EXTERNAL') {
-      result['PlacementStrategy'] = s.placementStrategy ?? [];
+      const strategy = s.placementStrategy ?? [];
+      result['PlacementStrategy'] = strategy;
+      result['PlacementStrategies'] = strategy;
     } else if (s.placementStrategy && s.placementStrategy.length > 0) {
       // Defensive: surface a non-empty strategy regardless of launch type
       // (so drift still flags an out-of-band attach if AWS ever permits it).
       result['PlacementStrategy'] = s.placementStrategy;
+      result['PlacementStrategies'] = s.placementStrategy;
     }
     result['ServiceRegistries'] = s.serviceRegistries ?? [];
     const tags = normalizeAwsTagsToCfn(s.tags);

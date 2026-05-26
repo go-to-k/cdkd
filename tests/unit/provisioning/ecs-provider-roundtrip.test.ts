@@ -348,7 +348,10 @@ describe('ECSProvider read-update round-trip', () => {
 
   it('Service EC2 round-trip preserves PlacementStrategy in UpdateService input', async () => {
     // The complement of the Fargate test: an EC2 service legitimately
-    // has PlacementStrategy and round-tripping should NOT drop it.
+    // has PlacementStrategy (legacy state key) and round-tripping should
+    // NOT drop it. update() reads both `PlacementStrategies` (the new
+    // CFn-canonical name; see #613 B-bucket fix) and `PlacementStrategy`
+    // (the legacy state-file key emitted by readCurrentState).
     const observed = {
       ServiceName: 'my-svc',
       Cluster: CLUSTER_ARN,

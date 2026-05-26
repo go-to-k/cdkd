@@ -134,6 +134,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       TableBucketARN: BUCKET_ARN,
       Namespace: 'my-namespace',
       Name: 'my-table',
+      // CFn-canonical alias (#613 B-bucket fix).
+      TableName: 'my-table',
       Format: 'ICEBERG',
     });
 
@@ -175,6 +177,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       TableBucketARN: BUCKET_ARN,
       Namespace: 'my-namespace',
       Name: 'my-table',
+      // CFn-canonical alias (#613 B-bucket fix).
+      TableName: 'my-table',
     });
     expect(observed).not.toHaveProperty('Format');
 

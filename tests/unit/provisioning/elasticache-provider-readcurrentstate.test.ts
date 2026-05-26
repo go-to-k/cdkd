@@ -131,6 +131,10 @@ describe('ElastiCacheProvider.readCurrentState', () => {
       expect(result).toEqual({
         CacheSubnetGroupName: 'mygrp',
         CacheSubnetGroupDescription: 'mygrp description',
+        // CFn-canonical alias (#613 B-bucket fix) — emitted alongside the
+        // AWS-API-named `CacheSubnetGroupDescription` so drift comparison
+        // works for both template shapes.
+        Description: 'mygrp description',
         SubnetIds: ['subnet-a', 'subnet-b'],
       });
     });

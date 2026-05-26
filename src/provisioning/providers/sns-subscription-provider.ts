@@ -31,6 +31,18 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     ['AWS::SNS::Subscription', new Set(['TopicArn', 'Protocol', 'Endpoint', 'FilterPolicy'])],
   ]);
 
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::SNS::Subscription',
+      new Map<string, string>([
+        [
+          'Region',
+          'CFn-only cross-region subscription hint; cdkd uses the SDK client region directly and has no per-resource region override',
+        ],
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.snsClient = awsClients.sns;

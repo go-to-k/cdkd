@@ -70,6 +70,10 @@ describe('GlueProvider.readCurrentState', () => {
           LocationUri: 's3://bucket/path',
           Parameters: { foo: 'bar' },
         },
+        // CFn-canonical alias (#613 B-bucket fix) — emitted alongside
+        // `DatabaseInput.Name` so drift comparison works for templates
+        // that supply the top-level `DatabaseName` form.
+        DatabaseName: 'mydb',
       });
     });
 
@@ -115,6 +119,10 @@ describe('GlueProvider.readCurrentState', () => {
           Parameters: { classification: 'json' },
           StorageDescriptor: { Location: 's3://b/p' },
         },
+        // CFn-canonical alias (#613 B-bucket fix) — emitted alongside
+        // `TableInput.Name` so drift comparison works for templates
+        // that supply the top-level `Name` form.
+        Name: 'mytbl',
       });
     });
 

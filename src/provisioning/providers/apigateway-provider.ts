@@ -103,6 +103,22 @@ export class ApiGatewayProvider implements ResourceProvider {
     ],
   ]);
 
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::ApiGateway::Deployment',
+      new Map<string, string>([
+        [
+          'StageName',
+          'CFn-only convenience for inline-creating a Stage from a Deployment; declare AWS::ApiGateway::Stage explicitly to attach to this Deployment',
+        ],
+        [
+          'StageDescription',
+          'CFn-only convenience for inline-creating a Stage; declare AWS::ApiGateway::Stage with the Description property instead',
+        ],
+      ]),
+    ],
+  ]);
+
   /** Maximum number of retries for IAM propagation delays */
   private static readonly MAX_IAM_RETRIES = 3;
   /** Delay between IAM propagation retries (ms) - exponential backoff */

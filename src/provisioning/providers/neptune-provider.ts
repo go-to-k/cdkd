@@ -71,6 +71,7 @@ export class NeptuneProvider implements ResourceProvider {
       new Set([
         'DBClusterIdentifier',
         'EngineVersion',
+        'DBPort',
         'Port',
         'VpcSecurityGroupIds',
         'DBSubnetGroupName',
@@ -365,7 +366,15 @@ export class NeptuneProvider implements ResourceProvider {
           // Neptune engine value is fixed: only `neptune` is accepted.
           Engine: 'neptune',
           EngineVersion: properties['EngineVersion'] as string | undefined,
-          Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+          // CFn schema's writable port field is `DBPort`; `Port` is readOnly
+          // in the schema but older CDK versions emit it. Prefer DBPort, fall
+          // back to Port for backward compat.
+          Port:
+            properties['DBPort'] != null
+              ? Number(properties['DBPort'])
+              : properties['Port'] != null
+                ? Number(properties['Port'])
+                : undefined,
           VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
           DBSubnetGroupName: properties['DBSubnetGroupName'] as string | undefined,
           StorageEncrypted: properties['StorageEncrypted'] as boolean | undefined,
@@ -460,7 +469,12 @@ export class NeptuneProvider implements ResourceProvider {
             | undefined,
           EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
-          Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+          Port:
+            properties['DBPort'] != null
+              ? Number(properties['DBPort'])
+              : properties['Port'] != null
+                ? Number(properties['Port'])
+                : undefined,
           ApplyImmediately: true,
         })
       );
@@ -1064,7 +1078,14 @@ export class NeptuneProvider implements ResourceProvider {
       result['DBClusterIdentifier'] = cluster.DBClusterIdentifier;
     }
     if (cluster.EngineVersion !== undefined) result['EngineVersion'] = cluster.EngineVersion;
-    if (cluster.Port !== undefined) result['Port'] = cluster.Port;
+    // CFn schema spells the writable port field `DBPort`; `Port` is the
+    // (readOnly) output field. Emit BOTH so drift works for state files
+    // written by either the new `DBPort` (post-#613 fix) or the legacy
+    // `Port` template shape.
+    if (cluster.Port !== undefined) {
+      result['Port'] = cluster.Port;
+      result['DBPort'] = cluster.Port;
+    }
     result['VpcSecurityGroupIds'] = (cluster.VpcSecurityGroups ?? [])
       .map((sg) => sg.VpcSecurityGroupId)
       .filter((id): id is string => !!id);

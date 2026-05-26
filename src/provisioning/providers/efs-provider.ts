@@ -67,6 +67,18 @@ export class EFSProvider implements ResourceProvider {
     ],
   ]);
 
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::EFS::AccessPoint',
+      new Map<string, string>([
+        [
+          'ClientToken',
+          'AWS SDK manages this idempotency token internally on CreateAccessPoint; no user-supplied value is honored',
+        ],
+      ]),
+    ],
+  ]);
+
   private getClient(): EFSClient {
     if (!this.client) {
       this.client = new EFSClient(this.providerRegion ? { region: this.providerRegion } : {});

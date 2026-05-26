@@ -132,6 +132,22 @@ export class ASGProvider implements ResourceProvider {
     ],
   ]);
 
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::AutoScaling::AutoScalingGroup',
+      new Map<string, string>([
+        [
+          'LaunchConfigurationName',
+          'AWS Launch Configurations end-of-life 2024-10; use LaunchTemplate instead',
+        ],
+        [
+          'NotificationConfiguration',
+          'Legacy singular form; use NotificationConfigurations (plural) which cdkd already wires',
+        ],
+      ]),
+    ],
+  ]);
+
   private getClient(): AutoScalingClient {
     if (!this.asgClient) {
       this.asgClient = new AutoScalingClient(
