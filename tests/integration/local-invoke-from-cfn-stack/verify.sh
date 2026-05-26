@@ -85,13 +85,19 @@ echo "[verify] step 3: cdk deploy (upstream CDK CLI, NOT cdkd)"
 # vp's globally-managed environment (same pattern as
 # import-nested-stack); no per-fixture install round-trip needed since
 # Node's parent-dir resolution finds aws-cdk-lib from the repo root.
+# Set the sentinel BEFORE `cdk deploy` rather than after — pre-flight
+# has already verified the namespace is clean, so once we issue the
+# deploy command we OWN the namespace (cdk destroy is a no-op on
+# stacks that never reached AWS, so this is safe even on early-failure
+# paths). Mirrors the matching fix in
+# `tests/integration/local-invoke-from-cfn-stack-multi-stack/verify.sh`.
+WE_CREATED_STACK=1
 cdk deploy "${STACK}" \
   --require-approval never \
   --no-version-reporting \
   --no-asset-metadata \
   --no-path-metadata \
   --region "${REGION}"
-WE_CREATED_STACK=1
 echo "[verify] step 3 ok: cdk deploy completed"
 
 echo "[verify] step 4: read the deployed DynamoDB table name from CloudFormation"

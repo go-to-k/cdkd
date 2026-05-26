@@ -2048,6 +2048,7 @@
         "local-invoke-container",
         "local-invoke-dotnet",
         "local-invoke-from-cfn-stack",
+        "local-invoke-from-cfn-stack-multi-stack",
         "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-layers",
@@ -2142,6 +2143,9 @@
           "l2"
         ],
         "local-invoke-from-cfn-stack": [
+          "l2"
+        ],
+        "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
         ],
         "local-invoke-from-state": [
@@ -2739,6 +2743,7 @@
         "infra-security",
         "legacy-bucket-name-fallback",
         "legacy-state-migration",
+        "local-invoke-from-cfn-stack-multi-stack",
         "microservices",
         "multi-region-same-stack",
         "nested-stack",
@@ -2786,6 +2791,9 @@
           "l2"
         ],
         "legacy-state-migration": [
+          "l2"
+        ],
+        "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
         ],
         "microservices": [
