@@ -1,3 +1,4 @@
+import { createHash, createHmac } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
@@ -11,6 +12,12 @@ import type { CachedAuthorizerResult } from '../../../src/local/authorizer-cache
 import type { ContainerPool } from '../../../src/local/container-pool.js';
 import { createAuthorizerCache } from '../../../src/local/authorizer-cache.js';
 import { createJwksCache } from '../../../src/local/cognito-jwt.js';
+import {
+  canonicalizePath,
+  canonicalizeQueryString,
+  type CredentialsLoader,
+  type ResolvedCredentials,
+} from '../../../src/local/sigv4-verify.js';
 
 vi.mock('../../../src/local/rie-client.js', () => ({
   invokeRie: vi.fn(),
@@ -76,6 +83,22 @@ describe('writeAuthRejection', () => {
     writeAuthRejection(res, 'v2', 'policy-deny');
     expect(res.statusCode).toBe(401);
     expect(res.capturedBody).toBe('{"message":"Unauthorized"}');
+  });
+
+  it('Function URL (v2 + IAM) + missing-identity → 403 Forbidden (#621)', () => {
+    // Function URL with AWS_IAM is v2-shaped but the AWS-deployed response
+    // is 403 (the SigV4 layer rejects), not API Gateway v2's default 401.
+    const res = makeResponse();
+    writeAuthRejection(res, 'v2', 'missing-identity', 'iam');
+    expect(res.statusCode).toBe(403);
+    expect(res.capturedBody).toBe('{"Message":"Forbidden"}');
+  });
+
+  it('Function URL (v2 + IAM) + policy-deny → 403 Forbidden (#621)', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v2', 'policy-deny', 'iam');
+    expect(res.statusCode).toBe(403);
+    expect(res.capturedBody).toBe('{"Message":"Forbidden"}');
   });
 });
 
@@ -1054,5 +1077,240 @@ describe('buildAuthorizerContextForServiceIntegration (closes #502)', () => {
         scopes: [],
       },
     });
+  });
+});
+
+/**
+ * End-to-end tests for Lambda Function URL `AuthType: 'AWS_IAM'`
+ * (issue #621). The infrastructure for SigV4 verification shipped in
+ * PR #447 for REST v1; this issue wires Function URL routes through the
+ * same `IamAuthorizer` plumbing so they share the verifier rather than
+ * being rejected at boot.
+ *
+ * Tests boot a real `node:http` server with a Function URL route
+ * (v2-shaped) carrying an IAM authorizer, then exercise three
+ * end-to-end shapes: valid SigV4 (200), missing Authorization header
+ * (403), and tampered signature (403). The 403 status (vs API Gateway
+ * v2's default 401) matches Lambda's deployed Function URL IAM response.
+ */
+function signFunctionUrlRequest(opts: {
+  method: string;
+  path: string;
+  query?: string;
+  headers: Record<string, string>;
+  body?: Buffer;
+  accessKeyId: string;
+  secretAccessKey: string;
+  region: string;
+  amzDate: string;
+}): { authorization: string; headers: Record<string, string> } {
+  const headers = { ...opts.headers };
+  if (!headers['x-amz-date']) headers['x-amz-date'] = opts.amzDate;
+  const body = opts.body ?? Buffer.alloc(0);
+  const payloadHash = createHash('sha256').update(body).digest('hex');
+
+  const signedHeaderNames = Object.keys(headers)
+    .map((h) => h.toLowerCase())
+    .sort();
+  const headerLines = signedHeaderNames
+    .map((h) => `${h}:${headers[h]!.trim().replace(/\s+/g, ' ')}\n`)
+    .join('');
+  const canonicalQuery = opts.query ? canonicalizeQueryString(opts.query) : '';
+  const canonicalUri = canonicalizePath(opts.path);
+
+  const canonicalRequest = [
+    opts.method.toUpperCase(),
+    canonicalUri,
+    canonicalQuery,
+    headerLines,
+    signedHeaderNames.join(';'),
+    payloadHash,
+  ].join('\n');
+
+  const date = opts.amzDate.slice(0, 8);
+  // Function URL uses service=lambda when signed by an AWS SDK client;
+  // the verifier only checks the access-key-id matches the dev's local
+  // creds and the canonical-request hash matches, so the service name
+  // in the credential scope is not load-bearing for the verify step.
+  const service = 'lambda';
+  const credentialScope = `${date}/${opts.region}/${service}/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    opts.amzDate,
+    credentialScope,
+    createHash('sha256').update(canonicalRequest, 'utf8').digest('hex'),
+  ].join('\n');
+
+  const kDate = createHmac('sha256', `AWS4${opts.secretAccessKey}`).update(date).digest();
+  const kRegion = createHmac('sha256', kDate).update(opts.region).digest();
+  const kService = createHmac('sha256', kRegion).update(service).digest();
+  const kSigning = createHmac('sha256', kService).update('aws4_request').digest();
+  const signature = createHmac('sha256', kSigning).update(stringToSign, 'utf8').digest('hex');
+
+  const authorization =
+    `AWS4-HMAC-SHA256 Credential=${opts.accessKeyId}/${credentialScope}, ` +
+    `SignedHeaders=${signedHeaderNames.join(';')}, Signature=${signature}`;
+  return { authorization, headers };
+}
+
+function nowAmzDate(): string {
+  // YYYYMMDDTHHmmssZ — what AWS SDKs put in `x-amz-date`. Use the
+  // current clock so the verifier's 15-min skew check passes against
+  // the real wall clock that `startApiServer` reads (the http-server
+  // does NOT pass a `now` override to `verifySigV4`).
+  const d = new Date();
+  const yyyy = d.getUTCFullYear().toString().padStart(4, '0');
+  const mm = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+  const dd = d.getUTCDate().toString().padStart(2, '0');
+  const hh = d.getUTCHours().toString().padStart(2, '0');
+  const mi = d.getUTCMinutes().toString().padStart(2, '0');
+  const ss = d.getUTCSeconds().toString().padStart(2, '0');
+  return `${yyyy}${mm}${dd}T${hh}${mi}${ss}Z`;
+}
+
+function stubCredentialsLoader(creds: ResolvedCredentials): CredentialsLoader {
+  return async () => creds;
+}
+
+function functionUrlIamRoute(): RouteWithAuth {
+  return {
+    route: {
+      method: 'ANY',
+      pathPattern: '/{proxy+}',
+      lambdaLogicalId: 'HandlerFn',
+      source: 'function-url',
+      apiVersion: 'v2',
+      stage: '$default',
+      apiStackName: 'S',
+      declaredAt: 'S/Url',
+      invokeMode: 'BUFFERED',
+    },
+    authorizer: {
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: 'S/Url',
+    },
+  };
+}
+
+describe('startApiServer — Function URL AWS_IAM (#621)', () => {
+  const accessKeyId = 'AKIDEXAMPLE';
+  const secretAccessKey = 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY';
+
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+  });
+
+  it('valid SigV4 → 200 (request reaches the Lambda handler)', async () => {
+    invokeRieMock.mockImplementation(async () => ({
+      raw: '',
+      payload: { statusCode: 200, body: 'ok' },
+    }));
+    const route = functionUrlIamRoute();
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      sigV4CredentialsLoader: stubCredentialsLoader({ accessKeyId, secretAccessKey }),
+    });
+    try {
+      const path = '/items/42';
+      const amzDate = nowAmzDate();
+      const { authorization, headers } = signFunctionUrlRequest({
+        method: 'GET',
+        path,
+        // The verifier rebuilds the canonical request from the request
+        // signed-header list. The Host header at the client side is
+        // `127.0.0.1:<port>`; signing it here keeps the hashes aligned.
+        headers: { host: `${server.host}:${server.port}` },
+        accessKeyId,
+        secretAccessKey,
+        region: 'us-east-1',
+        amzDate,
+      });
+      const r = await fetch(`http://${server.host}:${server.port}${path}`, {
+        headers: { authorization, ...headers },
+      });
+      expect(r.status).toBe(200);
+      expect(invokeRieMock).toHaveBeenCalledTimes(1);
+      // Function URL + AWS_IAM does NOT emit a `buildOverlay` block —
+      // AWS-deployed Function URLs write principal context under
+      // `event.requestContext.authorizer.iam.{accessKey, accountId, ...}`,
+      // NOT `.lambda`. cdkd has no local IAM data plane to synthesize
+      // the `.iam` block, so the safest answer is no overlay at all:
+      // the base v2 event's `authorizer: null` survives intact (PR body
+      // honors this with "no Function URL identity context" out-of-scope).
+      // A regression that wrote principalId under `.lambda.principalId`
+      // would mislead handlers that defensive-read `.iam ?? {}` — this
+      // assertion catches it.
+      const passedEvent = invokeRieMock.mock.calls[0]?.[2] as
+        | { requestContext?: { authorizer?: Record<string, unknown> | null } }
+        | undefined;
+      expect(passedEvent?.requestContext?.authorizer).toBeNull();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('missing Authorization header → 403 Forbidden (no Lambda invoke)', async () => {
+    const route = functionUrlIamRoute();
+    const pool = makePool();
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      sigV4CredentialsLoader: stubCredentialsLoader({ accessKeyId, secretAccessKey }),
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/items/42`);
+      expect(r.status).toBe(403);
+      const body = (await r.json()) as { Message: string };
+      expect(body.Message).toBe('Forbidden');
+      expect(invokeRieMock).not.toHaveBeenCalled();
+      expect((pool.acquire as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('tampered signature → 403 Forbidden (no Lambda invoke)', async () => {
+    const route = functionUrlIamRoute();
+    const pool = makePool();
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      sigV4CredentialsLoader: stubCredentialsLoader({ accessKeyId, secretAccessKey }),
+    });
+    try {
+      const path = '/items/42';
+      const amzDate = nowAmzDate();
+      const { authorization, headers } = signFunctionUrlRequest({
+        method: 'GET',
+        path,
+        headers: { host: `${server.host}:${server.port}` },
+        accessKeyId,
+        secretAccessKey,
+        region: 'us-east-1',
+        amzDate,
+      });
+      // Flip one hex character in the signature so the verifier rejects.
+      const tampered = authorization.replace(/Signature=([0-9a-f])/, (_m, c: string) =>
+        `Signature=${c === '0' ? '1' : '0'}`
+      );
+      const r = await fetch(`http://${server.host}:${server.port}${path}`, {
+        headers: { authorization: tampered, ...headers },
+      });
+      expect(r.status).toBe(403);
+      const body = (await r.json()) as { Message: string };
+      expect(body.Message).toBe('Forbidden');
+      expect(invokeRieMock).not.toHaveBeenCalled();
+      expect((pool.acquire as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
   });
 });

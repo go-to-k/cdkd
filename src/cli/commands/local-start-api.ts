@@ -2633,7 +2633,7 @@ export function resolveMtlsConfig(
 export function createLocalStartApiCommand(): Command {
   const startApi = new Command('start-api')
     .description(
-      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and REST v1 AWS_IAM (SigV4 signature verification only — IAM policy evaluation is NOT emulated; see docs/local-emulation.md). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
+      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and AWS_IAM auth (REST v1 `AuthorizationType: AWS_IAM` and Function URL `AuthType: AWS_IAM` — SigV4 signature verification only; IAM policy evaluation is NOT emulated; see docs/local-emulation.md). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
     .argument(
       '[target]',

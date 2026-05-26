@@ -482,17 +482,23 @@ async function handleRequest(
         `Authorizer ${authorizer.logicalId} threw for ${match.route.declaredAt}: ${err instanceof Error ? err.message : String(err)}`
       );
       // Authorizer error is treated as policy-deny (403 on REST v1, 401
-      // on HTTP v2) — matches deployed behavior on Lambda authorizer
-      // exceptions.
-      writeAuthRejection(res, match.route.apiVersion, 'policy-deny');
+      // on HTTP v2, 403 on Function URL AWS_IAM) — matches deployed
+      // behavior on Lambda authorizer exceptions / SigV4 verification
+      // failures.
+      writeAuthRejection(res, match.route.apiVersion, 'policy-deny', authorizer.kind);
       return;
     }
     if (!outcome.result.allow) {
-      writeAuthRejection(res, match.route.apiVersion, outcome.denyKind ?? 'policy-deny');
+      writeAuthRejection(
+        res,
+        match.route.apiVersion,
+        outcome.denyKind ?? 'policy-deny',
+        authorizer.kind
+      );
       return;
     }
     authResult = outcome.result;
-    const overlay = buildOverlay(authorizer, authResult);
+    const overlay = buildOverlay(authorizer, authResult, match.route.apiVersion);
     if (overlay) {
       baseEvent = applyAuthorizerOverlay(baseEvent, overlay);
     }
@@ -1182,7 +1188,8 @@ function pickSourceIp(
 
 function buildOverlay(
   authorizer: AuthorizerInfo,
-  result: CachedAuthorizerResult
+  result: CachedAuthorizerResult,
+  routeApiVersion: 'v1' | 'v2'
 ): AuthorizerEventOverlay | undefined {
   // PR #515 item 9: `buildAuthorizerContextForServiceIntegration` was
   // extracted into the shared `authorizer-context.ts:buildAuthorizerContextShape`
@@ -1212,9 +1219,24 @@ function buildOverlay(
     return { kind: 'cognito-rest-v1', claims: result.context ?? {} };
   }
   if (authorizer.kind === 'iam') {
-    // AWS_IAM authorization is REST v1 only. Surface the access-key-id
-    // as the principal so user handlers can log it; we don't synthesize
-    // an IAM context (no policy emulation).
+    // AWS_IAM authorization runs on REST v1 (`AuthorizationType: 'AWS_IAM'`)
+    // and on Function URLs (`AuthType: 'AWS_IAM'`, issue #621).
+    //
+    // REST v1: surface the access-key-id under `authorizer.principalId`
+    // via the flat v1 overlay shape. PR #447 established this precedent.
+    //
+    // Function URL (v2 + iam): emit NO overlay. AWS-deployed Function URLs
+    // write principal context under `event.requestContext.authorizer.iam.
+    // {accessKey, accountId, callerId, userArn, ...}` — NOT `.lambda` —
+    // and cdkd has no local IAM data plane to synthesize that block (no
+    // STS GetCallerIdentity per request, no IAM policy emulation). Emitting
+    // the v2 `lambda-http-v2` overlay would write `principalId` under
+    // `.lambda.principalId`, which is the wrong namespace and worse than
+    // no context: handlers defensive-reading `.iam ?? {}` see an empty
+    // object either way, and handlers reading `.lambda` see a misleading
+    // value that does not exist on deployed Function URLs. PR body honors
+    // this with "no Function URL identity context" out-of-scope.
+    if (routeApiVersion === 'v2') return undefined;
     return {
       kind: 'lambda-rest-v1',
       ...(result.principalId !== undefined && { principalId: result.principalId }),
@@ -1233,12 +1255,23 @@ function buildOverlay(
  *     authorizer ran and denied; status mirrors AWS API Gateway).
  *   - HTTP v2, both kinds → 401 `{"message":"Unauthorized"}` (HTTP API
  *     collapses both into the same response).
+ *   - Function URL with AWS_IAM (issue #621) → 403 `{"Message":"Forbidden"}`
+ *     for both deny kinds (matches Lambda's deployed Function URL IAM
+ *     behavior — the AWS SigV4 layer rejects with 403, not 401).
  */
 export function writeAuthRejection(
   res: ServerResponse,
   apiVersion: 'v1' | 'v2',
-  denyKind: 'missing-identity' | 'policy-deny'
+  denyKind: 'missing-identity' | 'policy-deny',
+  authorizerKind?: AuthorizerInfo['kind']
 ): void {
+  // Function URLs are v2-shaped but Lambda's IAM rejection differs from
+  // API Gateway v2's default 401 — match the deployed response so a dev
+  // exercising AWS_IAM Function URLs sees the same status code locally.
+  if (apiVersion === 'v2' && authorizerKind === 'iam') {
+    writeError(res, 403, '{"Message":"Forbidden"}');
+    return;
+  }
   if (apiVersion === 'v2') {
     writeError(res, 401, '{"message":"Unauthorized"}');
     return;

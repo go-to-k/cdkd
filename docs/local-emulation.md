@@ -532,7 +532,7 @@ unsupportedness):
 | Synthetic CORS preflight | REST v1 `HttpMethod: OPTIONS` + `Integration.Type: MOCK` + `IntegrationResponses[].ResponseParameters` carries literal `method.response.header.*` pairs (the shape CDK's `defaultCorsPreflightOptions` synthesizes) | Captured at boot. The HTTP server returns the captured status + headers directly on OPTIONS without invoking any Lambda. |
 | Streaming Function URL | `AWS::Lambda::Url` with `InvokeMode: RESPONSE_STREAM` (issue #467) | Dispatched via the RIE streaming protocol: the request goes out with `Lambda-Runtime-Function-Response-Mode: streaming` and the response body's JSON prelude (`{statusCode, headers, cookies?}` + an 8-NULL-byte separator + raw body) is parsed; the body Readable is piped to the HTTP client with `Transfer-Encoding: chunked`. Note: AWS's local RIE buffers the response (verified empirically against `public.ecr.aws/lambda/nodejs:20`), so curl observes the chunks in one block locally even though cdkd's pipe / chunked-encoding machinery works correctly — real incremental delivery only manifests against the deployed Lambda runtime. |
 | REST v1 non-AWS_PROXY (closes #457) | `Integration.Type` is one of `MOCK` (non-CORS-preflight), `HTTP_PROXY`, `HTTP`, or `AWS` (Lambda non-proxy). | Dispatched via the per-kind handler in `src/local/rest-v1-integrations.ts`. MOCK / HTTP / AWS apply VTL request + response templates via the hand-rolled engine at `src/local/vtl-engine.ts`. HTTP_PROXY forwards verbatim with `RequestParameters` mappings. AWS Lambda non-proxy uses the same container pool as AWS_PROXY but transforms event payload + response via VTL and routes errors through `IntegrationResponses[].SelectionPattern`. |
-| Deferred-error unsupported | REST v1 AWS integration targeting a non-Lambda service (`:s3:path/...` / `:sqs:action/...` etc.); HTTP_PROXY / HTTP with a non-literal `Uri` (cdkd does not resolve Fn::Sub / Fn::Join in HTTP Uris); HTTP API v2 service integrations (`IntegrationSubtype` set); WebSocket APIs (`ProtocolType: WEBSOCKET`); Function URLs with `AuthType !== 'NONE'`; routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
+| Deferred-error unsupported | REST v1 AWS integration targeting a non-Lambda service (`:s3:path/...` / `:sqs:action/...` etc.); HTTP_PROXY / HTTP with a non-literal `Uri` (cdkd does not resolve Fn::Sub / Fn::Join in HTTP Uris); HTTP API v2 service integrations (`IntegrationSubtype` set); WebSocket APIs (`ProtocolType: WEBSOCKET`); Function URLs with an unrecognized `AuthType` (anything other than `'NONE'` / `'AWS_IAM'`); routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
 | Hard error | Template-structural problems the discovery layer cannot generate a meaningful route from: missing `Integration` on a Method, non-Ref `RestApiId` / `ApiId`, malformed Route `Target`, ParentId chain failures, missing `PathPart`, unresolvable `TargetFunctionArn` on a Function URL | Boot aborts via `RouteDiscoveryError` with every offending route listed in a single message. |
 
 The deferred-error class lets you run the supported subset of an API
@@ -849,18 +849,20 @@ URL is blocked by a corporate proxy. **Do NOT rely on this in any
 shared environment** — the dev's machine accepts every token, including
 forged ones.
 
-REST v1 `AWS_IAM` authorization is supported with
-**signature-verification-only** semantics — see the next section. mTLS
+`AWS_IAM` authorization is supported with **signature-verification-only**
+semantics on BOTH REST v1 (`AuthorizationType: 'AWS_IAM'`) and Function
+URLs (`AuthType: 'AWS_IAM'`, issue #621) — see the next section. mTLS
 authorizers and any non-TOKEN/REQUEST/COGNITO_USER_POOLS Type /
 non-REQUEST/JWT AuthorizerType still hard-error at discovery with the
 offending route's location named.
 
-### `local start-api` AWS_IAM authorizer (REST v1, signature verification only)
+### `local start-api` AWS_IAM authorizer (REST v1 + Function URL, signature verification only)
 
-Routes that declare `AuthorizationType: 'AWS_IAM'` boot and serve
-requests; cdkd verifies the inbound `Authorization: AWS4-HMAC-SHA256 ...`
-SigV4 signature against the developer's **local** AWS credentials (the
-same default credential chain every other cdkd command uses):
+Routes that declare REST v1 `AuthorizationType: 'AWS_IAM'` OR Function
+URL `AuthType: 'AWS_IAM'` boot and serve requests; cdkd verifies the
+inbound `Authorization: AWS4-HMAC-SHA256 ...` SigV4 signature against
+the developer's **local** AWS credentials (the same default credential
+chain every other cdkd command uses):
 
 1. Parse the header into `(Credential, SignedHeaders, Signature)`.
 2. Reconstruct the canonical request per the AWS SigV4 spec.
@@ -871,11 +873,25 @@ same default credential chain every other cdkd command uses):
 Outcomes:
 
 - **Valid signature with the dev's credentials** → request reaches the
-  handler. The handler sees the access-key-id as the
-  `event.requestContext.authorizer.principalId`.
-- **No / malformed `Authorization` header** → 401 (`missing-identity`).
-- **Signature mismatch under the dev's own credentials** → 403
-  (`policy-deny`).
+  handler.
+  - **REST v1**: the handler sees the access-key-id as
+    `event.requestContext.authorizer.principalId` (flat v1 overlay).
+  - **Function URL**: NO authorizer block is synthesized. The base v2
+    event's `requestContext.authorizer` stays `null`. AWS-deployed
+    Function URLs write principal context under
+    `event.requestContext.authorizer.iam.{accessKey, accountId, callerId,
+    userArn, ...}`, and cdkd has no local IAM data plane to populate
+    that block (no STS GetCallerIdentity per request, no policy
+    emulation). Emitting principalId under `.lambda` would mislead
+    handlers that defensive-read `.iam`, so the deployed and local
+    behavior diverge only by absence of identity context — never by
+    location.
+- **No / malformed `Authorization` header**, **signature mismatch
+  under the dev's own credentials**, or any other rejection → 401 / 403
+  matching the deployed response:
+  - REST v1: 401 (`missing-identity`) / 403 (`policy-deny`).
+  - Function URL: 403 (`{"Message":"Forbidden"}`) for both deny kinds —
+    matches Lambda's deployed Function URL IAM rejection.
 - **Different `Credential` access-key-id than the dev has** →
   warn-and-pass. The local server cannot reproduce a signing key it
   doesn't have, and refusing every foreign-identity request would
@@ -1028,7 +1044,7 @@ curl --cacert ca.pem \
 
 | Out of scope | Deferred to |
 | --- | --- |
-| REST v1 IAM authorizer — IAM policy evaluation (resource/action/condition). Signature verification IS implemented. | Out of scope (the local server has no IAM data plane) |
+| AWS_IAM authorizer (REST v1 + Function URL) — IAM policy evaluation (resource/action/condition). Signature verification IS implemented on both surfaces (#447 for REST v1, #621 for Function URL). | Out of scope (the local server has no IAM data plane) |
 | REST v1 AWS integration with non-Lambda service backend (`:s3:path/...` / `:sqs:action/...` / `:dynamodb:action/...` / etc.) | Future PR — requires per-service SDK clients, IAM credential threading, and a per-service compatibility matrix. v1 emulates Lambda non-proxy AWS integrations only (#457). |
 | VTL features outside the supported subset (arithmetic outside literal concat, `#macro` / `#parse` / `#include`, range operator, `$velocityCount`, JSONPath filter expressions) | Surface as `VtlEvaluationError` → HTTP 502 + reason body. Hand-roll the missing feature in `src/local/vtl-engine.ts` if a real workload needs it. |
 | WebSocket APIs | Never (different protocol) |
