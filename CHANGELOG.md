@@ -1,3 +1,10 @@
+# [0.155.0](https://github.com/go-to-k/cdkd/compare/v0.154.0...v0.155.0) (2026-05-26)
+
+
+### Features
+
+* **provisioning:** add IAMManagedPolicyProvider (AWS::IAM::ManagedPolicy) ([#605](https://github.com/go-to-k/cdkd/issues/605)) ([c2912f3](https://github.com/go-to-k/cdkd/commit/c2912f36f58b8d306d346a61ff0ee9b7e6ef434e))
+
 # [0.154.0](https://github.com/go-to-k/cdkd/compare/v0.153.0...v0.154.0) (2026-05-26)
 
 
