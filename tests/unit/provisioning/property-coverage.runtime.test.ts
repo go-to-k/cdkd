@@ -260,6 +260,34 @@ describe('ProviderRegistry.validateResourceProperties', () => {
     expect(idxB).toBeGreaterThan(idxA);
   });
 
+  it('sorts logical IDs alphabetically across resources in the error message', () => {
+    const fx = pickSilentDropFixture();
+    const registry = new ProviderRegistry();
+    let message = '';
+    try {
+      // Pass insertion order Zeta -> Alpha to confirm the renderer sorts.
+      registry.validateResourceProperties([
+        {
+          logicalId: 'ZetaResource',
+          resourceType: fx.resourceType,
+          properties: { [fx.property]: 'x' },
+        },
+        {
+          logicalId: 'AlphaResource',
+          resourceType: fx.resourceType,
+          properties: { [fx.property]: 'y' },
+        },
+      ]);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    const idxAlpha = message.indexOf('AlphaResource');
+    const idxZeta = message.indexOf('ZetaResource');
+    expect(idxAlpha).toBeGreaterThan(-1);
+    expect(idxZeta).toBeGreaterThan(-1);
+    expect(idxAlpha).toBeLessThan(idxZeta);
+  });
+
   it('throws on a mixed template — flags only the silent-drop resource', () => {
     const fx = pickSilentDropFixture();
     const registry = new ProviderRegistry();
