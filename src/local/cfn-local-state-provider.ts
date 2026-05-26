@@ -101,6 +101,14 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   // intrinsic-valued env vars) doesn't open a needless client.
   private client: CloudFormationClient | undefined;
   private readonly clientOptions: { region: string; profile?: string };
+  // Issue #611 NIT 2: `dispose()` is terminal. The lazy `getClient()`
+  // path would otherwise resurrect the client on a post-dispose
+  // `load()` / `buildCrossStackResolver()` call, which violates the
+  // interface contract (the CLI calls `dispose()` in its outer
+  // `finally`, so any subsequent provider use is a programming bug).
+  // Flip the flag in `dispose()` and throw on any operational entry
+  // point so the bug surfaces loudly.
+  private disposed = false;
 
   constructor(opts: CfnLocalStateProviderOptions) {
     this.cfnStackName = opts.cfnStackName;
@@ -110,6 +118,9 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   }
 
   private getClient(): CloudFormationClient {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
     if (!this.client) {
       // Profile threading mirrors `AwsClients` in src/utils/aws-clients.ts:
       // the project-wide convention is to NOT pass `profile` directly to
@@ -139,6 +150,9 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     _stackName: string,
     _synthRegion: string | undefined
   ): Promise<LocalStateRecord | undefined> {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
     const logger = getLogger();
     const client = this.getClient();
 
@@ -150,7 +164,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       resourceMap = buildResourceStateMap(resp.StackResources ?? []);
     } catch (err) {
       logger.warn(
-        `${this.label}: DescribeStackResources(${this.cfnStackName}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `${this.label}: DescribeStackResources(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)}. ` +
           `Was the stack deployed in region '${this.region}'? Falling back.`
       );
       return undefined;
@@ -170,7 +184,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       }
     } catch (err) {
       logger.warn(
-        `${this.label}: DescribeStacks(${this.cfnStackName}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `${this.label}: DescribeStacks(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)}. ` +
           `Outputs will be empty (Fn::GetStackOutput cannot resolve).`
       );
       outputs = {};
@@ -200,6 +214,9 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   public async buildCrossStackResolver(
     _consumerRegion: string
   ): Promise<CrossStackResolver | undefined> {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
     const logger = getLogger();
     const client = this.getClient();
     const label = this.label;
@@ -207,19 +224,27 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     // Memoize the exports map across multiple `Fn::ImportValue` lookups
     // in one substitution pass so a multi-import env block doesn't pay
     // N round-trips to ListExports.
-    let cachedExports: Map<string, string> | undefined;
+    //
+    // Issue #611 fix: cache the in-flight Promise (not just the
+    // resolved value) so parallel `resolveImport` callers single-flight
+    // through ONE `ListExports` walk. Without this, two awaiting
+    // callers both see `cachedExports === undefined` at entry, both
+    // fire `fetchAllExports`, and the cache only "saves" later
+    // sequential callers. The parallel race is realistic: a single
+    // env block with two `Fn::ImportValue`s drives the substitution
+    // engine through `Promise.all`-shaped concurrent resolver calls.
+    let exportsPromise: Promise<Map<string, string> | undefined> | undefined;
 
-    const ensureExports = async (): Promise<Map<string, string> | undefined> => {
-      if (cachedExports) return cachedExports;
-      const result = await fetchAllExports(client).catch((err: unknown) => {
+    const ensureExports = (): Promise<Map<string, string> | undefined> => {
+      if (exportsPromise) return exportsPromise;
+      exportsPromise = fetchAllExports(client).catch((err: unknown) => {
         logger.warn(
-          `${label}: ListExports (${region}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `${label}: ListExports (${region}) failed: ${formatAwsErrorForWarn(err)}. ` +
             `Fn::ImportValue intrinsics will warn-and-drop.`
         );
         return undefined;
       });
-      if (result) cachedExports = result;
-      return result;
+      return exportsPromise;
     };
 
     return {
@@ -254,6 +279,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   }
 
   public dispose(): void {
+    this.disposed = true;
     if (this.client) {
       this.client.destroy();
       this.client = undefined;
@@ -348,6 +374,35 @@ export async function fetchAllExports(client: CloudFormationClient): Promise<Map
         'ListExports pagination exceeded 50 pages — likely a malformed NextToken loop.'
       );
     }
-  } while (nextToken !== undefined);
+    // Issue #611 NIT 3: defend against an empty-string `NextToken`. The
+    // SDK type allows `string | undefined`; AWS shouldn't return `''`
+    // in practice, but if it ever does the loop would keep firing
+    // `ListExports({ NextToken: '' })` until the 50-page bound — wasted
+    // round-trips on an empty result page. Treat `''` as terminal.
+  } while (nextToken !== undefined && nextToken !== '');
   return out;
+}
+
+/**
+ * Format an AWS SDK error as `<name> (HTTP <status>): <message>` so the
+ * surfaced warn name the error class (e.g. `ThrottlingException`,
+ * `AccessDeniedException`, `ValidationError`) and HTTP status alongside
+ * the human-readable message. Falls back to the bare message for
+ * non-SDK errors (the existing pre-issue-#611 behavior) so non-AWS
+ * thrown values still surface meaningfully. Exported for unit testing.
+ *
+ * Issue #611 NIT 4 — `normalizeAwsError` in `utils/error-handler.ts` is
+ * S3-bucket-specific (it rewrites the synthetic `Unknown`/`UnknownError`
+ * with bucket / region context), so the CFn provider extracts the
+ * pieces directly here.
+ */
+export function formatAwsErrorForWarn(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const name = err.name && err.name !== 'Error' ? err.name : undefined;
+  const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+  const prefixParts: string[] = [];
+  if (name !== undefined) prefixParts.push(name);
+  if (status !== undefined) prefixParts.push(`HTTP ${status}`);
+  if (prefixParts.length === 0) return err.message;
+  return `${prefixParts.join(' ')}: ${err.message}`;
 }

@@ -79,6 +79,23 @@ export function resolveCfnStackName(fromCfnStack: string | boolean, cdkdStackNam
 }
 
 /**
+ * Single source of truth for "is the user asking for `--from-cfn-stack`?".
+ * Commander maps the flag to one of `undefined` (absent) / `true` (bare) /
+ * `'<name>'` (explicit). Everything except `undefined` / `false` means the
+ * flag is present. Extracted so the `local-start-api` "state source
+ * active" check (the parent call site that decides whether to load any
+ * state at all) and `createLocalStateProvider`'s own branch logic stay
+ * in lock-step — a previous duplication of this predicate motivated the
+ * extraction (issue #611 NIT 5).
+ *
+ * Exported for use by `local-start-api` and unit testing.
+ */
+export function isCfnFlagPresent(opts: Pick<LocalStateSourceOptions, 'fromCfnStack'>): boolean {
+  const v = opts.fromCfnStack;
+  return v !== undefined && v !== false;
+}
+
+/**
  * Resolve the region used for the CFn client. The CFn provider is
  * region-bound at construction time; we apply the precedence chain
  * `--stack-region` > `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION`
@@ -176,11 +193,26 @@ export function createLocalStateProvider(
   synthRegion: string | undefined
 ): LocalStateProvider | undefined {
   const cfnStackOpt = options.fromCfnStack;
-  const cfnFlagPresent = cfnStackOpt !== undefined && cfnStackOpt !== false;
+  const cfnFlagPresent = isCfnFlagPresent(options);
   if (options.fromState && cfnFlagPresent) {
     throw new LocalStateSourceError(
       '--from-state and --from-cfn-stack are mutually exclusive. ' +
         'Use --from-state for stacks deployed via `cdkd deploy`; use --from-cfn-stack for stacks deployed via `cdk deploy` (CloudFormation).'
+    );
+  }
+
+  // Issue #611 NIT 1: reject empty `--from-cfn-stack ""`. The string is
+  // truthy in the `cfnFlagPresent` check (Commander only collapses
+  // boolean `true` / `undefined` for absent / bare flags — an explicit
+  // empty argument lands here as `''`). Letting it through would
+  // construct a `CfnLocalStateProvider` with `cfnStackName: ''` and the
+  // SDK's `DescribeStackResources({ StackName: '' })` rejects with a
+  // generic ValidationError far from the call site. Reject at the
+  // dispatcher with a clear remediation message instead.
+  if (cfnStackOpt === '') {
+    throw new LocalStateSourceError(
+      '--from-cfn-stack requires a non-empty stack name when an explicit value is provided. ' +
+        'Drop the value to use the cdkd stack name, or pass --from-cfn-stack <name>.'
     );
   }
 
