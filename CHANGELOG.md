@@ -1,3 +1,10 @@
+## [0.159.2](https://github.com/go-to-k/cdkd/compare/v0.159.1...v0.159.2) (2026-05-26)
+
+
+### Bug Fixes
+
+* **local:** honor --profile for --from-cfn-stack CFn client ([#628](https://github.com/go-to-k/cdkd/issues/628)) ([#631](https://github.com/go-to-k/cdkd/issues/631)) ([817e7fe](https://github.com/go-to-k/cdkd/commit/817e7fe9e206c30fd90d91c2a74776578942266a))
+
 ## [0.159.1](https://github.com/go-to-k/cdkd/compare/v0.159.0...v0.159.1) (2026-05-26)
 
 
