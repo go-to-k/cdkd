@@ -517,6 +517,76 @@ which CFn itself tolerates. Read-only properties (AWS-managed Arns, Ids,
 etc.) also pass through silently; you cannot set them from the template
 side and they are no-ops if they appear there.
 
+### When to use this flag (safety-valve guidance)
+
+The flag is the **safety valve** for situations where cdkd's fail-fast
+pre-flight is too strict for your immediate needs. cdkd defaults to
+fail-fast because silent drop is a real bug class (the deployed resource
+is missing fields the user wrote); the flag lets you accept the drop
+explicitly when the alternative is worse.
+
+The contract is: *cdkd promises to tell you about silent drops instead
+of hiding them. You then choose what to do — wait, work around, recreate,
+or explicitly accept the drop.* The flag is the "explicitly accept" branch.
+It does not change cdkd's behavior; it changes what cdkd warns you about.
+
+#### Use the flag when
+
+- **Mid-life update on an existing SDK-managed resource that you cannot
+  recreate.** AWS added a new property, CDK supports it, but cdkd's
+  provider has not caught up yet. Recreating the resource is unacceptable
+  (stateful data, downtime, ARN references from other stacks). The flag
+  accepts the silent drop until provider support lands.
+- **You are prototyping** and the missing field does not affect what you
+  are testing.
+- **You filed an upstream issue** (the error message contains a 1-click
+  pre-filled GitHub issue link) and want to continue your work while
+  waiting for the fix.
+
+#### Do NOT use the flag when
+
+- **The dropped property is security-meaningful** — e.g. `KmsKeyArn`,
+  `MonitoringRoleArn`, `MasterUserSecret`, IAM policy attachments,
+  resource-policy fields, encryption settings, TLS configuration.
+  Silent drop here is a real-world incident: the resource will be
+  deployed without the security control you intended, often without an
+  obvious failure mode at runtime.
+- **The dropped property's absence silently changes runtime behavior**
+  that your tests do not catch — e.g. `LoggingConfig` changing log
+  format, `ReservedConcurrentExecutions` removing throttling
+  protection, `DeadLetterConfig` removing retry destination.
+- **You can recreate the resource.** A fresh `cdkd destroy <stack>
+  && cdkd deploy <stack>` cycle is preferable to accepting a silent
+  drop on a long-lived resource — recreated resources will be wired
+  via whatever path cdkd's pre-flight allows next deploy.
+
+#### Decision summary
+
+| Situation | Recommended action |
+| --- | --- |
+| Fresh deploy, no state yet, can recreate | Wait for provider support, or accept silent drop with the flag |
+| Existing resource, recreation acceptable | `cdkd destroy <stack> && cdkd deploy <stack>` — fresh creation goes through the path cdkd currently supports |
+| Existing resource, recreation NOT acceptable | This flag (per-property opt-in), acknowledging silent drop |
+| Property is security-meaningful | Pause the deploy. File an issue (1-click link in the error). Wait for provider support OR downgrade the requirement until support lands. Do **not** use the flag. |
+| You are not sure whether the property is security-meaningful | Default to "do not use the flag" — read the AWS docs for that property first |
+
+#### What the flag is NOT
+
+- **NOT** a request to cdkd to start handling the property. The provider
+  is unchanged; the property is still silently dropped at write time.
+  The deployed resource is missing the field.
+- **NOT** a way to retry an unsupported deploy. The "support" never
+  arrives via the flag — it arrives via a provider PR or a future
+  Cloud Control fallback.
+- **NOT** persisted in cdkd state. Every deploy must pass the flag if
+  the silent drop is still relevant; rotating the flag out only works
+  once the provider catches up.
+
+cdkd is currently a dev/test tool (see "Important Notes" in CLAUDE.md);
+the safety valve is the right escape hatch for that audience. For
+production workloads, use the AWS CDK CLI until cdkd's property
+coverage matches your needs.
+
 ## `--role-arn`
 
 Assume a different IAM role for cdkd's AWS API calls. Equivalent env
