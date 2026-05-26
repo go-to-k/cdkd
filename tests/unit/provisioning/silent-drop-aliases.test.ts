@@ -163,10 +163,32 @@ describe('B-bucket silent-drop alias fixes (issue #613)', () => {
       expect(call.constructor.name).toBe('CreateNetworkAclEntryCommand');
       expect(call.input.IcmpTypeCode).toEqual({ Type: 3, Code: 0 });
     });
+
+    it('falls back to legacy `IcmpTypeCode` key (pre-#613-fix state-file backward compat)', async () => {
+      // State files written by pre-#613-fix cdkd carry the legacy
+      // `IcmpTypeCode` key in state.properties (the provider was
+      // reading the AWS-API name from template properties). After
+      // upgrade, a re-deploy reads state.properties and must still
+      // route the ICMP rule through to AWS.
+      mockEc2Send.mockResolvedValueOnce({});
+      const provider = new EC2Provider();
+
+      await provider.create('MyRule', 'AWS::EC2::NetworkAclEntry', {
+        NetworkAclId: 'acl-1',
+        RuleNumber: 100,
+        Protocol: 1,
+        RuleAction: 'allow',
+        Egress: false,
+        IcmpTypeCode: { Type: 8, Code: -1 },
+      });
+
+      const call = mockEc2Send.mock.calls[0][0];
+      expect(call.input.IcmpTypeCode).toEqual({ Type: 8, Code: -1 });
+    });
   });
 
   describe('AWS::ECS::Service:PlacementStrategies', () => {
-    it('reads the CFn-schema-canonical (plural) key and passes it to placementStrategy', async () => {
+    it('create: reads the CFn-schema-canonical (plural) key and passes it to placementStrategy', async () => {
       mockEcsSend.mockResolvedValueOnce({
         service: {
           serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
@@ -186,6 +208,34 @@ describe('B-bucket silent-drop alias fixes (issue #613)', () => {
       const call = mockEcsSend.mock.calls.find((c) => c[0].constructor.name === 'CreateServiceCommand')?.[0];
       expect(call).toBeDefined();
       expect(call.input.placementStrategy).toEqual([{ type: 'spread', field: 'instanceId' }]);
+    });
+
+    it('update: reads the CFn-schema-canonical (plural) key and passes it to placementStrategy', async () => {
+      mockEcsSend.mockResolvedValueOnce({
+        service: {
+          serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          serviceName: 'my-service',
+        },
+      });
+      const provider = new ECSProvider();
+
+      await provider.update(
+        'MyService',
+        'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+        'AWS::ECS::Service',
+        {
+          Cluster: 'my-cluster',
+          TaskDefinition: 'my-task:2',
+          DesiredCount: 2,
+          LaunchType: 'EC2',
+          PlacementStrategies: [{ type: 'binpack', field: 'cpu' }],
+        },
+        {} // previousProperties — irrelevant for this test
+      );
+
+      const call = mockEcsSend.mock.calls.find((c) => c[0].constructor.name === 'UpdateServiceCommand')?.[0];
+      expect(call).toBeDefined();
+      expect(call.input.placementStrategy).toEqual([{ type: 'binpack', field: 'cpu' }]);
     });
   });
 
@@ -219,11 +269,11 @@ describe('B-bucket silent-drop alias fixes (issue #613)', () => {
   });
 
   describe('AWS::Glue::Table:Name', () => {
-    it('falls back to top-level `Name` when nested `TableInput.Name` is absent', async () => {
+    it('falls back to top-level `Name` when nested `TableInput.Name` is absent (plumbs into TableInput SDK input)', async () => {
       mockGlueSend.mockResolvedValueOnce({});
       const provider = new GlueProvider();
 
-      await provider.create('MyTable', 'AWS::Glue::Table', {
+      const result = await provider.create('MyTable', 'AWS::Glue::Table', {
         DatabaseName: 'my_db',
         Name: 'top_level_table',
         TableInput: { Description: 'no Name field here' },
@@ -231,11 +281,28 @@ describe('B-bucket silent-drop alias fixes (issue #613)', () => {
 
       const call = mockGlueSend.mock.calls[0][0];
       expect(call.constructor.name).toBe('CreateTableCommand');
-      // physical ID format `{databaseName}|{tableName}` is the verification
-      // surface that the name was actually resolved.
-      // (CreateTableCommand input does not echo the Name into the call
-      // beyond passing it through TableInput; the test asserts via the
-      // logger / no-throw path.)
+      // The resolved name must reach the SDK call's TableInput.Name —
+      // buildTableInput receives a fallbackName so the SDK side is
+      // never called with TableInput.Name === undefined.
+      expect(call.input.TableInput.Name).toBe('top_level_table');
+      // Physical-id round-trip lock: confirms the resolved name is the
+      // same value that flowed into both the SDK call and cdkd state.
+      expect(result.physicalId).toBe('my_db|top_level_table');
+    });
+
+    it('prefers nested `TableInput.Name` when both are set (backward compat)', async () => {
+      mockGlueSend.mockResolvedValueOnce({});
+      const provider = new GlueProvider();
+
+      const result = await provider.create('MyTable', 'AWS::Glue::Table', {
+        DatabaseName: 'my_db',
+        Name: 'top_level',
+        TableInput: { Name: 'nested_canonical' },
+      });
+
+      const call = mockGlueSend.mock.calls[0][0];
+      expect(call.input.TableInput.Name).toBe('nested_canonical');
+      expect(result.physicalId).toBe('my_db|nested_canonical');
     });
   });
 
@@ -326,6 +393,29 @@ describe('B-bucket silent-drop alias fixes (issue #613)', () => {
 
       const call = mockElastiCacheSend.mock.calls[0][0];
       expect(call.input.CacheSubnetGroupDescription).toBe('legacy description');
+    });
+
+    it('update: reads CFn-canonical `Description` and passes it to ModifyCacheSubnetGroup', async () => {
+      mockElastiCacheSend.mockResolvedValueOnce({});
+      const provider = new ElastiCacheProvider();
+
+      await provider.update(
+        'MySubnetGroup',
+        'my-sg',
+        'AWS::ElastiCache::SubnetGroup',
+        {
+          CacheSubnetGroupName: 'my-sg',
+          Description: 'updated CFn-canonical',
+          SubnetIds: ['subnet-1', 'subnet-2', 'subnet-3'],
+        },
+        {} // previousProperties — irrelevant for this test
+      );
+
+      const call = mockElastiCacheSend.mock.calls.find(
+        (c) => c[0].constructor.name === 'ModifyCacheSubnetGroupCommand'
+      )?.[0];
+      expect(call).toBeDefined();
+      expect(call.input.CacheSubnetGroupDescription).toBe('updated CFn-canonical');
     });
   });
 

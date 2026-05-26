@@ -373,7 +373,7 @@ export class GlueProvider implements ResourceProvider {
         new CreateTableCommand({
           CatalogId: catalogId,
           DatabaseName: databaseName,
-          TableInput: this.buildTableInput(tableInput),
+          TableInput: this.buildTableInput(tableInput, tableName),
         })
       );
 
@@ -404,8 +404,8 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Glue Table ${logicalId}: ${physicalId}`);
 
-    const [databaseName] = physicalId.split('|');
-    if (!databaseName) {
+    const [databaseName, tableName] = physicalId.split('|');
+    if (!databaseName || !tableName) {
       throw new ProvisioningError(
         `Invalid Glue Table physical ID format: ${physicalId}`,
         resourceType,
@@ -431,7 +431,7 @@ export class GlueProvider implements ResourceProvider {
         new UpdateTableCommand({
           CatalogId: catalogId,
           DatabaseName: databaseName,
-          TableInput: this.buildTableInput(tableInput),
+          TableInput: this.buildTableInput(tableInput, tableName),
         })
       );
 
@@ -536,9 +536,9 @@ export class GlueProvider implements ResourceProvider {
   /**
    * Build TableInput for Glue API from CFn template properties
    */
-  private buildTableInput(tableInput: Record<string, unknown>): TableInput {
+  private buildTableInput(tableInput: Record<string, unknown>, fallbackName: string): TableInput {
     const result: TableInput = {
-      Name: tableInput['Name'] as string,
+      Name: (tableInput['Name'] as string | undefined) ?? fallbackName,
     };
 
     if (tableInput['Description'] !== undefined) {

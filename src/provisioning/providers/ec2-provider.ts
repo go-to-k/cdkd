@@ -2800,8 +2800,14 @@ export class EC2Provider implements ResourceProvider {
       const ipv6CidrBlock = properties['Ipv6CidrBlock'] as string | undefined;
       const portRange = properties['PortRange'] as Record<string, unknown> | undefined;
       // CFn schema spells this property `Icmp`; the AWS API call below
-      // takes the same shape under the key `IcmpTypeCode`.
-      const icmpTypeCode = properties['Icmp'] as Record<string, unknown> | undefined;
+      // takes the same shape under the key `IcmpTypeCode`. Accept both:
+      // CFn-canonical (template authors / CDK L1) prefers `Icmp`; legacy
+      // state files written by pre-#613-fix cdkd carry `IcmpTypeCode`,
+      // so fall back to it for backward compat (e.g. re-deploy after a
+      // binary upgrade where state.properties has the legacy key).
+      const icmpTypeCode = (properties['Icmp'] ?? properties['IcmpTypeCode']) as
+        | Record<string, unknown>
+        | undefined;
 
       await this.ec2Client.send(
         new CreateNetworkAclEntryCommand({
