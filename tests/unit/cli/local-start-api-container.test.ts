@@ -233,4 +233,113 @@ describe('resolveLambdaByLogicalId — IMAGE branch (issue #453)', () => {
       /No AWS::Lambda::Function resource named 'NoSuch'/
     );
   });
+
+  /**
+   * Issue #627: `lambda.DockerImageCode.fromImageAsset(...)` in CDK 2.x
+   * synthesizes an `Fn::Join` shape over the literal bootstrap ECR URI
+   * with `${AWS::URLSuffix}` as the only intrinsic. Pre-fix
+   * `extractImageUri` only recognized literal strings + `Fn::Sub`, so
+   * the Lambda fell through to the ZIP branch's misleading "no Runtime"
+   * hard error. Post-fix the `Fn::Join` arm routes through the shared
+   * `tryResolveImageFnJoin` helper and surfaces a clear error naming
+   * the actual root cause (pseudo-param substitution / same-stack ECR
+   * ref needing state) instead.
+   */
+  describe('Code.ImageUri Fn::Join (issue #627)', () => {
+    it('throws a clear error (mentioning AWS::URLSuffix) for the canonical fromImageAsset bootstrap-ECR shape', () => {
+      // The exact shape `cdk synth` emits for
+      // `lambda.DockerImageCode.fromImageAsset(...)` — literal account /
+      // region / repo path bracketing `Ref: AWS::URLSuffix`.
+      const joinResource: TemplateResource = {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          Code: {
+            ImageUri: {
+              'Fn::Join': [
+                '',
+                [
+                  '123456789012.dkr.ecr.us-east-1.',
+                  { Ref: 'AWS::URLSuffix' },
+                  '/cdk-hnb659fds-container-assets-123456789012-us-east-1:abc123',
+                ],
+              ],
+            },
+          },
+          PackageType: 'Image',
+        },
+      };
+      expect(() =>
+        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: joinResource })])
+      ).toThrow(/AWS::URLSuffix/);
+      // Critically: the post-fix error must NOT be the pre-fix
+      // misleading "no Runtime" message.
+      expect(() =>
+        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: joinResource })])
+      ).not.toThrow(/no Runtime property/);
+    });
+
+    it('throws a clear "needs state" error for a same-stack ECR repository Fn::Join', () => {
+      // The CDK 2.x `lambda.DockerImageCode.fromEcr(repo, ...)` shape —
+      // same-stack ECR Repository ref + Ref: AWS::URLSuffix. Without
+      // state we can't recover the repo's physical id, so the resolver
+      // reports `needs-state` and we surface a `--from-state`-style hint.
+      // start-api doesn't have `--from-state` today; the message
+      // names the actual gap.
+      const joinResource: TemplateResource = {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          Code: {
+            ImageUri: {
+              'Fn::Join': [
+                '',
+                [
+                  { 'Fn::Select': [4, { 'Fn::Split': [':', { 'Fn::GetAtt': ['Repo', 'Arn'] }] }] },
+                  '.dkr.ecr.',
+                  { 'Fn::Select': [3, { 'Fn::Split': [':', { 'Fn::GetAtt': ['Repo', 'Arn'] }] }] },
+                  '.',
+                  { Ref: 'AWS::URLSuffix' },
+                  '/',
+                  { Ref: 'Repo' },
+                  ':latest',
+                ],
+              ],
+            },
+          },
+          PackageType: 'Image',
+        },
+      };
+      const repoResource: TemplateResource = {
+        Type: 'AWS::ECR::Repository',
+        Properties: {},
+      };
+      expect(() =>
+        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: joinResource, Repo: repoResource })])
+      ).toThrow(/same-stack ECR repository 'Repo'/);
+      expect(() =>
+        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: joinResource, Repo: repoResource })])
+      ).not.toThrow(/no Runtime property/);
+    });
+
+    it('throws a clear "unsupported Fn::Join shape" error for a malformed Fn::Join', () => {
+      // Delimiter must be a string; this exercises the
+      // `unsupported-join` arm.
+      const joinResource: TemplateResource = {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          Code: {
+            ImageUri: {
+              'Fn::Join': [
+                42,
+                ['some', 'parts'],
+              ],
+            },
+          },
+          PackageType: 'Image',
+        },
+      };
+      expect(() =>
+        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: joinResource })])
+      ).toThrow(/unsupported Fn::Join Code\.ImageUri shape/);
+    });
+  });
 });

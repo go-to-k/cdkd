@@ -37,6 +37,7 @@ import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/ru
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
 import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';
+import { tryResolveImageFnJoin } from '../../local/intrinsic-image.js';
 import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
@@ -1741,7 +1742,12 @@ export function resolveLambdaByLogicalId(
     const timeoutSec = typeof props['Timeout'] === 'number' ? props['Timeout'] : 3;
 
     const code = (props['Code'] ?? {}) as Record<string, unknown>;
-    const imageUri = extractImageUri(code['ImageUri']);
+    const imageUri = extractImageUri(
+      code['ImageUri'],
+      logicalId,
+      stack.stackName,
+      stack.template.Resources ?? {}
+    );
     if (imageUri !== undefined) {
       return resolveImageLambda({
         stack,
@@ -1801,26 +1807,82 @@ export function resolveLambdaByLogicalId(
 /**
  * Extract `Code.ImageUri` across the shapes CDK actually synthesizes.
  * Mirrors the simpler subset of `lambda-resolver.ts:extractImageUri`
- * scoped to the shapes `cdkd local start-api` consumes — flat string
- * and `Fn::Sub` (the canonical asset shape for
- * `lambda.DockerImageCode.fromImageAsset`). `Fn::Join` shapes for
- * `lambda.DockerImageCode.fromEcr` are deferred to a follow-up: the
- * start-api boot flow doesn't yet load cdkd state up front, and the
- * `Fn::Join` resolver needs it to recover same-stack ECR repository
- * URIs. When the user hits the unsupported shape, the downstream
- * resolveLocalBuildPlan / pullEcrImage path surfaces a clear error.
+ * scoped to the shapes `cdkd local start-api` consumes — flat string,
+ * `Fn::Sub` (the canonical asset shape for
+ * `lambda.DockerImageCode.fromImageAsset`), and `Fn::Join` (the
+ * canonical shape for `lambda.DockerImageCode.fromImageAsset` in
+ * CDK 2.x, which emits a `Fn::Join` over the literal bootstrap ECR
+ * URI with `${AWS::URLSuffix}` — issue #627).
+ *
+ * The `Fn::Join` arm routes through the shared
+ * `tryResolveImageFnJoin` helper (`src/local/intrinsic-image.ts`) used
+ * by `cdkd local invoke`. Like the sibling `lambda-resolver.ts`, we
+ * pass `undefined` for the `ImageResolutionContext` — start-api
+ * doesn't load cdkd state up front, so same-stack ECR refs surface
+ * as `needs-state` and pseudo-parameter-only shapes (`Ref:
+ * AWS::URLSuffix`) surface as `not-applicable`. Both cases throw a
+ * clear error that names the actual root cause instead of falling
+ * through to the ZIP branch's misleading "no Runtime" hard error.
+ *
+ * Pseudo-parameter substitution (`${AWS::URLSuffix}` → `amazonaws.com`)
+ * is deliberately not implemented here — `lambda-resolver.ts` (the
+ * canonical sibling) also defers it, and shipping one-sided support
+ * would surprise users. Tracked separately as the issue's optional
+ * follow-up.
  *
  * Returns `undefined` when the field is absent or non-recognized,
  * which routes the caller to the ZIP branch (with its existing
  * "no Runtime / no Handler" validations).
  */
-function extractImageUri(value: unknown): string | undefined {
+function extractImageUri(
+  value: unknown,
+  logicalId: string,
+  stackName: string,
+  resources: Record<string, TemplateResource>
+): string | undefined {
   if (typeof value === 'string' && value.length > 0) return value;
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>;
     const sub = obj['Fn::Sub'];
     if (typeof sub === 'string' && sub.length > 0) return sub;
     if (Array.isArray(sub) && typeof sub[0] === 'string') return sub[0];
+
+    if ('Fn::Join' in obj) {
+      // Shared resolver — no state / pseudo parameters context. Same
+      // shape as `lambda-resolver.ts:extractImageUri` (issue #286 Gap 2).
+      const joinResolved = tryResolveImageFnJoin(value, resources, undefined);
+      if (joinResolved.kind === 'resolved') return joinResolved.uri;
+      if (joinResolved.kind === 'needs-state') {
+        throw new Error(
+          `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
+            'cdkd local start-api cannot resolve the repository URI without state — ' +
+            'deploy the stack first (so cdkd records the repository physical id), ' +
+            'rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
+        );
+      }
+      if (joinResolved.kind === 'unsupported-join') {
+        throw new Error(
+          `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
+            'cdkd local start-api recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ' +
+            '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
+        );
+      }
+      // `not-applicable` — the shape is `Fn::Join` but the resolver
+      // couldn't reduce every element and there's no same-stack ECR
+      // Repository ref. The most common cause is a `Ref: AWS::URLSuffix`
+      // / other pseudo-parameter (the canonical CDK 2.x
+      // `lambda.DockerImageCode.fromImageAsset` shape) that needs
+      // `pseudoParameters` context, not yet plumbed through
+      // `cdkd local start-api`. Surface a clear error instead of
+      // falling through to ZIP-branch validation, which would error
+      // with the unrelated "no Runtime" message.
+      throw new Error(
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local start-api cannot resolve. ` +
+          'The shape likely references AWS pseudo parameters (e.g. ${AWS::URLSuffix}) — ' +
+          'the canonical CDK 2.x lambda.DockerImageCode.fromImageAsset synthesized shape. ' +
+          'Workarounds: pin a fully-literal public image URI, or wait for the follow-up that substitutes ${AWS::URLSuffix} against the current region.'
+      );
+    }
   }
   return undefined;
 }
