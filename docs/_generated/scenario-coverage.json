@@ -503,6 +503,14 @@
       ]
     },
     {
+      "name": "local-invoke-from-cfn-stack-multi-stack",
+      "annotated": true,
+      "scenarios": [
+        "local-from-cfn-stack-substitution",
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
       "name": "local-invoke-from-state",
       "annotated": true,
       "scenarios": [
@@ -960,7 +968,8 @@
       "scenario": "local-from-cfn-stack-substitution",
       "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).",
       "fixtures": [
-        "local-invoke-from-cfn-stack"
+        "local-invoke-from-cfn-stack",
+        "local-invoke-from-cfn-stack-multi-stack"
       ]
     },
     {
@@ -987,6 +996,7 @@
         "local-invoke",
         "local-invoke-dotnet",
         "local-invoke-from-cfn-stack",
+        "local-invoke-from-cfn-stack-multi-stack",
         "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-layers",

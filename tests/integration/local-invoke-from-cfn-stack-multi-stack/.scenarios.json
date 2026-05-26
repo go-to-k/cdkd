@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-from-cfn-stack-substitution",
+    "local-lambda-rie-zip"
+  ]
+}
