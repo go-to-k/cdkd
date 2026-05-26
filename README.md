@@ -29,6 +29,8 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 - **Bidirectional CloudFormation migration**: `cdkd import` adopts AWS-deployed resources (including `cdk deploy`-managed CloudFormation stacks via `--migrate-from-cloudformation`) into cdkd state without re-creating them; `cdkd export` hands a cdkd-managed stack back to CloudFormation when you're ready to move to production. See [Importing existing resources](#importing-existing-resources) and [Exporting a stack back to CloudFormation](#exporting-a-stack-back-to-cloudformation).
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
+>
+> **Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type — when a template uses a top-level property the provider has not implemented yet, cdkd fails fast at pre-flight with the silently-dropped property name, rationale, and a 1-click GitHub issue link to request support. The `--allow-unsupported-properties <Type>:<Prop>,...` flag is the **safety valve** when this is too strict for your situation (e.g. mid-life update on an existing resource that cannot be recreated): it accepts the silent drop explicitly, per-property. **Do not use it on security-meaningful properties** (encryption / IAM / TLS settings) — the deployed resource will be missing the control you intended. See [docs/cli-reference.md `--allow-unsupported-properties`](docs/cli-reference.md#--allow-unsupported-properties-deploy) for the full safety-valve guidance.
 
 ## Benchmark
 
