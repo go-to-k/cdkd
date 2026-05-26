@@ -887,11 +887,15 @@ Outcomes:
     behavior diverge only by absence of identity context — never by
     location.
 - **No / malformed `Authorization` header**, **signature mismatch
-  under the dev's own credentials**, or any other rejection → 401 / 403
+  under the dev's own credentials**, or any other rejection → 403
   matching the deployed response:
-  - REST v1: 401 (`missing-identity`) / 403 (`policy-deny`).
+  - REST v1: 403 (`{"message":"Missing Authentication Token"}`) for
+    missing-identity, 403 (`{"message":"Forbidden"}`) for policy-deny —
+    matches AWS-deployed API Gateway REST v1 IAM rejection (lowercase
+    `message`).
   - Function URL: 403 (`{"Message":"Forbidden"}`) for both deny kinds —
-    matches Lambda's deployed Function URL IAM rejection.
+    matches Lambda's deployed Function URL IAM rejection (capital
+    `Message`).
 - **Different `Credential` access-key-id than the dev has** →
   warn-and-pass. The local server cannot reproduce a signing key it
   doesn't have, and refusing every foreign-identity request would

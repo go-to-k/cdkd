@@ -1248,6 +1248,11 @@ function buildOverlay(
 
 /**
  * Map the authorizer rejection to an HTTP status code and body.
+ *   - REST v1 with AWS_IAM (issue #625) → 403 for both deny kinds (the
+ *     deployed REST v1 SigV4 layer rejects unsigned requests with 403
+ *     `{"message":"Missing Authentication Token"}` and signature/policy
+ *     failures with 403 `{"message":"Forbidden"}` — lowercase `message`
+ *     distinguishes the REST v1 shape from the Function URL shape below).
  *   - REST v1, missing identity → 401 `{"message":"Unauthorized"}`
  *     (matches deployed behavior; the route reaches the Method but no
  *     identity source is present so the authorizer never runs).
@@ -1257,7 +1262,9 @@ function buildOverlay(
  *     collapses both into the same response).
  *   - Function URL with AWS_IAM (issue #621) → 403 `{"Message":"Forbidden"}`
  *     for both deny kinds (matches Lambda's deployed Function URL IAM
- *     behavior — the AWS SigV4 layer rejects with 403, not 401).
+ *     behavior — the AWS SigV4 layer rejects with 403, not 401). Note the
+ *     capital `Message` — distinct from REST v1 AWS_IAM's lowercase
+ *     `message`.
  */
 export function writeAuthRejection(
   res: ServerResponse,
@@ -1265,6 +1272,18 @@ export function writeAuthRejection(
   denyKind: 'missing-identity' | 'policy-deny',
   authorizerKind?: AuthorizerInfo['kind']
 ): void {
+  // REST v1 with AWS_IAM rides the same SigV4 verifier as the v2 path
+  // (PR #447), but the AWS-deployed REST v1 surface rejects with 403 +
+  // lowercase `message` — distinct from both v1's default authorizer
+  // 401 (the non-IAM path below) and Function URL's capital `Message`.
+  if (apiVersion === 'v1' && authorizerKind === 'iam') {
+    if (denyKind === 'missing-identity') {
+      writeError(res, 403, '{"message":"Missing Authentication Token"}');
+      return;
+    }
+    writeError(res, 403, '{"message":"Forbidden"}');
+    return;
+  }
   // Function URLs are v2-shaped but Lambda's IAM rejection differs from
   // API Gateway v2's default 401 — match the deployed response so a dev
   // exercising AWS_IAM Function URLs sees the same status code locally.

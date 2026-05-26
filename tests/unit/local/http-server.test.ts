@@ -100,6 +100,27 @@ describe('writeAuthRejection', () => {
     expect(res.statusCode).toBe(403);
     expect(res.capturedBody).toBe('{"Message":"Forbidden"}');
   });
+
+  it('REST v1 + IAM + missing-identity → 403 Missing Authentication Token (#625)', () => {
+    // REST v1 with AWS_IAM also rejects unsigned requests with 403, not
+    // the v1 default 401. Body uses lowercase `message` — distinct from
+    // Function URL's capital `Message` — and the deployed REST v1 surface
+    // returns "Missing Authentication Token" when no signature is present.
+    const res = makeResponse();
+    writeAuthRejection(res, 'v1', 'missing-identity', 'iam');
+    expect(res.statusCode).toBe(403);
+    expect(res.capturedBody).toBe('{"message":"Missing Authentication Token"}');
+  });
+
+  it('REST v1 + IAM + policy-deny → 403 Forbidden (#625)', () => {
+    // REST v1 with AWS_IAM, SigV4 verification ran and failed (bad
+    // signature / wrong account / policy deny). Status mirrors AWS API
+    // Gateway's deployed REST v1 IAM rejection: 403 + lowercase `message`.
+    const res = makeResponse();
+    writeAuthRejection(res, 'v1', 'policy-deny', 'iam');
+    expect(res.statusCode).toBe(403);
+    expect(res.capturedBody).toBe('{"message":"Forbidden"}');
+  });
 });
 
 /**
