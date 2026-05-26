@@ -9,7 +9,7 @@ import {
 describe('unsupported-types helpers', () => {
   it('NON_PROVISIONABLE_TYPES is non-empty and contains known tier3 types', () => {
     expect(NON_PROVISIONABLE_TYPES.size).toBeGreaterThan(0);
-    expect(NON_PROVISIONABLE_TYPES.has('AWS::CertificateManager::Certificate')).toBe(true);
+    expect(NON_PROVISIONABLE_TYPES.has('AWS::AppMesh::Mesh')).toBe(true);
     expect(NON_PROVISIONABLE_TYPES.has('AWS::CloudFormation::WaitCondition')).toBe(true);
   });
 
@@ -31,7 +31,6 @@ describe('CloudControlProvider.isSupportedResourceType (tier3-grounded)', () => 
   const isCC = (t: string) => CloudControlProvider.isSupportedResourceType(t);
 
   it('rejects NON_PROVISIONABLE (tier3) types so pre-flight fails fast', () => {
-    expect(isCC('AWS::CertificateManager::Certificate')).toBe(false);
     expect(isCC('AWS::AppMesh::Mesh')).toBe(false);
     expect(isCC('AWS::CloudFormation::WaitConditionHandle')).toBe(false);
   });

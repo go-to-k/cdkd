@@ -16,6 +16,7 @@ import { CloudFrontClient } from '@aws-sdk/client-cloudfront';
 import { CloudWatchClient } from '@aws-sdk/client-cloudwatch';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
+import { ACMClient } from '@aws-sdk/client-acm';
 
 /**
  * AWS client configuration
@@ -52,6 +53,7 @@ export class AwsClients {
   private cloudWatchClient?: CloudWatchClient;
   private cloudWatchLogsClient?: CloudWatchLogsClient;
   private bedrockAgentCoreControlClient?: BedrockAgentCoreControlClient;
+  private acmClient?: ACMClient;
   private config: AwsClientConfig;
 
   constructor(config: AwsClientConfig = {}) {
@@ -374,6 +376,30 @@ export class AwsClients {
   }
 
   /**
+   * Get ACM client
+   *
+   * ACM is region-scoped. The client uses the configured AWS region so the
+   * deploy engine's per-stack region resolution carries through. CloudFront
+   * users must place their certificate stack in `us-east-1`.
+   */
+  getACMClient(): ACMClient {
+    if (!this.acmClient) {
+      this.acmClient = new ACMClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.acmClient;
+  }
+
+  /**
+   * Convenience getter for ACM client
+   */
+  get acm(): ACMClient {
+    return this.getACMClient();
+  }
+
+  /**
    * Get CloudWatch client
    */
   getCloudWatchClient(): CloudWatchClient {
@@ -455,6 +481,7 @@ export class AwsClients {
     this.cloudWatchClient?.destroy();
     this.cloudWatchLogsClient?.destroy();
     this.bedrockAgentCoreControlClient?.destroy();
+    this.acmClient?.destroy();
   }
 }
 

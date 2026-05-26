@@ -273,6 +273,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::IAM::ManagedPolicy
 - AWS::IAM::InstanceProfile
 - AWS::IAM::User
+- AWS::CertificateManager::Certificate
 - AWS::IAM::Group
 - AWS::SNS::Topic
 - AWS::SQS::Queue

@@ -279,6 +279,13 @@ const CDK_L2_TO_L1: Record<string, string[]> = {
   // Cognito
   'cognito.UserPool': ['AWS::Cognito::UserPool'],
 
+  // ACM (Certificate Manager). The L2 key is the resolved module name
+  // (`certificatemanager`), not the import alias (`acm`) — see
+  // parseImportAliases (which strips `aws-` and normalizes hyphens to
+  // underscores from the package path).
+  'certificatemanager.Certificate': ['AWS::CertificateManager::Certificate'],
+  'certificatemanager.DnsValidatedCertificate': ['AWS::CertificateManager::Certificate'],
+
   // Route 53
   'route53.HostedZone': ['AWS::Route53::HostedZone'],
   'route53.PrivateHostedZone': ['AWS::Route53::HostedZone'],

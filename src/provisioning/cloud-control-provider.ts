@@ -844,9 +844,6 @@ export class CloudControlProvider implements ResourceProvider {
 
       // Route53 hosted zones (complex)
       'AWS::Route53::HostedZone',
-
-      // ACM certificates (validation complexity)
-      'AWS::CertificateManager::Certificate',
     ]);
 
     if (unsupportedTypes.has(resourceType)) {

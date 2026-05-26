@@ -107,8 +107,6 @@ export const RUNTIME_UNSUPPORTED_TYPES: ReadonlySet<string> = new Set([
   'Custom::S3AutoDeleteObjects',
   // Route53 hosted zones (complex)
   'AWS::Route53::HostedZone',
-  // ACM certificates (validation complexity)
-  'AWS::CertificateManager::Certificate',
 ]);
 
 /**
