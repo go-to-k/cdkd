@@ -21,6 +21,7 @@ import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.
 import { resolveApp } from '../config-loader.js';
 import {
   createLocalStateProvider,
+  isCfnFlagPresent,
   rejectExplicitCfnStackWithMultipleStacks,
 } from './local-state-source.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -458,8 +459,7 @@ async function localStartApiCommand(
     // differ if stacks span partitions. Per-stack failures degrade to
     // warn-and-fall-back (the PR 1 behavior is preserved) so a missing
     // or unreadable state file never aborts the server boot.
-    const stateSourceActive =
-      options.fromState || (options.fromCfnStack !== undefined && options.fromCfnStack !== false);
+    const stateSourceActive = options.fromState || isCfnFlagPresent(options);
     const stateByStack = stateSourceActive
       ? await loadStateForRoutedStacks(targetStacks, routes, routesWithAuth, options)
       : new Map<string, StackStateBundle>();

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 
 import {
   createLocalStateProvider,
+  isCfnFlagPresent,
   resolveCfnStackName,
   resolveCfnRegion,
   rejectExplicitCfnStackWithMultipleStacks,
@@ -284,5 +285,73 @@ describe('createLocalStateProvider — labels distinguish source for warn attrib
     );
     expect(provider!.label).toBe('--from-cfn-stack');
     provider!.dispose();
+  });
+});
+
+describe('isCfnFlagPresent helper (Issue #611 NIT 5)', () => {
+  it('returns false when fromCfnStack is undefined (flag absent)', () => {
+    expect(isCfnFlagPresent({ fromCfnStack: undefined })).toBe(false);
+  });
+
+  it('returns true when fromCfnStack === true (bare flag)', () => {
+    expect(isCfnFlagPresent({ fromCfnStack: true })).toBe(true);
+  });
+
+  it('returns false when fromCfnStack === false (defensive; commander never emits)', () => {
+    expect(isCfnFlagPresent({ fromCfnStack: false })).toBe(false);
+  });
+
+  it('returns true when fromCfnStack is a string (explicit value)', () => {
+    expect(isCfnFlagPresent({ fromCfnStack: 'my-cfn-stack' })).toBe(true);
+  });
+
+  it('returns true even when fromCfnStack is the empty string', () => {
+    // Empty-string is still "present" — the createLocalStateProvider
+    // path rejects it explicitly with a clearer message (NIT 1). The
+    // helper itself does not double-validate.
+    expect(isCfnFlagPresent({ fromCfnStack: '' })).toBe(true);
+  });
+});
+
+describe('createLocalStateProvider — empty --from-cfn-stack rejection (Issue #611 NIT 1)', () => {
+  it('throws LocalStateSourceError when fromCfnStack is the empty string', () => {
+    expect(() =>
+      createLocalStateProvider(
+        { fromState: false, fromCfnStack: '', statePrefix: 'cdkd' },
+        'CdkdStack',
+        'us-east-1'
+      )
+    ).toThrow(LocalStateSourceError);
+  });
+
+  it('surfaces a remediation message naming the drop-the-value alternative', () => {
+    expect(() =>
+      createLocalStateProvider(
+        { fromState: false, fromCfnStack: '', statePrefix: 'cdkd' },
+        'CdkdStack',
+        'us-east-1'
+      )
+    ).toThrow(/non-empty stack name/);
+    expect(() =>
+      createLocalStateProvider(
+        { fromState: false, fromCfnStack: '', statePrefix: 'cdkd' },
+        'CdkdStack',
+        'us-east-1'
+      )
+    ).toThrow(/Drop the value to use the cdkd stack name/);
+  });
+
+  it('rejects empty string even when --from-state is also set (mutex check fires first)', () => {
+    // Mutual exclusion fires before the empty-string check, but the
+    // important contract is: both errors are LocalStateSourceError with
+    // a clear message. Whichever fires first is fine — the user sees
+    // an actionable error either way.
+    expect(() =>
+      createLocalStateProvider(
+        { fromState: true, fromCfnStack: '', statePrefix: 'cdkd' },
+        'CdkdStack',
+        'us-east-1'
+      )
+    ).toThrow(LocalStateSourceError);
   });
 });

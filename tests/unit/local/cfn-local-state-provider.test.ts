@@ -75,6 +75,7 @@ import {
   buildResourceStateMap,
   buildOutputsMap,
   fetchAllExports,
+  formatAwsErrorForWarn,
 } from '../../../src/local/cfn-local-state-provider.js';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 
@@ -189,6 +190,70 @@ describe('fetchAllExports', () => {
     }));
     const client = new CloudFormationClient({ region: 'us-east-1' });
     await expect(fetchAllExports(client)).rejects.toThrow(/pagination exceeded 50 pages/);
+  });
+
+  // Issue #611 test gap: the existing 2-page test exercises pagination but
+  // no test directly asserts the canonical `{ Exports: [...] }` (no
+  // NextToken) shape works correctly. A regression that always sends
+  // `NextToken: undefined` instead of omitting the field (via the
+  // `...nextToken !== undefined && {...}` spread) would slip through
+  // because AWS tolerates it.
+  it('does exactly 1 ListExports send when the response omits NextToken (no second page)', async () => {
+    cfnSendMock.mockImplementationOnce(async () => ({
+      Exports: [
+        { Name: 'A', Value: 'a-value' },
+        { Name: 'B', Value: 'b-value' },
+      ],
+      // No NextToken — single page.
+    }));
+    const client = new CloudFormationClient({ region: 'us-east-1' });
+    const result = await fetchAllExports(client);
+    expect(result.size).toBe(2);
+    expect(result.get('A')).toBe('a-value');
+    expect(result.get('B')).toBe('b-value');
+    expect(sentCalls).toHaveLength(1);
+    expect(sentCalls[0]!.name).toBe('ListExports');
+    // The first-page call must omit the `NextToken` field entirely
+    // (the `...nextToken !== undefined && { NextToken: ... }` spread
+    // produces an empty object when nextToken is undefined).
+    expect(sentCalls[0]!.input).toEqual({});
+    expect('NextToken' in sentCalls[0]!.input).toBe(false);
+  });
+
+  // Issue #611 test gap: `resp.Exports ?? []` guard is currently
+  // untested. Cover both shapes AWS could return on an empty account.
+  it('returns an empty map when Exports is an empty array', async () => {
+    cfnSendMock.mockImplementationOnce(async () => ({ Exports: [] }));
+    const client = new CloudFormationClient({ region: 'us-east-1' });
+    const result = await fetchAllExports(client);
+    expect(result.size).toBe(0);
+    expect(sentCalls).toHaveLength(1);
+  });
+
+  it('returns an empty map when Exports is undefined', async () => {
+    cfnSendMock.mockImplementationOnce(async () => ({ Exports: undefined }));
+    const client = new CloudFormationClient({ region: 'us-east-1' });
+    const result = await fetchAllExports(client);
+    expect(result.size).toBe(0);
+    expect(sentCalls).toHaveLength(1);
+  });
+
+  // Issue #611 NIT 3: defense against `NextToken === ''`. The SDK type
+  // allows `string | undefined`; the loop condition is
+  // `nextToken !== undefined && nextToken !== ''` so an empty string
+  // terminates the walk and we do NOT fire a second `ListExports`.
+  it('treats an empty-string NextToken as terminal (no follow-up page)', async () => {
+    cfnSendMock.mockImplementationOnce(async () => ({
+      Exports: [
+        { Name: 'OnlyPage', Value: 'only-value' },
+      ],
+      NextToken: '',
+    }));
+    const client = new CloudFormationClient({ region: 'us-east-1' });
+    const result = await fetchAllExports(client);
+    expect(result.size).toBe(1);
+    expect(result.get('OnlyPage')).toBe('only-value');
+    expect(sentCalls).toHaveLength(1);
   });
 });
 
@@ -380,6 +445,58 @@ describe('CfnLocalStateProvider.buildCrossStackResolver', () => {
     expect(warnSpy.mock.calls[0]![0]).toContain('Fn::GetStackOutput');
     expect(warnSpy.mock.calls[0]![0]).toContain('cdkd-specific');
   });
+
+  // Issue #611 test gap: `resolveImport(<missing>)` after cache is
+  // populated must return `undefined` AND not fire another ListExports
+  // walk. The "export not found" case was implicit in the impl but not
+  // pinned by a test before.
+  it('returns undefined for an exportName not in any page and does not refetch on miss', async () => {
+    cfnSendMock.mockImplementationOnce(async () => ({
+      Exports: [{ Name: 'Known', Value: 'known-value' }],
+    }));
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'us-east-1',
+    });
+    const resolver = await provider.buildCrossStackResolver('us-east-1');
+    // Warm the cache with a hit so we know the walk completed.
+    const hit = await resolver!.resolveImport('Known');
+    expect(hit).toBe('known-value');
+    const sentBefore = sentCalls.length;
+    // Miss against a populated cache: undefined + no new send.
+    const miss = await resolver!.resolveImport('NoSuchExport');
+    expect(miss).toBeUndefined();
+    expect(sentCalls.length).toBe(sentBefore);
+  });
+
+  // Issue #611 test gap (race): `cachedExports` is set only after the
+  // `await fetchAllExports(...)` resolves, so two parallel callers may
+  // BOTH find an empty cache and fire their own walks. Assert exactly
+  // ONE ListExports send fires when two `resolveImport` calls are
+  // awaited concurrently. This catches the race the existing serial
+  // test cannot.
+  it('fires ListExports exactly once when two resolveImport calls run in parallel', async () => {
+    // Single-page response so the entire walk is one send. If the cache
+    // races, the test sees 2 sends.
+    cfnSendMock.mockImplementation(async () => ({
+      Exports: [
+        { Name: 'A', Value: 'a-value' },
+        { Name: 'B', Value: 'b-value' },
+      ],
+    }));
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'us-east-1',
+    });
+    const resolver = await provider.buildCrossStackResolver('us-east-1');
+    const [a, b] = await Promise.all([
+      resolver!.resolveImport('A'),
+      resolver!.resolveImport('B'),
+    ]);
+    expect(a).toBe('a-value');
+    expect(b).toBe('b-value');
+    expect(sentCalls.filter((c) => c.name === 'ListExports')).toHaveLength(1);
+  });
 });
 
 describe('CfnLocalStateProvider.dispose', () => {
@@ -406,6 +523,104 @@ describe('CfnLocalStateProvider.dispose', () => {
     await provider.load('X', undefined);
     provider.dispose();
     expect(cfnDestroyMock).toHaveBeenCalled();
+  });
+
+  // Issue #611 NIT 2: `dispose()` is terminal. The lazy `getClient()`
+  // path would otherwise resurrect the client on a post-dispose `load`
+  // call. Throw at every operational entry point so the bug surfaces
+  // loudly.
+  it('throws when load() is called after dispose() (terminal contract)', async () => {
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'us-east-1',
+    });
+    provider.dispose();
+    await expect(provider.load('X', undefined)).rejects.toThrow(
+      /CfnLocalStateProvider used after dispose/
+    );
+  });
+
+  it('throws when buildCrossStackResolver() is called after dispose() (terminal contract)', async () => {
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'us-east-1',
+    });
+    provider.dispose();
+    await expect(provider.buildCrossStackResolver('us-east-1')).rejects.toThrow(
+      /CfnLocalStateProvider used after dispose/
+    );
+  });
+});
+
+describe('formatAwsErrorForWarn (Issue #611 NIT 4)', () => {
+  it('includes the SDK error name and HTTP status when both are present', () => {
+    const err = new Error('User: arn:... is not authorized to perform: cloudformation:ListExports');
+    err.name = 'AccessDeniedException';
+    (err as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 403 };
+    const out = formatAwsErrorForWarn(err);
+    expect(out).toContain('AccessDeniedException');
+    expect(out).toContain('HTTP 403');
+    expect(out).toContain('not authorized');
+  });
+
+  it('includes only the name when $metadata is absent', () => {
+    const err = new Error('Rate exceeded');
+    err.name = 'ThrottlingException';
+    expect(formatAwsErrorForWarn(err)).toBe('ThrottlingException: Rate exceeded');
+  });
+
+  it('falls back to the bare message when name === "Error" and no $metadata', () => {
+    const err = new Error('boom');
+    expect(formatAwsErrorForWarn(err)).toBe('boom');
+  });
+
+  it('coerces non-Error throws to a string', () => {
+    expect(formatAwsErrorForWarn('plain-string-throw')).toBe('plain-string-throw');
+    expect(formatAwsErrorForWarn(42)).toBe('42');
+  });
+});
+
+describe('CfnLocalStateProvider — SDK error code surfacing (Issue #611 NIT 4)', () => {
+  it('includes the SDK error name in the DescribeStackResources warn (e.g. AccessDeniedException)', async () => {
+    cfnSendMock.mockImplementationOnce(async () => {
+      const err = new Error('User is not authorized to perform: cloudformation:DescribeStackResources');
+      err.name = 'AccessDeniedException';
+      (err as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 403 };
+      throw err;
+    });
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'MyCfnStack',
+      region: 'us-east-1',
+    });
+    const record = await provider.load('X', undefined);
+    expect(record).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    const msg = String(warnSpy.mock.calls[0]![0]);
+    expect(msg).toContain('DescribeStackResources');
+    expect(msg).toContain('AccessDeniedException');
+    expect(msg).toContain('HTTP 403');
+  });
+
+  it('includes the SDK error name in the ListExports warn (e.g. ThrottlingException)', async () => {
+    cfnSendMock.mockImplementationOnce(async () => {
+      const err = new Error('Rate exceeded');
+      err.name = 'ThrottlingException';
+      (err as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 400 };
+      throw err;
+    });
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'us-east-1',
+    });
+    const resolver = await provider.buildCrossStackResolver('us-east-1');
+    const v = await resolver!.resolveImport('Anything');
+    expect(v).toBeUndefined();
+    const listExportsWarn = warnSpy.mock.calls.find((args) =>
+      String(args[0]).includes('ListExports')
+    );
+    expect(listExportsWarn).toBeDefined();
+    expect(String(listExportsWarn![0])).toContain('ThrottlingException');
+    expect(String(listExportsWarn![0])).toContain('HTTP 400');
   });
 });
 
