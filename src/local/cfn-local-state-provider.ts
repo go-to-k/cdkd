@@ -76,15 +76,20 @@ export interface CfnLocalStateProviderOptions {
    */
   region: string;
   /**
-   * Optional AWS profile name. Captured for interface parity with the
-   * S3 provider's option set; matches the project-wide convention
-   * (see `AwsClients` in [src/utils/aws-clients.ts](../utils/aws-clients.ts))
-   * that profile is NOT passed directly to the AWS SDK client — users
-   * set `AWS_PROFILE` (or `AWS_PROFILE`-equivalent) in their
-   * environment and the SDK's default credential chain picks it up.
-   * If you genuinely need this option threaded into the
-   * `CloudFormationClient` config, open an issue against `cdkd local *`;
-   * this is dead through the whole codebase today.
+   * Optional AWS profile name. When set, threaded through to the
+   * `CloudFormationClient` config so the SDK reads credentials from the
+   * named profile in `~/.aws/credentials` / `~/.aws/config`. When unset,
+   * the SDK's default credential chain (env vars / `AWS_PROFILE` /
+   * shared config / IAM role) picks the credentials.
+   *
+   * Issue #628: an earlier revision captured this option but did NOT
+   * pass it to the client, so `cdkd local start-api --from-cfn-stack
+   * <stack> --profile <profile>` silently queried the default account
+   * and failed with "Stack does not exist" when the stack lived
+   * elsewhere. Matches the threading pattern in
+   * `S3LocalStateProvider` / `S3StateBackend` /
+   * `src/utils/aws-region-resolver.ts` — every other cdkd command
+   * already passes `profile` straight to the SDK client.
    */
   profile?: string;
 }
@@ -122,14 +127,16 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       throw new Error('CfnLocalStateProvider used after dispose()');
     }
     if (!this.client) {
-      // Profile threading mirrors `AwsClients` in src/utils/aws-clients.ts:
-      // the project-wide convention is to NOT pass `profile` directly to
-      // the SDK client. Users select a profile via `AWS_PROFILE` (or
-      // equivalent) and the SDK's default credential chain picks it up.
-      // The `profile` option exists on this provider's option set only
-      // for interface parity with the S3 provider — see
-      // `CfnLocalStateProviderOptions.profile` for the full rationale.
-      this.client = new CloudFormationClient({ region: this.region });
+      // Profile threading matches `S3LocalStateProvider` /
+      // `S3StateBackend` / `src/utils/aws-region-resolver.ts` — every
+      // other cdkd command already passes the CLI's `--profile` through
+      // to the SDK client constructor so the SDK's profile-aware
+      // credential resolution picks up the named profile from
+      // `~/.aws/credentials` / `~/.aws/config`. Issue #628.
+      this.client = new CloudFormationClient({
+        region: this.region,
+        ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
+      });
     }
     return this.client;
   }
