@@ -1103,6 +1103,16 @@ function signFunctionUrlRequest(opts: {
   secretAccessKey: string;
   region: string;
   amzDate: string;
+  /**
+   * Service name embedded in the SigV4 credential scope. AWS SDK clients
+   * use `service=lambda` when signing Function URL requests, but the
+   * verifier does NOT pin the service name — it only checks the
+   * access-key-id matches the dev's local creds and the canonical-request
+   * hash matches. Tests pass `service: 'execute-api'` (or other non-
+   * `'lambda'` values) to lock down that "service name is informational"
+   * contract. Defaults to `'lambda'` for backward compatibility.
+   */
+  service?: string;
 }): { authorization: string; headers: Record<string, string> } {
   const headers = { ...opts.headers };
   if (!headers['x-amz-date']) headers['x-amz-date'] = opts.amzDate;
@@ -1132,7 +1142,7 @@ function signFunctionUrlRequest(opts: {
   // the verifier only checks the access-key-id matches the dev's local
   // creds and the canonical-request hash matches, so the service name
   // in the credential scope is not load-bearing for the verify step.
-  const service = 'lambda';
+  const service = opts.service ?? 'lambda';
   const credentialScope = `${date}/${opts.region}/${service}/aws4_request`;
   const stringToSign = [
     'AWS4-HMAC-SHA256',
@@ -1309,6 +1319,55 @@ describe('startApiServer — Function URL AWS_IAM (#621)', () => {
       expect(body.Message).toBe('Forbidden');
       expect(invokeRieMock).not.toHaveBeenCalled();
       expect((pool.acquire as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  // Locks down the verifier's documented "service name in the credential
+  // scope is informational, not load-bearing" contract (#626). The signer
+  // that AWS SDK clients use for Function URLs sets `service=lambda`, but
+  // curl `--aws-sigv4` and other dev tooling routinely sign with off-
+  // service values (e.g. `service=execute-api`). The verifier reconstructs
+  // the canonical request from the same `(date, region, service)` scope
+  // the request itself carries — it does NOT pin `service` to any
+  // particular value — so a request signed with `service=execute-api`
+  // must reach the Lambda handler the same way `service=lambda` does. A
+  // future verifier change that silently starts pinning service would
+  // flip this test from green to red.
+  it('valid SigV4 with off-service credential scope (execute-api) → 200', async () => {
+    invokeRieMock.mockImplementation(async () => ({
+      raw: '',
+      payload: { statusCode: 200, body: 'ok' },
+    }));
+    const route = functionUrlIamRoute();
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      sigV4CredentialsLoader: stubCredentialsLoader({ accessKeyId, secretAccessKey }),
+    });
+    try {
+      const path = '/items/42';
+      const amzDate = nowAmzDate();
+      const { authorization, headers } = signFunctionUrlRequest({
+        method: 'GET',
+        path,
+        headers: { host: `${server.host}:${server.port}` },
+        accessKeyId,
+        secretAccessKey,
+        region: 'us-east-1',
+        amzDate,
+        // Deliberately NOT 'lambda' — locks down the "service is
+        // informational" contract documented in #626.
+        service: 'execute-api',
+      });
+      const r = await fetch(`http://${server.host}:${server.port}${path}`, {
+        headers: { authorization, ...headers },
+      });
+      expect(r.status).toBe(200);
+      expect(invokeRieMock).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
     }
