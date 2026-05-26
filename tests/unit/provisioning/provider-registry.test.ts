@@ -24,6 +24,25 @@ describe('ProviderRegistry pre-flight (validateResourceTypes)', () => {
     // Supported sibling is not named in the error.
     expect(message).not.toContain('AWS::S3::Bucket');
   });
+
+  it('joins multiple unsupported types into the single escape-hatch re-run hint', () => {
+    const registry = new ProviderRegistry();
+    let message = '';
+    try {
+      registry.validateResourceTypes(
+        new Set(['AWS::AppMesh::Mesh', 'AWS::Budgets::Budget', 'AWS::S3::Bucket'])
+      );
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    // Both unsupported types named individually with their per-type reason + link.
+    expect(message).toContain('AWS::AppMesh::Mesh');
+    expect(message).toContain('AWS::Budgets::Budget');
+    // The re-run hint comma-joins them (load-bearing for copy-paste UX).
+    expect(message).toMatch(
+      /--allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget/
+    );
+  });
 });
 
 describe('ProviderRegistry --allow-unsupported-types escape hatch', () => {

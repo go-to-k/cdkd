@@ -1,6 +1,7 @@
 import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
-import { bold, gray, green, red, yellow } from '../../utils/colors.js';
+import { bold, green, red, yellow } from '../../utils/colors.js';
+import { formatResourceLine } from '../../utils/resource-line.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -606,9 +607,7 @@ export async function runDestroyForStack(
           );
 
           renderer.removeTask(logicalId);
-          logger.info(
-            `  ${red('✗')} ${bold(logicalId)} ${gray(`(${resource.resourceType})`)} ${red('deleted')}`
-          );
+          logger.info(`  ${formatResourceLine('deleted', logicalId, resource.resourceType)}`);
           result.deletedCount++;
         } catch (error) {
           renderer.removeTask(logicalId);

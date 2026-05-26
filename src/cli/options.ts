@@ -529,27 +529,43 @@ export const aggressiveVpcParallelOption = new Option(
 );
 
 /**
- * Deploy options
- */
-/**
  * Escape hatch for the pre-flight unsupported-type rejection. Comma-separated
  * (and repeatable) resource types that cdkd will attempt via Cloud Control
  * even though it reports them unsupported (AWS NON_PROVISIONABLE). Shared by
  * `cdkd deploy` and `cdkd destroy` so a stack deployed with the flag can also
  * be destroyed. Per-type (not blanket) so the user explicitly names each type.
+ *
+ * Format-checks each token against the CFn resource-type shape
+ * (`Namespace::Service::Type` / `Custom::Foo`) so a typo like
+ * `--allow-unsupported-types AWS::AppMash::Mesh` aborts at parse time
+ * instead of silently being added to the allowlist with no effect.
  */
+const RESOURCE_TYPE_FORMAT = /^[A-Z][A-Za-z0-9]+(::[A-Z][A-Za-z0-9]+)+$/;
+
+export function parseAllowUnsupportedTypesToken(
+  value: string,
+  previous: string[] | undefined
+): string[] {
+  const parsed = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const token of parsed) {
+    if (!RESOURCE_TYPE_FORMAT.test(token)) {
+      throw new Error(
+        `Invalid --allow-unsupported-types value "${token}": expected a CloudFormation resource type like AWS::Service::Type or Custom::Foo.`
+      );
+    }
+  }
+  return [...(previous ?? []), ...parsed];
+}
+
 export const allowUnsupportedTypesOption = new Option(
   '--allow-unsupported-types <types>',
   'Comma-separated resource types to attempt via Cloud Control even though cdkd reports ' +
     'them unsupported (AWS NON_PROVISIONABLE). Escape hatch — Cloud Control will likely ' +
     'still fail. Example: --allow-unsupported-types AWS::Foo::Bar,AWS::Baz::Qux'
-).argParser((value: string, previous: string[] | undefined) => {
-  const parsed = value
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return [...(previous ?? []), ...parsed];
-});
+).argParser(parseAllowUnsupportedTypesToken);
 
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')

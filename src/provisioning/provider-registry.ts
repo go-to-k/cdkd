@@ -181,6 +181,11 @@ export class ProviderRegistry {
     if (CloudControlProvider.isSupportedResourceType(resourceType)) {
       return 'cloud-control';
     }
+    // Escape-hatch-allowed types are routed through Cloud Control by
+    // getProvider/hasProvider; keep this method consistent.
+    if (this.allowedUnsupportedTypes.has(resourceType)) {
+      return 'cloud-control';
+    }
     return null;
   }
 
@@ -206,7 +211,7 @@ export class ProviderRegistry {
         .map((type) => {
           const reason = isNonProvisionable(type)
             ? 'AWS reports this type as NON_PROVISIONABLE (Cloud Control API cannot manage it) and cdkd has no SDK provider for it.'
-            : 'Not supported by Cloud Control API and no SDK provider is registered.';
+            : "cdkd does not currently support this type — no SDK provider is registered, and the type is either on cdkd's Cloud Control blocklist (pending a dedicated SDK provider) or is not an AWS:: namespace.";
           return `  - ${type}\n      ${reason}\n      Request support: ${unsupportedTypeIssueUrl(type)}`;
         })
         .join('\n');

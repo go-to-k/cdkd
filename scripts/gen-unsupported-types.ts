@@ -24,7 +24,7 @@
  * stale module (json regenerated but module not) fails the build — mirroring
  * the integ-coverage / scenario-coverage staleness guards.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,5 +65,9 @@ ${body}
 ]);
 `;
 
-writeFileSync(OUT_FILE, content);
+// Atomic write: a Ctrl-C between open and close would otherwise leave the
+// generated module truncated/empty and break the next build's module load.
+const tmp = `${OUT_FILE}.tmp`;
+writeFileSync(tmp, content);
+renameSync(tmp, OUT_FILE);
 console.log(`Wrote ${tier3.length} NON_PROVISIONABLE types to ${OUT_FILE}`);
