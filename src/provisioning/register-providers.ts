@@ -1,6 +1,7 @@
 import { ProviderRegistry } from './provider-registry.js';
 import { IAMRoleProvider } from './providers/iam-role-provider.js';
 import { IAMPolicyProvider } from './providers/iam-policy-provider.js';
+import { IAMManagedPolicyProvider } from './providers/iam-managed-policy-provider.js';
 import { IAMInstanceProfileProvider } from './providers/iam-instance-profile-provider.js';
 import { IAMUserGroupProvider } from './providers/iam-user-group-provider.js';
 import { S3BucketProvider } from './providers/s3-bucket-provider.js';
@@ -75,6 +76,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // IAM
   registry.register('AWS::IAM::Role', new IAMRoleProvider());
   registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
+  registry.register('AWS::IAM::ManagedPolicy', new IAMManagedPolicyProvider());
   registry.register('AWS::IAM::InstanceProfile', new IAMInstanceProfileProvider());
   const iamUserGroupProvider = new IAMUserGroupProvider();
   registry.register('AWS::IAM::User', iamUserGroupProvider);

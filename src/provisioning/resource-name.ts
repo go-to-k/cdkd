@@ -121,6 +121,7 @@ export const PATTERN_B_RESOURCE_TYPES: readonly string[] = [
   'AWS::IAM::User',
   'AWS::IAM::Group',
   'AWS::IAM::InstanceProfile',
+  'AWS::IAM::ManagedPolicy',
   'AWS::ElasticLoadBalancingV2::LoadBalancer',
   'AWS::ElasticLoadBalancingV2::TargetGroup',
 ] as const;
@@ -148,6 +149,7 @@ export const PATTERN_B_NAME_PROPERTIES: Readonly<Record<string, string>> = {
   'AWS::IAM::User': 'UserName',
   'AWS::IAM::Group': 'GroupName',
   'AWS::IAM::InstanceProfile': 'InstanceProfileName',
+  'AWS::IAM::ManagedPolicy': 'ManagedPolicyName',
   'AWS::ElasticLoadBalancingV2::LoadBalancer': 'Name',
   'AWS::ElasticLoadBalancingV2::TargetGroup': 'Name',
 };
@@ -288,6 +290,10 @@ const FALLBACK_NAME_RULES: Record<
   'AWS::Lambda::LayerVersion': { nameProperty: 'LayerName', options: { maxLength: 64 } },
   'AWS::IAM::Role': { nameProperty: 'RoleName', options: { maxLength: 64 } },
   'AWS::IAM::Policy': { nameProperty: 'PolicyName', options: { maxLength: 64 } },
+  'AWS::IAM::ManagedPolicy': {
+    nameProperty: 'ManagedPolicyName',
+    options: { maxLength: 128 },
+  },
   'AWS::IAM::User': { nameProperty: 'UserName', options: { maxLength: 64 } },
   'AWS::IAM::Group': { nameProperty: 'GroupName', options: { maxLength: 128 } },
   'AWS::IAM::InstanceProfile': {
