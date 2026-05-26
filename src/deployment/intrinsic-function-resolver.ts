@@ -25,6 +25,85 @@ import type { ExportIndexStore } from '../state/export-index-store.js';
 export const AWS_NO_VALUE = Symbol('AWS::NoValue');
 
 /**
+ * Intrinsic-function keys the resolver knows how to handle.
+ *
+ * A CloudFormation intrinsic is ALWAYS a single-key object — `{ "Ref": ... }`
+ * or `{ "Fn::X": ... }`. When `resolveValue` encounters a single-key object
+ * whose key is `Ref` or starts with `Fn::` but is NOT in this set, it throws
+ * (rather than silently passing the broken value through to the provider).
+ *
+ * `Fn::Transform` (CloudFormation macros) is intentionally treated as handled:
+ * it is expanded server-side at the SYNTHESIS layer (see
+ * `src/synthesis/macro-expander.ts`, routed via `Synthesizer`) BEFORE the
+ * resolver ever runs, so by resolution time it should already be gone. Listing
+ * it here keeps a stray (already-expanded) occurrence from hard-erroring.
+ */
+const HANDLED_INTRINSIC_KEYS = new Set<string>([
+  'Ref',
+  'Fn::GetAtt',
+  'Fn::Join',
+  'Fn::Sub',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::If',
+  'Fn::Equals',
+  'Fn::And',
+  'Fn::Or',
+  'Fn::Not',
+  'Fn::ImportValue',
+  'Fn::GetStackOutput',
+  'Fn::FindInMap',
+  'Fn::Base64',
+  'Fn::GetAZs',
+  'Fn::Cidr',
+  'Fn::Transform',
+]);
+
+/**
+ * Detect an unresolved / unknown CloudFormation intrinsic function.
+ *
+ * A CloudFormation intrinsic is ALWAYS a single-key object whose key is `Ref`
+ * or starts with `Fn::`. Requiring EXACTLY ONE key avoids false positives on a
+ * real resource property that happens to be literally named `Ref` or
+ * `Fn::Something` (those would be multi-key objects, or sit alongside sibling
+ * keys), so only a genuine lone intrinsic node is flagged.
+ *
+ * @returns the unknown intrinsic key (e.g. `Fn::ToJsonString`) or `undefined`
+ *   when the object is not an unknown single-key intrinsic.
+ */
+function detectUnknownIntrinsicKey(obj: Record<string, unknown>): string | undefined {
+  const keys = Object.keys(obj);
+  if (keys.length !== 1) {
+    return undefined;
+  }
+  const key = keys[0]!;
+  if (key !== 'Ref' && !key.startsWith('Fn::')) {
+    return undefined;
+  }
+  if (HANDLED_INTRINSIC_KEYS.has(key)) {
+    return undefined;
+  }
+  return key;
+}
+
+/**
+ * Build a clear, English error message for an unsupported intrinsic, including
+ * a one-click pre-filled GitHub issue link so users can request support.
+ */
+function buildUnknownIntrinsicError(key: string): Error {
+  const title = `Support intrinsic ${key}`;
+  const issueUrl =
+    `https://github.com/go-to-k/cdkd/issues/new` +
+    `?title=${encodeURIComponent(title)}&labels=intrinsic-support`;
+  return new Error(
+    `Unsupported CloudFormation intrinsic function "${key}": ` +
+      `cdkd does not support resolving it yet. ` +
+      `Deploying this template would produce a broken value. ` +
+      `Please request support by opening an issue: ${issueUrl}`
+  );
+}
+
+/**
  * Resolver context for intrinsic functions
  */
 export interface ResolverContext {
@@ -409,6 +488,17 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::Cidr' in obj) {
       return await this.resolveCidr(obj['Fn::Cidr'] as [unknown, unknown, unknown], context);
+    }
+
+    // Unknown intrinsic: a lone `{ "Ref": ... }` / `{ "Fn::X": ... }` whose key
+    // is not in the handled set above. Hard-error instead of silently passing
+    // the broken value through to the provider (e.g. CFn language extensions
+    // like Fn::ToJsonString / Fn::Length / Fn::ForEach that cdkd cannot
+    // resolve). The single-key guard means a real property literally named
+    // "Ref"/"Fn::Something" alongside siblings is NOT misdetected.
+    const unknownIntrinsicKey = detectUnknownIntrinsicKey(obj);
+    if (unknownIntrinsicKey !== undefined) {
+      throw buildUnknownIntrinsicError(unknownIntrinsicKey);
     }
 
     // Not an intrinsic function: recursively resolve object properties
