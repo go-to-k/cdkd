@@ -159,208 +159,57 @@ cdkd has three command families:
   use them to inspect / clean up state when the source is gone or
   you don't want to synth. `cdkd state destroy` is the CDK-app-free
   counterpart of `cdkd destroy`.
-- **`cdkd local ...` subcommands** (`local invoke`, `local start-api`,
-  `local run-task`, `local start-service`) run synthesized workloads
-  locally inside Docker containers. The Lambda variants (`local invoke` /
-  `local start-api`) bundle the AWS Lambda Runtime Interface Emulator
-  (RIE); `local invoke` runs a single Lambda once, and `local start-api`
-  stands up a long-running HTTP server that maps API Gateway / HTTP API /
-  Function URL routes to local Lambda invocations. `local run-task` is
-  the ECS one-shot counterpart — it locates an
-  `AWS::ECS::TaskDefinition` from the synthesized template and stands
-  up every container in `dependsOn` order on a per-task docker network
-  with the AWS-published metadata endpoints sidecar, so containers see
-  `ECS_CONTAINER_METADATA_URI_V4` (and optionally task-role creds via
-  `--assume-task-role`) just like they would on Fargate / ECS.
-  `local start-service` is the long-running counterpart for
-  `AWS::ECS::Service`: it discovers the service, chains into the same
-  per-task machinery for each `DesiredCount` replica (clamped by
-  `--max-tasks`), and keeps every replica running until `^C` — failed
-  replicas restart per `--restart-policy on-failure|always|none`. It
-  also accepts multiple service targets in one invocation
-  (`cdkd local start-service Stack/Orders Stack/Frontend`); per-service
-  `AWS::ServiceDiscovery::PrivateDnsNamespace` / `Service` +
-  `ServiceConnectConfiguration` / `ServiceRegistries[]` blocks are
-  parsed and each booted replica's container IP is published to a
-  shared in-process Cloud Map registry, then injected into the next
-  service's containers via docker `--add-host <fqdn>:<ip>` so
-  `wget http://orders/` from inside the `frontend` container resolves
-  via `/etc/hosts` to the orders replica (boot targets in
-  producer-then-consumer order; see [docs/local-emulation.md](docs/local-emulation.md)
-  for v1 limitations — first-wins for multi-replica routing, no SRV
-  records, no Envoy L7). No AWS API calls beyond optional STS / Secrets
-  resolution, no state bucket needed. Local load-balancer emulation and
-  `--watch` hot-reload for `start-service` are deferred to follow-up
-  PRs.
+- **`cdkd local ...` subcommands** (`local invoke` / `start-api` /
+  `run-task` / `start-service`) run synthesized workloads locally
+  inside Docker containers — no AWS deploy needed. Modeled on
+  `sam local *` but reads CDK state directly via `--from-state`
+  (cdkd-managed) or `--from-cfn-stack` (CFn-managed). See
+  [Local execution](#local-execution).
 
 Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
 ```bash
-# Bootstrap (create S3 bucket for state)
-cdkd bootstrap \
-  --state-bucket my-cdkd-state \
-  --region us-east-1
-
-# Synthesize only
-cdkd synth --app "node app.ts"
-
-# List all stacks in the CDK app (alias: ls)
-cdkd list
-cdkd ls
-cdkd list --long              # YAML records with id/name/environment
-cdkd list --long --json       # same, but JSON
-cdkd list --show-dependencies # id + dependency list per stack
-cdkd list 'MyStage/*'         # filter by display path (CDK CLI parity)
-
-# Deploy from a pre-synthesized cloud assembly directory
-cdkd deploy --app cdk.out
-
-# Deploy (single stack auto-detected, reads --app from cdk.json)
-cdkd deploy
-
-# Deploy specific stack(s)
-cdkd deploy MyStack
-cdkd deploy Stack1 Stack2
-
-# Deploy all stacks
+# Synth + deploy
+cdkd synth
+cdkd deploy                         # single-stack auto-detected
+cdkd deploy MyStack                 # by name (or 'MyStage/Api' display path)
 cdkd deploy --all
+cdkd deploy --dry-run               # plan only, no changes
+cdkd deploy --no-rollback           # Terraform-style: keep partial state on failure
+cdkd deploy --no-wait               # skip multi-minute waits (CloudFront / RDS / NAT)
 
-# Deploy with wildcard (matched against the physical CloudFormation stack name)
-cdkd deploy 'My*'
-
-# Deploy stacks under a CDK Stage using the hierarchical path (CDK CLI parity)
-# Patterns containing '/' are routed to the CDK display path; both forms work:
-cdkd deploy 'MyStage/*'        # all stacks under MyStage
-cdkd deploy MyStage/Api        # specific stack by display path
-cdkd deploy MyStage-Api        # same stack by physical CloudFormation name
-
-# Deploy with context values
-cdkd deploy -c env=staging -c featureFlag=true
-
-# Deploy with explicit options
-cdkd deploy MyStack \
-  --app "node app.ts" \
-  --state-bucket my-cdkd-state \
-  --verbose
-
-# Show diff (what would change)
+# Inspect what would change
 cdkd diff MyStack
-cdkd diff MyParent --recursive       # also diff every nested-stack child vs its own state (#555 A5)
-cdkd diff MyParent --recursive --json  # nested {stack, changes, children: [...]} JSON
-cdkd diff MyStack --fail             # exit 1 when any change is detected (CI gate; matches cdk diff --fail)
+cdkd diff MyStack --fail            # exit 1 on any change (CI gate)
 
-# Detect drift between cdkd state and AWS reality (state-only; no synth)
-# Exits 0 with no drift, 1 when drift is detected, 2 on partial revert failure.
-cdkd drift MyStack
-cdkd drift --all --json
+# Drift detection — compare state vs AWS reality (no synth)
+cdkd drift MyStack                  # exit 1 if drift
+cdkd drift MyStack --accept --yes   # state ← AWS
+cdkd drift MyStack --revert --yes   # AWS ← state
 
-# Resolve drift: state ← AWS (catch up state with manual console changes)
-cdkd drift MyStack --accept --yes
-
-# Resolve drift: AWS ← state (push state values back into AWS via provider.update)
-cdkd drift MyStack --revert --yes
-
-# Refresh the deploy-time AWS snapshot used as drift baseline.
-# Optional — `cdkd deploy` itself auto-refreshes on the first deploy after
-# upgrading from a pre-v3 cdkd binary (= state schema `version: 2`), in
-# parallel with the deploy at no critical-path cost. This command is the
-# manual / non-deploy path: run it when you want the baseline refreshed
-# without redeploying (e.g. for resources that won't change in any
-# near-future deploy). Idempotent on the same v3 state — see "Drift
-# detection" below for the full upgrade story.
-cdkd state refresh-observed MyStack
-
-# Dry run (plan only, no changes)
-cdkd deploy --dry-run
-
-# Deploy with no rollback on failure (Terraform-style)
-cdkd deploy --no-rollback
-
-# Deploy only the specified stack (skip dependency auto-inclusion)
-cdkd deploy -e MyStack
-
-# Skip the multi-minute wait on async resources (CloudFront, RDS, NAT GW, etc.)
-cdkd deploy --no-wait
-
-# Synth + build + publish assets only (no deploy) — typical CI split
-cdkd publish-assets
-
-# Destroy resources
+# Asset / destroy / unlock
+cdkd publish-assets                 # synth + upload only (typical CI split)
 cdkd destroy MyStack
-cdkd destroy --all --force
+cdkd force-unlock MyStack           # clear stale lock from an interrupted deploy
 
-# Force-unlock a stale lock from interrupted deploy
-cdkd force-unlock MyStack
-
-# Adopt already-deployed AWS resources into cdkd state.
-# See docs/import.md for the full guide (auto / selective / hybrid modes,
-# --resource overrides, --resource-mapping CDK CLI compatibility).
-cdkd import MyStack --dry-run
+# Adopt existing AWS resources into cdkd state
 cdkd import MyStack --yes
 
-# Inspect state-bucket info on demand (bucket name, region, source, schema version, stack count).
-# Routine commands (deploy / destroy / etc.) no longer print the bucket banner by default —
-# pass --verbose to surface it in their debug logs, or use this subcommand for an explicit answer.
-cdkd state info
-cdkd state info --json        # JSON output for tooling
-cdkd state info --state-bucket my-bucket  # explicit bucket; reports Source: --state-bucket flag
-
-# List stacks registered in the cdkd state bucket
-cdkd state list
-cdkd state ls --long          # include resource count, last-modified, lock status
-cdkd state list --json        # JSON output (alone, or combined with --long)
-cdkd state list --tree        # parent → child stack tree (nested stacks; #555 A3)
-cdkd state list --tree --json # tree as nested JSON
-
-# List resources of a single stack from state
-cdkd state resources MyStack          # aligned columns: LogicalID, Type, PhysicalID
-cdkd state resources MyStack --long   # per-resource block with dependencies and attributes
-cdkd state resources MyStack --json   # full JSON array
-
-# Show full state record for a stack (metadata, outputs, all resources incl. properties)
-cdkd state show MyStack
-cdkd state show MyStack --json              # raw {state, lock} JSON
-cdkd state show MyParent --show-nested      # recursively show every nested-stack child (#555 A4)
-cdkd state show MyParent --show-nested --json  # tree as nested {state, lock, children: [...]} JSON
-
-# Orphan one or more RESOURCES from cdkd's state (does NOT delete AWS resources).
-# Per-resource, mirrors aws-cdk-cli's `cdk orphan --unstable=orphan`.
-# Synth-driven — needs --app / cdk.json. Construct paths use CDK's L2-style form
-# (`<StackName>/<Path/To/Construct>`); the synthesized `/Resource` suffix is
-# matched implicitly. Passing an L2 wrapper that contains multiple CFn resources
-# orphans every child under it (matches upstream's prefix-match semantics).
-cdkd orphan MyStack/MyTable                    # confirmation prompt (y/N)
-cdkd orphan MyStack/MyTable --yes
-cdkd orphan MyStack/MyTable MyStack/MyBucket   # multiple resources, same stack
-cdkd orphan MyStack/MyTable --dry-run          # print rewrite audit, no save
-cdkd orphan MyStack/MyTable --force            # also fall back to cached
-                                               # attributes when live fetch fails
-
-# State-driven counterpart that orphans a WHOLE STACK's state record
-# (no CDK app needed — works against the bucket).
-cdkd state orphan MyStack             # confirmation prompt (y/N)
-cdkd state orphan MyStack --yes       # skip confirmation
-cdkd state orphan StackA StackB --force # also bypass the locked-stack refusal
-
-# Destroy a stack's AWS resources AND remove its state record, without
-# requiring the CDK app (no synth — works from any working directory).
-cdkd state destroy MyStack            # per-stack confirmation prompt
-cdkd state destroy MyStack OtherStack --yes
-cdkd state destroy --all -y           # every stack in the bucket
-cdkd state destroy MyStack --region us-east-1
+# State-bucket-only commands (no CDK app needed)
+cdkd state info                     # bucket name, region, schema version
+cdkd state list                     # one row per (stackName, region)
+cdkd state list --tree              # parent → child nested-stack tree
+cdkd state show MyStack             # full state record
+cdkd state resources MyStack        # logical id / type / physical id
+cdkd state destroy MyStack          # delete AWS resources + state, no CDK app
+cdkd state orphan MyStack           # remove state record only (AWS resources stay)
 ```
 
-## Compatibility
-
-cdkd supports the standard CloudFormation surface — intrinsic functions,
-pseudo parameters, parameters / conditions, cross-stack / cross-region
-references, asset publishing, custom resources, and so on. See
-**[docs/supported-features.md](docs/supported-features.md)** for the
-full reference. For per-resource-type provisioning support (SDK Providers
-vs Cloud Control API fallback), see
-**[docs/supported-resources.md](docs/supported-resources.md)**.
-
-**Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type. cdkd fails fast at pre-flight when a template uses a not-yet-implemented property, with the property name + a 1-click issue link. `--allow-unsupported-properties <Type>:<Prop>,...` is the safety valve when this is too strict (e.g. mid-life update on an existing resource); avoid it on security-meaningful properties (encryption / IAM / TLS). See [docs/cli-reference.md](docs/cli-reference.md#--allow-unsupported-properties-deploy).
+See **[docs/cli-reference.md](docs/cli-reference.md)** for the full flag
+matrix (`--concurrency`, `--no-aggressive-vpc-parallel`,
+`--allow-unsupported-properties`, `--role-arn`, etc.), per-command details
+including the synth-driven per-resource `cdkd orphan <constructPath>`
+variant, and stage / wildcard pattern matching.
 
 ## Importing existing resources
 
@@ -631,6 +480,18 @@ cdkd publish-assets -a cdk.out       # skip synth, use pre-synthesized assembly
 
 See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
 for stack-selection rules and concurrency knobs.
+
+## Compatibility
+
+cdkd supports the standard CloudFormation surface — intrinsic functions,
+pseudo parameters, parameters / conditions, cross-stack / cross-region
+references, asset publishing, custom resources, and so on. See
+**[docs/supported-features.md](docs/supported-features.md)** for the
+full reference. For per-resource-type provisioning support (SDK Providers
+vs Cloud Control API fallback), see
+**[docs/supported-resources.md](docs/supported-resources.md)**.
+
+**Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type. cdkd fails fast at pre-flight when a template uses a not-yet-implemented property, with the property name + a 1-click issue link. `--allow-unsupported-properties <Type>:<Prop>,...` is the safety valve when this is too strict (e.g. mid-life update on an existing resource); avoid it on security-meaningful properties (encryption / IAM / TLS). See [docs/cli-reference.md](docs/cli-reference.md#--allow-unsupported-properties-deploy).
 
 ## State Management
 
