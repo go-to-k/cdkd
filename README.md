@@ -64,6 +64,45 @@ Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [test
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. Deployment fails with a clear error message naming the type + a 1-click issue link.
 
+## How it works
+
+```
+┌─────────────────┐
+│  Your CDK App   │  (aws-cdk-lib)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ cdkd Synthesis  │  Subprocess + Cloud Assembly parser
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ CloudFormation  │
+│   Template      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ cdkd Engine     │
+│ - DAG Analysis  │  Dependency graph construction
+│ - Diff Calc     │  Compare with existing resources
+│ - Parallel Exec │  Event-driven dispatch
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌────────┐ ┌────────┐
+│  SDK   │ │ Cloud  │
+│Provider│ │Control │  Fallback for many
+│        │ │  API   │  additional types
+└────────┘ └────────┘
+```
+
+For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
+parsing → synthesis → asset publishing → per-stack deploy), see
+[docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
+
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
@@ -323,79 +362,6 @@ vs Cloud Control API fallback), see
 
 **Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type. cdkd fails fast at pre-flight when a template uses a not-yet-implemented property, with the property name + a 1-click issue link. `--allow-unsupported-properties <Type>:<Prop>,...` is the safety valve when this is too strict (e.g. mid-life update on an existing resource); avoid it on security-meaningful properties (encryption / IAM / TLS). See [docs/cli-reference.md](docs/cli-reference.md#--allow-unsupported-properties-deploy).
 
-## Local execution
-
-The `cdkd local` family runs AWS workloads on the developer's machine
-via Docker — Lambda functions, API Gateway routes, ECS tasks, and
-long-running ECS services — without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
-synthesis / asset / construct-path plumbing — no `template.yaml` to
-maintain, no `cdk synth | sam ...` round-trip.
-
-| Subcommand | Emulates |
-| --- | --- |
-| `cdkd local invoke <target>` | One-shot Lambda invoke via the AWS Lambda Runtime Interface Emulator (RIE) |
-| `cdkd local start-api` | Long-running HTTP server for REST v1 / HTTP API / Function URL routes |
-| `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
-| `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
-
-Requires Docker. Pass `--from-state` (cdkd-deployed) or
-`--from-cfn-stack` (cdk-deployed / CFn-managed) to substitute deployed
-physical IDs into intrinsic-valued env vars / secrets / image URIs;
-without either, intrinsic values are dropped with a per-key warning
-(matches `sam local *`). The two flags are mutually exclusive.
-
-### `local invoke`
-
-```bash
-cdkd local invoke MyStack/Handler                    # one-shot invoke
-cdkd local invoke MyStack/Handler --event events/get.json
-cdkd local invoke MyStack/Handler --from-state       # OR --from-cfn-stack
-```
-
-All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET /
-`provided.al2023`), ZIP and container Lambdas, same-stack Lambda Layers
-bind-mounted at `/opt`.
-
-### `local start-api`
-
-```bash
-cdkd local start-api                                 # one HTTP server per discovered API
-cdkd local start-api MyStack/MyHttpApi --watch       # filter + hot reload
-cdkd local start-api --from-state                    # OR --from-cfn-stack
-```
-
-REST v1 + HTTP API v2 + Function URL with all integration kinds
-(AWS_PROXY / MOCK / HTTP_PROXY / HTTP / AWS Lambda non-proxy via
-hand-rolled VTL), authorizers (Lambda / Cognito / HTTP v2 JWT /
-REST v1 AWS_IAM SigV4), CORS, stage variables, `--watch` hot reload.
-
-### `local run-task`
-
-```bash
-cdkd local run-task MyStack/MyService/TaskDef
-cdkd local run-task MyTaskDef --from-state           # OR --from-cfn-stack
-```
-
-Every container in the task definition on a per-task docker network
-with the AWS-published ECS metadata sidecar.
-
-### `local start-service`
-
-```bash
-cdkd local start-service MyStack/Orders MyStack/Web  # multiple services in one invocation
-cdkd local start-service MyStack/Orders --from-state # OR --from-cfn-stack
-```
-
-Long-running ECS Service emulator: `DesiredCount` replicas with
-restart-on-exit, cross-service Service Connect / Cloud Map DNS
-discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
-No local load-balancer in v1.
-
-See **[docs/local-emulation.md](docs/local-emulation.md)** for the
-full reference — runtimes, target resolution, every flag, integration
-and authorizer detail, route precedence, container pool, networking,
-`--from-cfn-stack` semantics, v1 scope.
-
 ## Importing existing resources
 
 `cdkd import` adopts AWS resources that are already deployed (via
@@ -495,45 +461,6 @@ Two `orphan` variants at different granularities:
 Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 (state-driven, no synth) delete AWS resources + state.
 
-## How it works
-
-```
-┌─────────────────┐
-│  Your CDK App   │  (aws-cdk-lib)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ cdkd Synthesis  │  Subprocess + Cloud Assembly parser
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ CloudFormation  │
-│   Template      │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ cdkd Engine     │
-│ - DAG Analysis  │  Dependency graph construction
-│ - Diff Calc     │  Compare with existing resources
-│ - Parallel Exec │  Event-driven dispatch
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐ ┌────────┐
-│  SDK   │ │ Cloud  │
-│Provider│ │Control │  Fallback for many
-│        │ │  API   │  additional types
-└────────┘ └────────┘
-```
-
-For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
-parsing → synthesis → asset publishing → per-stack deploy), see
-[docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
-
 ## `--no-wait`: skip async-resource waits
 
 CloudFront / RDS / ElastiCache / NAT Gateway typically take 1–15
@@ -548,19 +475,78 @@ See [docs/cli-reference.md](docs/cli-reference.md#--no-wait-skip-async-resource-
 for per-resource caveats (NAT egress, RDS final-snapshot timing,
 etc.).
 
-## VPC route DependsOn relaxation (on by default)
+## Local execution
 
-CDK injects defensive `DependsOn` from VPC Lambdas onto private-subnet
-routes. The dependency is real at runtime but NOT required at deploy
-time. cdkd drops it by default so CloudFront + Lambda::Url propagation
-runs in parallel with NAT stabilization (~50% faster on VPC+Lambda+CloudFront
-stacks; bench-cdk-sample 398s → 181s). Pass
-`cdkd deploy --no-aggressive-vpc-parallel` to opt out (e.g. when a
-Custom Resource synchronously invokes a VPC Lambda outside cdkd's
-Lambda-ServiceToken Active wait).
+The `cdkd local` family runs AWS workloads on the developer's machine
+via Docker — Lambda functions, API Gateway routes, ECS tasks, and
+long-running ECS services — without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
+synthesis / asset / construct-path plumbing — no `template.yaml` to
+maintain, no `cdk synth | sam ...` round-trip.
 
-See [docs/cli-reference.md](docs/cli-reference.md) for the full
-type-pair allowlist and trade-off notes.
+| Subcommand | Emulates |
+| --- | --- |
+| `cdkd local invoke <target>` | One-shot Lambda invoke via the AWS Lambda Runtime Interface Emulator (RIE) |
+| `cdkd local start-api` | Long-running HTTP server for REST v1 / HTTP API / Function URL routes |
+| `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
+| `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
+
+Requires Docker. Pass `--from-state` (cdkd-deployed) or
+`--from-cfn-stack` (cdk-deployed / CFn-managed) to substitute deployed
+physical IDs into intrinsic-valued env vars / secrets / image URIs;
+without either, intrinsic values are dropped with a per-key warning
+(matches `sam local *`). The two flags are mutually exclusive.
+
+### `local invoke`
+
+```bash
+cdkd local invoke MyStack/Handler                    # one-shot invoke
+cdkd local invoke MyStack/Handler --event events/get.json
+cdkd local invoke MyStack/Handler --from-state       # OR --from-cfn-stack
+```
+
+All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET /
+`provided.al2023`), ZIP and container Lambdas, same-stack Lambda Layers
+bind-mounted at `/opt`.
+
+### `local start-api`
+
+```bash
+cdkd local start-api                                 # one HTTP server per discovered API
+cdkd local start-api MyStack/MyHttpApi --watch       # filter + hot reload
+cdkd local start-api --from-state                    # OR --from-cfn-stack
+```
+
+REST v1 + HTTP API v2 + Function URL with all integration kinds
+(AWS_PROXY / MOCK / HTTP_PROXY / HTTP / AWS Lambda non-proxy via
+hand-rolled VTL), authorizers (Lambda / Cognito / HTTP v2 JWT /
+REST v1 AWS_IAM SigV4), CORS, stage variables, `--watch` hot reload.
+
+### `local run-task`
+
+```bash
+cdkd local run-task MyStack/MyService/TaskDef
+cdkd local run-task MyTaskDef --from-state           # OR --from-cfn-stack
+```
+
+Every container in the task definition on a per-task docker network
+with the AWS-published ECS metadata sidecar.
+
+### `local start-service`
+
+```bash
+cdkd local start-service MyStack/Orders MyStack/Web  # multiple services in one invocation
+cdkd local start-service MyStack/Orders --from-state # OR --from-cfn-stack
+```
+
+Long-running ECS Service emulator: `DesiredCount` replicas with
+restart-on-exit, cross-service Service Connect / Cloud Map DNS
+discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
+No local load-balancer in v1.
+
+See **[docs/local-emulation.md](docs/local-emulation.md)** for the
+full reference — runtimes, target resolution, every flag, integration
+and authorizer detail, route precedence, container pool, networking,
+`--from-cfn-stack` semantics, v1 scope.
 
 ## Rollback behavior
 
@@ -582,6 +568,20 @@ Mid-deploy state is also saved per-resource as work completes, so even
 if cdkd itself crashes between the failure and the rollback, the state
 file accurately reflects what's on AWS and a follow-up `cdkd destroy`
 won't orphan anything.
+
+## VPC route DependsOn relaxation (on by default)
+
+CDK injects defensive `DependsOn` from VPC Lambdas onto private-subnet
+routes. The dependency is real at runtime but NOT required at deploy
+time. cdkd drops it by default so CloudFront + Lambda::Url propagation
+runs in parallel with NAT stabilization (~50% faster on VPC+Lambda+CloudFront
+stacks; bench-cdk-sample 398s → 181s). Pass
+`cdkd deploy --no-aggressive-vpc-parallel` to opt out (e.g. when a
+Custom Resource synchronously invokes a VPC Lambda outside cdkd's
+Lambda-ServiceToken Active wait).
+
+See [docs/cli-reference.md](docs/cli-reference.md) for the full
+type-pair allowlist and trade-off notes.
 
 ## `--remove-protection`: one-shot bypass for protected resources
 
