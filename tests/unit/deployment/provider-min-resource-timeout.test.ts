@@ -153,6 +153,7 @@ describe('DeployEngine — provider.getMinResourceTimeoutMs() lifts the deadline
       }),
       getCloudControlProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
 
     const template: CloudFormationTemplate = {

@@ -133,6 +133,7 @@ describe('DeployEngine — per-resource-type timeout resolution (#91 v2)', () =>
       getProvider: vi.fn().mockReturnValue(provider),
       getCloudControlProvider: vi.fn(),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
 
     const template: CloudFormationTemplate = {

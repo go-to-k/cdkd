@@ -1,3 +1,10 @@
+# [0.156.0](https://github.com/go-to-k/cdkd/compare/v0.155.0...v0.156.0) (2026-05-26)
+
+
+### Features
+
+* **provisioning:** fail fast on silent-drop properties at pre-flight ([#608](https://github.com/go-to-k/cdkd/issues/608)) ([aa7547f](https://github.com/go-to-k/cdkd/commit/aa7547fe49c5335bcf4340ea91eace62f792cc84))
+
 # [0.155.0](https://github.com/go-to-k/cdkd/compare/v0.154.0...v0.155.0) (2026-05-26)
 
 

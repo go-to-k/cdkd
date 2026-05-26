@@ -584,3 +584,110 @@ describe('parseAllowUnsupportedTypesToken', () => {
     ).toEqual(['AWS::AppMesh::Mesh', 'AWS::Budgets::Budget']);
   });
 });
+
+describe('parseAllowUnsupportedPropertiesToken', () => {
+  it('parses a single <Type>:<Prop> token', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(
+      parseAllowUnsupportedPropertiesToken('AWS::Lambda::Function:LoggingConfig', undefined)
+    ).toEqual(['AWS::Lambda::Function:LoggingConfig']);
+  });
+
+  it('splits a comma-separated value', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(
+      parseAllowUnsupportedPropertiesToken(
+        'AWS::Lambda::Function:LoggingConfig,AWS::Lambda::Function:SnapStart',
+        undefined
+      )
+    ).toEqual([
+      'AWS::Lambda::Function:LoggingConfig',
+      'AWS::Lambda::Function:SnapStart',
+    ]);
+  });
+
+  it('accumulates across repeated invocations (commander --flag x --flag y)', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    const first = parseAllowUnsupportedPropertiesToken(
+      'AWS::Lambda::Function:LoggingConfig',
+      undefined
+    );
+    const second = parseAllowUnsupportedPropertiesToken(
+      'AWS::RDS::DBInstance:CACertificateIdentifier',
+      first
+    );
+    expect(second).toEqual([
+      'AWS::Lambda::Function:LoggingConfig',
+      'AWS::RDS::DBInstance:CACertificateIdentifier',
+    ]);
+  });
+
+  it('rejects a token missing the property segment', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() =>
+      parseAllowUnsupportedPropertiesToken('AWS::Lambda::Function', undefined)
+    ).toThrow(/Invalid --allow-unsupported-properties value/);
+  });
+
+  it('rejects a token missing the type segment', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() =>
+      parseAllowUnsupportedPropertiesToken('LoggingConfig', undefined)
+    ).toThrow(/Invalid --allow-unsupported-properties value/);
+  });
+
+  it('rejects a hyphenated property typo (not a valid CFn property name)', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() =>
+      parseAllowUnsupportedPropertiesToken('AWS::Lambda::Function:Logging-Config', undefined)
+    ).toThrow(/Invalid --allow-unsupported-properties value/);
+  });
+
+  it('rejects a lowercase-initial property name (CFn property names are PascalCase)', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() =>
+      parseAllowUnsupportedPropertiesToken(
+        'AWS::Lambda::Function:loggingConfig',
+        undefined
+      )
+    ).toThrow(/PascalCase/);
+  });
+
+  it('rejects Custom:: tokens (Custom resources have no Tier-1 silent drop)', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() =>
+      parseAllowUnsupportedPropertiesToken('Custom::Foo:Bar', undefined)
+    ).toThrow(/Custom:: resources are routed through cfn-response/);
+  });
+
+  it('trims whitespace around tokens', async () => {
+    const { parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(
+      parseAllowUnsupportedPropertiesToken(
+        ' AWS::Lambda::Function:LoggingConfig , AWS::Lambda::Function:SnapStart ',
+        undefined
+      )
+    ).toEqual([
+      'AWS::Lambda::Function:LoggingConfig',
+      'AWS::Lambda::Function:SnapStart',
+    ]);
+  });
+});

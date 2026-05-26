@@ -567,6 +567,61 @@ export const allowUnsupportedTypesOption = new Option(
     'still fail. Example: --allow-unsupported-types AWS::Foo::Bar,AWS::Baz::Qux'
 ).argParser(parseAllowUnsupportedTypesToken);
 
+/**
+ * Escape hatch for the property-level silent-drop pre-flight reject.
+ * Comma-separated (and repeatable) `<ResourceType>:<PropertyName>` tokens
+ * the user explicitly accepts as silently dropped at deploy time. Per
+ * type+property pair (not blanket) so each silent drop is acknowledged
+ * by name.
+ *
+ * Format-checks each token against `<Namespace>::<Service>::<Type>:<Prop>`
+ * with both halves PascalCase, so a typo aborts at parse time instead of
+ * being silently added to the allowlist with no effect.
+ *
+ * The check is Tier-1-only by design (Cloud Control forwards every property
+ * to AWS, so there is no write-side silent drop for Tier 2 / Custom). A
+ * `Custom::Foo:Bar` token is therefore always a user mistake — it would be
+ * added to the allowlist but never consulted at runtime. Reject it at parse
+ * time so the user sees the error immediately.
+ */
+const RESOURCE_PROPERTY_FORMAT = /^[A-Z][A-Za-z0-9]+(::[A-Z][A-Za-z0-9]+)+:[A-Z][A-Za-z0-9]*$/;
+
+export function parseAllowUnsupportedPropertiesToken(
+  value: string,
+  previous: string[] | undefined
+): string[] {
+  const parsed = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const token of parsed) {
+    if (!RESOURCE_PROPERTY_FORMAT.test(token)) {
+      throw new Error(
+        `Invalid --allow-unsupported-properties value "${token}": expected ` +
+          `<ResourceType>:<PropertyName> with PascalCase on both halves ` +
+          `(e.g. AWS::Lambda::Function:LoggingConfig).`
+      );
+    }
+    if (token.startsWith('Custom::')) {
+      throw new Error(
+        `Invalid --allow-unsupported-properties value "${token}": Custom:: ` +
+          `resources are routed through cfn-response and have no write-side ` +
+          `silent drop at cdkd, so the flag would have no effect. Use ` +
+          `--allow-unsupported-types for type-level escape hatches instead.`
+      );
+    }
+  }
+  return [...(previous ?? []), ...parsed];
+}
+
+export const allowUnsupportedPropertiesOption = new Option(
+  '--allow-unsupported-properties <entries>',
+  'Comma-separated <ResourceType>:<PropertyName> tokens to accept as silently dropped ' +
+    'at deploy time. Escape hatch — the property will NOT be written to AWS, the ' +
+    'deployed resource will be missing the field. Example: ' +
+    '--allow-unsupported-properties AWS::Lambda::Function:LoggingConfig,AWS::RDS::DBInstance:CACertificateIdentifier'
+).argParser(parseAllowUnsupportedPropertiesToken);
+
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)
@@ -626,6 +681,7 @@ export const deployOptions = [
     'Only deploy requested stacks, do not include dependencies'
   ).default(false),
   allowUnsupportedTypesOption,
+  allowUnsupportedPropertiesOption,
   ...resourceTimeoutOptions,
 ];
 
