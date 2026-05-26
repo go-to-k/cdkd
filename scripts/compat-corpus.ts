@@ -89,7 +89,6 @@ export const RUNTIME_UNSUPPORTED_TYPES: ReadonlySet<string> = new Set([
   // IAM (most types not supported)
   'AWS::IAM::Role',
   'AWS::IAM::Policy',
-  'AWS::IAM::ManagedPolicy',
   'AWS::IAM::User',
   'AWS::IAM::Group',
   'AWS::IAM::InstanceProfile',

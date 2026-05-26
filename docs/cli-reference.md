@@ -778,8 +778,9 @@ resource types it diverges enough to fire false-positive drift on
 every run. Two guards protect the fallback:
 
 1. **Deny-list** (`src/analyzer/drift-cc-api-deny-list.ts`) — types
-   with verified structural divergence (e.g. `AWS::IAM::ManagedPolicy`'s
-   URL-encoded `PolicyDocument`) short-circuit to `drift unknown`
+   with verified structural divergence (e.g. `AWS::ApiGateway::RestApi`'s
+   write-only `Body` field, or `AWS::EC2::LaunchTemplate`'s
+   version-bumped `LaunchTemplateData`) short-circuit to `drift unknown`
    before the CC API call ever fires. The fix path for any deny-listed
    type is a first-class SDK-provider `readCurrentState`, not a
    per-entry tweak — once the provider implements it, the deny-list

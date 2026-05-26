@@ -904,11 +904,11 @@ describe('cdkd drift', () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          // AWS::IAM::ManagedPolicy is in the deny list.
-          Policy1: makeResource({
-            physicalId: 'arn:aws:iam::123:policy/p',
-            resourceType: 'AWS::IAM::ManagedPolicy',
-            properties: { PolicyDocument: { Statement: [] } },
+          // AWS::ApiGateway::RestApi is in the deny list (write-only Body field).
+          RestApi1: makeResource({
+            physicalId: 'rest-api-id',
+            resourceType: 'AWS::ApiGateway::RestApi',
+            properties: { Body: { swagger: '2.0' } },
           }),
         })
       );
@@ -918,7 +918,7 @@ describe('cdkd drift', () => {
 
       expect(error).toBeUndefined();
       expect(mockCcReadCurrentState).not.toHaveBeenCalled();
-      expect(output).toContain('? Policy1 (AWS::IAM::ManagedPolicy)');
+      expect(output).toContain('? RestApi1 (AWS::ApiGateway::RestApi)');
       expect(output).toContain('1 unsupported');
     });
 

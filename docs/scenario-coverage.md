@@ -72,5 +72,6 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 
 - [`acm-certificate`](../tests/integration/acm-certificate/)
 - [`export-nested-stack`](../tests/integration/export-nested-stack/)
+- [`iam-managed-policy`](../tests/integration/iam-managed-policy/)
 - [`nested-stack`](../tests/integration/nested-stack/)
 - [`nested-stack-deep`](../tests/integration/nested-stack-deep/)

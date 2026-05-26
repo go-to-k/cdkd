@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-26T08:16:30.610Z",
+  "generatedAt": "2026-05-26T07:12:21.165Z",
   "summary": {
     "tier1Count": 113,
-    "tier2Count": 1297,
-    "tier3Count": 178,
+    "tier2Count": 1296,
+    "tier3Count": 179,
     "totalCount": 1588
   },
   "tier1": [
@@ -26,7 +26,6 @@
     "AWS::AppSync::Resolver",
     "AWS::AutoScaling::AutoScalingGroup",
     "AWS::BedrockAgentCore::Runtime",
-    "AWS::CertificateManager::Certificate",
     "AWS::CloudFormation::Stack",
     "AWS::CloudFront::CloudFrontOriginAccessIdentity",
     "AWS::CloudFront::Distribution",
@@ -77,6 +76,7 @@
     "AWS::Glue::Workflow",
     "AWS::IAM::Group",
     "AWS::IAM::InstanceProfile",
+    "AWS::IAM::ManagedPolicy",
     "AWS::IAM::Policy",
     "AWS::IAM::Role",
     "AWS::IAM::User",
@@ -739,7 +739,6 @@
     "AWS::HealthImaging::Datastore",
     "AWS::HealthLake::FHIRDatastore",
     "AWS::IAM::GroupPolicy",
-    "AWS::IAM::ManagedPolicy",
     "AWS::IAM::OIDCProvider",
     "AWS::IAM::RolePolicy",
     "AWS::IAM::SAMLProvider",
@@ -1439,6 +1438,7 @@
     "AWS::AutoScalingPlans::ScalingPlan",
     "AWS::BedrockAgentCore::Browser",
     "AWS::Budgets::Budget",
+    "AWS::CertificateManager::Certificate",
     "AWS::Cloud9::EnvironmentEC2",
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudFormation::Macro",

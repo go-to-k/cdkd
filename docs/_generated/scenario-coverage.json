@@ -392,6 +392,11 @@
       ]
     },
     {
+      "name": "iam-managed-policy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-nested-stack",
       "annotated": true,
       "scenarios": [
@@ -1079,6 +1084,7 @@
   "unannotatedFixtures": [
     "acm-certificate",
     "export-nested-stack",
+    "iam-managed-policy",
     "nested-stack",
     "nested-stack-deep"
   ]

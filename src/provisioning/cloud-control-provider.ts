@@ -818,12 +818,9 @@ export class CloudControlProvider implements ResourceProvider {
     // Common resource types that are NOT supported by Cloud Control API
     const unsupportedTypes = new Set([
       // IAM (most types not supported by Cloud Control; cdkd ships SDK
-      // providers for these instead). AWS::IAM::ManagedPolicy stays here for
-      // now: a dedicated SDK provider (the verified path) is added in a
-      // follow-up PR, which makes it Tier 1 and wins over this blocklist.
+      // providers for these instead).
       'AWS::IAM::Role',
       'AWS::IAM::Policy',
-      'AWS::IAM::ManagedPolicy',
       'AWS::IAM::User',
       'AWS::IAM::Group',
       'AWS::IAM::InstanceProfile',
