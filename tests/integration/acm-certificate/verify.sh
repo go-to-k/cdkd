@@ -60,12 +60,23 @@ if [[ "${arn}" != arn:aws:acm:* ]]; then
 fi
 echo "PASS: state records ACM cert ARN ${arn}"
 
-# Verify the cert exists in ACM with PENDING_VALIDATION status.
+# Verify the cert exists in ACM. The synthetic `example.test` domain cannot
+# be DNS-validated, so AWS's terminal state for it is either PENDING_VALIDATION
+# (initial state, awaiting DNS records that will never appear) or FAILED
+# (AWS fast-fails invalid-TLD validations after a brief window — observed
+# behavior may vary by region/time). Either is acceptable for this integ —
+# what matters is that cdkd's create() returned without waiting (the
+# --no-wait path) and DeleteCertificate succeeds against the non-ISSUED
+# cert in either status.
 status=$(aws acm describe-certificate --certificate-arn "${arn}" --region "${REGION}" --query 'Certificate.Status' --output text)
-if [[ "${status}" != "PENDING_VALIDATION" ]]; then
-  echo "FAIL: expected PENDING_VALIDATION (synthetic domain never issues), got ${status}"
-  exit 1
-fi
-echo "PASS: ACM cert is in PENDING_VALIDATION as expected"
+case "${status}" in
+  PENDING_VALIDATION|FAILED)
+    echo "PASS: ACM cert is in ${status} (expected for synthetic domain under --no-wait)"
+    ;;
+  *)
+    echo "FAIL: expected PENDING_VALIDATION or FAILED, got ${status}"
+    exit 1
+    ;;
+esac
 
 # trap will run destroy
