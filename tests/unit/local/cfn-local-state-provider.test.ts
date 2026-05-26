@@ -48,14 +48,14 @@ interface SentCall {
 }
 
 const sentCalls = vi.hoisted(() => [] as SentCall[]);
-const clientCtorOpts = vi.hoisted(() => [] as Array<{ region?: string }>);
+const clientCtorOpts = vi.hoisted(() => [] as Array<{ region?: string; profile?: string }>);
 const cfnSendMock = vi.hoisted(() =>
   vi.fn(async (_cmd: { _name: string; input: Record<string, unknown> }) => undefined)
 );
 const cfnDestroyMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-cloudformation', () => ({
-  CloudFormationClient: vi.fn((opts: { region?: string }) => {
+  CloudFormationClient: vi.fn((opts: { region?: string; profile?: string }) => {
     clientCtorOpts.push(opts);
     return {
       send: async (cmd: { _name: string; input: Record<string, unknown> }) => {
@@ -390,6 +390,65 @@ describe('CfnLocalStateProvider — region routing', () => {
     });
     await provider.load('X', undefined);
     expect(clientCtorOpts.some((o) => o.region === 'us-west-2')).toBe(true);
+  });
+});
+
+describe('CfnLocalStateProvider — profile threading (Issue #628)', () => {
+  it('threads `--profile` into the CloudFormationClient constructor when set', async () => {
+    cfnSendMock.mockImplementation(async (cmd) => {
+      if (cmd._name === 'DescribeStackResources') return { StackResources: [] };
+      if (cmd._name === 'DescribeStacks') return { Stacks: [{}] };
+      throw new Error('unexpected');
+    });
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'us-east-1',
+      profile: 'test-profile',
+    });
+    await provider.load('X', undefined);
+    // The CFn client must be constructed with both region and profile
+    // so the SDK reads creds from `~/.aws/credentials` / `~/.aws/config`
+    // under [test-profile]. Pre-fix this option was captured but never
+    // passed to the SDK, so `--profile` was silently ignored.
+    const ctor = clientCtorOpts.find((o) => o.region === 'us-east-1');
+    expect(ctor).toBeDefined();
+    expect(ctor!.profile).toBe('test-profile');
+  });
+
+  it('omits `profile` from the CloudFormationClient constructor when not set', async () => {
+    cfnSendMock.mockImplementation(async (cmd) => {
+      if (cmd._name === 'DescribeStackResources') return { StackResources: [] };
+      if (cmd._name === 'DescribeStacks') return { Stacks: [{}] };
+      throw new Error('unexpected');
+    });
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'us-east-1',
+      // profile omitted — provider must fall back to the SDK default
+      // credential chain (env vars / AWS_PROFILE / shared config /
+      // IAM role) and NOT pass an explicit `profile` field, since a
+      // literal `profile: undefined` would otherwise tell the SDK to
+      // resolve a profile named `undefined`.
+    });
+    await provider.load('X', undefined);
+    const ctor = clientCtorOpts.find((o) => o.region === 'us-east-1');
+    expect(ctor).toBeDefined();
+    expect('profile' in ctor!).toBe(false);
+  });
+
+  it('threads profile through buildCrossStackResolver as well (same lazy client)', async () => {
+    cfnSendMock.mockImplementationOnce(async () => ({ Exports: [{ Name: 'A', Value: 'a' }] }));
+    const provider = new CfnLocalStateProvider({
+      cfnStackName: 'X',
+      region: 'eu-west-1',
+      profile: 'another-profile',
+    });
+    const resolver = await provider.buildCrossStackResolver('eu-west-1');
+    expect(resolver).toBeDefined();
+    await resolver!.resolveImport('A');
+    const ctor = clientCtorOpts.find((o) => o.region === 'eu-west-1');
+    expect(ctor).toBeDefined();
+    expect(ctor!.profile).toBe('another-profile');
   });
 });
 
