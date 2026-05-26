@@ -1550,3 +1550,139 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
     expect(result).toBe('r');
   });
 });
+
+describe('IntrinsicFunctionResolver - unknown intrinsic detection', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  const context = (): ResolverContext => ({
+    template: { Resources: {} },
+    resources: {},
+  });
+
+  // (a) an unknown Fn:: throws with the issue link
+  it('throws on an unknown Fn:: intrinsic with a pre-filled GitHub issue link', async () => {
+    await expect(
+      resolver.resolve({ 'Fn::ToJsonString': { foo: 'bar' } }, context())
+    ).rejects.toThrow(
+      'Unsupported CloudFormation intrinsic function "Fn::ToJsonString": cdkd does not support resolving it yet.'
+    );
+
+    await expect(
+      resolver.resolve({ 'Fn::ToJsonString': { foo: 'bar' } }, context())
+    ).rejects.toThrow(
+      'https://github.com/go-to-k/cdkd/issues/new?title=Support%20intrinsic%20Fn%3A%3AToJsonString&labels=intrinsic-support'
+    );
+  });
+
+  it.each([['Fn::Length'], ['Fn::ForEach'], ['Fn::Contains']])(
+    'throws on CFn language-extension intrinsic %s',
+    async (key) => {
+      await expect(resolver.resolve({ [key]: [] }, context())).rejects.toThrow(
+        `Unsupported CloudFormation intrinsic function "${key}"`
+      );
+    }
+  );
+
+  it('embeds the url-encoded intrinsic key in the issue title for an arbitrary unknown key', async () => {
+    await expect(
+      resolver.resolve({ 'Fn::SomethingNew': 1 }, context())
+    ).rejects.toThrow(
+      'title=Support%20intrinsic%20Fn%3A%3ASomethingNew&labels=intrinsic-support'
+    );
+  });
+
+  // (b) a lone unknown single-key intrinsic throws (Ref-prefixed safety net is
+  // covered by the false-positive guard below; here we cover a bare Fn:: key
+  // that sits alone as the only key on the node).
+  it('throws on a lone unknown single-key Fn:: intrinsic node', async () => {
+    await expect(resolver.resolve({ 'Fn::Mystery': 'x' }, context())).rejects.toThrow(
+      'Unsupported CloudFormation intrinsic function "Fn::Mystery"'
+    );
+  });
+
+  it('throws when an unknown intrinsic is nested deep inside an object', async () => {
+    await expect(
+      resolver.resolve(
+        { Properties: { Config: { Value: { 'Fn::Length': ['a', 'b'] } } } },
+        context()
+      )
+    ).rejects.toThrow('Unsupported CloudFormation intrinsic function "Fn::Length"');
+  });
+
+  it('throws when an unknown intrinsic is nested inside an array', async () => {
+    await expect(
+      resolver.resolve([{ 'Fn::ToJsonString': {} }], context())
+    ).rejects.toThrow('Unsupported CloudFormation intrinsic function "Fn::ToJsonString"');
+  });
+
+  // (c) false-positive guard: a multi-key object carrying an UNKNOWN
+  // "Fn::Something" property alongside siblings must NOT trip the new
+  // unknown-intrinsic detection — only a lone single-key node is flagged.
+  // (A multi-key object whose key is `Ref` or a HANDLED `Fn::X` is governed by
+  // the pre-existing `'X' in obj` branches at the top of resolveValue, which
+  // intentionally match regardless of sibling keys — that path is unchanged.)
+  it('does NOT throw on a multi-key object with an unknown "Fn::X" property alongside siblings', async () => {
+    const input = { 'Fn::ToJsonString': 'data', Sibling: 'kept' };
+    const result = await resolver.resolve(input, context());
+    expect(result).toEqual({ 'Fn::ToJsonString': 'data', Sibling: 'kept' });
+  });
+
+  it('does NOT throw on a single-key object whose key is neither Ref nor Fn:: prefixed', async () => {
+    const input = { Reference: 'not-an-intrinsic' };
+    const result = await resolver.resolve(input, context());
+    expect(result).toEqual({ Reference: 'not-an-intrinsic' });
+  });
+
+  it('does NOT throw on a single-key object whose key contains but does not start with "Fn::"', async () => {
+    const input = { 'My::Fn::Thing': 'value' };
+    const result = await resolver.resolve(input, context());
+    expect(result).toEqual({ 'My::Fn::Thing': 'value' });
+  });
+
+  // (d) all existing handled intrinsics still resolve (smoke test that the
+  // new detection did not break the recognized set).
+  it('still resolves every handled intrinsic without throwing', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Mappings: { M: { K: { V: 'mapped' } } },
+      Conditions: {},
+      Parameters: {},
+    };
+    const ctx: ResolverContext = {
+      template,
+      resources: {
+        Res: {
+          physicalId: 'phys-id',
+          resourceType: 'AWS::Custom::Foo',
+          properties: {},
+          attributes: { Attr: 'attr-val' },
+          dependencies: [],
+        },
+      },
+      parameters: { P: 'pval' },
+      conditions: { C: true },
+    };
+
+    expect(await resolver.resolve({ Ref: 'Res' }, ctx)).toBe('phys-id');
+    expect(await resolver.resolve({ Ref: 'P' }, ctx)).toBe('pval');
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Res', 'Attr'] }, ctx)).toBe('attr-val');
+    expect(await resolver.resolve({ 'Fn::Join': ['-', ['a', 'b']] }, ctx)).toBe('a-b');
+    expect(await resolver.resolve({ 'Fn::Sub': 'static-text' }, ctx)).toBe('static-text');
+    expect(await resolver.resolve({ 'Fn::Select': [1, ['a', 'b', 'c']] }, ctx)).toBe('b');
+    expect(await resolver.resolve({ 'Fn::Split': [',', 'a,b'] }, ctx)).toEqual(['a', 'b']);
+    expect(await resolver.resolve({ 'Fn::If': ['C', 'yes', 'no'] }, ctx)).toBe('yes');
+    expect(await resolver.resolve({ 'Fn::Equals': ['x', 'x'] }, ctx)).toBe(true);
+    expect(await resolver.resolve({ 'Fn::And': [true, true] }, ctx)).toBe(true);
+    expect(await resolver.resolve({ 'Fn::Or': [false, true] }, ctx)).toBe(true);
+    expect(await resolver.resolve({ 'Fn::Not': [false] }, ctx)).toBe(true);
+    expect(await resolver.resolve({ 'Fn::FindInMap': ['M', 'K', 'V'] }, ctx)).toBe('mapped');
+    expect(await resolver.resolve({ 'Fn::Base64': 'hi' }, ctx)).toBe(
+      Buffer.from('hi').toString('base64')
+    );
+  });
+});
