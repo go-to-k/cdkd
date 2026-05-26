@@ -119,6 +119,18 @@ export class AppSyncProvider implements ResourceProvider {
     ['AWS::AppSync::ApiKey', new Set(['ApiId', 'Description', 'Expires'])],
   ]);
 
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::AppSync::DataSource',
+      new Map<string, string>([
+        [
+          'ElasticsearchConfig',
+          'Legacy Elasticsearch alias; use OpenSearchServiceConfig (AppSync deprecated the Elasticsearch DataSource type in favor of OpenSearch)',
+        ],
+      ]),
+    ],
+  ]);
+
   private getClient(): AppSyncClient {
     if (!this.client) {
       this.client = new AppSyncClient(this.providerRegion ? { region: this.providerRegion } : {});

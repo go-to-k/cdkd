@@ -99,8 +99,8 @@ export class GlueProvider implements ResourceProvider {
   private logger = getLogger().child('GlueProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::Glue::Database', new Set(['DatabaseInput', 'CatalogId'])],
-    ['AWS::Glue::Table', new Set(['DatabaseName', 'TableInput', 'CatalogId'])],
+    ['AWS::Glue::Database', new Set(['DatabaseInput', 'DatabaseName', 'CatalogId'])],
+    ['AWS::Glue::Table', new Set(['DatabaseName', 'TableInput', 'Name', 'CatalogId'])],
   ]);
 
   private getClient(): GlueClient {
@@ -193,10 +193,16 @@ export class GlueProvider implements ResourceProvider {
       );
     }
 
-    const databaseName = databaseInput['Name'] as string;
+    // CFn schema accepts both top-level `DatabaseName` (the canonical
+    // resource identifier) and nested `DatabaseInput.Name`. Prefer the
+    // nested value when set so existing templates keep working; fall back
+    // to top-level when only the resource-level identifier is provided.
+    const databaseName =
+      (databaseInput['Name'] as string | undefined) ??
+      (properties['DatabaseName'] as string | undefined);
     if (!databaseName) {
       throw new ProvisioningError(
-        `DatabaseInput.Name is required for Glue Database ${logicalId}`,
+        `DatabaseInput.Name or top-level DatabaseName is required for Glue Database ${logicalId}`,
         resourceType,
         logicalId
       );
@@ -346,10 +352,15 @@ export class GlueProvider implements ResourceProvider {
       );
     }
 
-    const tableName = tableInput['Name'] as string;
+    // CFn schema accepts both top-level `Name` (the canonical resource
+    // identifier) and nested `TableInput.Name`. Prefer the nested value
+    // when set; fall back to top-level when only the resource-level
+    // identifier is provided.
+    const tableName =
+      (tableInput['Name'] as string | undefined) ?? (properties['Name'] as string | undefined);
     if (!tableName) {
       throw new ProvisioningError(
-        `TableInput.Name is required for Glue Table ${logicalId}`,
+        `TableInput.Name or top-level Name is required for Glue Table ${logicalId}`,
         resourceType,
         logicalId
       );
@@ -709,7 +720,12 @@ export class GlueProvider implements ResourceProvider {
     dbInput['Description'] = db.Description ?? '';
     if (db.LocationUri !== undefined) dbInput['LocationUri'] = db.LocationUri;
     dbInput['Parameters'] = db.Parameters ?? {};
-    return { DatabaseInput: dbInput };
+    // CFn schema accepts BOTH nested `DatabaseInput.Name` AND top-level
+    // `DatabaseName` (see #613 B-bucket fix in createDatabase). Surface
+    // both so drift comparison works for either template shape.
+    const result: Record<string, unknown> = { DatabaseInput: dbInput };
+    if (db.Name !== undefined) result['DatabaseName'] = db.Name;
+    return result;
   }
 
   private async readTable(physicalId: string): Promise<Record<string, unknown> | undefined> {
@@ -754,7 +770,15 @@ export class GlueProvider implements ResourceProvider {
       tableInput['TargetTable'] = table.TargetTable as unknown as Record<string, unknown>;
     }
 
-    return { DatabaseName: databaseName, TableInput: tableInput };
+    // CFn schema accepts BOTH nested `TableInput.Name` AND top-level
+    // `Name` (see #613 B-bucket fix in createTable). Surface both so
+    // drift comparison works for either template shape.
+    const result: Record<string, unknown> = {
+      DatabaseName: databaseName,
+      TableInput: tableInput,
+    };
+    if (table.Name !== undefined) result['Name'] = table.Name;
+    return result;
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

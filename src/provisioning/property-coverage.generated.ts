@@ -62,8 +62,14 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>(['Description', 'RestApiId']),
       silentDrop: new Map<string, string>([
         ['DeploymentCanarySettings', 'not yet implemented by cdkd'],
-        ['StageDescription', 'not yet implemented by cdkd'],
-        ['StageName', 'not yet implemented by cdkd'],
+        [
+          'StageDescription',
+          'CFn-only convenience for inline-creating a Stage; declare AWS::ApiGateway::Stage with the Description property instead',
+        ],
+        [
+          'StageName',
+          'CFn-only convenience for inline-creating a Stage from a Deployment; declare AWS::ApiGateway::Stage explicitly to attach to this Deployment',
+        ],
       ]),
     },
   ],
@@ -254,7 +260,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Type',
       ]),
       silentDrop: new Map<string, string>([
-        ['ElasticsearchConfig', 'not yet implemented by cdkd'],
+        [
+          'ElasticsearchConfig',
+          'Legacy Elasticsearch alias; use OpenSearchServiceConfig (AppSync deprecated the Elasticsearch DataSource type in favor of OpenSearch)',
+        ],
         ['EventBridgeConfig', 'not yet implemented by cdkd'],
         ['MetricsConfig', 'not yet implemented by cdkd'],
         ['OpenSearchServiceConfig', 'not yet implemented by cdkd'],
@@ -358,8 +367,14 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['AvailabilityZoneIds', 'not yet implemented by cdkd'],
         ['InstanceId', 'not yet implemented by cdkd'],
         ['InstanceLifecyclePolicy', 'not yet implemented by cdkd'],
-        ['LaunchConfigurationName', 'not yet implemented by cdkd'],
-        ['NotificationConfiguration', 'not yet implemented by cdkd'],
+        [
+          'LaunchConfigurationName',
+          'AWS Launch Configurations end-of-life 2024-10; use LaunchTemplate instead',
+        ],
+        [
+          'NotificationConfiguration',
+          'Legacy singular form; use NotificationConfigurations (plural) which cdkd already wires',
+        ],
         ['PlacementGroup', 'not yet implemented by cdkd'],
       ]),
     },
@@ -751,8 +766,14 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['CreditSpecification', 'not yet implemented by cdkd'],
         ['DisableApiTermination', 'not yet implemented by cdkd'],
         ['EbsOptimized', 'not yet implemented by cdkd'],
-        ['ElasticGpuSpecifications', 'not yet implemented by cdkd'],
-        ['ElasticInferenceAccelerators', 'not yet implemented by cdkd'],
+        [
+          'ElasticGpuSpecifications',
+          'AWS Elastic GPU end-of-life (announced 2023-11); no replacement API',
+        ],
+        [
+          'ElasticInferenceAccelerators',
+          'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',
+        ],
         ['EnclaveOptions', 'not yet implemented by cdkd'],
         ['HibernationOptions', 'not yet implemented by cdkd'],
         ['HostId', 'not yet implemented by cdkd'],
@@ -802,7 +823,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         ['AvailabilityMode', 'not yet implemented by cdkd'],
         ['AvailabilityZoneAddresses', 'not yet implemented by cdkd'],
-        ['VpcId', 'not yet implemented by cdkd'],
+        [
+          'VpcId',
+          'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
+        ],
       ]),
     },
   ],
@@ -819,7 +843,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'CidrBlock',
         'Egress',
-        'IcmpTypeCode',
+        'Icmp',
         'Ipv6CidrBlock',
         'NetworkAclId',
         'PortRange',
@@ -827,7 +851,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RuleAction',
         'RuleNumber',
       ]),
-      silentDrop: new Map<string, string>([['Icmp', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [
@@ -880,19 +904,25 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'CidrIp',
+        'CidrIpv6',
         'Description',
         'FromPort',
         'GroupId',
         'IpProtocol',
+        'SourcePrefixListId',
         'SourceSecurityGroupId',
         'SourceSecurityGroupOwnerId',
         'ToPort',
       ]),
       silentDrop: new Map<string, string>([
-        ['CidrIpv6', 'not yet implemented by cdkd'],
-        ['GroupName', 'not yet implemented by cdkd'],
-        ['SourcePrefixListId', 'not yet implemented by cdkd'],
-        ['SourceSecurityGroupName', 'not yet implemented by cdkd'],
+        [
+          'GroupName',
+          'EC2-Classic-only — use GroupId for VPC security groups (EC2-Classic retired 2022-08-15)',
+        ],
+        [
+          'SourceSecurityGroupName',
+          'EC2-Classic-only — use SourceSecurityGroupId for VPC peer security groups (EC2-Classic retired 2022-08-15)',
+        ],
       ]),
     },
   ],
@@ -1007,7 +1037,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'LoadBalancers',
         'NetworkConfiguration',
         'PlacementConstraints',
-        'PlacementStrategy',
+        'PlacementStrategies',
         'PlatformVersion',
         'PropagateTags',
         'SchedulingStrategy',
@@ -1020,8 +1050,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['AvailabilityZoneRebalancing', 'not yet implemented by cdkd'],
         ['DeploymentController', 'not yet implemented by cdkd'],
         ['ForceNewDeployment', 'not yet implemented by cdkd'],
-        ['PlacementStrategies', 'not yet implemented by cdkd'],
-        ['Role', 'not yet implemented by cdkd'],
+        [
+          'Role',
+          'Legacy classic-ELB service-linked-role override; AWS uses the AWSServiceRoleForECS service-linked role automatically since 2017',
+        ],
         ['ServiceConnectConfiguration', 'not yet implemented by cdkd'],
         ['VolumeConfigurations', 'not yet implemented by cdkd'],
         ['VpcLatticeConfigurations', 'not yet implemented by cdkd'],
@@ -1051,7 +1083,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       silentDrop: new Map<string, string>([
         ['EnableFaultInjection', 'not yet implemented by cdkd'],
-        ['InferenceAccelerators', 'not yet implemented by cdkd'],
+        [
+          'InferenceAccelerators',
+          'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',
+        ],
       ]),
     },
   ],
@@ -1059,7 +1094,12 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EFS::AccessPoint',
     {
       handled: new Set<string>(['AccessPointTags', 'FileSystemId', 'PosixUser', 'RootDirectory']),
-      silentDrop: new Map<string, string>([['ClientToken', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>([
+        [
+          'ClientToken',
+          'AWS SDK manages this idempotency token internally on CreateAccessPoint; no user-supplied value is honored',
+        ],
+      ]),
     },
   ],
   [
@@ -1124,7 +1164,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcSecurityGroupIds',
       ]),
       silentDrop: new Map<string, string>([
-        ['CacheSecurityGroupNames', 'not yet implemented by cdkd'],
+        [
+          'CacheSecurityGroupNames',
+          'EC2-Classic-only — use VpcSecurityGroupIds for VPC-deployed clusters (EC2-Classic retired 2022-08-15)',
+        ],
         ['SnapshotArns', 'not yet implemented by cdkd'],
       ]),
     },
@@ -1135,10 +1178,11 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'CacheSubnetGroupDescription',
         'CacheSubnetGroupName',
+        'Description',
         'SubnetIds',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([['Description', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [
@@ -1274,8 +1318,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::Glue::Database',
     {
-      handled: new Set<string>(['CatalogId', 'DatabaseInput']),
-      silentDrop: new Map<string, string>([['DatabaseName', 'not yet implemented by cdkd']]),
+      handled: new Set<string>(['CatalogId', 'DatabaseInput', 'DatabaseName']),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [
@@ -1320,9 +1364,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::Glue::Table',
     {
-      handled: new Set<string>(['CatalogId', 'DatabaseName', 'TableInput']),
+      handled: new Set<string>(['CatalogId', 'DatabaseName', 'Name', 'TableInput']),
       silentDrop: new Map<string, string>([
-        ['Name', 'not yet implemented by cdkd'],
         ['OpenTableFormatInput', 'not yet implemented by cdkd'],
       ]),
     },
@@ -1661,6 +1704,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'BackupRetentionPeriod',
         'DBClusterIdentifier',
         'DBClusterParameterGroupName',
+        'DBPort',
         'DBSubnetGroupName',
         'DeletionProtection',
         'EngineVersion',
@@ -1678,7 +1722,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['AvailabilityZones', 'not yet implemented by cdkd'],
         ['CopyTagsToSnapshot', 'not yet implemented by cdkd'],
         ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
-        ['DBPort', 'not yet implemented by cdkd'],
         ['EnableCloudwatchLogsExports', 'not yet implemented by cdkd'],
         ['RestoreToTime', 'not yet implemented by cdkd'],
         ['RestoreType', 'not yet implemented by cdkd'],
@@ -1756,7 +1799,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DBClusterParameterGroupName', 'not yet implemented by cdkd'],
         ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
         ['DBSystemId', 'not yet implemented by cdkd'],
-        ['DeleteAutomatedBackups', 'not yet implemented by cdkd'],
+        [
+          'DeleteAutomatedBackups',
+          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+        ],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainIAMRoleName', 'not yet implemented by cdkd'],
         ['EnableCloudwatchLogsExports', 'not yet implemented by cdkd'],
@@ -1809,7 +1855,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['AdditionalStorageVolumes', 'not yet implemented by cdkd'],
         ['AllocatedStorage', 'not yet implemented by cdkd'],
         ['AllowMajorVersionUpgrade', 'not yet implemented by cdkd'],
-        ['ApplyImmediately', 'not yet implemented by cdkd'],
+        [
+          'ApplyImmediately',
+          'cdkd always applies modifications immediately (rds:ModifyDBInstance.ApplyImmediately=true is hardcoded); users wanting maintenance-window deferral should run aws rds modify-db-instance directly',
+        ],
         ['AssociatedRoles', 'not yet implemented by cdkd'],
         ['AutomaticBackupReplicationKmsKeyId', 'not yet implemented by cdkd'],
         ['AutomaticBackupReplicationRegion', 'not yet implemented by cdkd'],
@@ -1827,11 +1876,17 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DBClusterSnapshotIdentifier', 'not yet implemented by cdkd'],
         ['DBName', 'not yet implemented by cdkd'],
         ['DBParameterGroupName', 'not yet implemented by cdkd'],
-        ['DBSecurityGroups', 'not yet implemented by cdkd'],
+        [
+          'DBSecurityGroups',
+          'EC2-Classic-only feature retired by AWS (2022-08-15); new accounts cannot use this — use VPCSecurityGroups instead',
+        ],
         ['DBSnapshotIdentifier', 'not yet implemented by cdkd'],
         ['DBSystemId', 'not yet implemented by cdkd'],
         ['DedicatedLogVolume', 'not yet implemented by cdkd'],
-        ['DeleteAutomatedBackups', 'not yet implemented by cdkd'],
+        [
+          'DeleteAutomatedBackups',
+          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+        ],
         ['DeletionProtection', 'not yet implemented by cdkd'],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainAuthSecretArn', 'not yet implemented by cdkd'],
@@ -2011,7 +2066,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       silentDrop: new Map<string, string>([
         ['AbacStatus', 'not yet implemented by cdkd'],
-        ['AccessControl', 'not yet implemented by cdkd'],
+        [
+          'AccessControl',
+          'Legacy canned ACL; AWS disables ACLs by default since 2023-04 — use BucketOwnershipControls + BucketPolicy / PublicAccessBlockConfiguration instead',
+        ],
         ['BucketNamePrefix', 'not yet implemented by cdkd'],
         ['BucketNamespace', 'not yet implemented by cdkd'],
         ['MetadataConfiguration', 'not yet implemented by cdkd'],
@@ -2049,14 +2107,13 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::S3Tables::Table',
     {
-      handled: new Set<string>(['Format', 'Name', 'Namespace', 'TableBucketARN']),
+      handled: new Set<string>(['Format', 'Name', 'Namespace', 'TableBucketARN', 'TableName']),
       silentDrop: new Map<string, string>([
         ['Compaction', 'not yet implemented by cdkd'],
         ['IcebergMetadata', 'not yet implemented by cdkd'],
         ['OpenTableFormat', 'not yet implemented by cdkd'],
         ['SnapshotManagement', 'not yet implemented by cdkd'],
         ['StorageClassConfiguration', 'not yet implemented by cdkd'],
-        ['TableName', 'not yet implemented by cdkd'],
         ['Tags', 'not yet implemented by cdkd'],
         ['WithoutMetadata', 'not yet implemented by cdkd'],
       ]),
@@ -2130,7 +2187,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['FilterPolicyScope', 'not yet implemented by cdkd'],
         ['RawMessageDelivery', 'not yet implemented by cdkd'],
         ['RedrivePolicy', 'not yet implemented by cdkd'],
-        ['Region', 'not yet implemented by cdkd'],
+        [
+          'Region',
+          'CFn-only cross-region subscription hint; cdkd uses the SDK client region directly and has no per-resource region override',
+        ],
         ['ReplayPolicy', 'not yet implemented by cdkd'],
         ['SubscriptionRoleArn', 'not yet implemented by cdkd'],
       ]),

@@ -89,6 +89,35 @@ export class RDSProvider implements ResourceProvider {
     ],
   ]);
 
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::RDS::DBCluster',
+      new Map<string, string>([
+        [
+          'DeleteAutomatedBackups',
+          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+        ],
+      ]),
+    ],
+    [
+      'AWS::RDS::DBInstance',
+      new Map<string, string>([
+        [
+          'DBSecurityGroups',
+          'EC2-Classic-only feature retired by AWS (2022-08-15); new accounts cannot use this — use VPCSecurityGroups instead',
+        ],
+        [
+          'ApplyImmediately',
+          'cdkd always applies modifications immediately (rds:ModifyDBInstance.ApplyImmediately=true is hardcoded); users wanting maintenance-window deferral should run aws rds modify-db-instance directly',
+        ],
+        [
+          'DeleteAutomatedBackups',
+          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+        ],
+      ]),
+    ],
+  ]);
+
   private getClient(): RDSClient {
     if (!this.rdsClient) {
       this.rdsClient = new RDSClient(this.providerRegion ? { region: this.providerRegion } : {});

@@ -1161,7 +1161,7 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
-    it('handles IcmpTypeCode', async () => {
+    it('handles ICMP entries (emitted under both `Icmp` and `IcmpTypeCode` keys)', async () => {
       mockSend.mockResolvedValueOnce({
         NetworkAcls: [
           {
@@ -1185,6 +1185,9 @@ describe('EC2Provider.readCurrentState', () => {
         'Logical',
         'AWS::EC2::NetworkAclEntry'
       );
+      // CFn-canonical name is `Icmp`; AWS API uses `IcmpTypeCode`. Both
+      // emitted so drift works for state files written by either name.
+      expect(result?.['Icmp']).toEqual({ Type: 8, Code: -1 });
       expect(result?.['IcmpTypeCode']).toEqual({ Type: 8, Code: -1 });
       expect(result?.['Protocol']).toBe(1);
     });

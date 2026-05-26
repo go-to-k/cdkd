@@ -54,7 +54,13 @@ export class ElastiCacheProvider implements ResourceProvider {
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::ElastiCache::SubnetGroup',
-      new Set(['CacheSubnetGroupName', 'CacheSubnetGroupDescription', 'SubnetIds', 'Tags']),
+      new Set([
+        'CacheSubnetGroupName',
+        'CacheSubnetGroupDescription',
+        'Description',
+        'SubnetIds',
+        'Tags',
+      ]),
     ],
     [
       'AWS::ElastiCache::CacheCluster',
@@ -82,6 +88,18 @@ export class ElastiCacheProvider implements ResourceProvider {
         'NetworkType',
         'IpDiscovery',
         'TransitEncryptionEnabled',
+      ]),
+    ],
+  ]);
+
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::ElastiCache::CacheCluster',
+      new Map<string, string>([
+        [
+          'CacheSecurityGroupNames',
+          'EC2-Classic-only — use VpcSecurityGroupIds for VPC-deployed clusters (EC2-Classic retired 2022-08-15)',
+        ],
       ]),
     ],
   ]);
@@ -183,8 +201,12 @@ export class ElastiCacheProvider implements ResourceProvider {
       await this.getClient().send(
         new CreateCacheSubnetGroupCommand({
           CacheSubnetGroupName: cacheSubnetGroupName,
+          // CFn schema spells the description field `Description`; AWS API
+          // expects `CacheSubnetGroupDescription`. Accept both keys from the
+          // template and prefer the CFn-canonical name.
           CacheSubnetGroupDescription:
-            (properties['CacheSubnetGroupDescription'] as string) ||
+            (properties['Description'] as string | undefined) ??
+            (properties['CacheSubnetGroupDescription'] as string | undefined) ??
             `Subnet group for ${logicalId}`,
           SubnetIds: properties['SubnetIds'] as string[],
         })
@@ -224,9 +246,9 @@ export class ElastiCacheProvider implements ResourceProvider {
       await this.getClient().send(
         new ModifyCacheSubnetGroupCommand({
           CacheSubnetGroupName: physicalId,
-          CacheSubnetGroupDescription: properties['CacheSubnetGroupDescription'] as
-            | string
-            | undefined,
+          CacheSubnetGroupDescription:
+            (properties['Description'] as string | undefined) ??
+            (properties['CacheSubnetGroupDescription'] as string | undefined),
           SubnetIds: properties['SubnetIds'] as string[],
         })
       );
@@ -782,7 +804,11 @@ export class ElastiCacheProvider implements ResourceProvider {
       result['CacheSubnetGroupName'] = group.CacheSubnetGroupName;
     }
     if (group.CacheSubnetGroupDescription !== undefined) {
+      // CFn schema spells the description `Description`; AWS API uses
+      // `CacheSubnetGroupDescription`. Emit BOTH so drift comparison
+      // works for state files written by either name (#613 B-bucket fix).
       result['CacheSubnetGroupDescription'] = group.CacheSubnetGroupDescription;
+      result['Description'] = group.CacheSubnetGroupDescription;
     }
     const subnetIds = (group.Subnets ?? [])
       .map((s) => s.SubnetIdentifier)

@@ -109,6 +109,18 @@ export class S3BucketProvider implements ResourceProvider {
     ],
   ]);
 
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::S3::Bucket',
+      new Map<string, string>([
+        [
+          'AccessControl',
+          'Legacy canned ACL; AWS disables ACLs by default since 2023-04 — use BucketOwnershipControls + BucketPolicy / PublicAccessBlockConfiguration instead',
+        ],
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.s3Client = awsClients.s3;

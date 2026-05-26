@@ -123,6 +123,10 @@ describe('S3TablesProvider.readCurrentState', () => {
         TableBucketARN: 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
         Namespace: 'my-namespace',
         Name: 'my-table',
+        // CFn-canonical alias (#613 B-bucket fix) — emitted alongside
+        // the AWS-API-named `name` so drift comparison works for
+        // templates that supply the CFn-canonical `TableName` form.
+        TableName: 'my-table',
         Format: 'ICEBERG',
       });
     });

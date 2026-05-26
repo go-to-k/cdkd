@@ -150,9 +150,11 @@ export class EC2Provider implements ResourceProvider {
         'FromPort',
         'ToPort',
         'CidrIp',
+        'CidrIpv6',
         'Description',
         'SourceSecurityGroupId',
         'SourceSecurityGroupOwnerId',
+        'SourcePrefixListId',
       ]),
     ],
     [
@@ -182,10 +184,48 @@ export class EC2Provider implements ResourceProvider {
         'CidrBlock',
         'Ipv6CidrBlock',
         'PortRange',
-        'IcmpTypeCode',
+        'Icmp',
       ]),
     ],
     ['AWS::EC2::SubnetNetworkAclAssociation', new Set(['SubnetId', 'NetworkAclId'])],
+  ]);
+
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::EC2::Instance',
+      new Map<string, string>([
+        [
+          'ElasticGpuSpecifications',
+          'AWS Elastic GPU end-of-life (announced 2023-11); no replacement API',
+        ],
+        [
+          'ElasticInferenceAccelerators',
+          'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',
+        ],
+      ]),
+    ],
+    [
+      'AWS::EC2::SecurityGroupIngress',
+      new Map<string, string>([
+        [
+          'GroupName',
+          'EC2-Classic-only — use GroupId for VPC security groups (EC2-Classic retired 2022-08-15)',
+        ],
+        [
+          'SourceSecurityGroupName',
+          'EC2-Classic-only — use SourceSecurityGroupId for VPC peer security groups (EC2-Classic retired 2022-08-15)',
+        ],
+      ]),
+    ],
+    [
+      'AWS::EC2::NatGateway',
+      new Map<string, string>([
+        [
+          'VpcId',
+          'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
+        ],
+      ]),
+    ],
   ]);
 
   constructor() {
@@ -2759,7 +2799,9 @@ export class EC2Provider implements ResourceProvider {
       const cidrBlock = properties['CidrBlock'] as string | undefined;
       const ipv6CidrBlock = properties['Ipv6CidrBlock'] as string | undefined;
       const portRange = properties['PortRange'] as Record<string, unknown> | undefined;
-      const icmpTypeCode = properties['IcmpTypeCode'] as Record<string, unknown> | undefined;
+      // CFn schema spells this property `Icmp`; the AWS API call below
+      // takes the same shape under the key `IcmpTypeCode`.
+      const icmpTypeCode = properties['Icmp'] as Record<string, unknown> | undefined;
 
       await this.ec2Client.send(
         new CreateNetworkAclEntryCommand({
@@ -3950,7 +3992,16 @@ export class EC2Provider implements ResourceProvider {
       const icmp: Record<string, unknown> = {};
       if (entry.IcmpTypeCode.Type !== undefined) icmp['Type'] = entry.IcmpTypeCode.Type;
       if (entry.IcmpTypeCode.Code !== undefined) icmp['Code'] = entry.IcmpTypeCode.Code;
-      if (Object.keys(icmp).length > 0) result['IcmpTypeCode'] = icmp;
+      if (Object.keys(icmp).length > 0) {
+        // CFn schema spells this property `Icmp`; AWS API spells it
+        // `IcmpTypeCode`. Emit BOTH names so drift comparison works for
+        // state files written by both the post-#613-fix code (which
+        // uses CFn-canonical `Icmp`) AND any pre-fix state files that
+        // stored `IcmpTypeCode` directly (template authors bypassed
+        // the silent-drop pre-flight by using the AWS API name).
+        result['Icmp'] = icmp;
+        result['IcmpTypeCode'] = icmp;
+      }
     }
     return result;
   }

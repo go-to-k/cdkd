@@ -45,7 +45,10 @@ export class S3TablesProvider implements ResourceProvider {
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::S3Tables::TableBucket', new Set(['TableBucketName'])],
     ['AWS::S3Tables::Namespace', new Set(['TableBucketARN', 'Namespace'])],
-    ['AWS::S3Tables::Table', new Set(['TableBucketARN', 'Namespace', 'Name', 'Format'])],
+    [
+      'AWS::S3Tables::Table',
+      new Set(['TableBucketARN', 'Namespace', 'TableName', 'Name', 'Format']),
+    ],
   ]);
 
   private getClient(): S3TablesClient {
@@ -412,10 +415,14 @@ export class S3TablesProvider implements ResourceProvider {
       );
     }
 
-    const name = properties['Name'] as string | undefined;
+    // CFn schema spells this property `TableName`; the AWS API call below
+    // takes it as `name`. Accept both keys from the template and prefer the
+    // CFn-canonical name.
+    const name =
+      (properties['TableName'] as string | undefined) ?? (properties['Name'] as string | undefined);
     if (!name) {
       throw new ProvisioningError(
-        `Name is required for S3 Tables Table ${logicalId}`,
+        `TableName is required for S3 Tables Table ${logicalId}`,
         resourceType,
         logicalId
       );
@@ -554,10 +561,15 @@ export class S3TablesProvider implements ResourceProvider {
       throw err;
     }
 
+    // CFn schema spells this property `TableName`; AWS API uses `name`.
+    // Emit BOTH so drift comparison works for state files written by
+    // either name (#613 B-bucket fix).
+    const tableNameValue = resp.name ?? name;
     const result: Record<string, unknown> = {
       TableBucketARN: tableBucketARN,
       Namespace: namespace,
-      Name: resp.name ?? name,
+      Name: tableNameValue,
+      TableName: tableNameValue,
     };
     if (resp.format !== undefined) result['Format'] = resp.format;
     return result;
