@@ -1,17 +1,14 @@
 # cdkd (CDK Direct)
 
-Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of CloudFormation, plus local emulation for Lambda, API Gateway, and ECS that works against any CDK app (cdkd- or `cdk deploy`-managed).
+Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of CloudFormation, plus local emulation for Lambda, API Gateway, and ECS.
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
-- **Local dev for any CDK app** — invoke Lambdas, serve API Gateway routes, and run ECS tasks and services directly from your CDK code. Works for **both `cdkd deploy`-managed AND `cdk deploy`-managed (CloudFormation)** stacks via `--from-state` / `--from-cfn-stack` — no `cdk synth → sam local` round-trip, no migration required.
-- **CDK CLI dev-loop companion** — install cdkd alongside the AWS CDK CLI and point it at your existing `cdk deploy`-managed stacks. Use cdkd for the inner dev loop (fast deploys + local exec), keep CloudFormation for production. Bidirectional migration via `cdkd import` / `cdkd export` when you're ready to switch.
+- **Local dev for any CDK app** — invoke Lambdas, serve API Gateway routes, run ECS tasks/services directly from your CDK code. Works against both `cdkd deploy`-managed AND `cdk deploy`-managed (CloudFormation) stacks via `--from-state` / `--from-cfn-stack` — no migration, no `cdk synth → sam local` round-trip.
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
-**cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration and SAM-style local execution; use the AWS CDK CLI in production for full CloudFormation tooling. Bidirectional migration is supported — [import an existing CloudFormation stack](#importing-existing-resources) into cdkd for iteration, or [export back to CloudFormation](#exporting-a-stack-back-to-cloudformation) when ready for production.
-
-**Already using the AWS CDK CLI?** Install cdkd alongside — no migration needed. `cdkd local invoke MyStack/Handler --from-cfn-stack` works against any `cdk deploy`-managed stack, so you can iterate locally with cdkd's dev loop while keeping CloudFormation for production deploys. See [Local execution](#local-execution).
+**cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration and SAM-style local execution; use the AWS CDK CLI in production for full CloudFormation tooling. Install cdkd alongside an existing `cdk deploy` workflow — no migration needed, `cdkd local *` reads deployed state directly via `--from-cfn-stack`. Bidirectional migration is also supported — [import](#importing-existing-resources) into cdkd or [export](#exporting-a-stack-back-to-cloudformation) back to CloudFormation when ready.
 
 > [!IMPORTANT]
 > cdkd is for dev/test workflows only — early in development, not yet production-ready.
@@ -28,14 +25,10 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 - **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair. See [Rollback behavior](#rollback-behavior).
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
-- **Local Lambda invoke** (`cdkd local invoke`): one-shot Lambda invocation via the AWS Lambda Runtime Interface Emulator (RIE). Every AWS Lambda runtime (Node.js / Python / Ruby / Java / .NET / `provided.*`), ZIP and container Lambdas, and same-stack Lambda Layers bind-mounted at `/opt`. Substitute intrinsic-valued env vars / secrets / image URIs against either cdkd state (`--from-state`) or a deployed CloudFormation stack (`--from-cfn-stack`) — so the dev loop works for both `cdkd deploy`-managed AND `cdk deploy`-managed (CFn) stacks with no migration.
-- **Local API Gateway server** (`cdkd local start-api`): one long-running HTTP server per discovered API (HTTP API v2 / REST v1 / Function URL) with per-Lambda warm container pool, REST v1 MOCK / HTTP_PROXY / HTTP / AWS-non-proxy integrations, CORS, authorizers (Lambda TOKEN / REQUEST, Cognito User Pool, HTTP v2 JWT, REST v1 AWS_IAM SigV4), VTL, stage variables, and `--watch` hot reload. `--from-state` / `--from-cfn-stack` Lambda env-var substitution.
-- **Local ECS task + service** (`cdkd local run-task` / `cdkd local start-service`): start every container in an `AWS::ECS::TaskDefinition` on a per-task docker network with the AWS-published ECS metadata-endpoints sidecar (containers see `ECS_CONTAINER_METADATA_URI_V4`), or boot an `AWS::ECS::Service` long-running with `DesiredCount` replicas + restart-on-exit and cross-service Service Connect / Cloud Map DNS discovery (boot multiple services in one invocation; peer containers reach each other by `<discoveryName>.<namespace>` / bare alias via docker `--add-host` overlay from an in-process Cloud Map registry). `--from-state` / `--from-cfn-stack` substitute intrinsic-valued container `Environment[].Value` (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` / `Fn::ImportValue` / `Fn::GetStackOutput`) and `Secrets[].ValueFrom` against the deployed stack — `table.tableName` / `ecs.Secret.fromSecretsManager(secret)` / `ecs.Secret.fromSsmParameter(param)` / cross-stack output refs Just Work locally instead of silently dropping. Local load-balancer emulation is a tracked follow-up.
-- **Bidirectional CloudFormation migration**: `cdkd import` adopts AWS-deployed resources (including `cdk deploy`-managed CloudFormation stacks via `--migrate-from-cloudformation`) into cdkd state without re-creating them; `cdkd export` hands a cdkd-managed stack back to CloudFormation when you're ready to move to production. Migration is optional — `cdkd local *` works against `cdk deploy`-managed stacks directly via `--from-cfn-stack`, so you can start with the local dev loop and adopt full cdkd management only when ready. See [Importing existing resources](#importing-existing-resources) and [Exporting a stack back to CloudFormation](#exporting-a-stack-back-to-cloudformation).
+- **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service`): run Lambdas, API Gateway routes, ECS tasks and long-running ECS services from your CDK code via Docker. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map. Works for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks. See [Local execution](#local-execution).
+- **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
 
-> **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
->
-> **Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type — when a template uses a top-level property the provider has not implemented yet, cdkd fails fast at pre-flight with the silently-dropped property name, rationale, and a 1-click GitHub issue link to request support. The `--allow-unsupported-properties <Type>:<Prop>,...` flag is the **safety valve** when this is too strict for your situation (e.g. mid-life update on an existing resource that cannot be recreated): it accepts the silent drop explicitly, per-property. **Do not use it on security-meaningful properties** (encryption / IAM / TLS settings) — the deployed resource will be missing the control you intended. See [docs/cli-reference.md `--allow-unsupported-properties`](docs/cli-reference.md#--allow-unsupported-properties-deploy) for the full safety-valve guidance.
+> **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. Deployment fails with a clear error message naming the type + a 1-click issue link.
 
 ## Benchmark
 
@@ -367,34 +360,7 @@ full reference. For per-resource-type provisioning support (SDK Providers
 vs Cloud Control API fallback), see
 **[docs/supported-resources.md](docs/supported-resources.md)**.
 
-### Cross-stack references — strong vs weak
-
-`Fn::ImportValue` is a **strong reference**: `cdkd destroy <producer>`
-refuses to delete a stack while any other stack still imports one of
-its exports via `Fn::ImportValue`. Matches CloudFormation's behavior.
-The error message names every offending consumer and points at the
-two valid resolution paths (destroy the consumer first, or remove
-the `Fn::ImportValue` from the consumer's template and redeploy).
-
-`Fn::GetStackOutput` (cdkd-specific) is a **weak reference**: the
-producer stays deletable independently of consumers. Use it when you
-intentionally want decoupled lifecycles (cross-region / cross-stage /
-staging environments).
-
-A persistent per-region exports index at
-`s3://{state-bucket}/cdkd/_index/{region}/exports.json` makes
-`Fn::ImportValue` resolution O(1) at scale (200-stack environments
-resolve in ~100ms vs minutes with the pre-#343 per-resolve scan).
-The index is a derived view rebuilt from `state.json` on demand —
-state.json remains the canonical source of truth, and strong-reference
-safety checks scan it directly rather than trusting the index.
-
-See **[docs/cross-stack-references.md](docs/cross-stack-references.md)**
-for the full design (`Fn::ImportValue` strong-reference rules added in
-state schema v4, lifecycle, locking, failure modes). State schema is at
-v5 since v0.100.0; `DeletionPolicy` / `UpdateReplacePolicy` changes
-between deploys are now detected and surfaced (see
-[docs/state-management.md](docs/state-management.md)).
+**Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type. cdkd fails fast at pre-flight when a template uses a not-yet-implemented property, with the property name + a 1-click issue link. `--allow-unsupported-properties <Type>:<Prop>,...` is the safety valve when this is too strict (e.g. mid-life update on an existing resource); avoid it on security-meaningful properties (encryption / IAM / TLS). See [docs/cli-reference.md](docs/cli-reference.md#--allow-unsupported-properties-deploy).
 
 ## Rollback behavior
 
@@ -460,96 +426,63 @@ maintain, no `cdk synth | sam ...` round-trip.
 | `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
 | `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
 
-Requires Docker. Pass `--from-state` to substitute deployed physical
-IDs into intrinsic-valued properties (`Ref` / `Fn::GetAtt` / `Fn::Sub` /
-`Fn::Join` against the same stack's state plus AWS pseudo parameters
-via STS, AND `Fn::ImportValue` / `Fn::GetStackOutput` against the
-persistent exports index for cross-stack references — same-account /
-same-region); without it, intrinsic values are dropped with a per-key
-warning (matches `sam local *` semantics). For CDK apps deployed via
-the upstream CDK CLI (`cdk deploy` → CloudFormation), pass
-`--from-cfn-stack [<cfn-stack-name>]` instead: cdkd reads the deployed
-CFn stack via `DescribeStackResources` + `ListExports` and substitutes
-`Ref` / `Fn::ImportValue` against the same code path (`Fn::GetAtt` is
-warn-and-dropped in v1). Mutually exclusive with `--from-state`.
+Requires Docker. Pass `--from-state` (cdkd-deployed) or
+`--from-cfn-stack` (cdk-deployed / CFn-managed) to substitute deployed
+physical IDs into intrinsic-valued env vars / secrets / image URIs;
+without either, intrinsic values are dropped with a per-key warning
+(matches `sam local *`). The two flags are mutually exclusive.
 
 ### `local invoke`
 
 ```bash
-cdkd local invoke MyStack/MyApi/Handler              # one-shot invoke
+cdkd local invoke MyStack/Handler                    # one-shot invoke
 cdkd local invoke MyStack/Handler --event events/get.json
-cdkd local invoke MyStack/Handler --from-state       # cdkd-deployed: recover deployed env vars
-cdkd local invoke MyStack/Handler --from-cfn-stack   # cdk-deployed (CFn): same flow via DescribeStackResources
+cdkd local invoke MyStack/Handler --from-state       # OR --from-cfn-stack
 ```
 
-Supports every current AWS Lambda runtime (Node.js / Python / Ruby /
-Java / .NET / `provided.al2023`), container Lambdas
-(`DockerImageFunction` / `Code.ImageUri`) via local-build or ECR pull,
-and same-stack Lambda Layers bind-mounted at `/opt`.
+All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET /
+`provided.al2023`), ZIP and container Lambdas, same-stack Lambda Layers
+bind-mounted at `/opt`.
 
 ### `local start-api`
 
 ```bash
-cdkd local start-api                              # one HTTP server per discovered API
-cdkd local start-api --port 3000                  # pin the first server's port
-cdkd local start-api MyHttpApi                    # filter to one API (logical id, single-stack apps)
-cdkd local start-api MyStack/MyHttpApi            # OR: CDK Construct path
-cdkd local start-api --warm --watch               # pre-start + hot reload
-cdkd local start-api --from-state                 # substitute deployed env vars in Lambda Environment
+cdkd local start-api                                 # one HTTP server per discovered API
+cdkd local start-api MyStack/MyHttpApi --watch       # filter + hot reload
+cdkd local start-api --from-state                    # OR --from-cfn-stack
 ```
 
-One server per discovered API — authorizers, CORS configs, and stage
-variables stay scoped to the owning API. Supports REST v1 + HTTP API +
-Function URL with **AWS_PROXY** integrations AND every REST v1
-non-AWS_PROXY integration kind: **MOCK** (status-code selection via
-request template + response-template VTL), **HTTP_PROXY** (verbatim
-upstream forward with `RequestParameters` mappings), **HTTP**
-(HTTP_PROXY + bidirectional VTL), and **AWS** Lambda non-proxy
-(request + response VTL via the hand-rolled engine at
-`src/local/vtl-engine.ts`).
-Direct AWS-service integrations (S3 / SQS / SNS / DynamoDB / etc.) are
-NOT emulated — deploy to AWS or use HTTP_PROXY to a local mock instead.
-Authorizers: Lambda TOKEN / REQUEST, Cognito User Pool, HTTP v2 JWT
-(JWKS-verified), and REST v1 `AuthorizationType: 'AWS_IAM'` (SigV4
-signature verification only — IAM policy evaluation is not emulated;
-see `docs/local-emulation.md`). CORS preflight (HTTP API v2
-`CorsConfiguration` + REST v1 OPTIONS MOCK preflight from
-`defaultCorsPreflightOptions`); hot reload via `--watch`;
-deploy-state-backed env var substitution via `--from-state`.
-
-Function URL `InvokeMode: RESPONSE_STREAM` is supported (issue #467):
-streaming Lambdas are invoked via the RIE streaming protocol and the
-response is piped to the HTTP client with `Transfer-Encoding: chunked`.
-Note that AWS's local RIE buffers the response — incremental chunk
-delivery only manifests against the deployed Lambda runtime; locally
-the response shape is correct but arrives in one block.
-
-Routes whose integration cdkd cannot emulate (REST v1 AWS integration
-to a non-Lambda service, HTTP_PROXY / HTTP with non-literal `Uri`, HTTP
-API v2 service integrations, WebSocket APIs, Function URLs with IAM
-auth, cross-stack Lambda Arn references) **do not block boot** — the
-server starts with a per-route `[warn]` summary and returns HTTP 501 +
-the reason in the JSON body if and when the route is hit. This lets
-you run the rest of your API surface locally while the unsupported
-routes stay on the deployed API.
+REST v1 + HTTP API v2 + Function URL with all integration kinds
+(AWS_PROXY / MOCK / HTTP_PROXY / HTTP / AWS Lambda non-proxy via
+hand-rolled VTL), authorizers (Lambda / Cognito / HTTP v2 JWT /
+REST v1 AWS_IAM SigV4), CORS, stage variables, `--watch` hot reload.
 
 ### `local run-task`
 
 ```bash
 cdkd local run-task MyStack/MyService/TaskDef
-cdkd local run-task MyTaskDef --from-state        # resolve deployed secrets / env intrinsics
+cdkd local run-task MyTaskDef --from-state           # OR --from-cfn-stack
 ```
 
-Starts every container in the task definition on a per-task docker
-network with the AWS-published ECS metadata sidecar
-(`amazon/amazon-ecs-local-container-endpoints`). `DependsOn` /
-`Secrets` / `Volumes` (Host / Docker) are honored; `Secrets[].ValueFrom`
-is resolved from SecretsManager / SSM at startup.
+Every container in the task definition on a per-task docker network
+with the AWS-published ECS metadata sidecar.
 
-See [docs/local-emulation.md](docs/local-emulation.md) for the full
-reference — supported runtimes, target resolution, every flag, exit
-codes, route precedence, container-pool semantics, networking model,
-v1 scope notes.
+### `local start-service`
+
+```bash
+cdkd local start-service MyStack/Orders MyStack/Web  # multiple services in one invocation
+cdkd local start-service MyStack/Orders --from-state # OR --from-cfn-stack
+```
+
+Long-running ECS Service emulator: `DesiredCount` replicas with
+restart-on-exit, cross-service Service Connect / Cloud Map DNS
+discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
+No local load-balancer in v1.
+
+See **[docs/local-emulation.md](docs/local-emulation.md)** for the
+full reference — runtimes, target resolution, every flag, integration
+and authorizer detail, route precedence, container pool, networking,
+`--from-cfn-stack` semantics, v1 scope.
 
 ## Importing existing resources
 
@@ -586,63 +519,31 @@ parity matrix vs upstream `cdk import`.
 ## Exporting a stack back to CloudFormation
 
 `cdkd export` is the mirror of `cdkd import`: it hands a cdkd-managed
-stack over to CloudFormation via a CFn `ChangeSetType=IMPORT` changeset.
+stack back to CloudFormation via a CFn `ChangeSetType=IMPORT` changeset.
 AWS resources are unchanged across the migration; cdkd state for the
 exported stack is deleted on success. From then on the stack is managed
-by `cdk deploy` / `aws cloudformation`.
-
-Lambda-backed Custom Resources (`Custom::*` and
-`AWS::CloudFormation::CustomResource`) are NOT directly CFn-importable.
-`cdkd export --include-non-importable` opts into a 2-phase migration
-to handle them: phase 1 IMPORT changeset adopts every importable
-resource, then phase 2 UPDATE changeset re-CREATEs the Custom Resources
-through CFn — which re-invokes each backing Lambda's onCreate handler.
-The Custom Resource Lambda must be idempotent AND must POST to
-`event.ResponseURL` per the cfn-response protocol. Without the flag,
-the command refuses to proceed and the user is expected to destroy
-the offending resources (or accept abandoning them) first. Nested
-`AWS::CloudFormation::Stack` rows are fully supported as of
-[#464](https://github.com/go-to-k/cdkd/issues/464) PR B2: `cdkd export`
-recursively walks the cdkd state tree, validates every parent → child
-link, and submits **IMPORT changesets per cdkd-managed stack** in
-leaf-first order — leaf stacks via one CREATE-via-IMPORT changeset, non-leaf
-parents via two changesets (Phase 1A CREATE-via-IMPORT for the parent's
-leaf resources only, then Phase 1B UPDATE-via-IMPORT for the just-imported
-child adoption per AWS's
-["Nest an existing stack"](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-nested-stacks.html)
-pattern with `DeletionPolicy: Retain` plus
-`ResourceIdentifier: { StackId: <child arn> }` plus AWS-validated
-child-Tag forwarding). Between phases cdkd flips each
-stack's status from `IMPORT_COMPLETE` to `UPDATE_COMPLETE` via a no-op
-tag-only `UpdateStack` (AWS rejects `IMPORT_COMPLETE` as a non-importable
-status for nested adoption). The original "one atomic
-`--include-nested-stacks` IMPORT changeset" design was found infeasible
-by the 2026-05-24 AWS spike — AWS rejects that flag combination with
-`ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`;
-see [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md)
-§4.0 / §4.3 for the per-stack-loop algorithm. Each child cdkd stack
-(`<parent>~<childLogicalId>`) becomes its own CFn stack named
-`<parent>-<childLogicalId>` by default (`~` is illegal in CFn stack
-names); override per child with `--cfn-child-stack-name '<cdkd>=<cfn>'`
-(repeatable). Fresh `cdkd deploy` of nested stacks works via
-[#459](https://github.com/go-to-k/cdkd/issues/459).
+by `cdk deploy` / `aws cloudformation`. Accepts JSON and YAML templates
+(shorthand intrinsics round-trip).
 
 ```bash
 cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
 cdkd export MyStack --cfn-stack-name MyStack-CFn
 cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
-cdkd export MyStack --template path.json      # skip synth, use a pre-rendered template (JSON or YAML — format auto-detected)
 cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn-CREATE Custom Resources
-
-# Nested-stack tree (parent + children). Default child CFn names: '<parent>-<childLogicalId>'.
-cdkd export MyApp                             # leaf-first per-stack IMPORT loop
-cdkd export MyApp --cfn-child-stack-name 'MyApp~Database=my-app-db'   # per-child name override
+cdkd export MyApp                             # nested-stack tree: leaf-first per-stack IMPORT loop
 ```
 
-Accepts JSON and YAML templates. YAML round-trips through a CFn-aware codec
-(`src/cli/yaml-cfn.ts`) that preserves every shorthand intrinsic (`!Ref` /
-`!GetAtt` / `!Sub` / `!Join` / etc.), so a YAML-authored CFn stack stays YAML
-on the phase-1 IMPORT and phase-2 UPDATE changesets.
+**Lambda-backed Custom Resources** (`Custom::*` /
+`AWS::CloudFormation::CustomResource`) are NOT directly CFn-importable.
+`--include-non-importable` opts into a 2-phase migration that re-CREATEs
+them through CFn — the Custom Resource Lambda must be idempotent.
+**Nested stacks** are supported via a leaf-first per-stack IMPORT loop
+(AWS rejects `--include-nested-stacks` for IMPORT changesets).
+
+See **[docs/import.md](docs/import.md)** for the full guide — Custom Resource
+2-phase flow, nested-stack adoption mechanics (`--cfn-child-stack-name`
+per-child overrides, AWS's "Nest an existing stack" pattern), and the
+design rationale at [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md).
 
 ## Drift detection
 
@@ -684,22 +585,11 @@ Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 
 ## `--remove-protection`: one-shot bypass for protected resources
 
-CDK's `new Stack(app, 'X', { terminationProtection: true })` is honored
-by `cdkd destroy` (refused before any per-resource delete). The
-state-only path `cdkd state destroy` does NOT honor it — that's the
-explicit "I know what I'm doing, ignore CDK guards" escape hatch.
-
-For resource-level protection (`DeletionProtection` etc.), the standard
-workflow is edit CDK → redeploy → destroy. `--remove-protection` is the
-one-shot bypass:
-
-`cdkd destroy --remove-protection` and `cdkd state destroy
---remove-protection` flip every protection flag off in-place
-before each provider's delete API call so the destroy proceeds
-without an intermediate edit / redeploy. The flag covers both
-stack-level `terminationProtection` (the bypass logs a WARN line
-naming the stack) and resource-level protection on the following
-types:
+`cdkd destroy --remove-protection` (and `cdkd state destroy --remove-protection`)
+flips every protection flag off in-place before each provider's delete
+API call, so a destroy proceeds without an intermediate edit / redeploy.
+Covers stack-level `terminationProtection` (logged as a WARN) AND
+resource-level protection on these types:
 
 | Resource type | Protection field |
 | --- | --- |
