@@ -637,6 +637,9 @@
     "AWS::Glue::Job": {
       "SourceControlDetails": "Schema snapshot (2026-05) does not include this property. Verify in a follow-up."
     },
+    "AWS::IAM::ManagedPolicy": {
+      "Tags": "CFn user-guide doc + AWS SDK (CreatePolicyCommand) accept Tags, but cloudformation:DescribeType (CFn registry schema) does NOT surface it for AWS::IAM::ManagedPolicy as of the 2026-05 snapshot. Provider wires Tags through CreatePolicy / Tag / Untag — registry schema lag, not a real bug."
+    },
     "AWS::Neptune::DBInstance": {
       "DeletionProtection": "CFn schema has DeletionProtection only on DBCluster, not DBInstance. Likely a copy-paste from the cluster handler — verify before removing."
     },

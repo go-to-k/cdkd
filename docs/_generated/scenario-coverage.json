@@ -387,6 +387,11 @@
       ]
     },
     {
+      "name": "iam-managed-policy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-nested-stack",
       "annotated": true,
       "scenarios": [
@@ -1073,6 +1078,7 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "export-nested-stack",
+    "iam-managed-policy",
     "nested-stack",
     "nested-stack-deep"
   ]

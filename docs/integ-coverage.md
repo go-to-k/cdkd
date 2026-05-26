@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**101 / 112 registered SDK Providers** have at least one integ fixture exercising them. 11 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**102 / 113 registered SDK Providers** have at least one integ fixture exercising them. 11 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -38,7 +38,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::S3Tables::Namespace` | existing s3-tables integ exercises only TableBucket. Namespace + Table are sub-resources sharing the same provider; unit roundtrip + parent-bucket integ suffice for now. |
 | `AWS::S3Tables::Table` | see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces. |
 
-## Covered providers (101)
+## Covered providers (102)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -104,8 +104,9 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::Glue::Table` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal) |
 | `AWS::IAM::Group` | [`infra-security`](../tests/integration/infra-security/) (l2) |
 | `AWS::IAM::InstanceProfile` | [`remove-protection`](../tests/integration/remove-protection/) (literal) |
+| `AWS::IAM::ManagedPolicy` | [`iam-managed-policy`](../tests/integration/iam-managed-policy/) (literal) |
 | `AWS::IAM::Policy` | [`export`](../tests/integration/export/) (l2,literal)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (literal) |
-| `AWS::IAM::Role` | [`appsync`](../tests/integration/appsync/) (l2)<br>[`batch`](../tests/integration/batch/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/) (l2)<br>[`drift-revert`](../tests/integration/drift-revert/) (l2)<br>[`eventbridge`](../tests/integration/eventbridge/) (l2)<br>[`export`](../tests/integration/export/) (l2,literal)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`intrinsic-functions`](../tests/integration/intrinsic-functions/) (l2)<br>[`local-invoke-dotnet`](../tests/integration/local-invoke-dotnet/) (l2)<br>[`local-invoke-java`](../tests/integration/local-invoke-java/) (l2)<br>[`local-invoke-provided`](../tests/integration/local-invoke-provided/) (l2)<br>[`local-invoke-ruby`](../tests/integration/local-invoke-ruby/) (l2)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/) (l2)<br>[`local-start-api-websocket`](../tests/integration/local-start-api-websocket/) (literal)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`macro-expansion`](../tests/integration/macro-expansion/) (literal)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (l2)<br>[`multi-resource`](../tests/integration/multi-resource/) (l2)<br>[`multi-stack-deps`](../tests/integration/multi-stack-deps/) (l2)<br>[`nested-stack`](../tests/integration/nested-stack/) (l2)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) (l2) |
+| `AWS::IAM::Role` | [`appsync`](../tests/integration/appsync/) (l2)<br>[`batch`](../tests/integration/batch/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/) (l2)<br>[`drift-revert`](../tests/integration/drift-revert/) (l2)<br>[`eventbridge`](../tests/integration/eventbridge/) (l2)<br>[`export`](../tests/integration/export/) (l2,literal)<br>[`iam-managed-policy`](../tests/integration/iam-managed-policy/) (l2)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`intrinsic-functions`](../tests/integration/intrinsic-functions/) (l2)<br>[`local-invoke-dotnet`](../tests/integration/local-invoke-dotnet/) (l2)<br>[`local-invoke-java`](../tests/integration/local-invoke-java/) (l2)<br>[`local-invoke-provided`](../tests/integration/local-invoke-provided/) (l2)<br>[`local-invoke-ruby`](../tests/integration/local-invoke-ruby/) (l2)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/) (l2)<br>[`local-start-api-websocket`](../tests/integration/local-start-api-websocket/) (literal)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`macro-expansion`](../tests/integration/macro-expansion/) (literal)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (l2)<br>[`multi-resource`](../tests/integration/multi-resource/) (l2)<br>[`multi-stack-deps`](../tests/integration/multi-stack-deps/) (l2)<br>[`nested-stack`](../tests/integration/nested-stack/) (l2)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) (l2) |
 | `AWS::IAM::User` | [`infra-security`](../tests/integration/infra-security/) (l2) |
 | `AWS::IAM::UserToGroupAddition` | [`infra-security`](../tests/integration/infra-security/) (literal) |
 | `AWS::KMS::Alias` | [`composite-stack`](../tests/integration/composite-stack/) (literal)<br>[`infra-security`](../tests/integration/infra-security/) (literal)<br>[`kms-encryption`](../tests/integration/kms-encryption/) (literal) |
