@@ -270,6 +270,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::S3::Bucket
 - AWS::Lambda::Function
 - AWS::IAM::Role
+- AWS::IAM::ManagedPolicy
 - AWS::IAM::InstanceProfile
 - AWS::IAM::User
 - AWS::IAM::Group

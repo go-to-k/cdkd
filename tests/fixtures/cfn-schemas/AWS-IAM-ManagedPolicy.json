@@ -1,0 +1,36 @@
+{
+  "resourceType": "AWS::IAM::ManagedPolicy",
+  "generatedAt": "2026-05-26",
+  "properties": [
+    "AttachmentCount",
+    "CreateDate",
+    "DefaultVersionId",
+    "Description",
+    "Groups",
+    "IsAttachable",
+    "ManagedPolicyName",
+    "Path",
+    "PermissionsBoundaryUsageCount",
+    "PolicyArn",
+    "PolicyDocument",
+    "PolicyId",
+    "Roles",
+    "UpdateDate",
+    "Users"
+  ],
+  "readOnlyProperties": [
+    "AttachmentCount",
+    "CreateDate",
+    "DefaultVersionId",
+    "IsAttachable",
+    "PermissionsBoundaryUsageCount",
+    "PolicyArn",
+    "PolicyId",
+    "UpdateDate"
+  ],
+  "createOnlyProperties": [
+    "Description",
+    "ManagedPolicyName",
+    "Path"
+  ]
+}

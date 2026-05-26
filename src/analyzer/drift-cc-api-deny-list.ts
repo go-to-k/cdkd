@@ -29,16 +29,6 @@
  * `Record<string, string>` for trivial JSON serialization if ever needed).
  */
 export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
-  // AWS::IAM::ManagedPolicy: PolicyDocument round-trips through CC API
-  // URL-encoded; cdkd state stores it as a parsed JSON object. Without
-  // a per-type decoder, every comparison sees a string-vs-object
-  // mismatch and fires drift on every run. The IAM Role provider's
-  // first-class readCurrentState handles its inline AssumeRolePolicy
-  // the same way (URL-decode + JSON-parse); the same fix pattern is
-  // needed for ManagedPolicy when an SDK provider is added.
-  'AWS::IAM::ManagedPolicy':
-    'PolicyDocument is URL-encoded JSON in CC API responses, but cdkd state stores it as a parsed object — needs per-type decode',
-
   // AWS::ApiGateway::RestApi: the `Body` property (OpenAPI spec object
   // when supplied via `Body` rather than `BodyS3Location`) is write-only
   // — `GetRestApi` does NOT return it, but cdkd state preserves the

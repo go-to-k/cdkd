@@ -55,6 +55,7 @@ catalog with Tier 2 and Tier 3 entries included.
 |----------|--------------|----------|--------|
 | **IAM** | AWS::IAM::Role | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::Policy | SDK Provider | ✅ |
+| **IAM** | AWS::IAM::ManagedPolicy | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::InstanceProfile | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::User | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::Group | SDK Provider | ✅ |
