@@ -1,3 +1,10 @@
+## [0.158.1](https://github.com/go-to-k/cdkd/compare/v0.158.0...v0.158.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **provisioning:** wire silent-drop property aliases + declare design-intentional non-support ([#623](https://github.com/go-to-k/cdkd/issues/623)) ([2f25e87](https://github.com/go-to-k/cdkd/commit/2f25e87e7b9a126827c8ac7d97e76d3686874b75))
+
 # [0.158.0](https://github.com/go-to-k/cdkd/compare/v0.157.0...v0.158.0) (2026-05-26)
 
 
