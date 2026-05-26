@@ -873,10 +873,19 @@ chain every other cdkd command uses):
 Outcomes:
 
 - **Valid signature with the dev's credentials** → request reaches the
-  handler. The handler sees the access-key-id as the
-  `event.requestContext.authorizer.principalId` (REST v1) or
-  `event.requestContext.authorizer.lambda.principalId` (Function URL,
-  HTTP v2 event shape).
+  handler.
+  - **REST v1**: the handler sees the access-key-id as
+    `event.requestContext.authorizer.principalId` (flat v1 overlay).
+  - **Function URL**: NO authorizer block is synthesized. The base v2
+    event's `requestContext.authorizer` stays `null`. AWS-deployed
+    Function URLs write principal context under
+    `event.requestContext.authorizer.iam.{accessKey, accountId, callerId,
+    userArn, ...}`, and cdkd has no local IAM data plane to populate
+    that block (no STS GetCallerIdentity per request, no policy
+    emulation). Emitting principalId under `.lambda` would mislead
+    handlers that defensive-read `.iam`, so the deployed and local
+    behavior diverge only by absence of identity context — never by
+    location.
 - **No / malformed `Authorization` header**, **signature mismatch
   under the dev's own credentials**, or any other rejection → 401 / 403
   matching the deployed response:

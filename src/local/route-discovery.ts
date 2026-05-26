@@ -1175,9 +1175,9 @@ function discoverFunctionUrl(
         ...baseRoute,
         lambdaLogicalId,
         unsupported: {
-          reason: `${stackName}/${logicalId}: AuthType '${String(
+          reason: `${stackName}/${logicalId}: AuthType ${shortJson(
             authType
-          )}' is not a recognized Function URL auth type (expected 'NONE' or 'AWS_IAM').`,
+          )} is not a recognized Function URL auth type (expected 'NONE' or 'AWS_IAM').`,
         },
       },
     ];

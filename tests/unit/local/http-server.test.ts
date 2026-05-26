@@ -1234,6 +1234,20 @@ describe('startApiServer — Function URL AWS_IAM (#621)', () => {
       });
       expect(r.status).toBe(200);
       expect(invokeRieMock).toHaveBeenCalledTimes(1);
+      // Function URL + AWS_IAM does NOT emit a `buildOverlay` block —
+      // AWS-deployed Function URLs write principal context under
+      // `event.requestContext.authorizer.iam.{accessKey, accountId, ...}`,
+      // NOT `.lambda`. cdkd has no local IAM data plane to synthesize
+      // the `.iam` block, so the safest answer is no overlay at all:
+      // the base v2 event's `authorizer: null` survives intact (PR body
+      // honors this with "no Function URL identity context" out-of-scope).
+      // A regression that wrote principalId under `.lambda.principalId`
+      // would mislead handlers that defensive-read `.iam ?? {}` — this
+      // assertion catches it.
+      const passedEvent = invokeRieMock.mock.calls[0]?.[2] as
+        | { requestContext?: { authorizer?: Record<string, unknown> | null } }
+        | undefined;
+      expect(passedEvent?.requestContext?.authorizer).toBeNull();
     } finally {
       await server.close();
     }

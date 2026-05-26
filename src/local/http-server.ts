@@ -1220,23 +1220,27 @@ function buildOverlay(
   }
   if (authorizer.kind === 'iam') {
     // AWS_IAM authorization runs on REST v1 (`AuthorizationType: 'AWS_IAM'`)
-    // and on Function URLs (`AuthType: 'AWS_IAM'`, issue #621). Surface
-    // the access-key-id as the principal so user handlers can log it;
-    // no IAM identity context is synthesized (no policy emulation). The
-    // overlay shape follows the route's event-shape API version — REST
-    // v1 routes get a flat `authorizer` block, Function URLs (which are
-    // HTTP-v2-shaped) get the `authorizer.lambda` namespaced block —
-    // since otherwise the `authorizer` field on a v2 event would carry
-    // a v1-shaped value the user's handler does not expect.
-    return routeApiVersion === 'v2'
-      ? {
-          kind: 'lambda-http-v2',
-          ...(result.principalId !== undefined && { principalId: result.principalId }),
-        }
-      : {
-          kind: 'lambda-rest-v1',
-          ...(result.principalId !== undefined && { principalId: result.principalId }),
-        };
+    // and on Function URLs (`AuthType: 'AWS_IAM'`, issue #621).
+    //
+    // REST v1: surface the access-key-id under `authorizer.principalId`
+    // via the flat v1 overlay shape. PR #447 established this precedent.
+    //
+    // Function URL (v2 + iam): emit NO overlay. AWS-deployed Function URLs
+    // write principal context under `event.requestContext.authorizer.iam.
+    // {accessKey, accountId, callerId, userArn, ...}` — NOT `.lambda` —
+    // and cdkd has no local IAM data plane to synthesize that block (no
+    // STS GetCallerIdentity per request, no IAM policy emulation). Emitting
+    // the v2 `lambda-http-v2` overlay would write `principalId` under
+    // `.lambda.principalId`, which is the wrong namespace and worse than
+    // no context: handlers defensive-reading `.iam ?? {}` see an empty
+    // object either way, and handlers reading `.lambda` see a misleading
+    // value that does not exist on deployed Function URLs. PR body honors
+    // this with "no Function URL identity context" out-of-scope.
+    if (routeApiVersion === 'v2') return undefined;
+    return {
+      kind: 'lambda-rest-v1',
+      ...(result.principalId !== undefined && { principalId: result.principalId }),
+    };
   }
   // jwt
   return { kind: 'jwt-http-v2', claims: result.context ?? {} };
