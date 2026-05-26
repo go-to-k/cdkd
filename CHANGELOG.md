@@ -1,3 +1,10 @@
+# [0.157.0](https://github.com/go-to-k/cdkd/compare/v0.156.0...v0.157.0) (2026-05-26)
+
+
+### Features
+
+* **provisioning:** add ACMCertificateProvider (AWS::CertificateManager::Certificate) ([#607](https://github.com/go-to-k/cdkd/issues/607)) ([17b2864](https://github.com/go-to-k/cdkd/commit/17b2864f562676f71b437fd8dedd91c9266063fa))
+
 # [0.156.0](https://github.com/go-to-k/cdkd/compare/v0.155.0...v0.156.0) (2026-05-26)
 
 
