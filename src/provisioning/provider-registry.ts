@@ -3,6 +3,7 @@ import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
 import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
+import { findSilentDropProperties, unsupportedPropertyIssueUrl } from './property-coverage.js';
 
 /**
  * Provider registry for managing resource providers
@@ -19,6 +20,7 @@ export class ProviderRegistry {
   private customResourceProvider: CustomResourceProvider;
   private skipResourceTypes = new Set<string>();
   private allowedUnsupportedTypes = new Set<string>();
+  private allowedUnsupportedProperties = new Set<string>();
 
   constructor() {
     this.cloudControlProvider = new CloudControlProvider();
@@ -36,6 +38,21 @@ export class ProviderRegistry {
     for (const resourceType of resourceTypes) {
       this.allowedUnsupportedTypes.add(resourceType);
       this.logger.debug(`Allowing unsupported resource type via escape hatch: ${resourceType}`);
+    }
+  }
+
+  /**
+   * Escape hatch for the `--allow-unsupported-properties` CLI flag. Each entry
+   * is a `<ResourceType>:<PropertyName>` token (e.g.
+   * `AWS::Lambda::Function:LoggingConfig`). Named entries bypass the
+   * property-level silent-drop pre-flight reject for that exact type+property
+   * pair. Per-type-property (not blanket) so the user explicitly acknowledges
+   * each silent drop they accept.
+   */
+  allowUnsupportedProperties(entries: Iterable<string>): void {
+    for (const entry of entries) {
+      this.allowedUnsupportedProperties.add(entry);
+      this.logger.debug(`Allowing unsupported property via escape hatch: ${entry}`);
     }
   }
 
@@ -227,4 +244,96 @@ export class ProviderRegistry {
       `Validated ${resourceTypes.size} resource types: all have available providers`
     );
   }
+
+  /**
+   * Pre-flight reject: walk every resource in the template and identify
+   * top-level CFn properties cdkd's SDK provider would silently drop on
+   * write. Throws with a per-resource per-property breakdown + the exact
+   * `--allow-unsupported-properties` re-run command. No-op for Tier 2 (Cloud
+   * Control) types — CC forwards the full property map to AWS, so cdkd has
+   * no write-side silent drop for those.
+   *
+   * Must be called AFTER {@link validateResourceTypes} — type-level errors
+   * are reported first. For a type allowed via `--allow-unsupported-types`,
+   * the type-level check passes and this property check is a no-op
+   * (`findSilentDropProperties` returns `[]` for non-Tier-1 / unknown types).
+   */
+  validateResourceProperties(
+    resources: Iterable<{
+      logicalId: string;
+      resourceType: string;
+      properties: Record<string, unknown> | undefined;
+    }>
+  ): void {
+    const errors: Array<{
+      logicalId: string;
+      resourceType: string;
+      property: string;
+      rationale: string;
+    }> = [];
+    for (const { logicalId, resourceType, properties } of resources) {
+      const drops = findSilentDropProperties(resourceType, properties);
+      for (const { property, rationale } of drops) {
+        const allowKey = `${resourceType}:${property}`;
+        if (this.allowedUnsupportedProperties.has(allowKey)) continue;
+        errors.push({ logicalId, resourceType, property, rationale });
+      }
+    }
+    if (errors.length === 0) return;
+    throw new Error(renderPropertyCoverageError(errors));
+  }
+}
+
+/**
+ * Render the actionable pre-flight error for property-level silent drops.
+ * Groups by logical ID, sorts properties within each resource, and emits
+ * a comma-joined `--allow-unsupported-properties` re-run command with
+ * deduplicated `Type:Prop` entries (the same type appearing in two
+ * resources only needs one entry — the flag is per-type-prop, not
+ * per-resource).
+ */
+function renderPropertyCoverageError(
+  errors: Array<{
+    logicalId: string;
+    resourceType: string;
+    property: string;
+    rationale: string;
+  }>
+): string {
+  const byLogicalId = new Map<
+    string,
+    { resourceType: string; props: Array<{ property: string; rationale: string }> }
+  >();
+  for (const e of errors) {
+    let entry = byLogicalId.get(e.logicalId);
+    if (!entry) {
+      entry = { resourceType: e.resourceType, props: [] };
+      byLogicalId.set(e.logicalId, entry);
+    }
+    entry.props.push({ property: e.property, rationale: e.rationale });
+  }
+  const sections: string[] = [];
+  for (const [logicalId, { resourceType, props }] of byLogicalId) {
+    const sortedProps = [...props].sort((a, b) => a.property.localeCompare(b.property));
+    const propLines = sortedProps
+      .map(({ property, rationale }) => {
+        const issueUrl = unsupportedPropertyIssueUrl(resourceType, property);
+        return (
+          `    - ${property}\n` + `        ${rationale}\n` + `        Request support: ${issueUrl}`
+        );
+      })
+      .join('\n');
+    sections.push(`  ${logicalId} (${resourceType}):\n${propLines}`);
+  }
+  const dedupRerun = Array.from(new Set(errors.map((e) => `${e.resourceType}:${e.property}`))).join(
+    ','
+  );
+  return (
+    `cdkd would silently drop these properties at deploy time:\n\n` +
+    sections.join('\n\n') +
+    `\n\nThese properties exist in your CDK code but cdkd will not write them to ` +
+    `AWS. The deployed resource will be missing these fields.\n\n` +
+    `To proceed anyway (accepts the silent drop), re-run with:\n` +
+    `  --allow-unsupported-properties ${dedupRerun}`
+  );
 }

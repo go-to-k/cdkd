@@ -596,6 +596,21 @@ export class DeployEngine {
       this.providerRegistry.validateResourceTypes(resourceTypes);
       this.logger.debug(`All resource types validated`);
 
+      // 3.5. Validate top-level resource properties (property-level pre-flight).
+      // Rejects deploys whose templates use top-level CFn properties cdkd's SDK
+      // provider does NOT write to AWS (silent drop). Escape hatch:
+      // `--allow-unsupported-properties Type:Prop,...`. Skips AWS::CDK::Metadata
+      // (filtered by the same predicate as the type set).
+      const resourcesForPropertyCheck = Object.entries(template.Resources || {})
+        .filter(([, r]) => r.Type !== 'AWS::CDK::Metadata')
+        .map(([logicalId, r]) => ({
+          logicalId,
+          resourceType: r.Type,
+          properties: r.Properties,
+        }));
+      this.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
+      this.logger.debug(`All resource properties validated`);
+
       // 4. Build dependency graph
       const dag = this.dagBuilder.buildGraph(template);
       const executionLevels = this.dagBuilder.getExecutionLevels(dag);

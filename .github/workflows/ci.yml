@@ -79,6 +79,20 @@ jobs:
             exit 1
           fi
 
+      # Fail CI when src/provisioning/property-coverage.generated.ts is stale
+      # relative to the CFn schema fixtures + each SDK provider's
+      # handledProperties / unhandledByDesign declarations. The runtime
+      # property-level pre-flight (ProviderRegistry.validateResourceProperties)
+      # reads the generated module, so it must track the source data.
+      - name: property-coverage module is up-to-date
+        run: |
+          vp run gen:property-coverage
+          if ! git diff --quiet -- src/provisioning/property-coverage.generated.ts; then
+            echo "::error::src/provisioning/property-coverage.generated.ts is stale — run \`vp run gen:property-coverage\` and commit the regenerated module"
+            git --no-pager diff -- src/provisioning/property-coverage.generated.ts
+            exit 1
+          fi
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test

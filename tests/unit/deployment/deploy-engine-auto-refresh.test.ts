@@ -83,6 +83,7 @@ describe('DeployEngine - auto-refresh observed-properties on v2 state load', () 
   let mockProviderRegistry: {
     getProvider: ReturnType<typeof vi.fn>;
     validateResourceTypes: ReturnType<typeof vi.fn>;
+    validateResourceProperties: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
@@ -123,6 +124,7 @@ describe('DeployEngine - auto-refresh observed-properties on v2 state load', () 
     mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(mockProvider),
       validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
     };
 
     mockStateBackend = {

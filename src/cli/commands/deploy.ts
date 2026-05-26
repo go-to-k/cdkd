@@ -72,6 +72,7 @@ async function deployCommand(
     verbose: boolean;
     context?: string[];
     allowUnsupportedTypes?: string[];
+    allowUnsupportedProperties?: string[];
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -404,6 +405,9 @@ async function deployCommand(
       stackProviderRegistry.setCustomResourceResponseBucket(stateBucket, baseRegion);
       if (options.allowUnsupportedTypes?.length) {
         stackProviderRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
+      }
+      if (options.allowUnsupportedProperties?.length) {
+        stackProviderRegistry.allowUnsupportedProperties(options.allowUnsupportedProperties);
       }
 
       try {
