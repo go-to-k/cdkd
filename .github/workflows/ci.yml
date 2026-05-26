@@ -84,11 +84,16 @@ jobs:
       # handledProperties / unhandledByDesign declarations. The runtime
       # property-level pre-flight (ProviderRegistry.validateResourceProperties)
       # reads the generated module, so it must track the source data.
+      # The codegen writes a raw multi-line shape; the committed module is
+      # Prettier-formatted, so we run `vp run format` after the codegen to
+      # canonicalize before diffing (mirrors how the file was written at
+      # scaffold time in 476d3c1).
       - name: property-coverage module is up-to-date
         run: |
           vp run gen:property-coverage
+          vp run format
           if ! git diff --quiet -- src/provisioning/property-coverage.generated.ts; then
-            echo "::error::src/provisioning/property-coverage.generated.ts is stale — run \`vp run gen:property-coverage\` and commit the regenerated module"
+            echo "::error::src/provisioning/property-coverage.generated.ts is stale — run \`vp run gen:property-coverage && vp run format\` and commit the regenerated module"
             git --no-pager diff -- src/provisioning/property-coverage.generated.ts
             exit 1
           fi
