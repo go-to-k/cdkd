@@ -1,3 +1,10 @@
+# [0.153.0](https://github.com/go-to-k/cdkd/compare/v0.152.2...v0.153.0) (2026-05-26)
+
+
+### Features
+
+* **deployment:** hard-error on unknown CloudFormation intrinsics instead of silent pass-through ([#604](https://github.com/go-to-k/cdkd/issues/604)) ([df8a979](https://github.com/go-to-k/cdkd/commit/df8a9799f91c2a1e17b042c1d4de8c197a8ece4e))
+
 ## [0.152.2](https://github.com/go-to-k/cdkd/compare/v0.152.1...v0.152.2) (2026-05-25)
 
 
