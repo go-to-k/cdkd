@@ -39,29 +39,37 @@ LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probes"
-  set +e
+  # `set +u` so an early-exit (e.g. STATE_BUCKET unset) does not abort
+  # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
+  # cleanup should run as much as it can with the env it has.
+  set +eu
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${OVERRIDE_STACK}" --region "${REGION}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${TRANSITION_STACK}" --region "${REGION}" --force >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${OVERRIDE_FN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws lambda delete-function --function-name "${TRANSITION_FN}" --region "${REGION}" >/dev/null 2>&1 || true
-  aws s3 rm "s3://${STATE_BUCKET}/${OVERRIDE_KEY}" >/dev/null 2>&1 || true
-  aws s3 rm "s3://${STATE_BUCKET}/${TRANSITION_KEY}" >/dev/null 2>&1 || true
-  aws s3 rm "s3://${STATE_BUCKET}/cdkd/${OVERRIDE_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
-  aws s3 rm "s3://${STATE_BUCKET}/cdkd/${TRANSITION_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${OVERRIDE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/${TRANSITION_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${OVERRIDE_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${TRANSITION_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  fi
   # IAM roles: only the auto-named stack-prefixed ones remain after a
-  # cdkd `state destroy` (which skips AWS deletion). Best-effort detach
-  # the AWSLambdaBasicExecutionRole managed policy + delete; ignore
-  # failures (the verify.sh may have already destroyed cleanly).
+  # cdkd `state destroy` (which skips AWS deletion). `starts_with` (not
+  # `contains`) so we never match an unrelated user-created role whose
+  # name happens to embed the stack id substring on a shared AWS
+  # account. Best-effort detach the AWSLambdaBasicExecutionRole managed
+  # policy + delete; ignore failures (the verify.sh may have already
+  # destroyed cleanly).
   for stack in "${OVERRIDE_STACK}" "${TRANSITION_STACK}"; do
-    for role in $(aws iam list-roles --query "Roles[?contains(RoleName, \`${stack}\`)].RoleName" --output text 2>/dev/null); do
+    for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, \`${stack}\`)].RoleName" --output text 2>/dev/null); do
       aws iam detach-role-policy --role-name "${role}" \
         --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null 2>&1 || true
       aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
     done
   done
-  set -e
+  set -eu
 }
 
 trap cleanup EXIT
@@ -122,8 +130,14 @@ OVERRIDE_LOG_CONFIG=$(aws lambda get-function-configuration \
   --query 'LoggingConfig' --output json 2>/dev/null)
 OVERRIDE_LOG_FORMAT=$(echo "${OVERRIDE_LOG_CONFIG}" | jq -r '.LogFormat // ""')
 OVERRIDE_APP_LEVEL=$(echo "${OVERRIDE_LOG_CONFIG}" | jq -r '.ApplicationLogLevel // ""')
-if [ "${OVERRIDE_LOG_FORMAT}" = "JSON" ] && [ "${OVERRIDE_APP_LEVEL}" = "INFO" ]; then
-  echo "FAIL: OverrideStack Lambda received LoggingConfig (LogFormat=JSON, ApplicationLogLevel=INFO) — override should have silent-dropped it" >&2
+# Either field reaching AWS's expected post-CC values is enough to know
+# the silent drop did NOT happen. `||` (not `&&`) so a partial forward
+# — `LogFormat=JSON` alone, or `ApplicationLogLevel=INFO` alone — still
+# fails the assertion. The override path stamps `provisionedBy: 'sdk'`
+# AND the SDK provider does not wire LoggingConfig at all, so neither
+# field should be reachable through this path.
+if [ "${OVERRIDE_LOG_FORMAT}" = "JSON" ] || [ "${OVERRIDE_APP_LEVEL}" = "INFO" ]; then
+  echo "FAIL: OverrideStack Lambda received some LoggingConfig (LogFormat='${OVERRIDE_LOG_FORMAT}', ApplicationLogLevel='${OVERRIDE_APP_LEVEL}') — override should have silent-dropped both" >&2
   echo "    AWS LoggingConfig: ${OVERRIDE_LOG_CONFIG}"
   exit 1
 fi
