@@ -1,8 +1,8 @@
 {
-  "name": "cdkd-integ-recreate-via-cc-api",
+  "name": "cdkd-integ-recreate-via-sdk-provider",
   "version": "1.0.0",
   "private": true,
-  "description": "cdkd #615 --recreate-via-cc-api integ probe — mid-life SDK→CC migration via destroy+recreate",
+  "description": "cdkd #651 --recreate-via-sdk-provider integ probe — mid-life CC→SDK migration via destroy+recreate",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

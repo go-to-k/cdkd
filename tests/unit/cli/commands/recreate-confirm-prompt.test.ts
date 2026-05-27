@@ -192,6 +192,37 @@ describe('promptRecreateConfirm (#649)', () => {
     expect(readlineQuestion).not.toHaveBeenCalled();
   });
 
+  it('renders the [CC → SDK] direction tag for to-sdk targets (#651)', async () => {
+    await promptRecreateConfirm({
+      stackName: 'S',
+      targets: [
+        target({ direction: 'to-sdk', logicalId: 'BackLambda' }),
+      ],
+      yes: true,
+    });
+    const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+    expect(warnLines).toContain('--recreate-via-sdk-provider will destroy + recreate 1');
+    expect(warnLines).toContain('SDK Provider');
+    expect(warnLines).toContain('BackLambda (AWS::Lambda::Function) [CC → SDK]');
+  });
+
+  it('renders mixed-direction header when both lists are non-empty (#651)', async () => {
+    await promptRecreateConfirm({
+      stackName: 'S',
+      targets: [
+        target({ direction: 'to-cc-api', logicalId: 'FwdLambda' }),
+        target({ direction: 'to-sdk', logicalId: 'BackLambda' }),
+      ],
+      yes: true,
+    });
+    const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+    expect(warnLines).toMatch(
+      /recreate-via-cc-api \/ recreate-via-sdk-provider will destroy \+ recreate 2 resource\(s\) on stack S \(1 → Cloud Control, 1 → SDK Provider\)/
+    );
+    expect(warnLines).toContain('FwdLambda (AWS::Lambda::Function) [SDK → CC]');
+    expect(warnLines).toContain('BackLambda (AWS::Lambda::Function) [CC → SDK]');
+  });
+
   it('still skips the prompt in a non-TTY environment when --yes IS set (CI path)', async () => {
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
     const result = await promptRecreateConfirm({

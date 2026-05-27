@@ -305,9 +305,16 @@ export function validateRecreateTargets(input: {
 export function renderRecreateTargetsErrors(validation: RecreateTargetsValidation): string | null {
   const lines: string[] = [];
 
+  // Reviewer caught: shared error categories (unknownLogicalIds /
+  // missingFromState / blockedStatefulTargets) can be triggered by EITHER
+  // direction's list, so the prefix needs to be neutral — naming
+  // `--recreate-via-cc-api` when the user only passed
+  // `--recreate-via-sdk-provider` is misleading. Use the umbrella prefix.
+  const FLAG_UMBRELLA = '--recreate-via-cc-api / --recreate-via-sdk-provider';
+
   if (validation.unknownLogicalIds.length > 0) {
     lines.push(
-      `--recreate-via-cc-api named ${validation.unknownLogicalIds.length} ` +
+      `${FLAG_UMBRELLA} named ${validation.unknownLogicalIds.length} ` +
         `logical id(s) not present in the synth template:`
     );
     for (const id of validation.unknownLogicalIds) {
@@ -324,7 +331,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
   if (validation.missingFromState.length > 0) {
     if (lines.length > 0) lines.push('');
     lines.push(
-      `--recreate-via-cc-api named ${validation.missingFromState.length} ` +
+      `${FLAG_UMBRELLA} named ${validation.missingFromState.length} ` +
         `logical id(s) the template declares but cdkd state has no record of:`
     );
     for (const id of validation.missingFromState) {
@@ -332,9 +339,9 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     }
     lines.push(
       `  These are fresh CREATEs on the next deploy — recreate has nothing ` +
-        `to destroy first. Remove the --recreate-via-cc-api flag for these ` +
-        `resources; the new auto-route via Cloud Control (#614) handles ` +
-        `fresh deploys.`
+        `to destroy first. Remove the flag for these resources; the auto-route ` +
+        `via Cloud Control (#614) handles fresh deploys for silent-drop properties, ` +
+        `and SDK Provider is the default for everything else.`
     );
   }
 
@@ -361,7 +368,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
   if (validation.blockedStatefulTargets.length > 0) {
     if (lines.length > 0) lines.push('');
     lines.push(
-      `--recreate-via-cc-api would destroy + recreate ` +
+      `${FLAG_UMBRELLA} would destroy + recreate ` +
         `${validation.blockedStatefulTargets.length} stateful resource(s). ` +
         `Recreate loses ALL data — no automatic data migration. Re-run with ` +
         `--force-stateful-recreation to acknowledge the data-loss footgun.`
@@ -521,7 +528,7 @@ export async function probeStatefulRecreateTargetsAsync(
       }
     } catch (e) {
       logger.warn(
-        `--recreate-via-cc-api: live S3 probe failed for ${target.logicalId} ` +
+        `--recreate-via-cc-api / --recreate-via-sdk-provider: live S3 probe failed for ${target.logicalId} ` +
           `(bucket ${target.physicalId}); leaving stateful guard at the sync ` +
           `result. If the bucket might be non-empty, re-run with ` +
           `--force-stateful-recreation. Underlying error: ` +

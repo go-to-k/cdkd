@@ -474,7 +474,14 @@ async function deployCommand(
             recreateViaSdkProvider: options.recreateViaSdkProvider ?? [],
             allowUnsupportedProperties: new Set(options.allowUnsupportedProperties ?? []),
             forceStatefulRecreation: options.forceStatefulRecreation ?? false,
-            hasSdkProvider: (rt) => stackProviderRegistry.hasProvider(rt),
+            // Reviewer caught: `hasProvider(rt)` returns true for ANY
+            // routable type (SDK / Cloud Control / Custom Resource / escape-
+            // hatch), so a Tier 2 CC-only type would slip past
+            // `blockedNoSdkProvider` and the routing decision would silently
+            // round-trip back to CC after the recreate. Ask the narrower
+            // `getProviderType(rt) === 'sdk'` instead — true ONLY when a
+            // dedicated SDK provider is registered for the type.
+            hasSdkProvider: (rt) => stackProviderRegistry.getProviderType(rt) === 'sdk',
           });
           // Issue [#648] — promote `AWS::S3::Bucket` targets whose sync
           // reason is `null` to `'has-objects'` when the live bucket
@@ -491,7 +498,7 @@ async function deployCommand(
           });
           const errorBlock = renderRecreateTargetsErrors(validation);
           if (errorBlock) {
-            throw new CdkdError(errorBlock, 'RECREATE_VIA_CC_API_INVALID');
+            throw new CdkdError(errorBlock, 'RECREATE_TARGETS_INVALID');
           }
           recreateViaCcApiTargets = new Set(
             validation.targets.filter((t) => t.direction === 'to-cc-api').map((t) => t.logicalId)
