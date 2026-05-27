@@ -1886,7 +1886,7 @@ function extractImageUri(
       // couldn't derive `urlSuffix`). Either way, surface a clear
       // error instead of falling through to ZIP-branch validation.
       const accountIdHint = pseudoParameters
-        ? ' (likely \\${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
+        ? ' (likely ${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
         : ` (cdkd could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new Error(
         `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local start-api cannot resolve${accountIdHint}. ` +

@@ -599,7 +599,7 @@ function extractImageUri(
       // plumbing the typical remaining cause is `${AWS::AccountId}`
       // (needs an STS call or `--from-state`) or an unknown region.
       const accountIdHint = pseudoParameters
-        ? ' (likely \\${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
+        ? ' (likely ${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
         : ` (cdkd could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new LocalInvokeResolutionError(
         `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local invoke cannot resolve${accountIdHint}. ` +
