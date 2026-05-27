@@ -18,6 +18,7 @@ import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import {
   validateRecreateTargets,
   renderRecreateTargetsErrors,
+  probeAndRevalidateStateful,
 } from '../../deployment/recreate-targets.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
@@ -455,7 +456,7 @@ async function deployCommand(
             stackInfo.stackName,
             stackRegion
           );
-          const validation = validateRecreateTargets({
+          const syncValidation = validateRecreateTargets({
             template: stackInfo.template,
             state: stateForRecreateCheck?.state ?? {
               version: STATE_SCHEMA_VERSION_CURRENT,
@@ -467,6 +468,19 @@ async function deployCommand(
             },
             recreateViaCcApi: options.recreateViaCcApi,
             allowUnsupportedProperties: new Set(options.allowUnsupportedProperties ?? []),
+            forceStatefulRecreation: options.forceStatefulRecreation ?? false,
+          });
+          // Issue [#648] — promote `AWS::S3::Bucket` targets whose sync
+          // reason is `null` to `'has-objects'` when the live bucket
+          // has at least one object. Uses the deploy-region S3 client
+          // (the user's bucket lives in the stack's deploy region, not
+          // the state bucket region). Soft-fails on permission denied
+          // / bucket-not-found: leaves the sync reason in place and
+          // logs a warn (the user can decide to pass --force-stateful-
+          // recreation).
+          const validation = await probeAndRevalidateStateful({
+            validation: syncValidation,
+            s3Client: stackAwsClients.s3,
             forceStatefulRecreation: options.forceStatefulRecreation ?? false,
           });
           const errorBlock = renderRecreateTargetsErrors(validation);

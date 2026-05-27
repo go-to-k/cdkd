@@ -2464,6 +2464,7 @@
         "multi-stack-deps",
         "nested-stack",
         "orphan-resource",
+        "recreate-via-cc-api",
         "s3-cloudfront",
         "state-destroy"
       ],
@@ -2546,6 +2547,9 @@
         "orphan-resource": [
           "l2",
           "literal"
+        ],
+        "recreate-via-cc-api": [
+          "l1"
         ],
         "s3-cloudfront": [
           "l2"
