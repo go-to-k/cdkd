@@ -80,18 +80,36 @@ export interface CorsConfig {
 }
 
 /**
- * Build a `apiLogicalId → CorsConfig | undefined` map. Walks the
- * template once, picks every `AWS::ApiGatewayV2::Api`, and extracts its
- * `Properties.CorsConfiguration` if any. APIs without CorsConfiguration
- * (or whose CorsConfiguration is malformed) are NOT entered into the map.
+ * Build a `logicalId → CorsConfig | undefined` map. Walks the template
+ * once and picks two CORS-bearing resource types:
+ *
+ *   - `AWS::ApiGatewayV2::Api` → `Properties.CorsConfiguration`
+ *     (HTTP API v2; the original PR 8c surface)
+ *   - `AWS::Lambda::Url` → `Properties.Cors` (Function URL; issue #644)
+ *
+ * Both blocks are field-for-field identical in CFn schema (same
+ * `AllowOrigins` / `AllowMethods` / `AllowHeaders` / `ExposeHeaders` /
+ * `MaxAge` / `AllowCredentials`), so a single parser handles both. The
+ * map key is the resource's own logical ID — that ID is later looked up
+ * against `DiscoveredRoute.apiLogicalId` (set to the surface-bearing
+ * resource at route-discovery time) so the preflight interceptor finds
+ * the right config.
+ *
+ * Resources without a CORS block (or whose block is malformed) are NOT
+ * entered into the map.
  */
 export function buildCorsConfigByApiId(template: CloudFormationTemplate): Map<string, CorsConfig> {
   const out = new Map<string, CorsConfig>();
   const resources = template.Resources ?? {};
   for (const [logicalId, resource] of Object.entries(resources)) {
-    if (resource.Type !== 'AWS::ApiGatewayV2::Api') continue;
-    const props = resource.Properties ?? {};
-    const raw = props['CorsConfiguration'];
+    let raw: unknown;
+    if (resource.Type === 'AWS::ApiGatewayV2::Api') {
+      raw = (resource.Properties ?? {})['CorsConfiguration'];
+    } else if (resource.Type === 'AWS::Lambda::Url') {
+      raw = (resource.Properties ?? {})['Cors'];
+    } else {
+      continue;
+    }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const parsed = parseCorsConfiguration(raw as Record<string, unknown>);
     if (parsed) out.set(logicalId, parsed);

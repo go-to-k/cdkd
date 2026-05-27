@@ -73,6 +73,108 @@ describe('buildCorsConfigByApiId', () => {
     );
     expect(m.size).toBe(0);
   });
+
+  // Issue #644: Function URL Cors block extraction. The CFn schema for
+  // AWS::Lambda::Url.Cors is field-for-field identical to HTTP API v2's
+  // CorsConfiguration, so the same parser handles both.
+  describe('AWS::Lambda::Url.Cors (issue #644)', () => {
+    it('extracts Cors from AWS::Lambda::Url', () => {
+      const m = buildCorsConfigByApiId(
+        tpl({
+          Url: {
+            Type: 'AWS::Lambda::Url',
+            Properties: {
+              AuthType: 'AWS_IAM',
+              TargetFunctionArn: { 'Fn::GetAtt': ['Fn', 'Arn'] },
+              Cors: {
+                AllowOrigins: ['http://127.0.0.1:5050'],
+                AllowMethods: ['POST'],
+                AllowHeaders: ['Authorization', 'Content-Type'],
+                AllowCredentials: true,
+                MaxAge: 600,
+              },
+            },
+          },
+        })
+      );
+      const cors = m.get('Url');
+      expect(cors).toBeDefined();
+      expect(cors?.AllowOrigins).toEqual(['http://127.0.0.1:5050']);
+      expect(cors?.AllowMethods).toEqual(['POST']);
+      expect(cors?.AllowHeaders).toEqual(['Authorization', 'Content-Type']);
+      expect(cors?.AllowCredentials).toBe(true);
+      expect(cors?.MaxAge).toBe(600);
+    });
+
+    it('skips Function URLs without a Cors block', () => {
+      const m = buildCorsConfigByApiId(
+        tpl({
+          Url: {
+            Type: 'AWS::Lambda::Url',
+            Properties: { AuthType: 'NONE', TargetFunctionArn: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+          },
+        })
+      );
+      expect(m.size).toBe(0);
+    });
+
+    it('returns empty for a Function URL with a fully blank Cors block', () => {
+      const m = buildCorsConfigByApiId(
+        tpl({
+          Url: {
+            Type: 'AWS::Lambda::Url',
+            Properties: {
+              AuthType: 'NONE',
+              TargetFunctionArn: { 'Fn::GetAtt': ['Fn', 'Arn'] },
+              Cors: {},
+            },
+          },
+        })
+      );
+      expect(m.size).toBe(0);
+    });
+
+    it('merges Function URL entries with HTTP API v2 entries (different logical IDs)', () => {
+      const m = buildCorsConfigByApiId(
+        tpl({
+          HttpApi: {
+            Type: 'AWS::ApiGatewayV2::Api',
+            Properties: {
+              ProtocolType: 'HTTP',
+              CorsConfiguration: { AllowOrigins: ['*'] },
+            },
+          },
+          FnUrl: {
+            Type: 'AWS::Lambda::Url',
+            Properties: {
+              AuthType: 'NONE',
+              TargetFunctionArn: { 'Fn::GetAtt': ['Fn', 'Arn'] },
+              Cors: { AllowOrigins: ['http://localhost:3000'] },
+            },
+          },
+        })
+      );
+      expect(m.size).toBe(2);
+      expect(m.get('HttpApi')?.AllowOrigins).toEqual(['*']);
+      expect(m.get('FnUrl')?.AllowOrigins).toEqual(['http://localhost:3000']);
+    });
+
+    it('tolerates a malformed Cors block (non-object) without throwing', () => {
+      const m = buildCorsConfigByApiId(
+        tpl({
+          Url: {
+            Type: 'AWS::Lambda::Url',
+            Properties: {
+              AuthType: 'NONE',
+              TargetFunctionArn: { 'Fn::GetAtt': ['Fn', 'Arn'] },
+              Cors: 'not-an-object',
+            },
+          },
+        })
+      );
+      expect(m.size).toBe(0);
+    });
+  });
 });
 
 describe('matchPreflight', () => {
