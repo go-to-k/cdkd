@@ -68,7 +68,13 @@ describe('validateRecreateTargets (#615)', () => {
       forceStatefulRecreation: false,
     });
     expect(v.targets).toEqual([
-      { logicalId: 'MyLambda', resourceType: 'AWS::Lambda::Function', physicalId: 'foo', statefulReason: null },
+      {
+        logicalId: 'MyLambda',
+        resourceType: 'AWS::Lambda::Function',
+        physicalId: 'foo',
+        statefulReason: null,
+        direction: 'to-cc-api',
+      },
     ]);
     expect(v.unknownLogicalIds).toEqual([]);
     expect(v.missingFromState).toEqual([]);
@@ -391,6 +397,213 @@ describe('validateRecreateTargets (#615)', () => {
   });
 });
 
+describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk-provider)', () => {
+  it('rejects --recreate-via-sdk-provider on a resource currently provisionedBy: sdk (no-op)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'sdk' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.blockedAlreadySdk.map((t) => t.logicalId)).toEqual(['MyLambda']);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toContain('reverse migration is a no-op');
+    expect(error).toContain('already SDK-managed');
+  });
+
+  it('rejects --recreate-via-sdk-provider on a resource with no provisionedBy field (legacy state, treated as SDK)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function'), // no provisionedBy → legacy SDK
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.blockedAlreadySdk.map((t) => t.logicalId)).toEqual(['MyLambda']);
+  });
+
+  it('accepts --recreate-via-sdk-provider on a resource currently provisionedBy: cc-api', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.blockedAlreadySdk).toEqual([]);
+    expect(v.targets.map((t) => t.logicalId)).toEqual(['MyLambda']);
+    expect(v.targets[0]!.direction).toBe('to-sdk');
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
+  it('rejects --recreate-via-sdk-provider on a type with no SDK provider (Tier 2 CC-only)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyTier2: { Type: 'AWS::Tier2::Type', Properties: {} } },
+    };
+    const state = st('S', { MyTier2: res('AWS::Tier2::Type', { provisionedBy: 'cc-api' }) });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyTier2'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: (rt) => rt !== 'AWS::Tier2::Type',
+    });
+    expect(v.blockedNoSdkProvider.map((t) => t.logicalId)).toEqual(['MyTier2']);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toContain('no SDK provider for');
+    expect(error).toContain('AWS::Tier2::Type');
+  });
+
+  it('inverse ambiguous-intent: refuses --recreate-via-sdk-provider when template uses a silent-drop property NOT in --allow-unsupported-properties', () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyLambda: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { LoggingConfig: { LogFormat: 'JSON' } },
+        },
+      },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyLambda'],
+      // LoggingConfig NOT in --allow-unsupported-properties → next deploy
+      // would auto-route the recreated SDK resource back to CC.
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.ambiguousIntentSdk.map((a) => a.logicalId)).toEqual(['MyLambda']);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toContain('IMMEDIATELY be re-routed back to Cloud Control');
+    expect(error).toContain('LoggingConfig');
+  });
+
+  it('inverse ambiguous-intent: PASSES when the silent-drop property IS in --allow-unsupported-properties', () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyLambda: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { LoggingConfig: { LogFormat: 'JSON' } },
+        },
+      },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyLambda'],
+      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:LoggingConfig']),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.ambiguousIntentSdk).toEqual([]);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
+  it('rejects a logical id named in BOTH --recreate-via-cc-api AND --recreate-via-sdk-provider', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', { MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }) });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: ['MyLambda'],
+      recreateViaSdkProvider: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.conflictingDirections).toEqual(['MyLambda']);
+    // The conflicting id is NOT added to targets — caller must pick a side.
+    expect(v.targets).toEqual([]);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toContain('Conflicting recreate direction');
+    expect(error).toContain('pick ONE direction per resource');
+  });
+
+  it('multi-region refusal fires for the reverse direction too', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyGlobalTable: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} } },
+    };
+    const state = st('S', {
+      MyGlobalTable: res('AWS::DynamoDB::GlobalTable', { provisionedBy: 'cc-api' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyGlobalTable'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: true,
+      hasSdkProvider: () => true,
+    });
+    expect(v.blockedMultiRegionTargets.map((t) => t.logicalId)).toEqual(['MyGlobalTable']);
+  });
+
+  it('mixes both directions in a single call (cc-api + sdk-provider non-overlapping)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        FwdLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+        BackLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+      },
+    };
+    const state = st('S', {
+      FwdLambda: res('AWS::Lambda::Function', { provisionedBy: 'sdk' }),
+      BackLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: ['FwdLambda'],
+      recreateViaSdkProvider: ['BackLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.targets.map((t) => ({ id: t.logicalId, dir: t.direction }))).toEqual([
+      { id: 'FwdLambda', dir: 'to-cc-api' },
+      { id: 'BackLambda', dir: 'to-sdk' },
+    ]);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+});
+
 describe('probeStatefulRecreateTargetsAsync (#648)', () => {
   function s3Target(overrides: Partial<RecreateTarget> = {}): RecreateTarget {
     return {
@@ -398,6 +611,7 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
       resourceType: 'AWS::S3::Bucket',
       physicalId: 'bucket-pid',
       statefulReason: null,
+      direction: 'to-cc-api',
       ...overrides,
     };
   }
@@ -506,6 +720,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       resourceType: 'AWS::S3::Bucket',
       physicalId: 'bucket-pid',
       statefulReason: null,
+      direction: 'to-cc-api',
       ...overrides,
     };
   }
@@ -521,8 +736,12 @@ describe('probeAndRevalidateStateful (#648)', () => {
       unknownLogicalIds: [],
       missingFromState: [],
       ambiguousIntent: [],
+      ambiguousIntentSdk: [],
       blockedStatefulTargets: [],
       blockedMultiRegionTargets: [],
+      blockedAlreadySdk: [],
+      blockedNoSdkProvider: [],
+      conflictingDirections: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,
@@ -545,8 +764,12 @@ describe('probeAndRevalidateStateful (#648)', () => {
       unknownLogicalIds: [],
       missingFromState: [],
       ambiguousIntent: [],
+      ambiguousIntentSdk: [],
       blockedStatefulTargets: [],
       blockedMultiRegionTargets: [],
+      blockedAlreadySdk: [],
+      blockedNoSdkProvider: [],
+      conflictingDirections: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,

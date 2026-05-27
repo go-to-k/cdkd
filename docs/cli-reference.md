@@ -732,6 +732,74 @@ every backfill release.
   across replica regions is more involved; cdkd refuses with a clear
   error.
 
+## `--recreate-via-sdk-provider <LogicalId>` (deploy)
+
+`--recreate-via-sdk-provider <LogicalId>` (repeatable, one flag per
+resource) is the reverse direction of `--recreate-via-cc-api`
+(issue #651). It destroys + recreates the named resource via cdkd's
+SDK Provider so a resource currently sticky on `provisionedBy: 'cc-api'`
+flips back to `provisionedBy: 'sdk'`.
+
+When to use it:
+
+- A `provisionedBy: 'cc-api'`-sticky resource (landed on CC because
+  the user originally needed a top-level CFn property cdkd's SDK
+  Provider did not wire, e.g. Lambda `LoggingConfig`) is now eligible
+  for SDK Provider routing because a #609 backfill release has added
+  SDK coverage for that property. The flag forces a destroy + recreate
+  cycle so the new physical resource lands on SDK and benefits from
+  SDK Provider performance / diagnostic clarity / narrower IAM scope.
+- A `provisionedBy: 'cc-api'` resource where the user no longer needs
+  the CC route (e.g. removed the silent-drop property from the
+  template) and wants to consolidate routing back to SDK for the
+  reasons above.
+
+When NOT to use it:
+
+- The resource is already `provisionedBy: 'sdk'` (or pre-v7 legacy
+  state, treated as SDK by the v7 binary) — the reverse migration is
+  a no-op. cdkd refuses with a clear error.
+- The resource type has no SDK provider registered (Tier 2 CC-only) —
+  the destroy + recreate would route via CC again. cdkd refuses.
+- The template still uses a silent-drop property NOT in
+  `--allow-unsupported-properties` — the default-on CC auto-route
+  would re-route the SDK-recreated resource back to CC on the very
+  next routing decision. cdkd refuses (inverse ambiguous intent); fix
+  by either removing the property from the template or accepting the
+  silent drop via `--allow-unsupported-properties <Type>:<Prop>`.
+
+Stateful-resource guard, multi-region refusal, and the interactive
+`Continue? (y/N)` prompt are symmetric to `--recreate-via-cc-api`:
+named stateful targets (RDS / DynamoDB / S3-with-data / etc.) refuse
+unless `--force-stateful-recreation` is also passed, multi-region
+resources (`AWS::DynamoDB::GlobalTable`) refuse outright in v1, and
+the prompt fires per-stack with the same `**DATA LOSS**` prefix on
+stateful entries. The two flags are mutually exclusive on a per-resource
+basis — naming the same logical id in both is refused as ambiguous.
+
+```bash
+# Mid-life CC→SDK migration after a #609 backfill landed SDK coverage
+# for Lambda's LoggingConfig:
+cdkd deploy MyStack --recreate-via-sdk-provider MyLambda --yes
+
+# Multiple targets:
+cdkd deploy MyStack \
+  --recreate-via-sdk-provider MyLambda \
+  --recreate-via-sdk-provider OtherFn \
+  --yes
+```
+
+### What `--recreate-via-sdk-provider` is NOT
+
+- **NOT** a per-stack shortcut. Per-resource explicit naming only.
+- **NOT** the only path to SDK routing — fresh CREATEs route via the
+  routing-decision matrix in `ProviderRegistry.getProviderFor` and
+  land on SDK whenever an SDK Provider is registered for the type AND
+  the template has no silent-drop property. This flag is for the
+  existing-state CC → SDK migration only.
+- **NOT** compatible with `--recreate-via-cc-api` on the same logical
+  id — pick ONE direction per resource.
+
 ## `--role-arn`
 
 Assume a different IAM role for cdkd's AWS API calls. Equivalent env

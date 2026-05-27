@@ -58,6 +58,14 @@ export interface RecreateTarget {
   physicalId: string;
   /** Sync-derivable stateful reason; `null` if not stateful. */
   statefulReason: StatefulReason;
+  /**
+   * Migration direction. `'to-cc-api'` is the original #615 SDK → CC
+   * flow (named via `--recreate-via-cc-api`); `'to-sdk'` is the #651
+   * reverse CC → SDK flow (named via `--recreate-via-sdk-provider`).
+   * Drives the deploy-engine's `provisionedBy` override on the
+   * post-recreate state record.
+   */
+  direction: 'to-cc-api' | 'to-sdk';
 }
 
 /**
@@ -80,6 +88,15 @@ export interface RecreateTargetsValidation {
   missingFromState: string[];
   /** Overlaps between --recreate-via-cc-api and --allow-unsupported-properties. */
   ambiguousIntent: AmbiguousIntentOverlap[];
+  /**
+   * Inverse ambiguous-intent (#651): `--recreate-via-sdk-provider <id>`
+   * named on a resource whose template uses a silent-drop property
+   * that is NOT in `--allow-unsupported-properties`. The post-recreate
+   * routing would re-route the resource back to CC API on the very
+   * next deploy (or this deploy, in the no-template-change case),
+   * making the migration a round-trip. Refuse with an actionable fix.
+   */
+  ambiguousIntentSdk: AmbiguousIntentOverlap[];
   /** Stateful targets that lack --force-stateful-recreation cover. */
   blockedStatefulTargets: Array<RecreateTarget & { statefulReason: Exclude<StatefulReason, null> }>;
   /**
@@ -90,6 +107,26 @@ export interface RecreateTargetsValidation {
    * path (out of scope until a follow-up issue).
    */
   blockedMultiRegionTargets: Array<RecreateTarget>;
+  /**
+   * #651: `--recreate-via-sdk-provider <id>` named on a resource whose
+   * recorded `provisionedBy` is NOT `'cc-api'` (i.e. already SDK-managed,
+   * or legacy state with no field). Reverse migration is a no-op for
+   * these; refuse with a clear message rather than silently destroy +
+   * recreate.
+   */
+  blockedAlreadySdk: RecreateTarget[];
+  /**
+   * #651: `--recreate-via-sdk-provider <id>` named on a resource type
+   * for which cdkd has no SDK provider registered (Tier 2 CC-only).
+   * The destroy + recreate would just route via CC again, making the
+   * migration impossible.
+   */
+  blockedNoSdkProvider: RecreateTarget[];
+  /**
+   * #651: logical id named in BOTH `--recreate-via-cc-api` AND
+   * `--recreate-via-sdk-provider`. Ambiguous — pick one direction.
+   */
+  conflictingDirections: string[];
 }
 
 /**
@@ -110,22 +147,56 @@ export function validateRecreateTargets(input: {
   template: CloudFormationTemplate;
   state: StackState;
   recreateViaCcApi: ReadonlyArray<string>;
+  /** #651: reverse-direction list. Optional for backward compatibility. */
+  recreateViaSdkProvider?: ReadonlyArray<string>;
   allowUnsupportedProperties: ReadonlySet<string>;
   forceStatefulRecreation: boolean;
+  /**
+   * #651: callback to ask whether cdkd has an SDK provider registered
+   * for a given resource type. Used to refuse `--recreate-via-sdk-provider`
+   * on Tier 2 CC-only types. Optional — when omitted (legacy callers),
+   * the SDK-provider check is skipped and the blockedNoSdkProvider list
+   * stays empty.
+   */
+  hasSdkProvider?: (resourceType: string) => boolean;
 }): RecreateTargetsValidation {
+  const seenCcApi = new Set<string>(input.recreateViaCcApi);
+  const seenSdk = new Set<string>(input.recreateViaSdkProvider ?? []);
+  const conflictingDirections = [...seenCcApi].filter((id) => seenSdk.has(id));
+
   const seen = new Set<string>();
   const targets: RecreateTarget[] = [];
   const unknownLogicalIds: string[] = [];
   const missingFromState: string[] = [];
   const ambiguousIntent: AmbiguousIntentOverlap[] = [];
+  const ambiguousIntentSdk: AmbiguousIntentOverlap[] = [];
   const blockedStatefulTargets: Array<
     RecreateTarget & { statefulReason: Exclude<StatefulReason, null> }
   > = [];
   const blockedMultiRegionTargets: Array<RecreateTarget> = [];
+  const blockedAlreadySdk: RecreateTarget[] = [];
+  const blockedNoSdkProvider: RecreateTarget[] = [];
 
-  for (const logicalId of input.recreateViaCcApi) {
+  const conflictSet = new Set(conflictingDirections);
+
+  type Direction = 'to-cc-api' | 'to-sdk';
+  const namedTargets: Array<{ logicalId: string; direction: Direction }> = [
+    ...input.recreateViaCcApi.map((id) => ({ logicalId: id, direction: 'to-cc-api' as const })),
+    ...(input.recreateViaSdkProvider ?? []).map((id) => ({
+      logicalId: id,
+      direction: 'to-sdk' as const,
+    })),
+  ];
+
+  for (const { logicalId, direction } of namedTargets) {
     if (seen.has(logicalId)) continue;
     seen.add(logicalId);
+
+    // A logical id named in BOTH flags is recorded once in
+    // `conflictingDirections` and skipped here — the renderer will
+    // surface the conflict; we don't add it to targets[] in either
+    // direction.
+    if (conflictSet.has(logicalId)) continue;
 
     const templateResource = input.template.Resources?.[logicalId];
     if (!templateResource) {
@@ -144,32 +215,62 @@ export function validateRecreateTargets(input: {
       resourceType,
       physicalId: recordedResource.physicalId,
       statefulReason: isStatefulRecreateTargetSync(resourceType, recordedResource.properties),
+      direction,
     };
     targets.push(target);
 
     // Multi-region refusal (design §8 — out of scope for v1). Refused
     // regardless of `--force-stateful-recreation`; the user has no
-    // bypass flag for this category by design.
+    // bypass flag for this category by design. Applies to BOTH directions.
     if (MULTI_REGION_RECREATE_BLOCKED_TYPES.has(resourceType)) {
       blockedMultiRegionTargets.push(target);
     }
 
-    // Ambiguous-intent overlap with --allow-unsupported-properties.
-    // The overlap only fires when the template carries a silent-drop
-    // property AND that property is in the override allow-set —
-    // matching what the routing decision would actually do.
-    const actionableDrops = findActionableSilentDrops(
-      resourceType,
-      templateResource.Properties,
-      // For the overlap check we want to surface every drop that the
-      // user explicitly put in the allow-set, NOT filter them out. So
-      // we pass an empty allow-set to the helper and post-filter.
-      EMPTY_ALLOW_SET
-    );
-    for (const { property } of actionableDrops) {
-      const allowKey = `${resourceType}:${property}`;
-      if (input.allowUnsupportedProperties.has(allowKey)) {
-        ambiguousIntent.push({ logicalId, resourceType, property });
+    if (direction === 'to-cc-api') {
+      // Ambiguous-intent overlap with --allow-unsupported-properties.
+      // The overlap only fires when the template carries a silent-drop
+      // property AND that property is in the override allow-set —
+      // matching what the routing decision would actually do.
+      const actionableDrops = findActionableSilentDrops(
+        resourceType,
+        templateResource.Properties,
+        // For the overlap check we want to surface every drop that the
+        // user explicitly put in the allow-set, NOT filter them out. So
+        // we pass an empty allow-set to the helper and post-filter.
+        EMPTY_ALLOW_SET
+      );
+      for (const { property } of actionableDrops) {
+        const allowKey = `${resourceType}:${property}`;
+        if (input.allowUnsupportedProperties.has(allowKey)) {
+          ambiguousIntent.push({ logicalId, resourceType, property });
+        }
+      }
+    } else {
+      // #651 inverse ambiguous-intent: the template uses a silent-drop
+      // property that is NOT in `--allow-unsupported-properties`. The
+      // default-on auto-route would immediately re-route the resource
+      // back to CC after the recreate. Refuse the round-trip.
+      const actionableDrops = findActionableSilentDrops(
+        resourceType,
+        templateResource.Properties,
+        input.allowUnsupportedProperties
+      );
+      for (const { property } of actionableDrops) {
+        ambiguousIntentSdk.push({ logicalId, resourceType, property });
+      }
+
+      // #651 already-SDK refusal: the resource is NOT on `'cc-api'` so
+      // the reverse migration is a no-op. Refuse.
+      const currentlyOnCcApi = recordedResource.provisionedBy === 'cc-api';
+      if (!currentlyOnCcApi) {
+        blockedAlreadySdk.push(target);
+      }
+
+      // #651 no-SDK-provider refusal: cdkd has no SDK provider
+      // registered for this resource type. The destroy + recreate
+      // would just route via CC again — impossible migration.
+      if (input.hasSdkProvider && !input.hasSdkProvider(resourceType)) {
+        blockedNoSdkProvider.push(target);
       }
     }
 
@@ -185,8 +286,12 @@ export function validateRecreateTargets(input: {
     unknownLogicalIds,
     missingFromState,
     ambiguousIntent,
+    ambiguousIntentSdk,
     blockedStatefulTargets,
     blockedMultiRegionTargets,
+    blockedAlreadySdk,
+    blockedNoSdkProvider,
+    conflictingDirections,
   };
 }
 
@@ -200,9 +305,16 @@ export function validateRecreateTargets(input: {
 export function renderRecreateTargetsErrors(validation: RecreateTargetsValidation): string | null {
   const lines: string[] = [];
 
+  // Reviewer caught: shared error categories (unknownLogicalIds /
+  // missingFromState / blockedStatefulTargets) can be triggered by EITHER
+  // direction's list, so the prefix needs to be neutral — naming
+  // `--recreate-via-cc-api` when the user only passed
+  // `--recreate-via-sdk-provider` is misleading. Use the umbrella prefix.
+  const FLAG_UMBRELLA = '--recreate-via-cc-api / --recreate-via-sdk-provider';
+
   if (validation.unknownLogicalIds.length > 0) {
     lines.push(
-      `--recreate-via-cc-api named ${validation.unknownLogicalIds.length} ` +
+      `${FLAG_UMBRELLA} named ${validation.unknownLogicalIds.length} ` +
         `logical id(s) not present in the synth template:`
     );
     for (const id of validation.unknownLogicalIds) {
@@ -219,7 +331,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
   if (validation.missingFromState.length > 0) {
     if (lines.length > 0) lines.push('');
     lines.push(
-      `--recreate-via-cc-api named ${validation.missingFromState.length} ` +
+      `${FLAG_UMBRELLA} named ${validation.missingFromState.length} ` +
         `logical id(s) the template declares but cdkd state has no record of:`
     );
     for (const id of validation.missingFromState) {
@@ -227,9 +339,9 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     }
     lines.push(
       `  These are fresh CREATEs on the next deploy — recreate has nothing ` +
-        `to destroy first. Remove the --recreate-via-cc-api flag for these ` +
-        `resources; the new auto-route via Cloud Control (#614) handles ` +
-        `fresh deploys.`
+        `to destroy first. Remove the flag for these resources; the auto-route ` +
+        `via Cloud Control (#614) handles fresh deploys for silent-drop properties, ` +
+        `and SDK Provider is the default for everything else.`
     );
   }
 
@@ -256,7 +368,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
   if (validation.blockedStatefulTargets.length > 0) {
     if (lines.length > 0) lines.push('');
     lines.push(
-      `--recreate-via-cc-api would destroy + recreate ` +
+      `${FLAG_UMBRELLA} would destroy + recreate ` +
         `${validation.blockedStatefulTargets.length} stateful resource(s). ` +
         `Recreate loses ALL data — no automatic data migration. Re-run with ` +
         `--force-stateful-recreation to acknowledge the data-loss footgun.`
@@ -272,9 +384,9 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
   if (validation.blockedMultiRegionTargets.length > 0) {
     if (lines.length > 0) lines.push('');
     lines.push(
-      `--recreate-via-cc-api refuses to operate on ` +
+      `--recreate-via-cc-api / --recreate-via-sdk-provider refuses to operate on ` +
         `${validation.blockedMultiRegionTargets.length} multi-region resource(s) — ` +
-        `out of scope for v1 of this flag (the destroy + recreate cycle across ` +
+        `out of scope for v1 of these flags (the destroy + recreate cycle across ` +
         `replica regions is more involved than the single-region path):`
     );
     for (const blocked of validation.blockedMultiRegionTargets) {
@@ -283,6 +395,78 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  No --force-stateful-recreation bypass — this category is structurally ` +
         `unsupported in v1. File an issue if you need this path.`
+    );
+  }
+
+  // #651 reverse-direction errors.
+  if (validation.conflictingDirections.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `Conflicting recreate direction — ${validation.conflictingDirections.length} ` +
+        `logical id(s) named in BOTH --recreate-via-cc-api AND ` +
+        `--recreate-via-sdk-provider:`
+    );
+    for (const id of validation.conflictingDirections) {
+      lines.push(`  - ${id}`);
+    }
+    lines.push(
+      `  Fix: pick ONE direction per resource. The two flags drive opposite ` +
+        `provisionedBy targets ('cc-api' vs 'sdk').`
+    );
+  }
+
+  if (validation.blockedAlreadySdk.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `--recreate-via-sdk-provider named ${validation.blockedAlreadySdk.length} ` +
+        `resource(s) that are NOT currently sticky on Cloud Control API (the ` +
+        `reverse migration is a no-op):`
+    );
+    for (const blocked of validation.blockedAlreadySdk) {
+      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+    }
+    lines.push(
+      `  Fix: remove --recreate-via-sdk-provider <id> for these resources. ` +
+        `They are already SDK-managed (or pre-v7 legacy state, treated as SDK).`
+    );
+  }
+
+  if (validation.blockedNoSdkProvider.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `--recreate-via-sdk-provider named ${validation.blockedNoSdkProvider.length} ` +
+        `resource(s) of types cdkd has no SDK provider for (Tier 2 CC-only):`
+    );
+    for (const blocked of validation.blockedNoSdkProvider) {
+      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+    }
+    lines.push(
+      `  Fix: remove --recreate-via-sdk-provider <id> for these resources. ` +
+        `The destroy + recreate would route via Cloud Control anyway — there's ` +
+        `no SDK alternative available.`
+    );
+  }
+
+  if (validation.ambiguousIntentSdk.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `Inverse ambiguous intent — ${validation.ambiguousIntentSdk.length} ` +
+        `--recreate-via-sdk-provider target(s) would IMMEDIATELY be re-routed ` +
+        `back to Cloud Control after the recreate because their template uses ` +
+        `silent-drop properties NOT in --allow-unsupported-properties:`
+    );
+    for (const overlap of validation.ambiguousIntentSdk) {
+      lines.push(
+        `  - ${overlap.logicalId} (${overlap.resourceType}) — template uses ` +
+          `${overlap.property}; the default-on CC auto-route would re-route ` +
+          `the recreated resource back to CC immediately`
+      );
+    }
+    lines.push(
+      `  Fix: pass --allow-unsupported-properties <Type>:<Prop> for each ` +
+        `silent-drop property so the recreated resource stays on SDK with the ` +
+        `property explicitly dropped. Or drop --recreate-via-sdk-provider — ` +
+        `the resource already routes via CC and honors the property.`
     );
   }
 
@@ -344,7 +528,7 @@ export async function probeStatefulRecreateTargetsAsync(
       }
     } catch (e) {
       logger.warn(
-        `--recreate-via-cc-api: live S3 probe failed for ${target.logicalId} ` +
+        `--recreate-via-cc-api / --recreate-via-sdk-provider: live S3 probe failed for ${target.logicalId} ` +
           `(bucket ${target.physicalId}); leaving stateful guard at the sync ` +
           `result. If the bucket might be non-empty, re-run with ` +
           `--force-stateful-recreation. Underlying error: ` +

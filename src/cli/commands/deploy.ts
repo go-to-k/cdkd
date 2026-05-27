@@ -82,6 +82,7 @@ async function deployCommand(
     allowUnsupportedTypes?: string[];
     allowUnsupportedProperties?: string[];
     recreateViaCcApi?: string[];
+    recreateViaSdkProvider?: string[];
     forceStatefulRecreation?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
@@ -453,7 +454,8 @@ async function deployCommand(
         // the user fixes them all in one cycle. Skipped when the flag
         // is absent (no list).
         let recreateViaCcApiTargets: ReadonlySet<string> | undefined;
-        if (options.recreateViaCcApi?.length) {
+        let recreateViaSdkProviderTargets: ReadonlySet<string> | undefined;
+        if (options.recreateViaCcApi?.length || options.recreateViaSdkProvider?.length) {
           const stateForRecreateCheck = await stackStateBackend.getState(
             stackInfo.stackName,
             stackRegion
@@ -468,9 +470,18 @@ async function deployCommand(
               outputs: {},
               lastModified: Date.now(),
             },
-            recreateViaCcApi: options.recreateViaCcApi,
+            recreateViaCcApi: options.recreateViaCcApi ?? [],
+            recreateViaSdkProvider: options.recreateViaSdkProvider ?? [],
             allowUnsupportedProperties: new Set(options.allowUnsupportedProperties ?? []),
             forceStatefulRecreation: options.forceStatefulRecreation ?? false,
+            // Reviewer caught: `hasProvider(rt)` returns true for ANY
+            // routable type (SDK / Cloud Control / Custom Resource / escape-
+            // hatch), so a Tier 2 CC-only type would slip past
+            // `blockedNoSdkProvider` and the routing decision would silently
+            // round-trip back to CC after the recreate. Ask the narrower
+            // `getProviderType(rt) === 'sdk'` instead — true ONLY when a
+            // dedicated SDK provider is registered for the type.
+            hasSdkProvider: (rt) => stackProviderRegistry.getProviderType(rt) === 'sdk',
           });
           // Issue [#648] — promote `AWS::S3::Bucket` targets whose sync
           // reason is `null` to `'has-objects'` when the live bucket
@@ -487,10 +498,15 @@ async function deployCommand(
           });
           const errorBlock = renderRecreateTargetsErrors(validation);
           if (errorBlock) {
-            throw new CdkdError(errorBlock, 'RECREATE_VIA_CC_API_INVALID');
+            throw new CdkdError(errorBlock, 'RECREATE_TARGETS_INVALID');
           }
-          recreateViaCcApiTargets = new Set(validation.targets.map((t) => t.logicalId));
-          if (recreateViaCcApiTargets.size > 0) {
+          recreateViaCcApiTargets = new Set(
+            validation.targets.filter((t) => t.direction === 'to-cc-api').map((t) => t.logicalId)
+          );
+          recreateViaSdkProviderTargets = new Set(
+            validation.targets.filter((t) => t.direction === 'to-sdk').map((t) => t.logicalId)
+          );
+          if (recreateViaCcApiTargets.size > 0 || recreateViaSdkProviderTargets.size > 0) {
             // Issue [#650] — enumerate downstream `Fn::ImportValue`
             // consumers via the state bucket walk so the warn block
             // names them by stack. Soft-fail (returns []) on read
@@ -526,6 +542,8 @@ async function deployCommand(
           noRollback: !options.rollback,
           ...(recreateViaCcApiTargets &&
             recreateViaCcApiTargets.size > 0 && { recreateViaCcApiTargets }),
+          ...(recreateViaSdkProviderTargets &&
+            recreateViaSdkProviderTargets.size > 0 && { recreateViaSdkProviderTargets }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,

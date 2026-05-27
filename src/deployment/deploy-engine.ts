@@ -169,6 +169,25 @@ export interface DeployEngineOptions {
    * When `undefined` or empty, the engine behaves exactly as before #615.
    */
   recreateViaCcApiTargets?: ReadonlySet<string>;
+
+  /**
+   * #651 — set of resource logical ids the user named with
+   * `--recreate-via-sdk-provider`. Reverse direction of {@link recreateViaCcApiTargets}:
+   * for each id, the engine destroys + recreates the resource via cdkd's
+   * SDK Provider, stamping `provisionedBy: 'sdk'` on the new state
+   * record. Used to migrate CC-sticky resources back to SDK after a
+   * #609 backfill release adds SDK coverage for a previously-silent-drop
+   * property.
+   *
+   * Same destroy-then-create ordering as `recreateViaCcApiTargets` —
+   * the old physical id usually reuses its user-supplied name so a
+   * create-first would collide.
+   *
+   * The two sets are mutually exclusive (the pre-flight validator
+   * rejects any logical id named in both). When `undefined` or empty,
+   * the engine behaves exactly as before #651.
+   */
+  recreateViaSdkProviderTargets?: ReadonlySet<string>;
 }
 
 /**
@@ -1812,19 +1831,31 @@ export class DeployEngine {
         // + recreate it through Cloud Control regardless of whether the
         // template's diff would otherwise drive a replacement.
         const recreateViaCcApi = this.options.recreateViaCcApiTargets?.has(logicalId) ?? false;
-        const needsReplacement = propertyDrivenReplacement || recreateViaCcApi;
+        // #651 reverse direction. Mutually exclusive with `recreateViaCcApi`
+        // — the pre-flight validator rejects any logical id named in both
+        // lists, so at most one of these two booleans is true at a time.
+        const recreateViaSdkProvider =
+          this.options.recreateViaSdkProviderTargets?.has(logicalId) ?? false;
+        const recreateFlagged = recreateViaCcApi || recreateViaSdkProvider;
+        const needsReplacement = propertyDrivenReplacement || recreateFlagged;
 
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
         const dependencies = this.extractAllDependencies(template, logicalId);
 
         if (needsReplacement) {
           // Resource replacement: DELETE old → CREATE new
-          const replacementReason = recreateViaCcApi
-            ? '--recreate-via-cc-api flag (mid-life SDK→CC migration)'
-            : `immutable properties changed: ${change.propertyChanges
-                ?.filter((pc) => pc.requiresReplacement)
-                .map((pc) => pc.path)
-                .join(', ')}`;
+          let replacementReason: string;
+          if (recreateViaCcApi) {
+            replacementReason = '--recreate-via-cc-api flag (mid-life SDK→CC migration)';
+          } else if (recreateViaSdkProvider) {
+            // #651 reverse direction.
+            replacementReason = '--recreate-via-sdk-provider flag (mid-life CC→SDK migration)';
+          } else {
+            replacementReason = `immutable properties changed: ${change.propertyChanges
+              ?.filter((pc) => pc.requiresReplacement)
+              .map((pc) => pc.path)
+              .join(', ')}`;
+          }
           this.logger.info(`Replacing ${logicalId} (${resourceType}) - ${replacementReason}`);
 
           // The new (replacement) resource gets a fresh routing decision —
@@ -1839,10 +1870,20 @@ export class DeployEngine {
           // the template itself has no silent-drop property. The new
           // physical id then stamps `provisionedBy: 'cc-api'` on state
           // and all subsequent ops stick to CC.
+          //
+          // #651: `--recreate-via-sdk-provider` is the reverse — force
+          // `provisionedBy: 'sdk'` so the routing decision returns the
+          // SDK provider even though the current state record sticks at
+          // 'cc-api'. The new physical id stamps `provisionedBy: 'sdk'`.
+          const recreateDirectionHint: 'sdk' | 'cc-api' | undefined = recreateViaCcApi
+            ? 'cc-api'
+            : recreateViaSdkProvider
+              ? 'sdk'
+              : undefined;
           const replaceDecision = this.providerRegistry.getProviderFor({
             resourceType,
             properties: resolvedProps,
-            ...(recreateViaCcApi && { provisionedBy: 'cc-api' as const }),
+            ...(recreateDirectionHint && { provisionedBy: recreateDirectionHint }),
           });
           const replaceProvider = replaceDecision.provider;
           const replaceProps =
@@ -1870,17 +1911,20 @@ export class DeployEngine {
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
           let createResult: any;
-          if (recreateViaCcApi) {
+          if (recreateFlagged) {
             // Destroy-then-create path. Same `UpdateReplacePolicy:
             // Retain` semantics — retained old resources leak (named the
             // same as the new); document via warning. CFn would refuse a
             // Retain + replace combo at template-author time; cdkd warns
             // and proceeds since the user explicitly opted in.
+            const recreateFlagName = recreateViaCcApi
+              ? '--recreate-via-cc-api'
+              : '--recreate-via-sdk-provider';
             if (updateReplacePolicy === 'Retain') {
               this.logger.warn(
-                `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — recreate-via-cc-api will ` +
+                `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} will ` +
                   `leak the old physical resource (${currentResource.physicalId}). The new ` +
-                  `CC-managed resource shares the same name where applicable; if the type ` +
+                  `resource shares the same name where applicable; if the type ` +
                   `has user-supplied names (e.g. functionName, bucketName), the create will ` +
                   `deterministically collide with the retained orphan.`
               );
@@ -1905,7 +1949,7 @@ export class DeployEngine {
                 // produce a confusing AlreadyExists later.
                 throw new Error(
                   `Failed to destroy old resource ${logicalId} (${currentResource.physicalId}) ` +
-                    `during --recreate-via-cc-api: ` +
+                    `during ${recreateFlagName}: ` +
                     `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
                 );
               }

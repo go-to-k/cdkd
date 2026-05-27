@@ -1847,6 +1847,7 @@
         "multi-stack-deps",
         "nested-stack",
         "recreate-via-cc-api",
+        "recreate-via-sdk-provider",
         "vpc-lambda-cr-race"
       ],
       "signals": {
@@ -1925,6 +1926,9 @@
           "l2"
         ],
         "recreate-via-cc-api": [
+          "l2"
+        ],
+        "recreate-via-sdk-provider": [
           "l2"
         ],
         "vpc-lambda-cr-race": [
@@ -2082,6 +2086,7 @@
         "multi-stack-deps",
         "orphan-resource",
         "recreate-via-cc-api",
+        "recreate-via-sdk-provider",
         "scheduled-task",
         "serverless-api",
         "sns-sqs-event",
@@ -2230,6 +2235,9 @@
           "literal"
         ],
         "recreate-via-cc-api": [
+          "l1"
+        ],
+        "recreate-via-sdk-provider": [
           "l1"
         ],
         "scheduled-task": [

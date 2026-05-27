@@ -726,6 +726,11 @@
       "scenarios": []
     },
     {
+      "name": "recreate-via-sdk-provider",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "remove-protection",
       "annotated": true,
       "scenarios": [
@@ -1140,6 +1145,7 @@
     "nested-stack",
     "nested-stack-deep",
     "recreate-via-cc-api",
+    "recreate-via-sdk-provider",
     "schema-v6-to-v7-migration"
   ]
 }
