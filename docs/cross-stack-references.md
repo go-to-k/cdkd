@@ -200,10 +200,25 @@ resolveImportValue(exportName):
 `recordedImports` bag — the DeployEngine reads this after resource
 provisioning and persists it to `state.imports`.
 
-### Why `Fn::GetStackOutput` does NOT recordImport
+### `Fn::GetStackOutput` does NOT recordImport — it records to a separate bag
 
 Weak-reference by design. The producer stays deletable independently;
-recording the consumer's reference would defeat that.
+recording the consumer's reference into `recordedImports` would defeat
+that (and `state.imports` IS the destroy-time refusal source). However,
+schema v8 (issue
+[#668](https://github.com/go-to-k/cdkd/issues/668)) adds a SEPARATE
+`recordedOutputReads` bag that the resolver pushes into on every
+successful **same-account** `Fn::GetStackOutput` resolution. The
+DeployEngine persists this bag to `state.outputReads` at save time.
+
+`state.outputReads` is **informational only** — used by
+`findDownstreamConsumers` to name `Fn::GetStackOutput` consumers in
+the `--recreate-via-cc-api` / `--recreate-via-sdk-provider` warn
+block. There is NO destroy-time refusal for these references; the
+producer remains deletable independently, matching the v1 weak-ref
+contract. Cross-account `RoleArn`-based reads do NOT push entries
+into `state.outputReads` in v8 (deferred to a future schema bump
+alongside a `sourceAccountId` field).
 
 ### Cross-account `Fn::GetStackOutput` (`RoleArn` argument)
 

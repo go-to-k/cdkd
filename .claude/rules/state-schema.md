@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema (StackState v1-v7 interface, observedProperties / deletionPolicy / parentStack / provisionedBy semantics)
+description: cdkd S3 state schema (StackState v1-v8 interface, observedProperties / deletionPolicy / parentStack / provisionedBy / outputReads semantics)
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -9,12 +9,13 @@ paths:
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614)
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614), 8 = +outputReads[] (Fn::GetStackOutput downstream-consumer enumeration, #668)
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
   outputs: Record<string, string>;
   imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
+  outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational; NO destroy-time refusal — weak reference by design)
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string;    // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -25,6 +26,12 @@ interface StateImportEntry {
   sourceStack: string;   // The producer stack whose Output was imported
   sourceRegion: string;  // The producer's region (load-bearing for state-key lookup)
   exportName: string;    // The CloudFormation Output's Export.Name
+}
+
+interface StateOutputReadEntry {
+  sourceStack: string;   // The producer stack whose Output was read via Fn::GetStackOutput
+  sourceRegion: string;  // The producer's region (load-bearing for state-key lookup)
+  outputName: string;    // The producer's template Outputs.<Name> (NOT Export.Name — Fn::GetStackOutput does not require an Export)
 }
 
 interface ResourceState {
@@ -119,6 +126,38 @@ error; v6 readers tolerate missing fields and degrade to the
 top-level-stack default. The v6 prep PR added the type bump alone —
 the `NestedStackProvider` that populates these fields lands in the
 follow-up.
+
+**`outputReads`** (schema v8+, issue
+[#668](https://github.com/go-to-k/cdkd/issues/668)) is the sibling of
+`imports` for the weak-reference `Fn::GetStackOutput` intrinsic. The
+deploy-side intrinsic resolver pushes one `StateOutputReadEntry` per
+successful **same-account** resolution into the consumer's bag, and
+the deploy engine persists the bag to `state.outputReads` at save
+time (omitted from JSON when empty so the on-the-wire shape stays
+identical to v7 for no-`Fn::GetStackOutput` stacks). Consumed by
+`findDownstreamConsumers` (in `src/cli/commands/recreate-downstream-consumers.ts`)
+to name `Fn::GetStackOutput` consumers in the `--recreate-via-cc-api` /
+`--recreate-via-sdk-provider` warn block — alongside the existing v4
+`imports[]` walk for `Fn::ImportValue` consumers.
+
+Unlike `imports`, `outputReads` is **informational only**: there is
+NO destroy-time refusal for `Fn::GetStackOutput` references. The
+producer stays deletable independently of consumers (the intrinsic
+is a weak reference by design — see `IntrinsicFunctionResolver`'s
+`resolveGetStackOutput` JSDoc).
+
+Cross-account `RoleArn`-based `Fn::GetStackOutput` reads do NOT
+push entries here in v8 — the resolver intentionally skips recording
+in the cross-account branch because a `sourceAccountId` field would
+be required for unambiguous match keys, deferred to a future bump.
+Same-account cross-region reads ARE recorded (the consumer's region
+is independent of the producer's, and `state.outputReads[].sourceRegion`
+captures the producer's region).
+
+Pre-v8 state with `outputReads === undefined` is treated by v8 readers
+as "no GetStackOutput consumers known" — `findDownstreamConsumers`
+degrades to imports-only enumeration, matching the v4-shipped
+behavior. The next deploy under the v8 binary repopulates the field.
 
 **`observedProperties`** is populated on each successful create / update by
 calling `provider.readCurrentState` fire-and-forget after the resource flips

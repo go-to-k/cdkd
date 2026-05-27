@@ -44,16 +44,17 @@ vp run typecheck
 
 ## State Schema
 
-State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v7). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue [#459](https://github.com/go-to-k/cdkd/issues/459), shipped in PR #548) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue [#464](https://github.com/go-to-k/cdkd/issues/464), this PR) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
+State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v8). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue [#459](https://github.com/go-to-k/cdkd/issues/459), shipped in PR #548) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue [#464](https://github.com/go-to-k/cdkd/issues/464), this PR) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   stackName: string;
   region?: string;
   resources: Record<string, ResourceState>;
   outputs: Record<string, string>;
   imports?: StateImportEntry[];
+  outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational, NOT destroy-blocking)
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level stacks)
   parentLogicalId?: string;    // v6+: the AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -73,7 +74,7 @@ interface ResourceState {
 }
 ```
 
-Full per-field semantics (v1-v7 migration story, `observedProperties` / `deletionPolicy` / `parentStack` / `provisionedBy` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
+Full per-field semantics (v1-v8 migration story, `observedProperties` / `deletionPolicy` / `parentStack` / `provisionedBy` / `outputReads` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
 
 ## Provider Pattern
 

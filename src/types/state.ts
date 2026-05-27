@@ -56,15 +56,33 @@
  *       absent are treated as `'sdk'` (legacy default) and the next
  *       write persists it explicitly. Layout superset of v6; only the
  *       resource-level shape grew.
+ * - 8 — adds `StackState.outputReads` (the set of `Fn::GetStackOutput`
+ *       references this stack resolved during its last deploy), the
+ *       sibling of v4's `imports` for the weak-reference `Fn::GetStackOutput`
+ *       intrinsic (issue [#668](https://github.com/go-to-k/cdkd/issues/668)).
+ *       Consumed by `findDownstreamConsumers` in the
+ *       `--recreate-via-cc-api` / `--recreate-via-sdk-provider` warn block
+ *       so users can see exactly which downstream stacks read the
+ *       recreated resource's outputs via `Fn::GetStackOutput` (in
+ *       addition to the v4 `Fn::ImportValue` walk). Unlike `imports`,
+ *       this field is purely informational — no destroy-time refusal
+ *       (`Fn::GetStackOutput` is a weak reference by design; the
+ *       producer stays deletable independently of consumers). Layout
+ *       superset of v7; only the stack-level shape grew. v7 readers
+ *       see v8 state with `outputReads` undefined → degrade gracefully
+ *       (the enumeration just reports no `GetStackOutput` consumers).
+ *       v8 writers always emit the field (omitted from JSON when the
+ *       set is empty, matching how `imports` is persisted). v7 binary
+ *       on v8 state → existing "Upgrade cdkd" hard-fail.
  *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 8;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -72,7 +90,9 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7;
  * forward-migration, and an unknown / future version triggers an explicit
  * "upgrade cdkd" error in the parser.
  */
-export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5, 6, 7];
+export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
+  1, 2, 3, 4, 5, 6, 7, 8,
+];
 
 /**
  * One `Fn::ImportValue` reference recorded during a consumer stack's
@@ -81,8 +101,9 @@ export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1,
  * (strong reference, matches CloudFormation behavior).
  *
  * Only `Fn::ImportValue` populates this — `Fn::GetStackOutput` is a weak
- * reference by design (cdkd-specific) and intentionally does NOT record
- * an entry here so the producer stays deletable independently of consumers.
+ * reference by design (cdkd-specific) and is tracked separately in
+ * `StackState.outputReads` (schema v8+) for downstream-consumer
+ * enumeration only, NOT for destroy-time refusal.
  */
 export interface StateImportEntry {
   /** The producer stack whose Output `Export.Name` was imported. */
@@ -95,6 +116,38 @@ export interface StateImportEntry {
   sourceRegion: string;
   /** The CloudFormation Output `Export.Name` that was imported. */
   exportName: string;
+}
+
+/**
+ * One `Fn::GetStackOutput` reference recorded during a consumer stack's
+ * deploy (schema v8+, issue
+ * [#668](https://github.com/go-to-k/cdkd/issues/668)). Persisted in
+ * `StackState.outputReads` so `findDownstreamConsumers` (called from the
+ * `--recreate-via-cc-api` / `--recreate-via-sdk-provider` warn block) can
+ * name the downstream stacks that will see a stale value after the
+ * producer's recreate.
+ *
+ * Unlike `StateImportEntry`, this does NOT influence destroy semantics —
+ * `Fn::GetStackOutput` is a weak reference by design (cdkd-specific),
+ * and the producer stays deletable independently of consumers. The
+ * enumeration is informational only.
+ *
+ * Cross-account RoleArn-based reads are NOT recorded in v8 (deferred to
+ * a future schema bump alongside a `sourceAccountId` field — `RoleArn`
+ * lookups already pay an STS hop at resolve time, so the cross-account
+ * consumer set is rarely large in practice).
+ */
+export interface StateOutputReadEntry {
+  /** The producer stack whose Output `Name` was read. */
+  sourceStack: string;
+  /**
+   * The producer's region. Required so the enumeration's
+   * `(producerStack, producerRegion)` match key is stable across
+   * cross-region `Fn::GetStackOutput` references.
+   */
+  sourceRegion: string;
+  /** The CloudFormation Output `Name` (template `Outputs.<Name>`) that was read. */
+  outputName: string;
 }
 
 /**
@@ -131,6 +184,26 @@ export interface StackState {
    * next deploy of an upgraded stack repopulates the field.
    */
   imports?: StateImportEntry[];
+
+  /**
+   * `Fn::GetStackOutput` references this stack resolved during its last
+   * successful deploy (schema v8+, issue
+   * [#668](https://github.com/go-to-k/cdkd/issues/668)). Sibling of
+   * `imports` for the weak-reference `Fn::GetStackOutput` intrinsic —
+   * consumed by `findDownstreamConsumers` so the recreate warn block
+   * can name downstream stacks whose cached output values will go
+   * stale after a producer's recreate.
+   *
+   * Absent (or undefined) on state written by a pre-v8 binary; the
+   * enumeration degrades to imports-only in that case (matches the v4
+   * shipped behavior). The next deploy of an upgraded stack
+   * repopulates the field. Same persistence policy as `imports`:
+   * emitted only when the resolved set is non-empty so an empty array
+   * doesn't bloat every state file. Cross-account (`RoleArn`-based)
+   * reads are deferred to a future schema bump alongside a
+   * `sourceAccountId` field.
+   */
+  outputReads?: StateOutputReadEntry[];
 
   /**
    * Parent stack's physical name when THIS state record describes a
