@@ -10,17 +10,24 @@
  * variable is **dropped** rather than silently substituted with garbage
  * (a bad env var that "exists" is harder to debug than one that's missing).
  *
- * `--env-vars <file>` overrides match SAM's shape (D5):
+ * `--env-vars <file>` overrides match SAM's shape (D5), with the
+ * additional CDK ergonomics that a function-specific entry can be keyed
+ * by either the CloudFormation logical ID or the CDK display path
+ * (`Metadata['aws:cdk:path']`):
  *
  *   {
  *     "Parameters":           { "GLOBAL_KEY": "value" },
- *     "MyHandlerLogicalId":   { "FUNCTION_KEY": "value" }
+ *     "MyHandlerLogicalId":   { "FUNCTION_KEY": "value" },
+ *     "MyStack/MyHandler":    { "FUNCTION_KEY": "value" }
  *   }
  *
  * Override merge order (lowest to highest priority):
  *   1. Template literal env vars
  *   2. `Parameters` (global, applied to every invoke)
- *   3. Function-specific entry keyed by logical ID
+ *   3. Function-specific entries (logical-ID or display-path keyed)
+ *      applied in JSON insertion order, so a later key wins on conflict.
+ *      This matches SAM's apply-in-order semantics; pick one form per
+ *      function to avoid surprises.
  *
  * The override file may also clear a variable by setting it to `null`
  * (matches SAM behavior).
@@ -36,8 +43,11 @@ export interface EnvResolutionResult {
 export interface EnvOverrideFile {
   /** Variables applied to every function invocation. */
   Parameters?: Record<string, string | null>;
-  /** Function-specific overrides keyed by logical ID. */
-  [logicalId: string]: Record<string, string | null> | undefined;
+  /**
+   * Function-specific overrides keyed by either the CloudFormation
+   * logical ID or the CDK display path (`Metadata['aws:cdk:path']`).
+   */
+  [logicalIdOrDisplayPath: string]: Record<string, string | null> | undefined;
 }
 
 /**
@@ -46,6 +56,15 @@ export interface EnvOverrideFile {
  * @param logicalId         The function's CloudFormation logical ID. Used
  *                          to look up function-specific overrides in the
  *                          `--env-vars` file.
+ * @param displayPath       The function's CDK display path
+ *                          (`Metadata['aws:cdk:path']`, e.g.
+ *                          `"MyStack/MyHandler"`), or `undefined` when
+ *                          the resource has no path metadata. Display-path
+ *                          keys in the override file are matched against
+ *                          this value in addition to `logicalId`. Pass
+ *                          `undefined` rather than the logical ID when no
+ *                          path is known, so the override lookup does not
+ *                          accidentally double-match the same key.
  * @param templateEnv       The function's `Properties.Environment.Variables`
  *                          object from the synthesized template, or
  *                          `undefined` when the function has no env vars.
@@ -54,6 +73,7 @@ export interface EnvOverrideFile {
  */
 export function resolveEnvVars(
   logicalId: string,
+  displayPath: string | undefined,
   templateEnv: Record<string, unknown> | undefined,
   overrides?: EnvOverrideFile
 ): EnvResolutionResult {
@@ -72,9 +92,28 @@ export function resolveEnvVars(
 
   if (overrides) {
     applyOverrideMap(resolved, overrides.Parameters);
-    const fnOverrides = overrides[logicalId];
-    if (fnOverrides && typeof fnOverrides === 'object') {
-      applyOverrideMap(resolved, fnOverrides);
+    // Iterate non-Parameters keys in JSON insertion order so a
+    // logical-ID + display-path collision applies later-wins (SAM-compat).
+    //
+    // Display-path matching mirrors the prefix rule the rest of cdkd
+    // uses for `cdkd local invoke <target>` (`src/cli/cdk-path.ts`
+    // `resolveCdkPathToLogicalIds`): an override key matches when the
+    // resource's `aws:cdk:path` is exactly that key OR starts with
+    // `key + "/"`. That lets a user write `MyStack/MyFn` (the L2 form
+    // they read from CDK app code, same form `cdkd local invoke`
+    // accepts) and have it match the synthesized L1 resource at
+    // `MyStack/MyFn/Resource` — without forcing them to look up the
+    // `/Resource` suffix.
+    for (const [key, val] of Object.entries(overrides)) {
+      if (key === 'Parameters') continue;
+      if (!val || typeof val !== 'object') continue;
+      if (key === logicalId) {
+        applyOverrideMap(resolved, val);
+        continue;
+      }
+      if (displayPath && (displayPath === key || displayPath.startsWith(`${key}/`))) {
+        applyOverrideMap(resolved, val);
+      }
     }
   }
 

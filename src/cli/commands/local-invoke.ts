@@ -17,6 +17,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
+import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider } from './local-state-source.js';
 import {
   resolveLambdaTarget,
@@ -456,16 +457,21 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     // is off) are warned about and dropped; the user can override them via
     // --env-vars (SAM-shape).
     const overrides = readEnvOverridesFile(options.envVars);
-    const envResult = resolveEnvVars(lambda.logicalId, templateEnv, overrides);
+    const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
+    const envResult = resolveEnvVars(lambda.logicalId, lambdaCdkPath, templateEnv, overrides);
     for (const key of envResult.unresolved) {
       // The state-resolver already warned for keys it tried + failed on, so
       // suppress the per-key duplicate warn here. The `--env-vars` /
       // wait-for-state hints still fire for the no-flag path, which is the
       // original PR 1 UX.
       if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
+      // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
+      // matches the README guidance and `cdkd local invoke` target shape;
+      // the resolver's prefix rule accepts either form.
+      const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;
       logger.warn(
         `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-          `Override it with --env-vars (e.g. {"${lambda.logicalId}":{"${key}":"<literal>"}}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
+          `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
       );
     }
 

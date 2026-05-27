@@ -266,6 +266,11 @@ bind-mounted at `/opt`.
 cdkd local start-api                                 # one HTTP server per discovered API
 cdkd local start-api MyStack/MyHttpApi --watch       # filter + hot reload
 cdkd local start-api --from-state                    # OR --from-cfn-stack
+
+# Typical shape — the bare `--from-cfn-stack` flag auto-resolves to the
+# routed stack's name (here `MyStack`). Pass an explicit value only when
+# the deployed CFn stack name differs from the CDK stack name.
+cdkd local start-api MyStack/MyHttpApi --from-cfn-stack
 ```
 
 REST v1 + HTTP API v2 + Function URL with all integration kinds
