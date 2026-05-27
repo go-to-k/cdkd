@@ -85,7 +85,11 @@ import {
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
 import { matchStacks } from '../stack-matcher.js';
-import { buildCorsConfigByApiId, type CorsConfig } from '../../local/cors-handler.js';
+import {
+  buildCorsConfigByApiId,
+  buildCorsConfigFromCloudFrontChain,
+  type CorsConfig,
+} from '../../local/cors-handler.js';
 import {
   attachStageContext,
   buildStageMap,
@@ -445,12 +449,24 @@ async function localStartApiCommand(
       routesWithAuth = filtered;
     }
 
-    // PR 8c: per-API CORS config. HTTP API v2 only (REST v1 OPTIONS
-    // Mock integrations are explicitly out of scope).
+    // PR 8c: per-API CORS config. HTTP API v2's `CorsConfiguration` +
+    // Function URL's own `Cors` (issue #644) + CORS borrowed from
+    // CloudFront ResponseHeadersPolicy when a CloudFront Distribution
+    // fronts the Function URL (issue #646 — production-correct CDK
+    // pattern where CORS is on the edge, not the origin). REST v1
+    // OPTIONS Mock integrations stay out of scope.
+    //
+    // Merge order: direct map last → Function URL's own `Cors` block
+    // wins over a CloudFront-borrowed config when both exist (matches
+    // AWS semantics: Function URL's own headers apply at the Lambda
+    // boundary; we only have one slot locally, so closer-to-Lambda
+    // wins). The two rarely coexist in practice.
     const corsConfigByApiId = new Map<string, CorsConfig>();
     for (const stack of targetStacks) {
-      const m = buildCorsConfigByApiId(stack.template);
-      for (const [k, v] of m) corsConfigByApiId.set(k, v);
+      const fromCloudFront = buildCorsConfigFromCloudFrontChain(stack.template);
+      for (const [k, v] of fromCloudFront) corsConfigByApiId.set(k, v);
+      const direct = buildCorsConfigByApiId(stack.template);
+      for (const [k, v] of direct) corsConfigByApiId.set(k, v);
     }
 
     // `--from-state` / `--from-cfn-stack` (issue #606): load deployed
