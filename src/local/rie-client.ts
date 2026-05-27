@@ -397,23 +397,75 @@ export async function invokeRieStreaming(
     }
   }
 
+  // Whether we synthesized a default prelude because no separator was found
+  // in the response. See the issue #664 fix block below for the rationale.
+  let preludeSynthesized = false;
+
   if (separatorIdx < 0) {
-    clearTimeout(timer);
-    throw new Error(
-      `RIE streaming response ended before the prelude/body separator (got ${preludeBytes.length} bytes). ` +
-        `The handler likely threw before streaming the prelude — check container logs.`
-    );
+    // No prelude/body separator found in the entire response. Two real-world
+    // scenarios produce this — empirically verified 2026-05-27 for issue #664
+    // against `public.ecr.aws/lambda/nodejs:22`:
+    //
+    //   (1) The handler is wrapped by `awslambda.streamifyResponse(...)` AND
+    //       uses the documented `responseStream.setContentType('...')` +
+    //       `responseStream.write(...)` shortcut WITHOUT explicitly calling
+    //       `awslambda.HttpResponseStream.from(stream, metadata)`. Production
+    //       AWS Lambda + Function URL handles this — the runtime auto-completes
+    //       the prelude lazily — but RIE emits only the raw body bytes the
+    //       handler wrote, no prelude+separator framing. This is the most
+    //       common case in the wild (the `setContentType` shortcut appears in
+    //       most tutorials + AWS docs).
+    //
+    //   (2) The handler crashed mid-invoke and RIE emitted a Lambda error
+    //       envelope (`{"errorType":"...","errorMessage":"..."}`) instead of
+    //       the prelude+separator framing. RIE itself reports
+    //       `INVOKE RTDONE(status: success, produced bytes: 0)` because from
+    //       its perspective the handler never finalized the streaming
+    //       response; the envelope bytes are sidecar diagnostics.
+    //
+    // In BOTH cases the right move is to NOT reject the invocation. We
+    // synthesize a default prelude (status 200, `application/octet-stream`)
+    // and surface the buffered bytes as the HTTP body. Case (1) lets the
+    // handler work locally exactly as it does in production. Case (2)
+    // surfaces the Lambda error envelope verbatim so the dev can read it
+    // from the curl response (much better UX than cdkd swallowing the bytes
+    // behind a generic "RIE streaming invoke failed").
+    //
+    // The genuinely-empty case (zero buffered bytes — handler threw before
+    // any write AND RIE didn't emit a diagnostic envelope) still falls
+    // through to the original error path: there's no body worth surfacing,
+    // and the rapid log is the right place for the dev to read the cause.
+    if (preludeBytes.length === 0) {
+      clearTimeout(timer);
+      throw new Error(
+        `RIE streaming response ended with zero bytes. The handler likely threw before any write — check container logs.`
+      );
+    }
+    preludeSynthesized = true;
+    bodyTail = preludeBytes;
+    preludeBytes = Buffer.alloc(0);
   }
 
   let prelude: StreamingPrelude;
-  try {
-    prelude = parseStreamingPrelude(preludeBytes.toString('utf8'));
-  } catch (err) {
-    clearTimeout(timer);
-    reader.cancel().catch(() => undefined);
-    throw new Error(
-      `RIE streaming response prelude is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
-    );
+  if (preludeSynthesized) {
+    // Default prelude when the handler bypassed `HttpResponseStream.from(...)`.
+    // `application/octet-stream` matches the documented AWS default; consumers
+    // that care about Content-Type should call `HttpResponseStream.from(...)`
+    // explicitly with the right metadata.
+    prelude = {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/octet-stream' },
+    };
+  } else {
+    try {
+      prelude = parseStreamingPrelude(preludeBytes.toString('utf8'));
+    } catch (err) {
+      clearTimeout(timer);
+      reader.cancel().catch(() => undefined);
+      throw new Error(
+        `RIE streaming response prelude is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   // Build a Readable that emits any already-buffered body bytes first,
