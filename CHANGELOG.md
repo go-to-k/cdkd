@@ -1,3 +1,10 @@
+## [0.167.2](https://github.com/go-to-k/cdkd/compare/v0.167.1...v0.167.2) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** mount profile-aware credentials file for fromIni({ profile }) handlers ([#670](https://github.com/go-to-k/cdkd/issues/670)) ([55440d3](https://github.com/go-to-k/cdkd/commit/55440d3a57172fe0ce3b32f048542aaf47361c4a))
+
 ## [0.167.1](https://github.com/go-to-k/cdkd/compare/v0.167.0...v0.167.1) (2026-05-27)
 
 
