@@ -1,3 +1,10 @@
+# [0.161.0](https://github.com/go-to-k/cdkd/compare/v0.160.0...v0.161.0) (2026-05-27)
+
+
+### Features
+
+* **diff:** wire [#614](https://github.com/go-to-k/cdkd/issues/614) routing annotation into cdkd diff + deploy live-progress ([#635](https://github.com/go-to-k/cdkd/issues/635)) ([86dd741](https://github.com/go-to-k/cdkd/commit/86dd741cd4e65aa0d48e9e682c53cf6b10a9c2b1))
+
 # [0.160.0](https://github.com/go-to-k/cdkd/compare/v0.159.3...v0.160.0) (2026-05-26)
 
 
