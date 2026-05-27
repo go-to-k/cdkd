@@ -1,3 +1,10 @@
+# [0.167.0](https://github.com/go-to-k/cdkd/compare/v0.166.1...v0.167.0) (2026-05-27)
+
+
+### Features
+
+* **deploy:** symmetric blockedAlreadyCcApi refusal for --recreate-via-cc-api ([#666](https://github.com/go-to-k/cdkd/issues/666)) ([99b1fe7](https://github.com/go-to-k/cdkd/commit/99b1fe74209b79d68d11e4ab829712cd85daecad))
+
 ## [0.166.1](https://github.com/go-to-k/cdkd/compare/v0.166.0...v0.166.1) (2026-05-27)
 
 
