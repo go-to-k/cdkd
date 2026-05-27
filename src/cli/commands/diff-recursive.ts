@@ -6,6 +6,7 @@ import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
+import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 
 /**
@@ -37,6 +38,17 @@ export interface DiffTreeNode {
   region: string;
   /** Per-resource changes for this node (includes `NO_CHANGE` entries — filter with {@link nodeHasChanges}). */
   changes: Map<string, ResourceChange>;
+  /**
+   * Per-resource Cloud Control API auto-route hits (issue [#614]). Maps each
+   * logical ID that #614's auto-fallback would route via CC API to the
+   * silent-drop property names that triggered the routing — surfaced as
+   * `[via CC API: LoggingConfig]` annotations on each diff line so users can
+   * audit the routing decision before they deploy. Empty for stacks whose
+   * template uses no silent-drop top-level property, and for state-only
+   * DELETE branches (deletes route via the recorded `provisionedBy`, not via
+   * template inspection).
+   */
+  ccApiRoutes: Map<string, string[]>;
   /** Direct nested-stack children, DFS order. Empty for leaves and for non-recursive runs. */
   children: DiffTreeNode[];
 }
@@ -214,7 +226,15 @@ export async function buildDiffTree(args: {
     stateBackend,
     diffCalculator
   );
-  const node: DiffTreeNode = { stackName, displayName, region, changes, children: [] };
+  const ccApiRoutes = collectCcApiRoutes(template);
+  const node: DiffTreeNode = {
+    stackName,
+    displayName,
+    region,
+    changes,
+    ccApiRoutes,
+    children: [],
+  };
   if (!recursive) return node;
 
   // Template-present children, in template order (CREATE / UPDATE / present).
@@ -285,6 +305,10 @@ async function buildDeletedSubtree(
     displayName: stackName,
     region,
     changes,
+    // State-only DELETE branches do not consult the template — routing is
+    // already recorded on each resource's `provisionedBy`, and the diff line
+    // only shows the type. No annotation surface.
+    ccApiRoutes: new Map(),
     children: [],
   };
   for (const [logicalId, resource] of Object.entries(state.resources)) {
@@ -295,6 +319,35 @@ async function buildDeletedSubtree(
   }
   return node;
 }
+
+/**
+ * Walk every resource in `template` and return the logicalId → silent-drop
+ * property names map that #614's auto-fallback would route via Cloud Control
+ * API. Empty allow-set: `--allow-unsupported-properties` is a deploy-only
+ * flag, so diff renders every actionable drop as an auto-route hint.
+ *
+ * Excludes `AWS::CDK::Metadata` (filtered like the deploy pre-flight); also
+ * excludes `AWS::CloudFormation::Stack` rows since nested-stack children
+ * recurse through their own templates rather than carrying CC-routable
+ * properties on the parent's row.
+ */
+function collectCcApiRoutes(template: CloudFormationTemplate): Map<string, string[]> {
+  const hits = new Map<string, string[]>();
+  for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
+    if (!resource) continue;
+    if (resource.Type === 'AWS::CDK::Metadata') continue;
+    if (resource.Type === NESTED_STACK_RESOURCE_TYPE) continue;
+    const drops = findActionableSilentDrops(resource.Type, resource.Properties, EMPTY_ALLOW_SET);
+    if (drops.length === 0) continue;
+    hits.set(
+      logicalId,
+      drops.map((d) => d.property)
+    );
+  }
+  return hits;
+}
+
+const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
 
 /** True when this node has at least one real (non-`NO_CHANGE`) change. */
 export function nodeHasChanges(node: DiffTreeNode): boolean {
@@ -317,6 +370,13 @@ export interface DiffChangeJson {
   resourceType: string;
   propertyChanges?: ResourceChange['propertyChanges'];
   attributeChanges?: ResourceChange['attributeChanges'];
+  /**
+   * Silent-drop property names that #614's auto-fallback would route via
+   * Cloud Control API for this resource. Present only when the resource is
+   * a CC-routed auto-route hit (matches the human renderer's
+   * `[via CC API: <prop list>]` annotation).
+   */
+  ccApi?: string[];
 }
 
 /** Serializable diff-tree node for `--json` (nested when `--recursive`). */
@@ -337,6 +397,7 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
   const changes: DiffChangeJson[] = [];
   for (const change of node.changes.values()) {
     if (change.changeType === 'NO_CHANGE') continue;
+    const ccApi = node.ccApiRoutes.get(change.logicalId);
     changes.push({
       logicalId: change.logicalId,
       changeType: change.changeType,
@@ -347,6 +408,7 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
       ...(change.attributeChanges && change.attributeChanges.length > 0
         ? { attributeChanges: change.attributeChanges }
         : {}),
+      ...(ccApi && ccApi.length > 0 ? { ccApi } : {}),
     });
   }
   return {
@@ -436,24 +498,37 @@ function stripUnchangedValues(value: unknown, other: unknown): unknown {
  * Render one resource-change map into human-readable diff lines via `logFn`,
  * returning the per-type counts. Shared by the root stack block and every
  * nested-stack block.
+ *
+ * When `ccApiRoutes` is supplied, every CREATE / UPDATE line whose logical ID
+ * appears in the map gets a `[via CC API: <props>]` suffix so the user sees
+ * #614's auto-fallback decision at plan time. DELETE lines are not annotated
+ * — the delete routing is recorded on each resource's `provisionedBy` state
+ * field rather than re-derived from the template.
  */
 export function renderChangeLines(
   changes: Map<string, ResourceChange>,
-  logFn: (msg: string) => void
+  logFn: (msg: string) => void,
+  ccApiRoutes?: Map<string, string[]>
 ): { create: number; update: number; delete: number } {
   let createCount = 0;
   let updateCount = 0;
   let deleteCount = 0;
 
+  const annotateRouting = (logicalId: string): string => {
+    const props = ccApiRoutes?.get(logicalId);
+    if (!props || props.length === 0) return '';
+    return ` [via CC API: ${props.join(', ')}]`;
+  };
+
   for (const [logicalId, change] of changes.entries()) {
     switch (change.changeType) {
       case 'CREATE':
         createCount++;
-        logFn(`  [+] ${logicalId} (${change.resourceType})`);
+        logFn(`  [+] ${logicalId} (${change.resourceType})${annotateRouting(logicalId)}`);
         break;
       case 'UPDATE': {
         updateCount++;
-        logFn(`  [~] ${logicalId} (${change.resourceType})`);
+        logFn(`  [~] ${logicalId} (${change.resourceType})${annotateRouting(logicalId)}`);
         if (change.propertyChanges && change.propertyChanges.length > 0) {
           for (const propChange of change.propertyChanges) {
             const requiresReplace = propChange.requiresReplacement ? ' [requires replacement]' : '';
@@ -508,7 +583,11 @@ export function renderDiffTree(
 ): void {
   if (nodeHasChanges(node)) {
     logFn(isRoot ? `\nStack ${node.stackName}:` : `\nNested stack: ${node.displayName}`);
-    const { create, update, delete: del } = renderChangeLines(node.changes, logFn);
+    const {
+      create,
+      update,
+      delete: del,
+    } = renderChangeLines(node.changes, logFn, node.ccApiRoutes);
     logFn(`\n${create} to create, ${update} to update, ${del} to delete`);
   }
   for (const child of node.children) {

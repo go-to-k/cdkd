@@ -98,9 +98,19 @@ describe('DeployEngine - DeployResult.outputs', () => {
       filterByType: vi.fn().mockReturnValue([]),
     };
 
+    // `getProviderFor` must return a `{provider, provisionedBy}` decision —
+    // the real registry always returns one of those (or throws), so a
+    // bare `vi.fn()` returning `undefined` diverges from the contract.
+    // The fake provider below is never invoked by these tests (every path
+    // is no-change / outputs-only), but keeping the mock shape consistent
+    // with the 9 other test files updated for #614 avoids a crash if a
+    // future test extends this fixture into a CREATE / UPDATE path.
+    const noopProvider = { create: vi.fn(), update: vi.fn(), delete: vi.fn(), getAttribute: vi.fn() };
     mockProviderRegistry = {
-      getProvider: vi.fn(),
-      getProviderFor: vi.fn(),
+      getProvider: vi.fn().mockReturnValue(noopProvider),
+      getProviderFor: vi
+        .fn()
+        .mockReturnValue({ provider: noopProvider, provisionedBy: 'sdk' as const }),
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),

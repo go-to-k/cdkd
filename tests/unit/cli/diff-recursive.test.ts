@@ -128,6 +128,7 @@ describe('nodeHasChanges / treeHasChanges', () => {
     displayName: id,
     region: 'us-east-1',
     changes: changeMap(changes),
+    ccApiRoutes: new Map(),
     children: [],
   });
 
@@ -177,12 +178,14 @@ describe('diffTreeToJson', () => {
           propertyChanges: [{ path: 'Value', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
         },
       ]),
+      ccApiRoutes: new Map(),
       children: [
         {
           stackName: 'P~C',
           displayName: 'P~C',
           region: 'us-east-1',
           changes: changeMap([{ logicalId: 'New', changeType: 'CREATE', resourceType: 'T' }]),
+          ccApiRoutes: new Map(),
           children: [],
         },
       ],
@@ -212,6 +215,7 @@ describe('diffTreeToJson', () => {
           attributeChanges: [{ attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' }],
         },
       ]),
+      ccApiRoutes: new Map(),
       children: [],
     };
     const json = diffTreeToJson(node);
@@ -226,12 +230,14 @@ describe('renderDiffTree', () => {
   const leaf = (
     stackName: string,
     displayName: string,
-    changes: ResourceChange[]
+    changes: ResourceChange[],
+    ccApiRoutes: Map<string, string[]> = new Map()
   ): DiffTreeNode => ({
     stackName,
     displayName,
     region: 'us-east-1',
     changes: changeMap(changes),
+    ccApiRoutes,
     children: [],
   });
 
@@ -265,6 +271,55 @@ describe('renderDiffTree', () => {
     const lines: string[] = [];
     renderDiffTree(root, true, (m) => lines.push(m));
     expect(lines).toEqual([]);
+  });
+
+  it('annotates CREATE / UPDATE lines with [via CC API: <props>] when ccApiRoutes carries the logical id (#614)', () => {
+    const root = leaf(
+      'P',
+      'P',
+      [
+        { logicalId: 'MyLambda', changeType: 'CREATE', resourceType: 'AWS::Lambda::Function' },
+        {
+          logicalId: 'OtherFn',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::Lambda::Function',
+          propertyChanges: [{ path: 'Runtime', oldValue: 'nodejs18.x', newValue: 'nodejs20.x', requiresReplacement: false }],
+        },
+        { logicalId: 'NoTag', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue' },
+      ],
+      new Map<string, string[]>([
+        ['MyLambda', ['LoggingConfig']],
+        ['OtherFn', ['LoggingConfig', 'SnapStart']],
+      ])
+    );
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    // CREATE + UPDATE lines get the annotation; the comma-joined property
+    // list appears verbatim so users can audit which property triggered
+    // the CC-route.
+    expect(text).toContain('[+] MyLambda (AWS::Lambda::Function) [via CC API: LoggingConfig]');
+    expect(text).toContain('[~] OtherFn (AWS::Lambda::Function) [via CC API: LoggingConfig, SnapStart]');
+    // Sibling without a hit still renders the plain line — no spurious tag.
+    expect(text).toContain('[+] NoTag (AWS::SQS::Queue)');
+    expect(text).not.toContain('NoTag (AWS::SQS::Queue) [via CC API');
+  });
+
+  it('does not annotate DELETE lines (deletes route via state-recorded provisionedBy, not template)', () => {
+    const root = leaf(
+      'P',
+      'P',
+      [{ logicalId: 'GoneLambda', changeType: 'DELETE', resourceType: 'AWS::Lambda::Function' }],
+      // Even when a hit is recorded, DELETE skips the annotation since
+      // routing is not derived from the template at delete time.
+      new Map<string, string[]>([['GoneLambda', ['LoggingConfig']]])
+    );
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+    expect(text).toContain('[-] GoneLambda (AWS::Lambda::Function)');
+    expect(text).not.toContain('GoneLambda (AWS::Lambda::Function) [via CC API');
   });
 
   it('renders [requires replacement], attribute changes, and prunes unchanged/intrinsic nested keys', () => {
@@ -501,6 +556,65 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     const grandchild = child.children[0]!;
     expect(grandchild.changes.get('GrandRes')!.changeType).toBe('DELETE');
     expect(treeHasChanges(root)).toBe(true);
+  });
+
+  it('populates ccApiRoutes for resources whose template uses #614 silent-drop properties (e.g. Lambda LoggingConfig)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        SilentDropLambda: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            FunctionName: 'foo',
+            Role: 'arn:aws:iam::1:role/r',
+            Code: { ZipFile: 'x' },
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            // Top-level CFn property cdkd's SDK provider does not yet wire.
+            LoggingConfig: { LogFormat: 'JSON' },
+          },
+        },
+        // A sibling Lambda whose template uses NO silent-drop property —
+        // the route should NOT pick it up, so the rendered diff stays clean.
+        OkayLambda: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            FunctionName: 'bar',
+            Role: 'arn:aws:iam::1:role/r',
+            Code: { ZipFile: 'x' },
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          },
+        },
+      },
+    };
+    const backend = fakeBackend({});
+
+    const root = await buildDiffTree({
+      stackName: 'Leaf',
+      displayName: 'Leaf',
+      region: 'us-east-1',
+      template,
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    expect(root.ccApiRoutes.get('SilentDropLambda')).toEqual(['LoggingConfig']);
+    expect(root.ccApiRoutes.has('OkayLambda')).toBe(false);
+
+    // The annotation makes it into the human renderer + the JSON projection.
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    expect(lines.join('\n')).toContain(
+      '[+] SilentDropLambda (AWS::Lambda::Function) [via CC API: LoggingConfig]'
+    );
+
+    const json = diffTreeToJson(root);
+    const silentDropChange = json.changes.find((c) => c.logicalId === 'SilentDropLambda');
+    const okayChange = json.changes.find((c) => c.logicalId === 'OkayLambda');
+    expect(silentDropChange?.ccApi).toEqual(['LoggingConfig']);
+    expect(okayChange?.ccApi).toBeUndefined();
   });
 
   it('treats a leaf stack with no nested rows as a single node', async () => {
