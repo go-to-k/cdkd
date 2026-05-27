@@ -721,6 +721,11 @@
       ]
     },
     {
+      "name": "recreate-mixed-direction",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "recreate-via-cc-api",
       "annotated": false,
       "scenarios": []
@@ -1144,6 +1149,7 @@
     "iam-managed-policy",
     "nested-stack",
     "nested-stack-deep",
+    "recreate-mixed-direction",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "schema-v6-to-v7-migration"

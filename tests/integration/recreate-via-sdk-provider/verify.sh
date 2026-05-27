@@ -154,5 +154,18 @@ if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
 fi
 echo "    OK: state file is gone"
 
+# Audit follow-up: assert the IAM role was destroyed too — not just
+# relying on the trap to clean it up. The trap remains as a defence-in-
+# depth cleanup for leftover-from-prior-runs cases; this assertion
+# confirms the destroy itself handled the role.
+LEFTOVER_ROLES=$(aws iam list-roles \
+  --query "Roles[?starts_with(RoleName, \`${STACK}\`)].RoleName" \
+  --output text 2>/dev/null)
+if [ -n "${LEFTOVER_ROLES}" ]; then
+  echo "FAIL: IAM role(s) still exist after destroy: ${LEFTOVER_ROLES}" >&2
+  exit 1
+fi
+echo "    OK: IAM role is gone"
+
 echo ""
 echo "==> recreate-via-sdk-provider test passed (#651 mid-life CC->SDK migration verified end-to-end)"

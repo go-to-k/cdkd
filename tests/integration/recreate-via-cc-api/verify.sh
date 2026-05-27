@@ -252,5 +252,16 @@ if aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/nu
 fi
 echo "    OK: S3 probe bucket is gone"
 
+# Audit follow-up: assert the IAM role was destroyed too — not just
+# relying on the trap.
+LEFTOVER_ROLES=$(aws iam list-roles \
+  --query "Roles[?starts_with(RoleName, \`${STACK}\`)].RoleName" \
+  --output text 2>/dev/null)
+if [ -n "${LEFTOVER_ROLES}" ]; then
+  echo "FAIL: IAM role(s) still exist after destroy: ${LEFTOVER_ROLES}" >&2
+  exit 1
+fi
+echo "    OK: IAM role is gone"
+
 echo ""
-echo "==> recreate-via-cc-api test passed (#615 mid-life SDK→CC migration + #648 S3 probe verified end-to-end)"
+echo "==> recreate-via-cc-api test passed (#615 mid-life SDK->CC migration + #648 S3 probe verified end-to-end)"

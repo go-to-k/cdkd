@@ -1846,6 +1846,7 @@
         "multi-resource",
         "multi-stack-deps",
         "nested-stack",
+        "recreate-mixed-direction",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "vpc-lambda-cr-race"
@@ -1923,6 +1924,9 @@
           "l2"
         ],
         "nested-stack": [
+          "l2"
+        ],
+        "recreate-mixed-direction": [
           "l2"
         ],
         "recreate-via-cc-api": [
@@ -2085,6 +2089,7 @@
         "multi-resource",
         "multi-stack-deps",
         "orphan-resource",
+        "recreate-mixed-direction",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "scheduled-task",
@@ -2233,6 +2238,9 @@
         "orphan-resource": [
           "l2",
           "literal"
+        ],
+        "recreate-mixed-direction": [
+          "l1"
         ],
         "recreate-via-cc-api": [
           "l1"
