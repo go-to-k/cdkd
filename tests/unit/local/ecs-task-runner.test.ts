@@ -550,3 +550,131 @@ describe('topoSort (G3)', () => {
     expect(order).toEqual(['A', 'B', 'C']);
   });
 });
+
+describe('buildDockerRunArgs profile credentials file (ECS analogue of PR #670)', () => {
+  it('emits read-only bind-mount + AWS_SHARED_CREDENTIALS_FILE + AWS_PROFILE when profileCredentialsFile is set', () => {
+    const c = makeContainer({ name: 'app' });
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx:alpine',
+      network: 'cdkd-local-svc-shared',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      profileCredentialsFile: {
+        hostPath: '/tmp/cdkd-profile-creds-abc/credentials',
+        containerPath: '/cdkd-aws/credentials',
+        profileName: 'dev-sso',
+      },
+    });
+    // Read-only bind-mount: the `:ro` flag is load-bearing — a
+    // compromised handler must not tamper with the host-side
+    // creds file.
+    const mountIdx = args.findIndex(
+      (a) => a === '/tmp/cdkd-profile-creds-abc/credentials:/cdkd-aws/credentials:ro'
+    );
+    expect(mountIdx).toBeGreaterThan(-1);
+    expect(args[mountIdx - 1]).toBe('-v');
+    // SDK env-vars: container path (NOT host path) for the file,
+    // and the original `--profile <name>` for the section header.
+    const joined = args.join(' ');
+    expect(joined).toContain('AWS_SHARED_CREDENTIALS_FILE=/cdkd-aws/credentials');
+    expect(joined).toContain('AWS_PROFILE=dev-sso');
+  });
+
+  it('omits the mount and env vars when profileCredentialsFile is undefined (no --profile)', () => {
+    const c = makeContainer({ name: 'app' });
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx:alpine',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    const joined = args.join(' ');
+    expect(joined).not.toContain('/cdkd-aws/credentials');
+    expect(joined).not.toContain('AWS_SHARED_CREDENTIALS_FILE');
+    expect(joined).not.toContain('AWS_PROFILE');
+  });
+
+  it('user template AWS_PROFILE override beats the profile-file injection', () => {
+    // Env precedence (per the build comment): template literal env
+    // sits ABOVE the profile-file env vars, so a user template that
+    // explicitly sets `AWS_PROFILE` to a different value (e.g. for
+    // an alternative in-container chain) still wins. This documents
+    // the deliberate ordering — file vars are a default, not a
+    // forced override.
+    const c = makeContainer({ name: 'app', environment: { AWS_PROFILE: 'in-container' } });
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx:alpine',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      profileCredentialsFile: {
+        hostPath: '/tmp/cdkd-profile-creds-abc/credentials',
+        containerPath: '/cdkd-aws/credentials',
+        profileName: 'dev-sso',
+      },
+    });
+    const joined = args.join(' ');
+    expect(joined).toContain('AWS_PROFILE=in-container');
+    expect(joined).not.toContain('AWS_PROFILE=dev-sso');
+    // The credentials-file env var stays at the file-defaulted path
+    // (the user template did not override it).
+    expect(joined).toContain('AWS_SHARED_CREDENTIALS_FILE=/cdkd-aws/credentials');
+  });
+
+  it('profile-file mount precedes user MountPoints so user mount cannot shadow /cdkd-aws/credentials', () => {
+    const c = makeContainer({
+      name: 'app',
+      mountPoints: [{ sourceVolume: 'data', containerPath: '/d', readOnly: false }],
+    });
+    const dockerVol: ResolvedEcsVolume & { dockerVolumeName?: string } = {
+      name: 'data',
+      kind: 'docker',
+      dockerVolumeConfig: { scope: 'task' },
+      dockerVolumeName: 'cdkd-local-data-xxxx',
+    };
+    const args = buildDockerRunArgs({
+      task: makeTask({ containers: [c], volumes: [dockerVol] }),
+      container: c,
+      image: 'nginx:alpine',
+      network: 'n',
+      volumeByName: new Map([['data', dockerVol]]),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      profileCredentialsFile: {
+        hostPath: '/tmp/cdkd-profile-creds-abc/credentials',
+        containerPath: '/cdkd-aws/credentials',
+        profileName: 'dev-sso',
+      },
+    });
+    const credsIdx = args.indexOf('/tmp/cdkd-profile-creds-abc/credentials:/cdkd-aws/credentials:ro');
+    const userVolIdx = args.indexOf('cdkd-local-data-xxxx:/d');
+    expect(credsIdx).toBeGreaterThan(-1);
+    expect(userVolIdx).toBeGreaterThan(-1);
+    expect(credsIdx).toBeLessThan(userVolIdx);
+  });
+});

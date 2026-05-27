@@ -69,13 +69,14 @@ ${CDKD} local start-service CdkdLocalStartServiceFixture:WebService \
   > "${OUT_FILE}" 2>&1 &
 CDKD_PID=$!
 
-# Wait for the service boot banner. The runner prints
-# "Service '...' running with N active replica(s)" once startEcsService
-# returns; that's the deterministic ready marker.
+# Wait for the service boot banner. The CLI prints
+# "Service(s) running: <Name> (N replica(s)). Press ^C to shut down."
+# once every target's controller has been started — that's the
+# deterministic ready marker.
 echo "==> Waiting for boot banner (up to 60s)"
 BOOTED=0
 for i in $(seq 1 60); do
-  if grep -q "running with .* active replica" "${OUT_FILE}" 2>/dev/null; then
+  if grep -q "Service(s) running:" "${OUT_FILE}" 2>/dev/null; then
     BOOTED=1
     break
   fi
@@ -113,56 +114,27 @@ if [[ "${WEB_COUNT}" -lt 2 ]]; then
 fi
 echo "    OK: ${WEB_COUNT} busybox web containers running"
 
-echo "==> Asserting per-replica docker networks (2 networks expected)"
+echo "==> Asserting one shared docker network (design § 5 Option A, PR #522)"
+# Post-#522 every replica in a single CLI invocation joins ONE shared
+# `cdkd-local-svc-<rand>` network so peers can reach each other by IP
+# / network alias without `docker network connect` choreography. The
+# pre-#522 per-replica-network shape (with the `170 + (index % 84)`
+# subnet allocator + per-replica subnet isolation assertion) is gone.
 NET_COUNT=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
-if [[ "${NET_COUNT}" -lt 2 ]]; then
-  echo "FAIL: expected at least 2 cdkd-local-* docker networks, found ${NET_COUNT}"
+if [[ "${NET_COUNT}" -ne 1 ]]; then
+  echo "FAIL: expected exactly 1 shared cdkd-local-* docker network, found ${NET_COUNT}"
   docker network ls --filter "name=cdkd-local-"
   exit 1
 fi
-echo "    OK: ${NET_COUNT} per-replica networks present"
-
-echo "==> Asserting per-replica subnet isolation (each network has a distinct /24 in 169.254.170-253)"
-# Regression guard for the per-replica subnet allocator in
-# ecs-service-runner.ts (`170 + (index % 84)`). The pre-PR assertion
-# only counted networks, so a collapsed allocator that put every
-# replica on the same /24 would still pass. Walk every network's
-# IPAM.Config[0].Subnet and assert (a) they are all distinct AND (b)
-# each is in the expected 169.254.<170-253>.0/24 range that
-# `buildReplicaSubnet(index)` allocates.
-NET_IDS=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}')
-declare -a SUBNETS=()
-for net_id in ${NET_IDS}; do
-  SUBNET=$(docker network inspect "${net_id}" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || echo "")
-  if [[ -z "${SUBNET}" ]]; then
-    echo "FAIL: docker network ${net_id} has no IPAM.Config[0].Subnet"
-    docker network inspect "${net_id}"
-    exit 1
-  fi
-  echo "    network ${net_id}: subnet=${SUBNET}"
-  # Assert the subnet falls inside the allocator's range. The allocator
-  # emits `169.254.<170 + (index % 84)>.0/24` so the third octet must
-  # be in 170..253 inclusive.
-  if [[ ! "${SUBNET}" =~ ^169\.254\.([0-9]+)\.0/24$ ]]; then
-    echo "FAIL: subnet ${SUBNET} for network ${net_id} is not in the expected 169.254.X.0/24 shape"
-    exit 1
-  fi
-  OCTET="${BASH_REMATCH[1]}"
-  if (( OCTET < 170 || OCTET > 253 )); then
-    echo "FAIL: subnet ${SUBNET} third octet ${OCTET} is outside the allocator range 170..253"
-    exit 1
-  fi
-  SUBNETS+=("${SUBNET}")
-done
-
-# Assert every subnet is distinct (no duplicates). Sort + uniq + count.
-UNIQUE_SUBNET_COUNT=$(printf '%s\n' "${SUBNETS[@]}" | sort -u | wc -l | tr -d ' ')
-if [[ "${UNIQUE_SUBNET_COUNT}" -ne "${#SUBNETS[@]}" ]]; then
-  echo "FAIL: detected duplicate subnets across replicas — subnet allocator regression"
-  printf '    %s\n' "${SUBNETS[@]}"
+NET_ID=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}')
+SUBNET=$(docker network inspect "${NET_ID}" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || echo "")
+echo "    network ${NET_ID}: subnet=${SUBNET}"
+# Subnet must be the shared-service `169.254.171.0/24` (SHARED_SVC_SUBNET_OCTET).
+if [[ "${SUBNET}" != "169.254.171.0/24" ]]; then
+  echo "FAIL: expected shared subnet 169.254.171.0/24 (SHARED_SVC_SUBNET_OCTET), got ${SUBNET}"
   exit 1
 fi
-echo "    OK: ${UNIQUE_SUBNET_COUNT} distinct subnets across ${#SUBNETS[@]} networks"
+echo "    OK: 1 shared network on 169.254.171.0/24"
 
 echo "==> Sending SIGTERM to cdkd ($(echo $CDKD_PID))"
 kill -TERM "${CDKD_PID}"

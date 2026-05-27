@@ -17,6 +17,10 @@ import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
+  writeProfileCredentialsFile,
+  type ProfileCredentialsFile,
+} from './local-profile-credentials-file.js';
+import {
   applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
@@ -120,6 +124,11 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   // Hoisted so the outer `finally` can dispose it even if the body
   // throws between provider creation and the normal exit path.
   let stateProvider: LocalStateProvider | undefined;
+  // ECS analogue of PR #670: synthesized AWS shared credentials file
+  // (one INI section) bind-mounted into every user container so
+  // handlers using `fromIni({ profile })` resolve to the same creds.
+  // Disposed in the cleanup chain below.
+  let profileCredsFile: ProfileCredentialsFile | undefined;
 
   // Single-flight cleanup: the SIGINT handler AND the outer `finally` both
   // call this, so we await the first invocation's promise on every later
@@ -134,6 +143,17 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
           await cleanupEcsRun(state, { keepRunning: options.keepRunning });
         } catch (err) {
           getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (profileCredsFile) {
+          try {
+            await profileCredsFile.dispose();
+          } catch (err) {
+            getLogger().debug(
+              `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+          }
         }
       })();
     }
@@ -276,6 +296,25 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // for `cdkd local start-api`'s Lambda container path.
     const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
 
+    // ECS analogue of PR #670 (Lambda-container fix-back finding #1):
+    // when `--profile <p>` is set AND `--assume-task-role` did NOT
+    // produce credentials for this task, synthesize a host-side AWS
+    // shared credentials file under `[<options.profile>]` and bind-
+    // mount it read-only into every user container. Handler code
+    // calling `fromIni({ profile: '<options.profile>' })` then
+    // resolves to the same creds the metadata sidecar serves —
+    // without this, the SDK looks for `[<options.profile>]` in
+    // `~/.aws/credentials` inside the container and fails.
+    //
+    // Gating `!assumedCredentials` preserves the documented
+    // precedence (assume-task-role > profile-file > sidecar): when
+    // `--assume-task-role` won, the sidecar's `/role/<arn>` endpoint
+    // already serves the assumed creds and the file env vars must
+    // NOT override them.
+    if (options.profile && sidecarCredentials && !assumedCredentials) {
+      profileCredsFile = await writeProfileCredentialsFile(options.profile, sidecarCredentials);
+    }
+
     const envOverrides = readEnvOverridesFile(options.envVars);
 
     const runOpts: RunEcsTaskOptions = {
@@ -291,6 +330,13 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;
     if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
+    if (profileCredsFile) {
+      runOpts.profileCredentialsFile = {
+        hostPath: profileCredsFile.hostPath,
+        containerPath: profileCredsFile.containerPath,
+        profileName: profileCredsFile.profileName,
+      };
+    }
 
     const result = await runEcsTask(task, runOpts, state);
 
