@@ -93,8 +93,8 @@ run "non-Bash tool passes" \
   'Closes (#502).' \
   0
 
-# 8. PASS: offline (gh returns nothing)
-run "offline tolerance" \
+# 8. PASS: empty body (PR has no body content — gh succeeds with "")
+run "empty PR body passes silently" \
   '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 100 --squash"}}' \
   '' \
   0
@@ -126,6 +126,54 @@ run "Bash comment + real merge extracts last PR num" \
   '{"tool_name":"Bash","tool_input":{"command":"# wait then gh pr merge\nfor i in 1 2 3; do echo loop; done; gh pr merge 800 --squash"}}' \
   'Closes #800.' \
   0
+
+# 13. PASS-with-warning: `gh pr view` exits non-zero (network / auth)
+#     — fail-open by policy but EMIT loud stderr warning so the user
+#     sees the gate couldn't verify (closes the silent-bypass gap that
+#     let PR #671 / #668 ship with Closes (#N) undetected, 2026-05-27)
+run_gh_fail() {
+  local name="$1"
+  local input="$2"
+  local expect_exit="$3"
+  local expect_stderr_pattern="$4"
+
+  local tmp
+  tmp=$(mktemp -d)
+  cat <<EOF > "$tmp/gh"
+#!/usr/bin/env bash
+# Mock gh that ALWAYS fails on \`gh pr view\` (simulates auth/network drop)
+if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
+  echo "error connecting to api.github.com: dial tcp: lookup api.github.com: no such host" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "$tmp/gh"
+
+  local err exit_code
+  echo "$input" | PATH="$tmp:$PATH" "$HOOK" 2>"$tmp/err" && exit_code=$? || exit_code=$?
+  err=$(cat "$tmp/err")
+
+  if [[ "$exit_code" -ne "$expect_exit" ]]; then
+    echo "FAIL: $name (exit $exit_code, expected $expect_exit)"
+    echo "  stderr: $err"
+    FAIL=$((FAIL + 1))
+  elif ! echo "$err" | grep -q "$expect_stderr_pattern"; then
+    echo "FAIL: $name (stderr missing pattern '$expect_stderr_pattern')"
+    echo "  stderr: $err"
+    FAIL=$((FAIL + 1))
+  else
+    echo "PASS: $name (exit $exit_code + stderr warning)"
+    PASS=$((PASS + 1))
+  fi
+
+  rm -rf "$tmp"
+}
+
+run_gh_fail "gh pr view fails → fail-open but loud warning to stderr" \
+  '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 100 --squash"}}' \
+  0 \
+  'could not fetch PR #100 body'
 
 # Summary
 echo ""
