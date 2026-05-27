@@ -42,6 +42,7 @@ function target(overrides: Partial<RecreateTarget> = {}): RecreateTarget {
     resourceType: 'AWS::Lambda::Function',
     physicalId: 'fn-pid',
     statefulReason: null,
+    direction: 'to-cc-api',
     ...overrides,
   };
 }

@@ -670,6 +670,48 @@ export const recreateViaCcApiOption = new Option(
 ).argParser(parseRecreateViaCcApiToken);
 
 /**
+ * Issue [#651] — `--recreate-via-sdk-provider <LogicalId>` is the reverse
+ * direction of `--recreate-via-cc-api`. Once a resource is sticky on
+ * `provisionedBy: 'cc-api'` (e.g. after a #615 SDK→CC migration, or
+ * because cdkd auto-routed it via the #614 default-on Cloud Control
+ * fallback on a fresh deploy), subsequent SDK Provider backfills
+ * (issue #609) do NOT auto-migrate it back — sticky semantics avoid
+ * SDK↔CC ping-pong on every backfill release. This flag is the
+ * user-initiated CC → SDK migration: destroy + recreate the named
+ * resource so the new copy is `provisionedBy: 'sdk'`.
+ *
+ * Symmetric to `--recreate-via-cc-api`: same per-resource explicit
+ * opt-in, same destroy-then-create ordering, same stateful guard,
+ * same multi-region refusal, same `Continue? (y/N)` interactive prompt.
+ */
+export function parseRecreateViaSdkProviderToken(
+  value: string,
+  previous: string[] | undefined
+): string[] {
+  const token = value.trim();
+  if (!LOGICAL_ID_FORMAT.test(token)) {
+    throw new Error(
+      `Invalid --recreate-via-sdk-provider value "${value}": expected a CloudFormation ` +
+        `logical id (alphanumeric, starts with a letter, max 255 chars). One ` +
+        `--recreate-via-sdk-provider flag per resource — repeat the flag for additional ` +
+        `targets.`
+    );
+  }
+  return [...(previous ?? []), token];
+}
+
+export const recreateViaSdkProviderOption = new Option(
+  '--recreate-via-sdk-provider <logicalId>',
+  'Destroy + recreate the named resource (by CloudFormation logical id) via ' +
+    "cdkd's SDK Provider in this deploy, so a resource currently sticky on " +
+    'provisionedBy: cc-api flips back to provisionedBy: sdk. Used after a #609 ' +
+    'backfill release adds SDK coverage for a type the user originally needed CC ' +
+    'for (e.g. Lambda LoggingConfig). Repeatable — pass the flag once per resource. ' +
+    'Per-resource opt-in. Stateful resource types refuse unless ' +
+    '--force-stateful-recreation is ALSO passed.'
+).argParser(parseRecreateViaSdkProviderToken);
+
+/**
  * Issue [#615] — `--force-stateful-recreation` (boolean) is the second
  * flag required to allow `--recreate-via-cc-api` to operate on a
  * stateful resource (RDS / DynamoDB / EFS / S3 with data / etc.). Two
@@ -755,6 +797,7 @@ export const deployOptions = [
   allowUnsupportedTypesOption,
   allowUnsupportedPropertiesOption,
   recreateViaCcApiOption,
+  recreateViaSdkProviderOption,
   forceStatefulRecreationOption,
   ...resourceTimeoutOptions,
 ];

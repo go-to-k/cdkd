@@ -47,18 +47,36 @@ export async function promptRecreateConfirm(input: {
   if (input.targets.length === 0) return true;
 
   const logger = getLogger();
+  const toCcCount = input.targets.filter((t) => t.direction === 'to-cc-api').length;
+  const toSdkCount = input.targets.filter((t) => t.direction === 'to-sdk').length;
   logger.warn('');
-  logger.warn(
-    `--recreate-via-cc-api will destroy + recreate ${input.targets.length} ` +
-      `resource(s) via Cloud Control API on stack ${input.stackName}:`
-  );
+  if (toCcCount > 0 && toSdkCount > 0) {
+    logger.warn(
+      `recreate-via-cc-api / recreate-via-sdk-provider will destroy + recreate ` +
+        `${input.targets.length} resource(s) on stack ${input.stackName} ` +
+        `(${toCcCount} → Cloud Control, ${toSdkCount} → SDK Provider):`
+    );
+  } else if (toCcCount > 0) {
+    logger.warn(
+      `--recreate-via-cc-api will destroy + recreate ${toCcCount} ` +
+        `resource(s) via Cloud Control API on stack ${input.stackName}:`
+    );
+  } else {
+    logger.warn(
+      `--recreate-via-sdk-provider will destroy + recreate ${toSdkCount} ` +
+        `resource(s) via SDK Provider on stack ${input.stackName}:`
+    );
+  }
   for (const t of input.targets) {
     const stateful = t.statefulReason !== null;
     const dataLossPrefix = stateful ? '**DATA LOSS** ' : '';
+    const directionTag = t.direction === 'to-cc-api' ? ' [SDK → CC]' : ' [CC → SDK]';
     const stateNote = stateful
       ? ` — stateful (${t.statefulReason}); --force-stateful-recreation acknowledged`
       : '';
-    logger.warn(`  - ${dataLossPrefix}${t.logicalId} (${t.resourceType})${stateNote}`);
+    logger.warn(
+      `  - ${dataLossPrefix}${t.logicalId} (${t.resourceType})${directionTag}${stateNote}`
+    );
     if (stateful) {
       logger.warn(
         `    DATA: all data in ${t.logicalId} will be lost (no automatic data migration)`
