@@ -1285,7 +1285,7 @@ function forwardAwsEnv(env: Record<string, string>): void {
  * `process.env.AWS_*`. The overlay covers SSO / IAM Identity Center /
  * fromIni / role-assumption profiles uniformly (resolved via the SDK's
  * default credential chain in `resolveProfileCredentials`). Without
- * this overlay, a dev who runs `cdkd local invoke --profile mates_dev`
+ * this overlay, a dev who runs `cdkd local invoke --profile dev`
  * AND has no `AWS_ACCESS_KEY_ID` env var (the common SSO / Identity
  * Center case) sees the Lambda boot with no creds → handler's AWS SDK
  * call fails with `Could not load credentials from any providers`.
