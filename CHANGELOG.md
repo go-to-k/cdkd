@@ -1,3 +1,10 @@
+# [0.169.0](https://github.com/go-to-k/cdkd/compare/v0.168.0...v0.169.0) (2026-05-27)
+
+
+### Features
+
+* **local:** mirror cdk-local start-api UX (env-vars display path + multi-stack --from-cfn-stack inference + bare-form docs) ([#676](https://github.com/go-to-k/cdkd/issues/676)) ([4d4513e](https://github.com/go-to-k/cdkd/commit/4d4513e3e09352dfb23e2f4037db443a5748ef3a))
+
 # [0.168.0](https://github.com/go-to-k/cdkd/compare/v0.167.3...v0.168.0) (2026-05-27)
 
 
