@@ -88,9 +88,15 @@ if [ "${PROVISIONED_1}" != "sdk" ]; then
 fi
 echo "    OK: baseline Lambda provisionedBy == 'sdk'"
 
-# Capture physical-id from baseline so the recreate assertion can verify a NEW one.
-PHYS_ID_1=$(echo "${STATE_1}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId] | first')
-echo "    Baseline physical-id: ${PHYS_ID_1}"
+# Capture the baseline Lambda's CodeSha256 so the recreate assertion can
+# verify a NEW physical resource was created. The user-supplied
+# `functionName` is stable across recreates (the destroy+create reuses
+# the name), so physical-id alone is not a reliable witness; the
+# CodeSha256 / FunctionArn:Version are different between two distinct
+# Lambda instances even with the same name.
+CODE_SHA_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'CodeSha256' --output text 2>/dev/null)
+LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
+echo "    Baseline CodeSha256: ${CODE_SHA_1}  LastModified: ${LAST_MOD_1}"
 
 # Baseline AWS check: LoggingConfig should NOT be JSON-formatted.
 LOG_CONFIG_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LoggingConfig' --output json 2>/dev/null)
@@ -120,15 +126,21 @@ if [ "${PROVISIONED_2}" != "cc-api" ]; then
 fi
 echo "    OK: post-recreate Lambda provisionedBy flipped 'sdk' → 'cc-api'"
 
-# Assert: physical-id CHANGED (destroy+recreate produced a new resource).
-PHYS_ID_2=$(echo "${STATE_2}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId] | first')
-echo "    Post-recreate physical-id: ${PHYS_ID_2}"
-if [ "${PHYS_ID_2}" = "${PHYS_ID_1}" ]; then
-  echo "FAIL: physical-id unchanged after --recreate-via-cc-api (expected destroy+recreate to produce a NEW physical resource)" >&2
-  echo "    Both: ${PHYS_ID_1}"
+# Assert: a NEW Lambda was created (the old one was destroyed and a new one
+# took its place). User-supplied `functionName` is stable across the
+# recreate (CFn / cdkd reuses the name), so physical-id alone is not a
+# witness. Compare LastModified instead — AWS stamps it at create time
+# and the two timestamps MUST differ when distinct Lambda instances were
+# involved. CodeSha256 is the same (same source code) so we use
+# LastModified as the distinguishing signal.
+LAST_MOD_2=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
+echo "    Post-recreate LastModified: ${LAST_MOD_2}"
+if [ "${LAST_MOD_2}" = "${LAST_MOD_1}" ]; then
+  echo "FAIL: Lambda LastModified unchanged after --recreate-via-cc-api (expected destroy+recreate to produce a new Lambda instance with a fresh LastModified)" >&2
+  echo "    Both: ${LAST_MOD_1}"
   exit 1
 fi
-echo "    OK: physical-id changed across recreate (old destroyed, new created)"
+echo "    OK: LastModified updated across recreate (old destroyed, new created)"
 
 # Post-recreate AWS check: LoggingConfig should now be JSON via CC.
 LOG_CONFIG_2=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LoggingConfig' --output json 2>/dev/null)

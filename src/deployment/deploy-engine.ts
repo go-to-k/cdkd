@@ -1850,42 +1850,107 @@ export class DeployEngine {
               ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
               : resolvedProps;
 
-          // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
-          this.logger.info(`  Creating new ${logicalId}...`);
-          const createResult = await this.withRetry(
-            () => replaceProvider.create(logicalId, resourceType, replaceProps),
-            logicalId,
-            undefined,
-            undefined,
-            replaceProvider
-          );
-
-          // 2. Delete old resource (after successful CREATE)
+          // Order: property-driven replacement (immutable prop changed)
+          // creates the NEW resource first so the old survives a CREATE
+          // failure — matches CFn's safe-replacement order. The
+          // `--recreate-via-cc-api` flag (#615) instead destroys the OLD
+          // resource first: the user-named recreate target almost always
+          // has a user-supplied physical name (e.g. `functionName: 'foo'`),
+          // and a create-first attempt with the same name collides with
+          // the existing resource. Brief deletion-window downtime is the
+          // explicit cost of opting into recreate; the design doc § 2
+          // calls this out as "Old physical resource: destroyed via SDK
+          // Provider ... New physical resource: created via CC API",
+          // i.e. destroy-then-create.
           const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
           const oldDeleteProvider = this.providerRegistry.getProviderFor({
             resourceType,
             provisionedBy: currentResource.provisionedBy,
           }).provider;
 
-          if (updateReplacePolicy === 'Retain') {
-            this.logger.info(
-              `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
+          let createResult: any;
+          if (recreateViaCcApi) {
+            // Destroy-then-create path. Same `UpdateReplacePolicy:
+            // Retain` semantics — retained old resources leak (named the
+            // same as the new); document via warning. CFn would refuse a
+            // Retain + replace combo at template-author time; cdkd warns
+            // and proceeds since the user explicitly opted in.
+            if (updateReplacePolicy === 'Retain') {
+              this.logger.warn(
+                `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — recreate-via-cc-api will ` +
+                  `leak the old physical resource (${currentResource.physicalId}). The new ` +
+                  `CC-managed resource will share the same name where applicable; if the type ` +
+                  `has user-supplied names, the create may collide with the retained orphan.`
+              );
+            } else {
+              this.logger.info(
+                `  Destroying old ${logicalId} (${currentResource.physicalId}) before recreate...`
+              );
+              try {
+                await oldDeleteProvider.delete(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  currentResource.properties,
+                  { expectedRegion: this.stackRegion }
+                );
+                this.logger.info(`  ${green('✓')} Old resource deleted`);
+              } catch (deleteError) {
+                // Re-throw so the deploy engine's existing rollback path
+                // sees the failure — recreate's destroy is load-bearing
+                // (without it the subsequent create collides with the
+                // pre-existing resource), so a swallowed failure would
+                // produce a confusing AlreadyExists later.
+                throw new Error(
+                  `Failed to destroy old resource ${logicalId} (${currentResource.physicalId}) ` +
+                    `during --recreate-via-cc-api: ` +
+                    `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                );
+              }
+            }
+
+            this.logger.info(`  Creating new ${logicalId}...`);
+            createResult = await this.withRetry(
+              () => replaceProvider.create(logicalId, resourceType, replaceProps),
+              logicalId,
+              undefined,
+              undefined,
+              replaceProvider
             );
           } else {
-            this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
-            try {
-              await oldDeleteProvider.delete(
-                logicalId,
-                currentResource.physicalId,
-                resourceType,
-                currentResource.properties,
-                { expectedRegion: this.stackRegion }
+            // Property-driven replacement: create-then-destroy (CFn
+            // safe-replacement order — keeps the old alive if CREATE
+            // fails so the deploy can roll back to it cleanly).
+            this.logger.info(`  Creating new ${logicalId}...`);
+            createResult = await this.withRetry(
+              () => replaceProvider.create(logicalId, resourceType, replaceProps),
+              logicalId,
+              undefined,
+              undefined,
+              replaceProvider
+            );
+
+            if (updateReplacePolicy === 'Retain') {
+              this.logger.info(
+                `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
               );
-              this.logger.info(`  ${green('✓')} Old resource deleted`);
-            } catch (deleteError) {
-              this.logger.warn(
-                `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-              );
+            } else {
+              this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+              try {
+                await oldDeleteProvider.delete(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  currentResource.properties,
+                  { expectedRegion: this.stackRegion }
+                );
+                this.logger.info(`  ${green('✓')} Old resource deleted`);
+              } catch (deleteError) {
+                this.logger.warn(
+                  `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                );
+              }
             }
           }
 
