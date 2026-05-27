@@ -19,6 +19,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
+import { readCdkPathOrUndefined } from '../cdk-path.js';
 import {
   createLocalStateProvider,
   isCfnFlagPresent,
@@ -343,6 +344,14 @@ async function localStartApiCommand(
   // `defaultCredentialsLoader` for the caching contract.
   let sigV4CredentialsLoader: CredentialsLoader | undefined;
   const sigV4WarnedForeignIds = new Set<string>();
+  // One-shot guard for the `--from-cfn-stack <name>` redundancy tip
+  // (improvement A). `synthesizeAndBuild` runs on every `--watch` hot
+  // reload firing, so without this flag the tip would re-emit on every
+  // reload — noisy. The flag flips on the first emission and stays
+  // `true` for the rest of the server lifetime; subsequent reloads see
+  // the gate and skip the emission. Per-`localStartApiCommand`-invocation
+  // (new server boot starts with a fresh `false`).
+  const fromCfnTipEmitted: { value: boolean } = { value: false };
 
   /**
    * One synth + discover + build pass. Returns the next-state
@@ -373,10 +382,55 @@ async function localStartApiCommand(
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
-    const targetStacks = pickTargetStacks(stacks, options.stack);
+    // When the user passes an explicit `--from-cfn-stack <name>` AND has
+    // not also passed `--stack`, infer the synth target from the CFn
+    // stack name — typical CDK apps deploy each stack under its own
+    // stack-name, so the same value selects the synth target unambiguously.
+    // `--from-cfn-stack` without a value (bare flag => `true`) is left to
+    // the regular single-stack auto-pick path.
+    const cfnStackFallback =
+      typeof options.fromCfnStack === 'string' ? options.fromCfnStack : undefined;
+    // Improvement B: positional target prefix → synth stack inference.
+    // `cdkd local start-api MyStack/MyApi` (no `--stack`, no `--from-cfn-stack`)
+    // extracts `MyStack` from the target's `<StackName>/<construct>`
+    // shape and uses it as a third fallback for stack selection. Targets
+    // without a `/` separator (bare logical id) leave this undefined so
+    // the existing single-stack auto-pick path is untouched.
+    const targetStackPrefix =
+      target?.includes('/') === true ? target.slice(0, target.indexOf('/')) : undefined;
+    const targetStacks = pickTargetStacks(
+      stacks,
+      options.stack,
+      cfnStackFallback,
+      targetStackPrefix
+    );
     if (targetStacks.length === 0) {
-      throw new Error('No stacks matched. Pass --stack <name> or run from a single-stack app.');
+      throw new Error(
+        'No stacks matched. Pass --stack <name> (or --from-cfn-stack <name>) or run from a single-stack app.'
+      );
     }
+
+    // Improvement A: when the user passed `--from-cfn-stack <explicit>`
+    // AND that value already equals the routed stack's `stackName`, the
+    // explicit value is redundant — the bare-flag form auto-resolves to
+    // the same value. Surface a single info-level tip so the user knows
+    // they can drop the value next time. Skipped on multi-stack runs
+    // (too many edge cases to keep the message useful).
+    //
+    // `synthesizeAndBuild` re-runs on every `--watch` hot reload firing,
+    // so the emission is gated by `fromCfnTipEmitted.value` (one-shot per
+    // server lifetime) — see `tryEmitFromCfnRedundancyTipOnce`.
+    const routedStackNames = targetStacks.map((s) => s.stackName);
+    tryEmitFromCfnRedundancyTipOnce(
+      options.fromCfnStack,
+      routedStackNames,
+      fromCfnTipEmitted,
+      (routedStackName) => {
+        logger.info(
+          `tip: --from-cfn-stack value matches the routed stack name (${routedStackName}); you can omit the value: \`cdkd local start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
+        );
+      }
+    );
 
     const routes = discoverRoutes(targetStacks);
     // #462: WebSocket APIs (ProtocolType: 'WEBSOCKET') are discovered
@@ -1175,10 +1229,27 @@ async function localStartApiCommand(
  * Match the `--stack` pattern (or single-stack auto-detect) to a list
  * of stacks the route-discovery walks. Mirrors the deploy/diff matcher
  * routing rules.
+ *
+ * @internal exported for unit tests.
  */
-function pickTargetStacks(stacks: StackInfo[], pattern: string | undefined): StackInfo[] {
-  if (pattern) {
-    return matchStacks(stacks, [pattern]);
+export function pickTargetStacks(
+  stacks: StackInfo[],
+  pattern: string | undefined,
+  cfnStackFallback?: string,
+  targetFallback?: string
+): StackInfo[] {
+  // Resolution chain (first non-empty wins):
+  //   1. `--stack <pattern>`                            (explicit)
+  //   2. `--from-cfn-stack <explicit-name>`             (PR #44 mirror)
+  //   3. positional target's stack-name prefix          (PR #45 mirror)
+  //      e.g. `cdkd local start-api MyStack/MyApi` infers `MyStack`.
+  //
+  // CDK apps typically deploy each synth stack under its own stack-name,
+  // so any of the three values identifies the synth target unambiguously
+  // without the user having to repeat themselves via `--stack`.
+  const effective = pattern ?? cfnStackFallback ?? targetFallback;
+  if (effective) {
+    return matchStacks(stacks, [effective]);
   }
   if (stacks.length === 1) return stacks;
   if (stacks.length === 0) return [];
@@ -1186,8 +1257,63 @@ function pickTargetStacks(stacks: StackInfo[], pattern: string | undefined): Sta
   // its routes — but for v1 we require an explicit selection so users
   // don't accidentally serve a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name> to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
+    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, or a stack-qualified target like "<StackName>/<construct>" to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
   );
+}
+
+/**
+ * Decide whether the `--from-cfn-stack <name>` redundancy tip should
+ * fire for the current invocation. Fires only when:
+ *  - `fromCfnStack` is a non-empty STRING (explicit value, not bare `true`)
+ *  - exactly ONE stack is routed
+ *  - the explicit value equals the routed stack's `stackName`
+ *
+ * Extracted as a pure function so it can be unit-tested without booting
+ * the full server. See improvement A in the start-api UX PR.
+ *
+ * @internal exported for unit tests.
+ */
+export function shouldEmitFromCfnRedundancyTip(
+  fromCfnStack: string | boolean | undefined,
+  routedStackNames: readonly string[]
+): boolean {
+  if (typeof fromCfnStack !== 'string') return false;
+  if (fromCfnStack.length === 0) return false;
+  if (routedStackNames.length !== 1) return false;
+  return fromCfnStack === routedStackNames[0];
+}
+
+/**
+ * One-shot wrapper around `shouldEmitFromCfnRedundancyTip` for the
+ * `--watch` hot-reload path. `synthesizeAndBuild` re-runs on every
+ * reload firing, so without a gate the tip would re-emit on every
+ * reload — noisy. This helper consults the caller-supplied ref:
+ *  - If the predicate fires AND the ref is still `false`, calls `emit`
+ *    and flips the ref to `true`.
+ *  - On subsequent invocations the ref is `true` and the helper is a
+ *    no-op for the rest of the ref's lifetime.
+ *  - When the predicate does NOT fire (no `--from-cfn-stack` value /
+ *    intentionally-different value / multi-stack run), the ref stays
+ *    `false` so a future reload whose synthesized stacks change in a
+ *    way that DOES make the value redundant still emits the tip once.
+ *
+ * The ref is owned by `localStartApiCommand` (one per server boot), so
+ * independent server invocations get independent flags.
+ *
+ * @internal exported for unit tests.
+ */
+export function tryEmitFromCfnRedundancyTipOnce(
+  fromCfnStack: string | boolean | undefined,
+  routedStackNames: readonly string[],
+  emittedRef: { value: boolean },
+  emit: (routedStackName: string) => void
+): void {
+  if (emittedRef.value) return;
+  if (!shouldEmitFromCfnRedundancyTip(fromCfnStack, routedStackNames)) return;
+  const routedStackName = routedStackNames[0];
+  if (routedStackName === undefined) return;
+  emit(routedStackName);
+  emittedRef.value = true;
 }
 
 /**
@@ -1526,7 +1652,8 @@ async function buildContainerSpec(args: {
       );
     }
   }
-  const envResult = resolveEnvVars(logicalId, templateEnv, overrides);
+  const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
+  const envResult = resolveEnvVars(logicalId, lambdaCdkPath, templateEnv, overrides);
   for (const key of envResult.unresolved) {
     // The state-resolver already warned for keys it tried + failed on
     // (defensive: substituteEnvVarsFromState drops unresolved keys from
@@ -1534,9 +1661,13 @@ async function buildContainerSpec(args: {
     // `cdkd local invoke --from-state`'s safety dedupe in case the
     // state-resolver evolves).
     if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
+    // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
+    // matches the README guidance and `cdkd local invoke` target shape;
+    // the resolver's prefix rule accepts either form.
+    const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? logicalId;
     getLogger().warn(
       `Lambda ${logicalId}: env var ${key} contains a CloudFormation intrinsic and was dropped. ` +
-        `Override it with --env-vars (e.g. {"${logicalId}":{"${key}":"<literal>"}}) ` +
+        `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}) ` +
         `or pass --from-state to recover deployed values.`
     );
   }

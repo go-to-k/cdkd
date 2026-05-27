@@ -16,6 +16,22 @@ export function readCdkPath(resource: TemplateResource): string {
 }
 
 /**
+ * Same lookup as `readCdkPath`, but returns `undefined` instead of an
+ * empty string when no `aws:cdk:path` metadata is present.
+ *
+ * Use this variant when the caller passes the value into APIs whose
+ * contract distinguishes "no path known" from "empty path". For example,
+ * `resolveEnvVars(logicalId, displayPath, ...)` short-circuits the
+ * display-path lookup when `displayPath` is `undefined`, but an empty
+ * string `''` would still hit the loop and could spuriously match a
+ * malformed override key.
+ */
+export function readCdkPathOrUndefined(resource: TemplateResource): string | undefined {
+  const path = readCdkPath(resource);
+  return path === '' ? undefined : path;
+}
+
+/**
  * Build a `Map<cdkPath, logicalId>` from a synthesized template.
  *
  * Used by `cdkd orphan <constructPath>` to translate user-supplied
