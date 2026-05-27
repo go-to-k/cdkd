@@ -144,6 +144,45 @@ describe('promptRecreateConfirm (#649)', () => {
     expect(warnLines).not.toContain('**DATA LOSS** OtherFn');
   });
 
+  it('renders downstream consumer enumeration when supplied (#650)', async () => {
+    await promptRecreateConfirm({
+      stackName: 'Producer',
+      targets: [target()],
+      yes: true,
+      downstreamConsumers: [
+        {
+          consumerStack: 'StackB',
+          consumerRegion: 'us-east-1',
+          exportName: 'ProducerArn',
+          intrinsic: 'ImportValue',
+        },
+        {
+          consumerStack: 'StackC',
+          consumerRegion: 'us-east-1',
+          exportName: 'OtherArn',
+          intrinsic: 'ImportValue',
+        },
+      ],
+    });
+    const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+    expect(warnLines).toContain("Downstream consumers of Producer's outputs");
+    expect(warnLines).toContain('- StackB (us-east-1) reads ProducerArn via Fn::ImportValue');
+    expect(warnLines).toContain('- StackC (us-east-1) reads OtherArn via Fn::ImportValue');
+    expect(warnLines).toContain('per-resource; sibling resources are unaffected');
+  });
+
+  it('skips downstream enumeration section when the list is empty (#650)', async () => {
+    await promptRecreateConfirm({
+      stackName: 'Producer',
+      targets: [target()],
+      yes: true,
+      downstreamConsumers: [],
+    });
+    const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+    expect(warnLines).not.toContain("Downstream consumers of Producer's outputs");
+    expect(warnLines).toContain('per-resource; sibling resources are unaffected');
+  });
+
   it('throws an actionable error in a non-TTY environment when --yes is not set', async () => {
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
     await expect(
