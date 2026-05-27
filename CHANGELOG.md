@@ -1,3 +1,10 @@
+# [0.168.0](https://github.com/go-to-k/cdkd/compare/v0.167.3...v0.168.0) (2026-05-27)
+
+
+### Features
+
+* **state:** schema v8 + Fn::GetStackOutput consumer enumeration ([#671](https://github.com/go-to-k/cdkd/issues/671)) ([21b1f1c](https://github.com/go-to-k/cdkd/commit/21b1f1c343a54f44e704435cd851aece55d5e62a))
+
 ## [0.167.3](https://github.com/go-to-k/cdkd/compare/v0.167.2...v0.167.3) (2026-05-27)
 
 
