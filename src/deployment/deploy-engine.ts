@@ -146,6 +146,29 @@ export interface DeployEngineOptions {
     parentLogicalId: string;
     parentRegion: string;
   };
+
+  /**
+   * Issue [#615] — user-named resources to destroy + recreate via Cloud
+   * Control API this deploy. Plumbed through `--recreate-via-cc-api
+   * <LogicalId>` (repeatable). Validated upstream in `deploy.ts` (typo /
+   * missing-state / ambiguous-intent / stateful guard); the engine
+   * trusts that every id in this set is present in cdkd state on entry.
+   *
+   * Behavior at each provisionResource site:
+   *   - CREATE → log a warning + treat as normal CREATE (recreate is
+   *     N/A for resources that don't yet exist).
+   *   - UPDATE → force the replacement code path, route the new
+   *     resource via CC API (regardless of whether the template has a
+   *     silent-drop property), stamp `provisionedBy: 'cc-api'` on the
+   *     new state record. The OLD resource's destroy uses its
+   *     state-recorded `provisionedBy` so the destroy hits the right
+   *     provider.
+   *   - DELETE → ignore the flag (the resource is being destroyed
+   *     anyway).
+   *
+   * When `undefined` or empty, the engine behaves exactly as before #615.
+   */
+  recreateViaCcApiTargets?: ReadonlySet<string>;
 }
 
 /**
@@ -1781,29 +1804,45 @@ export class DeployEngine {
         }
 
         // Check if this update requires resource replacement (immutable property changed)
-        const needsReplacement = change.propertyChanges?.some((pc) => pc.requiresReplacement);
+        const propertyDrivenReplacement = change.propertyChanges?.some(
+          (pc) => pc.requiresReplacement
+        );
+        // Issue [#615] — the user explicitly named this resource via
+        // `--recreate-via-cc-api <LogicalId>` so this deploy MUST destroy
+        // + recreate it through Cloud Control regardless of whether the
+        // template's diff would otherwise drive a replacement.
+        const recreateViaCcApi = this.options.recreateViaCcApiTargets?.has(logicalId) ?? false;
+        const needsReplacement = propertyDrivenReplacement || recreateViaCcApi;
 
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
         const dependencies = this.extractAllDependencies(template, logicalId);
 
         if (needsReplacement) {
           // Resource replacement: DELETE old → CREATE new
-          const replacedProps = change.propertyChanges
-            ?.filter((pc) => pc.requiresReplacement)
-            .map((pc) => pc.path)
-            .join(', ');
-          this.logger.info(
-            `Replacing ${logicalId} (${resourceType}) - immutable properties changed: ${replacedProps}`
-          );
+          const replacementReason = recreateViaCcApi
+            ? '--recreate-via-cc-api flag (mid-life SDK→CC migration)'
+            : `immutable properties changed: ${change.propertyChanges
+                ?.filter((pc) => pc.requiresReplacement)
+                .map((pc) => pc.path)
+                .join(', ')}`;
+          this.logger.info(`Replacing ${logicalId} (${resourceType}) - ${replacementReason}`);
 
           // The new (replacement) resource gets a fresh routing decision —
           // a property the SDK provider used to silent-drop may now be
           // wired, or vice versa. The OLD resource's delete uses the
           // state-recorded layer (sticky) so a CC-managed legacy is
           // deleted via CC even if the template now would land on SDK.
+          //
+          // When the recreate is driven by `--recreate-via-cc-api`, pass
+          // an explicit `provisionedBy: 'cc-api'` hint so the routing
+          // decision tree's rule 2 ("sticky CC") returns CC even when
+          // the template itself has no silent-drop property. The new
+          // physical id then stamps `provisionedBy: 'cc-api'` on state
+          // and all subsequent ops stick to CC.
           const replaceDecision = this.providerRegistry.getProviderFor({
             resourceType,
             properties: resolvedProps,
+            ...(recreateViaCcApi && { provisionedBy: 'cc-api' as const }),
           });
           const replaceProvider = replaceDecision.provider;
           const replaceProps =
