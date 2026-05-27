@@ -1,3 +1,10 @@
+## [0.167.3](https://github.com/go-to-k/cdkd/compare/v0.167.2...v0.167.3) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** mount profile-aware credentials file for ECS containers (fromIni({ profile }) handlers) ([#672](https://github.com/go-to-k/cdkd/issues/672)) ([c47ac79](https://github.com/go-to-k/cdkd/commit/c47ac79a2f1054227216948401ce791330050846))
+
 ## [0.167.2](https://github.com/go-to-k/cdkd/compare/v0.167.1...v0.167.2) (2026-05-27)
 
 
