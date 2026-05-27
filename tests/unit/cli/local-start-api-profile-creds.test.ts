@@ -35,14 +35,14 @@ describe('resolveProfileCredentials (issue #654)', () => {
       secretAccessKey: 'SECRET-TEMP',
       sessionToken: 'SESSION-TEMP',
     });
-    const creds = await resolveProfileCredentials('mates_dev');
+    const creds = await resolveProfileCredentials('dev-sso');
     expect(creds).toEqual({
       accessKeyId: 'AKIA-TEMP',
       secretAccessKey: 'SECRET-TEMP',
       sessionToken: 'SESSION-TEMP',
     });
     // STSClient constructed with the profile threaded through.
-    expect(stsCtorMock).toHaveBeenCalledWith({ profile: 'mates_dev' });
+    expect(stsCtorMock).toHaveBeenCalledWith({ profile: 'dev-sso' });
     // Destroy called for cleanup.
     expect(stsDestroyMock).toHaveBeenCalledOnce();
   });

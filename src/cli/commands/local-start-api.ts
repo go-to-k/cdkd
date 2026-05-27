@@ -1503,7 +1503,7 @@ async function buildContainerSpec(args: {
     // overlay covers SSO / IAM Identity Center / regular access key /
     // role-assumption profiles uniformly (resolved via the SDK's
     // default credential chain). Without this overlay, a dev who runs
-    // `cdkd local start-api --profile mates_dev` AND has no
+    // `cdkd local start-api --profile dev` AND has no
     // `AWS_ACCESS_KEY_ID` env var (the common SSO / Identity Center
     // case) sees the Lambda boot with no creds → handler's AWS SDK
     // call fails with `Could not load credentials from any providers`.
