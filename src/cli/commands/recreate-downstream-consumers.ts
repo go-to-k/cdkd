@@ -36,6 +36,7 @@
  */
 
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
+import { getLogger } from '../../utils/logger.js';
 
 /**
  * One downstream consumer of a recreate target's outputs.
@@ -52,7 +53,7 @@ export interface DownstreamConsumer {
    * detects `'ImportValue'`; `'GetStackOutput'` is reserved for a
    * future schema bump that adds `outputReads[]` tracking.
    */
-  intrinsic: 'ImportValue';
+  intrinsic: 'ImportValue' | 'GetStackOutput';
 }
 
 /**
@@ -73,7 +74,21 @@ export async function findDownstreamConsumers(input: {
   /** Default-region fallback for legacy v1 state records that lack `region`. */
   baseRegion: string;
 }): Promise<DownstreamConsumer[]> {
-  const refs = await input.stateBackend.listStacks();
+  const logger = getLogger().child('recreate-downstream');
+  // Outer soft-fail: a transient `ListObjectsV2` IAM denial / 5xx on
+  // the state bucket must NOT abort the deploy. The warn block is
+  // informational; the generic caveat that follows already covers the
+  // "we couldn't enumerate" case.
+  let refs: Awaited<ReturnType<S3StateBackend['listStacks']>>;
+  try {
+    refs = await input.stateBackend.listStacks();
+  } catch (err) {
+    logger.debug(
+      `findDownstreamConsumers: listStacks failed; ` +
+        `falling back to empty enumeration. ${err instanceof Error ? err.message : String(err)}`
+    );
+    return [];
+  }
   const results = await Promise.all(
     refs.map(async (ref) => {
       const region = ref.region ?? input.baseRegion;
@@ -96,10 +111,14 @@ export async function findDownstreamConsumers(input: {
           exportName: entry.exportName,
           intrinsic: 'ImportValue',
         }));
-      } catch {
+      } catch (err) {
         // An unreadable single state file shouldn't tank the entire
-        // enumeration — return null and let the caller render
-        // whatever consumers were found in other stacks.
+        // enumeration — log at debug and return null; the caller still
+        // renders whatever consumers were found in other stacks.
+        logger.debug(
+          `findDownstreamConsumers: skip ${ref.stackName} (${region}); ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
         return null;
       }
     })

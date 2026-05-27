@@ -206,6 +206,23 @@ describe('findDownstreamConsumers (#650)', () => {
     expect(out.every((c) => c.consumerStack === 'StackB')).toBe(true);
   });
 
+  it('soft-fails on listStacks error (deploy must not abort on transient S3 list failure)', async () => {
+    const backend = {
+      listStacks: vi.fn(async () => {
+        throw new Error('AccessDeniedException on ListObjectsV2');
+      }),
+      getState: vi.fn(),
+    } as unknown as S3StateBackend;
+    const out = await findDownstreamConsumers({
+      producerStack: 'Producer',
+      producerRegion: 'us-east-1',
+      stateBackend: backend,
+      baseRegion: 'us-east-1',
+    });
+    expect(out).toEqual([]);
+    expect(backend.getState).not.toHaveBeenCalled();
+  });
+
   it('falls back to baseRegion when ref.region is missing (legacy v1 records)', async () => {
     const backend = mockBackend(
       [{ stackName: 'StackB' /* no region */ }],
