@@ -1,3 +1,10 @@
+## [0.161.3](https://github.com/go-to-k/cdkd/compare/v0.161.2...v0.161.3) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** use absolute GitHub URLs in user-facing docs references ([#641](https://github.com/go-to-k/cdkd/issues/641)) ([#642](https://github.com/go-to-k/cdkd/issues/642)) ([ff2e5bb](https://github.com/go-to-k/cdkd/commit/ff2e5bb973fb02973a29c9ebb4f753ef91deaff8))
+
 ## [0.161.2](https://github.com/go-to-k/cdkd/compare/v0.161.1...v0.161.2) (2026-05-27)
 
 
