@@ -55,7 +55,7 @@ import {
 } from '../../assets/asset-manifest-loader.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import type { StackState } from '../../types/state.js';
-import { createLocalStartApiCommand } from './local-start-api.js';
+import { createLocalStartApiCommand, resolveProfileCredentials } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
 import { createLocalStartServiceCommand } from './local-start-service.js';
 
@@ -280,6 +280,18 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
     await ensureDockerAvailable();
+
+    // Issue #657: when `--profile <p>` is set, resolve the profile to a
+    // concrete credential set ONCE up-front so it can be overlaid onto
+    // the Lambda container's env after `forwardAwsEnv` (which only reads
+    // `process.env.AWS_*` — empty for SSO / IAM Identity Center / fromIni
+    // profiles). Same fix shape as PR #655 (issue #654) for the
+    // `cdkd local start-api` family; the helper itself is exported from
+    // `local-start-api.ts` and shared. Resolved once per invoke
+    // (per the issue spec: "ONCE per invoke (NOT per-container)").
+    const profileCredentials = options.profile
+      ? await resolveProfileCredentials(options.profile)
+      : undefined;
 
     // Synthesize. Default is "synth every time" (Q2 recommendation C):
     // safe-by-default, with `-a/--app cdk.out` as the explicit opt-out
@@ -511,6 +523,13 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     }
     if (!assumeSucceeded) {
       forwardAwsEnv(dockerEnv);
+      // Issue #657: when `--profile <p>` was supplied AND assume-role
+      // did not produce creds for this Lambda (either not asked for or
+      // STS failed), overlay the profile-resolved {AKID, SAK,
+      // sessionToken?} on top of whatever `forwardAwsEnv` copied from
+      // `process.env`. See `applyProfileCredentialsOverlay`'s doc for
+      // the full precedence table + session-token-strip rationale.
+      applyProfileCredentialsOverlay(dockerEnv, profileCredentials, false);
     }
 
     // Optional inspector: --debug-port enables `node --inspect-brk` inside
@@ -1257,6 +1276,55 @@ function forwardAwsEnv(env: Record<string, string>): void {
   for (const key of passThrough) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
+  }
+}
+
+/**
+ * Issue #657: overlay `--profile <p>`-resolved credentials onto the
+ * Lambda container's env block AFTER `forwardAwsEnv` has copied
+ * `process.env.AWS_*`. The overlay covers SSO / IAM Identity Center /
+ * fromIni / role-assumption profiles uniformly (resolved via the SDK's
+ * default credential chain in `resolveProfileCredentials`). Without
+ * this overlay, a dev who runs `cdkd local invoke --profile mates_dev`
+ * AND has no `AWS_ACCESS_KEY_ID` env var (the common SSO / Identity
+ * Center case) sees the Lambda boot with no creds → handler's AWS SDK
+ * call fails with `Could not load credentials from any providers`.
+ *
+ * Precedence (codifies existing semantics + this new layer):
+ *   1. `--assume-role <arn>` (per-Lambda STS creds) — unchanged
+ *   2. NEW: `--profile <p>` resolved + cached (this helper)
+ *   3. `process.env.AWS_*` forwarded — when `--profile` not set
+ *
+ * Region from `forwardAwsEnv` is preserved — only the credential
+ * triple is overlaid.
+ *
+ * When the resolved profile is long-lived (no `sessionToken`), any
+ * inherited `AWS_SESSION_TOKEN` is stripped — a mismatched (long-
+ * lived AKID + foreign session) would otherwise cause an SDK error
+ * inside the container.
+ *
+ * No-op when `profileCreds` is `undefined` (profile not set) or when
+ * `assumeRoleActive` is true (assume-role already won; its STS-issued
+ * creds must not be clobbered by the profile overlay).
+ *
+ * Exported for unit-test isolation (see `local-invoke-profile-creds.test.ts`).
+ */
+export function applyProfileCredentialsOverlay(
+  env: Record<string, string>,
+  profileCreds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined,
+  assumeRoleActive: boolean
+): void {
+  if (!profileCreds) return;
+  if (assumeRoleActive) return;
+  env['AWS_ACCESS_KEY_ID'] = profileCreds.accessKeyId;
+  env['AWS_SECRET_ACCESS_KEY'] = profileCreds.secretAccessKey;
+  if (profileCreds.sessionToken) {
+    env['AWS_SESSION_TOKEN'] = profileCreds.sessionToken;
+  } else {
+    // The profile resolved to long-lived creds (no session token).
+    // Strip any inherited session token to avoid the SDK trying to
+    // use a mismatched (long-lived AKID + foreign session).
+    delete env['AWS_SESSION_TOKEN'];
   }
 }
 
