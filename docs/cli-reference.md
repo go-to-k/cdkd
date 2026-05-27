@@ -643,14 +643,19 @@ Conditionally stateful (guard fires only when the resource actually
 contains data):
 
 - `AWS::S3::Bucket` — guard fires when the bucket has at least one
-  object. cdkd issues a single-page `s3:ListObjectsV2(MaxKeys=1)` against
-  each S3 bucket target at plan time (issue #648); empty buckets pass
-  through, non-empty buckets are refused unless `--force-stateful-recreation`
-  is supplied. If the probe itself fails (permission denied, transient
-  network error), cdkd logs a warn and falls through to the conservative
-  "not stateful" sync result — pass `--force-stateful-recreation` to
-  proceed when the bucket might hold data and the probe could not be
-  verified.
+  current version, prior version, or delete-marker. cdkd issues a
+  single-page `s3:ListObjectVersions(MaxKeys=1)` against each S3 bucket
+  target at plan time (issue #648); empty buckets pass through,
+  non-empty buckets (including versioned buckets whose current keys are
+  soft-deleted but whose history is still retained) are refused unless
+  `--force-stateful-recreation` is supplied. cdkd uses
+  `ListObjectVersions` rather than `ListObjectsV2` so the probe's
+  view of "empty" matches what the destroy + recreate cycle would
+  actually wipe. If the probe itself fails (permission denied,
+  transient network error), cdkd logs a warn and falls through to the
+  conservative "not stateful" sync result — pass
+  `--force-stateful-recreation` to proceed when the bucket might hold
+  data and the probe could not be verified.
 - `AWS::Logs::LogGroup` — guard fires when `RetentionInDays > 0` on the
   recorded state. Log groups without retention configured are treated
   as ephemeral.

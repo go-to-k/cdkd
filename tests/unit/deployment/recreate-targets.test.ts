@@ -403,17 +403,28 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
   }
 
   function mockS3({
-    keyCount,
+    versions,
+    deleteMarkers,
     throws,
   }: {
-    keyCount?: number;
+    versions?: number;
+    deleteMarkers?: number;
     throws?: Error;
   }): { client: S3Client; sentCommands: unknown[] } {
     const sentCommands: unknown[] = [];
     const send = vi.fn(async (cmd: unknown) => {
       sentCommands.push(cmd);
       if (throws) throw throws;
-      return { KeyCount: keyCount ?? 0 };
+      return {
+        Versions: Array.from({ length: versions ?? 0 }, (_, i) => ({
+          Key: `k${i}`,
+          VersionId: `v${i}`,
+        })),
+        DeleteMarkers: Array.from({ length: deleteMarkers ?? 0 }, (_, i) => ({
+          Key: `d${i}`,
+          VersionId: `dv${i}`,
+        })),
+      };
     });
     return { client: { send } as unknown as S3Client, sentCommands };
   }
@@ -424,54 +435,42 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
-      setLevel: vi.fn(),
-      getLevel: vi.fn(() => 'info'),
-      child: vi.fn(),
     };
   }
 
-  it('promotes statefulReason to has-objects when the bucket has at least one object', async () => {
-    const { client } = mockS3({ keyCount: 1 });
-    const out = await probeStatefulRecreateTargetsAsync(
-      [s3Target()],
-      client,
-      // @ts-expect-error — shape-compatible silent logger
-      silentLogger()
-    );
+  it('promotes statefulReason to has-objects when the bucket has at least one current version', async () => {
+    const { client } = mockS3({ versions: 1 });
+    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, silentLogger());
     expect(out).toHaveLength(1);
     expect(out[0]!.statefulReason).toBe('has-objects');
   });
 
-  it('leaves statefulReason at null when ListObjectsV2 returns an empty page', async () => {
-    const { client } = mockS3({ keyCount: 0 });
-    const out = await probeStatefulRecreateTargetsAsync(
-      [s3Target()],
-      client,
-      // @ts-expect-error
-      silentLogger()
-    );
+  it('promotes statefulReason to has-objects when the bucket has only delete-markers (versioned bucket where current keys are soft-deleted)', async () => {
+    const { client } = mockS3({ versions: 0, deleteMarkers: 1 });
+    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, silentLogger());
+    expect(out[0]!.statefulReason).toBe('has-objects');
+  });
+
+  it('leaves statefulReason at null when ListObjectVersions returns no versions and no delete-markers', async () => {
+    const { client } = mockS3({ versions: 0, deleteMarkers: 0 });
+    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, silentLogger());
     expect(out[0]!.statefulReason).toBe(null);
   });
 
   it('soft-fails on probe error — logs a warn and leaves the sync result in place', async () => {
     const { client } = mockS3({ throws: new Error('AccessDenied') });
     const logger = silentLogger();
-    const out = await probeStatefulRecreateTargetsAsync(
-      [s3Target()],
-      client,
-      // @ts-expect-error
-      logger
-    );
+    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, logger);
     expect(out[0]!.statefulReason).toBe(null);
     expect(logger.warn).toHaveBeenCalledTimes(1);
-    const warnArg = (logger.warn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    const warnArg = logger.warn.mock.calls[0]![0] as string;
     expect(warnArg).toContain('live S3 probe failed');
     expect(warnArg).toContain('MyBucket');
     expect(warnArg).toContain('AccessDenied');
   });
 
   it('passes through non-S3 targets without probing', async () => {
-    const { client, sentCommands } = mockS3({ keyCount: 5 });
+    const { client, sentCommands } = mockS3({ versions: 5 });
     const out = await probeStatefulRecreateTargetsAsync(
       [
         {
@@ -482,7 +481,6 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
         },
       ],
       client,
-      // @ts-expect-error
       silentLogger()
     );
     expect(out[0]!.statefulReason).toBe(null);
@@ -490,11 +488,10 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
   });
 
   it('passes through S3 targets whose sync reason is already non-null without probing', async () => {
-    const { client, sentCommands } = mockS3({ keyCount: 99 });
+    const { client, sentCommands } = mockS3({ versions: 99 });
     const out = await probeStatefulRecreateTargetsAsync(
       [s3Target({ statefulReason: 'always' })],
       client,
-      // @ts-expect-error
       silentLogger()
     );
     expect(out[0]!.statefulReason).toBe('always');
@@ -514,7 +511,10 @@ describe('probeAndRevalidateStateful (#648)', () => {
   }
 
   it('promotes the blockedStatefulTargets list when the probe finds objects', async () => {
-    const send = vi.fn(async () => ({ KeyCount: 1 }));
+    const send = vi.fn(async () => ({
+      Versions: [{ Key: 'k', VersionId: 'v' }],
+      DeleteMarkers: [],
+    }));
     const s3 = { send } as unknown as S3Client;
     const validation = {
       targets: [s3Target()],

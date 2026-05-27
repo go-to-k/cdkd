@@ -33,7 +33,7 @@
  * Fail fast and let the user pick one strategy per resource.
  */
 
-import { ListObjectsV2Command, type S3Client } from '@aws-sdk/client-s3';
+import { ListObjectVersionsCommand, type S3Client } from '@aws-sdk/client-s3';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState } from '../types/state.js';
 import {
@@ -294,15 +294,24 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
  *
  * For every `AWS::S3::Bucket` target whose sync {@link StatefulReason}
  * is `null` (the sync map defers — see {@link isStatefulRecreateTargetSync}),
- * issues a single-page `ListObjectsV2(MaxKeys=1)` against the bucket's
- * recorded physical id. When the bucket has at least one object,
- * promotes the target's `statefulReason` to `'has-objects'`.
+ * issues a single-page `ListObjectVersions(MaxKeys=1)` against the
+ * bucket's recorded physical id. When the bucket has at least one
+ * current object, prior version, OR delete-marker, promotes the
+ * target's `statefulReason` to `'has-objects'`.
  *
- * **Soft-fail on probe errors**: if `ListObjectsV2` throws (permission
- * denied, bucket-not-found mid-flight, transient network error), logs
- * a warn and leaves the target's `statefulReason` at the sync result
- * (`null`). The user can decide to proceed without the probe by passing
- * `--force-stateful-recreation`.
+ * Uses `ListObjectVersions` rather than `ListObjectsV2` so the probe
+ * mirrors the s3-bucket-provider's `emptyBucket` view: a versioned
+ * bucket whose current keys have all been soft-deleted (so
+ * `ListObjectsV2.KeyCount === 0`) still holds prior versions +
+ * delete-markers that the destroy + recreate cycle would lose. Using
+ * the same listing API as the provider ensures the probe and the
+ * destroy path agree on "empty".
+ *
+ * **Soft-fail on probe errors**: if `ListObjectVersions` throws
+ * (permission denied, bucket-not-found mid-flight, transient network
+ * error), logs a warn and leaves the target's `statefulReason` at the
+ * sync result (`null`). The user can decide to proceed without the
+ * probe by passing `--force-stateful-recreation`.
  *
  * Returns a NEW array of targets; the input is not mutated. Non-S3
  * targets and S3 targets whose sync reason is already non-null are
@@ -321,12 +330,14 @@ export async function probeStatefulRecreateTargetsAsync(
     }
     try {
       const result = await s3Client.send(
-        new ListObjectsV2Command({
+        new ListObjectVersionsCommand({
           Bucket: target.physicalId,
           MaxKeys: 1,
         })
       );
-      if ((result.KeyCount ?? 0) > 0) {
+      const hasVersions = (result.Versions?.length ?? 0) > 0;
+      const hasDeleteMarkers = (result.DeleteMarkers?.length ?? 0) > 0;
+      if (hasVersions || hasDeleteMarkers) {
         promoted.push({ ...target, statefulReason: 'has-objects' });
       } else {
         promoted.push({ ...target });
