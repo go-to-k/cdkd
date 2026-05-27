@@ -905,6 +905,7 @@ describe('discoverRoutes — Function URL', () => {
       apiVersion: 'v2',
       stage: '$default',
       apiStackName: 'S',
+      apiLogicalId: 'Url', // issue #644: Function URL's own logical ID (CORS-config-bearing)
       declaredAt: 'S/Url',
       invokeMode: 'BUFFERED',
     });

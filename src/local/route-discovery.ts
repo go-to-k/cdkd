@@ -85,13 +85,19 @@ export interface DiscoveredRoute {
    */
   stage: string;
   /**
-   * Logical ID of the parent API resource:
+   * Logical ID of the resource that owns this route's surface-level
+   * config (CORS, stage variables, etc.):
    *   - REST v1 routes: the `AWS::ApiGateway::RestApi`.
    *   - HTTP API routes: the `AWS::ApiGatewayV2::Api`.
-   *   - Function URL routes: `undefined` (Function URLs aren't grouped
-   *     under an API).
+   *   - Function URL routes: the `AWS::Lambda::Url` itself (issue #644
+   *     — the Function URL is its own surface-config-bearing resource;
+   *     it carries the `Cors` block that `buildCorsConfigByApiId`
+   *     surfaces).
    *
-   * Used by the CORS handler + stage-resolver to look up per-API config.
+   * Used by the CORS handler + stage-resolver to look up per-surface
+   * config. Despite the name `apiLogicalId`, the value is "the
+   * surface-config-bearing resource" rather than literally "an API
+   * resource" — that distinction is load-bearing for Function URLs.
    */
   apiLogicalId?: string;
   /**
@@ -1157,6 +1163,15 @@ function discoverFunctionUrl(
     apiVersion: 'v2',
     stage: '$default',
     apiStackName: stackName,
+    // Issue #644: set `apiLogicalId` to the AWS::Lambda::Url's own
+    // logical ID so the CORS preflight interceptor can look up the
+    // Function URL's `Cors` block via `buildCorsConfigByApiId`. The
+    // pre-fix design left this undefined ("Function URLs aren't
+    // grouped under a parent API"); the new semantics is that
+    // `apiLogicalId` points at the CORS-config-bearing resource
+    // (HTTP API v2's `AWS::ApiGatewayV2::Api` OR Function URL's
+    // `AWS::Lambda::Url`), which is the only consumer of the field.
+    apiLogicalId: logicalId,
     ...(lambdaCdkPath !== undefined && { apiCdkPath: lambdaCdkPath }),
     declaredAt: `${stackName}/${logicalId}`,
   };
