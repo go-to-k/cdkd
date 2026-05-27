@@ -1,3 +1,10 @@
+## [0.161.1](https://github.com/go-to-k/cdkd/compare/v0.161.0...v0.161.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** resolve canonical fromImageAsset image URI ([#637](https://github.com/go-to-k/cdkd/issues/637)) ([#639](https://github.com/go-to-k/cdkd/issues/639)) ([e49ccca](https://github.com/go-to-k/cdkd/commit/e49cccab98d8157a3ae0c328d98dc2bd1842f03a))
+
 # [0.161.0](https://github.com/go-to-k/cdkd/compare/v0.160.0...v0.161.0) (2026-05-27)
 
 
