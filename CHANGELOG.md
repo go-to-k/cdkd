@@ -1,3 +1,10 @@
+## [0.164.1](https://github.com/go-to-k/cdkd/compare/v0.164.0...v0.164.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** forward --profile-resolved credentials to local-invoke Lambda container ([#657](https://github.com/go-to-k/cdkd/issues/657)) ([#661](https://github.com/go-to-k/cdkd/issues/661)) ([fd98abc](https://github.com/go-to-k/cdkd/commit/fd98abcc23f1dde3296553d126e43280354df2c1))
+
 # [0.164.0](https://github.com/go-to-k/cdkd/compare/v0.163.0...v0.164.0) (2026-05-27)
 
 
