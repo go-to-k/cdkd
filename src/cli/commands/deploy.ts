@@ -21,6 +21,7 @@ import {
   probeAndRevalidateStateful,
 } from '../../deployment/recreate-targets.js';
 import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
+import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -490,6 +491,17 @@ async function deployCommand(
           }
           recreateViaCcApiTargets = new Set(validation.targets.map((t) => t.logicalId));
           if (recreateViaCcApiTargets.size > 0) {
+            // Issue [#650] — enumerate downstream `Fn::ImportValue`
+            // consumers via the state bucket walk so the warn block
+            // names them by stack. Soft-fail (returns []) on read
+            // errors — the generic caveat still surfaces below.
+            const downstreamConsumers = await findDownstreamConsumers({
+              producerStack: stackInfo.stackName,
+              producerRegion: stackRegion,
+              stateBackend: stackStateBackend,
+              baseRegion,
+            });
+
             // Issue [#649] — interactive [y/N] prompt. Mirrors the
             // existing prefix-rename prompt structure: per-stack, with
             // --yes / -y short-circuiting to the warn-log surface that
@@ -500,6 +512,7 @@ async function deployCommand(
               stackName: stackInfo.stackName,
               targets: validation.targets,
               yes: options.yes ?? false,
+              downstreamConsumers,
             });
             if (!proceed) {
               return;

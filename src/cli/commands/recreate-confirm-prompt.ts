@@ -27,11 +27,22 @@
 import readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
 import type { RecreateTarget } from '../../deployment/recreate-targets.js';
+import {
+  renderDownstreamConsumers,
+  type DownstreamConsumer,
+} from './recreate-downstream-consumers.js';
 
 export async function promptRecreateConfirm(input: {
   stackName: string;
   targets: ReadonlyArray<RecreateTarget>;
   yes: boolean;
+  /**
+   * Optional per-target downstream consumer enumeration (issue [#650]).
+   * Empty / undefined → no per-target consumer list is rendered (the
+   * generic caveat still fires). When supplied, each entry is rendered
+   * below the corresponding target.
+   */
+  downstreamConsumers?: ReadonlyArray<DownstreamConsumer>;
 }): Promise<boolean> {
   if (input.targets.length === 0) return true;
 
@@ -53,6 +64,13 @@ export async function promptRecreateConfirm(input: {
         `    DATA: all data in ${t.logicalId} will be lost (no automatic data migration)`
       );
     }
+  }
+  // Issue [#650] — per-target downstream consumer enumeration.
+  // Fires once (consumers are stack-wide, not per-target — every
+  // Fn::ImportValue from this stack lands in the same list).
+  if (input.downstreamConsumers && input.downstreamConsumers.length > 0) {
+    const rendered = renderDownstreamConsumers(input.stackName, input.downstreamConsumers);
+    if (rendered) logger.warn(rendered);
   }
   logger.warn(
     '  The destroy + recreate cycle is per-resource; sibling resources are unaffected. ' +
