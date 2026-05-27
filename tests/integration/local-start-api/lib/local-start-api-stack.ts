@@ -358,5 +358,31 @@ export class LocalStartApiStack extends cdk.Stack {
       authType: lambda.FunctionUrlAuthType.NONE,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
     });
+
+    // Issue #664: a second streaming Function URL whose handler uses the
+    // `responseStream.setContentType(...)` + `responseStream.write(...)`
+    // shortcut WITHOUT explicitly calling
+    // `awslambda.HttpResponseStream.from(stream, metadata)`. Production AWS
+    // Lambda accepts this pattern; pre-#664 cdkd local rejected it because
+    // RIE emits no prelude+separator framing in that case. Post-fix cdkd
+    // synthesizes a default prelude (200 / application/octet-stream) and
+    // surfaces the body bytes verbatim — verify.sh asserts the route
+    // returns 200 + the expected SSE-style body.
+    const streamUrlSetContentTypeHandler = new lambda.Function(
+      this,
+      'StreamUrlSetContentTypeHandler',
+      {
+        runtime: lambda.Runtime.NODEJS_20_X,
+        handler: 'index.handler',
+        code: lambda.Code.fromAsset(
+          path.join(__dirname, '../lambda-stream-url-set-content-type')
+        ),
+        timeout: cdk.Duration.seconds(30),
+      }
+    );
+    streamUrlSetContentTypeHandler.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+      invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
+    });
   }
 }

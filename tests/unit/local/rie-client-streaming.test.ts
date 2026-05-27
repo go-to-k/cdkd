@@ -249,15 +249,55 @@ describe('invokeRieStreaming', () => {
     expect(body.length).toBe(0);
   });
 
-  it('rejects when the response ends before the separator arrives', async () => {
+  it('rejects when the response ends with zero bytes (handler crashed pre-write)', async () => {
+    // Genuinely empty response — RIE emitted nothing, handler threw before
+    // any output. Issue #664: rejected with a clear pointer to container logs
+    // (where the real error trace lives).
     nextStreamResponse = (_req, res) => {
       res.writeHead(200);
-      // Send only part of the prelude — no separator, no body.
-      res.end(Buffer.from('{"statusCode":200,"headers":{}'));
+      res.end();
     };
-    await expect(invokeRieStreaming('127.0.0.1', port, {}, 5000)).rejects.toThrow(
-      /ended before the prelude/
-    );
+    await expect(invokeRieStreaming('127.0.0.1', port, {}, 5000)).rejects.toThrow(/zero bytes/);
+  });
+
+  it('synthesizes a default prelude when the handler emits bytes without a separator (setContentType pattern)', async () => {
+    // Issue #664: a handler wrapped by `awslambda.streamifyResponse(...)` that
+    // uses `responseStream.setContentType(...)` + `responseStream.write(...)`
+    // WITHOUT explicitly calling `awslambda.HttpResponseStream.from(...)` —
+    // the documented AWS Lambda streaming shortcut — produces NO 8-NULL
+    // prelude separator on the RIE wire. Production AWS Lambda accepts this;
+    // pre-#664 cdkd rejected the invocation. Post-fix: cdkd synthesizes a
+    // default 200 / application/octet-stream prelude and surfaces every
+    // received byte as the body so the dev's handler runs locally as it does
+    // in production.
+    nextStreamResponse = (_req, res) => {
+      res.writeHead(200);
+      // SSE-style body the handler wrote — NO prelude, NO separator,
+      // just raw bytes.
+      res.end(Buffer.from('data: {"hello":"world"}\n\n'));
+    };
+    const result = await invokeRieStreaming('127.0.0.1', port, {}, 5000);
+    expect(result.prelude.statusCode).toBe(200);
+    expect(result.prelude.headers).toEqual({ 'Content-Type': 'application/octet-stream' });
+    const body = await collectBody(result);
+    expect(body.toString('utf8')).toBe('data: {"hello":"world"}\n\n');
+  });
+
+  it('synthesizes default prelude even when buffered bytes look like a partial JSON attempt', async () => {
+    // Companion to the setContentType test: even when the buffered bytes
+    // happen to LOOK like a partial JSON prelude attempt, surface them as
+    // body rather than reject. The Lambda error envelope shape
+    // (`{"errorType":...}`) lives in this space — the dev gets it back in
+    // the response body verbatim, which is the right diagnostic outcome.
+    nextStreamResponse = (_req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.from('{"errorType":"InternalError","errorMessage":"boom"}'));
+    };
+    const result = await invokeRieStreaming('127.0.0.1', port, {}, 5000);
+    expect(result.prelude.statusCode).toBe(200);
+    expect(result.prelude.headers).toEqual({ 'Content-Type': 'application/octet-stream' });
+    const body = await collectBody(result);
+    expect(body.toString('utf8')).toBe('{"errorType":"InternalError","errorMessage":"boom"}');
   });
 
   it('rejects when the prelude is not valid JSON', async () => {

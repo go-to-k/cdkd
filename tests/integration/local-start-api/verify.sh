@@ -128,15 +128,21 @@ PORT_REST=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\
 # so the `(` boundary excludes it).
 PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(UrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
 PORT_FNURL_STREAM=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(StreamUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
-if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" ]]; then
+# Issue #664: a second streaming Function URL whose handler uses the
+# setContentType-only shortcut (no explicit `HttpResponseStream.from(...)`).
+# `StreamUrlSetContentTypeHandler[A-F0-9]{8}` is distinct from
+# `StreamUrlHandler[A-F0-9]{8}` (the `Set` infix breaks the latter regex).
+PORT_FNURL_STREAM_SCT=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(StreamUrlSetContentTypeHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" || -z "${PORT_FNURL_STREAM_SCT}" ]]; then
   echo "FAIL: could not extract per-API port mappings. Log:"
   cat "${LOG_FILE}"
   exit 1
 fi
-echo "    HTTP API v2:           ${PORT_HTTP}"
-echo "    REST API v1:           ${PORT_REST}"
-echo "    Function URL:          ${PORT_FNURL}"
-echo "    Function URL (stream): ${PORT_FNURL_STREAM}"
+echo "    HTTP API v2:                  ${PORT_HTTP}"
+echo "    REST API v1:                  ${PORT_REST}"
+echo "    Function URL:                 ${PORT_FNURL}"
+echo "    Function URL (stream):        ${PORT_FNURL_STREAM}"
+echo "    Function URL (stream/SCT):    ${PORT_FNURL_STREAM_SCT}"
 
 # Verify the route table contains every route. Method-column width
 # varies per server (REST v1 with OPTIONS preflight rows has a wider
@@ -203,7 +209,7 @@ curl_assert() {
   local needle="$3"
   shift 3
   local response=""
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     if response=$(curl -sf "$@" "${url}" 2>&1); then
       if echo "${response}" | grep -q "${needle}"; then
         echo "    [${label}] OK"
@@ -254,7 +260,7 @@ echo "==> Asserting streaming Function URL (#467)"
 STREAM_URL="http://127.0.0.1:${PORT_FNURL_STREAM}/anything"
 # First-request retry loop (cold container ~3-5s on first invoke).
 STREAM_RESPONSE=""
-for attempt in 1 2 3 4 5 6 7 8 9 10; do
+for _ in 1 2 3 4 5 6 7 8 9 10; do
   if STREAM_RESPONSE=$(curl -sf -i --no-buffer "${STREAM_URL}" 2>&1); then
     if echo "${STREAM_RESPONSE}" | grep -q 'hello-0'; then break; fi
   fi
@@ -302,6 +308,46 @@ if echo "${STREAM_RESPONSE}" | grep -q '"statusCode":200,"headers"'; then
   exit 1
 fi
 echo "    [streaming Function URL] OK"
+
+# Issue #664: streaming Function URL whose handler uses the documented
+# `responseStream.setContentType(...)` + `responseStream.write(...)`
+# shortcut WITHOUT explicitly calling
+# `awslambda.HttpResponseStream.from(stream, metadata)`. Production AWS
+# Lambda + Function URL handles this — the runtime auto-completes the
+# prelude — but RIE emits only the raw body bytes the handler wrote
+# (verified empirically 2026-05-27 against `public.ecr.aws/lambda/nodejs:22`).
+# Pre-#664 cdkd rejected the invocation with "RIE streaming response
+# ended before the prelude/body separator". Post-fix cdkd synthesizes a
+# default 200 / application/octet-stream prelude and surfaces the body
+# bytes verbatim so the handler runs locally as it does in production.
+echo "==> Asserting streaming Function URL (#664 — setContentType-only handler)"
+STREAM_URL_SCT="http://127.0.0.1:${PORT_FNURL_STREAM_SCT}/anything"
+STREAM_SCT_RESPONSE=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if STREAM_SCT_RESPONSE=$(curl -sf -i --no-buffer "${STREAM_URL_SCT}" 2>&1); then
+    if echo "${STREAM_SCT_RESPONSE}" | grep -q '"hello":"world"'; then break; fi
+  fi
+  sleep 1
+done
+if ! echo "${STREAM_SCT_RESPONSE}" | grep -qi '^HTTP/1.1 200'; then
+  echo "FAIL: setContentType-only streaming Function URL did not return 200. Response:"
+  echo "${STREAM_SCT_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${STREAM_SCT_RESPONSE}" | grep -q '"hello":"world"'; then
+  echo "FAIL: setContentType-only streaming response missing first chunk body. Response:"
+  echo "${STREAM_SCT_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${STREAM_SCT_RESPONSE}" | grep -q '"count":2'; then
+  echo "FAIL: setContentType-only streaming response missing second chunk body. Response:"
+  echo "${STREAM_SCT_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [streaming Function URL — setContentType-only (#664)] OK"
 
 # PR 8c: CORS preflight interception. The HTTP API has CorsConfiguration
 # with `*` origins; verify.sh asserts the canonical preflight response.
