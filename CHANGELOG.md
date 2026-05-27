@@ -1,3 +1,10 @@
+## [0.162.2](https://github.com/go-to-k/cdkd/compare/v0.162.1...v0.162.2) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** set CORS headers on actual responses, not just preflight ([#652](https://github.com/go-to-k/cdkd/issues/652)) ([#653](https://github.com/go-to-k/cdkd/issues/653)) ([84b2652](https://github.com/go-to-k/cdkd/commit/84b26522fc32e3882d71375bef24f98faa017b81))
+
 ## [0.162.1](https://github.com/go-to-k/cdkd/compare/v0.162.0...v0.162.1) (2026-05-27)
 
 
