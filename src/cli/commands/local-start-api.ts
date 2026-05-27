@@ -110,6 +110,10 @@ import {
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
+import {
+  writeProfileCredentialsFile,
+  type ProfileCredentialsFile,
+} from './local-profile-credentials-file.js';
 
 interface LocalStartApiOptions {
   app?: string;
@@ -305,6 +309,14 @@ async function localStartApiCommand(
   // shutdown path is the single owner of cleanup so leaks are
   // bounded by server lifetime).
   const layerTmpDirs = new Set<string>();
+  // Issue #2 deferred from #655: synthesized AWS shared credentials
+  // file bind-mounted into every Lambda container so handlers using
+  // `fromIni({ profile })` explicitly resolve to the same creds as the
+  // default chain. Created ONCE at server boot (NOT on hot reload —
+  // re-resolving profile creds is fine for env vars but rewriting the
+  // file mid-flight would race with running containers' SDK reads).
+  // Disposed in the cleanup chain. Undefined when `--profile` is unset.
+  let profileCredsFile: ProfileCredentialsFile | undefined;
   // Track every Lambda asset directory the server is currently
   // referencing; the file watcher uses this list to know what to
   // watch beyond `cdk.out/`. The value is updated AFTER the reload
@@ -498,6 +510,31 @@ async function localStartApiCommand(
       ? await resolveProfileCredentials(options.profile)
       : undefined;
 
+    // Issue #2 deferred from #655: when `--profile <p>` is set, ALSO
+    // synthesize a shared AWS credentials file with the resolved creds
+    // under `[<p>]` and bind-mount it into every Lambda container at
+    // `/cdkd-aws/credentials`. This lets handlers that use
+    // `fromIni({ profile: '<p>' })` explicitly inside their code (instead
+    // of the default credential chain) resolve to the same creds locally.
+    // The default-chain path (most handlers) keeps working through the
+    // existing `AWS_*` env-var injection — the file is the additive
+    // layer for the explicit-profile case.
+    //
+    // Caveat: under `--watch` hot reload, `profileCredentials` re-resolves
+    // and the new env vars flow to the next cold start, but the on-disk
+    // file is NOT re-written. Long-running sessions whose SSO temp creds
+    // expire need a cdkd restart (matches the auto-refresh-deferred
+    // stance for env vars from #655).
+    //
+    // Assigned to outer-scope `profileCredsFile` so the cleanup chain
+    // (`runCleanup`) disposes the file at shutdown. Only ever assigned
+    // on the FIRST synthesizeAndBuild (initial server boot) — hot
+    // reload sees the variable already set and skips re-writing per
+    // the caveat above.
+    if (options.profile && profileCredentials && !profileCredsFile) {
+      profileCredsFile = await writeProfileCredentialsFile(options.profile, profileCredentials);
+    }
+
     // Build the per-Lambda spec map. Every reachable logical ID is
     // resolved to its asset / inline code, env vars, optional STS creds
     // (--assume-role), optional --debug-port reservation. The container
@@ -522,6 +559,7 @@ async function localStartApiCommand(
         skipPull: options.pull === false,
         ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
         ...(profileCredentials && { profileCredentials }),
+        ...(profileCredsFile && { profileCredsFile }),
       });
       specs.set(logicalId, spec);
     }
@@ -1077,6 +1115,20 @@ async function localStartApiCommand(
         );
       }
     }
+    // Issue #2 deferred from #655: dispose the synthesized profile
+    // credentials file (one INI file under `/tmp/cdkd-profile-creds-*/`).
+    // Leaving temp credential files on disk after process exit is a
+    // security smell; `dispose()` rm's the tempdir recursively + force,
+    // so re-entrant calls (signal-mid-finally race) are safe.
+    if (profileCredsFile) {
+      try {
+        await profileCredsFile.dispose();
+      } catch (err) {
+        logger.warn(
+          `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
   });
   const shutdown = async (signal: string, exitCode: number): Promise<void> => {
     if (shutdownStarted) {
@@ -1369,6 +1421,16 @@ async function buildContainerSpec(args: {
    * effect — `forwardAwsEnv` copies `process.env.AWS_*`).
    */
   profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  /**
+   * Issue #2 deferred from #655: when set, a synthesized AWS shared
+   * credentials file (one INI section, the resolved `[<profile-name>]`
+   * block) the container should bind-mount + reference via
+   * `AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE` env vars. Lets handlers
+   * that use `fromIni({ profile })` explicitly inside their code resolve
+   * to the same creds locally. Undefined when `--profile` was not
+   * passed.
+   */
+  profileCredsFile?: ProfileCredentialsFile;
 }): Promise<ContainerSpec> {
   const {
     logicalId,
@@ -1384,6 +1446,7 @@ async function buildContainerSpec(args: {
     skipPull,
     layerRoleArn,
     profileCredentials,
+    profileCredsFile,
   } = args;
   const lambda = resolveLambdaByLogicalId(logicalId, stacks);
 
@@ -1525,6 +1588,19 @@ async function buildContainerSpec(args: {
     }
   }
 
+  // Issue #2 deferred from #655 (profile-aware SDK config inside
+  // container): when the server boot synthesized a credentials file via
+  // `writeProfileCredentialsFile(options.profile, ...)`, point the
+  // container's SDK chain at the bind-mounted path so
+  // `fromIni({ profile: '<name>' })` calls inside the handler resolve
+  // to the same creds as the default chain. `AWS_PROFILE` makes
+  // `fromIni()` (no explicit arg) ALSO use this profile — both code
+  // paths converge on the same `[<name>]` section.
+  if (profileCredsFile) {
+    dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
+    dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
+  }
+
   if (debugPort !== undefined) {
     dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
   }
@@ -1551,6 +1627,12 @@ async function buildContainerSpec(args: {
       ...(optDir !== undefined && { optDir }),
       ...(debugPort !== undefined && { debugPort }),
       ...(tmpfs !== undefined && { tmpfs }),
+      ...(profileCredsFile && {
+        profileCredentialsFile: {
+          hostPath: profileCredsFile.hostPath,
+          containerPath: profileCredsFile.containerPath,
+        },
+      }),
     };
     return spec;
   }
@@ -1572,6 +1654,12 @@ async function buildContainerSpec(args: {
     containerHost,
     ...(debugPort !== undefined && { debugPort }),
     ...(tmpfs !== undefined && { tmpfs }),
+    ...(profileCredsFile && {
+      profileCredentialsFile: {
+        hostPath: profileCredsFile.hostPath,
+        containerPath: profileCredsFile.containerPath,
+      },
+    }),
   };
   return spec;
 }
