@@ -116,6 +116,15 @@ export interface RecreateTargetsValidation {
    */
   blockedAlreadySdk: RecreateTarget[];
   /**
+   * #665: `--recreate-via-cc-api <id>` named on a resource whose
+   * recorded `provisionedBy` is already `'cc-api'`. Forward migration
+   * is a no-op for these; refuse with a clear message rather than
+   * silently destroy + recreate. Mirror of {@link blockedAlreadySdk}
+   * for the forward direction, addressing the pre-existing asymmetry
+   * in #615.
+   */
+  blockedAlreadyCcApi: RecreateTarget[];
+  /**
    * #651: `--recreate-via-sdk-provider <id>` named on a resource type
    * for which cdkd has no SDK provider registered (Tier 2 CC-only).
    * The destroy + recreate would just route via CC again, making the
@@ -175,6 +184,7 @@ export function validateRecreateTargets(input: {
   > = [];
   const blockedMultiRegionTargets: Array<RecreateTarget> = [];
   const blockedAlreadySdk: RecreateTarget[] = [];
+  const blockedAlreadyCcApi: RecreateTarget[] = [];
   const blockedNoSdkProvider: RecreateTarget[] = [];
 
   const conflictSet = new Set(conflictingDirections);
@@ -245,6 +255,14 @@ export function validateRecreateTargets(input: {
           ambiguousIntent.push({ logicalId, resourceType, property });
         }
       }
+
+      // #665 already-CC refusal (mirror of #651's blockedAlreadySdk):
+      // the resource is ALREADY sticky on 'cc-api' so forward migration
+      // is a no-op. Refuse rather than silently destroy + recreate
+      // (wasted downtime + AWS API churn, identical end state).
+      if (recordedResource.provisionedBy === 'cc-api') {
+        blockedAlreadyCcApi.push(target);
+      }
     } else {
       // #651 inverse ambiguous-intent: the template uses a silent-drop
       // property that is NOT in `--allow-unsupported-properties`. The
@@ -290,6 +308,7 @@ export function validateRecreateTargets(input: {
     blockedStatefulTargets,
     blockedMultiRegionTargets,
     blockedAlreadySdk,
+    blockedAlreadyCcApi,
     blockedNoSdkProvider,
     conflictingDirections,
   };
@@ -428,6 +447,24 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  Fix: remove --recreate-via-sdk-provider <id> for these resources. ` +
         `They are already SDK-managed (or pre-v7 legacy state, treated as SDK).`
+    );
+  }
+
+  // #665 — mirror of blockedAlreadySdk for the forward direction.
+  if (validation.blockedAlreadyCcApi.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `--recreate-via-cc-api named ${validation.blockedAlreadyCcApi.length} ` +
+        `resource(s) that are ALREADY sticky on Cloud Control API (the ` +
+        `migration is a no-op):`
+    );
+    for (const blocked of validation.blockedAlreadyCcApi) {
+      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+    }
+    lines.push(
+      `  Fix: remove --recreate-via-cc-api <id> for these resources. ` +
+        `They are already CC-managed; a destroy + recreate cycle would ` +
+        `produce the same end state at the cost of unnecessary downtime.`
     );
   }
 

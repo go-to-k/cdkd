@@ -604,6 +604,89 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
   });
 });
 
+describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate-via-cc-api on already-cc-api)', () => {
+  it('rejects --recreate-via-cc-api on a resource currently provisionedBy: cc-api (no-op)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedAlreadyCcApi.map((t) => t.logicalId)).toEqual(['MyLambda']);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toContain('ALREADY sticky on Cloud Control API');
+    expect(error).toContain('migration is a no-op');
+    expect(error).toContain('remove --recreate-via-cc-api');
+  });
+
+  it('accepts --recreate-via-cc-api on a resource currently provisionedBy: sdk (legitimate forward migration)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'sdk' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedAlreadyCcApi).toEqual([]);
+    expect(v.targets.map((t) => t.logicalId)).toEqual(['MyLambda']);
+    expect(v.targets[0]!.direction).toBe('to-cc-api');
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
+  it('accepts --recreate-via-cc-api on a resource with no provisionedBy field (legacy pre-v7 state, treated as SDK)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function'), // no provisionedBy
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedAlreadyCcApi).toEqual([]);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
+  it('blockedAlreadyCcApi does NOT fire for the reverse direction (--recreate-via-sdk-provider on cc-api is the intended path)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } },
+    };
+    const state = st('S', {
+      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+    });
+    const v = validateRecreateTargets({
+      template,
+      state,
+      recreateViaCcApi: [],
+      recreateViaSdkProvider: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+      hasSdkProvider: () => true,
+    });
+    expect(v.blockedAlreadyCcApi).toEqual([]);
+    // The reverse direction PASSES this case — this is exactly the user's goal.
+    expect(v.targets[0]!.direction).toBe('to-sdk');
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+});
+
 describe('probeStatefulRecreateTargetsAsync (#648)', () => {
   function s3Target(overrides: Partial<RecreateTarget> = {}): RecreateTarget {
     return {
@@ -740,6 +823,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedStatefulTargets: [],
       blockedMultiRegionTargets: [],
       blockedAlreadySdk: [],
+      blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       conflictingDirections: [],
     };
@@ -768,6 +852,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedStatefulTargets: [],
       blockedMultiRegionTargets: [],
       blockedAlreadySdk: [],
+      blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       conflictingDirections: [],
     };
