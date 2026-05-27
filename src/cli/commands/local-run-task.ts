@@ -15,6 +15,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveProfileCredentials } from './local-start-api.js';
 import {
   applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
@@ -263,6 +264,18 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
     }
 
+    // Issue #658: when `--assume-task-role` is NOT effective but
+    // `--profile <p>` IS set, resolve the profile via the SDK's default
+    // credential provider chain (SSO / IAM Identity Center / fromIni /
+    // role-assumption) and forward the resulting `{AKID, SAK,
+    // sessionToken?}` to the metadata-endpoints sidecar. Without this,
+    // the sidecar starts inside a fresh container with no SSO config and
+    // no `~/.aws/credentials`, so every user container that hits
+    // `169.254.170.2/role/<role>` gets a credential-provider failure.
+    // Same gap class as #654/#655, which shipped the equivalent forward
+    // for `cdkd local start-api`'s Lambda container path.
+    const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
+
     const envOverrides = readEnvOverridesFile(options.envVars);
 
     const runOpts: RunEcsTaskOptions = {
@@ -273,7 +286,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       detach: options.detach,
     };
     if (envOverrides) runOpts.envOverrides = envOverrides;
-    if (assumedCredentials) runOpts.taskCredentials = assumedCredentials;
+    if (sidecarCredentials) runOpts.taskCredentials = sidecarCredentials;
     if (resolvedRoleArn) runOpts.taskRoleArn = resolvedRoleArn;
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;
@@ -508,6 +521,36 @@ function readEnvOverridesFile(
     throw new Error(`--env-vars file '${filePath}' must contain a JSON object at the top level.`);
   }
   return parsed as Record<string, Record<string, string | null> | undefined>;
+}
+
+/**
+ * Issue #658: pick the credentials forwarded to the AWS-published
+ * `amazon-ecs-local-container-endpoints` sidecar. Precedence:
+ *   1. `--assume-task-role <arn>` (or bare `--assume-task-role` against
+ *      a resolvable `TaskRoleArn`) → STS-assumed temp creds. Highest
+ *      priority — when the user opted in to IAM emulation, those creds
+ *      drive the sidecar regardless of `--profile`.
+ *   2. `--profile <p>` → resolved via {@link resolveProfileCredentials}
+ *      (the SDK's default credential provider chain — SSO / IAM
+ *      Identity Center / fromIni / role-assumption). NEW in this PR.
+ *   3. Neither set → `undefined`; the sidecar runs with its own
+ *      default credential chain (typically empty inside a fresh
+ *      container — user containers will get 4xx from the credentials
+ *      endpoint, mimicking IAM-misconfigured prod).
+ *
+ * Extracted as an exported helper so a unit test can exercise every
+ * branch without having to mock the full Synth + Docker + AWS pipeline
+ * (the strategy PR #655 used for the Lambda container path).
+ */
+export async function resolveSidecarCredentials(
+  options: { profile?: string },
+  assumedCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined
+): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  if (assumedCredentials) return assumedCredentials;
+  if (options.profile) return resolveProfileCredentials(options.profile);
+  return undefined;
 }
 
 export function createLocalRunTaskCommand(): Command {

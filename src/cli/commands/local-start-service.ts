@@ -16,6 +16,7 @@ import { singleFlight } from '../../utils/single-flight.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveProfileCredentials } from './local-start-api.js';
 import {
   applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
@@ -275,15 +276,29 @@ async function localStartServiceCommand(
     // metadata endpoint to every container. Per-service IAM role
     // emulation in multi-service runs is NOT supported in v1 — each
     // service's `TaskRoleArn` flows into its container env via
-    // `buildMetadataEnv`, but the sidecar itself uses the user's
-    // default AWS credential chain. Users who need per-service IAM
+    // `buildMetadataEnv`, but the sidecar itself runs without per-
+    // service credentials.
+    //
+    // Issue #658: when `--profile <p>` is set, the resolved credentials
+    // are forwarded to the sidecar so its `/role/<role-arn>` endpoint
+    // serves them to user containers. Without this, the sidecar starts
+    // inside a fresh container with no SSO config / no
+    // `~/.aws/credentials` and falls back to its own (empty) default
+    // chain, breaking every container that hits 169.254.171.2. Without
+    // `--profile`, the sidecar continues to use its own default chain
+    // (pre-existing behavior). Per-service `--assume-task-role
+    // <Service>=<arn>` overrides are independent — they flow into
+    // `buildMetadataEnv` per container and are unrelated to the
+    // SIDECAR's own startup credentials. Users who need per-service IAM
     // role emulation should split their run into multiple
     // `cdkd local start-service` invocations.
+    const sidecarCredentials = await resolveSharedSidecarCredentials(options);
     try {
       sharedNetwork = await createSharedSvcNetwork({
         prefix: options.cluster,
         skipPull,
         cluster: options.cluster,
+        ...(sidecarCredentials !== undefined && { credentials: sidecarCredentials }),
       });
     } catch (err) {
       throw new LocalStartServiceError(
@@ -723,6 +738,38 @@ function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none' {
   throw new LocalStartServiceError(
     `--restart-policy must be one of 'on-failure', 'always', or 'none' (got '${raw}').`
   );
+}
+
+/**
+ * Issue #658: pick the credentials forwarded to the AWS-published
+ * `amazon-ecs-local-container-endpoints` sidecar. `cdkd local
+ * start-service`'s sidecar is SHARED across every replica boot in one
+ * CLI invocation (design § 5 Option A), so this resolves ONCE at
+ * startup. Precedence:
+ *   1. `--profile <p>` → resolved via {@link resolveProfileCredentials}
+ *      (the SDK's default credential provider chain — SSO / IAM
+ *      Identity Center / fromIni / role-assumption). NEW in this PR.
+ *   2. Not set → `undefined`; the sidecar runs with its own default
+ *      credential chain (typically empty inside a fresh container —
+ *      user containers will get 4xx from the credentials endpoint).
+ *
+ * Note: per-service `--assume-task-role <Service>=<arn>` overrides are
+ * INTENTIONALLY NOT consulted here. The shared sidecar has no concept
+ * of per-service IAM — per-service `TaskRoleArn` flows into each
+ * container's env via `buildMetadataEnv` at boot time, where the
+ * sidecar's `/role/<role-arn>` path resolves per-request. The shared
+ * sidecar's OWN startup credentials govern only the fallback path
+ * (containers that did not bind a `TaskRoleArn`).
+ *
+ * Extracted as an exported helper so a unit test can exercise both
+ * branches without having to mock the full Synth + Docker + AWS
+ * pipeline (the strategy PR #655 used for the Lambda container path).
+ */
+export async function resolveSharedSidecarCredentials(options: {
+  profile?: string;
+}): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  if (options.profile) return resolveProfileCredentials(options.profile);
+  return undefined;
 }
 
 export function createLocalStartServiceCommand(): Command {
