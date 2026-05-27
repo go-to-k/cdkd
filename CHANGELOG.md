@@ -1,3 +1,10 @@
+## [0.166.1](https://github.com/go-to-k/cdkd/compare/v0.166.0...v0.166.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** forward --profile-resolved credentials to ECS metadata sidecar ([#658](https://github.com/go-to-k/cdkd/issues/658)) ([#662](https://github.com/go-to-k/cdkd/issues/662)) ([68b3c1e](https://github.com/go-to-k/cdkd/commit/68b3c1ef38c57b268e4122cb60d2e954af847e8c))
+
 # [0.166.0](https://github.com/go-to-k/cdkd/compare/v0.165.0...v0.166.0) (2026-05-27)
 
 
