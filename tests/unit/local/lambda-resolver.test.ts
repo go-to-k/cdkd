@@ -17,7 +17,8 @@ import type { CloudFormationTemplate, TemplateResource } from '../../../src/type
 function buildStack(
   stackName: string,
   resources: Record<string, TemplateResource>,
-  cdkOutDir: string
+  cdkOutDir: string,
+  region?: string
 ): StackInfo {
   const template: CloudFormationTemplate = { Resources: resources };
   // Materialize each asset.* directory referenced by Metadata.aws:asset:path
@@ -41,6 +42,7 @@ function buildStack(
     template,
     assetManifestPath: manifestPath,
     dependencyNames: [],
+    ...(region !== undefined && { region }),
   };
 }
 
@@ -541,6 +543,80 @@ describe('resolveLambdaTarget', () => {
     );
     expect(() => resolveLambdaTarget('MyStack:ImportedRepoFn', [stack])).toThrow(
       /Fn::Join Code\.ImageUri that cdkd local invoke cannot resolve/
+    );
+  });
+
+  it('resolves canonical fromImageAsset Fn::Join Code.ImageUri using region-derived URLSuffix (issue #637)', () => {
+    // The canonical `lambda.DockerImageCode.fromImageAsset(...)` shape:
+    // literal account / region / repo path + `Ref: AWS::URLSuffix`.
+    // Pre-#637 this surfaced `not-applicable` and required `--from-state`
+    // even though the only intrinsic was URLSuffix (derivable from
+    // region). Post-#637 the resolver substitutes URLSuffix using
+    // `stack.region` and the URI resolves cleanly.
+    const stack = buildStack(
+      'MyStack',
+      {
+        AssetFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: {
+              ImageUri: {
+                'Fn::Join': [
+                  '',
+                  [
+                    '123456789012.dkr.ecr.us-east-1.',
+                    { Ref: 'AWS::URLSuffix' },
+                    '/cdk-hnb659fds-container-assets-123456789012-us-east-1:abc123',
+                  ],
+                ],
+              },
+            },
+          },
+        },
+      },
+      tmpRoot,
+      'us-east-1'
+    );
+    const resolved = resolveLambdaTarget('MyStack:AssetFn', [stack]);
+    expect(resolved.kind).toBe('image');
+    if (resolved.kind !== 'image') return;
+    expect(resolved.imageUri).toBe(
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdk-hnb659fds-container-assets-123456789012-us-east-1:abc123'
+    );
+  });
+
+  it('resolves canonical fromImageAsset shape against aws-cn partition (issue #637)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        AssetFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: {
+              ImageUri: {
+                'Fn::Join': [
+                  '',
+                  [
+                    '123456789012.dkr.ecr.cn-north-1.',
+                    { Ref: 'AWS::URLSuffix' },
+                    '/cdk-hnb659fds-container-assets-123456789012-cn-north-1:abc123',
+                  ],
+                ],
+              },
+            },
+          },
+        },
+      },
+      tmpRoot,
+      'cn-north-1'
+    );
+    const resolved = resolveLambdaTarget('MyStack:AssetFn', [stack]);
+    expect(resolved.kind).toBe('image');
+    if (resolved.kind !== 'image') return;
+    expect(resolved.imageUri).toBe(
+      '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/cdk-hnb659fds-container-assets-123456789012-cn-north-1:abc123'
     );
   });
 

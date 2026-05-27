@@ -60,6 +60,59 @@ export interface ImageResolutionContext {
 }
 
 /**
+ * Derive the AWS pseudo parameters that are trivially knowable from the
+ * deploy region alone, without any STS call or cdkd state load.
+ * `urlSuffix` and `partition` follow the canonical AWS partition rules:
+ *
+ *   - region prefix `cn-*`        → partition `aws-cn`,     urlSuffix `amazonaws.com.cn`
+ *   - region prefix `us-gov-*`    → partition `aws-us-gov`, urlSuffix `amazonaws.com`
+ *   - region prefix `us-iso-*`    → partition `aws-iso`,    urlSuffix `c2s.ic.gov`
+ *   - region prefix `us-isob-*`   → partition `aws-iso-b`,  urlSuffix `sc2s.sgov.gov`
+ *   - everything else (`us-east-1` / `eu-west-2` / `ap-northeast-1` / etc.)
+ *                                 → partition `aws`,        urlSuffix `amazonaws.com`
+ *
+ * `accountId` is optional pass-through (caller decides whether to populate
+ * it). The bootstrap-ECR URI shape that `lambda.DockerImageCode.fromImageAsset`
+ * synthesizes carries account-id + region as literal strings in the template,
+ * so only `urlSuffix` / `partition` / `region` are required to resolve it
+ * (issue #637).
+ *
+ * Returns `undefined` when `region` is undefined / empty so the caller can
+ * fall through cleanly. The shape mirrors `ImageResolutionContext.pseudoParameters`
+ * so the result drops straight into a context literal.
+ */
+export function derivePseudoParametersFromRegion(
+  region: string | undefined,
+  accountId?: string
+): { accountId?: string; region: string; partition: string; urlSuffix: string } | undefined {
+  if (!region || typeof region !== 'string' || region.length === 0) return undefined;
+  let partition: string;
+  let urlSuffix: string;
+  if (region.startsWith('cn-')) {
+    partition = 'aws-cn';
+    urlSuffix = 'amazonaws.com.cn';
+  } else if (region.startsWith('us-gov-')) {
+    partition = 'aws-us-gov';
+    urlSuffix = 'amazonaws.com';
+  } else if (region.startsWith('us-isob-')) {
+    partition = 'aws-iso-b';
+    urlSuffix = 'sc2s.sgov.gov';
+  } else if (region.startsWith('us-iso-')) {
+    partition = 'aws-iso';
+    urlSuffix = 'c2s.ic.gov';
+  } else {
+    partition = 'aws';
+    urlSuffix = 'amazonaws.com';
+  }
+  return {
+    ...(accountId !== undefined && { accountId }),
+    region,
+    partition,
+    urlSuffix,
+  };
+}
+
+/**
  * Outcome of attempting to resolve a `Fn::Join`-shaped image URI against
  * the substitution context. Discriminated so the caller can route each
  * case to the right error / classification path.

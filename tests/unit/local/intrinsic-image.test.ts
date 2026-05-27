@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  derivePseudoParametersFromRegion,
   substituteImagePlaceholders,
   tryResolveImageFnJoin,
   type ImageResolutionContext,
@@ -264,5 +265,85 @@ describe('substituteImagePlaceholders', () => {
 
   it('leaves unrecognized placeholders untouched', () => {
     expect(substituteImagePlaceholders('${Unknown}/x', {}, undefined)).toBe('${Unknown}/x');
+  });
+});
+
+describe('derivePseudoParametersFromRegion (issue #637)', () => {
+  it('returns aws partition for standard commercial regions', () => {
+    expect(derivePseudoParametersFromRegion('us-east-1')).toEqual({
+      region: 'us-east-1',
+      partition: 'aws',
+      urlSuffix: 'amazonaws.com',
+    });
+    expect(derivePseudoParametersFromRegion('eu-west-2')).toEqual({
+      region: 'eu-west-2',
+      partition: 'aws',
+      urlSuffix: 'amazonaws.com',
+    });
+    expect(derivePseudoParametersFromRegion('ap-northeast-1')).toEqual({
+      region: 'ap-northeast-1',
+      partition: 'aws',
+      urlSuffix: 'amazonaws.com',
+    });
+  });
+
+  it('returns aws-cn partition + .com.cn urlSuffix for China regions', () => {
+    expect(derivePseudoParametersFromRegion('cn-north-1')).toEqual({
+      region: 'cn-north-1',
+      partition: 'aws-cn',
+      urlSuffix: 'amazonaws.com.cn',
+    });
+    expect(derivePseudoParametersFromRegion('cn-northwest-1')).toEqual({
+      region: 'cn-northwest-1',
+      partition: 'aws-cn',
+      urlSuffix: 'amazonaws.com.cn',
+    });
+  });
+
+  it('returns aws-us-gov partition for GovCloud regions (urlSuffix stays .com)', () => {
+    expect(derivePseudoParametersFromRegion('us-gov-west-1')).toEqual({
+      region: 'us-gov-west-1',
+      partition: 'aws-us-gov',
+      urlSuffix: 'amazonaws.com',
+    });
+    expect(derivePseudoParametersFromRegion('us-gov-east-1')).toEqual({
+      region: 'us-gov-east-1',
+      partition: 'aws-us-gov',
+      urlSuffix: 'amazonaws.com',
+    });
+  });
+
+  it('returns aws-iso / aws-iso-b partitions for ISO regions', () => {
+    // us-isob-* must be checked BEFORE us-iso-* (prefix overlap).
+    expect(derivePseudoParametersFromRegion('us-iso-east-1')).toEqual({
+      region: 'us-iso-east-1',
+      partition: 'aws-iso',
+      urlSuffix: 'c2s.ic.gov',
+    });
+    expect(derivePseudoParametersFromRegion('us-isob-east-1')).toEqual({
+      region: 'us-isob-east-1',
+      partition: 'aws-iso-b',
+      urlSuffix: 'sc2s.sgov.gov',
+    });
+  });
+
+  it('passes accountId through when supplied', () => {
+    expect(derivePseudoParametersFromRegion('us-east-1', '123456789012')).toEqual({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+      urlSuffix: 'amazonaws.com',
+    });
+  });
+
+  it('omits accountId field when not supplied', () => {
+    const result = derivePseudoParametersFromRegion('us-east-1');
+    expect(result).toBeDefined();
+    expect(result).not.toHaveProperty('accountId');
+  });
+
+  it('returns undefined for empty / falsy region', () => {
+    expect(derivePseudoParametersFromRegion(undefined)).toBeUndefined();
+    expect(derivePseudoParametersFromRegion('')).toBeUndefined();
   });
 });

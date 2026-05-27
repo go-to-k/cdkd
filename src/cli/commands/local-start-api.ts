@@ -37,7 +37,10 @@ import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/ru
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
 import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';
-import { tryResolveImageFnJoin } from '../../local/intrinsic-image.js';
+import {
+  derivePseudoParametersFromRegion,
+  tryResolveImageFnJoin,
+} from '../../local/intrinsic-image.js';
 import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
@@ -1746,7 +1749,8 @@ export function resolveLambdaByLogicalId(
       code['ImageUri'],
       logicalId,
       stack.stackName,
-      stack.template.Resources ?? {}
+      stack.template.Resources ?? {},
+      stack.region
     );
     if (imageUri !== undefined) {
       return resolveImageLambda({
@@ -1812,23 +1816,18 @@ export function resolveLambdaByLogicalId(
  * `lambda.DockerImageCode.fromImageAsset`), and `Fn::Join` (the
  * canonical shape for `lambda.DockerImageCode.fromImageAsset` in
  * CDK 2.x, which emits a `Fn::Join` over the literal bootstrap ECR
- * URI with `${AWS::URLSuffix}` — issue #627).
+ * URI with `${AWS::URLSuffix}` — issues #627 + #637).
  *
  * The `Fn::Join` arm routes through the shared
  * `tryResolveImageFnJoin` helper (`src/local/intrinsic-image.ts`) used
- * by `cdkd local invoke`. Like the sibling `lambda-resolver.ts`, we
- * pass `undefined` for the `ImageResolutionContext` — start-api
- * doesn't load cdkd state up front, so same-stack ECR refs surface
- * as `needs-state` and pseudo-parameter-only shapes (`Ref:
- * AWS::URLSuffix`) surface as `not-applicable`. Both cases throw a
- * clear error that names the actual root cause instead of falling
- * through to the ZIP branch's misleading "no Runtime" hard error.
- *
- * Pseudo-parameter substitution (`${AWS::URLSuffix}` → `amazonaws.com`)
- * is deliberately not implemented here — `lambda-resolver.ts` (the
- * canonical sibling) also defers it, and shipping one-sided support
- * would surprise users. Tracked separately as the issue's optional
- * follow-up.
+ * by `cdkd local invoke`. When the synth template recorded a deploy
+ * region (`stack.region`), we derive `{ urlSuffix, partition, region }`
+ * via `derivePseudoParametersFromRegion` and pass it as the resolver's
+ * `pseudoParameters` block so the canonical `${AWS::URLSuffix}` shape
+ * resolves cleanly (issue #637). Same-stack ECR refs still surface as
+ * `needs-state` (those require `--from-state`); a Join that references
+ * `${AWS::AccountId}` without state still surfaces as `not-applicable`
+ * with a more specific error message naming the missing parameter.
  *
  * Returns `undefined` when the field is absent or non-recognized,
  * which routes the caller to the ZIP branch (with its existing
@@ -1838,7 +1837,8 @@ function extractImageUri(
   value: unknown,
   logicalId: string,
   stackName: string,
-  resources: Record<string, TemplateResource>
+  resources: Record<string, TemplateResource>,
+  region: string | undefined
 ): string | undefined {
   if (typeof value === 'string' && value.length > 0) return value;
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -1848,9 +1848,20 @@ function extractImageUri(
     if (Array.isArray(sub) && typeof sub[0] === 'string') return sub[0];
 
     if ('Fn::Join' in obj) {
-      // Shared resolver — no state / pseudo parameters context. Same
-      // shape as `lambda-resolver.ts:extractImageUri` (issue #286 Gap 2).
-      const joinResolved = tryResolveImageFnJoin(value, resources, undefined);
+      // Issue #637: derive the region-knowable pseudo parameters
+      // (`urlSuffix` / `partition` / `region`) and pass them as
+      // resolver context so the canonical `lambda.DockerImageCode
+      // .fromImageAsset` shape resolves without `--from-state`.
+      // `accountId` stays undefined — the canonical shape has it
+      // as a literal in the template, and a Join that genuinely
+      // references `${AWS::AccountId}` falls back to the
+      // `not-applicable` branch below with a clear error.
+      const pseudoParameters = derivePseudoParametersFromRegion(region);
+      const joinResolved = tryResolveImageFnJoin(
+        value,
+        resources,
+        pseudoParameters ? { pseudoParameters } : undefined
+      );
       if (joinResolved.kind === 'resolved') return joinResolved.uri;
       if (joinResolved.kind === 'needs-state') {
         throw new Error(
@@ -1867,20 +1878,19 @@ function extractImageUri(
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
       }
-      // `not-applicable` — the shape is `Fn::Join` but the resolver
-      // couldn't reduce every element and there's no same-stack ECR
-      // Repository ref. The most common cause is a `Ref: AWS::URLSuffix`
-      // / other pseudo-parameter (the canonical CDK 2.x
-      // `lambda.DockerImageCode.fromImageAsset` shape) that needs
-      // `pseudoParameters` context, not yet plumbed through
-      // `cdkd local start-api`. Surface a clear error instead of
-      // falling through to ZIP-branch validation, which would error
-      // with the unrelated "no Runtime" message.
+      // `not-applicable` — the Join couldn't reduce every element
+      // AND there's no same-stack ECR Repository ref. With #637's
+      // pseudo-parameter plumbing the typical remaining cause is
+      // `${AWS::AccountId}` (needs an STS call or `--from-state`)
+      // or an unknown region (`stack.region` was undefined so we
+      // couldn't derive `urlSuffix`). Either way, surface a clear
+      // error instead of falling through to ZIP-branch validation.
+      const accountIdHint = pseudoParameters
+        ? ' (likely ${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
+        : ` (cdkd could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new Error(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local start-api cannot resolve. ` +
-          'The shape likely references AWS pseudo parameters (e.g. ${AWS::URLSuffix}) — ' +
-          'the canonical CDK 2.x lambda.DockerImageCode.fromImageAsset synthesized shape. ' +
-          'Workarounds: pin a fully-literal public image URI, or wait for the follow-up that substitutes ${AWS::URLSuffix} against the current region.'
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local start-api cannot resolve${accountIdHint}. ` +
+          'Workarounds: deploy first and run with --from-state, or pin a fully-literal public image URI.'
       );
     }
   }

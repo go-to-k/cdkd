@@ -4,7 +4,7 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
-import { tryResolveImageFnJoin } from './intrinsic-image.js';
+import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
 
 /**
@@ -395,7 +395,13 @@ function extractLambdaProperties(
   const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
 
   const code = (props['Code'] ?? {}) as Record<string, unknown>;
-  const imageUri = extractImageUri(code['ImageUri'], logicalId, stack.stackName, resources);
+  const imageUri = extractImageUri(
+    code['ImageUri'],
+    logicalId,
+    stack.stackName,
+    resources,
+    stack.region
+  );
 
   if (imageUri !== undefined) {
     return extractImageLambdaProperties({
@@ -546,7 +552,8 @@ function extractImageUri(
   value: unknown,
   logicalId: string,
   stackName: string,
-  resources: Record<string, TemplateResource>
+  resources: Record<string, TemplateResource>,
+  region: string | undefined
 ): string | undefined {
   if (typeof value === 'string' && value.length > 0) return value;
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -556,17 +563,21 @@ function extractImageUri(
     // Fn::Sub array form: [template, vars]. The first element is the template.
     if (Array.isArray(sub) && typeof sub[0] === 'string') return sub[0];
 
-    // `Fn::Join` — try the shared ECR-URI resolver. We deliberately pass
-    // no `ImageResolutionContext` here; `cdkd local invoke` doesn't load
-    // cdkd state up front (issue #286, v1 scope), so only `Fn::Join`
-    // shapes with no AWS pseudo-parameter refs AND no same-stack ECR
-    // Repository refs resolve cleanly. SAME-STACK shapes return
-    // `needs-state` and we surface a clear hint. Imported-repo shapes
-    // that reference `Ref: AWS::URLSuffix` return `not-applicable` (no
-    // ECR Repository ref in the tree); see the explicit `Fn::Join`
-    // detection below.
+    // `Fn::Join` — try the shared ECR-URI resolver. Issue #637 plumbed
+    // region-derived pseudo parameters (`urlSuffix` / `partition` /
+    // `region`) through here so the canonical
+    // `lambda.DockerImageCode.fromImageAsset` shape (only intrinsic in
+    // the URI is `${AWS::URLSuffix}`) resolves without `--from-state`.
+    // Same-stack ECR refs still return `needs-state`; a Join that
+    // genuinely references `${AWS::AccountId}` without state returns
+    // `not-applicable` with a more specific error.
     if ('Fn::Join' in obj) {
-      const joinResolved = tryResolveImageFnJoin(value, resources, undefined);
+      const pseudoParameters = derivePseudoParametersFromRegion(region);
+      const joinResolved = tryResolveImageFnJoin(
+        value,
+        resources,
+        pseudoParameters ? { pseudoParameters } : undefined
+      );
       if (joinResolved.kind === 'resolved') return joinResolved.uri;
       if (joinResolved.kind === 'needs-state') {
         throw new LocalInvokeResolutionError(
@@ -583,17 +594,16 @@ function extractImageUri(
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
       }
-      // `not-applicable` — the shape is `Fn::Join` but the resolver
-      // couldn't reduce every element and there's no same-stack ECR
-      // Repository ref. The most common cause is a `Ref: AWS::URLSuffix`
-      // / other pseudo-parameter that needs `pseudoParameters` context
-      // (not yet plumbed through `cdkd local invoke`). Surface a clear
-      // error instead of falling through to ZIP-branch validation,
-      // which would error with the unrelated "no Runtime" message.
+      // `not-applicable` — Join couldn't reduce every element AND no
+      // same-stack ECR Repository ref. With #637's pseudo-parameter
+      // plumbing the typical remaining cause is `${AWS::AccountId}`
+      // (needs an STS call or `--from-state`) or an unknown region.
+      const accountIdHint = pseudoParameters
+        ? ' (likely ${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
+        : ` (cdkd could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local invoke cannot resolve. ` +
-          'The shape likely references AWS pseudo parameters (e.g. ${AWS::URLSuffix}) for an imported ECR repository. ' +
-          'Workarounds: rebuild via lambda.DockerImageCode.fromImageAsset, or pin a fully-literal public image URI.'
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local invoke cannot resolve${accountIdHint}. ` +
+          'Workarounds: deploy first and run with --from-state, or pin a fully-literal public image URI.'
       );
     }
   }

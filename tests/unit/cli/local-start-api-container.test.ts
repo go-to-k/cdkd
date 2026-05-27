@@ -19,13 +19,17 @@ import type { TemplateResource } from '../../../src/types/resource.js';
  * still requires Handler on the ZIP branch).
  */
 
-function makeStack(resources: Record<string, TemplateResource>): StackInfo {
+function makeStack(
+  resources: Record<string, TemplateResource>,
+  region?: string
+): StackInfo {
   return {
     stackName: 'S',
     displayName: 'S',
     artifactId: 'S',
     template: { Resources: resources },
     dependencyNames: [],
+    ...(region !== undefined && { region }),
   } as unknown as StackInfo;
 }
 
@@ -245,36 +249,81 @@ describe('resolveLambdaByLogicalId — IMAGE branch (issue #453)', () => {
    * the actual root cause (pseudo-param substitution / same-stack ECR
    * ref needing state) instead.
    */
-  describe('Code.ImageUri Fn::Join (issue #627)', () => {
-    it('throws a clear error (mentioning AWS::URLSuffix) for the canonical fromImageAsset bootstrap-ECR shape', () => {
-      // The exact shape `cdk synth` emits for
-      // `lambda.DockerImageCode.fromImageAsset(...)` — literal account /
-      // region / repo path bracketing `Ref: AWS::URLSuffix`.
-      const joinResource: TemplateResource = {
-        Type: 'AWS::Lambda::Function',
-        Properties: {
-          Code: {
-            ImageUri: {
-              'Fn::Join': [
-                '',
-                [
-                  '123456789012.dkr.ecr.us-east-1.',
-                  { Ref: 'AWS::URLSuffix' },
-                  '/cdk-hnb659fds-container-assets-123456789012-us-east-1:abc123',
-                ],
+  describe('Code.ImageUri Fn::Join (issues #627 + #637)', () => {
+    // The exact shape `cdk synth` emits for
+    // `lambda.DockerImageCode.fromImageAsset(...)` — literal account /
+    // region / repo path bracketing `Ref: AWS::URLSuffix`.
+    const fromImageAssetJoin = (region: string): TemplateResource => ({
+      Type: 'AWS::Lambda::Function',
+      Properties: {
+        Code: {
+          ImageUri: {
+            'Fn::Join': [
+              '',
+              [
+                `123456789012.dkr.ecr.${region}.`,
+                { Ref: 'AWS::URLSuffix' },
+                `/cdk-hnb659fds-container-assets-123456789012-${region}:abc123`,
               ],
-            },
+            ],
           },
-          PackageType: 'Image',
         },
-      };
+        PackageType: 'Image',
+      },
+    });
+
+    it('resolves canonical fromImageAsset bootstrap-ECR shape under aws partition (issue #637)', () => {
+      // #637 plumbs `derivePseudoParametersFromRegion` into the resolver
+      // so the canonical fromImageAsset shape — only intrinsic is
+      // `${AWS::URLSuffix}` — substitutes to `amazonaws.com` and the
+      // Lambda boots locally.
+      const resolved = resolveLambdaByLogicalId('Fn', [
+        makeStack({ Fn: fromImageAssetJoin('us-east-1') }, 'us-east-1'),
+      ]);
+      expect(resolved.kind).toBe('image');
+      if (resolved.kind !== 'image') return;
+      expect(resolved.imageUri).toBe(
+        '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdk-hnb659fds-container-assets-123456789012-us-east-1:abc123'
+      );
+    });
+
+    it('resolves canonical fromImageAsset shape under aws-cn partition (issue #637)', () => {
+      const resolved = resolveLambdaByLogicalId('Fn', [
+        makeStack({ Fn: fromImageAssetJoin('cn-north-1') }, 'cn-north-1'),
+      ]);
+      expect(resolved.kind).toBe('image');
+      if (resolved.kind !== 'image') return;
+      expect(resolved.imageUri).toBe(
+        '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/cdk-hnb659fds-container-assets-123456789012-cn-north-1:abc123'
+      );
+    });
+
+    it('resolves canonical fromImageAsset shape under aws-us-gov partition (issue #637)', () => {
+      // GovCloud uses urlSuffix amazonaws.com (same as commercial), but
+      // partition is aws-us-gov (not visible in the URI itself — the
+      // partition matters for service ARNs elsewhere).
+      const resolved = resolveLambdaByLogicalId('Fn', [
+        makeStack({ Fn: fromImageAssetJoin('us-gov-west-1') }, 'us-gov-west-1'),
+      ]);
+      expect(resolved.kind).toBe('image');
+      if (resolved.kind !== 'image') return;
+      expect(resolved.imageUri).toBe(
+        '123456789012.dkr.ecr.us-gov-west-1.amazonaws.com/cdk-hnb659fds-container-assets-123456789012-us-gov-west-1:abc123'
+      );
+    });
+
+    it('throws a clear error when stack.region is undefined (fallback path)', () => {
+      // No region context means we cannot derive urlSuffix / partition,
+      // so the canonical fromImageAsset shape falls back to the
+      // pre-#637 `not-applicable` branch. The error message names the
+      // root cause specifically (stack.region was undefined).
       expect(() =>
-        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: joinResource })])
-      ).toThrow(/AWS::URLSuffix/);
-      // Critically: the post-fix error must NOT be the pre-fix
-      // misleading "no Runtime" message.
+        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: fromImageAssetJoin('us-east-1') })])
+      ).toThrow(/stack\.region was undefined/);
+      // Regression guard against #627's pre-fix misleading "no Runtime"
+      // hard error.
       expect(() =>
-        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: joinResource })])
+        resolveLambdaByLogicalId('Fn', [makeStack({ Fn: fromImageAssetJoin('us-east-1') })])
       ).not.toThrow(/no Runtime property/);
     });
 
