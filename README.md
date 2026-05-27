@@ -190,10 +190,12 @@ cdkd drift MyStack --revert --yes   # AWS ← state
 # Asset / destroy / unlock
 cdkd publish-assets                 # synth + upload only (typical CI split)
 cdkd destroy MyStack
+cdkd orphan MyStack/MyBucket        # drop one resource from state (AWS resource stays)
 cdkd force-unlock MyStack           # clear stale lock from an interrupted deploy
 
-# Adopt existing AWS resources into cdkd state
-cdkd import MyStack --yes
+# Migrate between cdkd and CloudFormation
+cdkd import MyStack --yes           # adopt existing AWS resources into cdkd state
+cdkd export MyStack                 # hand a cdkd-managed stack back to CloudFormation
 
 # State-bucket-only commands (no CDK app needed)
 cdkd state info                     # bucket name, region, schema version
