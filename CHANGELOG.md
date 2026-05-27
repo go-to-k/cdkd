@@ -1,3 +1,10 @@
+# [0.165.0](https://github.com/go-to-k/cdkd/compare/v0.164.1...v0.165.0) (2026-05-27)
+
+
+### Features
+
+* **deploy:** enumerate downstream Fn::ImportValue consumers in --recreate-via-cc-api warn ([#660](https://github.com/go-to-k/cdkd/issues/660)) ([f4532ed](https://github.com/go-to-k/cdkd/commit/f4532edd4d66142764647894020bae4dc6cb56e5))
+
 ## [0.164.1](https://github.com/go-to-k/cdkd/compare/v0.164.0...v0.164.1) (2026-05-27)
 
 
