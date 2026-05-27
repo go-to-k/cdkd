@@ -1825,6 +1825,7 @@
         "appsync",
         "batch",
         "cc-api-fallback",
+        "cc-api-fallback-transitions",
         "composite-stack",
         "diff-intrinsic-target-change",
         "drift-revert",
@@ -1855,6 +1856,9 @@
           "l2"
         ],
         "cc-api-fallback": [
+          "l2"
+        ],
+        "cc-api-fallback-transitions": [
           "l2"
         ],
         "composite-stack": [
@@ -2035,6 +2039,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "cc-api-fallback",
+        "cc-api-fallback-transitions",
         "cloudfront-function-url",
         "composite-stack",
         "custom-resource-provider",
@@ -2094,6 +2099,10 @@
         ],
         "cc-api-fallback": [
           "l1"
+        ],
+        "cc-api-fallback-transitions": [
+          "l1",
+          "literal"
         ],
         "cloudfront-function-url": [
           "l2"
