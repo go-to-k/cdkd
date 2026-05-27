@@ -1,3 +1,10 @@
+# [0.163.0](https://github.com/go-to-k/cdkd/compare/v0.162.3...v0.163.0) (2026-05-27)
+
+
+### Features
+
+* **deploy:** live s3:ListObjectsV2 probe for --recreate-via-cc-api stateful guard ([#656](https://github.com/go-to-k/cdkd/issues/656)) ([bd4c85e](https://github.com/go-to-k/cdkd/commit/bd4c85e01b990dedf86150aa43aabddb33db0b91))
+
 ## [0.162.3](https://github.com/go-to-k/cdkd/compare/v0.162.2...v0.162.3) (2026-05-27)
 
 
