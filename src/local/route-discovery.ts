@@ -678,7 +678,7 @@ function buildAwsIntegrationConfig(
   if (!isLambda) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in cdkd v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See docs/local-emulation.md.`,
+      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in cdkd v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md.`,
     };
   }
   const arnOutcome = resolveLambdaArnOutcome(uri);
