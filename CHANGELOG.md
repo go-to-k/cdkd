@@ -1,3 +1,10 @@
+## [0.167.1](https://github.com/go-to-k/cdkd/compare/v0.167.0...v0.167.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** synthesize default prelude when RIE streaming response lacks separator ([#664](https://github.com/go-to-k/cdkd/issues/664)) ([#667](https://github.com/go-to-k/cdkd/issues/667)) ([988e5b7](https://github.com/go-to-k/cdkd/commit/988e5b77f1c7fed6326987d3514ca67e0b87cf6b))
+
 # [0.167.0](https://github.com/go-to-k/cdkd/compare/v0.166.1...v0.167.0) (2026-05-27)
 
 
