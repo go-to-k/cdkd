@@ -1,3 +1,10 @@
+## [0.161.2](https://github.com/go-to-k/cdkd/compare/v0.161.1...v0.161.2) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** resolve Fn::Select + Fn::Split in --from-state env vars ([#636](https://github.com/go-to-k/cdkd/issues/636)) ([#640](https://github.com/go-to-k/cdkd/issues/640)) ([7ad2011](https://github.com/go-to-k/cdkd/commit/7ad201130de38eab31a62f0c32fb97adcf004831))
+
 ## [0.161.1](https://github.com/go-to-k/cdkd/compare/v0.161.0...v0.161.1) (2026-05-27)
 
 
