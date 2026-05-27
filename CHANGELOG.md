@@ -1,3 +1,10 @@
+## [0.161.4](https://github.com/go-to-k/cdkd/compare/v0.161.3...v0.161.4) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** honor AWS::Lambda::Url.Cors block in start-api preflight ([#644](https://github.com/go-to-k/cdkd/issues/644)) ([#645](https://github.com/go-to-k/cdkd/issues/645)) ([ab168e8](https://github.com/go-to-k/cdkd/commit/ab168e84da691ff77381ca20e1805ea9ae3b6cff))
+
 ## [0.161.3](https://github.com/go-to-k/cdkd/compare/v0.161.2...v0.161.3) (2026-05-27)
 
 
