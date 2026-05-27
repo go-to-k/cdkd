@@ -344,6 +344,14 @@ async function localStartApiCommand(
   // `defaultCredentialsLoader` for the caching contract.
   let sigV4CredentialsLoader: CredentialsLoader | undefined;
   const sigV4WarnedForeignIds = new Set<string>();
+  // One-shot guard for the `--from-cfn-stack <name>` redundancy tip
+  // (improvement A). `synthesizeAndBuild` runs on every `--watch` hot
+  // reload firing, so without this flag the tip would re-emit on every
+  // reload — noisy. The flag flips on the first emission and stays
+  // `true` for the rest of the server lifetime; subsequent reloads see
+  // the gate and skip the emission. Per-`localStartApiCommand`-invocation
+  // (new server boot starts with a fresh `false`).
+  const fromCfnTipEmitted: { value: boolean } = { value: false };
 
   /**
    * One synth + discover + build pass. Returns the next-state
@@ -408,15 +416,21 @@ async function localStartApiCommand(
     // the same value. Surface a single info-level tip so the user knows
     // they can drop the value next time. Skipped on multi-stack runs
     // (too many edge cases to keep the message useful).
+    //
+    // `synthesizeAndBuild` re-runs on every `--watch` hot reload firing,
+    // so the emission is gated by `fromCfnTipEmitted.value` (one-shot per
+    // server lifetime) — see `tryEmitFromCfnRedundancyTipOnce`.
     const routedStackNames = targetStacks.map((s) => s.stackName);
-    if (
-      shouldEmitFromCfnRedundancyTip(options.fromCfnStack, routedStackNames) &&
-      routedStackNames[0] !== undefined
-    ) {
-      logger.info(
-        `tip: --from-cfn-stack value matches the routed stack name (${routedStackNames[0]}); you can omit the value: \`cdkd local start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
-      );
-    }
+    tryEmitFromCfnRedundancyTipOnce(
+      options.fromCfnStack,
+      routedStackNames,
+      fromCfnTipEmitted,
+      (routedStackName) => {
+        logger.info(
+          `tip: --from-cfn-stack value matches the routed stack name (${routedStackName}); you can omit the value: \`cdkd local start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
+        );
+      }
+    );
 
     const routes = discoverRoutes(targetStacks);
     // #462: WebSocket APIs (ProtocolType: 'WEBSOCKET') are discovered
@@ -1267,6 +1281,39 @@ export function shouldEmitFromCfnRedundancyTip(
   if (fromCfnStack.length === 0) return false;
   if (routedStackNames.length !== 1) return false;
   return fromCfnStack === routedStackNames[0];
+}
+
+/**
+ * One-shot wrapper around `shouldEmitFromCfnRedundancyTip` for the
+ * `--watch` hot-reload path. `synthesizeAndBuild` re-runs on every
+ * reload firing, so without a gate the tip would re-emit on every
+ * reload — noisy. This helper consults the caller-supplied ref:
+ *  - If the predicate fires AND the ref is still `false`, calls `emit`
+ *    and flips the ref to `true`.
+ *  - On subsequent invocations the ref is `true` and the helper is a
+ *    no-op for the rest of the ref's lifetime.
+ *  - When the predicate does NOT fire (no `--from-cfn-stack` value /
+ *    intentionally-different value / multi-stack run), the ref stays
+ *    `false` so a future reload whose synthesized stacks change in a
+ *    way that DOES make the value redundant still emits the tip once.
+ *
+ * The ref is owned by `localStartApiCommand` (one per server boot), so
+ * independent server invocations get independent flags.
+ *
+ * @internal exported for unit tests.
+ */
+export function tryEmitFromCfnRedundancyTipOnce(
+  fromCfnStack: string | boolean | undefined,
+  routedStackNames: readonly string[],
+  emittedRef: { value: boolean },
+  emit: (routedStackName: string) => void
+): void {
+  if (emittedRef.value) return;
+  if (!shouldEmitFromCfnRedundancyTip(fromCfnStack, routedStackNames)) return;
+  const routedStackName = routedStackNames[0];
+  if (routedStackName === undefined) return;
+  emit(routedStackName);
+  emittedRef.value = true;
 }
 
 /**

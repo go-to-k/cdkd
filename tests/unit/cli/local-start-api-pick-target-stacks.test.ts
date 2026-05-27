@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   pickTargetStacks,
   shouldEmitFromCfnRedundancyTip,
+  tryEmitFromCfnRedundancyTipOnce,
 } from '../../../src/cli/commands/local-start-api.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
@@ -110,5 +111,78 @@ describe('shouldEmitFromCfnRedundancyTip', () => {
 
   it('does not fire when no stack is routed', () => {
     expect(shouldEmitFromCfnRedundancyTip('MyStack', [])).toBe(false);
+  });
+});
+
+describe('tryEmitFromCfnRedundancyTipOnce', () => {
+  it('emits once and flips the ref to true on the first redundant invocation', () => {
+    const emit = vi.fn();
+    const ref = { value: false };
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], ref, emit);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith('MyStack');
+    expect(ref.value).toBe(true);
+  });
+
+  it('skips subsequent redundant invocations once the ref is true (--watch hot-reload re-run)', () => {
+    const emit = vi.fn();
+    const ref = { value: false };
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], ref, emit);
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], ref, emit);
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], ref, emit);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(ref.value).toBe(true);
+  });
+
+  it('leaves the ref false on a non-redundant invocation and fires later when conditions become redundant', () => {
+    const emit = vi.fn();
+    const ref = { value: false };
+    // First call: --from-cfn-stack absent → predicate returns false, ref stays false.
+    tryEmitFromCfnRedundancyTipOnce(undefined, ['MyStack'], ref, emit);
+    expect(emit).not.toHaveBeenCalled();
+    expect(ref.value).toBe(false);
+    // Later (e.g. user restarts the server with --from-cfn-stack <name> and
+    // the synth resolves to the same stack name) the predicate fires and
+    // the helper emits its one-shot tip.
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], ref, emit);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(ref.value).toBe(true);
+  });
+
+  it('does not fire when the explicit value differs from the routed stack name (intentional different CFn stack)', () => {
+    const emit = vi.fn();
+    const ref = { value: false };
+    tryEmitFromCfnRedundancyTipOnce('OtherStack', ['MyStack'], ref, emit);
+    tryEmitFromCfnRedundancyTipOnce('OtherStack', ['MyStack'], ref, emit);
+    expect(emit).not.toHaveBeenCalled();
+    expect(ref.value).toBe(false);
+  });
+
+  it('does not fire on multi-stack runs (out of scope)', () => {
+    const emit = vi.fn();
+    const ref = { value: false };
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack', 'Other'], ref, emit);
+    expect(emit).not.toHaveBeenCalled();
+    expect(ref.value).toBe(false);
+  });
+
+  it('uses independent flags for independent server invocations (each localStartApiCommand call gets a fresh ref)', () => {
+    // Two independent refs model two independent `localStartApiCommand`
+    // invocations (e.g. user Ctrl+Cs the first server and boots a second).
+    // The first server's emission must not bleed into the second's gate.
+    const refA = { value: false };
+    const refB = { value: false };
+    const emitA = vi.fn();
+    const emitB = vi.fn();
+    // First server: emits and flips its own ref.
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], refA, emitA);
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], refA, emitA);
+    expect(emitA).toHaveBeenCalledTimes(1);
+    expect(refA.value).toBe(true);
+    // Second server: independent ref → starts at false, still emits once.
+    expect(refB.value).toBe(false);
+    tryEmitFromCfnRedundancyTipOnce('MyStack', ['MyStack'], refB, emitB);
+    expect(emitB).toHaveBeenCalledTimes(1);
+    expect(refB.value).toBe(true);
   });
 });
