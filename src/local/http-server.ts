@@ -25,7 +25,7 @@ import {
   type RestV1IntegrationOutcome,
 } from './rest-v1-integrations.js';
 import { randomUUID } from 'node:crypto';
-import { matchPreflight, type CorsConfig } from './cors-handler.js';
+import { applyCorsResponseHeaders, matchPreflight, type CorsConfig } from './cors-handler.js';
 import type { AuthorizerInfo, RouteWithAuth } from './authorizer-resolver.js';
 import type { AuthorizerCache, CachedAuthorizerResult } from './authorizer-cache.js';
 import { buildAuthorizerContextShape } from './authorizer-context.js';
@@ -402,6 +402,19 @@ async function handleRequest(
     return;
   }
 
+  // Issue #652: apply CORS headers to ACTUAL responses (preflight is
+  // handled above by `maybeHandleCorsPreflight`). The browser blocks
+  // 2xx / 4xx / 5xx response bodies from JS unless
+  // `Access-Control-Allow-Origin` is set on the actual response too.
+  // Closure captures the route + state + request Origin so every
+  // response-write call site in this handler can apply CORS without
+  // re-deriving them. Idempotent: safe to call multiple times (a later
+  // call overwrites the headers from an earlier one).
+  const requestOrigin = pickFirstHeaderValue(collectHeaders(req), 'origin') ?? undefined;
+  const applyCors = (): void => {
+    applyCorsResponseHeaders(res, match.route.apiLogicalId, state.corsConfigByApiId, requestOrigin);
+  };
+
   // Synthetic CORS preflight (REST v1 MOCK preflight): respond with
   // the captured status + headers directly, no Lambda invocation. Runs
   // BEFORE the authorizer pass — preflight requests do not carry
@@ -416,6 +429,7 @@ async function handleRequest(
   // reason as HTTP 501 so the user sees exactly what went wrong WHEN
   // they hit the route, while the rest of the API surface stays up.
   if (match.route.unsupported) {
+    applyCors();
     writeNotImplemented(res, match.route.unsupported.reason);
     return;
   }
@@ -485,10 +499,12 @@ async function handleRequest(
       // on HTTP v2, 403 on Function URL AWS_IAM) — matches deployed
       // behavior on Lambda authorizer exceptions / SigV4 verification
       // failures.
+      applyCors();
       writeAuthRejection(res, match.route.apiVersion, 'policy-deny', authorizer.kind);
       return;
     }
     if (!outcome.result.allow) {
+      applyCors();
       writeAuthRejection(
         res,
         match.route.apiVersion,
@@ -512,6 +528,7 @@ async function handleRequest(
   // `RequestParameterContext.authorizer` so `$context.authorizer.X`
   // selection expressions resolve correctly.
   if (match.route.serviceIntegration) {
+    applyCors();
     await handleServiceIntegrationRequest(req, res, match, bodyBuf, opts, authorizer, authResult);
     return;
   }
@@ -530,12 +547,14 @@ async function handleRequest(
         state,
         opts
       );
+      applyCors();
       writeIntegrationOutcome(res, outcome);
     } catch (err) {
       logger.error(
         `REST v1 ${match.route.restV1Integration.kind} dispatch failed for ${match.route.declaredAt}: ${err instanceof Error ? err.message : String(err)}`
       );
       if (!res.headersSent) {
+        applyCors();
         writeError(res, 502);
       } else {
         res.end();
@@ -551,6 +570,7 @@ async function handleRequest(
     logger.error(
       `Failed to acquire container for ${match.route.lambdaLogicalId}: ${err instanceof Error ? err.message : String(err)}`
     );
+    applyCors();
     writeError(res, 502);
     return;
   }
@@ -572,6 +592,7 @@ async function handleRequest(
         opts.rieTimeoutMs
       );
       try {
+        applyCors();
         writeStreamingResponse(res, streamResult, () => state.pool.release(handle));
       } catch (writeErr) {
         // `writeStreamingResponse` threw synchronously — typically from
@@ -609,6 +630,7 @@ async function handleRequest(
         }`
       );
       if (!res.headersSent) {
+        applyCors();
         writeError(res, 502);
       } else {
         res.end();
@@ -635,12 +657,14 @@ async function handleRequest(
       // Multiple Set-Cookie headers — Node's setHeader accepts an array.
       res.setHeader('set-cookie', translated.cookies);
     }
+    applyCors();
     res.end(translated.body);
   } catch (err) {
     logger.error(
       `RIE invoke failed for ${match.route.lambdaLogicalId}: ${err instanceof Error ? err.message : String(err)}`
     );
     if (!res.headersSent) {
+      applyCors();
       writeError(res, 502);
     } else {
       res.end();

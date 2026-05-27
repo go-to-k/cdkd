@@ -1,3 +1,4 @@
+import type { ServerResponse } from 'node:http';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
 /**
@@ -432,6 +433,80 @@ export function matchPreflight(
   responseHeaders['vary'] = 'Origin';
 
   return { statusCode: 204, headers: responseHeaders };
+}
+
+/**
+ * Apply CORS headers to an **actual** (non-preflight) response. CORS
+ * spec requires that 2xx / 4xx / 5xx responses all carry
+ * `Access-Control-Allow-Origin` (only preflight responses also need
+ * `Allow-Methods` / `Allow-Headers` / `Max-Age`) — without it the
+ * browser blocks the response body from JS regardless of status code.
+ *
+ * Looks up the route's `apiLogicalId` in `corsConfigByApiId`. When a
+ * matching config + the request Origin satisfies `AllowOrigins`, sets:
+ *
+ *   - `Access-Control-Allow-Origin: <origin or *>`  (always)
+ *   - `Vary: Origin`                                (when origin echoed)
+ *   - `Access-Control-Allow-Credentials: true`      (when configured)
+ *   - `Access-Control-Expose-Headers: <list>`       (when configured)
+ *
+ * `Allow-Methods` / `Allow-Headers` / `Max-Age` are preflight-only and
+ * deliberately NOT set on actual responses.
+ *
+ * Caller must invoke this BEFORE writing the response body (otherwise
+ * `res.headersSent` flips and `setHeader` becomes a no-op). Idempotent:
+ * a second call with the same args overwrites the same headers.
+ *
+ * No-op when:
+ *   - `route.apiLogicalId` is undefined (no surface-config-bearing
+ *     resource — e.g. routes discovered before issue #644's apiLogicalId
+ *     plumbing existed; harmless on routes without CORS to apply)
+ *   - The route's API has no entry in `corsConfigByApiId`
+ *   - The request has no `Origin` header (non-CORS request — same
+ *     posture as the matchPreflight gate)
+ *   - The Origin is not in the AllowOrigins list (browser will block
+ *     anyway; we don't smuggle through unauthorized origins by accident)
+ */
+export function applyCorsResponseHeaders(
+  res: ServerResponse,
+  apiLogicalId: string | undefined,
+  corsConfigByApiId: Map<string, CorsConfig>,
+  requestOrigin: string | undefined
+): void {
+  if (!apiLogicalId) return;
+  const cors = corsConfigByApiId.get(apiLogicalId);
+  if (!cors) return;
+  if (!requestOrigin) return;
+  const originMatch = matchOrigin(requestOrigin, cors.AllowOrigins);
+  if (!originMatch) return;
+
+  // RFC 6749 / fetch spec: `Allow-Origin: *` is invalid alongside
+  // `Allow-Credentials: true`. When credentials allowed AND the config
+  // had `*`, echo the request Origin instead.
+  const allowOrigin = originMatch === '*' && cors.AllowCredentials !== true ? '*' : requestOrigin;
+  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
+
+  if (allowOrigin !== '*') {
+    // The response varies by Origin; without `Vary: Origin` a shared
+    // cache (browser / CDN) might serve the wrong-origin cached copy
+    // and break the security model. Append to existing Vary if any.
+    const existing = res.getHeader('Vary');
+    if (typeof existing === 'string' && existing.length > 0) {
+      const tokens = existing.split(',').map((t) => t.trim());
+      if (!tokens.some((t) => t.toLowerCase() === 'origin')) {
+        res.setHeader('Vary', `${existing}, Origin`);
+      }
+    } else {
+      res.setHeader('Vary', 'Origin');
+    }
+  }
+
+  if (cors.AllowCredentials === true) {
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  if (cors.ExposeHeaders.length > 0) {
+    res.setHeader('Access-Control-Expose-Headers', cors.ExposeHeaders.join(','));
+  }
 }
 
 /**
