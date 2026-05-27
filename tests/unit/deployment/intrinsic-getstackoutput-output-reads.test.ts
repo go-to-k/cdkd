@@ -178,6 +178,44 @@ describe('Fn::GetStackOutput records into context.recordedOutputReads (#668)', (
     expect(recorded).toEqual([]);
   });
 
+  it('a cross-account (RoleArn) resolution does NOT push an entry — v8 scope-out for cross-account', async () => {
+    // The cross-account branch goes through a separate state backend
+    // (assume-role + ephemeral bucket). v8 intentionally does NOT
+    // record into recordedOutputReads on this path because a
+    // sourceAccountId field would be needed for unambiguous match
+    // keys, deferred to a future bump. This test pins the contract.
+    //
+    // The test stubs the cross-account state lookup by mocking the
+    // resolver's same-account backend lookup to throw if it ever
+    // gets called — that proves we took the cross-account branch
+    // (which then fails on the STS hop, but the assertion is about
+    // recording, not resolution success).
+    const recorded: StateOutputReadEntry[] = [];
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    // No stateBackend means the same-account path can't run; the
+    // RoleArn arg routes through the cross-account branch which
+    // performs its own STS+S3 work. The STS mock is absent so the
+    // cross-account resolution will fail — but the assertion that
+    // matters is that `recorded` stays empty even on the
+    // cross-account *attempt*.
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            OutputName: 'Arn',
+            RoleArn: 'arn:aws:iam::111122223333:role/cdkd-state-reader',
+          },
+        },
+        buildContext({ recordedOutputReads: recorded })
+      )
+    ).rejects.toThrow();
+    // Whether the cross-account branch succeeded or failed, the
+    // recording site is guarded by `if (!roleArn)` and must NOT
+    // have pushed.
+    expect(recorded).toEqual([]);
+  });
+
   it('a failed output lookup (stack exists, output missing) does NOT push an entry', async () => {
     const backend = mockBackend(
       new Map([

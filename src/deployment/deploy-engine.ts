@@ -767,10 +767,14 @@ export class DeployEngine {
               // Preserve existing imports[] (no-change path: nothing
               // re-resolved). Otherwise the refresh would silently
               // strip the strong-reference record on every diff-clean
-              // deploy.
+              // deploy. Same logic applies to outputReads[] (v8+).
               ...(currentState.imports &&
                 currentState.imports.length > 0 && {
                   imports: currentState.imports,
+                }),
+              ...(currentState.outputReads &&
+                currentState.outputReads.length > 0 && {
+                  outputReads: currentState.outputReads,
                 }),
               lastModified: Date.now(),
             };
@@ -957,12 +961,17 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
-            // Per-resource partial save: imports[] reverts to the
-            // pre-deploy snapshot. recordedImports from this session
-            // are persisted only on the final success path.
+            // Per-resource partial save: imports[] / outputReads[]
+            // revert to the pre-deploy snapshot. recordedImports +
+            // recordedOutputReads from this session are persisted
+            // only on the final success path.
             ...(currentState.imports &&
               currentState.imports.length > 0 && {
                 imports: currentState.imports,
+              }),
+            ...(currentState.outputReads &&
+              currentState.outputReads.length > 0 && {
+                outputReads: currentState.outputReads,
               }),
             lastModified: Date.now(),
           };
@@ -1172,6 +1181,10 @@ export class DeployEngine {
             currentState.imports.length > 0 && {
               imports: currentState.imports,
             }),
+          ...(currentState.outputReads &&
+            currentState.outputReads.length > 0 && {
+              outputReads: currentState.outputReads,
+            }),
           lastModified: Date.now(),
         };
         const migrate = pendingMigration;
@@ -1221,6 +1234,10 @@ export class DeployEngine {
             currentState.imports.length > 0 && {
               imports: currentState.imports,
             }),
+          ...(currentState.outputReads &&
+            currentState.outputReads.length > 0 && {
+              outputReads: currentState.outputReads,
+            }),
           lastModified: Date.now(),
         };
         await this.stateBackend.saveState(
@@ -1249,6 +1266,10 @@ export class DeployEngine {
             ...(currentState.imports &&
               currentState.imports.length > 0 && {
                 imports: currentState.imports,
+              }),
+            ...(currentState.outputReads &&
+              currentState.outputReads.length > 0 && {
+                outputReads: currentState.outputReads,
               }),
             lastModified: Date.now(),
           };
