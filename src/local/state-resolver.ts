@@ -39,6 +39,19 @@
  *     `ecs.Secret.fromSsmParameter` shape CDK synthesizes is
  *     `Fn::Join` with pseudo-parameter `Ref`s + a `Ref` to the
  *     parameter; without Fn::Join support the secret silently drops).
+ *   - `Fn::Select: [<index>, <list>]` — picks the indexed element of an
+ *     array. Index may be a number or a numeric string (CFn templates
+ *     often carry the string form). The list argument may be a literal
+ *     array of intrinsics OR an intrinsic that resolves to a
+ *     `string[]` (today: only `Fn::Split`). Out-of-bounds / negative /
+ *     non-finite index reports unresolved. Closes issue #636 — the
+ *     `Fn.select(N, Fn.split(':', secret.secretArn))` shape CDK
+ *     synthesizes for parsing secret ARN segments.
+ *   - `Fn::Split: [<delimiter>, <string>]` — splits a string into a
+ *     `string[]`. **Only valid INSIDE `Fn::Select`** — at the env-var
+ *     top level the result is an array which can't be an env-var
+ *     value, so the top-level dispatcher reports unresolved with a
+ *     clear reason.
  *   - `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` /
  *     `AWS::URLSuffix` — substituted from the optional
  *     `pseudoParameters` bag the caller supplies. When the bag is
@@ -78,9 +91,9 @@
  *
  *   - Cross-region `Fn::ImportValue` (tracked under #451).
  *   - Cross-account `Fn::GetStackOutput.RoleArn` (tracked under #449).
- *   - Other intrinsics (`Fn::Select`, `Fn::Split`, `Fn::If`, etc.).
- *     Anything beyond the supported set is reported as unresolved and the
- *     env var is dropped, matching PR 1's "warn-and-drop" semantics.
+ *   - Other intrinsics (`Fn::If`, `Fn::FindInMap`, etc.). Anything
+ *     beyond the supported set is reported as unresolved and the env
+ *     var is dropped, matching PR 1's "warn-and-drop" semantics.
  *
  * Failure mode: per-key best-effort. When a substitution can't be
  * produced (state missing for the referenced logical ID, attribute not
@@ -242,10 +255,23 @@ export function substituteAgainstState(
   if (intrinsic === 'Fn::Join') {
     return resolveJoin(arg, context);
   }
+  if (intrinsic === 'Fn::Select') {
+    return resolveSelect(arg, context);
+  }
+  if (intrinsic === 'Fn::Split') {
+    // `Fn::Split` returns a string[]; an array cannot be an env-var
+    // value, so at the top level we always reject it with a clear
+    // reason. It's still resolvable inside `Fn::Select` via
+    // `resolveAny` below.
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Split returns an array, which is not a valid env-var value (use Fn::Select to pick one element)`,
+    };
+  }
 
   return {
     kind: 'unresolved',
-    reason: `unsupported intrinsic '${intrinsic}' (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join)`,
+    reason: `unsupported intrinsic '${intrinsic}' (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::Select, Fn::Split)`,
   };
 }
 
@@ -504,6 +530,12 @@ function resolveJoin(arg: unknown, context: SubstitutionContext): StateSubstitut
     };
   }
 
+  // Each element MUST resolve to a scalar — `Fn::Join` of arrays is not
+  // a thing in CFn. We deliberately call `substituteAgainstState` (the
+  // scalar-only top-level dispatcher) rather than `resolveAny` so that a
+  // bare `Fn::Split` element gets the same warn-and-drop UX as at the
+  // top level. (Inside `Fn::Select`, `resolveAny` IS used to admit
+  // arrays — that asymmetry mirrors `intrinsic-image.ts`.)
   const parts: string[] = [];
   for (let i = 0; i < elements.length; i += 1) {
     const sub = substituteAgainstState(elements[i], context);
@@ -516,6 +548,173 @@ function resolveJoin(arg: unknown, context: SubstitutionContext): StateSubstitut
     parts.push(String(sub.value));
   }
   return { kind: 'literal', value: parts.join(delimiterRaw) };
+}
+
+/**
+ * `Fn::Select: [<index>, <list>]` — pick the indexed element of an
+ * array. Mirrors the semantics of `resolveImageIntrinsic`'s `Fn::Select`
+ * branch in `src/local/intrinsic-image.ts` so the two resolvers behave
+ * the same way for the same template shape.
+ *
+ *   - Index may be a number (`0`) OR a numeric string (`'0'`) — CFn
+ *     templates often carry the string form after a JSON round-trip.
+ *   - List may be a resolved-array intrinsic (today only `Fn::Split`
+ *     produces a `string[]`) OR a literal `[...]` array of intrinsics
+ *     resolved on the fly.
+ *   - Out-of-bounds / negative / non-finite index reports unresolved.
+ */
+function resolveSelect(arg: unknown, context: SubstitutionContext): StateSubstitutionResult {
+  if (!Array.isArray(arg) || arg.length !== 2) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Select expects [index, list], got ${
+        Array.isArray(arg) ? `array of length ${arg.length}` : typeof arg
+      }`,
+    };
+  }
+  const [rawIndex, listArg] = arg as [unknown, unknown];
+
+  let index: number | undefined;
+  if (typeof rawIndex === 'number') {
+    index = rawIndex;
+  } else if (typeof rawIndex === 'string' && /^-?\d+$/.test(rawIndex)) {
+    index = Number.parseInt(rawIndex, 10);
+  }
+  if (index === undefined || !Number.isFinite(index)) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Select index must be a finite number (or numeric string), got ${typeof rawIndex}`,
+    };
+  }
+  if (index < 0) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Select index must be non-negative, got ${index}`,
+    };
+  }
+
+  // Resolve the list arg through the array-tolerant helper so a nested
+  // `Fn::Split` produces a real `string[]`.
+  const list = resolveAny(listArg, context);
+  if (list.kind === 'unresolved') {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Select list: ${list.reason}`,
+    };
+  }
+
+  if (Array.isArray(list.value)) {
+    if (index >= list.value.length) {
+      return {
+        kind: 'unresolved',
+        reason: `Fn::Select index ${index} out of bounds (list length ${list.value.length})`,
+      };
+    }
+    const picked = list.value[index]!;
+    return { kind: 'literal', value: picked };
+  }
+
+  // The list arg resolved to a scalar — that's not a valid list. Most
+  // common cause: the template author passed a single intrinsic that
+  // resolves to a string instead of a `Fn::Split` / literal array.
+  return {
+    kind: 'unresolved',
+    reason: `Fn::Select list must resolve to an array, got ${typeof list.value}`,
+  };
+}
+
+/**
+ * `Fn::Split: [<delimiter>, <string>]` — split a string into a
+ * `string[]`. Only callable through `resolveAny` (i.e. inside
+ * `Fn::Select`); the top-level dispatcher rejects bare `Fn::Split`
+ * since an array cannot be an env-var value.
+ *
+ * The string argument can itself be an intrinsic (typical CDK shape:
+ * `Fn::Split: [':', { 'Fn::GetAtt': [<Secret>, 'SecretArn'] }]`); it's
+ * resolved through `substituteAgainstState` so we don't accidentally
+ * admit nested-array shapes there.
+ */
+function resolveSplitAsArray(
+  arg: unknown,
+  context: SubstitutionContext
+): { kind: 'literal'; value: string[] } | { kind: 'unresolved'; reason: string } {
+  if (!Array.isArray(arg) || arg.length !== 2) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Split expects [delimiter, string], got ${
+        Array.isArray(arg) ? `array of length ${arg.length}` : typeof arg
+      }`,
+    };
+  }
+  const [delim, src] = arg as [unknown, unknown];
+  if (typeof delim !== 'string') {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Split delimiter must be a string, got ${typeof delim}`,
+    };
+  }
+  const sub = substituteAgainstState(src, context);
+  if (sub.kind !== 'literal') {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Split string argument: ${sub.reason}`,
+    };
+  }
+  if (typeof sub.value !== 'string') {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::Split string argument must resolve to a string, got ${typeof sub.value}`,
+    };
+  }
+  return { kind: 'literal', value: sub.value.split(delim) };
+}
+
+/**
+ * Array-tolerant resolver used by `Fn::Select`'s `list` argument.
+ * Returns either the scalar `StateSubstitutionResult` shape (delegating
+ * to `substituteAgainstState`) OR a `{kind: 'literal', value: string[]}`
+ * when the node is `Fn::Split` / a literal array of intrinsics.
+ *
+ * Top-level `substituteAgainstState` deliberately doesn't go through
+ * this helper — env-var values can't be arrays, and the asymmetry
+ * matches `intrinsic-image.ts`'s `resolveImageIntrinsic` (scalar) vs
+ * `resolveImageIntrinsicAny` (scalar OR array) split.
+ */
+function resolveAny(
+  value: unknown,
+  context: SubstitutionContext
+):
+  | { kind: 'literal'; value: string | number | boolean | string[] }
+  | { kind: 'unresolved'; reason: string } {
+  // Literal arrays of intrinsics: resolve each element to a scalar.
+  if (Array.isArray(value)) {
+    const out: string[] = [];
+    for (let i = 0; i < value.length; i += 1) {
+      const sub = substituteAgainstState(value[i], context);
+      if (sub.kind !== 'literal') {
+        return {
+          kind: 'unresolved',
+          reason: `list element [${i}]: ${sub.reason}`,
+        };
+      }
+      out.push(String(sub.value));
+    }
+    return { kind: 'literal', value: out };
+  }
+
+  // Direct `Fn::Split` intrinsic — produces an array.
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length === 1 &&
+    Object.prototype.hasOwnProperty.call(value, 'Fn::Split')
+  ) {
+    return resolveSplitAsArray((value as Record<string, unknown>)['Fn::Split'], context);
+  }
+
+  // Anything else: fall back to the scalar top-level dispatcher.
+  return substituteAgainstState(value, context);
 }
 
 /**
@@ -575,7 +774,9 @@ export async function substituteAgainstStateAsync(
     intrinsic === 'Ref' ||
     intrinsic === 'Fn::GetAtt' ||
     intrinsic === 'Fn::Sub' ||
-    intrinsic === 'Fn::Join'
+    intrinsic === 'Fn::Join' ||
+    intrinsic === 'Fn::Select' ||
+    intrinsic === 'Fn::Split'
   ) {
     return substituteAgainstState(value, context);
   }
@@ -589,7 +790,7 @@ export async function substituteAgainstStateAsync(
 
   return {
     kind: 'unresolved',
-    reason: `unsupported intrinsic '${intrinsic}' (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::ImportValue, Fn::GetStackOutput)`,
+    reason: `unsupported intrinsic '${intrinsic}' (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::Select, Fn::Split, Fn::ImportValue, Fn::GetStackOutput)`,
   };
 }
 

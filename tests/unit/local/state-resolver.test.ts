@@ -162,12 +162,15 @@ describe('substituteAgainstState', () => {
     }
   });
 
-  it('reports unresolved for unsupported intrinsics (Fn::ImportValue, Fn::Select, etc.)', () => {
-    const r2 = substituteAgainstState({ 'Fn::ImportValue': 'OtherStackExport' }, {});
-    expect(r2.kind).toBe('unresolved');
+  it('reports unresolved for unsupported intrinsics (Fn::ImportValue, Fn::If, etc.)', () => {
+    const r1 = substituteAgainstState({ 'Fn::ImportValue': 'OtherStackExport' }, {});
+    expect(r1.kind).toBe('unresolved');
 
-    const r3 = substituteAgainstState({ 'Fn::Select': [0, ['a', 'b']] }, {});
-    expect(r3.kind).toBe('unresolved');
+    const r2 = substituteAgainstState(
+      { 'Fn::If': ['Cond', 'a', 'b'] } as Record<string, unknown>,
+      {}
+    );
+    expect(r2.kind).toBe('unresolved');
   });
 
   it('reports unresolved for objects with multiple keys (not a valid intrinsic shape)', () => {
@@ -319,6 +322,205 @@ describe('substituteAgainstState', () => {
       kind: 'literal',
       value: 'arn:aws:ssm:us-east-1:123456789012:parameter//app/param',
     });
+  });
+});
+
+/**
+ * Test suite for issue #636 — `Fn::Select` + `Fn::Split` support so the
+ * canonical CDK `Fn.select(N, Fn.split(':', secret.secretArn))` shape
+ * resolves instead of warn-and-dropping the env var.
+ */
+describe('substituteAgainstState (Fn::Select / Fn::Split)', () => {
+  it('picks the indexed element from a literal-array list under Fn::Select', () => {
+    const r = substituteAgainstState({ 'Fn::Select': [1, ['a', 'b', 'c']] }, {});
+    expect(r).toEqual({ kind: 'literal', value: 'b' });
+  });
+
+  it('resolves Fn::Select over Fn::Split over a literal ARN string', () => {
+    // Common CDK pattern: parse the 7th `:`-segment off a secret ARN.
+    const arn = 'arn:aws:secretsmanager:us-east-1:123:secret:mysecret-AbCdEf';
+    const r = substituteAgainstState(
+      { 'Fn::Select': [6, { 'Fn::Split': [':', arn] }] },
+      {}
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'mysecret-AbCdEf' });
+  });
+
+  it('resolves Fn::Select over Fn::Split over a Fn::GetAtt with a state-recorded attribute', () => {
+    // The canonical `Fn.select(6, Fn.split(':', secret.secretArn))` shape.
+    const resources: Record<string, ResourceState> = {
+      MySecret: res('secret-physical-id', {
+        Arn: 'arn:aws:secretsmanager:us-east-1:123:secret:mysecret-AbCdEf',
+      }),
+    };
+    const r = substituteAgainstState(
+      {
+        'Fn::Select': [
+          6,
+          { 'Fn::Split': [':', { 'Fn::GetAtt': ['MySecret', 'Arn'] }] },
+        ],
+      },
+      resources
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'mysecret-AbCdEf' });
+  });
+
+  it('accepts a numeric-string index (the CFn template shape after JSON round-trip)', () => {
+    const r = substituteAgainstState(
+      { 'Fn::Select': ['0', ['first', 'second']] },
+      {}
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'first' });
+  });
+
+  it('resolves Fn::Select with intrinsic-valued literal-array elements', () => {
+    const resources: Record<string, ResourceState> = {
+      MyTable: res('tbl-deployed'),
+    };
+    const r = substituteAgainstState(
+      { 'Fn::Select': [1, ['first', { Ref: 'MyTable' }, 'third']] },
+      resources
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'tbl-deployed' });
+  });
+
+  it('rejects bare Fn::Split at the top level (arrays are not valid env-var values)', () => {
+    const r = substituteAgainstState({ 'Fn::Split': [':', 'a:b:c'] }, {});
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('Fn::Split');
+      expect(r.reason).toContain('array');
+    }
+  });
+
+  it('reports unresolved on out-of-bounds Fn::Select index', () => {
+    const r = substituteAgainstState({ 'Fn::Select': [5, ['a', 'b']] }, {});
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('out of bounds');
+    }
+  });
+
+  it('reports unresolved on negative Fn::Select index', () => {
+    const r = substituteAgainstState({ 'Fn::Select': [-1, ['a', 'b']] }, {});
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('non-negative');
+    }
+  });
+
+  it('reports unresolved on non-numeric Fn::Select index', () => {
+    const r = substituteAgainstState(
+      { 'Fn::Select': ['not-a-number', ['a', 'b']] },
+      {}
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('finite number');
+    }
+  });
+
+  it('rejects malformed Fn::Select argument shapes', () => {
+    const r1 = substituteAgainstState({ 'Fn::Select': 'not-an-array' }, {});
+    expect(r1.kind).toBe('unresolved');
+    if (r1.kind === 'unresolved') expect(r1.reason).toContain('Fn::Select expects');
+
+    const r2 = substituteAgainstState({ 'Fn::Select': [0] }, {});
+    expect(r2.kind).toBe('unresolved');
+  });
+
+  it('rejects Fn::Select when the list arg resolves to a scalar (not an array)', () => {
+    const resources: Record<string, ResourceState> = {
+      MyTable: res('scalar-value'),
+    };
+    const r = substituteAgainstState(
+      { 'Fn::Select': [0, { Ref: 'MyTable' }] },
+      resources
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('must resolve to an array');
+    }
+  });
+
+  it('propagates Fn::Split inner-string resolution failures through Fn::Select', () => {
+    const r = substituteAgainstState(
+      {
+        'Fn::Select': [0, { 'Fn::Split': [':', { Ref: 'NotInState' }] }],
+      },
+      {}
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('NotInState');
+    }
+  });
+
+  it('rejects malformed Fn::Split shape under Fn::Select', () => {
+    const r = substituteAgainstState(
+      { 'Fn::Select': [0, { 'Fn::Split': 'not-an-array' }] },
+      {}
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('Fn::Split expects');
+    }
+  });
+
+  it('rejects Fn::Split with non-string delimiter under Fn::Select', () => {
+    const r = substituteAgainstState(
+      { 'Fn::Select': [0, { 'Fn::Split': [42, 'a:b'] }] },
+      {}
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('delimiter must be a string');
+    }
+  });
+
+  it('keeps Fn::Join element-level resolution scalar-only (rejects nested Fn::Split element)', () => {
+    // Join elements must be scalars in CFn; a bare Fn::Split inside a
+    // Join element should fall under the top-level Fn::Split rejection.
+    const r = substituteAgainstState(
+      { 'Fn::Join': ['-', ['x', { 'Fn::Split': [':', 'a:b'] }]] },
+      {}
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('Fn::Join element [1]');
+      expect(r.reason).toContain('Fn::Split');
+    }
+  });
+});
+
+describe('substituteAgainstStateAsync (Fn::Select / Fn::Split)', () => {
+  it('resolves Fn::Select through the async dispatcher (delegates to sync path)', async () => {
+    const resources: Record<string, ResourceState> = {
+      MySecret: res('secret-physical-id', {
+        Arn: 'arn:aws:secretsmanager:us-east-1:123:secret:mysecret-AbCdEf',
+      }),
+    };
+    const r = await substituteAgainstStateAsync(
+      {
+        'Fn::Select': [
+          6,
+          { 'Fn::Split': [':', { 'Fn::GetAtt': ['MySecret', 'Arn'] }] },
+        ],
+      },
+      resources
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'mysecret-AbCdEf' });
+  });
+
+  it('rejects bare Fn::Split at the async top level', async () => {
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::Split': [':', 'a:b:c'] },
+      {}
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('Fn::Split');
+    }
   });
 });
 
