@@ -85,6 +85,33 @@ describe('writeProfileCredentialsFile', () => {
     await expect(file.dispose()).resolves.toBeUndefined();
   });
 
+  it('rejects an empty profile name (would write an `[]` header)', async () => {
+    await expect(
+      writeProfileCredentialsFile('', { accessKeyId: 'A', secretAccessKey: 'B' })
+    ).rejects.toThrow(/must not be empty/);
+  });
+
+  it("rejects a profile name containing ']' (would inject a second INI section)", async () => {
+    await expect(
+      writeProfileCredentialsFile('a]\n[evil', { accessKeyId: 'A', secretAccessKey: 'B' })
+    ).rejects.toThrow(/forbidden character/);
+  });
+
+  it("rejects a profile name containing '[' (would corrupt the INI section header)", async () => {
+    await expect(
+      writeProfileCredentialsFile('a[b', { accessKeyId: 'A', secretAccessKey: 'B' })
+    ).rejects.toThrow(/forbidden character/);
+  });
+
+  it('rejects a profile name containing CR/LF (would break the docker -e env line)', async () => {
+    await expect(
+      writeProfileCredentialsFile('a\nb', { accessKeyId: 'A', secretAccessKey: 'B' })
+    ).rejects.toThrow(/forbidden character/);
+    await expect(
+      writeProfileCredentialsFile('a\rb', { accessKeyId: 'A', secretAccessKey: 'B' })
+    ).rejects.toThrow(/forbidden character/);
+  });
+
   it('uses the profile name the caller passed (matches handler-side fromIni({ profile }))', async () => {
     // Real-world case: user passes `--profile my-team-dev`; handler code
     // has `fromIni({ profile: 'my-team-dev' })`. The INI section header

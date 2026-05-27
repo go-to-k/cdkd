@@ -79,6 +79,23 @@ export async function writeProfileCredentialsFile(
   profileName: string,
   creds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
 ): Promise<ProfileCredentialsFile> {
+  // PR #670 code review finding #2: validate the profile name before
+  // interpolating into the INI section header / AWS_PROFILE env var.
+  // The injection surface is local-dev-only (the caller is the user's
+  // own `--profile <name>` arg) so this is hardening, not security
+  // boundary — but a value containing `]` would silently start a second
+  // INI section, and a value containing newlines would break the
+  // `-e AWS_PROFILE=...` docker-run env line. Reject at the helper
+  // boundary so the caller never has to think about it.
+  if (profileName === '') {
+    throw new Error('writeProfileCredentialsFile: profile name must not be empty.');
+  }
+  if (/[\r\n[\]]/.test(profileName)) {
+    throw new Error(
+      `writeProfileCredentialsFile: profile name '${profileName}' contains a forbidden character ` +
+        `(any of CR, LF, '[', ']' would corrupt the INI file or the docker -e env var).`
+    );
+  }
   const dir = await mkdtemp(path.join(tmpdir(), 'cdkd-profile-creds-'));
   const hostPath = path.join(dir, 'credentials');
   const lines: string[] = [

@@ -1586,19 +1586,27 @@ async function buildContainerSpec(args: {
         delete dockerEnv['AWS_SESSION_TOKEN'];
       }
     }
-  }
 
-  // Issue #2 deferred from #655 (profile-aware SDK config inside
-  // container): when the server boot synthesized a credentials file via
-  // `writeProfileCredentialsFile(options.profile, ...)`, point the
-  // container's SDK chain at the bind-mounted path so
-  // `fromIni({ profile: '<name>' })` calls inside the handler resolve
-  // to the same creds as the default chain. `AWS_PROFILE` makes
-  // `fromIni()` (no explicit arg) ALSO use this profile — both code
-  // paths converge on the same `[<name>]` section.
-  if (profileCredsFile) {
-    dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
-    dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
+    // Issue #2 deferred from #655 (profile-aware SDK config inside
+    // container): when the server boot synthesized a credentials file via
+    // `writeProfileCredentialsFile(options.profile, ...)`, point the
+    // container's SDK chain at the bind-mounted path so
+    // `fromIni({ profile: '<name>' })` calls inside the handler resolve
+    // to the same creds as the default chain. `AWS_PROFILE` makes
+    // `fromIni()` (no explicit arg) ALSO use this profile — both code
+    // paths converge on the same `[<name>]` section.
+    //
+    // GATED on `!roleArn` (nested in the assume-role-NOT-effective branch)
+    // so the existing precedence "assume-role > profile > env" holds for
+    // the file path too. Without this nesting, a handler in an
+    // assume-role'd Lambda that called `fromIni({ profile: '<name>' })`
+    // explicitly would silently bypass the execution-role creds and use
+    // the `--profile <name>` creds — breaking the documented precedence
+    // (PR #670 code review finding #1).
+    if (profileCredsFile) {
+      dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
+      dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
+    }
   }
 
   if (debugPort !== undefined) {
