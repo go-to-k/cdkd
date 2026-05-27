@@ -484,6 +484,20 @@ async function localStartApiCommand(
       ? await loadStateForRoutedStacks(targetStacks, routes, routesWithAuth, options)
       : new Map<string, StackStateBundle>();
 
+    // Issue #654: resolve `--profile <p>` to a concrete credential set
+    // ONCE at boot for forwarding into every Lambda container that
+    // doesn't have its own `--assume-role`. Drives the SDK's default
+    // credential provider chain (SSO / IAM Identity Center / fromIni /
+    // role-assumption profiles all handled uniformly — same chain that
+    // already resolves `--profile` for cdkd's own CFn / CC API clients).
+    // Resolved here so a stack with N Lambdas pays one STS round-trip.
+    // SSO temp creds typically last 1h+; long-running `--watch` sessions
+    // outliving the creds need a cdkd restart (auto-refresh deferred,
+    // see issue #654).
+    const profileCredentials = options.profile
+      ? await resolveProfileCredentials(options.profile)
+      : undefined;
+
     // Build the per-Lambda spec map. Every reachable logical ID is
     // resolved to its asset / inline code, env vars, optional STS creds
     // (--assume-role), optional --debug-port reservation. The container
@@ -507,6 +521,7 @@ async function localStartApiCommand(
         stateByStack,
         skipPull: options.pull === false,
         ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
+        ...(profileCredentials && { profileCredentials }),
       });
       specs.set(logicalId, spec);
     }
@@ -1345,6 +1360,15 @@ async function buildContainerSpec(args: {
    * cross-account role that can read all of them.
    */
   layerRoleArn?: string;
+  /**
+   * Issue #654: profile-resolved credentials to forward into the Lambda
+   * container's env when `--profile <p>` is set AND this Lambda has no
+   * `--assume-role` mapping. Resolved once at server boot via
+   * `resolveProfileCredentials` and shared across every spec build.
+   * Undefined when `--profile` is unset (the pre-fix path stays in
+   * effect — `forwardAwsEnv` copies `process.env.AWS_*`).
+   */
+  profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
 }): Promise<ContainerSpec> {
   const {
     logicalId,
@@ -1359,6 +1383,7 @@ async function buildContainerSpec(args: {
     stateByStack,
     skipPull,
     layerRoleArn,
+    profileCredentials,
   } = args;
   const lambda = resolveLambdaByLogicalId(logicalId, stacks);
 
@@ -1472,6 +1497,32 @@ async function buildContainerSpec(args: {
     if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
   } else {
     forwardAwsEnv(dockerEnv);
+    // Issue #654: when `--profile <p>` is set AND this Lambda has no
+    // `--assume-role` mapping, overlay the profile-resolved credentials
+    // on top of whatever `forwardAwsEnv` copied from `process.env`. The
+    // overlay covers SSO / IAM Identity Center / regular access key /
+    // role-assumption profiles uniformly (resolved via the SDK's
+    // default credential chain). Without this overlay, a dev who runs
+    // `cdkd local start-api --profile mates_dev` AND has no
+    // `AWS_ACCESS_KEY_ID` env var (the common SSO / Identity Center
+    // case) sees the Lambda boot with no creds → handler's AWS SDK
+    // call fails with `Could not load credentials from any providers`.
+    //
+    // Region from forwardAwsEnv is preserved — only the credential
+    // triple is overlaid. Existing precedence: assume-role > profile >
+    // forwarded process env.
+    if (profileCredentials) {
+      dockerEnv['AWS_ACCESS_KEY_ID'] = profileCredentials.accessKeyId;
+      dockerEnv['AWS_SECRET_ACCESS_KEY'] = profileCredentials.secretAccessKey;
+      if (profileCredentials.sessionToken) {
+        dockerEnv['AWS_SESSION_TOKEN'] = profileCredentials.sessionToken;
+      } else {
+        // The profile resolved to long-lived creds (no session token).
+        // Strip any inherited session token to avoid the SDK trying
+        // to use a mismatched (long-lived AKID + foreign session).
+        delete dockerEnv['AWS_SESSION_TOKEN'];
+      }
+    }
   }
 
   if (debugPort !== undefined) {
@@ -2147,6 +2198,64 @@ function forwardAwsEnv(env: Record<string, string>): void {
   for (const key of passThrough) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
+  }
+}
+
+/**
+ * Issue #654: resolve `--profile <p>` to a concrete credential set
+ * for forwarding to Lambda containers.
+ *
+ * The dev's AWS credentials may live in any of:
+ *   - `~/.aws/sso/cache/*.json` (AWS IAM Identity Center / legacy SSO)
+ *   - `~/.aws/credentials` (regular long-lived access keys)
+ *   - `~/.aws/config` profiles with `role_arn` + `source_profile` (chained AssumeRole)
+ *   - `credential_process` external resolvers
+ *
+ * `forwardAwsEnv` only reads `process.env.AWS_*`, which is empty for
+ * every shape except "user manually exported the env vars". The
+ * Lambda container therefore boots without creds and the handler's
+ * AWS SDK call fails with `Could not load credentials from any providers`.
+ *
+ * This helper constructs a transient `STSClient({ profile })` to drive
+ * the SDK's default credential provider chain — same code path cdkd's
+ * own CFn / CC API clients use when `--profile` is set, so SSO / IAM
+ * Identity Center / role-assumption profiles all resolve the same way
+ * they already do for cdkd's outbound calls. We then extract the
+ * resolved `AwsCredentialIdentity` via `sts.config.credentials()` and
+ * return the underlying `{ accessKeyId, secretAccessKey, sessionToken? }`
+ * for env-var injection.
+ *
+ * Called ONCE at server boot; the resolved creds are reused for every
+ * Lambda container's env overlay (when `--assume-role` is not set for
+ * that Lambda — assume-role wins per the existing precedence). SSO
+ * temp creds typically last 1h+, so a single resolve is fine for the
+ * common dev session; long-running `--watch` sessions that outlive
+ * the creds need a cdkd restart (deferred refresh out of scope for
+ * v1, see issue #654).
+ */
+export async function resolveProfileCredentials(
+  profile: string
+): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string }> {
+  const { STSClient } = await import('@aws-sdk/client-sts');
+  const sts = new STSClient({ profile });
+  try {
+    const credsProvider = sts.config.credentials;
+    const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
+    if (!creds || !creds.accessKeyId || !creds.secretAccessKey) {
+      throw new Error(
+        `--profile '${profile}': credential provider chain resolved without usable credentials. ` +
+          'Check `aws sso login --profile ' +
+          profile +
+          '` for SSO profiles, or `~/.aws/credentials` / `~/.aws/config` for regular profiles.'
+      );
+    }
+    return {
+      accessKeyId: creds.accessKeyId,
+      secretAccessKey: creds.secretAccessKey,
+      ...(creds.sessionToken && { sessionToken: creds.sessionToken }),
+    };
+  } finally {
+    sts.destroy();
   }
 }
 
