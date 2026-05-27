@@ -54,6 +54,10 @@ import {
   getDockerImageBySourceHash,
 } from '../../assets/asset-manifest-loader.js';
 import { singleFlight } from '../../utils/single-flight.js';
+import {
+  writeProfileCredentialsFile,
+  type ProfileCredentialsFile,
+} from './local-profile-credentials-file.js';
 import type { StackState } from '../../types/state.js';
 import { createLocalStartApiCommand, resolveProfileCredentials } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
@@ -198,6 +202,11 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
   let sigintHandler: (() => void) | undefined;
+  // Issue #2 deferred from #655: synthesized AWS shared credentials file
+  // (one INI section) bind-mounted into the container so handlers using
+  // `fromIni({ profile })` explicitly resolve to the same creds.
+  // Disposed in the shared `cleanup` single-flight.
+  let profileCredsFile: ProfileCredentialsFile | undefined;
 
   /**
    * Unified cleanup for both the success / failure unwind path AND the
@@ -267,6 +276,17 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           }
         }
       }
+      if (profileCredsFile) {
+        try {
+          await profileCredsFile.dispose();
+        } catch (err) {
+          getLogger().debug(
+            `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
     },
     (err) => {
       getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -292,6 +312,20 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     const profileCredentials = options.profile
       ? await resolveProfileCredentials(options.profile)
       : undefined;
+
+    // Issue #2 deferred from #655: synthesize an AWS shared credentials
+    // file with the resolved creds under `[<options.profile>]` so handler
+    // code that uses `fromIni({ profile: '<options.profile>' })` explicitly
+    // (instead of the default credential chain) resolves to the same
+    // creds locally. Mounted read-only into the container at the path
+    // pointed to by `AWS_SHARED_CREDENTIALS_FILE` (set below). The
+    // default-chain path (most handlers) keeps working through the
+    // existing env-var injection; this file is the additive layer for
+    // the explicit-profile case. Disposed in the shared `cleanup`
+    // single-flight below.
+    if (options.profile && profileCredentials) {
+      profileCredsFile = await writeProfileCredentialsFile(options.profile, profileCredentials);
+    }
 
     // Synthesize. Default is "synth every time" (Q2 recommendation C):
     // safe-by-default, with `-a/--app cdk.out` as the explicit opt-out
@@ -530,6 +564,14 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       // `process.env`. See `applyProfileCredentialsOverlay`'s doc for
       // the full precedence table + session-token-strip rationale.
       applyProfileCredentialsOverlay(dockerEnv, profileCredentials, false);
+      // Issue #2 deferred from #655: point the container's SDK chain at
+      // the bind-mounted credentials file so `fromIni({ profile })` calls
+      // inside the handler resolve to the same creds. `AWS_PROFILE` makes
+      // `fromIni()` (no explicit arg) ALSO use this profile.
+      if (profileCredsFile) {
+        dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
+        dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
+      }
     }
 
     // Optional inspector: --debug-port enables `node --inspect-brk` inside
@@ -569,10 +611,25 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       );
     }
     logger.info(`Starting container (image=${imagePlan.image}, port=${hostPort})...`);
+    // Issue #2 deferred from #655: append the profile credentials file
+    // bind-mount to the existing extraMounts (which already carry the
+    // /opt layer mount when present). Read-only — the container has no
+    // business writing to its credentials file; a writable mount would
+    // let a compromised handler tamper with the host-side temp file.
+    const extraMountsWithProfile = profileCredsFile
+      ? [
+          ...(imagePlan.extraMounts ?? []),
+          {
+            hostPath: profileCredsFile.hostPath,
+            containerPath: profileCredsFile.containerPath,
+            readOnly: true,
+          },
+        ]
+      : imagePlan.extraMounts;
     containerId = await runDetached({
       image: imagePlan.image,
       mounts: imagePlan.mounts,
-      extraMounts: imagePlan.extraMounts,
+      extraMounts: extraMountsWithProfile,
       env: dockerEnv,
       cmd: imagePlan.cmd,
       hostPort,

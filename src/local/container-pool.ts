@@ -116,6 +116,23 @@ interface ContainerSpecBase {
    * for Lambdas not backing a WebSocket API.
    */
   extraHosts?: { host: string; ip: string }[];
+  /**
+   * Issue #2-deferred-from-#655 — when `cdkd local *` is invoked with
+   * `--profile <name>`, this is the host path of a synthesized AWS shared
+   * credentials file (one INI section, the resolved `[<name>]` block).
+   * The pool bind-mounts it read-only at the container path so SDK calls
+   * via `fromIni({ profile: '<name>' })` inside the handler find their
+   * profile locally — production AWS Lambda doesn't ship `~/.aws/`, so
+   * this is purely a local-development convenience to keep handler code
+   * portable without source changes.
+   *
+   * Set in `local-start-api.ts` / `local-invoke.ts`'s startup flow
+   * alongside the `AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE` env
+   * entries (already in `env`) so the SDK's default chain + explicit
+   * `fromIni({ profile })` both resolve to the same creds. Unset when
+   * `--profile` was not passed (the env-var-only path stays in effect).
+   */
+  profileCredentialsFile?: { hostPath: string; containerPath: string };
 }
 
 export interface ZipContainerSpec extends ContainerSpecBase {
@@ -324,6 +341,22 @@ export function createContainerPool(
       const optMount = spec.optDir
         ? [{ hostPath: spec.optDir, containerPath: '/opt', readOnly: true }]
         : [];
+      // Append the profile credentials file mount (issue #2 deferred from
+      // #655) when --profile was passed. Read-only — the container has no
+      // business writing to its credentials file, and a writable mount
+      // would let a compromised handler tamper with the host-side temp
+      // file. Combined with `optMount` since Docker accepts an array of
+      // -v args (no conflict with the /opt layer mount).
+      const extraMounts = spec.profileCredentialsFile
+        ? [
+            ...optMount,
+            {
+              hostPath: spec.profileCredentialsFile.hostPath,
+              containerPath: spec.profileCredentialsFile.containerPath,
+              readOnly: true,
+            },
+          ]
+        : optMount;
       // provided.al2 / provided.al2023 require the deployment package at
       // /var/runtime (where the base image's hardcoded entrypoint exec's
       // /var/runtime/bootstrap); every other runtime expects /var/task.
@@ -332,7 +365,7 @@ export function createContainerPool(
       containerId = await runDetached({
         image,
         mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
-        extraMounts: optMount,
+        extraMounts,
         env: spec.env,
         cmd: [spec.lambda.handler],
         hostPort,
@@ -355,6 +388,15 @@ export function createContainerPool(
       containerId = await runDetached({
         image: spec.image,
         mounts: [],
+        ...(spec.profileCredentialsFile && {
+          extraMounts: [
+            {
+              hostPath: spec.profileCredentialsFile.hostPath,
+              containerPath: spec.profileCredentialsFile.containerPath,
+              readOnly: true,
+            },
+          ],
+        }),
         env: spec.env,
         cmd: spec.command,
         hostPort,
