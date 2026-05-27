@@ -617,6 +617,65 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     expect(okayChange?.ccApi).toBeUndefined();
   });
 
+  it('annotates sticky-CC resources (provisionedBy: cc-api in state, no silent-drop in template) with [via CC API: sticky] — matches live-progress label + design §8', async () => {
+    // The Lambda's template has NO silent-drop property — the SDK provider's
+    // coverage caught up between deploys. But cdkd state still pins routing
+    // to CC API (sticky semantics), so `getProviderFor` rule 2 will route
+    // the next UPDATE via CC API. Without sticky-state visibility, the diff
+    // line would render plain while the live-progress label correctly tags
+    // it `[CC API]` — that divergence is what this test prevents.
+    const template: CloudFormationTemplate = {
+      Resources: {
+        StickyLambda: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            FunctionName: 'foo',
+            Role: 'arn:aws:iam::1:role/r',
+            Code: { ZipFile: 'x' },
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          },
+        },
+      },
+    };
+    const backend = fakeBackend({
+      Leaf: st('Leaf', {
+        StickyLambda: {
+          ...res('AWS::Lambda::Function', {
+            FunctionName: 'foo',
+            Role: 'arn:aws:iam::1:role/r',
+            Code: { ZipFile: 'x' },
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          }),
+          provisionedBy: 'cc-api',
+        },
+      }),
+    });
+
+    const root = await buildDiffTree({
+      stackName: 'Leaf',
+      displayName: 'Leaf',
+      region: 'us-east-1',
+      template,
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    expect(root.ccApiRoutes.get('StickyLambda')).toEqual(['sticky']);
+
+    // Even when there is no actual change to render (NO_CHANGE on every
+    // field), the routing annotation is queryable via the JSON projection
+    // — important for users auditing routing without forcing a real diff.
+    const json = diffTreeToJson(root);
+    // NO_CHANGE entries are dropped from JSON, so we won't have a per-change
+    // entry here; the route info is captured on the tree itself.
+    expect(json.changes).toHaveLength(0);
+    expect(root.ccApiRoutes.has('StickyLambda')).toBe(true);
+  });
+
   it('treats a leaf stack with no nested rows as a single node', async () => {
     const template: CloudFormationTemplate = {
       Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },

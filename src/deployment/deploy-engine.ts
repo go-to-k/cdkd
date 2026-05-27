@@ -1496,14 +1496,17 @@ export class DeployEngine {
             : 'Updating';
     // #614 §9 live-progress annotation: distinguish CC-routed work from
     // SDK-routed work so the user sees WHY a particular resource is taking
-    // longer than its sibling (CC API is async-polling). For CREATE we
-    // peek at the template-driven routing decision (the real decision in
-    // provisionResourceBody passes resolved properties, but routing is
-    // based on top-level property NAMES which intrinsic resolution does
-    // not change — so the pre-routing here matches). For UPDATE / DELETE
-    // we use the recorded sticky `provisionedBy`. Errors here never
-    // surface — if routing inference fails, we drop the tag and the
-    // real `getProviderFor` call later will re-evaluate.
+    // longer than its sibling (CC API is async-polling). CREATE / UPDATE
+    // consult `getProviderFor` with the template-side properties +
+    // recorded `provisionedBy` (the latter so sticky-CC resources keep
+    // the tag even when the update payload has no silent-drop property
+    // of its own — design §8). DELETE short-circuits on recorded
+    // `provisionedBy` since delete routing is fully driven by state, not
+    // by the template. Routing is based on top-level property NAMES
+    // which intrinsic resolution does not change, so the pre-routing
+    // here matches the real decision in `provisionResourceBody`. Errors
+    // here never surface — if routing inference fails, we drop the tag
+    // and the real `getProviderFor` call later will re-evaluate.
     const labelRouting = this.peekRoutingForLabel(change, stateResources[logicalId]);
     const routingTag = labelRouting === 'cc-api' ? ' [CC API]' : '';
     const baseLabel = `${verb} ${logicalId} (${resourceType})${routingTag}`;

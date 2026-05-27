@@ -226,7 +226,7 @@ export async function buildDiffTree(args: {
     stateBackend,
     diffCalculator
   );
-  const ccApiRoutes = collectCcApiRoutes(template);
+  const ccApiRoutes = collectCcApiRoutes(template, state);
   const node: DiffTreeNode = {
     stackName,
     displayName,
@@ -320,34 +320,66 @@ async function buildDeletedSubtree(
   return node;
 }
 
+const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
+
 /**
- * Walk every resource in `template` and return the logicalId → silent-drop
- * property names map that #614's auto-fallback would route via Cloud Control
- * API. Empty allow-set: `--allow-unsupported-properties` is a deploy-only
- * flag, so diff renders every actionable drop as an auto-route hint.
+ * Walk every resource in `template` and return the logicalId → annotation
+ * source map that #614's auto-fallback would route via Cloud Control API.
+ *
+ * Two annotation sources are merged into one map so the diff renderer
+ * matches the live-progress label and the design §8 statement that the
+ * `[via CC API: ...]` tag "stays visible whenever the resource has the
+ * `provisionedBy: 'cc-api'` state field set OR is being introduced via the
+ * auto-route":
+ *
+ *  - **Fresh hits**: a resource whose template uses one or more
+ *    silent-drop top-level CFn properties. Annotation value is the list
+ *    of property names (e.g. `LoggingConfig`).
+ *  - **Sticky hits**: a resource whose deployed state records
+ *    `provisionedBy: 'cc-api'` (from a prior deploy) even when the
+ *    current template's silent-drop set is empty. Annotation value is
+ *    the single token `sticky` so the renderer prints `[via CC API:
+ *    sticky]` — the routing decision is unchanged but the tag stays
+ *    visible per #614's sticky-state semantics.
+ *
+ * When both sources fire on the same resource, the fresh-hit prop list
+ * wins (more informative). Empty allow-set:
+ * `--allow-unsupported-properties` is a deploy-only flag, so diff
+ * renders every actionable drop as an auto-route hint.
  *
  * Excludes `AWS::CDK::Metadata` (filtered like the deploy pre-flight); also
  * excludes `AWS::CloudFormation::Stack` rows since nested-stack children
  * recurse through their own templates rather than carrying CC-routable
  * properties on the parent's row.
  */
-function collectCcApiRoutes(template: CloudFormationTemplate): Map<string, string[]> {
+function collectCcApiRoutes(
+  template: CloudFormationTemplate,
+  state: StackState
+): Map<string, string[]> {
   const hits = new Map<string, string[]>();
   for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
     if (!resource) continue;
     if (resource.Type === 'AWS::CDK::Metadata') continue;
     if (resource.Type === NESTED_STACK_RESOURCE_TYPE) continue;
     const drops = findActionableSilentDrops(resource.Type, resource.Properties, EMPTY_ALLOW_SET);
-    if (drops.length === 0) continue;
-    hits.set(
-      logicalId,
-      drops.map((d) => d.property)
-    );
+    if (drops.length > 0) {
+      hits.set(
+        logicalId,
+        drops.map((d) => d.property)
+      );
+      continue;
+    }
+    // Sticky-CC fallback: no fresh silent-drop hit, but the deployed state
+    // pins routing to CC API → next op (UPDATE) still goes via CC API per
+    // `getProviderFor` rule 2 (sticky). Surface the tag with the
+    // distinguishing `sticky` token so the user can tell this case apart
+    // from a fresh auto-route.
+    if (state.resources[logicalId]?.provisionedBy === 'cc-api') {
+      hits.set(logicalId, ['sticky']);
+    }
   }
   return hits;
 }
-
-const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
 
 /** True when this node has at least one real (non-`NO_CHANGE`) change. */
 export function nodeHasChanges(node: DiffTreeNode): boolean {
