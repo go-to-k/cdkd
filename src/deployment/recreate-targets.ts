@@ -16,10 +16,10 @@
  *   3. Stateful-resource guard: every named target whose resource type
  *      is in {@link STATEFUL_TYPES} (or conditionally stateful — S3
  *      bucket with objects, LogGroup with retention) MUST be matched
- *      by an explicit `--force-stateful-recreation` flag. The probe
- *      for S3 / LogGroup conditional state runs synchronously off the
- *      recorded properties; the live `ListObjectsV2` probe for S3
- *      buckets is deferred to a follow-up issue (v1 sync-defers).
+ *      by an explicit `--force-stateful-recreation` flag. The sync
+ *      first-cut runs from the recorded properties alone; the live
+ *      `s3:ListObjectsV2` probe (issue [#648]) promotes a `null`
+ *      reason to `'has-objects'` when a bucket actually contains data.
  *   4. Multi-region refusal: every named target whose resource type
  *      is in {@link MULTI_REGION_RECREATE_BLOCKED_TYPES} (e.g.
  *      `AWS::DynamoDB::GlobalTable`) is refused outright. Out of
@@ -33,6 +33,7 @@
  * Fail fast and let the user pick one strategy per resource.
  */
 
+import { ListObjectsV2Command, type S3Client } from '@aws-sdk/client-s3';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState } from '../types/state.js';
 import {
@@ -42,6 +43,8 @@ import {
   type StatefulReason,
 } from '../provisioning/stateful-types.js';
 import { findActionableSilentDrops } from '../provisioning/property-coverage.js';
+import { getLogger } from '../utils/logger.js';
+import type { Logger } from '../types/config.js';
 
 /**
  * One validated recreate target. The `resourceType` + `physicalId` are
@@ -92,9 +95,11 @@ export interface RecreateTargetsValidation {
 /**
  * Plan-time validation of the user's recreate-via-cc-api list.
  *
- * Pure with respect to AWS — does NOT probe S3 bucket emptiness. The
- * S3 conditional check is deferred to a follow-up issue (the live
- * `s3:ListObjectsV2` probe is out of scope for v1).
+ * Pure with respect to AWS — does NOT probe S3 bucket emptiness. Wrap
+ * the result with {@link probeAndRevalidateStateful} to promote S3
+ * targets' `statefulReason` via a live `s3:ListObjectsV2` round-trip
+ * before rendering errors. The deploy command does this; the validator
+ * itself stays sync so unit tests don't need an S3 mock.
  *
  * Input order is preserved; duplicate logical ids in the user's input
  * are deduplicated.
@@ -282,4 +287,95 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
   }
 
   return lines.length > 0 ? lines.join('\n') : null;
+}
+
+/**
+ * Async S3 object probe (issue [#648]).
+ *
+ * For every `AWS::S3::Bucket` target whose sync {@link StatefulReason}
+ * is `null` (the sync map defers — see {@link isStatefulRecreateTargetSync}),
+ * issues a single-page `ListObjectsV2(MaxKeys=1)` against the bucket's
+ * recorded physical id. When the bucket has at least one object,
+ * promotes the target's `statefulReason` to `'has-objects'`.
+ *
+ * **Soft-fail on probe errors**: if `ListObjectsV2` throws (permission
+ * denied, bucket-not-found mid-flight, transient network error), logs
+ * a warn and leaves the target's `statefulReason` at the sync result
+ * (`null`). The user can decide to proceed without the probe by passing
+ * `--force-stateful-recreation`.
+ *
+ * Returns a NEW array of targets; the input is not mutated. Non-S3
+ * targets and S3 targets whose sync reason is already non-null are
+ * passed through unchanged.
+ */
+export async function probeStatefulRecreateTargetsAsync(
+  targets: ReadonlyArray<RecreateTarget>,
+  s3Client: S3Client,
+  logger: Logger = getLogger().child('recreate-targets')
+): Promise<RecreateTarget[]> {
+  const promoted: RecreateTarget[] = [];
+  for (const target of targets) {
+    if (target.resourceType !== 'AWS::S3::Bucket' || target.statefulReason !== null) {
+      promoted.push({ ...target });
+      continue;
+    }
+    try {
+      const result = await s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: target.physicalId,
+          MaxKeys: 1,
+        })
+      );
+      if ((result.KeyCount ?? 0) > 0) {
+        promoted.push({ ...target, statefulReason: 'has-objects' });
+      } else {
+        promoted.push({ ...target });
+      }
+    } catch (e) {
+      logger.warn(
+        `--recreate-via-cc-api: live S3 probe failed for ${target.logicalId} ` +
+          `(bucket ${target.physicalId}); leaving stateful guard at the sync ` +
+          `result. If the bucket might be non-empty, re-run with ` +
+          `--force-stateful-recreation. Underlying error: ` +
+          `${e instanceof Error ? e.message : String(e)}`
+      );
+      promoted.push({ ...target });
+    }
+  }
+  return promoted;
+}
+
+/**
+ * Async re-validation of the stateful-guard slice of a
+ * {@link RecreateTargetsValidation}, after promoting S3 bucket reasons
+ * via {@link probeStatefulRecreateTargetsAsync}.
+ *
+ * Skips the probe entirely when `forceStatefulRecreation: true` — the
+ * sync validation already omits the blocked list in that case, and
+ * skipping avoids an unnecessary AWS round-trip (plus permission-denied
+ * warn-and-skip cycle on low-privilege CI roles).
+ *
+ * Returns a NEW validation; the input is not mutated. Non-stateful
+ * categories (`unknownLogicalIds` / `missingFromState` /
+ * `ambiguousIntent` / `blockedMultiRegionTargets`) are preserved verbatim.
+ */
+export async function probeAndRevalidateStateful(input: {
+  validation: RecreateTargetsValidation;
+  s3Client: S3Client;
+  forceStatefulRecreation: boolean;
+}): Promise<RecreateTargetsValidation> {
+  if (input.forceStatefulRecreation) return input.validation;
+  const promoted = await probeStatefulRecreateTargetsAsync(
+    input.validation.targets,
+    input.s3Client
+  );
+  const blockedStatefulTargets = promoted.filter(
+    (t): t is RecreateTarget & { statefulReason: Exclude<StatefulReason, null> } =>
+      t.statefulReason !== null
+  );
+  return {
+    ...input.validation,
+    targets: promoted,
+    blockedStatefulTargets,
+  };
 }

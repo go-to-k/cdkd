@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 
 /**
  * Integ fixture for #615 — `--recreate-via-cc-api <LogicalId>`.
@@ -72,5 +73,21 @@ export class RecreateViaCcApiStack extends cdk.Stack {
     });
 
     fn.addDependency(role.node.defaultChild as cdk.CfnElement);
+
+    // Issue [#648] — S3 bucket used to verify the live `ListObjectsV2`
+    // probe at plan time. The bucket is empty post-deploy; the
+    // verify.sh script later pre-stages an object via `aws s3 cp` and
+    // asserts that `cdkd deploy --recreate-via-cc-api RecreateProbeBucket`
+    // is refused with `has-objects` in the pre-flight error block.
+    //
+    // RETAIN removal policy + no auto-delete: the verify.sh cleanup
+    // step empties the bucket via `aws s3 rm --recursive` before
+    // `cdkd destroy`. CDK auto-delete pulls in a Custom Resource which
+    // we don't want as a confound for this fixture's `provisionedBy`
+    // assertions.
+    const bucket = new s3.CfnBucket(this, 'RecreateProbeBucket', {
+      bucketName: `cdkd-recreate-via-cc-api-probe-${cdk.Aws.ACCOUNT_ID}`,
+    });
+    bucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
   }
 }

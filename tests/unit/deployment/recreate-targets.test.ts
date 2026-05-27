@@ -12,13 +12,17 @@
  *   - Error-message rendering
  */
 
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   validateRecreateTargets,
   renderRecreateTargetsErrors,
+  probeStatefulRecreateTargetsAsync,
+  probeAndRevalidateStateful,
+  type RecreateTarget,
 } from '../../../src/deployment/recreate-targets.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import type { S3Client } from '@aws-sdk/client-s3';
 
 function res(
   resourceType: string,
@@ -384,5 +388,172 @@ describe('validateRecreateTargets (#615)', () => {
     expect(error).toContain('Ambiguous intent');
     expect(error).toContain('--force-stateful-recreation');
     expect(error).toContain('multi-region resource');
+  });
+});
+
+describe('probeStatefulRecreateTargetsAsync (#648)', () => {
+  function s3Target(overrides: Partial<RecreateTarget> = {}): RecreateTarget {
+    return {
+      logicalId: 'MyBucket',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'bucket-pid',
+      statefulReason: null,
+      ...overrides,
+    };
+  }
+
+  function mockS3({
+    keyCount,
+    throws,
+  }: {
+    keyCount?: number;
+    throws?: Error;
+  }): { client: S3Client; sentCommands: unknown[] } {
+    const sentCommands: unknown[] = [];
+    const send = vi.fn(async (cmd: unknown) => {
+      sentCommands.push(cmd);
+      if (throws) throw throws;
+      return { KeyCount: keyCount ?? 0 };
+    });
+    return { client: { send } as unknown as S3Client, sentCommands };
+  }
+
+  function silentLogger() {
+    return {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      setLevel: vi.fn(),
+      getLevel: vi.fn(() => 'info'),
+      child: vi.fn(),
+    };
+  }
+
+  it('promotes statefulReason to has-objects when the bucket has at least one object', async () => {
+    const { client } = mockS3({ keyCount: 1 });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      client,
+      // @ts-expect-error — shape-compatible silent logger
+      silentLogger()
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.statefulReason).toBe('has-objects');
+  });
+
+  it('leaves statefulReason at null when ListObjectsV2 returns an empty page', async () => {
+    const { client } = mockS3({ keyCount: 0 });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      client,
+      // @ts-expect-error
+      silentLogger()
+    );
+    expect(out[0]!.statefulReason).toBe(null);
+  });
+
+  it('soft-fails on probe error — logs a warn and leaves the sync result in place', async () => {
+    const { client } = mockS3({ throws: new Error('AccessDenied') });
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      client,
+      // @ts-expect-error
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const warnArg = (logger.warn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    expect(warnArg).toContain('live S3 probe failed');
+    expect(warnArg).toContain('MyBucket');
+    expect(warnArg).toContain('AccessDenied');
+  });
+
+  it('passes through non-S3 targets without probing', async () => {
+    const { client, sentCommands } = mockS3({ keyCount: 5 });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [
+        {
+          logicalId: 'MyLambda',
+          resourceType: 'AWS::Lambda::Function',
+          physicalId: 'fn-pid',
+          statefulReason: null,
+        },
+      ],
+      client,
+      // @ts-expect-error
+      silentLogger()
+    );
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(sentCommands).toHaveLength(0);
+  });
+
+  it('passes through S3 targets whose sync reason is already non-null without probing', async () => {
+    const { client, sentCommands } = mockS3({ keyCount: 99 });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target({ statefulReason: 'always' })],
+      client,
+      // @ts-expect-error
+      silentLogger()
+    );
+    expect(out[0]!.statefulReason).toBe('always');
+    expect(sentCommands).toHaveLength(0);
+  });
+});
+
+describe('probeAndRevalidateStateful (#648)', () => {
+  function s3Target(overrides: Partial<RecreateTarget> = {}): RecreateTarget {
+    return {
+      logicalId: 'MyBucket',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'bucket-pid',
+      statefulReason: null,
+      ...overrides,
+    };
+  }
+
+  it('promotes the blockedStatefulTargets list when the probe finds objects', async () => {
+    const send = vi.fn(async () => ({ KeyCount: 1 }));
+    const s3 = { send } as unknown as S3Client;
+    const validation = {
+      targets: [s3Target()],
+      unknownLogicalIds: [],
+      missingFromState: [],
+      ambiguousIntent: [],
+      blockedStatefulTargets: [],
+      blockedMultiRegionTargets: [],
+    };
+    const out = await probeAndRevalidateStateful({
+      validation,
+      s3Client: s3,
+      forceStatefulRecreation: false,
+    });
+    expect(out.blockedStatefulTargets).toHaveLength(1);
+    expect(out.blockedStatefulTargets[0]!.statefulReason).toBe('has-objects');
+    // Rendering proves the new error block surfaces the bucket name.
+    const error = renderRecreateTargetsErrors(out);
+    expect(error).toContain('MyBucket');
+    expect(error).toContain('S3 bucket is non-empty');
+  });
+
+  it('returns validation untouched when --force-stateful-recreation is true (no AWS round-trip)', async () => {
+    const send = vi.fn();
+    const s3 = { send } as unknown as S3Client;
+    const validation = {
+      targets: [s3Target()],
+      unknownLogicalIds: [],
+      missingFromState: [],
+      ambiguousIntent: [],
+      blockedStatefulTargets: [],
+      blockedMultiRegionTargets: [],
+    };
+    const out = await probeAndRevalidateStateful({
+      validation,
+      s3Client: s3,
+      forceStatefulRecreation: true,
+    });
+    expect(out).toBe(validation);
+    expect(send).not.toHaveBeenCalled();
   });
 });

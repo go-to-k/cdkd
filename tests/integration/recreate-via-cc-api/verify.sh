@@ -25,6 +25,8 @@ REGION="${AWS_REGION:-us-east-1}"
 STACK="CdkdRecreateViaCcApi"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 FN_NAME="cdkd-recreate-via-cc-api-probe"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+BUCKET_NAME="cdkd-recreate-via-cc-api-probe-${ACCOUNT_ID}"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
@@ -38,6 +40,11 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --force >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # Empty + delete the S3 probe bucket if it leaked from a prior run.
+  if aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+    aws s3 rm "s3://${BUCKET_NAME}/" --recursive >/dev/null 2>&1 || true
+    aws s3 rb "s3://${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -156,8 +163,72 @@ if [ "${APP_2}" != "INFO" ]; then
 fi
 echo "    OK: post-recreate LoggingConfig reached AWS via CC (LogFormat=JSON, ApplicationLogLevel=INFO)"
 
-# --- Phase 3: destroy --------------------------------------------------
-echo "==> Phase 3: destroy via CC delete path"
+# --- Phase 3: S3 probe pre-flight refusal (#648) -----------------------
+echo "==> Phase 3: pre-flight S3 ListObjectsV2 probe — non-empty bucket must be refused"
+# Sanity check: the bucket was deployed empty.
+OBJ_COUNT=$(aws s3api list-objects-v2 --bucket "${BUCKET_NAME}" --region "${REGION}" --max-items 1 --query 'KeyCount' --output text 2>/dev/null || echo "0")
+echo "    Initial bucket object count: ${OBJ_COUNT}"
+
+# Empty-bucket case: pre-flight should pass (no error block emitted). We
+# use --dry-run + --force-stateful-recreation=false to exercise the
+# probe without actually recreating the bucket (which would destroy it).
+echo "    Sub-3a: empty bucket → pre-flight should pass under --dry-run"
+if ! node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api RecreateProbeBucket \
+  --dry-run \
+  --yes > /tmp/cdkd-648-empty.log 2>&1; then
+  echo "FAIL: empty bucket pre-flight unexpectedly failed; expected --dry-run to clear:" >&2
+  cat /tmp/cdkd-648-empty.log >&2
+  exit 1
+fi
+if grep -qE 'has-objects|S3 bucket is non-empty' /tmp/cdkd-648-empty.log; then
+  echo "FAIL: empty-bucket pre-flight surfaced has-objects error — probe falsely reported objects" >&2
+  cat /tmp/cdkd-648-empty.log >&2
+  exit 1
+fi
+echo "        OK: empty bucket passes pre-flight (no has-objects error)"
+
+# Non-empty bucket case: pre-flight should refuse with has-objects.
+echo "    Sub-3b: pre-stage 1 object via aws s3 cp"
+echo "cdkd #648 probe payload" | aws s3 cp - "s3://${BUCKET_NAME}/probe-key.txt" --region "${REGION}" >/dev/null
+echo "        OK: object placed"
+
+echo "    Sub-3c: non-empty bucket → pre-flight must refuse without --force-stateful-recreation"
+set +e
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api RecreateProbeBucket \
+  --dry-run \
+  --yes > /tmp/cdkd-648-nonempty.log 2>&1
+RC=$?
+set -e
+if [ ${RC} -eq 0 ]; then
+  echo "FAIL: non-empty bucket pre-flight unexpectedly succeeded (expected refusal)" >&2
+  cat /tmp/cdkd-648-nonempty.log >&2
+  exit 1
+fi
+if ! grep -q 'RecreateProbeBucket' /tmp/cdkd-648-nonempty.log; then
+  echo "FAIL: non-empty bucket pre-flight error did not name 'RecreateProbeBucket'" >&2
+  cat /tmp/cdkd-648-nonempty.log >&2
+  exit 1
+fi
+if ! grep -qE 'has-objects|S3 bucket is non-empty' /tmp/cdkd-648-nonempty.log; then
+  echo "FAIL: non-empty bucket pre-flight error did not surface 'has-objects' reason" >&2
+  cat /tmp/cdkd-648-nonempty.log >&2
+  exit 1
+fi
+echo "        OK: non-empty bucket refused with has-objects reason"
+
+# Empty the bucket so Phase 4 destroy can delete it.
+echo "    Sub-3d: empty the bucket so destroy can clear it"
+aws s3 rm "s3://${BUCKET_NAME}/" --recursive --region "${REGION}" >/dev/null
+echo "        OK: bucket emptied"
+
+# --- Phase 4: destroy --------------------------------------------------
+echo "==> Phase 4: destroy via CC delete path"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -175,5 +246,11 @@ if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
 fi
 echo "    OK: state file is gone"
 
+if aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: S3 probe bucket ${BUCKET_NAME} still exists after destroy" >&2
+  exit 1
+fi
+echo "    OK: S3 probe bucket is gone"
+
 echo ""
-echo "==> recreate-via-cc-api test passed (#615 mid-life SDK→CC migration verified end-to-end)"
+echo "==> recreate-via-cc-api test passed (#615 mid-life SDK→CC migration + #648 S3 probe verified end-to-end)"
