@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-cc-api-fallback-transitions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd Cloud Control API fallback — --allow-unsupported-properties override + SDK→CC mid-life transition integ probes (#614 / #634 items 3+4)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

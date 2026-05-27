@@ -229,6 +229,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-api-fallback-transitions",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []
@@ -1124,6 +1129,7 @@
   "unannotatedFixtures": [
     "acm-certificate",
     "cc-api-fallback",
+    "cc-api-fallback-transitions",
     "export-nested-stack",
     "iam-managed-policy",
     "nested-stack",

@@ -24,14 +24,19 @@ LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probe"
-  set +e
+  # `set +u` so an early-exit (e.g. STATE_BUCKET unset) does not abort
+  # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
+  # cleanup should run as much as it can with the env it has.
+  set +eu
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --force >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
-  aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
-  aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
-  set -e
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  fi
+  set -eu
 }
 
 trap cleanup EXIT
