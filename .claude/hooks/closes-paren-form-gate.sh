@@ -41,9 +41,36 @@ pr_num=$(echo "$args" | grep -oE '^[[:space:]]*[0-9]+' | head -1 | tr -d '[:spac
 [[ -n "$pr_num" ]] || exit 0
 [[ "$pr_num" =~ ^[0-9]+$ ]] || exit 0
 
-# Fetch PR body (offline tolerant — if gh fails, don't block)
-body=$(gh pr view "$pr_num" --json body -q .body 2>/dev/null || true)
-[[ -n "$body" ]] || exit 0
+# Fetch PR body. Distinguish two failure modes:
+#   (1) `gh pr view` exited non-zero (network / auth / rate-limit) — we
+#       can't determine the body, so we can't prove the trap is absent.
+#       Log a LOUD warning to stderr so the user sees the gate
+#       couldn't verify and can check manually; exit 0 (fail-open by
+#       policy — don't block offline workflows). PR #671 (2026-05-27)
+#       merged with `Closes (#668).` because this branch silently
+#       swallowed the failure with `|| true`; the user only saw #668
+#       stayed OPEN post-merge.
+#   (2) `gh pr view` succeeded but body is empty — legitimate state
+#       (PR with no body literally has nothing to match against). The
+#       grep below handles empty input cleanly; no warning needed.
+gh_stderr=$(mktemp)
+trap 'rm -f "$gh_stderr"' EXIT
+if ! body=$(gh pr view "$pr_num" --json body -q .body 2>"$gh_stderr"); then
+  {
+    echo "⚠️  closes-paren-form-gate could not fetch PR #$pr_num body"
+    echo "    (\`gh pr view\` exited non-zero — likely network / auth /"
+    echo "     rate-limit). The merge will proceed, but the"
+    echo "     'Closes (#N)' auto-close trap check did NOT run. If your"
+    echo "     PR body uses 'Closes #N' or no close keyword at all, you"
+    echo "     can ignore this warning. If you used 'Closes (#N)'"
+    echo "     parens-form, the target issue will stay OPEN and you'll"
+    echo "     need to manually \`gh issue close <N>\` after the merge."
+    echo ""
+    echo "     gh stderr:"
+    sed 's/^/       /' "$gh_stderr"
+  } >&2
+  exit 0
+fi
 
 # Match `(closes?|fix(es)?|resolves?) (#N)` case-insensitive, only
 # when the parens IMMEDIATELY follow the keyword + whitespace. This

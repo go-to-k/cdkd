@@ -8,9 +8,11 @@ paths:
 
 # Other PreToolUse safety hooks
 
-Ten additional one-shot hooks block known foot-guns at the source.
+Eleven additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/commit-msg-heredoc-gate.sh`** blocks `git commit -m "$(cat <<'EOF' ... EOF)"`-style invocations because outer-shell quote tracking miscounts when the body contains apostrophes / backticks; use `git commit -F <file>` instead.
+
+- **`.claude/hooks/closes-paren-form-gate.sh`** blocks `gh pr merge <N>` when the target PR's body uses `Closes (#N)` / `Fixes (#N)` / `Resolves (#N)` (parens form) — GitHub's auto-close grammar requires parens-free `#N`, so the parens form leaves the referenced issue OPEN after merge. Closes the PR #509-#514 trap (2026-05-22) where the closing-paren disambig convention from `feedback_pr_body_no_hash_for_item_numbers.md` was over-generalized to actual close directives. **Fail-open on `gh pr view` non-zero exit** (network / auth / rate-limit) — but emits a LOUD stderr warning so the user sees the gate couldn't verify and can check manually. Closes the silent-bypass gap that let PR #671 (#668 schema v8, 2026-05-27) merge with `Closes (#668).` undetected after `gh pr view` failed transiently and the old `|| true` swallow exited 0 with no signal. Empty body (PR with no content) passes silently — there's nothing to match against. Smoke test at `.claude/hooks/closes-paren-form-gate.test.sh` (13 cases — parens-free / parens-form / case-insensitive / incidental-paren / non-merge / non-Bash / empty-body / mixed-body / multi-line / `gh -C` / Bash-comment-extract-last-N / gh-fail-with-warning).
 
 - **`.claude/hooks/gh-pr-edit-deprecation-gate.sh`** blocks `gh pr edit --title` / `--body` because they currently fail SILENTLY on a GraphQL Projects-classic deprecation; use `gh api -X PATCH repos/<owner>/<repo>/pulls/<N> -f title=... -F body=@<file>` instead.
 
