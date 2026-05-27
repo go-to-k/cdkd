@@ -663,7 +663,18 @@ would apply, comparing the synth template against cdkd's S3 state.
   per target stack); with `--recursive`, `children` is populated with the
   same nested shape recursively. `NO_CHANGE` resources are omitted;
   `children` is always present (empty on leaves) so the key set is stable.
-  Progress logging is suppressed so stdout carries only the JSON payload.
+  Each change entry additionally carries `ccApi?: string[]` when the
+  resource would auto-route via Cloud Control API on the next deploy (the
+  human renderer's `[via CC API: <props>]` annotation in machine form;
+  absent when the resource routes via its SDK provider). Progress logging
+  is suppressed so stdout carries only the JSON payload.
+
+**Routing annotation**: every CREATE / UPDATE line whose template uses a
+top-level CFn property cdkd's SDK provider does not yet wire is tagged
+`[via CC API: <prop list>]` so the routing decision is auditable at plan
+time — the same auto-fallback the deploy engine applies (#614). DELETE
+lines are not annotated; deletes route via the recorded `provisionedBy`
+on each resource's state, not via template inspection.
 
 Like every non-bootstrap command, `--region` is deprecated and ignored.
 Stack selection (`<stacks...>` / `--all` / wildcards / display paths)

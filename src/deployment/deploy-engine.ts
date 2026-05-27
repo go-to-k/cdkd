@@ -202,6 +202,44 @@ class InterruptedError extends Error {
   }
 }
 
+/**
+ * Best-effort routing inference for the live-progress task label
+ * (#614 §9). Mirrors the routing decision tree but is purely cosmetic:
+ * errors here never surface — when the inference fails we return
+ * `undefined` and the label gets no `[CC API]` tag. The real
+ * `getProviderFor` call inside the deploy/destroy critical path is the
+ * load-bearing dispatch.
+ *
+ * Inputs:
+ * - CREATE / UPDATE → template-side `desiredProperties` (top-level CFn
+ *   property names; intrinsic resolution does not change those, so we
+ *   can route ahead of the resolver run).
+ * - DELETE → sticky `provisionedBy` from the existing-state record.
+ *
+ * Exported so {@link DeployEngine.peekRoutingForLabel} stays a 1-line
+ * delegate and the routing-inference logic is directly unit-testable
+ * without standing up a full DeployEngine harness.
+ */
+export function deriveLabelRouting(
+  change: ResourceChange,
+  existingState: ResourceState | undefined,
+  registry: Pick<ProviderRegistry, 'getProviderFor'>
+): 'sdk' | 'cc-api' | undefined {
+  try {
+    if (change.changeType === 'DELETE') {
+      return existingState?.provisionedBy;
+    }
+    const decision = registry.getProviderFor({
+      resourceType: change.resourceType,
+      properties: change.desiredProperties,
+      provisionedBy: existingState?.provisionedBy,
+    });
+    return decision.provisionedBy;
+  } catch {
+    return undefined;
+  }
+}
+
 export class DeployEngine {
   private logger = getLogger().child('DeployEngine');
   private resolver: IntrinsicFunctionResolver;
@@ -1456,7 +1494,22 @@ export class DeployEngine {
           : needsReplacement
             ? 'Replacing'
             : 'Updating';
-    const baseLabel = `${verb} ${logicalId} (${resourceType})`;
+    // #614 §9 live-progress annotation: distinguish CC-routed work from
+    // SDK-routed work so the user sees WHY a particular resource is taking
+    // longer than its sibling (CC API is async-polling). CREATE / UPDATE
+    // consult `getProviderFor` with the template-side properties +
+    // recorded `provisionedBy` (the latter so sticky-CC resources keep
+    // the tag even when the update payload has no silent-drop property
+    // of its own — design §8). DELETE short-circuits on recorded
+    // `provisionedBy` since delete routing is fully driven by state, not
+    // by the template. Routing is based on top-level property NAMES
+    // which intrinsic resolution does not change, so the pre-routing
+    // here matches the real decision in `provisionResourceBody`. Errors
+    // here never surface — if routing inference fails, we drop the tag
+    // and the real `getProviderFor` call later will re-evaluate.
+    const labelRouting = this.peekRoutingForLabel(change, stateResources[logicalId]);
+    const routingTag = labelRouting === 'cc-api' ? ' [CC API]' : '';
+    const baseLabel = `${verb} ${logicalId} (${resourceType})${routingTag}`;
     renderer.addTask(logicalId, baseLabel);
 
     // Operation classification for the timeout error message. UPDATE and
@@ -1557,6 +1610,13 @@ export class DeployEngine {
       // above is a no-op.
       renderer.removeTask(logicalId);
     }
+  }
+
+  private peekRoutingForLabel(
+    change: ResourceChange,
+    existingState: ResourceState | undefined
+  ): 'sdk' | 'cc-api' | undefined {
+    return deriveLabelRouting(change, existingState, this.providerRegistry);
   }
 
   /**
