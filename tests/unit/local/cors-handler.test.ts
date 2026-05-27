@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   buildCorsConfigByApiId,
+  buildCorsConfigFromCloudFrontChain,
   matchPreflight,
   type CorsConfig,
 } from '../../../src/local/cors-handler.js';
@@ -174,6 +175,237 @@ describe('buildCorsConfigByApiId', () => {
       );
       expect(m.size).toBe(0);
     });
+  });
+});
+
+// Issue #646: CloudFront ResponseHeadersPolicy CORS borrowed for the
+// fronted Function URL. The canonical production-correct CDK pattern
+// puts CORS on the edge (CloudFront), not on the origin (Function URL).
+describe('buildCorsConfigFromCloudFrontChain (issue #646)', () => {
+  function fnUrlOriginDomainName(fnUrlLogicalId: string): unknown {
+    return {
+      'Fn::Select': [
+        2,
+        {
+          'Fn::Split': ['/', { 'Fn::GetAtt': [fnUrlLogicalId, 'FunctionUrl'] }],
+        },
+      ],
+    };
+  }
+
+  function rhpResource(corsConfig: unknown): TemplateResource {
+    return {
+      Type: 'AWS::CloudFront::ResponseHeadersPolicy',
+      Properties: {
+        ResponseHeadersPolicyConfig: { CorsConfig: corsConfig, Name: 'rhp' },
+      },
+    };
+  }
+
+  function distributionResource(args: {
+    fnUrlLogicalId: string;
+    rhpLogicalId?: string;
+  }): TemplateResource {
+    return {
+      Type: 'AWS::CloudFront::Distribution',
+      Properties: {
+        DistributionConfig: {
+          Origins: [
+            {
+              DomainName: fnUrlOriginDomainName(args.fnUrlLogicalId),
+              Id: 'origin-1',
+            },
+          ],
+          DefaultCacheBehavior: {
+            TargetOriginId: 'origin-1',
+            ...(args.rhpLogicalId !== undefined && {
+              ResponseHeadersPolicyId: { Ref: args.rhpLogicalId },
+            }),
+          },
+        },
+      },
+    };
+  }
+
+  it('extracts CORS from a CloudFront → Function URL chain', () => {
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        FnUrl: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'AWS_IAM', TargetFunctionArn: { Ref: 'Fn' } },
+        },
+        Dist: distributionResource({ fnUrlLogicalId: 'FnUrl', rhpLogicalId: 'Rhp' }),
+        Rhp: rhpResource({
+          AccessControlAllowOrigins: { Items: ['http://127.0.0.1:5050', 'https://dev.example.com'] },
+          AccessControlAllowMethods: { Items: ['POST'] },
+          AccessControlAllowHeaders: { Items: ['authorization', 'content-type'] },
+          AccessControlAllowCredentials: false,
+          AccessControlMaxAgeSec: 600,
+          OriginOverride: true,
+        }),
+      })
+    );
+    const cors = m.get('FnUrl');
+    expect(cors).toBeDefined();
+    expect(cors?.AllowOrigins).toEqual(['http://127.0.0.1:5050', 'https://dev.example.com']);
+    expect(cors?.AllowMethods).toEqual(['POST']);
+    expect(cors?.AllowHeaders).toEqual(['authorization', 'content-type']);
+    expect(cors?.AllowCredentials).toBe(false);
+    expect(cors?.MaxAge).toBe(600);
+  });
+
+  it('returns empty when the CloudFront distribution has no ResponseHeadersPolicy', () => {
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        FnUrl: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn' } },
+        },
+        Dist: distributionResource({ fnUrlLogicalId: 'FnUrl' }),
+      })
+    );
+    expect(m.size).toBe(0);
+  });
+
+  it('returns empty when the ResponseHeadersPolicy has no CorsConfig', () => {
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        FnUrl: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn' } },
+        },
+        Dist: distributionResource({ fnUrlLogicalId: 'FnUrl', rhpLogicalId: 'Rhp' }),
+        Rhp: {
+          Type: 'AWS::CloudFront::ResponseHeadersPolicy',
+          Properties: { ResponseHeadersPolicyConfig: { Name: 'rhp' } },
+        },
+      })
+    );
+    expect(m.size).toBe(0);
+  });
+
+  it('ignores CloudFront distributions whose origin is not a Function URL', () => {
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+        Dist: {
+          Type: 'AWS::CloudFront::Distribution',
+          Properties: {
+            DistributionConfig: {
+              Origins: [{ DomainName: 'static.example.com.s3.amazonaws.com', Id: 'origin-1' }],
+              DefaultCacheBehavior: {
+                TargetOriginId: 'origin-1',
+                ResponseHeadersPolicyId: { Ref: 'Rhp' },
+              },
+            },
+          },
+        },
+        Rhp: rhpResource({ AccessControlAllowOrigins: { Items: ['*'] } }),
+      })
+    );
+    expect(m.size).toBe(0);
+  });
+
+  it('ignores AWS-managed RHP IDs (literal UUID, not Ref)', () => {
+    // CDK can set ResponseHeadersPolicyId to a literal AWS-managed-policy
+    // UUID. cdkd can't fetch those (they live in AWS), so we skip.
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        FnUrl: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn' } },
+        },
+        Dist: {
+          Type: 'AWS::CloudFront::Distribution',
+          Properties: {
+            DistributionConfig: {
+              Origins: [{ DomainName: fnUrlOriginDomainName('FnUrl'), Id: 'origin-1' }],
+              DefaultCacheBehavior: {
+                TargetOriginId: 'origin-1',
+                ResponseHeadersPolicyId: '67f7b8e0-7e4f-4e4c-a4f6-aws-managed',
+              },
+            },
+          },
+        },
+      })
+    );
+    expect(m.size).toBe(0);
+  });
+
+  it('maps multiple distributions / Function URLs independently', () => {
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        FnUrl1: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn1' } },
+        },
+        FnUrl2: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn2' } },
+        },
+        Dist1: distributionResource({ fnUrlLogicalId: 'FnUrl1', rhpLogicalId: 'Rhp1' }),
+        Dist2: distributionResource({ fnUrlLogicalId: 'FnUrl2', rhpLogicalId: 'Rhp2' }),
+        Rhp1: rhpResource({ AccessControlAllowOrigins: { Items: ['https://a.example.com'] } }),
+        Rhp2: rhpResource({ AccessControlAllowOrigins: { Items: ['https://b.example.com'] } }),
+      })
+    );
+    expect(m.size).toBe(2);
+    expect(m.get('FnUrl1')?.AllowOrigins).toEqual(['https://a.example.com']);
+    expect(m.get('FnUrl2')?.AllowOrigins).toEqual(['https://b.example.com']);
+  });
+
+  it('walks both DefaultCacheBehavior and CacheBehaviors[]', () => {
+    // Per-path CORS: v1 applies last-write-wins across cache behaviors
+    // (no per-path routing). Confirms we DO walk CacheBehaviors[].
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        FnUrl: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn' } },
+        },
+        Dist: {
+          Type: 'AWS::CloudFront::Distribution',
+          Properties: {
+            DistributionConfig: {
+              Origins: [{ DomainName: fnUrlOriginDomainName('FnUrl'), Id: 'origin-1' }],
+              DefaultCacheBehavior: {
+                TargetOriginId: 'origin-1',
+                ResponseHeadersPolicyId: { Ref: 'RhpDefault' },
+              },
+              CacheBehaviors: [
+                {
+                  PathPattern: '/api/*',
+                  TargetOriginId: 'origin-1',
+                  ResponseHeadersPolicyId: { Ref: 'RhpApi' },
+                },
+              ],
+            },
+          },
+        },
+        RhpDefault: rhpResource({
+          AccessControlAllowOrigins: { Items: ['https://default.example.com'] },
+        }),
+        RhpApi: rhpResource({
+          AccessControlAllowOrigins: { Items: ['https://api.example.com'] },
+        }),
+      })
+    );
+    // Last-write-wins: CacheBehaviors[] iterated after DefaultCacheBehavior.
+    expect(m.get('FnUrl')?.AllowOrigins).toEqual(['https://api.example.com']);
+  });
+
+  it('tolerates a malformed CorsConfig (non-object) without throwing', () => {
+    const m = buildCorsConfigFromCloudFrontChain(
+      tpl({
+        FnUrl: {
+          Type: 'AWS::Lambda::Url',
+          Properties: { AuthType: 'NONE', TargetFunctionArn: { Ref: 'Fn' } },
+        },
+        Dist: distributionResource({ fnUrlLogicalId: 'FnUrl', rhpLogicalId: 'Rhp' }),
+        Rhp: rhpResource('not-an-object'),
+      })
+    );
+    expect(m.size).toBe(0);
   });
 });
 

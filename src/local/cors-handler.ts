@@ -172,6 +172,181 @@ function pickStringArray(value: unknown): string[] {
 }
 
 /**
+ * Build a `fnUrlLogicalId → CorsConfig` map by tracing CloudFront →
+ * Function URL chains in the template (issue #646).
+ *
+ * Production-correct CDK pattern: Function URL fronted by a CloudFront
+ * Distribution where CORS is declared on the CloudFront
+ * `ResponseHeadersPolicy` (NOT on the Function URL itself). Without this
+ * helper, `cdkd local start-api` sees `Cors: null` on the Function URL
+ * and emits no preflight headers — even though the CDK code correctly
+ * declares the allowed origins on the CloudFront side.
+ *
+ * Detection: an `AWS::CloudFront::Distribution` whose `Origins[].DomainName`
+ * matches the canonical CDK 2.x shape
+ * `Fn::Select[2, Fn::Split['/', Fn::GetAtt[<FnUrlLogicalId>, 'FunctionUrl']]]`
+ * is the chain marker. For each such origin, we walk every cache behavior
+ * (`DefaultCacheBehavior` + `CacheBehaviors[]`), resolve their
+ * `ResponseHeadersPolicyId: { Ref: <RhpLogicalId> }` to the
+ * `AWS::CloudFront::ResponseHeadersPolicy` resource, and extract its
+ * `Properties.ResponseHeadersPolicyConfig.CorsConfig`.
+ *
+ * Schema mapping (CloudFront → internal `CorsConfig`):
+ *
+ *   AccessControlAllowOrigins.Items  → AllowOrigins
+ *   AccessControlAllowMethods.Items  → AllowMethods
+ *   AccessControlAllowHeaders.Items  → AllowHeaders
+ *   AccessControlExposeHeaders.Items → ExposeHeaders
+ *   AccessControlMaxAgeSec           → MaxAge
+ *   AccessControlAllowCredentials    → AllowCredentials
+ *   (OriginOverride is ignored — cdkd has only one config slot)
+ *
+ * Multiple distributions fronting the same Function URL: last write
+ * wins (rare in practice). Per-path CORS via `CacheBehaviors[]` is
+ * NOT supported in v1 — the `DefaultCacheBehavior`'s policy applies
+ * to all paths.
+ */
+export function buildCorsConfigFromCloudFrontChain(
+  template: CloudFormationTemplate
+): Map<string, CorsConfig> {
+  const out = new Map<string, CorsConfig>();
+  const resources = template.Resources ?? {};
+  for (const [, resource] of Object.entries(resources)) {
+    if (resource.Type !== 'AWS::CloudFront::Distribution') continue;
+    const distConfig = (resource.Properties ?? {})['DistributionConfig'];
+    if (!distConfig || typeof distConfig !== 'object') continue;
+    const dc = distConfig as Record<string, unknown>;
+
+    const origins = Array.isArray(dc['Origins']) ? (dc['Origins'] as unknown[]) : [];
+    for (const origin of origins) {
+      if (!origin || typeof origin !== 'object') continue;
+      const fnUrlLogicalId = pickFnUrlLogicalIdFromOriginDomainName(
+        (origin as Record<string, unknown>)['DomainName']
+      );
+      if (!fnUrlLogicalId) continue;
+
+      // Walk every cache behavior (default + per-path) and merge any
+      // CORS configs found. v1: last-write-wins on collision.
+      const cacheBehaviors: unknown[] = [
+        dc['DefaultCacheBehavior'],
+        ...(Array.isArray(dc['CacheBehaviors']) ? (dc['CacheBehaviors'] as unknown[]) : []),
+      ];
+      for (const behavior of cacheBehaviors) {
+        if (!behavior || typeof behavior !== 'object') continue;
+        const rhpId = pickRhpRefLogicalId(
+          (behavior as Record<string, unknown>)['ResponseHeadersPolicyId']
+        );
+        if (!rhpId) continue;
+        const rhpResource = resources[rhpId];
+        if (!rhpResource || rhpResource.Type !== 'AWS::CloudFront::ResponseHeadersPolicy') continue;
+        const rhpConfig = (rhpResource.Properties ?? {})['ResponseHeadersPolicyConfig'];
+        if (!rhpConfig || typeof rhpConfig !== 'object') continue;
+        const corsConfig = (rhpConfig as Record<string, unknown>)['CorsConfig'];
+        if (!corsConfig || typeof corsConfig !== 'object' || Array.isArray(corsConfig)) continue;
+        const parsed = parseCloudFrontCorsConfig(corsConfig as Record<string, unknown>);
+        if (parsed) out.set(fnUrlLogicalId, parsed);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Detect the canonical CDK 2.x `DomainName` shape that points a
+ * CloudFront Origin at a Function URL:
+ *   {Fn::Select: [2, {Fn::Split: ['/', {Fn::GetAtt: [<id>, 'FunctionUrl']}]}]}
+ * Returns the Function URL's logical ID, or undefined if the shape
+ * doesn't match.
+ */
+function pickFnUrlLogicalIdFromOriginDomainName(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const outer = value as Record<string, unknown>;
+  const sel = outer['Fn::Select'];
+  if (!Array.isArray(sel) || sel.length !== 2 || sel[0] !== 2) return undefined;
+  const split = sel[1];
+  if (!split || typeof split !== 'object') return undefined;
+  const splitArgs = (split as Record<string, unknown>)['Fn::Split'];
+  if (!Array.isArray(splitArgs) || splitArgs.length !== 2 || splitArgs[0] !== '/') return undefined;
+  const getAtt = splitArgs[1];
+  if (!getAtt || typeof getAtt !== 'object') return undefined;
+  const ga = (getAtt as Record<string, unknown>)['Fn::GetAtt'];
+  if (
+    !Array.isArray(ga) ||
+    ga.length !== 2 ||
+    typeof ga[0] !== 'string' ||
+    ga[1] !== 'FunctionUrl'
+  ) {
+    return undefined;
+  }
+  return ga[0];
+}
+
+/**
+ * Unwrap a `ResponseHeadersPolicyId` value to its referenced logical
+ * ID. CDK 2.x synthesizes this as `{ Ref: <id> }`. Returns undefined
+ * for the AWS-managed-policy ID form (literal UUID string) since
+ * cdkd can't fetch those — and for any non-Ref shape.
+ */
+function pickRhpRefLogicalId(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const ref = (value as Record<string, unknown>)['Ref'];
+  if (typeof ref !== 'string' || ref.length === 0) return undefined;
+  return ref;
+}
+
+/**
+ * Parse a CloudFront `ResponseHeadersPolicyConfig.CorsConfig` block
+ * into the internal `CorsConfig` shape. Schema differs from Function
+ * URL / HTTP API v2 (`AccessControl*` prefix + nested `Items` wrapper);
+ * see `buildCorsConfigFromCloudFrontChain` JSDoc for the field mapping.
+ *
+ * Returns undefined when every value-bearing field is missing.
+ */
+function parseCloudFrontCorsConfig(raw: Record<string, unknown>): CorsConfig | undefined {
+  const allowOrigins = pickItemsStringArray(raw['AccessControlAllowOrigins']);
+  const allowMethods = pickItemsStringArray(raw['AccessControlAllowMethods']);
+  const allowHeaders = pickItemsStringArray(raw['AccessControlAllowHeaders']);
+  const exposeHeaders = pickItemsStringArray(raw['AccessControlExposeHeaders']);
+  const maxAgeRaw = raw['AccessControlMaxAgeSec'];
+  const allowCreds = raw['AccessControlAllowCredentials'];
+
+  if (
+    allowOrigins.length === 0 &&
+    allowMethods.length === 0 &&
+    allowHeaders.length === 0 &&
+    exposeHeaders.length === 0 &&
+    maxAgeRaw === undefined &&
+    allowCreds === undefined
+  ) {
+    return undefined;
+  }
+
+  const config: CorsConfig = {
+    AllowOrigins: allowOrigins,
+    AllowMethods: allowMethods,
+    AllowHeaders: allowHeaders,
+    ExposeHeaders: exposeHeaders,
+  };
+  if (typeof maxAgeRaw === 'number' && Number.isFinite(maxAgeRaw)) {
+    config.MaxAge = Math.trunc(maxAgeRaw);
+  }
+  if (typeof allowCreds === 'boolean') {
+    config.AllowCredentials = allowCreds;
+  }
+  return config;
+}
+
+/**
+ * CloudFront `AccessControl*Origins/Methods/Headers` use a nested
+ * `Items: string[]` wrapper. Unwrap to a plain `string[]`.
+ */
+function pickItemsStringArray(value: unknown): string[] {
+  if (!value || typeof value !== 'object') return [];
+  const items = (value as Record<string, unknown>)['Items'];
+  return pickStringArray(items);
+}
+
+/**
  * The result of a successful preflight match. The HTTP server writes
  * `statusCode + headers` and ends the response with no body.
  */
