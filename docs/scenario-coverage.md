@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**36 / 36 canonical scenarios** have at least one integ fixture exercising them. **104 / 115 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**36 / 36 canonical scenarios** have at least one integ fixture exercising them. **104 / 116 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -67,7 +67,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 
-## Un-annotated fixtures (11)
+## Un-annotated fixtures (12)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
@@ -82,3 +82,4 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`recreate-via-cc-api`](../tests/integration/recreate-via-cc-api/)
 - [`recreate-via-sdk-provider`](../tests/integration/recreate-via-sdk-provider/)
 - [`schema-v6-to-v7-migration`](../tests/integration/schema-v6-to-v7-migration/)
+- [`schema-v7-to-v8-migration`](../tests/integration/schema-v7-to-v8-migration/)

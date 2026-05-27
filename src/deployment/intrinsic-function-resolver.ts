@@ -12,7 +12,7 @@ import { stringifyValue } from '../utils/stringify.js';
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ResourceState, StateImportEntry } from '../types/state.js';
+import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 
@@ -133,10 +133,24 @@ export interface ResolverContext {
    * field (schema v4) so destroy-time strong-reference checks can
    * refuse to delete a producer with active consumers.
    *
-   * `Fn::GetStackOutput` does NOT push entries here by design — it is
-   * a weak reference (see CLAUDE.md "Behavior vs CDK").
+   * `Fn::GetStackOutput` does NOT push entries here by design — it
+   * is a weak reference and uses the sibling `recordedOutputReads`
+   * bag instead (schema v8, issue #668).
    */
   recordedImports?: StateImportEntry[];
+  /**
+   * Bag for the resolver to push every successful `Fn::GetStackOutput`
+   * resolution into (schema v8+, issue #668). The deploy engine reads
+   * this after resource provisioning and persists it to the consumer's
+   * `state.outputReads` field so `findDownstreamConsumers` can name
+   * the downstream stacks affected by a producer's recreate.
+   *
+   * Sibling of `recordedImports` for the weak-reference
+   * `Fn::GetStackOutput` intrinsic. Cross-account `RoleArn`-based
+   * reads do NOT push entries here in v8 (deferred to a future
+   * schema bump alongside a `sourceAccountId` field).
+   */
+  recordedOutputReads?: StateOutputReadEntry[];
 }
 
 /**
@@ -1728,7 +1742,45 @@ export class IntrinsicFunctionResolver {
         roleArn ? `, RoleArn=${roleArn}` : ''
       } -> ${JSON.stringify(value)}`
     );
+    // Schema v8 (issue #668): record same-account reads so
+    // `findDownstreamConsumers` can name `Fn::GetStackOutput`
+    // consumers in the recreate warn block. Cross-account
+    // `RoleArn`-based reads are deferred to a future schema bump
+    // alongside a `sourceAccountId` field (the cross-account
+    // consumer set is rarely large in practice, and the resolver
+    // already pays an STS hop on the read side).
+    if (!roleArn) {
+      this.recordOutputRead(context, stackName, region, outputName);
+    }
     return value;
+  }
+
+  /**
+   * Push a resolved `Fn::GetStackOutput` into the consumer's
+   * recorded-output-reads bag (schema v8+, issue #668). Skips
+   * duplicates within the SAME bag — multiple references to the
+   * same `(sourceStack, sourceRegion, outputName)` triple emit one
+   * entry. Same dedup discipline as `recordImport`.
+   */
+  private recordOutputRead(
+    context: ResolverContext,
+    producerStack: string,
+    producerRegion: string,
+    outputName: string
+  ): void {
+    if (!context.recordedOutputReads) return;
+    const dup = context.recordedOutputReads.some(
+      (e) =>
+        e.sourceStack === producerStack &&
+        e.sourceRegion === producerRegion &&
+        e.outputName === outputName
+    );
+    if (dup) return;
+    context.recordedOutputReads.push({
+      sourceStack: producerStack,
+      sourceRegion: producerRegion,
+      outputName,
+    });
   }
 
   /**

@@ -2795,6 +2795,7 @@
         "nested-stack-deep",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
+        "schema-v7-to-v8-migration",
         "state-info-command",
         "vpc-lookup"
       ],
@@ -2858,6 +2859,10 @@
           "l2"
         ],
         "schema-v6-to-v7-migration": [
+          "l2"
+        ],
+        "schema-v7-to-v8-migration": [
+          "l1",
           "l2"
         ],
         "state-info-command": [

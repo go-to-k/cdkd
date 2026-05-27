@@ -787,6 +787,11 @@
       "scenarios": []
     },
     {
+      "name": "schema-v7-to-v8-migration",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "serverless-api",
       "annotated": true,
       "scenarios": []
@@ -1152,6 +1157,7 @@
     "recreate-mixed-direction",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
-    "schema-v6-to-v7-migration"
+    "schema-v6-to-v7-migration",
+    "schema-v7-to-v8-migration"
   ]
 }

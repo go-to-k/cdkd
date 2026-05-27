@@ -1,6 +1,6 @@
 /**
- * Downstream-consumer enumeration for the `--recreate-via-cc-api` warn
- * block (issue [#650]).
+ * Downstream-consumer enumeration for the `--recreate-via-cc-api` /
+ * `--recreate-via-sdk-provider` warn block.
  *
  * A recreated resource gets a fresh physical id (most types — Lambda
  * Functions with a user-supplied `functionName` reuse the name, but
@@ -9,30 +9,34 @@
  * `Fn::GetStackOutput`) will see a STALE value until that downstream
  * stack is re-deployed.
  *
- * The cdkd state bucket already has the data needed to enumerate
- * `Fn::ImportValue` consumers — every stack's `state.json` carries an
- * `imports[]` list of `(sourceStack, sourceRegion, exportName)`
- * triples written at deploy time by the intrinsic resolver (see
- * `src/deployment/intrinsic-function-resolver.ts` and the schema v4
- * note in `.claude/rules/state-schema.md`).
+ * The cdkd state bucket has the data needed to enumerate both kinds
+ * of cross-stack consumers:
  *
- * **v1 scope (#650)**: `Fn::ImportValue` consumers ONLY. cdkd's
- * `Fn::GetStackOutput` is intentionally NOT tracked in `imports[]`
- * (the design treats it as a weak reference — see
- * `src/types/state.ts` `StateImportEntry`'s JSDoc). Detecting
- * `Fn::GetStackOutput` consumers would require a separate
- * `outputReads[]` field on `StackState` — a schema bump out of scope
- * for this PR. The warn block continues to surface the generic
- * "downstream consumers will need a re-deploy" caveat so users with
- * `Fn::GetStackOutput`-only consumers see the warning even though we
- * cannot name them.
+ *   - `state.imports[]` — `(sourceStack, sourceRegion, exportName)`
+ *     triples recorded by the resolver on every `Fn::ImportValue`
+ *     resolution (schema v4, issue #650).
+ *   - `state.outputReads[]` — `(sourceStack, sourceRegion, outputName)`
+ *     triples recorded by the resolver on every same-account
+ *     `Fn::GetStackOutput` resolution (schema v8, issue #668).
  *
  * The walk is per-stack: `ListStacks` returns a flat list of
- * (stackName, region) refs and we read each state's `imports[]`. The
- * cost is O(M) S3 reads where M = total stacks in the bucket. The
- * existing `scanActiveConsumers` in `destroy-runner.ts` uses the same
- * shape for the destroy-time strong-reference refusal — this helper
- * exists as its read-only sibling for the recreate-warn use case.
+ * `(stackName, region)` refs and we read each state's `imports[]` AND
+ * `outputReads[]`. The cost is O(M) S3 reads where M = total stacks
+ * in the bucket. The existing `scanActiveConsumers` in
+ * `destroy-runner.ts` uses the same shape for the destroy-time
+ * strong-reference refusal — this helper exists as its read-only
+ * sibling for the recreate-warn use case.
+ *
+ * **Schema-degrade**: pre-v8 state has `outputReads` undefined and
+ * the `GetStackOutput` walk reports no consumers (matches the v4
+ * shipped behavior). The `Fn::ImportValue` walk still works against
+ * pre-v8 state since `imports[]` predates v8.
+ *
+ * **Cross-account scope**: same-account reads only. Cross-account
+ * (`RoleArn`-based) `Fn::GetStackOutput` reads do NOT push entries
+ * into the producer's `outputReads` (the resolver intentionally
+ * skips recording in that branch) — a future schema bump alongside
+ * a `sourceAccountId` field would extend the enumeration there.
  */
 
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -46,12 +50,17 @@ export interface DownstreamConsumer {
   consumerStack: string;
   /** The consumer stack's region. */
   consumerRegion: string;
-  /** The export the consumer reads from the producer. */
+  /**
+   * The producer-side reference name. `'ImportValue'` rows carry the
+   * `Export.Name`; `'GetStackOutput'` rows carry the template
+   * `Outputs.<Name>` (the two are usually but not always the same).
+   */
   exportName: string;
   /**
-   * Which intrinsic surfaced the cross-stack reference. v1 only
-   * detects `'ImportValue'`; `'GetStackOutput'` is reserved for a
-   * future schema bump that adds `outputReads[]` tracking.
+   * Which intrinsic surfaced the cross-stack reference. Both are
+   * detected today: `'ImportValue'` via `state.imports[]` (schema v4,
+   * issue #650), `'GetStackOutput'` via `state.outputReads[]`
+   * (schema v8, issue #668).
    */
   intrinsic: 'ImportValue' | 'GetStackOutput';
 }
@@ -98,19 +107,44 @@ export async function findDownstreamConsumers(input: {
       }
       try {
         const got = await input.stateBackend.getState(ref.stackName, region);
-        const imports = got?.state.imports;
-        if (!imports || imports.length === 0) return null;
-        const matches = imports.filter(
-          (entry) =>
-            entry.sourceStack === input.producerStack && entry.sourceRegion === input.producerRegion
-        );
-        if (matches.length === 0) return null;
-        return matches.map<DownstreamConsumer>((entry) => ({
-          consumerStack: ref.stackName,
-          consumerRegion: region,
-          exportName: entry.exportName,
-          intrinsic: 'ImportValue',
-        }));
+        if (!got) return null;
+        const out: DownstreamConsumer[] = [];
+        const imports = got.state.imports;
+        if (imports && imports.length > 0) {
+          for (const entry of imports) {
+            if (
+              entry.sourceStack === input.producerStack &&
+              entry.sourceRegion === input.producerRegion
+            ) {
+              out.push({
+                consumerStack: ref.stackName,
+                consumerRegion: region,
+                exportName: entry.exportName,
+                intrinsic: 'ImportValue',
+              });
+            }
+          }
+        }
+        // Schema v8 (#668): walk `outputReads[]` alongside `imports[]`.
+        // Pre-v8 state has the field undefined and degrades to
+        // imports-only — matches the v4-shipped behavior.
+        const outputReads = got.state.outputReads;
+        if (outputReads && outputReads.length > 0) {
+          for (const entry of outputReads) {
+            if (
+              entry.sourceStack === input.producerStack &&
+              entry.sourceRegion === input.producerRegion
+            ) {
+              out.push({
+                consumerStack: ref.stackName,
+                consumerRegion: region,
+                exportName: entry.outputName,
+                intrinsic: 'GetStackOutput',
+              });
+            }
+          }
+        }
+        return out.length > 0 ? out : null;
       } catch (err) {
         // An unreadable single state file shouldn't tank the entire
         // enumeration — log at debug and return null; the caller still

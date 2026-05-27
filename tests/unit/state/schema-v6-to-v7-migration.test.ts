@@ -25,8 +25,8 @@ import {
  *   - v7 writers emit `version: 7` (= STATE_SCHEMA_VERSION_CURRENT)
  */
 describe('State schema v7 — provisionedBy for Cloud Control auto-routing', () => {
-  it('current schema version is 7', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(7);
+  it('current schema version is at least 7 (subsequent bumps may carry this forward)', () => {
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(7);
   });
 
   it('readers accept every prior version + v7', () => {

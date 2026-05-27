@@ -12,6 +12,7 @@ import {
   shouldRetainResource,
   type StackState,
   type StateImportEntry,
+  type StateOutputReadEntry,
   type ResourceState,
   type ResourceChange,
 } from '../types/state.js';
@@ -322,6 +323,14 @@ export class DeployEngine {
    * `deploy()` call and persisted to `newState.imports` at the end.
    */
   private recordedImports: StateImportEntry[] = [];
+  /**
+   * Per-deploy-session bag the resolver pushes resolved
+   * `Fn::GetStackOutput` entries into (schema v8+, issue #668).
+   * Reset at the start of each `deploy()` call and persisted to
+   * `newState.outputReads` at the end. Sibling of `recordedImports`
+   * for the weak-reference `Fn::GetStackOutput` intrinsic.
+   */
+  private recordedOutputReads: StateOutputReadEntry[] = [];
 
   /**
    * Target region for this stack. Required — load-bearing for the
@@ -369,8 +378,11 @@ export class DeployEngine {
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
     // Reset per-session state. `recordedImports` is the bag the
     // resolver pushes Fn::ImportValue resolutions into; it lands in
-    // `state.imports` at deploy save time.
+    // `state.imports` at deploy save time. `recordedOutputReads`
+    // is the v8 sibling for Fn::GetStackOutput, landing in
+    // `state.outputReads`.
     this.recordedImports = [];
+    this.recordedOutputReads = [];
     // Scope `stackName` to this deploy's async chain so concurrent
     // deploys (--stack-concurrency > 1) don't see each other's value.
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
@@ -404,6 +416,7 @@ export class DeployEngine {
       stackName,
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
       recordedImports: this.recordedImports,
+      recordedOutputReads: this.recordedOutputReads,
     };
   }
 
@@ -754,10 +767,14 @@ export class DeployEngine {
               // Preserve existing imports[] (no-change path: nothing
               // re-resolved). Otherwise the refresh would silently
               // strip the strong-reference record on every diff-clean
-              // deploy.
+              // deploy. Same logic applies to outputReads[] (v8+).
               ...(currentState.imports &&
                 currentState.imports.length > 0 && {
                   imports: currentState.imports,
+                }),
+              ...(currentState.outputReads &&
+                currentState.outputReads.length > 0 && {
+                  outputReads: currentState.outputReads,
                 }),
               lastModified: Date.now(),
             };
@@ -944,12 +961,17 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
-            // Per-resource partial save: imports[] reverts to the
-            // pre-deploy snapshot. recordedImports from this session
-            // are persisted only on the final success path.
+            // Per-resource partial save: imports[] / outputReads[]
+            // revert to the pre-deploy snapshot. recordedImports +
+            // recordedOutputReads from this session are persisted
+            // only on the final success path.
             ...(currentState.imports &&
               currentState.imports.length > 0 && {
                 imports: currentState.imports,
+              }),
+            ...(currentState.outputReads &&
+              currentState.outputReads.length > 0 && {
+                outputReads: currentState.outputReads,
               }),
             lastModified: Date.now(),
           };
@@ -1159,6 +1181,10 @@ export class DeployEngine {
             currentState.imports.length > 0 && {
               imports: currentState.imports,
             }),
+          ...(currentState.outputReads &&
+            currentState.outputReads.length > 0 && {
+              outputReads: currentState.outputReads,
+            }),
           lastModified: Date.now(),
         };
         const migrate = pendingMigration;
@@ -1208,6 +1234,10 @@ export class DeployEngine {
             currentState.imports.length > 0 && {
               imports: currentState.imports,
             }),
+          ...(currentState.outputReads &&
+            currentState.outputReads.length > 0 && {
+              outputReads: currentState.outputReads,
+            }),
           lastModified: Date.now(),
         };
         await this.stateBackend.saveState(
@@ -1236,6 +1266,10 @@ export class DeployEngine {
             ...(currentState.imports &&
               currentState.imports.length > 0 && {
                 imports: currentState.imports,
+              }),
+            ...(currentState.outputReads &&
+              currentState.outputReads.length > 0 && {
+                outputReads: currentState.outputReads,
               }),
             lastModified: Date.now(),
           };
@@ -1275,6 +1309,9 @@ export class DeployEngine {
         resources: newResources,
         outputs,
         ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
+        ...(this.recordedOutputReads.length > 0 && {
+          outputReads: [...this.recordedOutputReads],
+        }),
         lastModified: Date.now(),
       },
       actualCounts,
