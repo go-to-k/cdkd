@@ -1234,7 +1234,7 @@ function warnVpcConfigLambdas(
       const vpcConfig = props['VpcConfig'];
       if (vpcConfig && typeof vpcConfig === 'object' && Object.keys(vpcConfig).length > 0) {
         logger.warn(
-          `Lambda ${logicalId} has VpcConfig — local container will reach external services via the host's network, NOT through the deployed VPC's NAT/private subnets. Calls to private RDS/ElastiCache will fail. See docs/cli-reference.md (cdkd local start-api — Limitations) for details.`
+          `Lambda ${logicalId} has VpcConfig — local container will reach external services via the host's network, NOT through the deployed VPC's NAT/private subnets. Calls to private RDS/ElastiCache will fail. See https://github.com/go-to-k/cdkd/blob/main/docs/cli-reference.md (cdkd local start-api — Limitations) for details.`
         );
       }
       break;
@@ -1267,7 +1267,7 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
       `verifies SigV4 signatures against your local AWS credentials, but does NOT emulate IAM ` +
       `policy evaluation (resource / action / condition rules). Signature-verified callers reach ` +
       `the handler under their own identity; downstream authorization is the dev's responsibility. ` +
-      `See docs/cli-reference.md (cdkd local start-api — AWS_IAM authorizer) for details.`
+      `See https://github.com/go-to-k/cdkd/blob/main/docs/cli-reference.md (cdkd local start-api — AWS_IAM authorizer) for details.`
   );
   for (const declaredAt of iamRoutes) {
     logger.warn(`  - ${declaredAt}`);
@@ -2705,7 +2705,7 @@ export function resolveMtlsConfig(
 export function createLocalStartApiCommand(): Command {
   const startApi = new Command('start-api')
     .description(
-      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and AWS_IAM auth (REST v1 `AuthorizationType: AWS_IAM` and Function URL `AuthType: AWS_IAM` — SigV4 signature verification only; IAM policy evaluation is NOT emulated; see docs/local-emulation.md). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
+      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and AWS_IAM auth (REST v1 `AuthorizationType: AWS_IAM` and Function URL `AuthType: AWS_IAM` — SigV4 signature verification only; IAM policy evaluation is NOT emulated; see https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
     .argument(
       '[target]',

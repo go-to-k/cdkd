@@ -177,7 +177,7 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
         throw new Error(
           `AssumeRole into ${roleArn} failed: ${message}. ` +
             `If this is a trust-policy issue, the producer's role must allow sts:AssumeRole ` +
-            `from the consumer's principal. See docs/cross-stack-references.md for the trust-policy template.`,
+            `from the consumer's principal. See https://github.com/go-to-k/cdkd/blob/main/docs/cross-stack-references.md for the trust-policy template.`,
           { cause: err instanceof Error ? err : undefined }
         );
       }
