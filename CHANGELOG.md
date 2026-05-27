@@ -1,3 +1,10 @@
+# [0.162.0](https://github.com/go-to-k/cdkd/compare/v0.161.4...v0.162.0) (2026-05-27)
+
+
+### Features
+
+* **provisioning:** --recreate-via-cc-api for mid-life SDK→CC migration ([#615](https://github.com/go-to-k/cdkd/issues/615)) ([#643](https://github.com/go-to-k/cdkd/issues/643)) ([1143126](https://github.com/go-to-k/cdkd/commit/1143126e6d4bc2ac6e9d1bf815eef805080ee139))
+
 ## [0.161.4](https://github.com/go-to-k/cdkd/compare/v0.161.3...v0.161.4) (2026-05-27)
 
 
