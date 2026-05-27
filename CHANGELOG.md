@@ -1,3 +1,10 @@
+# [0.164.0](https://github.com/go-to-k/cdkd/compare/v0.163.0...v0.164.0) (2026-05-27)
+
+
+### Features
+
+* **deploy:** interactive [y/N] prompt for --recreate-via-cc-api ([#659](https://github.com/go-to-k/cdkd/issues/659)) ([85a77f4](https://github.com/go-to-k/cdkd/commit/85a77f4027b739052b7680a39a647a0e1c5d34f7))
+
 # [0.163.0](https://github.com/go-to-k/cdkd/compare/v0.162.3...v0.163.0) (2026-05-27)
 
 
