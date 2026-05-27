@@ -20,6 +20,7 @@ import {
   renderRecreateTargetsErrors,
   probeAndRevalidateStateful,
 } from '../../deployment/recreate-targets.js';
+import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -489,22 +490,20 @@ async function deployCommand(
           }
           recreateViaCcApiTargets = new Set(validation.targets.map((t) => t.logicalId));
           if (recreateViaCcApiTargets.size > 0) {
-            logger.warn(
-              `--recreate-via-cc-api will destroy + recreate ${recreateViaCcApiTargets.size} ` +
-                `resource(s) via Cloud Control API on stack ${stackInfo.stackName}:`
-            );
-            for (const t of validation.targets) {
-              const stateNote =
-                t.statefulReason !== null
-                  ? ` ⚠ stateful (${t.statefulReason}) — --force-stateful-recreation acknowledged`
-                  : '';
-              logger.warn(`  - ${t.logicalId} (${t.resourceType})${stateNote}`);
+            // Issue [#649] — interactive [y/N] prompt. Mirrors the
+            // existing prefix-rename prompt structure: per-stack, with
+            // --yes / -y short-circuiting to the warn-log surface that
+            // v1 shipped. Stateful targets get a **DATA LOSS** prefix
+            // as a third "stop and think" moment beyond the explicit
+            // --force-stateful-recreation opt-in.
+            const proceed = await promptRecreateConfirm({
+              stackName: stackInfo.stackName,
+              targets: validation.targets,
+              yes: options.yes ?? false,
+            });
+            if (!proceed) {
+              return;
             }
-            logger.warn(
-              `  The destroy + recreate cycle is per-resource; sibling resources are unaffected. ` +
-                `Downstream consumers of any recreated resource's outputs (Fn::GetStackOutput / ` +
-                `Fn::ImportValue) will need a re-deploy to see the new physical id.`
-            );
           }
         }
 
