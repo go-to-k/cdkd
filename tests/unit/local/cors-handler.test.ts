@@ -1,11 +1,35 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  applyCorsResponseHeaders,
   buildCorsConfigByApiId,
   buildCorsConfigFromCloudFrontChain,
   matchPreflight,
   type CorsConfig,
 } from '../../../src/local/cors-handler.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
+
+/**
+ * Minimal stub for `ServerResponse`'s set/get/header interface used by
+ * `applyCorsResponseHeaders`. Captures `setHeader` calls into a map for
+ * assertion-friendly inspection. Only the surface
+ * `applyCorsResponseHeaders` touches is implemented.
+ */
+function mockRes(): {
+  setHeader: (name: string, value: string | string[]) => void;
+  getHeader: (name: string) => string | string[] | undefined;
+  headers: Map<string, string | string[]>;
+} {
+  const headers = new Map<string, string | string[]>();
+  return {
+    headers,
+    setHeader(name: string, value: string | string[]) {
+      headers.set(name, value);
+    },
+    getHeader(name: string) {
+      return headers.get(name);
+    },
+  };
+}
 
 function tpl(resources: Record<string, TemplateResource>): CloudFormationTemplate {
   return { Resources: resources };
@@ -693,5 +717,164 @@ describe('matchPreflight', () => {
     // (404 / user OPTIONS handler). Pinning the null contract here
     // because callers depend on "no preflight headers in null result".
     expect(r).toBeNull();
+  });
+});
+
+// Issue #652: actual responses (2xx / 4xx / 5xx) need Allow-Origin too,
+// not just preflight. Without it the browser blocks the body from JS
+// even when the request itself succeeded server-side.
+describe('applyCorsResponseHeaders (issue #652)', () => {
+  const config: CorsConfig = {
+    AllowOrigins: ['http://127.0.0.1:5050', 'https://dev.example.com'],
+    AllowMethods: ['GET', 'POST'],
+    AllowHeaders: ['content-type', 'authorization'],
+    ExposeHeaders: [],
+  };
+  const map = new Map<string, CorsConfig>([['Url', config]]);
+
+  it('sets Allow-Origin echoing the request Origin on a matched API + matched Origin', () => {
+    const res = mockRes();
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      map,
+      'http://127.0.0.1:5050'
+    );
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:5050');
+    expect(res.headers.get('Vary')).toBe('Origin');
+  });
+
+  it('no-op when route has no apiLogicalId', () => {
+    const res = mockRes();
+    applyCorsResponseHeaders(res as never, undefined, map, 'http://127.0.0.1:5050');
+    expect(res.headers.size).toBe(0);
+  });
+
+  it('no-op when API has no CORS config (route is not in the map)', () => {
+    const res = mockRes();
+    applyCorsResponseHeaders(res as never, 'OtherApi', map, 'http://127.0.0.1:5050');
+    expect(res.headers.size).toBe(0);
+  });
+
+  it('no-op when request has no Origin header (non-CORS request)', () => {
+    const res = mockRes();
+    applyCorsResponseHeaders(res as never, 'Url', map, undefined);
+    expect(res.headers.size).toBe(0);
+  });
+
+  it('no-op when Origin is not in AllowOrigins (do not smuggle through)', () => {
+    const res = mockRes();
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      map,
+      'https://evil.example.com'
+    );
+    expect(res.headers.size).toBe(0);
+  });
+
+  it('uses literal `*` when AllowOrigins has `*` AND AllowCredentials is not true', () => {
+    const wildcardConfig: CorsConfig = {
+      AllowOrigins: ['*'],
+      AllowMethods: ['GET'],
+      AllowHeaders: [],
+      ExposeHeaders: [],
+    };
+    const res = mockRes();
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      new Map([['Url', wildcardConfig]]),
+      'https://anyone.example.com'
+    );
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    // Vary: Origin NOT set when serving `*` (response is identical
+    // across origins).
+    expect(res.headers.has('Vary')).toBe(false);
+  });
+
+  it('echoes Origin (not `*`) + sets Allow-Credentials when AllowCredentials is true', () => {
+    const credsConfig: CorsConfig = {
+      AllowOrigins: ['*'],
+      AllowMethods: ['GET'],
+      AllowHeaders: [],
+      ExposeHeaders: [],
+      AllowCredentials: true,
+    };
+    const res = mockRes();
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      new Map([['Url', credsConfig]]),
+      'https://app.example.com'
+    );
+    // Per fetch spec: `*` is invalid alongside Allow-Credentials, so
+    // echo the request Origin instead.
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://app.example.com');
+    expect(res.headers.get('Access-Control-Allow-Credentials')).toBe('true');
+    expect(res.headers.get('Vary')).toBe('Origin');
+  });
+
+  it('sets Expose-Headers when configured', () => {
+    const exposeConfig: CorsConfig = {
+      AllowOrigins: ['http://127.0.0.1:5050'],
+      AllowMethods: ['GET'],
+      AllowHeaders: [],
+      ExposeHeaders: ['X-Request-Id', 'X-Trace-Id'],
+    };
+    const res = mockRes();
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      new Map([['Url', exposeConfig]]),
+      'http://127.0.0.1:5050'
+    );
+    expect(res.headers.get('Access-Control-Expose-Headers')).toBe('X-Request-Id,X-Trace-Id');
+  });
+
+  it('does NOT set preflight-only headers (Allow-Methods / Allow-Headers / Max-Age)', () => {
+    const fullConfig: CorsConfig = {
+      AllowOrigins: ['http://127.0.0.1:5050'],
+      AllowMethods: ['GET', 'POST'],
+      AllowHeaders: ['Authorization'],
+      ExposeHeaders: [],
+      MaxAge: 600,
+    };
+    const res = mockRes();
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      new Map([['Url', fullConfig]]),
+      'http://127.0.0.1:5050'
+    );
+    // Allow-Origin yes; preflight-only headers no.
+    expect(res.headers.has('Access-Control-Allow-Origin')).toBe(true);
+    expect(res.headers.has('Access-Control-Allow-Methods')).toBe(false);
+    expect(res.headers.has('Access-Control-Allow-Headers')).toBe(false);
+    expect(res.headers.has('Access-Control-Max-Age')).toBe(false);
+  });
+
+  it('appends to existing Vary header instead of overwriting', () => {
+    const res = mockRes();
+    res.setHeader('Vary', 'Accept-Encoding');
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      map,
+      'http://127.0.0.1:5050'
+    );
+    expect(res.headers.get('Vary')).toBe('Accept-Encoding, Origin');
+  });
+
+  it('does NOT duplicate Origin in Vary when already present', () => {
+    const res = mockRes();
+    res.setHeader('Vary', 'Origin, Accept-Encoding');
+    applyCorsResponseHeaders(
+      res as never,
+      'Url',
+      map,
+      'http://127.0.0.1:5050'
+    );
+    expect(res.headers.get('Vary')).toBe('Origin, Accept-Encoding');
   });
 });
