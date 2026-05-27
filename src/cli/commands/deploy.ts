@@ -14,7 +14,11 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
+import {
+  validateRecreateTargets,
+  renderRecreateTargetsErrors,
+} from '../../deployment/recreate-targets.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -40,6 +44,7 @@ import {
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { findPendingPrefixRenames, promptMigrationConfirm } from './prefix-migration-check.js';
+import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 
 /**
  * Deploy command implementation
@@ -73,6 +78,8 @@ async function deployCommand(
     context?: string[];
     allowUnsupportedTypes?: string[];
     allowUnsupportedProperties?: string[];
+    recreateViaCcApi?: string[];
+    forceStatefulRecreation?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -435,10 +442,64 @@ async function deployCommand(
           }
         }
 
+        // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
+        // companion `--force-stateful-recreation`) against the synth
+        // template + existing state. Surfaces every error category in
+        // one block (typos / missing-state / ambiguous-intent with
+        // --allow-unsupported-properties / stateful guard refusal) so
+        // the user fixes them all in one cycle. Skipped when the flag
+        // is absent (no list).
+        let recreateViaCcApiTargets: ReadonlySet<string> | undefined;
+        if (options.recreateViaCcApi?.length) {
+          const stateForRecreateCheck = await stackStateBackend.getState(
+            stackInfo.stackName,
+            stackRegion
+          );
+          const validation = validateRecreateTargets({
+            template: stackInfo.template,
+            state: stateForRecreateCheck?.state ?? {
+              version: STATE_SCHEMA_VERSION_CURRENT,
+              stackName: stackInfo.stackName,
+              region: stackRegion,
+              resources: {},
+              outputs: {},
+              lastModified: Date.now(),
+            },
+            recreateViaCcApi: options.recreateViaCcApi,
+            allowUnsupportedProperties: new Set(options.allowUnsupportedProperties ?? []),
+            forceStatefulRecreation: options.forceStatefulRecreation ?? false,
+          });
+          const errorBlock = renderRecreateTargetsErrors(validation);
+          if (errorBlock) {
+            throw new CdkdError(errorBlock, 'RECREATE_VIA_CC_API_INVALID');
+          }
+          recreateViaCcApiTargets = new Set(validation.targets.map((t) => t.logicalId));
+          if (recreateViaCcApiTargets.size > 0) {
+            logger.warn(
+              `--recreate-via-cc-api will destroy + recreate ${recreateViaCcApiTargets.size} ` +
+                `resource(s) via Cloud Control API on stack ${stackInfo.stackName}:`
+            );
+            for (const t of validation.targets) {
+              const stateNote =
+                t.statefulReason !== null
+                  ? ` ⚠ stateful (${t.statefulReason}) — --force-stateful-recreation acknowledged`
+                  : '';
+              logger.warn(`  - ${t.logicalId} (${t.resourceType})${stateNote}`);
+            }
+            logger.warn(
+              `  The destroy + recreate cycle is per-resource; sibling resources are unaffected. ` +
+                `Downstream consumers of any recreated resource's outputs (Fn::GetStackOutput / ` +
+                `Fn::ImportValue) will need a re-deploy to see the new physical id.`
+            );
+          }
+        }
+
         const deployEngineOptions: DeployEngineOptions = {
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: !options.rollback,
+          ...(recreateViaCcApiTargets &&
+            recreateViaCcApiTargets.size > 0 && { recreateViaCcApiTargets }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,

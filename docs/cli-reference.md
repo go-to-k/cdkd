@@ -576,6 +576,148 @@ the CC auto-route closes a long-standing silent-drop bug class by
 default. For production workloads, use the AWS CDK CLI until cdkd's
 property coverage matches your needs.
 
+## `--recreate-via-cc-api <LogicalId>` + `--force-stateful-recreation` (deploy)
+
+`--recreate-via-cc-api <LogicalId>` (repeatable, one flag per resource)
+destroys + recreates the named resource via Cloud Control API in this
+deploy, so a previously-silent-dropped top-level CFn property reaches
+AWS on the recreated copy. This is the mid-life counterpart to #614's
+default-on auto-route for fresh deploys.
+
+When to use it:
+
+- An existing resource is `provisionedBy: 'sdk'` in cdkd state, and you
+  want to start using a top-level CFn property cdkd's SDK provider does
+  not yet wire (e.g. adding `LoggingConfig` to an already-deployed
+  Lambda). Adding the property on the next deploy alone won't reach AWS
+  — the SDK update path drops it silently. The flag forces a destroy +
+  recreate cycle so the new physical resource lands on CC and the
+  property reaches AWS.
+
+When NOT to use it:
+
+- The resource is already `provisionedBy: 'cc-api'` (sticky). The
+  update path already routes via CC; the recreate is a no-op (cdkd
+  detects this case and skips with an info log).
+- Fresh deploy (the resource is not yet in cdkd state). #614's
+  auto-route handles fresh silent-drop deploys automatically — no flag
+  needed.
+
+```bash
+# Recreate a single Lambda (stateless, no extra flag needed)
+cdkd deploy MyStack --recreate-via-cc-api MyLambda --yes
+
+# Recreate two Lambdas in one deploy (repeat the flag — comma-split is intentionally unsupported)
+cdkd deploy MyStack \
+  --recreate-via-cc-api MyLambda \
+  --recreate-via-cc-api OtherFn \
+  --yes
+
+# Recreate a stateful resource — TWO flags required + data loss is acknowledged
+cdkd deploy MyStack \
+  --recreate-via-cc-api MyTable \
+  --force-stateful-recreation \
+  --yes
+```
+
+### Stateful-resource guard
+
+The flag refuses to operate on resource types that carry user data
+without `--force-stateful-recreation`. Two-flag protection mirrors the
+`--remove-protection` pattern.
+
+Guard list (always stateful — destroy loses ALL data, no automatic
+migration):
+
+| Category | Types |
+| --- | --- |
+| Database / storage | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` |
+| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::ECR::Repository` |
+| Streaming | `AWS::Kinesis::Stream` |
+| Search | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain` |
+| Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter` |
+| Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
+| Edge | `AWS::CloudFront::Distribution` (URL changes break consumers; ~20-minute propagation) |
+
+Conditionally stateful (guard fires only when the resource actually
+contains data):
+
+- `AWS::S3::Bucket` — guard fires when the bucket has at least one
+  object. v1 of this flag uses a synchronous template-side probe only;
+  a live `s3:ListObjectsV2` check is deferred to a follow-up issue.
+  Empty buckets pass through; non-empty buckets pass through v1 too
+  (slight UX gap — recreate an empty test bucket without `--force` and
+  an unsuspecting non-empty prod bucket with `--force` produces the same
+  outcome, so prefer `--force-stateful-recreation` for any S3 bucket
+  that might hold data).
+- `AWS::Logs::LogGroup` — guard fires when `RetentionInDays > 0` on the
+  recorded state. Log groups without retention configured are treated
+  as ephemeral.
+
+There is no per-resource granularity on `--force-stateful-recreation`
+— when set, EVERY named recreate target bypasses the stateful guard.
+The user is opting into a footgun; per-resource force would imply a
+false sense of granularity.
+
+### Interactive confirmation
+
+`cdkd deploy --recreate-via-cc-api <id>` logs a `WARN` line listing each
+target + the `stateful` reason (when applicable) before the deploy
+proceeds. Combine with `--yes` for non-interactive CI runs. Future
+follow-up may add an interactive `[y/N]` prompt (per design §4); v1
+ships the warn-log-then-proceed surface since the user already opted in
+explicitly per-resource at the CLI.
+
+### Cross-stack reference propagation
+
+The recreated resource gets a fresh physical id. Downstream stacks that
+read this resource's outputs via `Fn::GetStackOutput` /
+`Fn::ImportValue` must be re-deployed before they see the new id. A
+warn line lists this caveat at recreate time; cdkd does NOT walk the
+state bucket to enumerate downstream consumers in v1 (deferred to a
+follow-up issue). Plan multi-stack recreates from leaf to root.
+
+### Interaction with `--allow-unsupported-properties`
+
+`--recreate-via-cc-api MyLambda` combined with
+`--allow-unsupported-properties AWS::Lambda::Function:LoggingConfig`
+on a resource whose template carries `LoggingConfig` is **ambiguous
+intent**:
+
+- Does the user want SDK + silent drop (override path)?
+- Does the user want CC migration (recreate path)?
+
+cdkd refuses with a pre-flight error naming the overlap. Pick one
+strategy per resource.
+
+### Reversibility (one-way at v1)
+
+Once a resource is `provisionedBy: 'cc-api'`, going back to the SDK
+Provider requires another flag (the inverse `--recreate-via-sdk`). NOT
+in scope for v1 — file an issue if you need this direction.
+
+When a backfill PR (issue #609) wires the property the user originally
+needed, the migrated resource stays on CC unless the user explicitly
+switches it back. Sticky-state semantics avoid SDK↔CC ping-pong on
+every backfill release.
+
+### What `--recreate-via-cc-api` is NOT
+
+- **NOT** a per-stack shortcut. There is no
+  `--recreate-via-cc-api-all-with-silent-drops` form — the user names
+  each target explicitly to acknowledge the cost.
+- **NOT** persisted in cdkd state. The next deploy WITHOUT the flag
+  routes the recreated resource via CC (sticky); the flag is only
+  needed to trigger the initial destroy + recreate.
+- **NOT** compatible with cross-account / cross-region migration —
+  the flag operates within the current deploy's environment only.
+- **NOT** compatible with Tier 3 (`NON_PROVISIONABLE`) types — CC API
+  can't handle them either; the existing Tier 3 reject fires first.
+- **NOT** compatible with multi-region resources like
+  `AWS::DynamoDB::GlobalTable` in v1 — the destroy + recreate cycle
+  across replica regions is more involved; cdkd refuses with a clear
+  error.
+
 ## `--role-arn`
 
 Assume a different IAM role for cdkd's AWS API calls. Equivalent env

@@ -721,6 +721,11 @@
       ]
     },
     {
+      "name": "recreate-via-cc-api",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "remove-protection",
       "annotated": true,
       "scenarios": [
@@ -1134,6 +1139,7 @@
     "iam-managed-policy",
     "nested-stack",
     "nested-stack-deep",
+    "recreate-via-cc-api",
     "schema-v6-to-v7-migration"
   ]
 }

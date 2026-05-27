@@ -622,6 +622,78 @@ export const allowUnsupportedPropertiesOption = new Option(
     '--allow-unsupported-properties AWS::Lambda::Function:LoggingConfig,AWS::RDS::DBInstance:CACertificateIdentifier'
 ).argParser(parseAllowUnsupportedPropertiesToken);
 
+/**
+ * Issue [#615] — `--recreate-via-cc-api <LogicalId>` (repeatable). Each
+ * named resource is destroyed + recreated this deploy via Cloud Control
+ * API regardless of whether the existing state stamps it `sdk` or has
+ * no `provisionedBy` field (legacy). The new physical id stamps
+ * `provisionedBy: 'cc-api'` so all subsequent ops route via CC (sticky).
+ *
+ * Mirrors `--allow-unsupported-properties` per-resource explicit naming
+ * (one flag-instance per logical id), but the argument is a single
+ * logical id (no comma split — `MyLambda,Other` would be ambiguous
+ * since logical ids do not embed commas anyway).
+ *
+ * Format-checks each logical id against CFn's `Logical IDs are
+ * alphanumeric (A-Z, a-z, 0-9)` rule. A typo aborts at parse time so
+ * an unmatched id is surfaced immediately rather than silently
+ * skipped at deploy time.
+ */
+const LOGICAL_ID_FORMAT = /^[A-Za-z][A-Za-z0-9]{0,254}$/;
+
+export function parseRecreateViaCcApiToken(
+  value: string,
+  previous: string[] | undefined
+): string[] {
+  const token = value.trim();
+  if (!LOGICAL_ID_FORMAT.test(token)) {
+    throw new Error(
+      `Invalid --recreate-via-cc-api value "${value}": expected a CloudFormation ` +
+        `logical id (alphanumeric, starts with a letter, max 255 chars). One ` +
+        `--recreate-via-cc-api flag per resource — repeat the flag for additional ` +
+        `targets.`
+    );
+  }
+  return [...(previous ?? []), token];
+}
+
+export const recreateViaCcApiOption = new Option(
+  '--recreate-via-cc-api <logicalId>',
+  'Destroy + recreate the named resource (by CloudFormation logical id) via ' +
+    'Cloud Control API in this deploy, so a top-level CFn property cdkd would ' +
+    'otherwise silently drop reaches AWS via CC. Repeatable — pass the flag once ' +
+    'per resource. Per-resource opt-in (no bulk / no per-stack shortcut) so the ' +
+    'destroy-and-recreate cost is acknowledged for each target. Stateful resource ' +
+    'types (RDS, DynamoDB, S3, EFS, ...) refuse unless --force-stateful-recreation ' +
+    'is ALSO passed (two-flag protection). Cannot be combined with ' +
+    '--allow-unsupported-properties on the same resource type and property.'
+).argParser(parseRecreateViaCcApiToken);
+
+/**
+ * Issue [#615] — `--force-stateful-recreation` (boolean) is the second
+ * flag required to allow `--recreate-via-cc-api` to operate on a
+ * stateful resource (RDS / DynamoDB / EFS / S3 with data / etc.). Two
+ * flags so the user explicitly opts into the data-loss footgun.
+ *
+ * The guard list of "stateful" types lives in
+ * `src/provisioning/stateful-types.ts` so it can be queried from both
+ * the CLI pre-flight and the deploy engine.
+ *
+ * There is no per-resource granularity on the force flag — when set,
+ * EVERY named recreate target bypasses the stateful guard. Per-resource
+ * force would create a false sense of granularity (the user is opting
+ * into a footgun; pretending to scope it per-resource is misleading).
+ */
+export const forceStatefulRecreationOption = new Option(
+  '--force-stateful-recreation',
+  'Bypass the stateful-resource guard for --recreate-via-cc-api targets. ' +
+    'Required when ANY named target is a stateful type (RDS / DynamoDB / EFS / ' +
+    'S3 with data / Logs with retention / Cognito / Secrets / SSM / Glue / ECR / ' +
+    'CloudFront / Kinesis / OpenSearch). Destroy + recreate loses ALL data in ' +
+    'the resource — no automatic data migration. Triple-opt-in for CI use: ' +
+    '--recreate-via-cc-api <id> --force-stateful-recreation --yes.'
+).default(false);
+
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)
@@ -682,6 +754,8 @@ export const deployOptions = [
   ).default(false),
   allowUnsupportedTypesOption,
   allowUnsupportedPropertiesOption,
+  recreateViaCcApiOption,
+  forceStatefulRecreationOption,
   ...resourceTimeoutOptions,
 ];
 
