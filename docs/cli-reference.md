@@ -597,8 +597,12 @@ When to use it:
 When NOT to use it:
 
 - The resource is already `provisionedBy: 'cc-api'` (sticky). The
-  update path already routes via CC; the recreate is a no-op (cdkd
-  detects this case and skips with an info log).
+  update path already routes via CC; the recreate is a no-op. As of
+  #665 cdkd refuses pre-flight with `blockedAlreadyCcApi` — the
+  destroy + recreate cycle would produce identical end state at the
+  cost of unnecessary downtime. Mirror of the `blockedAlreadySdk`
+  refusal on the reverse direction (#651). Fix: drop the flag for that
+  resource.
 - Fresh deploy (the resource is not yet in cdkd state). #614's
   auto-route handles fresh silent-drop deploys automatically — no flag
   needed.
