@@ -70,6 +70,7 @@ describe('validateRecreateTargets (#615)', () => {
     expect(v.missingFromState).toEqual([]);
     expect(v.ambiguousIntent).toEqual([]);
     expect(v.blockedStatefulTargets).toEqual([]);
+    expect(v.blockedMultiRegionTargets).toEqual([]);
     expect(renderRecreateTargetsErrors(v)).toBeNull();
   });
 
@@ -299,6 +300,51 @@ describe('validateRecreateTargets (#615)', () => {
     });
   });
 
+  describe('multi-region refusal (design §8 — out of scope for v1)', () => {
+    it('refuses AWS::DynamoDB::GlobalTable outright (no --force bypass)', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          MyGlobalTable: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} },
+        },
+      };
+      const state = st('S', { MyGlobalTable: res('AWS::DynamoDB::GlobalTable') });
+      const v = validateRecreateTargets({
+        template,
+        state,
+        recreateViaCcApi: ['MyGlobalTable'],
+        allowUnsupportedProperties: new Set(),
+        // Even with --force-stateful-recreation, multi-region is structurally refused.
+        forceStatefulRecreation: true,
+      });
+      expect(v.blockedMultiRegionTargets).toHaveLength(1);
+      expect(v.blockedMultiRegionTargets[0]!.logicalId).toBe('MyGlobalTable');
+      const error = renderRecreateTargetsErrors(v);
+      expect(error).toMatch(/refuses to operate on 1 multi-region resource/);
+      expect(error).toMatch(/No --force-stateful-recreation bypass/);
+    });
+
+    it('still lists multi-region targets in targets[] so callers see them (the refusal is separate from inclusion)', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          MyGlobalTable: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} },
+        },
+      };
+      const state = st('S', { MyGlobalTable: res('AWS::DynamoDB::GlobalTable') });
+      const v = validateRecreateTargets({
+        template,
+        state,
+        recreateViaCcApi: ['MyGlobalTable'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: true,
+      });
+      // The target is added to targets[] AND blockedMultiRegionTargets[].
+      // renderRecreateTargetsErrors returning non-null is what causes the
+      // deploy command to abort BEFORE the engine sees the targets set.
+      expect(v.targets.map((t) => t.logicalId)).toEqual(['MyGlobalTable']);
+      expect(v.blockedMultiRegionTargets.map((t) => t.logicalId)).toEqual(['MyGlobalTable']);
+    });
+  });
+
   it('aggregates multiple distinct failure categories into one rendered error block', () => {
     const template: CloudFormationTemplate = {
       Resources: {
@@ -307,25 +353,36 @@ describe('validateRecreateTargets (#615)', () => {
           Type: 'AWS::Lambda::Function',
           Properties: { LoggingConfig: { LogFormat: 'JSON' } },
         },
+        // Declared but never deployed → missingFromState
+        FreshResource: { Type: 'AWS::Lambda::Function', Properties: {} },
+        MyGlobalTable: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} },
       },
     };
     const state = st('S', {
       MyDB: res('AWS::RDS::DBInstance'),
       MyLambda: res('AWS::Lambda::Function'),
+      MyGlobalTable: res('AWS::DynamoDB::GlobalTable'),
     });
     const v = validateRecreateTargets({
       template,
       state,
-      recreateViaCcApi: ['MyDB', 'MyLambda', 'NotInTemplate', 'NotInState'],
+      recreateViaCcApi: ['MyDB', 'MyLambda', 'NotInTemplate', 'FreshResource', 'MyGlobalTable'],
       allowUnsupportedProperties: new Set(['AWS::Lambda::Function:LoggingConfig']),
       forceStatefulRecreation: false,
     });
-    expect(v.unknownLogicalIds).toEqual(['NotInTemplate', 'NotInState']); // both absent from template
-    expect(v.blockedStatefulTargets.map((t) => t.logicalId)).toEqual(['MyDB']);
+    expect(v.unknownLogicalIds).toEqual(['NotInTemplate']);
+    expect(v.missingFromState).toEqual(['FreshResource']);
+    expect(v.blockedStatefulTargets.map((t) => t.logicalId).sort()).toEqual([
+      'MyDB',
+      'MyGlobalTable',
+    ]);
+    expect(v.blockedMultiRegionTargets.map((t) => t.logicalId)).toEqual(['MyGlobalTable']);
     expect(v.ambiguousIntent.map((a) => a.logicalId)).toEqual(['MyLambda']);
     const error = renderRecreateTargetsErrors(v);
     expect(error).toContain('not present in the synth template');
+    expect(error).toContain('fresh CREATEs on the next deploy');
     expect(error).toContain('Ambiguous intent');
     expect(error).toContain('--force-stateful-recreation');
+    expect(error).toContain('multi-region resource');
   });
 });

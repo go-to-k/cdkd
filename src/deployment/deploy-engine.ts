@@ -1880,8 +1880,9 @@ export class DeployEngine {
               this.logger.warn(
                 `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — recreate-via-cc-api will ` +
                   `leak the old physical resource (${currentResource.physicalId}). The new ` +
-                  `CC-managed resource will share the same name where applicable; if the type ` +
-                  `has user-supplied names, the create may collide with the retained orphan.`
+                  `CC-managed resource shares the same name where applicable; if the type ` +
+                  `has user-supplied names (e.g. functionName, bucketName), the create will ` +
+                  `deterministically collide with the retained orphan.`
               );
             } else {
               this.logger.info(

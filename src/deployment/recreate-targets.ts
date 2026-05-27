@@ -18,9 +18,13 @@
  *      bucket with objects, LogGroup with retention) MUST be matched
  *      by an explicit `--force-stateful-recreation` flag. The probe
  *      for S3 / LogGroup conditional state runs synchronously off the
- *      recorded properties (the live `ListObjectsV2` lookup for S3
- *      buckets is the deploy engine's job — see
- *      {@link probeStatefulRecreateTargetsAsync}).
+ *      recorded properties; the live `ListObjectsV2` probe for S3
+ *      buckets is deferred to a follow-up issue (v1 sync-defers).
+ *   4. Multi-region refusal: every named target whose resource type
+ *      is in {@link MULTI_REGION_RECREATE_BLOCKED_TYPES} (e.g.
+ *      `AWS::DynamoDB::GlobalTable`) is refused outright. Out of
+ *      scope for v1; no `--force-stateful-recreation` bypass since
+ *      this is a structural limitation, not a data-loss footgun.
  *
  * Plus one cross-flag invariant: `--recreate-via-cc-api MyLambda`
  * combined with `--allow-unsupported-properties AWS::Lambda::Function:LoggingConfig`
@@ -34,6 +38,7 @@ import type { StackState } from '../types/state.js';
 import {
   isStatefulRecreateTargetSync,
   renderStatefulReason,
+  MULTI_REGION_RECREATE_BLOCKED_TYPES,
   type StatefulReason,
 } from '../provisioning/stateful-types.js';
 import { findActionableSilentDrops } from '../provisioning/property-coverage.js';
@@ -74,22 +79,28 @@ export interface RecreateTargetsValidation {
   ambiguousIntent: AmbiguousIntentOverlap[];
   /** Stateful targets that lack --force-stateful-recreation cover. */
   blockedStatefulTargets: Array<RecreateTarget & { statefulReason: Exclude<StatefulReason, null> }>;
+  /**
+   * Multi-region targets (e.g. `AWS::DynamoDB::GlobalTable`) the design
+   * doc §8 declares out-of-scope for v1. Refusal is NOT bypassable
+   * via `--force-stateful-recreation` — the destroy + recreate cycle
+   * across replica regions is more involved than the single-region
+   * path (out of scope until a follow-up issue).
+   */
+  blockedMultiRegionTargets: Array<RecreateTarget>;
 }
 
 /**
  * Plan-time validation of the user's recreate-via-cc-api list.
  *
  * Pure with respect to AWS — does NOT probe S3 bucket emptiness. The
- * S3 conditional check runs in
- * {@link probeStatefulRecreateTargetsAsync} (called from the deploy
- * engine where an S3 client is already in hand). When the live probe
- * promotes a bucket from "not stateful synchronously" to "has-objects
- * stateful," that target moves into `blockedStatefulTargets` after a
- * second pass.
+ * S3 conditional check is deferred to a follow-up issue (the live
+ * `s3:ListObjectsV2` probe is out of scope for v1).
  *
  * Input order is preserved; duplicate logical ids in the user's input
  * are deduplicated.
  */
+const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
+
 export function validateRecreateTargets(input: {
   template: CloudFormationTemplate;
   state: StackState;
@@ -105,6 +116,7 @@ export function validateRecreateTargets(input: {
   const blockedStatefulTargets: Array<
     RecreateTarget & { statefulReason: Exclude<StatefulReason, null> }
   > = [];
+  const blockedMultiRegionTargets: Array<RecreateTarget> = [];
 
   for (const logicalId of input.recreateViaCcApi) {
     if (seen.has(logicalId)) continue;
@@ -130,6 +142,13 @@ export function validateRecreateTargets(input: {
     };
     targets.push(target);
 
+    // Multi-region refusal (design §8 — out of scope for v1). Refused
+    // regardless of `--force-stateful-recreation`; the user has no
+    // bypass flag for this category by design.
+    if (MULTI_REGION_RECREATE_BLOCKED_TYPES.has(resourceType)) {
+      blockedMultiRegionTargets.push(target);
+    }
+
     // Ambiguous-intent overlap with --allow-unsupported-properties.
     // The overlap only fires when the template carries a silent-drop
     // property AND that property is in the override allow-set —
@@ -140,7 +159,7 @@ export function validateRecreateTargets(input: {
       // For the overlap check we want to surface every drop that the
       // user explicitly put in the allow-set, NOT filter them out. So
       // we pass an empty allow-set to the helper and post-filter.
-      new Set()
+      EMPTY_ALLOW_SET
     );
     for (const { property } of actionableDrops) {
       const allowKey = `${resourceType}:${property}`;
@@ -162,6 +181,7 @@ export function validateRecreateTargets(input: {
     missingFromState,
     ambiguousIntent,
     blockedStatefulTargets,
+    blockedMultiRegionTargets,
   };
 }
 
@@ -242,6 +262,23 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
           `${renderStatefulReason(blocked.statefulReason)}`
       );
     }
+  }
+
+  if (validation.blockedMultiRegionTargets.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `--recreate-via-cc-api refuses to operate on ` +
+        `${validation.blockedMultiRegionTargets.length} multi-region resource(s) — ` +
+        `out of scope for v1 of this flag (the destroy + recreate cycle across ` +
+        `replica regions is more involved than the single-region path):`
+    );
+    for (const blocked of validation.blockedMultiRegionTargets) {
+      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+    }
+    lines.push(
+      `  No --force-stateful-recreation bypass — this category is structurally ` +
+        `unsupported in v1. File an issue if you need this path.`
+    );
   }
 
   return lines.length > 0 ? lines.join('\n') : null;

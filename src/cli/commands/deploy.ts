@@ -44,6 +44,7 @@ import {
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { findPendingPrefixRenames, promptMigrationConfirm } from './prefix-migration-check.js';
+import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 
 /**
  * Deploy command implementation
@@ -457,7 +458,7 @@ async function deployCommand(
           const validation = validateRecreateTargets({
             template: stackInfo.template,
             state: stateForRecreateCheck?.state ?? {
-              version: 7,
+              version: STATE_SCHEMA_VERSION_CURRENT,
               stackName: stackInfo.stackName,
               region: stackRegion,
               resources: {},

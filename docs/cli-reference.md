@@ -634,7 +634,7 @@ migration):
 | Database / storage | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` |
 | Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::ECR::Repository` |
 | Streaming | `AWS::Kinesis::Stream` |
-| Search | `AWS::ElasticSearch::Domain`, `AWS::OpenSearchService::Domain` |
+| Search | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain` |
 | Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter` |
 | Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
 | Edge | `AWS::CloudFront::Distribution` (URL changes break consumers; ~20-minute propagation) |

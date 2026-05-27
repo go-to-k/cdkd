@@ -53,7 +53,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Streaming.
   'AWS::Kinesis::Stream',
   // Search.
-  'AWS::ElasticSearch::Domain',
+  'AWS::Elasticsearch::Domain',
   'AWS::OpenSearchService::Domain',
   // Identity / config (user-managed values).
   'AWS::Cognito::UserPool',
@@ -67,6 +67,22 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Edge / URL-immutability — CloudFront URL change breaks downstream
   // consumers and the change has a ~20-minute propagation window.
   'AWS::CloudFront::Distribution',
+]);
+
+/**
+ * Multi-region resource types — `--recreate-via-cc-api` refuses these
+ * outright in v1 regardless of `--force-stateful-recreation`. Design
+ * doc §8 calls these "out of scope": the destroy + recreate cycle
+ * across replica regions is more involved than a single-region
+ * destroy-and-create (replica regions, automated backups, eventual
+ * consistency across the replication mesh, etc.).
+ *
+ * Distinct from {@link STATEFUL_TYPES} — STATEFUL_TYPES gates on data
+ * loss (bypassable with `--force-stateful-recreation`); this set is
+ * an out-of-scope refusal (no bypass).
+ */
+export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set([
+  'AWS::DynamoDB::GlobalTable',
 ]);
 
 /**
@@ -86,15 +102,14 @@ export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | null;
 
 /**
  * Cheap, synchronous read of the resource's recorded properties only.
- * For `AWS::S3::Bucket` this returns `null` (the live `ListObjectsV2`
- * probe lives in the deploy engine because it needs an S3 client) —
- * callers that need the full check call
- * {@link isStatefulRecreateTargetAsync} instead.
+ * For `AWS::S3::Bucket` this returns `null` — the live `ListObjectsV2`
+ * probe to distinguish empty buckets (safe to recreate) from
+ * non-empty (data loss) needs an S3 client + an AWS round-trip and is
+ * deferred to a follow-up issue (v1 sync-defers; an `--force-stateful-
+ * recreation` is recommended for any potentially-non-empty S3 target).
  *
  * Returns the {@link StatefulReason} when the type is stateful (or
- * `null` for non-stateful types). The S3 special case returns `null`
- * here so a caller that only has the synchronous map can defer the
- * decision to the async path.
+ * `null` for non-stateful types).
  */
 export function isStatefulRecreateTargetSync(
   resourceType: string,

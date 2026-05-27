@@ -25,9 +25,10 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *
  * Lambda is the canonical silent-drop demo type (cc-api-fallback /
  * cc-api-fallback-transitions both use it). The function name is
- * stable so verify.sh can grep AWS for it; the recreated copy gets
- * a different physical-id under CC (AWS assigns a new ARN) which the
- * assertion confirms.
+ * stable across recreates (the destroy+create reuses the user-supplied
+ * name, so the physical-id is identical post-recreate); the new Lambda
+ * instance is witnessed by `LastModified` updating, not by the
+ * physical-id changing.
  */
 export class RecreateViaCcApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

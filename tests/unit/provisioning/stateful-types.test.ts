@@ -24,6 +24,12 @@ describe('STATEFUL_TYPES (#615)', () => {
     expect(STATEFUL_TYPES.has('AWS::S3::Bucket')).toBe(true);
     expect(STATEFUL_TYPES.has('AWS::ECR::Repository')).toBe(true);
     expect(STATEFUL_TYPES.has('AWS::Kinesis::Stream')).toBe(true);
+    // Note canonical CFn casing: 'Elasticsearch' (lowercase 's') —
+    // matches `cloudformation:DescribeType AWS::Elasticsearch::Domain`.
+    // A camelcased typo `AWS::ElasticSearch::Domain` would silently
+    // bypass the guard, so this assertion is load-bearing.
+    expect(STATEFUL_TYPES.has('AWS::Elasticsearch::Domain')).toBe(true);
+    expect(STATEFUL_TYPES.has('AWS::ElasticSearch::Domain')).toBe(false);
     expect(STATEFUL_TYPES.has('AWS::OpenSearchService::Domain')).toBe(true);
     expect(STATEFUL_TYPES.has('AWS::Cognito::UserPool')).toBe(true);
     expect(STATEFUL_TYPES.has('AWS::SecretsManager::Secret')).toBe(true);
