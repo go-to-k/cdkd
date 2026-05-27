@@ -1,3 +1,10 @@
+# [0.166.0](https://github.com/go-to-k/cdkd/compare/v0.165.0...v0.166.0) (2026-05-27)
+
+
+### Features
+
+* **deploy:** --recreate-via-sdk-provider for reverse CC->SDK migration ([#663](https://github.com/go-to-k/cdkd/issues/663)) ([4bbf357](https://github.com/go-to-k/cdkd/commit/4bbf357501095fcc73fe51b8db5fc1031b084761))
+
 # [0.165.0](https://github.com/go-to-k/cdkd/compare/v0.164.1...v0.165.0) (2026-05-27)
 
 
