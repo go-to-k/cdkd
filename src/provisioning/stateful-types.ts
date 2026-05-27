@@ -104,9 +104,12 @@ export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | null;
  * Cheap, synchronous read of the resource's recorded properties only.
  * For `AWS::S3::Bucket` this returns `null` — the live `ListObjectsV2`
  * probe to distinguish empty buckets (safe to recreate) from
- * non-empty (data loss) needs an S3 client + an AWS round-trip and is
- * deferred to a follow-up issue (v1 sync-defers; an `--force-stateful-
- * recreation` is recommended for any potentially-non-empty S3 target).
+ * non-empty (data loss) lives in
+ * `src/deployment/recreate-targets.ts#probeStatefulRecreateTargetsAsync`
+ * (issue [#648]) and runs after this sync first-cut. Sync callers can
+ * still treat `null` as "not stateful" — the deploy command does both
+ * passes back-to-back; only callers that explicitly opt out of the
+ * async probe need to assume conservative "stateful" semantics.
  *
  * Returns the {@link StatefulReason} when the type is stateful (or
  * `null` for non-stateful types).
