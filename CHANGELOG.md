@@ -1,3 +1,10 @@
+## [0.162.1](https://github.com/go-to-k/cdkd/compare/v0.162.0...v0.162.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **local:** borrow CloudFront ResponseHeadersPolicy CORS for fronted Function URLs ([#646](https://github.com/go-to-k/cdkd/issues/646)) ([#647](https://github.com/go-to-k/cdkd/issues/647)) ([284b9cf](https://github.com/go-to-k/cdkd/commit/284b9cfabd1234bc8f8e1663ec2b0fee1b1f13ed))
+
 # [0.162.0](https://github.com/go-to-k/cdkd/compare/v0.161.4...v0.162.0) (2026-05-27)
 
 
