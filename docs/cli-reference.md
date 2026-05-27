@@ -667,12 +667,20 @@ false sense of granularity.
 
 ### Interactive confirmation
 
-`cdkd deploy --recreate-via-cc-api <id>` logs a `WARN` line listing each
-target + the `stateful` reason (when applicable) before the deploy
-proceeds. Combine with `--yes` for non-interactive CI runs. Future
-follow-up may add an interactive `[y/N]` prompt (per design §4); v1
-ships the warn-log-then-proceed surface since the user already opted in
-explicitly per-resource at the CLI.
+`cdkd deploy --recreate-via-cc-api <id>` prints a per-target plan
+(logical id + resource type + `stateful` reason where applicable) and
+then asks `Continue? (y/N)` before any AWS call. Default is `N`
+(destructive — the destroy + recreate cycle is irreversible per
+resource). Combine with `--yes` / `-y` for non-interactive CI runs;
+the plan is then warn-logged once and the deploy proceeds without
+prompting. Non-TTY runs without `--yes` are rejected with an
+actionable error rather than hanging on a closed stdin.
+
+For stateful targets (those reaching pre-flight only because the user
+opted in with `--force-stateful-recreation`), the prompt prefixes each
+row with `**DATA LOSS**` and emits an explicit `DATA: all data in
+<logical id> will be lost` caveat — the third "stop and think" moment
+on top of the two-flag opt-in.
 
 ### Cross-stack reference propagation
 
