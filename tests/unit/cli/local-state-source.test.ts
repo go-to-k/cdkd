@@ -7,10 +7,10 @@ import {
   resolveCfnRegion,
   rejectExplicitCfnStackWithMultipleStacks,
   LocalStateSourceError,
+  CfnLocalStateProvider,
   type LocalStateSourceOptions,
 } from '../../../src/cli/commands/local-state-source.js';
 import { S3LocalStateProvider } from '../../../src/local/s3-local-state-provider.js';
-import { CfnLocalStateProvider } from '../../../src/local/cfn-local-state-provider.js';
 
 describe('resolveCfnStackName', () => {
   it('returns the explicit string value when --from-cfn-stack <name> was passed', () => {
@@ -338,7 +338,7 @@ describe('createLocalStateProvider — empty --from-cfn-stack rejection (Issue #
         'CdkdStack',
         'us-east-1'
       )
-    ).toThrow(/Drop the value to use the cdkd stack name/);
+    ).toThrow(/Drop the value to use the resolved stack name/);
   });
 
   it('rejects empty string even when --from-state is also set (mutex check fires first)', () => {
