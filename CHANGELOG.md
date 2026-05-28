@@ -1,3 +1,10 @@
+## [0.169.1](https://github.com/go-to-k/cdkd/compare/v0.169.0...v0.169.1) (2026-05-28)
+
+
+### Bug Fixes
+
+* **local:** set cdk-local embedConfig so shimmed modules render cdkd branding ([#685](https://github.com/go-to-k/cdkd/issues/685)) ([50953b8](https://github.com/go-to-k/cdkd/commit/50953b8bf1e92db0db4b14e3737e109e58ad4104))
+
 # [0.169.0](https://github.com/go-to-k/cdkd/compare/v0.168.0...v0.169.0) (2026-05-27)
 
 
