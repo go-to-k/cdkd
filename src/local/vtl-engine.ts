@@ -78,6 +78,8 @@
  * acceptable and not in the contract.
  */
 
+import { VtlEvaluationError } from 'cdk-local';
+
 /**
  * Bindings available to a VTL template evaluation. Built up by
  * `buildVtlContext` from an `HttpRequestSnapshot` + `MatchedRouteContext`.
@@ -137,14 +139,12 @@ export interface VtlUtil {
   parseJson(input: unknown): unknown;
 }
 
-/** Error thrown when a template references an unsupported VTL feature. */
-export class VtlEvaluationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'VtlEvaluationError';
-    Object.setPrototypeOf(this, VtlEvaluationError.prototype);
-  }
-}
+// Error thrown when a template references an unsupported VTL feature.
+// Re-exported from cdk-local so this still-local engine, the shimmed
+// `integration-response-selector` (which throws it), and the REST v1
+// dispatcher's `instanceof VtlEvaluationError` catch share ONE class
+// identity across the package boundary.
+export { VtlEvaluationError };
 
 /** Built-in `$util` implementation. */
 export function buildDefaultUtil(): VtlUtil {

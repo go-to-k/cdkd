@@ -87,7 +87,7 @@
     "@aws-sdk/client-wafv2": "^3.1017.0",
     "@aws-sdk/s3-request-presigner": "^3.1016.0",
     "archiver": "^7.0.0",
-    "cdk-local": "^0.29.0",
+    "cdk-local": "^0.30.0",
     "chokidar": "^5.0.0",
     "commander": "^12.0.0",
     "graphlib": "^2.1.8",

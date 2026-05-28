@@ -1,5 +1,6 @@
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
+import { EcsTaskResolutionError } from 'cdk-local';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
@@ -148,13 +149,11 @@ export interface ResolvedEcsVolume {
   };
 }
 
-export class EcsTaskResolutionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'EcsTaskResolutionError';
-    Object.setPrototypeOf(this, EcsTaskResolutionError.prototype);
-  }
-}
+// Re-exported from cdk-local so this still-local module, the shimmed
+// `cloud-map-resolver` (which throws it), and every host-side
+// `instanceof` / `toThrow(EcsTaskResolutionError)` share ONE class identity
+// across the package boundary.
+export { EcsTaskResolutionError };
 
 /**
  * Derive the AWS partition / URL suffix for an AWS region. Same mapping
