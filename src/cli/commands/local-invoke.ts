@@ -63,6 +63,25 @@ import type { StackState } from '../../types/state.js';
 import { createLocalStartApiCommand, resolveProfileCredentials } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
 import { createLocalStartServiceCommand } from './local-start-service.js';
+import { setEmbedConfig } from 'cdk-local';
+
+/**
+ * cdkd's branding for cdk-local's embed-config. cdkd re-exports cdk-local's
+ * local-emulation leaf modules as shims (`runtime-image`, `websocket-*`,
+ * `layer-arn-materializer`, etc.) but keeps its OWN `cdkd local` command tree,
+ * so it does not go through cdk-local's command factories (which install the
+ * config themselves). Without this, those bundled modules render cdk-local's
+ * `cdkl` defaults in error strings / resource names. `createLocalCommand`
+ * calls `setEmbedConfig(CDKD_EMBED_CONFIG)` once so they read cdkd's branding.
+ */
+const CDKD_EMBED_CONFIG = {
+  cliName: 'cdkd local',
+  binaryName: 'cdkd',
+  productName: 'cdkd',
+  resourceNamePrefix: 'cdkd-local',
+  awsBindMountPath: '/cdkd-aws',
+  envPrefix: 'CDKD',
+} as const;
 
 interface LocalInvokeOptions {
   app?: string;
@@ -1508,6 +1527,11 @@ function pickReferencedLogicalId(intrinsic: Record<string, unknown>): string | u
  * under `src/local/`.
  */
 export function createLocalCommand(): Command {
+  // Install cdkd branding into cdk-local's embed-config before any shimmed
+  // local-emulation module reads it. Idempotent + process-wide; one call
+  // covers every `export { ... } from 'cdk-local'` shim cdkd mounts.
+  setEmbedConfig(CDKD_EMBED_CONFIG);
+
   const local = new Command('local').description(
     'Local execution of Lambda functions (RIE) and ECS task definitions (Docker required)'
   );
