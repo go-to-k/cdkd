@@ -130,7 +130,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
 | `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery---from-state) below. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. **Mutually exclusive with `--from-state`** — pick one source. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `DescribeStackResources` does not return per-attribute values). See [CloudFormation-driven env recovery (`--from-cfn-stack`)](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. **Mutually exclusive with `--from-state`** — pick one source. `Fn::GetAtt` in a consumer Lambda's own env vars is recovered from the deployed function config (`lambda:GetFunctionConfiguration`, via `cdk-local@0.10.0`); `Fn::GetAtt` at other sites still warn-and-drops. See [CloudFormation-driven env recovery (`--from-cfn-stack`)](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
 | `--stack-region <region>` | auto | Region of the state record to read. Required for `--from-state` when the same stack name has state in multiple regions. Also drives the CFn client region for `--from-cfn-stack` (cdkd does not have a separate `--cfn-stack-region` flag). |
@@ -261,13 +261,21 @@ cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack --stack-region eu-west-
 `Fn::ImportValue: <ExportName>` against `cloudformation:ListExports`
 (paginated, memoized for one substitution pass).
 
-**`Fn::GetAtt` is warn-and-dropped** in v1. CFn's
-`DescribeStackResources` does NOT return per-attribute values — it only
-exposes `(LogicalResourceId, PhysicalResourceId, ResourceType)`
-triplets. Recovering per-attribute values would require provider-
-specific describe calls (e.g. `GetQueueAttributes` for SQS, `GetFunction`
-for Lambda), which is out of scope for the v1 cut. Override the
-affected env var via `--env-vars` if the value is critical.
+**`Fn::GetAtt` is recovered for a consumer Lambda's OWN env vars; other
+sites warn-and-drop.** CFn's `DescribeStackResources` does NOT return
+per-attribute values — it only exposes `(LogicalResourceId,
+PhysicalResourceId, ResourceType)` triplets. But CloudFormation already
+resolved every intrinsic at deploy time, so a consumer Lambda's
+`Environment.Variables` already carries the concrete value. As of
+`cdk-local@0.10.0` (which cdkd consumes through the `--from-cfn-stack`
+shim), env keys whose template value is an `Fn::GetAtt` the static
+substituter could not resolve are filled at runtime by reading the
+deployed function's config (`lambda:GetFunctionConfiguration`) — this
+covers `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` / cross-stack `Ref`
+in Lambda env vars uniformly, without provider-specific describe calls.
+`Fn::GetAtt` at NON-Lambda-env sites (e.g. ECS container env) is still
+warn-and-dropped; override the affected entry via `--env-vars` if the
+value is critical.
 
 **`Fn::GetStackOutput` is rejected** with a clear warn naming the cdkd-
 vs-CFn gap: it's a cdkd-specific intrinsic with no CloudFormation
@@ -612,7 +620,7 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
 | `--from-state` | off | Read cdkd S3 state for every routed stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in Lambda env vars with the deployed physical IDs / attributes. Off by default — keeps the pre-PR literal-only / warn-and-drop behavior. Mirrors `cdkd local invoke --from-state` and `cdkd local run-task --from-state`. Re-runs against fresh state on every hot-reload firing (`--watch`). State load failures degrade per-stack to warn-and-fall-back so a missing or unreadable state file never aborts the server. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). **The bare form is the typical shape** — `cdkd local start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden); the explicit form is rejected when more than one stack is routed in one invocation. **Mutually exclusive with `--from-state`**. `Fn::GetAtt` is warn-and-dropped in v1. Same warn-and-drop semantics as `cdkd local invoke --from-cfn-stack`. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). **The bare form is the typical shape** — `cdkd local start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden); the explicit form is rejected when more than one stack is routed in one invocation. **Mutually exclusive with `--from-state`**. `Fn::GetAtt` in a consumer Lambda's own env vars is recovered from the deployed function config (`cdk-local@0.10.0`); other `Fn::GetAtt` sites still warn-and-drop. Same semantics as `cdkd local invoke --from-cfn-stack`. |
 | `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
 | `--stack-region <region>` | auto | Region of the state record to read. Required for `--from-state` when the same stack name has state in multiple regions. Also drives the CFn client region for `--from-cfn-stack`. |
