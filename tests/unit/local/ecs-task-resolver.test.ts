@@ -648,7 +648,14 @@ describe('resolveEcsTaskTarget', () => {
       ).toThrow(/--from-state/);
     });
 
-    it('hard-errors when state is missing the Repository Arn attribute', () => {
+    it('synthesizes the ECR image URI from the physical name + pseudo parameters when state lacks the Repository Arn attribute', () => {
+      // The shimmed `intrinsic-image` (cdk-local) synthesizes a same-stack ECR
+      // repository's Arn from its recovered physical name + pseudo parameters,
+      // so the canonical `Fn::Join` image resolves even when state carries only
+      // the physicalId and no Arn attribute. This is the `--from-cfn-stack`
+      // case (DescribeStackResources returns physical ids but no per-attribute
+      // values); pre-shim it hard-errored with "unsupported Fn::Join Image
+      // shape".
       const stack = buildStack('S1', {
         MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
         TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
@@ -662,17 +669,20 @@ describe('resolveEcsTaskTarget', () => {
           dependencies: [],
         },
       };
-      expect(() =>
-        resolveEcsTaskTarget('TD', [stack], {
-          pseudoParameters: {
-            accountId: '123456789012',
-            region: 'us-east-1',
-            partition: 'aws',
-            urlSuffix: 'amazonaws.com',
-          },
-          stateResources,
-        })
-      ).toThrow(/unsupported Fn::Join Image shape/);
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+        stateResources,
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('ecr');
+      if (img.kind === 'ecr') {
+        expect(img.uri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/my-deployed-repo:latest');
+      }
     });
 
     it('rejects a non-canonical Fn::Join with a clear unsupported-shape error', () => {
