@@ -153,8 +153,8 @@ importers:
         specifier: ^2.0.0
         version: 2.244.0(constructs@10.6.0)
       cdk-local:
-        specifier: ^0.14.0
-        version: 0.14.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0)
+        specifier: ^0.15.0
+        version: 0.15.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -2696,8 +2696,8 @@ packages:
   cdk-from-cfn@0.300.0:
     resolution: {integrity: sha512-BtTAthyg3EeBoO0o77A3PMfwID7mvm3R1BvM/avjwfPHbSnt598vv0qGGSZMM0KPM77DB5UtK6/z4VhBto4VJw==}
 
-  cdk-local@0.14.0:
-    resolution: {integrity: sha512-8UOC60Mdqku9QR1hyJQDNQx1YYx3GaCfPRavinf9nz4Dg/ERkJYS+nMSYGB6wsdAslxFn5mcEEsjyQrscGx0Jg==}
+  cdk-local@0.15.0:
+    resolution: {integrity: sha512-sX3TboveqN7JOoCN7QaJOej3DxyPZosafFAdvC3dEdoYPx4Tgz3g4r7MM3fmK7VqfDD6ejO5NyfdctcNq6SkLQ==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -9478,7 +9478,7 @@ snapshots:
 
   cdk-from-cfn@0.300.0: {}
 
-  cdk-local@0.14.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0):
+  cdk-local@0.15.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0):
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@53.27.0)
       '@aws-cdk/toolkit-lib': 1.26.2(@aws-cdk/cli-plugin-contract@2.182.2)
