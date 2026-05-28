@@ -153,6 +153,7 @@ high.
 ### Key Dependencies
 
 - `@aws-sdk/client-*` - AWS SDK v3 (various services)
+- `cdk-local` - Local-emulation engine (`--from-cfn-stack` dispatcher + state-source plumbing). cdkd's `src/cli/commands/local-state-source.ts` is a shim that injects the S3-backed `--from-state` factory via `cdk-local`'s `extraStateProviders` hook.
 - `graphlib` - DAG construction
 - `archiver` - ZIP packaging for file assets
 - `chokidar` - File watcher backing `cdkd local start-api --watch` (PR 8c)
