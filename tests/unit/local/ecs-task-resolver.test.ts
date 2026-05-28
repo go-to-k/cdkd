@@ -1227,7 +1227,7 @@ describe('resolveEcsTaskTarget --from-state env / secret substitution', () => {
     expect(r.containers[0]!.environment).toEqual({});
     expect(
       r.containers[0]!.warnings.some((w) =>
-        /TABLE_NAME.*MyMissingTable.*no record in cdkd state/.test(w)
+        /TABLE_NAME.*MyMissingTable.*no record in the state source/.test(w)
       )
     ).toBe(true);
   });

@@ -161,7 +161,7 @@ describe('cdkd local start-api --from-state: shared substituteEnvVarsFromState w
     expect(env).toEqual({});
     expect(audit.unresolved).toHaveLength(1);
     expect(audit.unresolved[0]!.key).toBe('MISSING');
-    expect(audit.unresolved[0]!.reason).toMatch(/no record in cdkd state/);
+    expect(audit.unresolved[0]!.reason).toMatch(/no record in the state source/);
   });
 
   it('drops AWS::* placeholders when no pseudoParameters bag is supplied', () => {
