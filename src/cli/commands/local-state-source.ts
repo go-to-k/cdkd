@@ -104,7 +104,8 @@ const fromStateFactory: LocalStateProviderFactory = (options) => {
  * flag set. Delegates to cdk-local's dispatcher with cdkd's
  * `--from-state` factory wired in. Returns `undefined` when neither
  * flag is set (caller skips the substitution pass). Throws
- * `LocalStateSourceError` when both flags are set.
+ * `LocalStateSourceError` when both flags are set (mutually exclusive)
+ * or when `--from-cfn-stack` is given an explicit empty string.
  *
  * `cdkdStackName` is the cdkd-side stack name the local command
  * resolved to its target — used for the bare-`--from-cfn-stack`
