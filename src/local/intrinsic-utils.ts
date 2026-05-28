@@ -1,16 +1,7 @@
 /**
- * If `value` is a `{ Ref: <string> }` intrinsic, return the referenced
- * logical ID. Otherwise return `null`.
- *
- * Shared across the `src/local/*` resolvers (route discovery, authorizer
- * resolution, stage attachment) so future intrinsic-shape extensions
- * (e.g. accepting `Fn::Sub`-bound Refs in REST v1 ResourceId / ParentId)
- * land in one place instead of three.
+ * Shim: re-exports cdk-local's `pickRefLogicalId` (`{ Ref: <id> }` ->
+ * the referenced logical id, else `null`). The implementation lives in
+ * cdk-local and cdkd consumes it verbatim instead of carrying a
+ * byte-identical copy. See cdk-local's `src/local/intrinsic-utils.ts`.
  */
-export function pickRefLogicalId(value: unknown): string | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const ref = (value as Record<string, unknown>)['Ref'];
-    if (typeof ref === 'string') return ref;
-  }
-  return null;
-}
+export { pickRefLogicalId } from 'cdk-local';
