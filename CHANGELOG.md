@@ -1,3 +1,10 @@
+# [0.173.0](https://github.com/go-to-k/cdkd/compare/v0.172.0...v0.173.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill Lambda::Function LoggingConfig ([#697](https://github.com/go-to-k/cdkd/issues/697)) ([6c131a1](https://github.com/go-to-k/cdkd/commit/6c131a11f42a59484017154669b7e03ee11468cf))
+
 # [0.172.0](https://github.com/go-to-k/cdkd/compare/v0.171.0...v0.172.0) (2026-05-29)
 
 
