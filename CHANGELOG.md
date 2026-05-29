@@ -1,3 +1,10 @@
+# [0.177.0](https://github.com/go-to-k/cdkd/compare/v0.176.0...v0.177.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill DynamoDB::Table WarmThroughput ([#701](https://github.com/go-to-k/cdkd/issues/701)) ([6e11981](https://github.com/go-to-k/cdkd/commit/6e1198132a03f300764dfafd67f665c0b7aa9c6e))
+
 # [0.176.0](https://github.com/go-to-k/cdkd/compare/v0.175.0...v0.176.0) (2026-05-29)
 
 
