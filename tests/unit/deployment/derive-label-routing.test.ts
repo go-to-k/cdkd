@@ -52,7 +52,7 @@ describe('deriveLabelRouting (#614 §9)', () => {
       logicalId: 'MyLambda',
       changeType: 'CREATE',
       resourceType: 'AWS::Lambda::Function',
-      desiredProperties: { LoggingConfig: { LogFormat: 'JSON' } },
+      desiredProperties: { RecursiveLoop: 'Allow' },
     };
     const registry = makeRegistry({ provider: noopProvider, provisionedBy: 'cc-api' });
     expect(deriveLabelRouting(change, undefined, registry)).toBe('cc-api');

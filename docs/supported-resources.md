@@ -37,7 +37,7 @@ both `cdkd deploy` and `cdkd destroy`.
 A type being on this list means cdkd's SDK provider can create / update /
 delete the resource — it does NOT guarantee every CFn property is written
 to AWS. AWS adds new properties to existing resource types regularly
-(e.g. `LoggingConfig` on `AWS::Lambda::Function`), and a provider that does
+(e.g. `RecursiveLoop` on `AWS::Lambda::Function`), and a provider that does
 not yet read the new property would silently drop it on write — your
 deployed resource would be missing the field with no error surfaced.
 

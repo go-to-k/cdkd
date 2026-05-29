@@ -148,7 +148,7 @@ describe('validateRecreateTargets (#615)', () => {
             Type: 'AWS::Lambda::Function',
             Properties: {
               FunctionName: 'foo',
-              LoggingConfig: { LogFormat: 'JSON' }, // silent-drop property
+              RecursiveLoop: 'Allow', // silent-drop property
             },
           },
         },
@@ -158,15 +158,15 @@ describe('validateRecreateTargets (#615)', () => {
         template,
         state,
         recreateViaCcApi: ['MyLambda'],
-        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:LoggingConfig']),
+        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RecursiveLoop']),
         forceStatefulRecreation: false,
       });
       expect(v.ambiguousIntent).toEqual([
-        { logicalId: 'MyLambda', resourceType: 'AWS::Lambda::Function', property: 'LoggingConfig' },
+        { logicalId: 'MyLambda', resourceType: 'AWS::Lambda::Function', property: 'RecursiveLoop' },
       ]);
       const error = renderRecreateTargetsErrors(v);
       expect(error).toContain('Ambiguous intent');
-      expect(error).toContain('LoggingConfig');
+      expect(error).toContain('RecursiveLoop');
       expect(error).toMatch(/pick ONE strategy per resource/);
     });
 
@@ -175,13 +175,13 @@ describe('validateRecreateTargets (#615)', () => {
         Resources: {
           MyLambda: {
             Type: 'AWS::Lambda::Function',
-            Properties: { FunctionName: 'foo', LoggingConfig: { LogFormat: 'JSON' } },
+            Properties: { FunctionName: 'foo', RecursiveLoop: 'Allow' },
           },
         },
       };
       const state = st('S', { MyLambda: res('AWS::Lambda::Function') });
-      // Allow-set covers SnapStart, not LoggingConfig — the template's
-      // actual silent-drop property is LoggingConfig, so no overlap fires.
+      // Allow-set covers SnapStart, not RecursiveLoop — the template's
+      // actual silent-drop property is RecursiveLoop, so no overlap fires.
       const v = validateRecreateTargets({
         template,
         state,
@@ -197,7 +197,7 @@ describe('validateRecreateTargets (#615)', () => {
         Resources: {
           PlainLambda: {
             Type: 'AWS::Lambda::Function',
-            Properties: { FunctionName: 'foo' /* no LoggingConfig */ },
+            Properties: { FunctionName: 'foo' /* no RecursiveLoop */ },
           },
         },
       };
@@ -206,7 +206,7 @@ describe('validateRecreateTargets (#615)', () => {
         template,
         state,
         recreateViaCcApi: ['PlainLambda'],
-        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:LoggingConfig']),
+        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RecursiveLoop']),
         forceStatefulRecreation: false,
       });
       expect(v.ambiguousIntent).toEqual([]);
@@ -361,7 +361,7 @@ describe('validateRecreateTargets (#615)', () => {
         MyDB: { Type: 'AWS::RDS::DBInstance', Properties: {} },
         MyLambda: {
           Type: 'AWS::Lambda::Function',
-          Properties: { LoggingConfig: { LogFormat: 'JSON' } },
+          Properties: { RecursiveLoop: 'Allow' },
         },
         // Declared but never deployed → missingFromState
         FreshResource: { Type: 'AWS::Lambda::Function', Properties: {} },
@@ -377,7 +377,7 @@ describe('validateRecreateTargets (#615)', () => {
       template,
       state,
       recreateViaCcApi: ['MyDB', 'MyLambda', 'NotInTemplate', 'FreshResource', 'MyGlobalTable'],
-      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:LoggingConfig']),
+      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RecursiveLoop']),
       forceStatefulRecreation: false,
     });
     expect(v.unknownLogicalIds).toEqual(['NotInTemplate']);
@@ -486,7 +486,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       Resources: {
         MyLambda: {
           Type: 'AWS::Lambda::Function',
-          Properties: { LoggingConfig: { LogFormat: 'JSON' } },
+          Properties: { RecursiveLoop: 'Allow' },
         },
       },
     };
@@ -498,7 +498,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       state,
       recreateViaCcApi: [],
       recreateViaSdkProvider: ['MyLambda'],
-      // LoggingConfig NOT in --allow-unsupported-properties → next deploy
+      // RecursiveLoop NOT in --allow-unsupported-properties → next deploy
       // would auto-route the recreated SDK resource back to CC.
       allowUnsupportedProperties: new Set(),
       forceStatefulRecreation: false,
@@ -507,7 +507,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
     expect(v.ambiguousIntentSdk.map((a) => a.logicalId)).toEqual(['MyLambda']);
     const error = renderRecreateTargetsErrors(v);
     expect(error).toContain('IMMEDIATELY be re-routed back to Cloud Control');
-    expect(error).toContain('LoggingConfig');
+    expect(error).toContain('RecursiveLoop');
   });
 
   it('inverse ambiguous-intent: PASSES when the silent-drop property IS in --allow-unsupported-properties', () => {
@@ -515,7 +515,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       Resources: {
         MyLambda: {
           Type: 'AWS::Lambda::Function',
-          Properties: { LoggingConfig: { LogFormat: 'JSON' } },
+          Properties: { RecursiveLoop: 'Allow' },
         },
       },
     };
@@ -527,7 +527,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       state,
       recreateViaCcApi: [],
       recreateViaSdkProvider: ['MyLambda'],
-      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:LoggingConfig']),
+      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RecursiveLoop']),
       forceStatefulRecreation: false,
       hasSdkProvider: () => true,
     });

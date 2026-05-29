@@ -367,7 +367,6 @@
       "CodeSigningConfigArn",
       "DurableConfig",
       "FunctionScalingConfig",
-      "LoggingConfig",
       "PublishToLatestPublished",
       "RecursiveLoop",
       "ReservedConcurrentExecutions",

@@ -296,10 +296,10 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
     ]);
   });
 
-  // Issue #609: the five native config fields backfilled into create()/update()
+  // Issue #609: the native config fields backfilled into create()/update()
   // are also read back so a console-side change surfaces as drift instead of
   // firing a false positive (state has the field, AWS readback omits it).
-  it('surfaces DeadLetterConfig / KmsKeyArn / FileSystemConfigs / SnapStart when AWS returns them', async () => {
+  it('surfaces DeadLetterConfig / KmsKeyArn / FileSystemConfigs / SnapStart / LoggingConfig when AWS returns them', async () => {
     mockSend.mockResolvedValueOnce({
       Configuration: {
         FunctionName: 'fn',
@@ -315,6 +315,12 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
           },
         ],
         SnapStart: { ApplyOn: 'PublishedVersions', OptimizationStatus: 'On' },
+        LoggingConfig: {
+          LogFormat: 'JSON',
+          ApplicationLogLevel: 'INFO',
+          SystemLogLevel: 'INFO',
+          LogGroup: '/aws/lambda/fn',
+        },
       },
     });
 
@@ -332,6 +338,31 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
     // OptimizationStatus is AWS-managed and must NOT be surfaced (CFn SnapStart
     // is { ApplyOn } only).
     expect(result?.SnapStart).toEqual({ ApplyOn: 'PublishedVersions' });
+    // All four LoggingConfig sub-fields are user-controllable, so all surface.
+    expect(result?.LoggingConfig).toEqual({
+      LogFormat: 'JSON',
+      ApplicationLogLevel: 'INFO',
+      SystemLogLevel: 'INFO',
+      LogGroup: '/aws/lambda/fn',
+    });
+  });
+
+  it('surfaces only LogFormat + LogGroup for a Text-format LoggingConfig (no JSON-only levels)', async () => {
+    // Text format has no ApplicationLogLevel / SystemLogLevel; AWS omits them,
+    // so the emit-when-present sub-field guards keep them out of the readback.
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        LoggingConfig: { LogFormat: 'Text', LogGroup: '/aws/lambda/fn' },
+      },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(result?.LoggingConfig).toEqual({ LogFormat: 'Text', LogGroup: '/aws/lambda/fn' });
   });
 
   it('surfaces ImageConfig nested under ImageConfigResponse for container Lambdas', async () => {
@@ -366,7 +397,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
         Runtime: 'nodejs20.x',
         Handler: 'index.handler',
         Role: 'arn:aws:iam::123456789012:role/exec',
-        // None of the five native config fields present.
+        // None of the native config fields present.
       },
     });
 
@@ -377,5 +408,6 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('FileSystemConfigs');
     expect(result).not.toHaveProperty('ImageConfig');
     expect(result).not.toHaveProperty('SnapStart');
+    expect(result).not.toHaveProperty('LoggingConfig');
   });
 });

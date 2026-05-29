@@ -2,14 +2,14 @@
 # verify.sh — cdkd #651 --recreate-via-sdk-provider integ test
 #
 # Mid-life CC→SDK migration: a Lambda Function deployed WITH
-# `LoggingConfig` (= auto-routes via Cloud Control on the fresh deploy,
+# `RecursiveLoop` (= auto-routes via Cloud Control on the fresh deploy,
 # state stamps `provisionedBy: 'cc-api'`) is destroyed + recreated via
-# cdkd's SDK Provider when the next deploy drops `LoggingConfig` AND
+# cdkd's SDK Provider when the next deploy drops `RecursiveLoop` AND
 # passes `--recreate-via-sdk-provider`. The assertions confirm:
 #
 #   - state `provisionedBy` flips 'cc-api' → 'sdk'
-#   - the Lambda's `LoggingConfig` is gone on AWS (SDK Provider doesn't
-#     wire it, and the template no longer carries it)
+#   - the Lambda's `RecursiveLoop` is back at the Terminate default on AWS
+#     (SDK Provider doesn't wire it, and the template no longer carries it)
 #   - LastModified changed (the recreate produced a new Lambda instance;
 #     the user-supplied functionName makes the physical id stable, so
 #     LastModified is the witness)
@@ -69,19 +69,19 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# --- Phase 1: deploy WITH LoggingConfig (lands CC via auto-route) ------
-echo "==> Phase 1: deploy ${STACK} WITH LoggingConfig (baseline -> auto-route to CC)"
-export CDKD_INTEG_USE_LOGGING_CONFIG=true
+# --- Phase 1: deploy WITH RecursiveLoop (lands CC via auto-route) ------
+echo "==> Phase 1: deploy ${STACK} WITH RecursiveLoop (baseline -> auto-route to CC)"
+export CDKD_INTEG_USE_SILENT_DROP=true
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-unset CDKD_INTEG_USE_LOGGING_CONFIG
+unset CDKD_INTEG_USE_SILENT_DROP
 
 STATE_1=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 PROVISIONED_1=$(echo "${STATE_1}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${PROVISIONED_1}" != "cc-api" ]; then
-  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api' (LoggingConfig auto-route should land CC)" >&2
+  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api' (RecursiveLoop auto-route should land CC)" >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi
@@ -90,18 +90,17 @@ echo "    OK: baseline Lambda provisionedBy == 'cc-api'"
 LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
 echo "    Baseline LastModified: ${LAST_MOD_1}"
 
-# Baseline AWS check: LoggingConfig should be JSON-formatted.
-LOG_CONFIG_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LoggingConfig' --output json 2>/dev/null)
-LF_1=$(echo "${LOG_CONFIG_1}" | jq -r '.LogFormat // ""')
-if [ "${LF_1}" != "JSON" ]; then
-  echo "FAIL: baseline Lambda has LogFormat='${LF_1}', expected 'JSON' (CC route should have set it)" >&2
+# Baseline AWS check: RecursiveLoop should be Allow (CC route forwarded it).
+RL_1=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
+if [ "${RL_1}" != "Allow" ]; then
+  echo "FAIL: baseline Lambda has RecursiveLoop='${RL_1}', expected 'Allow' (CC route should have set it)" >&2
   exit 1
 fi
-echo "    OK: baseline Lambda LoggingConfig is JSON on AWS (CC route confirmed)"
+echo "    OK: baseline Lambda RecursiveLoop is Allow on AWS (CC route confirmed)"
 
-# --- Phase 2: re-deploy WITHOUT LoggingConfig + --recreate-via-sdk-provider
-echo "==> Phase 2: re-deploy ${STACK} WITHOUT LoggingConfig + --recreate-via-sdk-provider (destroy+recreate via SDK)"
-unset CDKD_INTEG_USE_LOGGING_CONFIG
+# --- Phase 2: re-deploy WITHOUT RecursiveLoop + --recreate-via-sdk-provider
+echo "==> Phase 2: re-deploy ${STACK} WITHOUT RecursiveLoop + --recreate-via-sdk-provider (destroy+recreate via SDK)"
+unset CDKD_INTEG_USE_SILENT_DROP
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -125,15 +124,15 @@ if [ "${LAST_MOD_2}" = "${LAST_MOD_1}" ]; then
 fi
 echo "    OK: LastModified updated across recreate (old destroyed, new created)"
 
-# Post-recreate AWS check: LoggingConfig should be gone (the template
-# no longer carries it AND the SDK provider doesn't wire it anyway).
-LOG_CONFIG_2=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LoggingConfig' --output json 2>/dev/null)
-LF_2=$(echo "${LOG_CONFIG_2}" | jq -r '.LogFormat // ""')
-if [ "${LF_2}" = "JSON" ]; then
-  echo "FAIL: post-recreate Lambda still has LogFormat='JSON' on AWS — the SDK recreate should not have wired LoggingConfig" >&2
+# Post-recreate AWS check: RecursiveLoop should be back at the Terminate
+# default (the template no longer carries it AND the SDK provider doesn't
+# wire it anyway).
+RL_2=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
+if [ "${RL_2}" = "Allow" ]; then
+  echo "FAIL: post-recreate Lambda still has RecursiveLoop='Allow' on AWS — the SDK recreate should not have wired RecursiveLoop" >&2
   exit 1
 fi
-echo "    OK: post-recreate LoggingConfig is no longer JSON-formatted (SDK provider didn't wire it)"
+echo "    OK: post-recreate RecursiveLoop is back at the default (RecursiveLoop='${RL_2}' — SDK provider didn't wire it)"
 
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy via SDK delete path"

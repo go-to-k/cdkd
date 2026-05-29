@@ -149,13 +149,13 @@ describe('LambdaFunctionProvider', () => {
     });
   });
 
-  // Issue #609: backfill of five native CreateFunction /
+  // Issue #609: backfill of native CreateFunction /
   // UpdateFunctionConfiguration config fields cdkd previously silent-dropped.
-  // (LoggingConfig is deliberately NOT backfilled here — it is the canonical
-  // CC-API-fallback example across several integ fixtures + tests, so it gets
-  // its own follow-up PR.)
+  // LoggingConfig joined this set once the CC-API-fallback integ fixtures +
+  // coverage-derived tests were migrated to RecursiveLoop as the new canonical
+  // silent-drop trigger (so backfilling LoggingConfig no longer flips them).
   describe('native config properties (issue #609)', () => {
-    it('passes all five native config fields to CreateFunction (KmsKeyArn -> KMSKeyArn)', async () => {
+    it('passes all six native config fields to CreateFunction (KmsKeyArn -> KMSKeyArn)', async () => {
       mockLambdaSend.mockResolvedValueOnce({
         FunctionName: 'fn-cfg',
         FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-cfg',
@@ -181,6 +181,11 @@ describe('LambdaFunctionProvider', () => {
           WorkingDirectory: '/var/task',
         },
         SnapStart: { ApplyOn: 'PublishedVersions' },
+        LoggingConfig: {
+          LogFormat: 'JSON',
+          ApplicationLogLevel: 'INFO',
+          SystemLogLevel: 'INFO',
+        },
       });
 
       const cmd = mockLambdaSend.mock.calls[0][0];
@@ -202,6 +207,11 @@ describe('LambdaFunctionProvider', () => {
         WorkingDirectory: '/var/task',
       });
       expect(cmd.input.SnapStart).toEqual({ ApplyOn: 'PublishedVersions' });
+      expect(cmd.input.LoggingConfig).toEqual({
+        LogFormat: 'JSON',
+        ApplicationLogLevel: 'INFO',
+        SystemLogLevel: 'INFO',
+      });
     });
 
     it('omits the native config fields from CreateFunction input when not templated', async () => {
@@ -224,6 +234,7 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.FileSystemConfigs).toBeUndefined();
       expect(cmd.input.ImageConfig).toBeUndefined();
       expect(cmd.input.SnapStart).toBeUndefined();
+      expect(cmd.input.LoggingConfig).toBeUndefined();
     });
 
     it('sends SnapStart + KmsKeyArn changes via UpdateFunctionConfiguration', async () => {
@@ -293,7 +304,7 @@ describe('LambdaFunctionProvider', () => {
       });
     });
 
-    it('sends explicit reset values when the five fields are removed on update', async () => {
+    it('sends explicit reset values when the six fields are removed on update', async () => {
       // UpdateFunctionConfiguration treats an absent field as "no change", so
       // dropping a previously-set field must send a reset value or AWS keeps
       // the old one. Exercises FileSystemConfigs / ImageConfig change-detection
@@ -328,6 +339,11 @@ describe('LambdaFunctionProvider', () => {
           ],
           ImageConfig: { Command: ['app.handler'] },
           SnapStart: { ApplyOn: 'PublishedVersions' },
+          LoggingConfig: {
+            LogFormat: 'JSON',
+            ApplicationLogLevel: 'INFO',
+            SystemLogLevel: 'INFO',
+          },
         }
       );
 
@@ -338,9 +354,11 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.FileSystemConfigs).toEqual([]);
       expect(cmd.input.ImageConfig).toEqual({});
       expect(cmd.input.SnapStart).toEqual({ ApplyOn: 'None' });
+      // LoggingConfig resets to the Text-format default on removal.
+      expect(cmd.input.LoggingConfig).toEqual({ LogFormat: 'Text' });
     });
 
-    it('omits the five fields entirely when neither previous nor new sets them', async () => {
+    it('omits the six fields entirely when neither previous nor new sets them', async () => {
       // No reset value should be synthesized when a field was never present —
       // sending an empty reset would be a spurious no-op (or, for ImageConfig
       // on a ZIP function, an invalid input).
@@ -368,6 +386,47 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.FileSystemConfigs).toBeUndefined();
       expect(cmd.input.ImageConfig).toBeUndefined();
       expect(cmd.input.SnapStart).toBeUndefined();
+      expect(cmd.input.LoggingConfig).toBeUndefined();
+    });
+
+    it('sends a LoggingConfig change via UpdateFunctionConfiguration', async () => {
+      // LoggingConfig must be in the configFields change-detection list so a
+      // log-format-only change is not silently no-op'd.
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-log',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-log',
+          },
+        });
+
+      await provider.update(
+        'LogFn',
+        'fn-log',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          LoggingConfig: {
+            LogFormat: 'JSON',
+            ApplicationLogLevel: 'DEBUG',
+            SystemLogLevel: 'INFO',
+          },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          LoggingConfig: { LogFormat: 'Text' },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.LoggingConfig).toEqual({
+        LogFormat: 'JSON',
+        ApplicationLogLevel: 'DEBUG',
+        SystemLogLevel: 'INFO',
+      });
     });
   });
 

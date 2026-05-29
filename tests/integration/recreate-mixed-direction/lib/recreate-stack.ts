@@ -11,12 +11,15 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * one migrates SDK->CC (forward) and the other CC->SDK (reverse) in the
  * SAME `cdkd deploy` call:
  *
- *   - `FwdProbe`: Phase 1 WITHOUT LoggingConfig (lands SDK).
- *                 Phase 2 WITH LoggingConfig + --recreate-via-cc-api.
+ *   - `FwdProbe`: Phase 1 WITHOUT RecursiveLoop (lands SDK).
+ *                 Phase 2 WITH RecursiveLoop + --recreate-via-cc-api.
  *                 Result: provisionedBy flips 'sdk' -> 'cc-api'.
- *   - `BackProbe`: Phase 1 WITH LoggingConfig (auto-routes to CC).
- *                  Phase 2 WITHOUT LoggingConfig + --recreate-via-sdk-provider.
+ *   - `BackProbe`: Phase 1 WITH RecursiveLoop (auto-routes to CC).
+ *                  Phase 2 WITHOUT RecursiveLoop + --recreate-via-sdk-provider.
  *                  Result: provisionedBy flips 'cc-api' -> 'sdk'.
+ *
+ * `RecursiveLoop` is the canonical silent-drop demo property as of the
+ * #609 LoggingConfig backfill (default Terminate; set Allow here).
  *
  * The single Phase 2 deploy mixes both flags so the deploy engine's
  * recreate-target processing handles both directions in one DAG run.
@@ -41,18 +44,16 @@ export class RecreateMixedDirectionStack extends cdk.Stack {
       ],
     });
 
-    // Phase selector. Phase 1: FwdProbe has no LoggingConfig, BackProbe
+    // Phase selector. Phase 1: FwdProbe has no RecursiveLoop, BackProbe
     // has it (so it auto-routes to CC). Phase 2: inverted — FwdProbe
-    // gets LoggingConfig (so the recreate-via-cc-api flag has a real
+    // gets RecursiveLoop (so the recreate-via-cc-api flag has a real
     // forward-migration property to honor), BackProbe loses it (so the
     // reverse direction's inverse-ambiguous-intent guard doesn't refuse).
     const phase = process.env['CDKD_INTEG_PHASE'] === '2' ? 2 : 1;
 
-    const loggingConfig = {
-      logFormat: 'JSON',
-      applicationLogLevel: 'INFO',
-      systemLogLevel: 'INFO',
-    };
+    // RecursiveLoop default is 'Terminate'; 'Allow' is the non-default we set
+    // so the silent-drop / CC-route is observable on AWS.
+    const recursiveLoop = 'Allow';
 
     const fwd = new lambda.CfnFunction(this, 'FwdProbe', {
       functionName: 'cdkd-recreate-mixed-direction-fwd',
@@ -65,7 +66,7 @@ export class RecreateMixedDirectionStack extends cdk.Stack {
           '    return {"statusCode": 200, "body": "cdkd #651 fwd probe"}',
         ].join('\n'),
       },
-      ...(phase === 2 ? { loggingConfig } : {}),
+      ...(phase === 2 ? { recursiveLoop } : {}),
     });
     fwd.addDependency(role.node.defaultChild as cdk.CfnElement);
 
@@ -80,7 +81,7 @@ export class RecreateMixedDirectionStack extends cdk.Stack {
           '    return {"statusCode": 200, "body": "cdkd #651 back probe"}',
         ].join('\n'),
       },
-      ...(phase === 1 ? { loggingConfig } : {}),
+      ...(phase === 1 ? { recursiveLoop } : {}),
     });
     back.addDependency(role.node.defaultChild as cdk.CfnElement);
   }

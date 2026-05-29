@@ -7,29 +7,29 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 /**
  * Integ fixture for #615 — `--recreate-via-cc-api <LogicalId>`.
  *
- * Single Lambda Function with a conditionally-emitted `LoggingConfig`
+ * Single Lambda Function with a conditionally-emitted `RecursiveLoop`
  * top-level property. The verify.sh deploys twice:
  *
- *   Phase 1 (env `CDKD_INTEG_USE_LOGGING_CONFIG` unset): template
- *   omits `LoggingConfig` → fresh deploy → `provisionedBy: 'sdk'`,
- *   AWS has no LoggingConfig.
+ *   Phase 1 (env `CDKD_INTEG_USE_SILENT_DROP` unset): template
+ *   omits `RecursiveLoop` → fresh deploy → `provisionedBy: 'sdk'`,
+ *   AWS has the default RecursiveLoop=Terminate.
  *
  *   Phase 2 (env=true + `--recreate-via-cc-api RecreateProbe`):
- *   template now emits `LoggingConfig` AND the user opts into the
+ *   template now emits `RecursiveLoop` AND the user opts into the
  *   recreate flag → cdkd detects the recreate target, forces the
  *   replacement code path even though the property change isn't
- *   `requiresReplacement` on its own (`LoggingConfig` is otherwise
+ *   `requiresReplacement` on its own (`RecursiveLoop` is otherwise
  *   in-place updatable on SDK but SDK doesn't wire it). The old
  *   physical id is destroyed via SDK; the new physical id is created
  *   via Cloud Control API and stamps `provisionedBy: 'cc-api'`. AWS
- *   now has the JSON-format LoggingConfig.
+ *   now has RecursiveLoop=Allow.
  *
- * Lambda is the canonical silent-drop demo type (cc-api-fallback /
- * cc-api-fallback-transitions both use it). The function name is
- * stable across recreates (the destroy+create reuses the user-supplied
- * name, so the physical-id is identical post-recreate); the new Lambda
- * instance is witnessed by `LastModified` updating, not by the
- * physical-id changing.
+ * `RecursiveLoop` is the canonical silent-drop demo property as of the
+ * #609 LoggingConfig backfill (cc-api-fallback / cc-api-fallback-transitions
+ * both use it too). The function name is stable across recreates (the
+ * destroy+create reuses the user-supplied name, so the physical-id is
+ * identical post-recreate); the new Lambda instance is witnessed by
+ * `LastModified` updating, not by the physical-id changing.
  */
 export class RecreateViaCcApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -44,8 +44,8 @@ export class RecreateViaCcApiStack extends cdk.Stack {
       ],
     });
 
-    const includeLoggingConfig =
-      process.env['CDKD_INTEG_USE_LOGGING_CONFIG'] === 'true';
+    const includeSilentDrop =
+      process.env['CDKD_INTEG_USE_SILENT_DROP'] === 'true';
 
     const fn = new lambda.CfnFunction(this, 'RecreateProbe', {
       functionName: 'cdkd-recreate-via-cc-api-probe',
@@ -58,18 +58,10 @@ export class RecreateViaCcApiStack extends cdk.Stack {
           '    return {"statusCode": 200, "body": "cdkd #615 probe"}',
         ].join('\n'),
       },
-      // Phase 1: no LoggingConfig → SDK route, `provisionedBy: 'sdk'`.
-      // Phase 2: LoggingConfig added → with --recreate-via-cc-api the
+      // Phase 1: no RecursiveLoop → SDK route, `provisionedBy: 'sdk'`.
+      // Phase 2: RecursiveLoop added → with --recreate-via-cc-api the
       // resource is destroy+recreated via CC API.
-      ...(includeLoggingConfig
-        ? {
-            loggingConfig: {
-              logFormat: 'JSON',
-              applicationLogLevel: 'INFO',
-              systemLogLevel: 'INFO',
-            },
-          }
-        : {}),
+      ...(includeSilentDrop ? { recursiveLoop: 'Allow' } : {}),
     });
 
     fn.addDependency(role.node.defaultChild as cdk.CfnElement);

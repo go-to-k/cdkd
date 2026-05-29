@@ -66,7 +66,7 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: baseline — Fwd on SDK, Back on CC ------------------------
-echo "==> Phase 1: deploy ${STACK} (Fwd no LoggingConfig -> SDK; Back has LoggingConfig -> CC)"
+echo "==> Phase 1: deploy ${STACK} (Fwd no RecursiveLoop -> SDK; Back has RecursiveLoop -> CC)"
 export CDKD_INTEG_PHASE=1
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -141,22 +141,22 @@ if [ "${BACK_LAST_MOD_2}" = "${BACK_LAST_MOD_1}" ]; then
 fi
 echo "    OK: BackProbe LastModified updated across recreate"
 
-# AWS-side LoggingConfig: Fwd now has JSON (CC route forwarded the new
-# property); Back now lacks JSON (SDK provider doesn't wire it).
-FWD_LF_2=$(aws lambda get-function-configuration --function-name "${FWD_FN_NAME}" --region "${REGION}" --query 'LoggingConfig.LogFormat' --output text 2>/dev/null)
-BACK_LF_2=$(aws lambda get-function-configuration --function-name "${BACK_FN_NAME}" --region "${REGION}" --query 'LoggingConfig.LogFormat' --output text 2>/dev/null)
+# AWS-side RecursiveLoop: Fwd now has Allow (CC route forwarded the new
+# property); Back now back at the Terminate default (SDK provider doesn't wire it).
+FWD_RL_2=$(aws lambda get-function-recursion-config --function-name "${FWD_FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
+BACK_RL_2=$(aws lambda get-function-recursion-config --function-name "${BACK_FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
 
-if [ "${FWD_LF_2}" != "JSON" ]; then
-  echo "FAIL: post-mixed FwdProbe LogFormat='${FWD_LF_2}', expected 'JSON' (CC route should have set it)" >&2
+if [ "${FWD_RL_2}" != "Allow" ]; then
+  echo "FAIL: post-mixed FwdProbe RecursiveLoop='${FWD_RL_2}', expected 'Allow' (CC route should have set it)" >&2
   exit 1
 fi
-echo "    OK: FwdProbe LoggingConfig.LogFormat is JSON on AWS (CC route forwarded the new property)"
+echo "    OK: FwdProbe RecursiveLoop is Allow on AWS (CC route forwarded the new property)"
 
-if [ "${BACK_LF_2}" = "JSON" ]; then
-  echo "FAIL: post-mixed BackProbe still has LogFormat=JSON on AWS (SDK recreate should NOT have wired LoggingConfig)" >&2
+if [ "${BACK_RL_2}" = "Allow" ]; then
+  echo "FAIL: post-mixed BackProbe still has RecursiveLoop=Allow on AWS (SDK recreate should NOT have wired RecursiveLoop)" >&2
   exit 1
 fi
-echo "    OK: BackProbe LoggingConfig.LogFormat is no longer JSON (SDK recreate did not wire it)"
+echo "    OK: BackProbe RecursiveLoop is back at the default (SDK recreate did not wire it)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy via mixed delete path (FwdProbe via CC, BackProbe via SDK)"

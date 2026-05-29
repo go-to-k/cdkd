@@ -2,13 +2,13 @@
 # verify.sh — cdkd #615 --recreate-via-cc-api integ test
 #
 # Mid-life SDK→CC migration: a Lambda Function deployed without the
-# silent-drop `LoggingConfig` (= state stamps `provisionedBy: 'sdk'`)
+# silent-drop `RecursiveLoop` (= state stamps `provisionedBy: 'sdk'`)
 # is destroyed + recreated via Cloud Control API when the next deploy
-# adds `LoggingConfig` AND passes `--recreate-via-cc-api`. The
+# adds `RecursiveLoop` AND passes `--recreate-via-cc-api`. The
 # assertions confirm:
 #
 #   - state `provisionedBy` flips 'sdk' → 'cc-api'
-#   - the Lambda's `LoggingConfig` reaches AWS via CC
+#   - the Lambda's `RecursiveLoop` reaches AWS via CC
 #   - the physical id changed (recreate produced a NEW Lambda function;
 #     the old one was destroyed)
 #   - destroy via CC API delete path is clean
@@ -78,9 +78,9 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# --- Phase 1: deploy WITHOUT LoggingConfig (lands SDK) -----------------
-echo "==> Phase 1: deploy ${STACK} WITHOUT LoggingConfig (baseline → SDK route)"
-unset CDKD_INTEG_USE_LOGGING_CONFIG
+# --- Phase 1: deploy WITHOUT RecursiveLoop (lands SDK) -----------------
+echo "==> Phase 1: deploy ${STACK} WITHOUT RecursiveLoop (baseline → SDK route)"
+unset CDKD_INTEG_USE_SILENT_DROP
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -105,24 +105,23 @@ CODE_SHA_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" 
 LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
 echo "    Baseline CodeSha256: ${CODE_SHA_1}  LastModified: ${LAST_MOD_1}"
 
-# Baseline AWS check: LoggingConfig should NOT be JSON-formatted.
-LOG_CONFIG_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LoggingConfig' --output json 2>/dev/null)
-LF_1=$(echo "${LOG_CONFIG_1}" | jq -r '.LogFormat // ""')
-if [ "${LF_1}" = "JSON" ]; then
-  echo "FAIL: baseline Lambda has LogFormat=JSON — fixture forgot to omit LoggingConfig" >&2
+# Baseline AWS check: RecursiveLoop should NOT be Allow yet (default Terminate).
+RL_1=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
+if [ "${RL_1}" = "Allow" ]; then
+  echo "FAIL: baseline Lambda has RecursiveLoop=Allow — fixture forgot to omit RecursiveLoop" >&2
   exit 1
 fi
-echo "    OK: baseline Lambda has no JSON LoggingConfig on AWS yet"
+echo "    OK: baseline Lambda has no RecursiveLoop=Allow on AWS yet (RecursiveLoop='${RL_1}')"
 
-# --- Phase 2: re-deploy WITH LoggingConfig + --recreate-via-cc-api -----
-echo "==> Phase 2: re-deploy ${STACK} WITH LoggingConfig + --recreate-via-cc-api (destroy+recreate via CC)"
-export CDKD_INTEG_USE_LOGGING_CONFIG=true
+# --- Phase 2: re-deploy WITH RecursiveLoop + --recreate-via-cc-api -----
+echo "==> Phase 2: re-deploy ${STACK} WITH RecursiveLoop + --recreate-via-cc-api (destroy+recreate via CC)"
+export CDKD_INTEG_USE_SILENT_DROP=true
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --recreate-via-cc-api RecreateProbe \
   --yes
-unset CDKD_INTEG_USE_LOGGING_CONFIG
+unset CDKD_INTEG_USE_SILENT_DROP
 
 STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 PROVISIONED_2=$(echo "${STATE_2}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
@@ -149,19 +148,13 @@ if [ "${LAST_MOD_2}" = "${LAST_MOD_1}" ]; then
 fi
 echo "    OK: LastModified updated across recreate (old destroyed, new created)"
 
-# Post-recreate AWS check: LoggingConfig should now be JSON via CC.
-LOG_CONFIG_2=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LoggingConfig' --output json 2>/dev/null)
-LF_2=$(echo "${LOG_CONFIG_2}" | jq -r '.LogFormat // ""')
-APP_2=$(echo "${LOG_CONFIG_2}" | jq -r '.ApplicationLogLevel // ""')
-if [ "${LF_2}" != "JSON" ]; then
-  echo "FAIL: post-recreate Lambda has LogFormat='${LF_2}', expected 'JSON' (CC should have forwarded LoggingConfig)" >&2
+# Post-recreate AWS check: RecursiveLoop should now be Allow via CC.
+RL_2=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
+if [ "${RL_2}" != "Allow" ]; then
+  echo "FAIL: post-recreate Lambda has RecursiveLoop='${RL_2}', expected 'Allow' (CC should have forwarded RecursiveLoop)" >&2
   exit 1
 fi
-if [ "${APP_2}" != "INFO" ]; then
-  echo "FAIL: post-recreate Lambda has ApplicationLogLevel='${APP_2}', expected 'INFO'" >&2
-  exit 1
-fi
-echo "    OK: post-recreate LoggingConfig reached AWS via CC (LogFormat=JSON, ApplicationLogLevel=INFO)"
+echo "    OK: post-recreate RecursiveLoop reached AWS via CC (RecursiveLoop=Allow)"
 
 # --- Phase 3: S3 probe pre-flight refusal (#648) -----------------------
 echo "==> Phase 3: pre-flight S3 ListObjectsV2 probe — non-empty bucket must be refused"
