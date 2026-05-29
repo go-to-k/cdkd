@@ -7,17 +7,22 @@
 # does not cover:
 #
 #   Stack CdkdCcApiOverride (item 3): deploy with
-#     `--allow-unsupported-properties AWS::Lambda::Function:LoggingConfig`
+#     `--allow-unsupported-properties AWS::Lambda::Function:RecursiveLoop`
 #     → state stamps `provisionedBy: 'sdk'`, AWS does NOT receive
-#     `LoggingConfig` (silent drop accepted, warn-logged).
+#     `RecursiveLoop` (silent drop accepted, warn-logged — stays at the
+#     `Terminate` default).
 #
 #   Stack CdkdCcApiTransition (item 4): two-phase deploy that exercises
 #     the mid-life SDK→CC re-route path.
-#       Phase 1: synth WITHOUT LoggingConfig (env var unset) → deploy →
+#       Phase 1: synth WITHOUT RecursiveLoop (env var unset) → deploy →
 #         state stamps `provisionedBy: 'sdk'`.
-#       Phase 2: synth WITH LoggingConfig (env var set) → re-deploy →
+#       Phase 2: synth WITH RecursiveLoop (env var set) → re-deploy →
 #         `getProviderFor` returns CC, state flips to `'cc-api'`, AWS
-#         now has `LoggingConfig`.
+#         now has `RecursiveLoop=Allow`.
+#
+# RecursiveLoop is the canonical silent-drop CC-API-fallback example as of
+# the #609 LoggingConfig backfill. Default is `Terminate`; the fixtures set
+# `Allow` so the read-back is unambiguous.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -36,6 +41,16 @@ OVERRIDE_FN="cdkd-cc-api-override-probe"
 TRANSITION_FN="cdkd-cc-api-transition-probe"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+
+# Read the AWS-side RecursiveLoop setting for a function. Returns the value
+# ('Allow' / 'Terminate') or empty when the function is gone. RecursiveLoop
+# lives on its own control-plane API (get-function-recursion-config), not on
+# get-function-configuration.
+recursion_loop() {
+  aws lambda get-function-recursion-config \
+    --function-name "$1" --region "${REGION}" \
+    --query 'RecursiveLoop' --output text 2>/dev/null
+}
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probes"
@@ -94,12 +109,12 @@ cleanup
 
 # --- Phase 1A: deploy OverrideStack with --allow-unsupported-properties ---
 #
-# Item 3: the template emits `LoggingConfig` but the CLI flag forces the
+# Item 3: the template emits `RecursiveLoop` but the CLI flag forces the
 # SDK route. Expect: state stamps `provisionedBy: 'sdk'`, AWS does NOT
-# receive the logging config.
+# receive the recursive-loop config (stays at the Terminate default).
 echo "==> Phase 1A: deploy ${OVERRIDE_STACK} with --allow-unsupported-properties (item 3 override path)"
 node "${LOCAL_DIST}" deploy "${OVERRIDE_STACK}" \
-  --allow-unsupported-properties "AWS::Lambda::Function:LoggingConfig" \
+  --allow-unsupported-properties "AWS::Lambda::Function:RecursiveLoop" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -120,35 +135,22 @@ if [ "${OVERRIDE_PROVISIONED}" != "sdk" ]; then
 fi
 echo "    OK: OverrideStack Lambda provisionedBy == 'sdk' (override forced SDK path)"
 
-# Item 3 assertion 2: AWS does NOT have LoggingConfig — the silent drop
-# actually dropped. The SDK provider doesn't wire LoggingConfig, so
-# Lambda's GetFunctionConfiguration returns null for LoggingConfig (or a
-# default-shaped {LogFormat: "Text"} object — verify by checking that
-# LogFormat is NOT "JSON" and ApplicationLogLevel is NOT "INFO").
-OVERRIDE_LOG_CONFIG=$(aws lambda get-function-configuration \
-  --function-name "${OVERRIDE_FN}" --region "${REGION}" \
-  --query 'LoggingConfig' --output json 2>/dev/null)
-OVERRIDE_LOG_FORMAT=$(echo "${OVERRIDE_LOG_CONFIG}" | jq -r '.LogFormat // ""')
-OVERRIDE_APP_LEVEL=$(echo "${OVERRIDE_LOG_CONFIG}" | jq -r '.ApplicationLogLevel // ""')
-# Either field reaching AWS's expected post-CC values is enough to know
-# the silent drop did NOT happen. `||` (not `&&`) so a partial forward
-# — `LogFormat=JSON` alone, or `ApplicationLogLevel=INFO` alone — still
-# fails the assertion. The override path stamps `provisionedBy: 'sdk'`
-# AND the SDK provider does not wire LoggingConfig at all, so neither
-# field should be reachable through this path.
-if [ "${OVERRIDE_LOG_FORMAT}" = "JSON" ] || [ "${OVERRIDE_APP_LEVEL}" = "INFO" ]; then
-  echo "FAIL: OverrideStack Lambda received some LoggingConfig (LogFormat='${OVERRIDE_LOG_FORMAT}', ApplicationLogLevel='${OVERRIDE_APP_LEVEL}') — override should have silent-dropped both" >&2
-  echo "    AWS LoggingConfig: ${OVERRIDE_LOG_CONFIG}"
+# Item 3 assertion 2: AWS does NOT have RecursiveLoop=Allow — the silent
+# drop actually dropped. The SDK provider doesn't wire RecursiveLoop, so the
+# function stays at the AWS default 'Terminate'.
+OVERRIDE_RECURSIVE_LOOP=$(recursion_loop "${OVERRIDE_FN}")
+if [ "${OVERRIDE_RECURSIVE_LOOP}" = "Allow" ]; then
+  echo "FAIL: OverrideStack Lambda received RecursiveLoop='Allow' — override should have silent-dropped it (expected the 'Terminate' default)" >&2
   exit 1
 fi
-echo "    OK: OverrideStack Lambda did NOT receive LoggingConfig (AWS LogFormat='${OVERRIDE_LOG_FORMAT}', ApplicationLogLevel='${OVERRIDE_APP_LEVEL}' — silent drop honored)"
+echo "    OK: OverrideStack Lambda did NOT receive RecursiveLoop=Allow (AWS RecursiveLoop='${OVERRIDE_RECURSIVE_LOOP}' — silent drop honored)"
 
-# --- Phase 1B: deploy TransitionStack baseline (NO LoggingConfig) ----------
+# --- Phase 1B: deploy TransitionStack baseline (NO RecursiveLoop) ----------
 #
-# Item 4 stage 1: template has no LoggingConfig → SDK route → state stamps
+# Item 4 stage 1: template has no RecursiveLoop → SDK route → state stamps
 # `provisionedBy: 'sdk'`.
-echo "==> Phase 1B: deploy ${TRANSITION_STACK} WITHOUT LoggingConfig (item 4 baseline → SDK route)"
-unset CDKD_INTEG_USE_LOGGING_CONFIG
+echo "==> Phase 1B: deploy ${TRANSITION_STACK} WITHOUT RecursiveLoop (item 4 baseline → SDK route)"
+unset CDKD_INTEG_USE_SILENT_DROP
 node "${LOCAL_DIST}" deploy "${TRANSITION_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -163,54 +165,43 @@ if [ "${TRANSITION_PROVISIONED_1}" != "sdk" ]; then
 fi
 echo "    OK: TransitionStack Lambda provisionedBy == 'sdk' (baseline, no silent-drop property in template)"
 
-# Item 4 baseline AWS check: LoggingConfig should NOT be set yet.
-TRANSITION_LOG_CONFIG_1=$(aws lambda get-function-configuration \
-  --function-name "${TRANSITION_FN}" --region "${REGION}" \
-  --query 'LoggingConfig' --output json 2>/dev/null)
-TRANSITION_LOG_FORMAT_1=$(echo "${TRANSITION_LOG_CONFIG_1}" | jq -r '.LogFormat // ""')
-if [ "${TRANSITION_LOG_FORMAT_1}" = "JSON" ]; then
-  echo "FAIL: TransitionStack Lambda has LogFormat=JSON after baseline deploy — fixture forgot to omit LoggingConfig" >&2
+# Item 4 baseline AWS check: RecursiveLoop should NOT be Allow yet.
+TRANSITION_RECURSIVE_LOOP_1=$(recursion_loop "${TRANSITION_FN}")
+if [ "${TRANSITION_RECURSIVE_LOOP_1}" = "Allow" ]; then
+  echo "FAIL: TransitionStack Lambda has RecursiveLoop=Allow after baseline deploy — fixture forgot to omit RecursiveLoop" >&2
   exit 1
 fi
-echo "    OK: TransitionStack Lambda has no JSON LoggingConfig on AWS yet (baseline)"
+echo "    OK: TransitionStack Lambda has no RecursiveLoop=Allow on AWS yet (baseline RecursiveLoop='${TRANSITION_RECURSIVE_LOOP_1}')"
 
-# --- Phase 2: re-deploy TransitionStack WITH LoggingConfig (mid-life flip) -
+# --- Phase 2: re-deploy TransitionStack WITH RecursiveLoop (mid-life flip) -
 #
-# Item 4 stage 2: env var flips synth to emit LoggingConfig → diff sees
+# Item 4 stage 2: env var flips synth to emit RecursiveLoop → diff sees
 # the new property → routing returns CC → state flips from 'sdk' to
-# 'cc-api' → AWS now has LoggingConfig.
-echo "==> Phase 2: re-deploy ${TRANSITION_STACK} WITH LoggingConfig (item 4 mid-life SDK→CC flip)"
-export CDKD_INTEG_USE_LOGGING_CONFIG=true
+# 'cc-api' → AWS now has RecursiveLoop=Allow.
+echo "==> Phase 2: re-deploy ${TRANSITION_STACK} WITH RecursiveLoop (item 4 mid-life SDK→CC flip)"
+export CDKD_INTEG_USE_SILENT_DROP=true
 node "${LOCAL_DIST}" deploy "${TRANSITION_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-unset CDKD_INTEG_USE_LOGGING_CONFIG
+unset CDKD_INTEG_USE_SILENT_DROP
 
 TRANSITION_STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${TRANSITION_KEY}" - 2>/dev/null)
 TRANSITION_PROVISIONED_2=$(echo "${TRANSITION_STATE_2}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${TRANSITION_PROVISIONED_2}" != "cc-api" ]; then
-  echo "FAIL: TransitionStack Lambda has provisionedBy='${TRANSITION_PROVISIONED_2}' after LoggingConfig added, expected 'cc-api' (mid-life SDK→CC re-route)" >&2
+  echo "FAIL: TransitionStack Lambda has provisionedBy='${TRANSITION_PROVISIONED_2}' after RecursiveLoop added, expected 'cc-api' (mid-life SDK→CC re-route)" >&2
   echo "${TRANSITION_STATE_2}" | jq .
   exit 1
 fi
 echo "    OK: TransitionStack Lambda provisionedBy flipped 'sdk' → 'cc-api' (mid-life re-route fired)"
 
-# Item 4 post-flip AWS check: LoggingConfig should now be set (CC forwarded it).
-TRANSITION_LOG_CONFIG_2=$(aws lambda get-function-configuration \
-  --function-name "${TRANSITION_FN}" --region "${REGION}" \
-  --query 'LoggingConfig' --output json 2>/dev/null)
-TRANSITION_LOG_FORMAT_2=$(echo "${TRANSITION_LOG_CONFIG_2}" | jq -r '.LogFormat // ""')
-TRANSITION_APP_LEVEL_2=$(echo "${TRANSITION_LOG_CONFIG_2}" | jq -r '.ApplicationLogLevel // ""')
-if [ "${TRANSITION_LOG_FORMAT_2}" != "JSON" ]; then
-  echo "FAIL: TransitionStack Lambda has LogFormat='${TRANSITION_LOG_FORMAT_2}' after CC re-route, expected 'JSON' (CC should have forwarded LoggingConfig)" >&2
+# Item 4 post-flip AWS check: RecursiveLoop should now be Allow (CC forwarded it).
+TRANSITION_RECURSIVE_LOOP_2=$(recursion_loop "${TRANSITION_FN}")
+if [ "${TRANSITION_RECURSIVE_LOOP_2}" != "Allow" ]; then
+  echo "FAIL: TransitionStack Lambda has RecursiveLoop='${TRANSITION_RECURSIVE_LOOP_2}' after CC re-route, expected 'Allow' (CC should have forwarded RecursiveLoop)" >&2
   exit 1
 fi
-if [ "${TRANSITION_APP_LEVEL_2}" != "INFO" ]; then
-  echo "FAIL: TransitionStack Lambda has ApplicationLogLevel='${TRANSITION_APP_LEVEL_2}' after CC re-route, expected 'INFO'" >&2
-  exit 1
-fi
-echo "    OK: TransitionStack Lambda LoggingConfig reached AWS via CC API (LogFormat=JSON, ApplicationLogLevel=INFO)"
+echo "    OK: TransitionStack Lambda RecursiveLoop reached AWS via CC API (RecursiveLoop=Allow)"
 
 # --- Phase 3: destroy both stacks -------------------------------------
 echo "==> Phase 3: destroy both stacks"

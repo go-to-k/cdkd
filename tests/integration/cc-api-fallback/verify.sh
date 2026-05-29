@@ -3,8 +3,8 @@
 # (issue #614).
 #
 # Asserts that a Lambda Function whose template uses a silent-drop
-# property (`LoggingConfig`) is auto-routed via Cloud Control API and
-# that `LoggingConfig` reaches AWS verbatim — the silent-drop bug is
+# property (`RecursiveLoop`) is auto-routed via Cloud Control API and
+# that `RecursiveLoop` reaches AWS verbatim — the silent-drop bug is
 # closed by default. Also asserts the destroy path works through CC API.
 #
 # Required env vars:
@@ -78,7 +78,7 @@ fi
 # `SilentDropLambdaXXXXXXXX`).
 PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${PROVISIONED}" != "cc-api" ]; then
-  echo "FAIL: Lambda resource has provisionedBy='${PROVISIONED}', expected 'cc-api' (auto-route should have fired on LoggingConfig)" >&2
+  echo "FAIL: Lambda resource has provisionedBy='${PROVISIONED}', expected 'cc-api' (auto-route should have fired on RecursiveLoop)" >&2
   echo "${STATE}" | jq .
   exit 1
 fi
@@ -93,24 +93,18 @@ if [ "${ROLE_PROVISIONED}" != "sdk" ]; then
 fi
 echo "    OK: IAM Role resource provisionedBy == 'sdk' (heterogeneous routing in one stack)"
 
-# --- Assertion 3: LoggingConfig actually reached AWS ----------------------
-LOG_CONFIG=$(aws lambda get-function-configuration \
+# --- Assertion 3: RecursiveLoop actually reached AWS ----------------------
+# RecursiveLoop lives on its own control-plane API (get-function-recursion-config),
+# not on get-function-configuration. Default is 'Terminate'; the fixture sets
+# 'Allow', so seeing 'Allow' proves the CC route forwarded the silent-drop prop.
+RECURSIVE_LOOP=$(aws lambda get-function-recursion-config \
   --function-name "${FN_NAME}" --region "${REGION}" \
-  --query 'LoggingConfig' --output json 2>/dev/null)
-LOG_FORMAT=$(echo "${LOG_CONFIG}" | jq -r '.LogFormat // ""')
-if [ "${LOG_FORMAT}" != "JSON" ]; then
-  echo "FAIL: Lambda LoggingConfig.LogFormat is '${LOG_FORMAT}', expected 'JSON' (silent-drop NOT closed by CC route)" >&2
-  echo "    AWS-side LoggingConfig: ${LOG_CONFIG}"
+  --query 'RecursiveLoop' --output text 2>/dev/null)
+if [ "${RECURSIVE_LOOP}" != "Allow" ]; then
+  echo "FAIL: Lambda RecursiveLoop is '${RECURSIVE_LOOP}', expected 'Allow' (silent-drop NOT closed by CC route)" >&2
   exit 1
 fi
-echo "    OK: Lambda LoggingConfig.LogFormat == 'JSON' on AWS (silent-drop CLOSED by #614)"
-
-APP_LEVEL=$(echo "${LOG_CONFIG}" | jq -r '.ApplicationLogLevel // ""')
-if [ "${APP_LEVEL}" != "INFO" ]; then
-  echo "FAIL: Lambda LoggingConfig.ApplicationLogLevel is '${APP_LEVEL}', expected 'INFO'" >&2
-  exit 1
-fi
-echo "    OK: Lambda LoggingConfig.ApplicationLogLevel == 'INFO' on AWS"
+echo "    OK: Lambda RecursiveLoop == 'Allow' on AWS (silent-drop CLOSED by #614)"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy via CC delete path"

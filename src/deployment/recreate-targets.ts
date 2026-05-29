@@ -27,8 +27,8 @@
  *      this is a structural limitation, not a data-loss footgun.
  *
  * Plus one cross-flag invariant: `--recreate-via-cc-api MyLambda`
- * combined with `--allow-unsupported-properties AWS::Lambda::Function:LoggingConfig`
- * on a resource whose template carries `LoggingConfig` is **ambiguous
+ * combined with `--allow-unsupported-properties AWS::Lambda::Function:RecursiveLoop`
+ * on a resource whose template carries `RecursiveLoop` is **ambiguous
  * intent** — does the user want SDK + silent drop, or CC migration?
  * Fail fast and let the user pick one strategy per resource.
  */

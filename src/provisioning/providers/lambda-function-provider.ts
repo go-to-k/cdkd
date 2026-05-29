@@ -25,6 +25,7 @@ import {
   type FileSystemConfig,
   type ImageConfig,
   type SnapStart,
+  type LoggingConfig,
 } from '@aws-sdk/client-lambda';
 import {
   CDK_PATH_TAG,
@@ -102,6 +103,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'FileSystemConfigs',
         'ImageConfig',
         'SnapStart',
+        'LoggingConfig',
       ]),
     ],
   ]);
@@ -218,6 +220,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         FileSystemConfigs: properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
         ImageConfig: properties['ImageConfig'] as ImageConfig | undefined,
         SnapStart: properties['SnapStart'] as SnapStart | undefined,
+        LoggingConfig: properties['LoggingConfig'] as LoggingConfig | undefined,
         Tags: tags,
       };
 
@@ -290,6 +293,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'FileSystemConfigs',
         'ImageConfig',
         'SnapStart',
+        'LoggingConfig',
       ];
 
       let hasConfigChanges = false;
@@ -354,6 +358,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
             properties['SnapStart'] as SnapStart | undefined,
             previousProperties['SnapStart'] as SnapStart | undefined,
             { ApplyOn: 'None' }
+          ),
+          // LogFormat: 'Text' resets to the CFn default (Text format clears
+          // the JSON-only ApplicationLogLevel / SystemLogLevel filters).
+          LoggingConfig: this.clearOnUpdateRemoval(
+            properties['LoggingConfig'] as LoggingConfig | undefined,
+            previousProperties['LoggingConfig'] as LoggingConfig | undefined,
+            { LogFormat: 'Text' }
           ),
         };
 
@@ -1066,8 +1077,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * `create()` accepts (`Runtime`, `Handler`, `Role`, `Timeout`, `MemorySize`,
    * `Description`, `Environment`, `Layers`, `Architectures`, `PackageType`,
    * `TracingConfig`, `EphemeralStorage`, `VpcConfig`, `DeadLetterConfig`,
-   * `KmsKeyArn`, `FileSystemConfigs`, `ImageConfig`, `SnapStart`, plus the
-   * physical `FunctionName`). The drift comparator only descends into keys
+   * `KmsKeyArn`, `FileSystemConfigs`, `ImageConfig`, `SnapStart`,
+   * `LoggingConfig`, plus the physical `FunctionName`). The drift comparator
+   * only descends into keys
    * present in
    * cdkd state, so AWS-managed fields (timestamps, FunctionArn, RevisionId,
    * etc.) are filtered at compare time — we still avoid serializing them on
@@ -1186,6 +1198,21 @@ export class LambdaFunctionProvider implements ResourceProvider {
       if (cfg.SnapStart?.ApplyOn !== undefined) {
         // CFn SnapStart is { ApplyOn } only; OptimizationStatus is AWS-managed.
         result['SnapStart'] = { ApplyOn: cfg.SnapStart.ApplyOn };
+      }
+      // AWS always returns LoggingConfig (even for the Text-format default), so
+      // this is effectively emit-always on real AWS — but the comparator's
+      // state-keys-only walk ignores it unless the user templated LoggingConfig.
+      // Emit only the user-controllable sub-fields (LogGroup is templatable too);
+      // ApplicationLogLevel / SystemLogLevel only apply to JSON format and AWS
+      // omits them under Text, so they stay emit-when-present.
+      if (cfg.LoggingConfig?.LogFormat !== undefined) {
+        const lc: Record<string, unknown> = { LogFormat: cfg.LoggingConfig.LogFormat };
+        if (cfg.LoggingConfig.ApplicationLogLevel !== undefined)
+          lc['ApplicationLogLevel'] = cfg.LoggingConfig.ApplicationLogLevel;
+        if (cfg.LoggingConfig.SystemLogLevel !== undefined)
+          lc['SystemLogLevel'] = cfg.LoggingConfig.SystemLogLevel;
+        if (cfg.LoggingConfig.LogGroup !== undefined) lc['LogGroup'] = cfg.LoggingConfig.LogGroup;
+        result['LoggingConfig'] = lc;
       }
 
       // Tags: GetFunction returns a map keyed by tag name. Filter

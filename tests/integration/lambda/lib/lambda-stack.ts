@@ -68,10 +68,12 @@ export class LambdaStack extends cdk.Stack {
     // Create Lambda function with layer.
     //
     // deadLetterQueueEnabled auto-creates an SQS DLQ and sets the function's
-    // DeadLetterConfig.TargetArn — one of the five native config fields
-    // backfilled in issue #609, exercised here end-to-end on the SDK path.
-    // (Because DeadLetterConfig is now `handled`, the function stays on the SDK
-    // provider instead of auto-routing via Cloud Control API.)
+    // DeadLetterConfig.TargetArn; loggingFormat / applicationLogLevelV2 /
+    // systemLogLevelV2 set the function's LoggingConfig — both are native
+    // config fields backfilled in issue #609, exercised here end-to-end on
+    // the SDK path. (Because DeadLetterConfig + LoggingConfig are now
+    // `handled`, the function stays on the SDK provider instead of
+    // auto-routing via Cloud Control API.)
     const fn = new lambda.Function(this, 'Handler', {
       runtime: lambda.Runtime.PYTHON_3_12,
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
@@ -82,6 +84,9 @@ export class LambdaStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       layers: [layer],
       deadLetterQueueEnabled: true,
+      loggingFormat: lambda.LoggingFormat.JSON,
+      applicationLogLevelV2: lambda.ApplicationLogLevel.INFO,
+      systemLogLevelV2: lambda.SystemLogLevel.INFO,
     });
 
     // Create Lambda Alias
