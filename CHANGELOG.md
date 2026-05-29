@@ -1,3 +1,10 @@
+# [0.181.0](https://github.com/go-to-k/cdkd/compare/v0.180.0...v0.181.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill Route53::RecordSet GeoProximityLocation ([#706](https://github.com/go-to-k/cdkd/issues/706)) ([c214a1e](https://github.com/go-to-k/cdkd/commit/c214a1e22fc80ae2861d80640c93289b331667ee))
+
 # [0.180.0](https://github.com/go-to-k/cdkd/compare/v0.179.0...v0.180.0) (2026-05-29)
 
 
