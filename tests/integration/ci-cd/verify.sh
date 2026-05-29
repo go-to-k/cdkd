@@ -31,7 +31,7 @@ cleanup() {
   set +eu
   local destroy_rc=0
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --force --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+    node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET}" --region "${REGION}"
     destroy_rc=$?
   fi
   # Only remove the state key when the destroy succeeded (rc 0). A failed
