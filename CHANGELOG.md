@@ -1,3 +1,10 @@
+# [0.180.0](https://github.com/go-to-k/cdkd/compare/v0.179.0...v0.180.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill CodeBuild::Project AutoRetryLimit ([#704](https://github.com/go-to-k/cdkd/issues/704)) ([0989361](https://github.com/go-to-k/cdkd/commit/09893610b6eb6ed375a459bd3c31e8b25bf2a6be))
+
 # [0.179.0](https://github.com/go-to-k/cdkd/compare/v0.178.0...v0.179.0) (2026-05-29)
 
 
