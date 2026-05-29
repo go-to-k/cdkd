@@ -572,18 +572,6 @@
     "AWS::S3Vectors::VectorBucket": [
       "Tags"
     ],
-    "AWS::SNS::Subscription": [
-      "DeliveryPolicy",
-      "FilterPolicyScope",
-      "RawMessageDelivery",
-      "RedrivePolicy",
-      "Region",
-      "ReplayPolicy",
-      "SubscriptionRoleArn"
-    ],
-    "AWS::SQS::Queue": [
-      "RedriveAllowPolicy"
-    ],
     "AWS::SecretsManager::Secret": [
       "Type"
     ],

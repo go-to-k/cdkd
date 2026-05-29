@@ -8,6 +8,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -28,7 +29,21 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   private logger = getLogger().child('SNSSubscriptionProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::SNS::Subscription', new Set(['TopicArn', 'Protocol', 'Endpoint', 'FilterPolicy'])],
+    [
+      'AWS::SNS::Subscription',
+      new Set([
+        'TopicArn',
+        'Protocol',
+        'Endpoint',
+        'FilterPolicy',
+        'FilterPolicyScope',
+        'RawMessageDelivery',
+        'RedrivePolicy',
+        'DeliveryPolicy',
+        'ReplayPolicy',
+        'SubscriptionRoleArn',
+      ]),
+    ],
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
@@ -102,6 +117,53 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       if (filterPolicy !== undefined) {
         attributes['FilterPolicy'] =
           typeof filterPolicy === 'string' ? filterPolicy : JSON.stringify(filterPolicy);
+      }
+
+      // The remaining attributes all ride on the same `Subscribe` Attributes
+      // map. `!== undefined` gates (NOT truthy) for the same reason as
+      // FilterPolicy above: an explicit empty / falsey value is a meaningful
+      // "clear it" signal AWS treats specially, and a truthy gate would drop
+      // it when `cdkd drift --revert` round-trips an observedProperties
+      // snapshot. `update()` delegates to `create()` (delete + recreate), so
+      // these flow through the update path automatically.
+
+      // FilterPolicyScope: string passthrough.
+      const filterPolicyScope = properties['FilterPolicyScope'];
+      if (filterPolicyScope !== undefined) {
+        attributes['FilterPolicyScope'] = stringifyValue(filterPolicyScope);
+      }
+
+      // RawMessageDelivery: CFn boolean; the SDK expects the string
+      // "true" / "false" (stringifyValue coerces a boolean to exactly that).
+      const rawMessageDelivery = properties['RawMessageDelivery'];
+      if (rawMessageDelivery !== undefined) {
+        attributes['RawMessageDelivery'] = stringifyValue(rawMessageDelivery);
+      }
+
+      // RedrivePolicy / DeliveryPolicy / ReplayPolicy: CFn JSON objects; the
+      // SDK expects them as JSON strings. A string passes through unchanged.
+      const redrivePolicy = properties['RedrivePolicy'];
+      if (redrivePolicy !== undefined) {
+        attributes['RedrivePolicy'] =
+          typeof redrivePolicy === 'string' ? redrivePolicy : JSON.stringify(redrivePolicy);
+      }
+
+      const deliveryPolicy = properties['DeliveryPolicy'];
+      if (deliveryPolicy !== undefined) {
+        attributes['DeliveryPolicy'] =
+          typeof deliveryPolicy === 'string' ? deliveryPolicy : JSON.stringify(deliveryPolicy);
+      }
+
+      const replayPolicy = properties['ReplayPolicy'];
+      if (replayPolicy !== undefined) {
+        attributes['ReplayPolicy'] =
+          typeof replayPolicy === 'string' ? replayPolicy : JSON.stringify(replayPolicy);
+      }
+
+      // SubscriptionRoleArn: string passthrough (firehose protocol).
+      const subscriptionRoleArn = properties['SubscriptionRoleArn'];
+      if (subscriptionRoleArn !== undefined) {
+        attributes['SubscriptionRoleArn'] = stringifyValue(subscriptionRoleArn);
       }
 
       const response = await this.snsClient.send(
@@ -260,6 +322,33 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         result['FilterPolicy'] = JSON.parse(attributes['FilterPolicy']) as unknown;
       } catch {
         result['FilterPolicy'] = attributes['FilterPolicy'];
+      }
+    }
+
+    // FilterPolicyScope / SubscriptionRoleArn: string passthrough.
+    // Emit-when-present so a console-side change surfaces as drift; these are
+    // protocol- / scope-discriminated, so AWS omits them when not applicable.
+    if (attributes['FilterPolicyScope'] !== undefined) {
+      result['FilterPolicyScope'] = attributes['FilterPolicyScope'];
+    }
+    if (attributes['SubscriptionRoleArn'] !== undefined) {
+      result['SubscriptionRoleArn'] = attributes['SubscriptionRoleArn'];
+    }
+
+    // RedrivePolicy / DeliveryPolicy / ReplayPolicy: AWS returns these as JSON
+    // strings; cdkd state holds the parsed object (post intrinsic resolution).
+    // Emit-when-present (NOT the always-emit-placeholder convention) — these
+    // are protocol-discriminated and AWS omits them when absent, so emitting a
+    // `{}` placeholder would round-trip into `JSON.stringify({}) === '{}'`
+    // (which AWS rejects).
+    for (const key of ['RedrivePolicy', 'DeliveryPolicy', 'ReplayPolicy']) {
+      const raw = attributes[key];
+      if (raw) {
+        try {
+          result[key] = JSON.parse(raw) as unknown;
+        } catch {
+          result[key] = raw;
+        }
       }
     }
 

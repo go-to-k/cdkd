@@ -16,9 +16,23 @@ export class SnsSqsEventStack extends cdk.Stack {
       topicName: 'cdkd-sns-sqs-test-topic',
     });
 
-    // Dead Letter Queue
+    // Dead Letter Queue.
+    // `redriveAllowPolicy` exercises the SQS RedriveAllowPolicy backfill
+    // (issue #609): ALLOW_ALL lets any source queue use this queue as its DLQ.
     const dlq = new sqs.Queue(this, 'DeadLetterQueue', {
       queueName: 'cdkd-sns-sqs-test-dlq',
+      retentionPeriod: cdk.Duration.days(14),
+      redriveAllowPolicy: {
+        redrivePermission: sqs.RedrivePermission.ALLOW_ALL,
+      },
+    });
+
+    // Subscription dead-letter queue — referenced by the secondary
+    // subscription's `deadLetterQueue` option below, which produces a
+    // `RedrivePolicy` ON THE SUBSCRIPTION (exercises the SNS Subscription
+    // RedrivePolicy backfill, issue #609).
+    const subscriptionDlq = new sqs.Queue(this, 'SubscriptionDlq', {
+      queueName: 'cdkd-sns-sqs-test-sub-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
@@ -38,13 +52,21 @@ export class SnsSqsEventStack extends cdk.Stack {
       visibilityTimeout: cdk.Duration.seconds(60),
     });
 
-    // Subscribe queues to topic
+    // Subscribe queues to topic.
+    // `rawMessageDelivery: true` exercises the SNS Subscription
+    // RawMessageDelivery backfill (issue #609).
     topic.addSubscription(
-      new subscriptions.SqsSubscription(primaryQueue)
+      new subscriptions.SqsSubscription(primaryQueue, {
+        rawMessageDelivery: true,
+      })
     );
 
+    // The secondary subscription carries a `deadLetterQueue`, which CDK
+    // synthesizes as a `RedrivePolicy` on the AWS::SNS::Subscription
+    // (exercises the SNS Subscription RedrivePolicy backfill, issue #609).
     topic.addSubscription(
       new subscriptions.SqsSubscription(secondaryQueue, {
+        deadLetterQueue: subscriptionDlq,
         filterPolicy: {
           eventType: sns.SubscriptionFilter.stringFilter({
             allowlist: ['important'],
