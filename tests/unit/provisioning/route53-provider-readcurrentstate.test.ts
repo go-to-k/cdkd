@@ -300,6 +300,82 @@ describe('Route53Provider.readCurrentState', () => {
       expect(result).not.toHaveProperty('GeoProximityLocation');
     });
 
+    it('emits CidrRoutingConfig (emit-when-present) when AWS returns it', async () => {
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          {
+            Name: 'cidr.example.com.',
+            Type: 'A',
+            TTL: 300,
+            ResourceRecords: [{ Value: '198.51.100.4' }],
+            SetIdentifier: 'cidr-office',
+            CidrRoutingConfig: { CollectionId: 'col-1234', LocationName: 'office' },
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z1|cidr.example.com.|A',
+        'L',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(result).toEqual({
+        HostedZoneId: 'Z1',
+        Name: 'cidr.example.com.',
+        Type: 'A',
+        TTL: 300,
+        ResourceRecords: ['198.51.100.4'],
+        SetIdentifier: 'cidr-office',
+        CidrRoutingConfig: { CollectionId: 'col-1234', LocationName: 'office' },
+      });
+    });
+
+    it('emits only the CidrRoutingConfig sub-fields AWS returns', async () => {
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          {
+            Name: 'cidr2.example.com.',
+            Type: 'A',
+            TTL: 300,
+            ResourceRecords: [{ Value: '198.51.100.5' }],
+            SetIdentifier: 'cidr-default',
+            // CollectionId-only readback (LocationName absent on the wire).
+            CidrRoutingConfig: { CollectionId: 'col-5678' },
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z1|cidr2.example.com.|A',
+        'L',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(result?.['CidrRoutingConfig']).toEqual({ CollectionId: 'col-5678' });
+    });
+
+    it('omits CidrRoutingConfig when AWS does not return it', async () => {
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          {
+            Name: 'plain3.example.com.',
+            Type: 'A',
+            TTL: 300,
+            ResourceRecords: [{ Value: '1.2.3.4' }],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z1|plain3.example.com.|A',
+        'L',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(result).not.toHaveProperty('CidrRoutingConfig');
+    });
+
     it('returns undefined when no matching record', async () => {
       mockSend.mockResolvedValueOnce({
         ResourceRecordSets: [

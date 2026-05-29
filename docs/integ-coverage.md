@@ -146,7 +146,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`stepfunctions`](../tests/integration/stepfunctions/) (l2) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (23)
+## Resource types referenced in integs without an SDK Provider (24)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -167,6 +167,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Logs::MetricFilter`
 - `AWS::Logs::SubscriptionFilter`
 - `AWS::Pipes::Pipe`
+- `AWS::Route53::CidrCollection`
 - `AWS::Route53::HealthCheck`
 - `AWS::SSM::Document`
 - `AWS::Scheduler::Schedule`

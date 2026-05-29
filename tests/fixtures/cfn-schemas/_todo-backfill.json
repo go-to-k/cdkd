@@ -511,9 +511,6 @@
     "AWS::Route53::HostedZone": [
       "HostedZoneFeatures"
     ],
-    "AWS::Route53::RecordSet": [
-      "CidrRoutingConfig"
-    ],
     "AWS::S3::Bucket": [
       "AbacStatus",
       "AccessControl",

@@ -277,6 +277,69 @@ describe('Route53Provider', () => {
           changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
         expect(recordSet.GeoProximityLocation).toBeUndefined();
       });
+
+      it('should send CidrRoutingConfig (CollectionId + LocationName) into the ChangeResourceRecordSets ResourceRecordSet', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyCidrRecord', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'cidr.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['198.51.100.4'],
+          SetIdentifier: 'cidr-office',
+          CidrRoutingConfig: { CollectionId: 'col-1234', LocationName: 'office' },
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        expect(recordSet.SetIdentifier).toBe('cidr-office');
+        expect(recordSet.CidrRoutingConfig).toEqual({
+          CollectionId: 'col-1234',
+          LocationName: 'office',
+        });
+      });
+
+      it('should map only the CidrRoutingConfig sub-fields that are present', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyCidrPartial', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'cidr2.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['198.51.100.5'],
+          SetIdentifier: 'cidr-default',
+          // A default-location ('*') record still needs CollectionId.
+          CidrRoutingConfig: { CollectionId: 'col-5678', LocationName: '*' },
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        expect(recordSet.CidrRoutingConfig).toEqual({
+          CollectionId: 'col-5678',
+          LocationName: '*',
+        });
+      });
+
+      it('should omit CidrRoutingConfig when absent', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyNoCidrRecord', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'plain2.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['1.2.3.4'],
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        expect(recordSet.CidrRoutingConfig).toBeUndefined();
+      });
     });
 
     describe('update', () => {
