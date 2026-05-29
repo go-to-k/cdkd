@@ -26,6 +26,11 @@ export class DynamodbStreamsStack extends cdk.Stack {
     super(scope, id, props);
 
     // Create DynamoDB table with stream enabled
+    //
+    // pointInTimeRecoverySpecification + timeToLiveAttribute exercise the
+    // PointInTimeRecoverySpecification / TimeToLiveSpecification properties
+    // (issue #609) — both are wired via separate post-ACTIVE API calls
+    // (UpdateContinuousBackups / UpdateTimeToLive), not CreateTable.
     const table = new dynamodb.Table(this, 'EventsTable', {
       partitionKey: {
         name: 'id',
@@ -36,6 +41,10 @@ export class DynamodbStreamsStack extends cdk.Stack {
       writeCapacity: 5,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: true,
+      },
+      timeToLiveAttribute: 'expiresAt',
     });
 
     // Auto-scaling for read capacity
