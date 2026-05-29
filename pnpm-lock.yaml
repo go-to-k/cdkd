@@ -153,8 +153,8 @@ importers:
         specifier: ^2.0.0
         version: 2.244.0(constructs@10.6.0)
       cdk-local:
-        specifier: ^0.30.0
-        version: 0.30.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0)
+        specifier: ^0.32.0
+        version: 0.32.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -553,7 +553,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-env@3.972.40':
-    resolution: {integrity: sha512-jjT0p0Y7KZtcvExYiPCLJnqM9lkXDV1KBEg/13OE2DXv/9batzlyJHVKUEnRNJccY0O2Sul17E1su38CgdBhGQ==, tarball: https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.40.tgz}
+    resolution: {integrity: sha512-jjT0p0Y7KZtcvExYiPCLJnqM9lkXDV1KBEg/13OE2DXv/9batzlyJHVKUEnRNJccY0O2Sul17E1su38CgdBhGQ==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-http@3.972.25':
@@ -573,7 +573,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-http@3.972.42':
-    resolution: {integrity: sha512-+3fsKtWybe5BjKEUA3/07oh7Ayfd82IED2+gyyaVfS/4PU78E3TaOQxSGOJ1t7Imefoidw/ne9QA7apX8wEnJg==, tarball: https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.42.tgz}
+    resolution: {integrity: sha512-+3fsKtWybe5BjKEUA3/07oh7Ayfd82IED2+gyyaVfS/4PU78E3TaOQxSGOJ1t7Imefoidw/ne9QA7apX8wEnJg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-ini@3.972.25':
@@ -597,7 +597,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-ini@3.972.44':
-    resolution: {integrity: sha512-gZFw5wBefCIPg9vpT+gV5FdhfNKhYTVDZa1IsZCcn3SRoYUOJ/E05vwIogkJoonqBL0ttBGi5vhthX7xceekRg==, tarball: https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.972.44.tgz}
+    resolution: {integrity: sha512-gZFw5wBefCIPg9vpT+gV5FdhfNKhYTVDZa1IsZCcn3SRoYUOJ/E05vwIogkJoonqBL0ttBGi5vhthX7xceekRg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-login@3.972.25':
@@ -621,7 +621,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-login@3.972.44':
-    resolution: {integrity: sha512-QqEGHfQeZgUDqh7zpqHufrZ8T644ELEWvB+4gUdewLyRw4IRF+6CJqeQuRWqucZdQzoQeMh7fNAD9BWxFAdNig==, tarball: https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.44.tgz}
+    resolution: {integrity: sha512-QqEGHfQeZgUDqh7zpqHufrZ8T644ELEWvB+4gUdewLyRw4IRF+6CJqeQuRWqucZdQzoQeMh7fNAD9BWxFAdNig==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-node@3.972.26':
@@ -665,7 +665,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-process@3.972.40':
-    resolution: {integrity: sha512-cXaozlgJCOwmE6D7x4npcPdyk7kiFZdrGjN3D6tXXtItJJMNGPafDfAJn4YQmciMooG/X+b0Y6RTqdVVMx26jg==, tarball: https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.40.tgz}
+    resolution: {integrity: sha512-cXaozlgJCOwmE6D7x4npcPdyk7kiFZdrGjN3D6tXXtItJJMNGPafDfAJn4YQmciMooG/X+b0Y6RTqdVVMx26jg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-sso@3.972.25':
@@ -689,7 +689,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-sso@3.972.44':
-    resolution: {integrity: sha512-YePoj5kQuPmE0MHnyftXCfsO8ZSBd2kDr50XEIUrdejSbGFlayYvUuCohdb8drhGhPm6b65o7H1eC26EZhwUvA==, tarball: https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.972.44.tgz}
+    resolution: {integrity: sha512-YePoj5kQuPmE0MHnyftXCfsO8ZSBd2kDr50XEIUrdejSbGFlayYvUuCohdb8drhGhPm6b65o7H1eC26EZhwUvA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-web-identity@3.972.25':
@@ -713,7 +713,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-provider-web-identity@3.972.44':
-    resolution: {integrity: sha512-Ys/JJe++8Z2Y5meR1taMBaVcrGBA0/XsVTQR+qOKZbdNyg+8Jlv5rYZSwh8SqEHY00goSOZy7PHzZ2rLNQxDLg==, tarball: https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.44.tgz}
+    resolution: {integrity: sha512-Ys/JJe++8Z2Y5meR1taMBaVcrGBA0/XsVTQR+qOKZbdNyg+8Jlv5rYZSwh8SqEHY00goSOZy7PHzZ2rLNQxDLg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/credential-providers@3.1054.0':
@@ -1015,7 +1015,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/xml-builder@3.972.26':
-    resolution: {integrity: sha512-cDbrqvDS73whl6YAPSPq0U6whzG6UWI9PuWh0wrUuGoZexhWEqhdunbukV7iBoaWnFV1AODutM5hOD6rtn439g==, tarball: https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.26.tgz}
+    resolution: {integrity: sha512-cDbrqvDS73whl6YAPSPq0U6whzG6UWI9PuWh0wrUuGoZexhWEqhdunbukV7iBoaWnFV1AODutM5hOD6rtn439g==}
     engines: {node: '>=20.0.0'}
 
   '@aws/lambda-invoke-store@0.2.4':
@@ -2704,8 +2704,8 @@ packages:
   cdk-from-cfn@0.300.0:
     resolution: {integrity: sha512-BtTAthyg3EeBoO0o77A3PMfwID7mvm3R1BvM/avjwfPHbSnt598vv0qGGSZMM0KPM77DB5UtK6/z4VhBto4VJw==}
 
-  cdk-local@0.30.0:
-    resolution: {integrity: sha512-Mjz4C75gNShf/mph+1YXK0exqlFjnDhiXv5hocZ2qHALOskFUrpcEI40g6LA1CjhneIzia4KZ0gze3NUjSH/eA==}
+  cdk-local@0.32.0:
+    resolution: {integrity: sha512-WpZq9OZSFy3iDl0+iKEIZ4iYfTyE0i+92hcyeHjs6BHVu377tXIhRqbKfMyWBdIi9RgtBkSPlF1HEnDrWUhmWg==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -9510,7 +9510,7 @@ snapshots:
 
   cdk-from-cfn@0.300.0: {}
 
-  cdk-local@0.30.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0):
+  cdk-local@0.32.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0):
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@53.27.0)
       '@aws-cdk/toolkit-lib': 1.26.2(@aws-cdk/cli-plugin-contract@2.182.2)
