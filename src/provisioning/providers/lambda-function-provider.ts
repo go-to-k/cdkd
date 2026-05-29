@@ -319,12 +319,42 @@ export class LambdaFunctionProvider implements ResourceProvider {
             properties['VpcConfig'],
             previousProperties['VpcConfig']
           ),
-          DeadLetterConfig: properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
+          // Each of these five is cleared-on-removal (see clearOnUpdateRemoval):
+          // UpdateFunctionConfiguration treats an ABSENT field as "no change",
+          // so a template that drops a previously-set field must send an
+          // explicit reset value or AWS silently keeps the old one. Same
+          // hazard VpcConfig handles via buildVpcConfigForUpdate.
+          DeadLetterConfig: this.clearOnUpdateRemoval(
+            properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
+            previousProperties['DeadLetterConfig'] as DeadLetterConfig | undefined,
+            // Empty TargetArn detaches the DLQ.
+            { TargetArn: '' }
+          ),
           // CFn names this `KmsKeyArn`; the Lambda SDK input field is `KMSKeyArn`.
-          KMSKeyArn: properties['KmsKeyArn'] as string | undefined,
-          FileSystemConfigs: properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
-          ImageConfig: properties['ImageConfig'] as ImageConfig | undefined,
-          SnapStart: properties['SnapStart'] as SnapStart | undefined,
+          // Empty string resets to the AWS-managed default key.
+          KMSKeyArn: this.clearOnUpdateRemoval(
+            properties['KmsKeyArn'] as string | undefined,
+            previousProperties['KmsKeyArn'] as string | undefined,
+            ''
+          ),
+          // Empty list removes all EFS mounts.
+          FileSystemConfigs: this.clearOnUpdateRemoval(
+            properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
+            previousProperties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
+            []
+          ),
+          // Empty object resets container image overrides to the image defaults.
+          ImageConfig: this.clearOnUpdateRemoval(
+            properties['ImageConfig'] as ImageConfig | undefined,
+            previousProperties['ImageConfig'] as ImageConfig | undefined,
+            {}
+          ),
+          // ApplyOn: 'None' disables SnapStart.
+          SnapStart: this.clearOnUpdateRemoval(
+            properties['SnapStart'] as SnapStart | undefined,
+            previousProperties['SnapStart'] as SnapStart | undefined,
+            { ApplyOn: 'None' }
+          ),
         };
 
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
@@ -545,6 +575,27 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (this.hasVpcConfig(previousRaw)) {
       return { SubnetIds: [], SecurityGroupIds: [] };
     }
+    return undefined;
+  }
+
+  /**
+   * Build an UpdateFunctionConfiguration field value that clears on removal.
+   *
+   * `UpdateFunctionConfiguration` treats an absent field as "no change", so
+   * passing `undefined` for a field the user just dropped from the template
+   * leaves the old value live on AWS — the update reports success while the
+   * field silently persists. For fields that support an explicit reset value
+   * (DeadLetterConfig `{TargetArn:''}`, KMSKeyArn `''`, FileSystemConfigs `[]`,
+   * ImageConfig `{}`, SnapStart `{ApplyOn:'None'}`) we send that reset when the
+   * field was present before and is now absent. Mirrors `buildVpcConfigForUpdate`.
+   */
+  private clearOnUpdateRemoval<T>(
+    newValue: T | undefined,
+    previousValue: T | undefined,
+    clearValue: T
+  ): T | undefined {
+    if (newValue !== undefined) return newValue;
+    if (previousValue !== undefined) return clearValue;
     return undefined;
   }
 

@@ -292,6 +292,83 @@ describe('LambdaFunctionProvider', () => {
         TargetArn: 'arn:aws:sqs:us-east-1:123456789012:dlq2',
       });
     });
+
+    it('sends explicit reset values when the five fields are removed on update', async () => {
+      // UpdateFunctionConfiguration treats an absent field as "no change", so
+      // dropping a previously-set field must send a reset value or AWS keeps
+      // the old one. Exercises FileSystemConfigs / ImageConfig change-detection
+      // too (otherwise only covered indirectly via the shared configFields loop).
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-clear',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-clear',
+          },
+        });
+
+      await provider.update(
+        'ClearFn',
+        'fn-clear',
+        'AWS::Lambda::Function',
+        {
+          // All five fields removed from the template.
+          Role: 'arn:aws:iam::123456789012:role/exec',
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          DeadLetterConfig: { TargetArn: 'arn:aws:sqs:us-east-1:123456789012:dlq' },
+          KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+          FileSystemConfigs: [
+            {
+              Arn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:access-point/fsap-1',
+              LocalMountPath: '/mnt/data',
+            },
+          ],
+          ImageConfig: { Command: ['app.handler'] },
+          SnapStart: { ApplyOn: 'PublishedVersions' },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.DeadLetterConfig).toEqual({ TargetArn: '' });
+      expect(cmd.input.KMSKeyArn).toBe('');
+      expect(cmd.input.FileSystemConfigs).toEqual([]);
+      expect(cmd.input.ImageConfig).toEqual({});
+      expect(cmd.input.SnapStart).toEqual({ ApplyOn: 'None' });
+    });
+
+    it('omits the five fields entirely when neither previous nor new sets them', async () => {
+      // No reset value should be synthesized when a field was never present —
+      // sending an empty reset would be a spurious no-op (or, for ImageConfig
+      // on a ZIP function, an invalid input).
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-none',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-none',
+          },
+        });
+
+      await provider.update(
+        'NoneFn',
+        'fn-none',
+        'AWS::Lambda::Function',
+        { Role: 'arn:aws:iam::123456789012:role/exec', Timeout: 30 },
+        { Role: 'arn:aws:iam::123456789012:role/exec', Timeout: 10 }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd.input.DeadLetterConfig).toBeUndefined();
+      expect(cmd.input.KMSKeyArn).toBeUndefined();
+      expect(cmd.input.FileSystemConfigs).toBeUndefined();
+      expect(cmd.input.ImageConfig).toBeUndefined();
+      expect(cmd.input.SnapStart).toBeUndefined();
+    });
   });
 
   describe('update', () => {
