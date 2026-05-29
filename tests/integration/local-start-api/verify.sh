@@ -46,6 +46,7 @@ CONTAINER_HOST="127.0.0.1"
 
 LOG_FILE="$(mktemp)"
 SERVER_PID=""
+WATCH_SRC=""
 
 cleanup() {
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
@@ -67,6 +68,11 @@ cleanup() {
   if [[ -n "${ORPHANS}" ]]; then
     echo "==> Cleaning up orphan containers"
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  fi
+  # Restore the --watch live-test's edited handler if a crash skipped the
+  # inline restore, so the working tree stays clean on every exit path.
+  if [[ -n "${WATCH_SRC:-}" ]]; then
+    git checkout -- "${WATCH_SRC}" 2>/dev/null || true
   fi
   rm -f "${LOG_FILE}"
 }

@@ -153,7 +153,7 @@ interface LocalStartApiOptions {
    * AWS-published public layers like Lambda Powertools need no role.
    */
   layerRoleArn?: string;
-  /** PR 8c: enable hot reload on `cdk.out/` + asset-dir changes. */
+  /** Enable hot reload on CDK app source-tree changes (re-synth on edit). */
   watch: boolean;
   /** PR 8c: select a Stage by `StageName`; default is the first attached. */
   stage?: string;
