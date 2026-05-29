@@ -37,11 +37,21 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort cleanup
   # should run as much as it can with the env it has.
   set +eu
+  destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" --force >/dev/null 2>&1
+    destroy_rc=$?
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    # Only force-remove the state key when `state destroy` SUCCEEDED. A clean
+    # `state destroy --force` already removes state; a FAILED one must leave
+    # state behind so the resources it could not delete are NOT orphaned (and
+    # so a retry / diagnosis can still find them). The lock key is always safe
+    # to drop so a subsequent run can acquire it.
+    if [ "${destroy_rc}" -eq 0 ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   set -eu
@@ -108,7 +118,10 @@ echo "    OK: Api DisableExecuteApiEndpoint == false + Version == v1 on AWS (Api
 STAGE=$(aws apigatewayv2 get-stage --api-id "${API_ID}" --stage-name "${STAGE_NAME}" \
   --region "${REGION}")
 STAGE_ENV=$(echo "${STAGE}" | jq -r '.StageVariables.env // empty')
-RATE_LIMIT=$(echo "${STAGE}" | jq -r '.DefaultRouteSettings.ThrottlingRateLimit // empty')
+# API Gateway returns ThrottlingRateLimit as a double (e.g. "50.0"); strip the
+# fractional part so the integer comparison below matches the templated "50".
+RATE_LIMIT_RAW=$(echo "${STAGE}" | jq -r '.DefaultRouteSettings.ThrottlingRateLimit // empty')
+RATE_LIMIT="${RATE_LIMIT_RAW%.*}"
 DETAILED=$(echo "${STAGE}" | jq -r '.DefaultRouteSettings.DetailedMetricsEnabled // empty')
 if [ "${STAGE_ENV}" != "test" ]; then
   echo "FAIL: Stage StageVariables.env is '${STAGE_ENV}', expected 'test'" >&2
