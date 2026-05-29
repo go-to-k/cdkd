@@ -60,7 +60,7 @@ fi
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
-  pnpm install --ignore-workspace --prefer-offline
+  npm install
 fi
 
 echo "==> Pre-run cleanup"
