@@ -72,11 +72,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "==> Starting cdkd local start-api on port ${PORT}"
+echo "==> Starting cdkd local start-api on port ${PORT} (with --watch: watch-source model)"
 ${CDKD} local start-api \
   --port "${PORT}" \
   --container-host "${CONTAINER_HOST}" \
   --no-pull \
+  --watch \
   >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
 
@@ -589,6 +590,32 @@ if [[ "${PROTECTED_SQS_AUTH_STATUS}" == "501" ]]; then
   exit 1
 fi
 echo "    [POST /protected-sqs (allow + SDK)] OK (status=${PROTECTED_SQS_AUTH_STATUS})"
+
+echo "==> Asserting --watch reloads on a SOURCE edit (watch-source model, slice 14)"
+# The server was booted with --watch, which watches the CDK app SOURCE
+# tree (this fixture dir). Editing a handler source file under cwd must
+# trigger a re-synth + reload. The pre-slice-14 watch-OUTPUT model watched
+# `cdk.out/` and would NOT have fired on a source edit, so this assertion
+# is the regression guard for the watch-source behavior change.
+WATCH_SRC="lambda-items/index.js"
+printf '\n// watch-source live-test touch %s\n' "$(date +%s)" >> "${WATCH_SRC}"
+echo "    edited ${WATCH_SRC}; waiting up to 90s for the source-change reload"
+RELOADED=0
+for _ in $(seq 1 180); do
+  if grep -q "Detected source change; reloading" "${LOG_FILE}" 2>/dev/null; then
+    RELOADED=1
+    break
+  fi
+  sleep 0.5
+done
+# Restore the handler regardless of outcome so the working tree stays clean.
+git checkout -- "${WATCH_SRC}" 2>/dev/null || true
+if [[ "${RELOADED}" -eq 0 ]]; then
+  echo "FAIL: --watch did not detect the source edit within 90s (watch-source model broken). Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [--watch source-edit reload] OK (watcher fired on a source-tree change)"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

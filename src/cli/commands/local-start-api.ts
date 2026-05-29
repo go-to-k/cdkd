@@ -97,6 +97,7 @@ import {
   type ResolvedStage,
 } from '../../local/stage-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { createWatchPredicates, resolveWatchConfig } from 'cdk-local';
 import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
@@ -239,7 +240,7 @@ interface LocalStartApiOptions {
  *     container does NOT get attached to the deployed VPC.
  *
  * PR 8c additions (issue #235):
- *   - `--watch` enables hot reload on `cdk.out/` + asset-dir changes.
+ *   - `--watch` enables hot reload on CDK app source-tree changes (re-synth on edit).
  *   - HTTP API v2 OPTIONS preflight is intercepted when the API has a
  *     `CorsConfiguration`; REST v1 CORS (Mock OPTIONS method) stays
  *     out of scope.
@@ -318,18 +319,6 @@ async function localStartApiCommand(
   // file mid-flight would race with running containers' SDK reads).
   // Disposed in the cleanup chain. Undefined when `--profile` is unset.
   let profileCredsFile: ProfileCredentialsFile | undefined;
-  // Track every Lambda asset directory the server is currently
-  // referencing; the file watcher uses this list to know what to
-  // watch beyond `cdk.out/`. The value is updated AFTER the reload
-  // orchestrator's atomic state swap completes (see the `.then(...)`
-  // block on `orchestrator.reload()` below) — pre-fix, the assignment
-  // happened mid-`synthesizeAndBuild`, so a concurrent file event
-  // during a reload would call `watcher.update([...new asset dirs])`
-  // while the server still serves the old state. Now the file
-  // watcher's view of "what asset dirs to watch" stays in lockstep
-  // with the server's state.
-  const lastAssetPaths: { value: string[] } = { value: [] };
-
   // PR 8b: per-server-lifecycle caches. Constructed once at server
   // startup; persisted across hot reloads (PR 8c) so authorizer
   // verdicts and JWKS keys aren't re-fetched on every reload. The
@@ -625,10 +614,7 @@ async function localStartApiCommand(
     // resolved by `buildContainerSpec` (`resolveContainerImageForStartApi`
     // ran the local build or ECR pull before this point), so the
     // ContainerPool can `docker run` against it without any further
-    // pull step. NOTE: the watched-asset list (`lastAssetPaths.value`)
-    // is NOT mutated here — the assignment happens AFTER the reload
-    // orchestrator's atomic state swap completes. See the `.then(...)`
-    // block on `orchestrator.reload()` below.
+    // pull step.
     const distinctImages = new Set<string>();
     for (const spec of specs.values()) {
       if (spec.kind === 'zip') {
@@ -666,38 +652,8 @@ async function localStartApiCommand(
     return pool;
   };
 
-  /**
-   * Compute the watched-asset list from a spec map. Pure helper —
-   * keeps the side-effect (`lastAssetPaths.value = ...`) confined to
-   * the post-swap call sites (initial boot + post-reload). For ZIP
-   * Lambdas `codeDir` is either the unzipped asset directory or the
-   * inline-code tmpdir; both are watch-worthy. IMAGE Lambdas
-   * (`kind: 'image'`) don't have a host-side bind-mount source — the
-   * code is baked into the docker image at build time. Their build
-   * context (Dockerfile + source directory) is rebuilt on every
-   * reload via `synthesizeAndBuild` → `buildContainerSpec` →
-   * `resolveContainerImageForStartApi`, so a source edit DOES trigger
-   * rebuild AND the deterministic `image` tag changes — but watching
-   * the build-context dir explicitly here is deferred to a follow-up
-   * (the watched-asset list is currently sourced from `cdk.out/`
-   * which transitively covers most container-Lambda asset dirs since
-   * `cdk synth` re-stages them on every synth call).
-   */
-  const computeAssetPaths = (specs: Map<string, ContainerSpec>): string[] => {
-    const assetPaths = new Set<string>();
-    for (const spec of specs.values()) {
-      if (spec.kind === 'zip') {
-        assetPaths.add(spec.codeDir);
-      }
-    }
-    return [...assetPaths];
-  };
-
   // Initial boot.
   const initialMaterial = await synthesizeAndBuild();
-  // Initial assignment is safe (no reload race possible before any
-  // server is even listening).
-  lastAssetPaths.value = computeAssetPaths(initialMaterial.specs);
 
   // PR 8b: pre-warm JWKS for Cognito / JWT authorizers so the first
   // request doesn't pay the fetch latency. Failures fall through to
@@ -1036,27 +992,37 @@ async function localStartApiCommand(
   let watcher: FileWatcher | undefined;
   let reloadChain: Promise<unknown> = Promise.resolve();
   if (options.watch) {
-    const initialWatchPaths = [options.output, ...lastAssetPaths.value];
+    // Watch the CDK app's source tree (the synth working directory, where
+    // `cdk.json` lives) so editing handler / construct source re-synths and
+    // hot-reloads, mirroring `cdk watch`. We honor `cdk.json`'s
+    // `watch.include` / `watch.exclude`; `cdk.out` / `node_modules` / `.git`
+    // are excluded so the reload's own re-synth writes never self-trigger.
+    const watchRoot = process.cwd();
+    const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
+      watchRoot,
+      output: options.output,
+      watchConfig: resolveWatchConfig(),
+    });
     watcher = createFileWatcher({
-      paths: initialWatchPaths,
+      paths: [watchRoot],
+      ignored,
+      shouldTrigger,
       onChange: () => {
-        logger.info('Detected file change; reloading...');
+        logger.info('Detected source change; reloading...');
         const next = reloadChain.then(() =>
           reloadAllServers({
             synthesizeAndBuild,
             servers,
             buildPool,
-            computeAssetPaths,
-            lastAssetPaths,
-            watcher,
-            output: options.output,
             logger,
           })
         );
         reloadChain = next.catch(() => undefined);
       },
     });
-    logger.info(`Watching ${options.output} (and ${lastAssetPaths.value.length} asset dir(s))`);
+    logger.info(
+      `Watching ${watchRoot} for source changes (excluding ${excludePatterns.join(', ')}).`
+    );
   }
 
   // Graceful shutdown: SIGINT / SIGTERM / uncaughtException /
@@ -2721,22 +2687,9 @@ async function reloadAllServers(args: {
   synthesizeAndBuild: () => Promise<NextStateMaterial>;
   servers: readonly BootedApiServer[];
   buildPool: (specs: Map<string, ContainerSpec>) => ContainerPool;
-  computeAssetPaths: (specs: Map<string, ContainerSpec>) => string[];
-  lastAssetPaths: { value: string[] };
-  watcher: FileWatcher | undefined;
-  output: string;
   logger: ReturnType<typeof getLogger>;
 }): Promise<void> {
-  const {
-    synthesizeAndBuild,
-    servers,
-    buildPool,
-    computeAssetPaths,
-    lastAssetPaths,
-    watcher,
-    output,
-    logger,
-  } = args;
+  const { synthesizeAndBuild, servers, buildPool, logger } = args;
   let material: NextStateMaterial;
   try {
     material = await synthesizeAndBuild();
@@ -2791,11 +2744,6 @@ async function reloadAllServers(args: {
     });
   }
 
-  // Update the watcher's asset-path list AFTER all swaps complete.
-  lastAssetPaths.value = computeAssetPaths(material.specs);
-  if (watcher) {
-    watcher.update([output, ...lastAssetPaths.value]);
-  }
   // Re-print the per-server route table when any routes changed.
   // Cheap heuristic: always re-print after a successful reload — the
   // user is watching for the diff and a stable table reassures them
@@ -3111,7 +3059,7 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--watch',
-        'Hot-reload: re-synth + re-discover routes when cdk.out/ or asset directories change. Off by default; the server keeps the previous version serving when synth fails mid-reload.'
+        'Hot-reload: watch the CDK app source tree and re-synth + re-discover routes on a source edit (cdk.out / node_modules / .git excluded; honors cdk.json watch.include / watch.exclude). Off by default; the server keeps the previous version serving when synth fails mid-reload.'
       ).default(false)
     )
     .addOption(
