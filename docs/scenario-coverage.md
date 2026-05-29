@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**36 / 36 canonical scenarios** have at least one integ fixture exercising them. **104 / 116 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**36 / 36 canonical scenarios** have at least one integ fixture exercising them. **104 / 117 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -67,13 +67,14 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 
-## Un-annotated fixtures (12)
+## Un-annotated fixtures (13)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
 - [`acm-certificate`](../tests/integration/acm-certificate/)
 - [`cc-api-fallback`](../tests/integration/cc-api-fallback/)
 - [`cc-api-fallback-transitions`](../tests/integration/cc-api-fallback-transitions/)
+- [`dynamodb-ondemand`](../tests/integration/dynamodb-ondemand/)
 - [`export-nested-stack`](../tests/integration/export-nested-stack/)
 - [`iam-managed-policy`](../tests/integration/iam-managed-policy/)
 - [`nested-stack`](../tests/integration/nested-stack/)
