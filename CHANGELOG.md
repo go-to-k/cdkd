@@ -1,3 +1,10 @@
+# [0.175.0](https://github.com/go-to-k/cdkd/compare/v0.174.0...v0.175.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill DynamoDB::Table OnDemandThroughput ([#699](https://github.com/go-to-k/cdkd/issues/699)) ([56e13f3](https://github.com/go-to-k/cdkd/commit/56e13f327652ef72cdc26ff52ad50961c8689bf6))
+
 # [0.174.0](https://github.com/go-to-k/cdkd/compare/v0.173.0...v0.174.0) (2026-05-29)
 
 
