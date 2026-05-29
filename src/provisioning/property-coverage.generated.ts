@@ -1385,10 +1385,14 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::Glue::Table',
     {
-      handled: new Set<string>(['CatalogId', 'DatabaseName', 'Name', 'TableInput']),
-      silentDrop: new Map<string, string>([
-        ['OpenTableFormatInput', 'not yet implemented by cdkd'],
+      handled: new Set<string>([
+        'CatalogId',
+        'DatabaseName',
+        'Name',
+        'OpenTableFormatInput',
+        'TableInput',
       ]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

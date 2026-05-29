@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { UpdateDatabaseCommand, UpdateTableCommand } from '@aws-sdk/client-glue';
+import {
+  CreateTableCommand,
+  UpdateDatabaseCommand,
+  UpdateTableCommand,
+} from '@aws-sdk/client-glue';
 
 const mockSend = vi.fn();
 
@@ -246,5 +250,71 @@ describe('GlueProvider read-update round-trip', () => {
       TableInput: { StorageDescriptor: { SerdeInfo: { Parameters: Record<string, string> } } };
     };
     expect(input.TableInput.StorageDescriptor.SerdeInfo.Parameters).toEqual({});
+  });
+
+  it('AWS::Glue::Table — create() sends OpenTableFormatInput as a top-level sibling of TableInput (#609 Iceberg backfill)', async () => {
+    // OpenTableFormatInput (Apache Iceberg) is a top-level CreateTableCommand
+    // param, NOT nested inside TableInput. The CFn shape maps 1:1 to the SDK
+    // OpenTableFormatInput type. MetadataOperation: 'CREATE' is the create-time
+    // directive that writes Iceberg metadata under the S3 location.
+    mockSend.mockResolvedValueOnce({});
+
+    const properties = {
+      CatalogId: '123456789012',
+      DatabaseName: 'mydb',
+      OpenTableFormatInput: {
+        IcebergInput: { MetadataOperation: 'CREATE', Version: '2' },
+      },
+      TableInput: {
+        Name: 'events_iceberg',
+        TableType: 'EXTERNAL_TABLE',
+        StorageDescriptor: {
+          Columns: [{ Name: 'event_id', Type: 'string' }],
+          Location: 's3://b/iceberg/',
+        },
+      },
+    };
+
+    const result = await provider.create('L', 'AWS::Glue::Table', properties);
+    expect(result).toEqual({ physicalId: 'mydb|events_iceberg', attributes: {} });
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    expect(createCall).toBeDefined();
+    const input = createCall![0].input as {
+      DatabaseName: string;
+      TableInput: Record<string, unknown>;
+      OpenTableFormatInput?: Record<string, unknown>;
+    };
+    // Top-level sibling of TableInput — must NOT be nested inside TableInput.
+    expect(input.OpenTableFormatInput).toEqual({
+      IcebergInput: { MetadataOperation: 'CREATE', Version: '2' },
+    });
+    expect(input.TableInput.OpenTableFormatInput).toBeUndefined();
+    expect(input.TableInput.Name).toBe('events_iceberg');
+  });
+
+  it('AWS::Glue::Table — create() omits OpenTableFormatInput when absent (omit-when-absent)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const properties = {
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'plain_tbl',
+        TableType: 'EXTERNAL_TABLE',
+      },
+    };
+
+    await provider.create('L', 'AWS::Glue::Table', properties);
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    expect(createCall).toBeDefined();
+    const input = createCall![0].input as { OpenTableFormatInput?: unknown };
+    // Absent prop must not leak an `OpenTableFormatInput: undefined` key.
+    expect('OpenTableFormatInput' in input).toBe(false);
+  });
+
+  it('AWS::Glue::Table — getDriftUnknownPaths excludes OpenTableFormatInput (create-only, no clean readback)', () => {
+    expect(provider.getDriftUnknownPaths('AWS::Glue::Table')).toEqual(['OpenTableFormatInput']);
+    expect(provider.getDriftUnknownPaths('AWS::Glue::Database')).toEqual([]);
   });
 });
