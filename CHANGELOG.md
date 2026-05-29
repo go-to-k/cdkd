@@ -1,3 +1,10 @@
+# [0.178.0](https://github.com/go-to-k/cdkd/compare/v0.177.0...v0.178.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill ApiGatewayV2 Api/Stage/Integration config props ([#702](https://github.com/go-to-k/cdkd/issues/702)) ([bcd0a8d](https://github.com/go-to-k/cdkd/commit/bcd0a8db87b993e0ed565d44c4b2391cb15d7307))
+
 # [0.177.0](https://github.com/go-to-k/cdkd/compare/v0.176.0...v0.177.0) (2026-05-29)
 
 
