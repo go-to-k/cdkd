@@ -38,9 +38,7 @@
       "CanarySetting",
       "ClientCertificateId",
       "DocumentationVersion",
-      "MethodSettings",
-      "TracingEnabled",
-      "Variables"
+      "MethodSettings"
     ],
     "AWS::ApiGatewayV2::Api": [
       "ApiKeySelectionExpression",

@@ -20,6 +20,12 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  *   "Invalid mapping expression specified: ... [No method response
  *    exists for method.]" (pre-PR bug; regression-covered here).
  *
+ * - Stage config props backfilled for issue #609: `tracingEnabled` (X-Ray)
+ *   and stage `variables` are set on the RestApi's `deployOptions`
+ *   (CDK L2 `apigateway.StageOptions`). They ride on the Stage's own
+ *   CreateStage / UpdateStage API call (NOT a separate control-plane call),
+ *   and verify.sh asserts both reached AWS via `aws apigateway get-stage`.
+ *
  * covers: AWS::ApiGateway::Method
  * covers: AWS::ApiGateway::Resource
  * covers: AWS::ApiGateway::Stage
@@ -66,6 +72,17 @@ exports.handler = async (event) => {
       restApiName: 'cdkd-hello-api',
       description: 'A simple API Gateway + Lambda example for cdkd testing',
       cloudWatchRole: false,
+      // Stage config props backfilled for issue #609. `deployOptions` is the
+      // CDK L2 surface for the auto-created `prod` Stage; `tracingEnabled` +
+      // `variables` synthesize as `TracingEnabled` / `Variables` on the
+      // AWS::ApiGateway::Stage resource and ride on CreateStage / UpdateStage.
+      deployOptions: {
+        tracingEnabled: true,
+        variables: {
+          appVersion: '1.0.0',
+          featureFlag: 'enabled',
+        },
+      },
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: apigateway.Cors.ALL_METHODS,

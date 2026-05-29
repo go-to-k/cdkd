@@ -104,7 +104,15 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::ApiGateway::Stage',
     {
-      handled: new Set<string>(['DeploymentId', 'Description', 'RestApiId', 'StageName', 'Tags']),
+      handled: new Set<string>([
+        'DeploymentId',
+        'Description',
+        'RestApiId',
+        'StageName',
+        'Tags',
+        'TracingEnabled',
+        'Variables',
+      ]),
       silentDrop: new Map<string, string>([
         ['AccessLogSetting', 'not yet implemented by cdkd'],
         ['CacheClusterEnabled', 'not yet implemented by cdkd'],
@@ -113,8 +121,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['ClientCertificateId', 'not yet implemented by cdkd'],
         ['DocumentationVersion', 'not yet implemented by cdkd'],
         ['MethodSettings', 'not yet implemented by cdkd'],
-        ['TracingEnabled', 'not yet implemented by cdkd'],
-        ['Variables', 'not yet implemented by cdkd'],
       ]),
     },
   ],

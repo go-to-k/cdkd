@@ -601,6 +601,42 @@ describe('ApiGatewayProvider', () => {
         expect(command.input.description).toBe('Production stage');
       });
 
+      it('should create a stage with TracingEnabled and Variables (#609 backfill)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.create('MyStage', resourceType, {
+          RestApiId: 'api-id',
+          StageName: 'prod',
+          DeploymentId: 'deploy-123',
+          TracingEnabled: true,
+          Variables: { appVersion: '1.0.0', featureFlag: 'enabled' },
+        });
+
+        expect(result.physicalId).toBe('prod');
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('CreateStageCommand');
+        expect(command.input.tracingEnabled).toBe(true);
+        expect(command.input.variables).toEqual({
+          appVersion: '1.0.0',
+          featureFlag: 'enabled',
+        });
+      });
+
+      it('should omit TracingEnabled/Variables from CreateStage when absent', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyStage', resourceType, {
+          RestApiId: 'api-id',
+          StageName: 'prod',
+          DeploymentId: 'deploy-123',
+        });
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.tracingEnabled).toBeUndefined();
+        expect(command.input.variables).toBeUndefined();
+      });
+
       it('should throw when required properties are missing', async () => {
         await expect(
           provider.create('MyStage', resourceType, {
@@ -679,6 +715,79 @@ describe('ApiGatewayProvider', () => {
         expect(command.input.patchOperations).toEqual([
           { op: 'replace', path: '/description', value: 'New desc' },
         ]);
+      });
+
+      it('should patch /tracingEnabled when TracingEnabled changes (#609 backfill)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123', TracingEnabled: true },
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123', TracingEnabled: false }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('UpdateStageCommand');
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/tracingEnabled', value: 'true' },
+        ]);
+      });
+
+      it('should add/replace and remove /variables keys when Variables changes (#609 backfill)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            // appVersion changed, newFlag added, staleFlag dropped.
+            Variables: { appVersion: '2.0.0', newFlag: 'on' },
+          },
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            Variables: { appVersion: '1.0.0', staleFlag: 'off' },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/variables/appVersion', value: '2.0.0' },
+          { op: 'replace', path: '/variables/newFlag', value: 'on' },
+          { op: 'remove', path: '/variables/staleFlag' },
+        ]);
+      });
+
+      it('should not emit a /variables patch op for an unchanged key (#609 backfill)', async () => {
+        const result = await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            TracingEnabled: true,
+            Variables: { appVersion: '1.0.0' },
+          },
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            TracingEnabled: true,
+            Variables: { appVersion: '1.0.0' },
+          }
+        );
+
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).not.toHaveBeenCalled();
       });
 
       it('should return no-op when nothing changed', async () => {

@@ -81,7 +81,15 @@ export class ApiGatewayProvider implements ResourceProvider {
     ['AWS::ApiGateway::Deployment', new Set(['RestApiId', 'Description'])],
     [
       'AWS::ApiGateway::Stage',
-      new Set(['RestApiId', 'StageName', 'DeploymentId', 'Description', 'Tags']),
+      new Set([
+        'RestApiId',
+        'StageName',
+        'DeploymentId',
+        'Description',
+        'Tags',
+        'TracingEnabled',
+        'Variables',
+      ]),
     ],
     [
       'AWS::ApiGateway::Method',
@@ -1055,6 +1063,8 @@ export class ApiGatewayProvider implements ResourceProvider {
           stageName,
           deploymentId,
           description: properties['Description'] as string | undefined,
+          tracingEnabled: properties['TracingEnabled'] as boolean | undefined,
+          variables: properties['Variables'] as Record<string, string> | undefined,
           tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
@@ -1104,8 +1114,11 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
     }
 
-    // Build patch operations for changed properties
-    const patchOperations: Array<{ op: 'replace'; path: string; value: string }> = [];
+    // Build patch operations for changed properties. UpdateStage supports
+    // both `replace` (deploymentId / description / tracingEnabled, and
+    // adding/replacing a single variables key) and `remove` (dropping a
+    // variables key), so the patch op type covers both.
+    const patchOperations: Array<{ op: 'replace' | 'remove'; path: string; value?: string }> = [];
 
     const deploymentId = properties['DeploymentId'] as string | undefined;
     const prevDeploymentId = previousProperties['DeploymentId'] as string | undefined;
@@ -1121,6 +1134,35 @@ export class ApiGatewayProvider implements ResourceProvider {
         path: '/description',
         value: description ?? '',
       });
+    }
+
+    // TracingEnabled — X-Ray. UpdateStage renders the boolean as a string
+    // value ('true' / 'false') under the `/tracingEnabled` path.
+    const tracingEnabled = properties['TracingEnabled'] as boolean | undefined;
+    const prevTracingEnabled = previousProperties['TracingEnabled'] as boolean | undefined;
+    if (tracingEnabled !== prevTracingEnabled) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/tracingEnabled',
+        value: String(tracingEnabled ?? false),
+      });
+    }
+
+    // Variables — stage variables map. UpdateStage takes one patch op per
+    // key: `replace /variables/{key}` to add or change, `remove
+    // /variables/{key}` to delete a key that is no longer declared.
+    const variables = (properties['Variables'] as Record<string, string> | undefined) ?? {};
+    const prevVariables =
+      (previousProperties['Variables'] as Record<string, string> | undefined) ?? {};
+    for (const [key, value] of Object.entries(variables)) {
+      if (prevVariables[key] !== value) {
+        patchOperations.push({ op: 'replace', path: `/variables/${key}`, value });
+      }
+    }
+    for (const key of Object.keys(prevVariables)) {
+      if (!(key in variables)) {
+        patchOperations.push({ op: 'remove', path: `/variables/${key}` });
+      }
     }
 
     try {
@@ -1914,6 +1956,10 @@ export class ApiGatewayProvider implements ResourceProvider {
       if (resp.stageName !== undefined) result['StageName'] = resp.stageName;
       result['DeploymentId'] = resp.deploymentId ?? '';
       result['Description'] = resp.description ?? '';
+      // #609 backfill: emit-when-present (do NOT emit a default when absent,
+      // so a stage that never set these does not surface phantom drift).
+      if (resp.tracingEnabled !== undefined) result['TracingEnabled'] = resp.tracingEnabled;
+      if (resp.variables !== undefined) result['Variables'] = resp.variables;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
