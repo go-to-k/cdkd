@@ -89,13 +89,18 @@ export class DataAnalyticsStack extends cdk.Stack {
       },
     });
 
-    // Athena Named Query
-    new athena.CfnNamedQuery(this, 'SampleQuery', {
+    // Athena Named Query.
+    // `workGroup.name` is a literal string (not a Ref), so it creates NO
+    // dependency edge — an explicit addDependency is required so cdkd's DAG
+    // creates the WorkGroup before the NamedQuery (else AWS rejects with
+    // "WorkGroup is not found").
+    const sampleQuery = new athena.CfnNamedQuery(this, 'SampleQuery', {
       database: database.ref,
       queryString: 'SELECT event_id, timestamp FROM events LIMIT 10',
       name: `${this.stackName}-sample-query`,
       workGroup: workGroup.name,
     });
+    sampleQuery.addDependency(workGroup);
 
     // Outputs
     new cdk.CfnOutput(this, 'WorkGroupName', {
