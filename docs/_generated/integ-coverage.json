@@ -524,7 +524,8 @@
       ],
       "signals": {
         "cloudwatch": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "composite-stack": [
           "l2",

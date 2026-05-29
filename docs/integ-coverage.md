@@ -65,7 +65,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudFront::Distribution` | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) (l2)<br>[`cloudfront-function-url`](../tests/integration/cloudfront-function-url/) (l2)<br>[`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudTrail::Trail` | [`infra-security`](../tests/integration/infra-security/) (l2,literal) |
-| `AWS::CloudWatch::Alarm` | [`cloudwatch`](../tests/integration/cloudwatch/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
+| `AWS::CloudWatch::Alarm` | [`cloudwatch`](../tests/integration/cloudwatch/) (l2,literal)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
 | `AWS::CodeBuild::Project` | [`ci-cd`](../tests/integration/ci-cd/) (l2,literal) |
 | `AWS::Cognito::UserPool` | [`api-cognito`](../tests/integration/api-cognito/) (l2)<br>[`cognito`](../tests/integration/cognito/) (l2,literal)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal)<br>[`serverless-api`](../tests/integration/serverless-api/) (l2) |
 | `AWS::DocDB::DBCluster` | [`docdb-neptune`](../tests/integration/docdb-neptune/) (l1) |
