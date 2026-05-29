@@ -478,9 +478,13 @@ export class CodeBuildProvider implements ResourceProvider {
     }
     if (!project) return undefined;
 
-    // CodeBuild projects are mutable via UpdateProject; emit user-controllable
-    // top-level keys with placeholders so a console-side ADD on a property
-    // not templated at deploy time surfaces as drift.
+    // CodeBuild projects are mutable via UpdateProject. Top-level keys are
+    // surfaced two ways: keys AWS always returns (Description / ServiceRole /
+    // EncryptionKey / ...) get a placeholder default so a console-side ADD on
+    // a property not templated at deploy time surfaces as drift; keys AWS
+    // returns only when set (ConcurrentBuildLimit / AutoRetryLimit / ...) are
+    // emit-when-present (gated on `!== undefined`) so a project that never set
+    // them does not grow a phantom-drift key.
     const result: Record<string, unknown> = {};
     if (project.name !== undefined) result['Name'] = project.name;
     result['Description'] = project.description ?? '';
