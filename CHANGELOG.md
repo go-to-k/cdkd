@@ -1,3 +1,10 @@
+# [0.170.0](https://github.com/go-to-k/cdkd/compare/v0.169.1...v0.170.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill 5 native Lambda::Function config props ([#694](https://github.com/go-to-k/cdkd/issues/694)) ([b5a50e1](https://github.com/go-to-k/cdkd/commit/b5a50e13c8c15d5f6228ab7236e1393b02f39234))
+
 ## [0.169.1](https://github.com/go-to-k/cdkd/compare/v0.169.0...v0.169.1) (2026-05-28)
 
 
