@@ -42,18 +42,30 @@ export class CloudWatchStack extends cdk.Stack {
       defaultValue: 0,
     });
 
-    // Create CloudWatch Alarm based on the error count metric
+    // Create CloudWatch Alarm based on the error count metric.
+    // Exercises the backfilled AWS::CloudWatch::Alarm properties (issue #609):
+    //   - extendedStatistic ('p99') -> ExtendedStatistic
+    //   - evaluateLowSampleCountPercentile -> EvaluateLowSampleCountPercentile
+    //   - Tags (via cdk.Tags.of below)
+    // ThresholdMetricId is intentionally NOT exercised here (it is an
+    // anomaly-detection-only field requiring a metric-math band; left in
+    // silentDrop is out of scope for this fixture).
     const alarm = new cloudwatch.Alarm(this, 'ErrorAlarm', {
       alarmDescription: 'Alarm when error count exceeds threshold',
       metric: metricFilter.metric({
-        statistic: 'Sum',
+        statistic: 'p99',
         period: cdk.Duration.minutes(5),
       }),
       threshold: 0,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      evaluateLowSampleCountPercentile: 'ignore',
     });
+
+    // Tag the alarm to exercise the Tags backfill (PutMetricAlarm Tags on
+    // create + TagResource/UntagResource diff on update).
+    cdk.Tags.of(alarm).add('Team', 'Platform');
 
     // Add SNS action to alarm
     alarm.addAlarmAction(new cloudwatch_actions.SnsAction(alarmTopic));

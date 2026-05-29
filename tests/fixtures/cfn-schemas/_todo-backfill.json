@@ -142,12 +142,8 @@
       "AggregationConfigurations"
     ],
     "AWS::CloudWatch::Alarm": [
-      "EvaluateLowSampleCountPercentile",
       "EvaluationCriteria",
-      "EvaluationInterval",
-      "ExtendedStatistic",
-      "Tags",
-      "ThresholdMetricId"
+      "EvaluationInterval"
     ],
     "AWS::CodeBuild::Project": [
       "AutoRetryLimit",

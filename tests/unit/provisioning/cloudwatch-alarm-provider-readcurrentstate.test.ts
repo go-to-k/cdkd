@@ -92,6 +92,47 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
     });
   });
 
+  it('surfaces ExtendedStatistic / EvaluateLowSampleCountPercentile / ThresholdMetricId when present (emit-when-present)', async () => {
+    mockSend.mockResolvedValueOnce({
+      MetricAlarms: [
+        {
+          AlarmName: 'myalarm',
+          ComparisonOperator: 'GreaterThanThreshold',
+          Threshold: 80,
+          EvaluationPeriods: 2,
+          ExtendedStatistic: 'p99',
+          EvaluateLowSampleCountPercentile: 'ignore',
+          ThresholdMetricId: 'ad1',
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+
+    expect(result?.['ExtendedStatistic']).toBe('p99');
+    expect(result?.['EvaluateLowSampleCountPercentile']).toBe('ignore');
+    expect(result?.['ThresholdMetricId']).toBe('ad1');
+  });
+
+  it('omits ExtendedStatistic / EvaluateLowSampleCountPercentile / ThresholdMetricId when AWS does not report them', async () => {
+    mockSend.mockResolvedValueOnce({
+      MetricAlarms: [
+        {
+          AlarmName: 'myalarm',
+          ComparisonOperator: 'GreaterThanThreshold',
+          Threshold: 80,
+          EvaluationPeriods: 2,
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+
+    expect(result).not.toHaveProperty('ExtendedStatistic');
+    expect(result).not.toHaveProperty('EvaluateLowSampleCountPercentile');
+    expect(result).not.toHaveProperty('ThresholdMetricId');
+  });
+
   it('returns undefined when alarm is gone (empty MetricAlarms)', async () => {
     mockSend.mockResolvedValueOnce({ MetricAlarms: [] });
     const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
