@@ -1,3 +1,10 @@
+# [0.171.0](https://github.com/go-to-k/cdkd/compare/v0.170.0...v0.171.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill 4 CloudWatch::Alarm config props ([#695](https://github.com/go-to-k/cdkd/issues/695)) ([3d43ada](https://github.com/go-to-k/cdkd/commit/3d43adadc4c06e0a959d8f1a86db3730ca89a371))
+
 # [0.170.0](https://github.com/go-to-k/cdkd/compare/v0.169.1...v0.170.0) (2026-05-29)
 
 
