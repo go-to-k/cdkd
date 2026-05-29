@@ -212,6 +212,29 @@ describe('Route53Provider', () => {
         });
       });
 
+      it('should coerce a string Bias to a number (CFn may emit numeric props as strings)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyGeoProximityStrBias', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'geo3.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['198.51.100.3'],
+          SetIdentifier: 'geo-strbias',
+          GeoProximityLocation: { AWSRegion: 'us-east-1', Bias: '10' },
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        // `Bias` must reach the SDK as a number, not the string '10'.
+        expect(recordSet.GeoProximityLocation).toEqual({
+          AWSRegion: 'us-east-1',
+          Bias: 10,
+        });
+      });
+
       it('should map GeoProximityLocation Coordinates + LocalZoneGroup when present', async () => {
         mockSend.mockResolvedValueOnce({});
 
