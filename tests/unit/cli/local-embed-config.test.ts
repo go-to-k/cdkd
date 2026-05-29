@@ -30,6 +30,13 @@ describe('cdkd local embed-config branding', () => {
       resourceNamePrefix: 'cdkd-local',
       awsBindMountPath: '/cdkd-aws',
       envPrefix: 'CDKD',
+      // cdkd ships fail-closed-by-default on unverifiable AWS_IAM SigV4
+      // (security review #484) with an opt-OUT flag, the opposite polarity of
+      // cdk-local's warn-and-pass default + opt-IN `--strict-sigv4`. These two
+      // fields make the shimmed sigv4-verify warn messages reference cdkd's
+      // flag + advice instead of cdk-local's.
+      sigV4StrictByDefault: true,
+      sigV4OptFlag: '--allow-unverified-sigv4',
     });
   });
 });

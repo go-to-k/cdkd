@@ -806,7 +806,10 @@ async function localStartApiCommand(
       jwksWarnedUrls,
       sigV4CredentialsLoader,
       sigV4WarnedForeignIds,
-      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
+      // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed);
+      // cdkd ships fail-closed BY DEFAULT and opts OUT via --allow-unverified-sigv4,
+      // so invert: strict unless the user passed the opt-out flag.
+      sigV4Strict: options.allowUnverifiedSigv4 !== true,
       // #458: surfaces as the per-route fallback region for HTTP API
       // v2 service integrations. Per-request `RequestParameters.Region`
       // overrides this — matches AWS API Gateway behavior.
@@ -900,7 +903,10 @@ async function localStartApiCommand(
       jwksCache,
       jwksWarnedUrls,
       sigV4WarnedForeignIds,
-      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
+      // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed);
+      // cdkd ships fail-closed BY DEFAULT and opts OUT via --allow-unverified-sigv4,
+      // so invert: strict unless the user passed the opt-out flag.
+      sigV4Strict: options.allowUnverifiedSigv4 !== true,
       preDispatch: async (req, res) => {
         if (!registryRef) return false;
         return handleManagementRequest(req, res, registryRef.registry);

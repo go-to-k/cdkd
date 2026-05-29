@@ -81,6 +81,12 @@ const CDKD_EMBED_CONFIG = {
   resourceNamePrefix: 'cdkd-local',
   awsBindMountPath: '/cdkd-aws',
   envPrefix: 'CDKD',
+  // cdkd ships fail-closed-by-default on unverifiable AWS_IAM SigV4 (security
+  // review #484), the OPPOSITE polarity of cdk-local's warn-and-pass default.
+  // These two fields make the shimmed sigv4-verify warn messages reference
+  // cdkd's opt-out flag + advice instead of cdk-local's `--strict-sigv4`.
+  sigV4StrictByDefault: true,
+  sigV4OptFlag: '--allow-unverified-sigv4',
 } as const;
 
 interface LocalInvokeOptions {
