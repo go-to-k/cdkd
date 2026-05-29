@@ -12,6 +12,11 @@
 #   - AWS::ApiGatewayV2::Integration  TimeoutInMillis (15000) +
 #     RequestParameters (append:header.x-cdkd-test) + Description via
 #     CreateIntegration.
+#   - AWS::ApiGatewayV2::Route  AuthorizationScopes (email + openid) +
+#     OperationName (GetDefault) on the $default route via CreateRoute.
+#   - AWS::ApiGatewayV2::Authorizer  AuthorizerResultTtlInSeconds (300) +
+#     EnableSimpleResponses (true) on the standalone REQUEST authorizer
+#     via CreateAuthorizer.
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -28,6 +33,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 API_NAME="cdkd-serverless-api"
 STAGE_NAME='$default'
+ROUTE_KEY='$default'
+REQUEST_AUTHORIZER_NAME="request-authorizer"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
@@ -158,6 +165,50 @@ if [ -z "${INT_DESC}" ]; then
 fi
 echo "    OK: Integration TimeoutInMillis + RequestParameters + Description reached AWS (Integration backfill CLOSED)"
 
+# --- Assertion 4: Route AuthorizationScopes + OperationName reached AWS ----
+ROUTES=$(aws apigatewayv2 get-routes --api-id "${API_ID}" --region "${REGION}")
+ROUTE=$(echo "${ROUTES}" | jq -c --arg key "${ROUTE_KEY}" '.Items[] | select(.RouteKey == $key)')
+if [ -z "${ROUTE}" ]; then
+  echo "FAIL: could not find route with RouteKey '${ROUTE_KEY}'" >&2
+  echo "      raw GetRoutes: ${ROUTES}" >&2
+  exit 1
+fi
+HAS_EMAIL=$(echo "${ROUTE}" | jq -r '(.AuthorizationScopes // []) | index("email") != null')
+HAS_OPENID=$(echo "${ROUTE}" | jq -r '(.AuthorizationScopes // []) | index("openid") != null')
+OP_NAME=$(echo "${ROUTE}" | jq -r '.OperationName // empty')
+if [ "${HAS_EMAIL}" != "true" ] || [ "${HAS_OPENID}" != "true" ]; then
+  echo "FAIL: Route AuthorizationScopes missing email/openid (email=${HAS_EMAIL} openid=${HAS_OPENID})" >&2
+  echo "      raw route: ${ROUTE}" >&2
+  exit 1
+fi
+if [ "${OP_NAME}" != "GetDefault" ]; then
+  echo "FAIL: Route OperationName is '${OP_NAME}', expected 'GetDefault'" >&2
+  exit 1
+fi
+echo "    OK: Route AuthorizationScopes (email+openid) + OperationName == GetDefault reached AWS (Route backfill CLOSED)"
+
+# --- Assertion 5: Authorizer AuthorizerResultTtlInSeconds + EnableSimpleResponses
+AUTHORIZERS=$(aws apigatewayv2 get-authorizers --api-id "${API_ID}" --region "${REGION}")
+AUTHORIZER=$(echo "${AUTHORIZERS}" | jq -c --arg name "${REQUEST_AUTHORIZER_NAME}" \
+  '.Items[] | select(.Name == $name)')
+if [ -z "${AUTHORIZER}" ]; then
+  echo "FAIL: could not find authorizer named '${REQUEST_AUTHORIZER_NAME}'" >&2
+  echo "      raw GetAuthorizers: ${AUTHORIZERS}" >&2
+  exit 1
+fi
+TTL=$(echo "${AUTHORIZER}" | jq -r '.AuthorizerResultTtlInSeconds // empty')
+SIMPLE=$(echo "${AUTHORIZER}" | jq -r '.EnableSimpleResponses // empty')
+if [ "${TTL}" != "300" ]; then
+  echo "FAIL: Authorizer AuthorizerResultTtlInSeconds is '${TTL}', expected '300'" >&2
+  echo "      raw authorizer: ${AUTHORIZER}" >&2
+  exit 1
+fi
+if [ "${SIMPLE}" != "true" ]; then
+  echo "FAIL: Authorizer EnableSimpleResponses is '${SIMPLE}', expected 'true'" >&2
+  exit 1
+fi
+echo "    OK: Authorizer AuthorizerResultTtlInSeconds == 300 + EnableSimpleResponses == true reached AWS (Authorizer backfill CLOSED)"
+
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -178,4 +229,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> serverless-api test passed (ApiGatewayV2 property-coverage backfill closed + clean destroy)"
+echo "==> serverless-api test passed (ApiGatewayV2 Api/Stage/Integration/Route/Authorizer property-coverage backfill closed + clean destroy)"

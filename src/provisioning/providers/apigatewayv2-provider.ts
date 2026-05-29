@@ -107,7 +107,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     ],
     [
       'AWS::ApiGatewayV2::Route',
-      new Set(['ApiId', 'RouteKey', 'Target', 'AuthorizationType', 'AuthorizerId']),
+      new Set([
+        'ApiId',
+        'RouteKey',
+        'Target',
+        'AuthorizationType',
+        'AuthorizerId',
+        'AuthorizationScopes',
+        'OperationName',
+      ]),
     ],
     [
       'AWS::ApiGatewayV2::Authorizer',
@@ -119,6 +127,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'JwtConfiguration',
         'AuthorizerUri',
         'AuthorizerPayloadFormatVersion',
+        'AuthorizerResultTtlInSeconds',
+        'EnableSimpleResponses',
       ]),
     ],
   ]);
@@ -669,6 +679,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           Target: properties['Target'] as string | undefined,
           AuthorizationType: properties['AuthorizationType'] as AuthorizationType | undefined,
           AuthorizerId: properties['AuthorizerId'] as string | undefined,
+          AuthorizationScopes: properties['AuthorizationScopes'] as string[] | undefined,
+          OperationName: properties['OperationName'] as string | undefined,
         })
       );
 
@@ -784,6 +796,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           AuthorizerPayloadFormatVersion: properties['AuthorizerPayloadFormatVersion'] as
             | string
             | undefined,
+          AuthorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
+            | number
+            | undefined,
+          EnableSimpleResponses: properties['EnableSimpleResponses'] as boolean | undefined,
         })
       );
 
@@ -1056,6 +1072,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           ? [...resp.AuthorizationScopes]
           : [];
       }
+
+      // OperationName is a free-form label valid on any route regardless
+      // of AuthorizationType. Emit-when-present so a route that never set
+      // it does not grow a phantom-drift key.
+      if (resp.OperationName !== undefined) result['OperationName'] = resp.OperationName;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1093,6 +1114,16 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       } else if (resp.AuthorizerType === 'REQUEST') {
         result['AuthorizerUri'] = resp.AuthorizerUri ?? '';
         result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion ?? '';
+
+        // AuthorizerResultTtlInSeconds / EnableSimpleResponses are valid
+        // only for REQUEST authorizers. Emit-when-present (gate each on
+        // `!== undefined`) so a REQUEST authorizer that never set them
+        // does not grow a phantom-drift key, and a JWT authorizer never
+        // surfaces them at all.
+        if (resp.AuthorizerResultTtlInSeconds !== undefined)
+          result['AuthorizerResultTtlInSeconds'] = resp.AuthorizerResultTtlInSeconds;
+        if (resp.EnableSimpleResponses !== undefined)
+          result['EnableSimpleResponses'] = resp.EnableSimpleResponses;
       }
       return result;
     } catch (err) {
@@ -1477,7 +1508,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * `UpdateRoute` keys on `(ApiId, RouteId)`. Mutable fields cdkd
    * manages: `RouteKey` / `Target` / `AuthorizationType` /
-   * `AuthorizerId` / `AuthorizationScopes`.
+   * `AuthorizerId` / `AuthorizationScopes` / `OperationName`.
    */
   private async updateRoute(
     logicalId: string,
@@ -1546,6 +1577,13 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.AuthorizationScopes = properties['AuthorizationScopes'] as string[];
       changed = true;
     }
+    if (
+      properties['OperationName'] !== undefined &&
+      properties['OperationName'] !== previousProperties['OperationName']
+    ) {
+      input.OperationName = properties['OperationName'] as string;
+      changed = true;
+    }
 
     if (!changed) {
       this.logger.debug(`No mutable Route fields changed for ${logicalId}; skipping UpdateRoute`);
@@ -1573,7 +1611,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * `UpdateAuthorizer` keys on `(ApiId, AuthorizerId)`. Mutable fields
    * cdkd manages: `AuthorizerType` / `Name` / `IdentitySource` /
    * `JwtConfiguration` / `AuthorizerUri` /
-   * `AuthorizerPayloadFormatVersion`.
+   * `AuthorizerPayloadFormatVersion` / `AuthorizerResultTtlInSeconds` /
+   * `EnableSimpleResponses`.
    */
   private async updateAuthorizer(
     logicalId: string,
@@ -1654,6 +1693,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         previousProperties['AuthorizerPayloadFormatVersion']
     ) {
       input.AuthorizerPayloadFormatVersion = properties['AuthorizerPayloadFormatVersion'] as string;
+      changed = true;
+    }
+    if (
+      properties['AuthorizerResultTtlInSeconds'] !== undefined &&
+      properties['AuthorizerResultTtlInSeconds'] !==
+        previousProperties['AuthorizerResultTtlInSeconds']
+    ) {
+      input.AuthorizerResultTtlInSeconds = properties['AuthorizerResultTtlInSeconds'] as number;
+      changed = true;
+    }
+    if (
+      properties['EnableSimpleResponses'] !== undefined &&
+      properties['EnableSimpleResponses'] !== previousProperties['EnableSimpleResponses']
+    ) {
+      input.EnableSimpleResponses = properties['EnableSimpleResponses'] as boolean;
       changed = true;
     }
 
