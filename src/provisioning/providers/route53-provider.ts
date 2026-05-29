@@ -71,6 +71,7 @@ export class Route53Provider implements ResourceProvider {
         'Comment',
         'GeoLocation',
         'GeoProximityLocation',
+        'CidrRoutingConfig',
       ]),
     ],
   ]);
@@ -590,8 +591,8 @@ export class Route53Provider implements ResourceProvider {
    * Handles conversion of CDK-style ResourceRecords (array of strings)
    * to SDK-style ResourceRecords (array of {Value}).
    * Also handles routing policy properties: Weight, Region, Failover,
-   * MultiValueAnswer, GeoLocation, GeoProximityLocation, SetIdentifier, and
-   * HealthCheckId.
+   * MultiValueAnswer, GeoLocation, GeoProximityLocation, CidrRoutingConfig,
+   * SetIdentifier, and HealthCheckId.
    */
   private buildResourceRecordSet(properties: Record<string, unknown>): ResourceRecordSet {
     const name = properties['Name'] as string;
@@ -711,6 +712,29 @@ export class Route53Provider implements ResourceProvider {
         gpl.Bias = Number(geoProximityLocation['Bias']);
       }
       recordSet.GeoProximityLocation = gpl;
+    }
+
+    // CIDR routing — the CFn `CidrRoutingConfig` object shares the SDK
+    // PascalCase shape (`CollectionId` / `LocationName`). Map each sub-field
+    // when present (omit-when-absent). CIDR routing is a routing policy, so a
+    // `CidrRoutingConfig` RecordSet REQUIRES a `SetIdentifier` and the named
+    // `CollectionId` must reference an existing `AWS::Route53::CidrCollection`
+    // (Cloud-Control-provisioned by cdkd); cdkd forwards whatever the template
+    // supplied and lets AWS validate.
+    const cidrRoutingConfig = properties['CidrRoutingConfig'] as
+      | Record<string, unknown>
+      | undefined;
+    if (cidrRoutingConfig) {
+      const crc: ResourceRecordSet['CidrRoutingConfig'] = {} as NonNullable<
+        ResourceRecordSet['CidrRoutingConfig']
+      >;
+      if (cidrRoutingConfig['CollectionId'] !== undefined) {
+        crc.CollectionId = cidrRoutingConfig['CollectionId'] as string;
+      }
+      if (cidrRoutingConfig['LocationName'] !== undefined) {
+        crc.LocationName = cidrRoutingConfig['LocationName'] as string;
+      }
+      recordSet.CidrRoutingConfig = crc;
     }
 
     return recordSet;
@@ -950,7 +974,7 @@ export class Route53Provider implements ResourceProvider {
    *    (`{zoneId}|{name}|{type}`). Surfaces TTL, ResourceRecords (with
    *    `[{Value}]` -> string[] re-shape to match cdkd state), AliasTarget,
    *    Weight, Region, Failover, MultiValueAnswer, HealthCheckId,
-   *    GeoLocation, GeoProximityLocation, SetIdentifier.
+   *    GeoLocation, GeoProximityLocation, CidrRoutingConfig, SetIdentifier.
    *
    * Returns `undefined` when the parent zone is gone (`NoSuchHostedZone`).
    */
@@ -1149,6 +1173,16 @@ export class Route53Provider implements ResourceProvider {
         gpl['Bias'] = recordSet.GeoProximityLocation.Bias;
       }
       result['GeoProximityLocation'] = gpl;
+    }
+    if (recordSet.CidrRoutingConfig) {
+      const crc: Record<string, unknown> = {};
+      if (recordSet.CidrRoutingConfig.CollectionId !== undefined) {
+        crc['CollectionId'] = recordSet.CidrRoutingConfig.CollectionId;
+      }
+      if (recordSet.CidrRoutingConfig.LocationName !== undefined) {
+        crc['LocationName'] = recordSet.CidrRoutingConfig.LocationName;
+      }
+      result['CidrRoutingConfig'] = crc;
     }
     return result;
   }

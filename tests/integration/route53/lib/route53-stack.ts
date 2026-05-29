@@ -10,6 +10,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * - A Record with static IP target
  * - AWS::Route53::HealthCheck (HTTP health check)
  * - AWS::Route53::RecordSet with GeoProximityLocation (#609 backfill)
+ * - AWS::Route53::CidrCollection (CC-API) + RecordSet with CidrRoutingConfig (#609 backfill)
  * - Resource dependencies (RecordSet depends on HostedZone)
  * - Fn::GetAtt for outputs (HostedZoneId, HealthCheckId)
  *
@@ -57,6 +58,28 @@ export class Route53Stack extends cdk.Stack {
       setIdentifier: 'geo-use1',
       geoProximityLocation: { awsRegion: 'us-east-1', bias: 10 },
     });
+
+    // A CIDR collection backing the CidrRoutingConfig record below.
+    // AWS::Route53::CidrCollection has NO cdkd SDK provider — it routes via
+    // Cloud Control API (supported), so the integ provisions it via CC-API.
+    const cidrCollection = new route53.CfnCidrCollection(this, 'TestCidrCollection', {
+      name: `cdkd-test-cidr-${this.account}`,
+      locations: [{ locationName: 'office', cidrList: ['10.0.0.0/8'] }],
+    });
+
+    // Exercises the #609 CidrRoutingConfig backfill: a CIDR routing-policy
+    // RecordSet (a routing policy, so it REQUIRES a setIdentifier). The
+    // locationName must match a location in the CIDR collection above.
+    const cidrRecord = new route53.CfnRecordSet(this, 'CidrRecord', {
+      hostedZoneId: zone.hostedZoneId,
+      name: `cidr.cdkd-test-${this.account}.internal`,
+      type: 'A',
+      ttl: '300',
+      resourceRecords: ['198.51.100.4'],
+      setIdentifier: 'cidr-office',
+      cidrRoutingConfig: { collectionId: cidrCollection.attrId, locationName: 'office' },
+    });
+    cidrRecord.addDependency(cidrCollection);
 
     // Outputs
     new cdk.CfnOutput(this, 'HostedZoneId', {

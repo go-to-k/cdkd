@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd Route53 RecordSet GeoProximityLocation backfill integ test
-# (issue #609).
+# verify.sh — cdkd Route53 RecordSet GeoProximityLocation + CidrRoutingConfig
+# backfill integ test (issue #609).
 #
 # Asserts that a geoproximity-routing AWS::Route53::RecordSet whose template
 # sets `GeoProximityLocation` (here `AWSRegion` + `Bias`) has that field reach
 # AWS after `cdkd deploy` — the property was a silent-drop before the #609
 # backfill. GeoProximityLocation rides directly on ChangeResourceRecordSets
 # (no separate control-plane API), so closing the silent-drop is purely a
-# matter of forwarding the field. Also asserts the destroy path cleans up
-# (the hosted zone delete requires every non-default record gone first; the
-# cdkd destroy DAG handles order).
+# matter of forwarding the field.
+#
+# Also asserts that a CIDR-routing AWS::Route53::RecordSet whose template sets
+# `CidrRoutingConfig` ({ CollectionId, LocationName }) has that field reach AWS
+# — the last silent-drop on AWS::Route53::RecordSet, now closed by #609. It too
+# rides directly on ChangeResourceRecordSets; the CollectionId references an
+# AWS::Route53::CidrCollection (provisioned via Cloud Control API, no SDK
+# provider) and CIDR routing requires a SetIdentifier.
+#
+# Also asserts the destroy path cleans up (the hosted zone delete requires
+# every non-default record gone first; the cdkd destroy DAG handles order).
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -24,6 +32,8 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EXPECTED_GEO_REGION="us-east-1"
 SET_IDENTIFIER="geo-use1"
+CIDR_SET_IDENTIFIER="cidr-office"
+EXPECTED_CIDR_LOCATION="office"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
@@ -116,6 +126,37 @@ if [ "${ACTUAL_GEO_REGION}" != "${EXPECTED_GEO_REGION}" ]; then
   exit 1
 fi
 echo "    OK: GeoProximityLocation.AWSRegion == ${EXPECTED_GEO_REGION} on AWS (silent-drop CLOSED by #609)"
+
+# --- Assertion: CidrRoutingConfig reached AWS -------------------------
+# Find the CIDR-routing record by Name prefix `cidr.` AND SetIdentifier, then
+# assert its CidrRoutingConfig.CollectionId is non-empty AND LocationName ==
+# the templated value. Seeing both proves the silent-drop is closed (this is
+# the LAST silent-dropped prop on AWS::Route53::RecordSet — type now complete).
+CIDR_RECORD=$(echo "${RECORDS}" | jq -c \
+  --arg sid "${CIDR_SET_IDENTIFIER}" \
+  '.ResourceRecordSets[]
+     | select((.Name | startswith("cidr.")) and (.SetIdentifier == $sid))')
+
+if [ -z "${CIDR_RECORD}" ]; then
+  echo "FAIL: no CIDR-routing record (Name 'cidr.*', SetIdentifier '${CIDR_SET_IDENTIFIER}') found on AWS" >&2
+  echo "${RECORDS}" | jq '.ResourceRecordSets[] | {Name, SetIdentifier}'
+  exit 1
+fi
+
+ACTUAL_CIDR_COLLECTION=$(echo "${CIDR_RECORD}" | jq -r '.CidrRoutingConfig.CollectionId // ""')
+ACTUAL_CIDR_LOCATION=$(echo "${CIDR_RECORD}" | jq -r '.CidrRoutingConfig.LocationName // "null"')
+
+if [ -z "${ACTUAL_CIDR_COLLECTION}" ]; then
+  echo "FAIL: CidrRoutingConfig.CollectionId is empty on AWS (silent-drop NOT closed)" >&2
+  echo "${CIDR_RECORD}" | jq '.'
+  exit 1
+fi
+if [ "${ACTUAL_CIDR_LOCATION}" != "${EXPECTED_CIDR_LOCATION}" ]; then
+  echo "FAIL: CidrRoutingConfig.LocationName is '${ACTUAL_CIDR_LOCATION}', expected '${EXPECTED_CIDR_LOCATION}' (silent-drop NOT closed)" >&2
+  echo "${CIDR_RECORD}" | jq '.'
+  exit 1
+fi
+echo "    OK: CidrRoutingConfig reached AWS (CollectionId='${ACTUAL_CIDR_COLLECTION}', LocationName='${ACTUAL_CIDR_LOCATION}') — silent-drop CLOSED by #609"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

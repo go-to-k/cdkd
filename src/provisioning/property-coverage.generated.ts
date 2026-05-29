@@ -2040,6 +2040,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'AliasTarget',
+        'CidrRoutingConfig',
         'Comment',
         'Failover',
         'GeoLocation',
@@ -2056,7 +2057,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Type',
         'Weight',
       ]),
-      silentDrop: new Map<string, string>([['CidrRoutingConfig', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

@@ -3025,6 +3025,7 @@
     "AWS::Logs::MetricFilter",
     "AWS::Logs::SubscriptionFilter",
     "AWS::Pipes::Pipe",
+    "AWS::Route53::CidrCollection",
     "AWS::Route53::HealthCheck",
     "AWS::SSM::Document",
     "AWS::Scheduler::Schedule",
