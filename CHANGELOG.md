@@ -1,3 +1,10 @@
+# [0.172.0](https://github.com/go-to-k/cdkd/compare/v0.171.0...v0.172.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill DynamoDB::Table PITR + TTL specs ([#696](https://github.com/go-to-k/cdkd/issues/696)) ([15018f2](https://github.com/go-to-k/cdkd/commit/15018f2026ebe1356e6a5a032b3d3121a09e832c))
+
 # [0.171.0](https://github.com/go-to-k/cdkd/compare/v0.170.0...v0.171.0) (2026-05-29)
 
 
