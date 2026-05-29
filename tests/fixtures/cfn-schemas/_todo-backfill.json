@@ -371,18 +371,13 @@
     "AWS::Lambda::Function": [
       "CapacityProviderConfig",
       "CodeSigningConfigArn",
-      "DeadLetterConfig",
       "DurableConfig",
-      "FileSystemConfigs",
       "FunctionScalingConfig",
-      "ImageConfig",
-      "KmsKeyArn",
       "LoggingConfig",
       "PublishToLatestPublished",
       "RecursiveLoop",
       "ReservedConcurrentExecutions",
       "RuntimeManagementConfig",
-      "SnapStart",
       "TenancyConfig"
     ],
     "AWS::Lambda::Permission": [

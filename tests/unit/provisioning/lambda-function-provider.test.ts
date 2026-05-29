@@ -149,6 +149,151 @@ describe('LambdaFunctionProvider', () => {
     });
   });
 
+  // Issue #609: backfill of five native CreateFunction /
+  // UpdateFunctionConfiguration config fields cdkd previously silent-dropped.
+  // (LoggingConfig is deliberately NOT backfilled here — it is the canonical
+  // CC-API-fallback example across several integ fixtures + tests, so it gets
+  // its own follow-up PR.)
+  describe('native config properties (issue #609)', () => {
+    it('passes all five native config fields to CreateFunction (KmsKeyArn -> KMSKeyArn)', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-cfg',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-cfg',
+      });
+
+      await provider.create('CfgFn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-cfg',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+        DeadLetterConfig: { TargetArn: 'arn:aws:sqs:us-east-1:123456789012:dlq' },
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+        FileSystemConfigs: [
+          {
+            Arn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:access-point/fsap-1',
+            LocalMountPath: '/mnt/data',
+          },
+        ],
+        ImageConfig: {
+          Command: ['app.handler'],
+          EntryPoint: ['/lambda-entrypoint.sh'],
+          WorkingDirectory: '/var/task',
+        },
+        SnapStart: { ApplyOn: 'PublishedVersions' },
+      });
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(CreateFunctionCommand);
+      expect(cmd.input.DeadLetterConfig).toEqual({
+        TargetArn: 'arn:aws:sqs:us-east-1:123456789012:dlq',
+      });
+      // CFn names the property `KmsKeyArn`; the SDK input field is `KMSKeyArn`.
+      expect(cmd.input.KMSKeyArn).toBe('arn:aws:kms:us-east-1:123456789012:key/abc');
+      expect(cmd.input.FileSystemConfigs).toEqual([
+        {
+          Arn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:access-point/fsap-1',
+          LocalMountPath: '/mnt/data',
+        },
+      ]);
+      expect(cmd.input.ImageConfig).toEqual({
+        Command: ['app.handler'],
+        EntryPoint: ['/lambda-entrypoint.sh'],
+        WorkingDirectory: '/var/task',
+      });
+      expect(cmd.input.SnapStart).toEqual({ ApplyOn: 'PublishedVersions' });
+    });
+
+    it('omits the native config fields from CreateFunction input when not templated', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-bare',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-bare',
+      });
+
+      await provider.create('BareFn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-bare',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+      });
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd.input.DeadLetterConfig).toBeUndefined();
+      expect(cmd.input.KMSKeyArn).toBeUndefined();
+      expect(cmd.input.FileSystemConfigs).toBeUndefined();
+      expect(cmd.input.ImageConfig).toBeUndefined();
+      expect(cmd.input.SnapStart).toBeUndefined();
+    });
+
+    it('sends SnapStart + KmsKeyArn changes via UpdateFunctionConfiguration', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-cfg',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-cfg',
+          },
+        });
+
+      await provider.update(
+        'CfgFn',
+        'fn-cfg',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          SnapStart: { ApplyOn: 'PublishedVersions' },
+          KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/new',
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          SnapStart: { ApplyOn: 'None' },
+          KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/old',
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.SnapStart).toEqual({ ApplyOn: 'PublishedVersions' });
+      expect(cmd.input.KMSKeyArn).toBe('arn:aws:kms:us-east-1:123456789012:key/new');
+    });
+
+    it('triggers an UpdateFunctionConfiguration when only DeadLetterConfig changes', async () => {
+      // DeadLetterConfig must be in the configFields change-detection list so
+      // a DLQ-only change is not silently no-op'd.
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-dlq',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-dlq',
+          },
+        });
+
+      await provider.update(
+        'DlqFn',
+        'fn-dlq',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          DeadLetterConfig: { TargetArn: 'arn:aws:sqs:us-east-1:123456789012:dlq2' },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          DeadLetterConfig: { TargetArn: 'arn:aws:sqs:us-east-1:123456789012:dlq1' },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.DeadLetterConfig).toEqual({
+        TargetArn: 'arn:aws:sqs:us-east-1:123456789012:dlq2',
+      });
+    });
+  });
+
   describe('update', () => {
     it('sends VpcConfig change via UpdateFunctionConfiguration', async () => {
       // 1) UpdateFunctionConfiguration
