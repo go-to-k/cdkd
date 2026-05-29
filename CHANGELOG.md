@@ -1,3 +1,10 @@
+# [0.183.0](https://github.com/go-to-k/cdkd/compare/v0.182.0...v0.183.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill Glue::Table OpenTableFormatInput (Iceberg) ([#708](https://github.com/go-to-k/cdkd/issues/708)) ([f7f756f](https://github.com/go-to-k/cdkd/commit/f7f756fcbecc3d431ccab702bdd025e9c033855e))
+
 # [0.182.0](https://github.com/go-to-k/cdkd/compare/v0.181.0...v0.182.0) (2026-05-29)
 
 
