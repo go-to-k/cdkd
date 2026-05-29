@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { PutMetricAlarmCommand } from '@aws-sdk/client-cloudwatch';
+import {
+  PutMetricAlarmCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
+} from '@aws-sdk/client-cloudwatch';
 
 const mockSend = vi.fn();
 
@@ -195,5 +199,115 @@ describe('CloudWatchAlarmProvider read-update round-trip', () => {
     expect(input['MetricName']).toBeUndefined();
     expect(input['Namespace']).toBeUndefined();
     expect(input['Statistic']).toBeUndefined();
+  });
+});
+
+describe('CloudWatchAlarmProvider backfilled props (Tags / ExtendedStatistic / EvaluateLowSampleCountPercentile / ThresholdMetricId)', () => {
+  let provider: CloudWatchAlarmProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new CloudWatchAlarmProvider();
+  });
+
+  it('create() wires ExtendedStatistic / EvaluateLowSampleCountPercentile / ThresholdMetricId + Tags via the PutMetricAlarm Tags param', async () => {
+    // PutMetricAlarm then getAlarmArn's DescribeAlarms both go through send.
+    mockSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: ALARM_ARN }] });
+
+    await provider.create('L', RESOURCE_TYPE, {
+      AlarmName: ALARM_NAME,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      Threshold: 80,
+      MetricName: 'CPUUtilization',
+      Namespace: 'AWS/EC2',
+      Period: 300,
+      ExtendedStatistic: 'p99',
+      EvaluateLowSampleCountPercentile: 'ignore',
+      ThresholdMetricId: 'ad1',
+      Tags: [{ Key: 'Team', Value: 'Platform' }],
+    });
+
+    const putCall = mockSend.mock.calls.find((c) => c[0] instanceof PutMetricAlarmCommand);
+    expect(putCall).toBeDefined();
+    const input = putCall![0].input as Record<string, unknown>;
+    expect(input['ExtendedStatistic']).toBe('p99');
+    expect(input['EvaluateLowSampleCountPercentile']).toBe('ignore');
+    expect(input['ThresholdMetricId']).toBe('ad1');
+    // Tags ride the PutMetricAlarm Tags param on create.
+    expect(input['Tags']).toEqual([{ Key: 'Team', Value: 'Platform' }]);
+  });
+
+  it('create() omits Tags / extended fields when not templated', async () => {
+    mockSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: ALARM_ARN }] });
+
+    await provider.create('L', RESOURCE_TYPE, {
+      AlarmName: ALARM_NAME,
+      ComparisonOperator: 'GreaterThanThreshold',
+      EvaluationPeriods: 2,
+      Threshold: 80,
+      MetricName: 'CPUUtilization',
+      Namespace: 'AWS/EC2',
+      Period: 300,
+      Statistic: 'Average',
+    });
+
+    const putCall = mockSend.mock.calls.find((c) => c[0] instanceof PutMetricAlarmCommand);
+    const input = putCall![0].input as Record<string, unknown>;
+    expect(input['Tags']).toBeUndefined();
+    expect(input['ExtendedStatistic']).toBeUndefined();
+    expect(input['EvaluateLowSampleCountPercentile']).toBeUndefined();
+    expect(input['ThresholdMetricId']).toBeUndefined();
+  });
+
+  it('update() sends the 3 scalar fields through PutMetricAlarm (NOT the Tags param) and applies a tag diff via TagResource/UntagResource', async () => {
+    mockSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: ALARM_ARN }] });
+
+    const next = {
+      AlarmName: ALARM_NAME,
+      ComparisonOperator: 'LessThanThreshold',
+      EvaluationPeriods: 3,
+      Threshold: 5,
+      MetricName: 'Errors',
+      Namespace: 'My/Ns',
+      Period: 60,
+      ExtendedStatistic: 'p90',
+      EvaluateLowSampleCountPercentile: 'evaluate',
+      ThresholdMetricId: 'ad2',
+      Tags: [
+        { Key: 'Keep', Value: 'v2' },
+        { Key: 'Added', Value: 'new' },
+      ],
+    };
+    const prev = {
+      ...next,
+      ExtendedStatistic: 'p99',
+      Tags: [
+        { Key: 'Keep', Value: 'v1' },
+        { Key: 'Gone', Value: 'old' },
+      ],
+    };
+
+    await provider.update('L', ALARM_NAME, RESOURCE_TYPE, next, prev);
+
+    const putCall = mockSend.mock.calls.find((c) => c[0] instanceof PutMetricAlarmCommand);
+    const input = putCall![0].input as Record<string, unknown>;
+    expect(input['ExtendedStatistic']).toBe('p90');
+    expect(input['EvaluateLowSampleCountPercentile']).toBe('evaluate');
+    expect(input['ThresholdMetricId']).toBe('ad2');
+    // On update, tags are managed by the tag-diff APIs, NOT the PutMetricAlarm Tags param.
+    expect(input['Tags']).toBeUndefined();
+
+    // Untag the removed key, tag the added/changed keys.
+    const untag = mockSend.mock.calls.find((c) => c[0] instanceof UntagResourceCommand);
+    expect(untag![0].input).toEqual({ ResourceARN: ALARM_ARN, TagKeys: ['Gone'] });
+    const tag = mockSend.mock.calls.find((c) => c[0] instanceof TagResourceCommand);
+    expect(tag![0].input).toEqual({
+      ResourceARN: ALARM_ARN,
+      Tags: [
+        { Key: 'Keep', Value: 'v2' },
+        { Key: 'Added', Value: 'new' },
+      ],
+    });
   });
 });

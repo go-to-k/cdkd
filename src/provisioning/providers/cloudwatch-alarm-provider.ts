@@ -61,6 +61,10 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         'Period',
         'Statistic',
         'Dimensions',
+        'Tags',
+        'ExtendedStatistic',
+        'EvaluateLowSampleCountPercentile',
+        'ThresholdMetricId',
       ]),
     ],
   ]);
@@ -85,9 +89,17 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 256 });
 
     try {
-      await this.cloudWatchClient.send(
-        new PutMetricAlarmCommand(this.buildAlarmParams(alarmName, properties))
-      );
+      // PutMetricAlarm carries a `Tags` param for tags-on-create. On UPDATE
+      // tags are managed separately via TagResource / UntagResource (the
+      // PutMetricAlarm `Tags` param is replace-only and does not remove
+      // tags), so only the create path sends Tags through PutMetricAlarm.
+      const createParams = this.buildAlarmParams(alarmName, properties);
+      const tags = this.buildCreateTags(properties['Tags']);
+      if (tags) {
+        createParams.Tags = tags;
+      }
+
+      await this.cloudWatchClient.send(new PutMetricAlarmCommand(createParams));
 
       this.logger.debug(`Successfully created CloudWatch alarm ${logicalId}: ${alarmName}`);
 
@@ -244,6 +256,23 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   }
 
   /**
+   * Build the PutMetricAlarm `Tags` param from CFn-shape `[{Key, Value}]`
+   * Tags for the create path. Returns `undefined` when no tags are present
+   * so the field is omitted from the AWS call (matching create()'s
+   * omit-when-unset convention for other optional fields).
+   */
+  private buildCreateTags(raw: unknown): Array<{ Key: string; Value: string }> | undefined {
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    const tags: Array<{ Key: string; Value: string }> = [];
+    for (const t of raw as Array<{ Key?: string; Value?: string }>) {
+      if (t.Key !== undefined && t.Value !== undefined) {
+        tags.push({ Key: t.Key, Value: t.Value });
+      }
+    }
+    return tags.length > 0 ? tags : undefined;
+  }
+
+  /**
    * Apply a diff between old and new CFn-shape Tags arrays via CloudWatch's
    * `TagResource` / `UntagResource` APIs (keyed by `ResourceARN`).
    */
@@ -335,6 +364,19 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       OKActions: properties['OKActions'] as string[] | undefined,
       TreatMissingData: emptyToUndefined(properties['TreatMissingData']),
       Unit: emptyToUndefined(properties['Unit']) as StandardUnit | undefined,
+      // Direct PutMetricAlarm passthrough fields. ExtendedStatistic is the
+      // single-metric extended statistic (e.g. 'p99'), mutually exclusive
+      // with Statistic (no extra validation — CDK does none either).
+      // ThresholdMetricId references a metric-math expression for an
+      // anomaly-detection band. EvaluateLowSampleCountPercentile is the
+      // 'evaluate' / 'ignore' low-sample-count mode. The two string fields
+      // are coerced '' -> undefined so a readCurrentState placeholder never
+      // ships a rejectable empty value back through the update round-trip.
+      ExtendedStatistic: emptyToUndefined(properties['ExtendedStatistic']),
+      EvaluateLowSampleCountPercentile: emptyToUndefined(
+        properties['EvaluateLowSampleCountPercentile']
+      ),
+      ThresholdMetricId: emptyToUndefined(properties['ThresholdMetricId']),
     };
 
     // Metrics array (math expressions / composite metrics).
@@ -455,6 +497,23 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       ...(d.Value !== undefined ? { Value: d.Value } : {}),
     }));
     result['Metrics'] = (alarm.Metrics ?? []).map((m) => m as unknown as Record<string, unknown>);
+
+    // Emit-when-present (NOT always-emit) for the extended-statistic /
+    // anomaly-detection / low-sample-count fields. Unlike the always-emit
+    // placeholders above, these are surfaced only when AWS reports a value:
+    // PutMetricAlarm echoes back exactly what create()/update() sent, so
+    // emit-when-present can't drop a templated value, and emitting them
+    // unconditionally would break the "AWS minimum response" key-set
+    // regression test (cloudwatch-alarm-provider-readcurrentstate.test.ts).
+    if (alarm.ExtendedStatistic !== undefined) {
+      result['ExtendedStatistic'] = alarm.ExtendedStatistic;
+    }
+    if (alarm.EvaluateLowSampleCountPercentile !== undefined) {
+      result['EvaluateLowSampleCountPercentile'] = alarm.EvaluateLowSampleCountPercentile;
+    }
+    if (alarm.ThresholdMetricId !== undefined) {
+      result['ThresholdMetricId'] = alarm.ThresholdMetricId;
+    }
 
     // Tags via ListTagsForResource (uses the alarm ARN from DescribeAlarms).
     if (alarm.AlarmArn) {
