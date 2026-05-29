@@ -313,13 +313,6 @@
     "AWS::Events::EventBus": [
       "LogConfig"
     ],
-    "AWS::Glue::Database": [
-      "DatabaseName"
-    ],
-    "AWS::Glue::Table": [
-      "Name",
-      "OpenTableFormatInput"
-    ],
     "AWS::Kinesis::Stream": [
       "DesiredShardLevelMetrics",
       "MaxRecordSizeInKiB",

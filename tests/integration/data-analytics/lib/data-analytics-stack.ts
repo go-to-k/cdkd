@@ -9,20 +9,22 @@ import * as athena from 'aws-cdk-lib/aws-athena';
  *
  * Demonstrates:
  * - AWS::Glue::Database (SDK Provider)
- * - AWS::Glue::Table (SDK Provider)
+ * - AWS::Glue::Table (SDK Provider) — regular EXTERNAL_TABLE + Iceberg table
  * - AWS::Athena::WorkGroup (L1 CfnWorkGroup)
  * - AWS::Athena::NamedQuery (L1 CfnNamedQuery)
  * - AWS::S3::Bucket for query results
- * - CfnOutputs for workgroup name, database name, bucket name
+ * - CfnOutputs for workgroup name, database name, bucket name, iceberg table
  */
 export class DataAnalyticsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // S3 bucket for Athena query results
+    // S3 bucket for Athena query results. autoDeleteObjects is enabled so
+    // destroy can empty the Iceberg metadata the table below writes under
+    // s3://<bucket>/iceberg/ at create time.
     const bucket = new s3.Bucket(this, 'ResultsBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: false,
+      autoDeleteObjects: true,
     });
 
     // Glue Database
@@ -56,6 +58,26 @@ export class DataAnalyticsStack extends cdk.Stack {
       },
     });
 
+    // Iceberg Glue Table — exercises the #609 OpenTableFormatInput backfill
+    // (top-level CreateTable param; MetadataOperation: 'CREATE' writes Iceberg
+    // metadata under the S3 location at create time).
+    new glue.CfnTable(this, 'IcebergTable', {
+      catalogId: this.account,
+      databaseName: database.ref,
+      openTableFormatInput: { icebergInput: { metadataOperation: 'CREATE', version: '2' } },
+      tableInput: {
+        name: 'events_iceberg',
+        tableType: 'EXTERNAL_TABLE',
+        storageDescriptor: {
+          columns: [
+            { name: 'event_id', type: 'string' },
+            { name: 'ts', type: 'timestamp' },
+          ],
+          location: `s3://${bucket.bucketName}/iceberg/`,
+        },
+      },
+    });
+
     // Athena WorkGroup
     const workGroup = new athena.CfnWorkGroup(this, 'AnalyticsWorkGroup', {
       name: `${this.stackName}-workgroup`,
@@ -84,6 +106,11 @@ export class DataAnalyticsStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DatabaseName', {
       value: database.ref,
       description: 'Glue Database name',
+    });
+
+    new cdk.CfnOutput(this, 'IcebergTableName', {
+      value: 'events_iceberg',
+      description: 'Glue Iceberg table name (OpenTableFormatInput backfill)',
     });
 
     new cdk.CfnOutput(this, 'BucketName', {

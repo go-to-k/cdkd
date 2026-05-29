@@ -43,6 +43,7 @@ import {
   EntityNotFoundException,
   type DatabaseInput,
   type TableInput,
+  type OpenTableFormatInput,
   type StorageDescriptor,
   type Column,
   type Order,
@@ -100,7 +101,10 @@ export class GlueProvider implements ResourceProvider {
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::Glue::Database', new Set(['DatabaseInput', 'DatabaseName', 'CatalogId'])],
-    ['AWS::Glue::Table', new Set(['DatabaseName', 'TableInput', 'Name', 'CatalogId'])],
+    [
+      'AWS::Glue::Table',
+      new Set(['DatabaseName', 'TableInput', 'Name', 'CatalogId', 'OpenTableFormatInput']),
+    ],
   ]);
 
   private getClient(): GlueClient {
@@ -368,12 +372,26 @@ export class GlueProvider implements ResourceProvider {
 
     const catalogId = properties['CatalogId'] as string | undefined;
 
+    // `OpenTableFormatInput` (Apache Iceberg) is a top-level `CreateTableCommand`
+    // param — a SIBLING of `TableInput`, NOT nested inside it. The CFn shape
+    // (`{ IcebergInput: { MetadataOperation, Version } }`) maps 1:1 to the SDK
+    // `OpenTableFormatInput` type (same PascalCase). Omit when absent.
+    // Iceberg's `MetadataOperation: 'CREATE'` is a create-time directive, so it
+    // is intentionally wired on create only — `UpdateTableCommandInput` does not
+    // accept `OpenTableFormatInput` (verified against @aws-sdk/client-glue).
+    const openTableFormatInput = properties['OpenTableFormatInput'] as
+      | OpenTableFormatInput
+      | undefined;
+
     try {
       await this.getClient().send(
         new CreateTableCommand({
           CatalogId: catalogId,
           DatabaseName: databaseName,
           TableInput: this.buildTableInput(tableInput, tableName),
+          ...(openTableFormatInput !== undefined && {
+            OpenTableFormatInput: openTableFormatInput,
+          }),
         })
       );
 
@@ -702,6 +720,23 @@ export class GlueProvider implements ResourceProvider {
       default:
         return undefined;
     }
+  }
+
+  /**
+   * `OpenTableFormatInput` is a create-time directive (`IcebergInput.MetadataOperation`
+   * can only be `CREATE`). `GetTable` does NOT echo it back as an
+   * `OpenTableFormatInput` field — an Iceberg table surfaces only via
+   * `Table.Parameters['table_type'] == 'ICEBERG'`, which is not the same
+   * round-trippable shape. There is therefore no clean emit-when-present
+   * readback for it (and fabricating a placeholder would itself fire false
+   * drift). Declaring it here keeps the drift comparator from false-positiving
+   * on a state-recorded `OpenTableFormatInput` that the readback never surfaces.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    if (resourceType === 'AWS::Glue::Table') {
+      return ['OpenTableFormatInput'];
+    }
+    return [];
   }
 
   private async readDatabase(physicalId: string): Promise<Record<string, unknown> | undefined> {
