@@ -1,3 +1,10 @@
+# [0.174.0](https://github.com/go-to-k/cdkd/compare/v0.173.0...v0.174.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill SQS + SNS Subscription messaging attrs ([#698](https://github.com/go-to-k/cdkd/issues/698)) ([9f8b919](https://github.com/go-to-k/cdkd/commit/9f8b919bd7e006af8b47e3841163993861ab480c))
+
 # [0.173.0](https://github.com/go-to-k/cdkd/compare/v0.172.0...v0.173.0) (2026-05-29)
 
 
