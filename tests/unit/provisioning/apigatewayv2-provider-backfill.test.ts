@@ -124,6 +124,56 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
     expect(input['DisableExecuteApiEndpoint']).toBe(false);
   });
 
+  it('Api update(): RouteSelectionExpression change (WEBSOCKET) rides UpdateApi', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      { ProtocolType: 'WEBSOCKET', RouteSelectionExpression: '$request.body.newAction' },
+      { ProtocolType: 'WEBSOCKET', RouteSelectionExpression: '$request.body.action' }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateApiCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      RouteSelectionExpression: '$request.body.newAction',
+    });
+  });
+
+  it('Api update(): ApiKeySelectionExpression change (WEBSOCKET) rides UpdateApi', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      { ProtocolType: 'WEBSOCKET', ApiKeySelectionExpression: '$request.header.x-new-key' },
+      { ProtocolType: 'WEBSOCKET', ApiKeySelectionExpression: '$request.header.x-api-key' }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateApiCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      ApiKeySelectionExpression: '$request.header.x-new-key',
+    });
+  });
+
+  it('Api update(): unchanged selection expressions produce zero SDK calls', async () => {
+    const same = {
+      ProtocolType: 'WEBSOCKET',
+      RouteSelectionExpression: '$request.body.action',
+      ApiKeySelectionExpression: '$request.header.x-api-key',
+    };
+    await provider.update('ApiLogical', API_ID, 'AWS::ApiGatewayV2::Api', same, same);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('Api readCurrentState: emits DisableExecuteApiEndpoint / Version when present (HTTP)', async () => {
     mockSend.mockResolvedValueOnce({
       ApiId: API_ID,
@@ -137,6 +187,20 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
 
     expect(observed!['DisableExecuteApiEndpoint']).toBe(true);
     expect(observed!['Version']).toBe('v3');
+  });
+
+  it('Api readCurrentState: emits DisableExecuteApiEndpoint=false (emit-when-present, not truthy)', async () => {
+    mockSend.mockResolvedValueOnce({
+      ApiId: API_ID,
+      Name: 'my-api',
+      ProtocolType: 'HTTP',
+      DisableExecuteApiEndpoint: false,
+    });
+
+    const observed = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
+
+    expect(observed!).toHaveProperty('DisableExecuteApiEndpoint');
+    expect(observed!['DisableExecuteApiEndpoint']).toBe(false);
   });
 
   it('Api readCurrentState: omits DisableExecuteApiEndpoint / Version when AWS does not return them', async () => {
