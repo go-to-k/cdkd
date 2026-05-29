@@ -617,7 +617,7 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). |
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkd local invoke` — the function-specific key may also be a **CDK display path** (`MyStack/MyHandler`). |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
-| `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
+| `--watch` | off | Hot reload: watch the CDK app **source tree** (the synth working directory, where `cdk.json` lives) and re-synth + re-discover routes on a source edit, mirroring `cdk watch`. `cdk.out` / `node_modules` / `.git` are excluded and `cdk.json`'s `watch.include` / `watch.exclude` are honored. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
 | `--from-state` | off | Read cdkd S3 state for every routed stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in Lambda env vars with the deployed physical IDs / attributes. Off by default — keeps the pre-PR literal-only / warn-and-drop behavior. Mirrors `cdkd local invoke --from-state` and `cdkd local run-task --from-state`. Re-runs against fresh state on every hot-reload firing (`--watch`). State load failures degrade per-stack to warn-and-fall-back so a missing or unreadable state file never aborts the server. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). **The bare form is the typical shape** — `cdkd local start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden); the explicit form is rejected when more than one stack is routed in one invocation. **Mutually exclusive with `--from-state`**. `Fn::GetAtt` in a consumer Lambda's own env vars is recovered from the deployed function config (`cdk-local@0.10.0`); other `Fn::GetAtt` sites still warn-and-drop. Same semantics as `cdkd local invoke --from-cfn-stack`. |
@@ -631,8 +631,10 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 ### Hot reload (`--watch`)
 
 When `--watch` is set, cdkd installs a [chokidar](https://github.com/paulmillr/chokidar)-backed
-file watcher over `cdk.out/` plus every routed Lambda's asset
-directory. A change in any watched path triggers a debounced (500ms
+file watcher over the CDK app's **source tree** (the synth working
+directory, where `cdk.json` lives), excluding `cdk.out` / `node_modules`
+/ `.git` and honoring `cdk.json`'s `watch.include` / `watch.exclude`
+(mirroring `cdk watch`). A source edit triggers a debounced (500ms
 window) reload:
 
 1. Re-run `cdk synth` (skipped when `-a <dir>` was passed at server
