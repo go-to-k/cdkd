@@ -20,6 +20,7 @@ import {
   type GlobalSecondaryIndex,
   type LocalSecondaryIndex,
   type StreamSpecification,
+  type OnDemandThroughput,
   type Tag,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
@@ -61,6 +62,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         'AttributeDefinitions',
         'BillingMode',
         'ProvisionedThroughput',
+        'OnDemandThroughput',
         'StreamSpecification',
         'GlobalSecondaryIndexes',
         'LocalSecondaryIndexes',
@@ -137,6 +139,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
           ReadCapacityUnits: Number(pt?.['ReadCapacityUnits'] ?? 5),
           WriteCapacityUnits: Number(pt?.['WriteCapacityUnits'] ?? 5),
         };
+      }
+
+      // On-demand throughput caps (PAY_PER_REQUEST tables). Rides directly
+      // on CreateTable — unlike PITR / TTL it is NOT a post-ACTIVE control-
+      // plane call. Pass it through verbatim when present; AWS validates the
+      // PAY_PER_REQUEST-only constraint.
+      if (properties['OnDemandThroughput']) {
+        createParams.OnDemandThroughput = properties['OnDemandThroughput'] as OnDemandThroughput;
       }
 
       // Stream specification - CDK omits StreamEnabled, SDK requires it
@@ -281,6 +291,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
           previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
           properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
         );
+      }
+
+      // OnDemandThroughput — rides on UpdateTable (NOT a separate control-
+      // plane API like PITR / TTL). Fire only when the value changed so a
+      // no-op update doesn't issue a redundant UpdateTable; AWS validates
+      // the PAY_PER_REQUEST-only constraint.
+      if (
+        JSON.stringify(properties['OnDemandThroughput']) !==
+        JSON.stringify(previousProperties['OnDemandThroughput'])
+      ) {
+        if (properties['OnDemandThroughput']) {
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              OnDemandThroughput: properties['OnDemandThroughput'] as OnDemandThroughput,
+            })
+          );
+          this.logger.debug(`Updated OnDemandThroughput on DynamoDB table ${physicalId}`);
+        }
       }
 
       // PointInTimeRecoverySpecification — separate UpdateContinuousBackups
@@ -757,6 +786,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
           ReadCapacityUnits: table.ProvisionedThroughput.ReadCapacityUnits,
           WriteCapacityUnits: table.ProvisionedThroughput.WriteCapacityUnits,
         };
+      }
+      // OnDemandThroughput — DescribeTable returns it only on PAY_PER_REQUEST
+      // tables that set capacity caps. Emit-when-present (no default when
+      // absent) so a table that never configured caps doesn't grow a
+      // placeholder that would round-trip through update() as a spurious
+      // UpdateTable.
+      if (table.OnDemandThroughput) {
+        const odt: Record<string, unknown> = {};
+        if (table.OnDemandThroughput.MaxReadRequestUnits !== undefined) {
+          odt['MaxReadRequestUnits'] = table.OnDemandThroughput.MaxReadRequestUnits;
+        }
+        if (table.OnDemandThroughput.MaxWriteRequestUnits !== undefined) {
+          odt['MaxWriteRequestUnits'] = table.OnDemandThroughput.MaxWriteRequestUnits;
+        }
+        if (Object.keys(odt).length > 0) {
+          result['OnDemandThroughput'] = odt;
+        }
       }
       // Class 1 guard: StreamSpecification.StreamViewType is only valid when
       // a stream is enabled. AWS returns the StreamSpecification block on

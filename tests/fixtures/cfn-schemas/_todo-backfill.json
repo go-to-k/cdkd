@@ -194,7 +194,6 @@
       "ContributorInsightsSpecification",
       "ImportSourceSpecification",
       "KinesisStreamSpecification",
-      "OnDemandThroughput",
       "ResourcePolicy",
       "WarmThroughput"
     ],
