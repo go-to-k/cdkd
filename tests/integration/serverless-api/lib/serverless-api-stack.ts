@@ -138,13 +138,33 @@ def handler(event, context):
       },
     });
 
-    // Default route with JWT authorization
+    // Default route with JWT authorization.
+    // authorizationScopes / operationName exercise the #609 Route backfill
+    // (both ride on CreateRoute/UpdateRoute directly).
     new apigatewayv2.CfnRoute(this, 'DefaultRoute', {
       apiId: httpApi.ref,
       routeKey: '$default',
       authorizationType: 'JWT',
       authorizerId: authorizer.ref,
+      authorizationScopes: ['email', 'openid'],
+      operationName: 'GetDefault',
       target: cdk.Fn.join('/', ['integrations', integration.ref]),
+    });
+
+    // Standalone REQUEST authorizer (not attached to any route, no IAM role
+    // or lambda permission needed since it is never invoked). It exists
+    // solely to exercise the #609 Authorizer backfill props
+    // authorizerResultTtlInSeconds / enableSimpleResponses (both ride on
+    // CreateAuthorizer/UpdateAuthorizer directly).
+    new apigatewayv2.CfnAuthorizer(this, 'RequestAuthorizer', {
+      apiId: httpApi.ref,
+      authorizerType: 'REQUEST',
+      name: 'request-authorizer',
+      identitySource: ['$request.header.Authorization'],
+      authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${fn.functionArn}/invocations`,
+      authorizerPayloadFormatVersion: '2.0', // 2.0 required for enableSimpleResponses
+      enableSimpleResponses: true,
+      authorizerResultTtlInSeconds: 300,
     });
 
     // Outputs

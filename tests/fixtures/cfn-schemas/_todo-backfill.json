@@ -45,8 +45,6 @@
     ],
     "AWS::ApiGatewayV2::Authorizer": [
       "AuthorizerCredentialsArn",
-      "AuthorizerResultTtlInSeconds",
-      "EnableSimpleResponses",
       "IdentityValidationExpression"
     ],
     "AWS::ApiGatewayV2::Integration": [
@@ -63,9 +61,7 @@
     ],
     "AWS::ApiGatewayV2::Route": [
       "ApiKeyRequired",
-      "AuthorizationScopes",
       "ModelSelectionExpression",
-      "OperationName",
       "RequestModels",
       "RequestParameters",
       "RouteResponseSelectionExpression"

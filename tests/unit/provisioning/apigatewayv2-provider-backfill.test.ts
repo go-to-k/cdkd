@@ -3,9 +3,13 @@ import {
   CreateApiCommand,
   CreateStageCommand,
   CreateIntegrationCommand,
+  CreateRouteCommand,
+  CreateAuthorizerCommand,
   UpdateApiCommand,
   UpdateStageCommand,
   UpdateIntegrationCommand,
+  UpdateRouteCommand,
+  UpdateAuthorizerCommand,
 } from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
@@ -51,6 +55,8 @@ const API_ID = 'abcd1234';
  *                  RouteSelectionExpression / ApiKeySelectionExpression
  *   - Stage:       StageVariables / DefaultRouteSettings
  *   - Integration: TimeoutInMillis / RequestParameters / Description
+ *   - Route:       AuthorizationScopes / OperationName
+ *   - Authorizer:  AuthorizerResultTtlInSeconds / EnableSimpleResponses
  *
  * Each block covers create-send (field reaches the SDK input), update-send
  * (field rides the diffed UpdateX input), and readCurrentState emit/omit
@@ -434,5 +440,220 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
     expect(without!).not.toHaveProperty('TimeoutInMillis');
     expect(without!).not.toHaveProperty('RequestParameters');
     expect(without!).not.toHaveProperty('Description');
+  });
+
+  // ─── Route ────────────────────────────────────────────────────────
+
+  it('Route create(): AuthorizationScopes / OperationName reach CreateRoute', async () => {
+    mockSend.mockResolvedValueOnce({ RouteId: 'route-1' });
+
+    await provider.create('RouteLogical', 'AWS::ApiGatewayV2::Route', {
+      ApiId: API_ID,
+      RouteKey: '$default',
+      AuthorizationType: 'JWT',
+      AuthorizationScopes: ['email', 'openid'],
+      OperationName: 'GetDefault',
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateRouteCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['AuthorizationScopes']).toEqual(['email', 'openid']);
+    expect(input['OperationName']).toBe('GetDefault');
+  });
+
+  it('Route update(): AuthorizationScopes / OperationName change emits UpdateRoute with only diffed fields', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'RouteLogical',
+      'route-1',
+      'AWS::ApiGatewayV2::Route',
+      {
+        ApiId: API_ID,
+        AuthorizationScopes: ['email', 'openid'],
+        OperationName: 'GetDefault',
+      },
+      {
+        ApiId: API_ID,
+        AuthorizationScopes: ['email'],
+        OperationName: 'GetOld',
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRouteCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      RouteId: 'route-1',
+      AuthorizationScopes: ['email', 'openid'],
+      OperationName: 'GetDefault',
+    });
+  });
+
+  it('Route update(): unchanged AuthorizationScopes / OperationName produce zero SDK calls', async () => {
+    const same = {
+      ApiId: API_ID,
+      AuthorizationScopes: ['email', 'openid'],
+      OperationName: 'GetDefault',
+    };
+    await provider.update('RouteLogical', 'route-1', 'AWS::ApiGatewayV2::Route', same, same);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Route update(): AuthorizationScopes equal by value but a DISTINCT array reference produces zero SDK calls (deepEqual, not reference ===)', async () => {
+    // Guards the change-detection from regressing to a reference `!==`,
+    // which would always treat a structurally-equal array as changed and
+    // fire a spurious UpdateRoute on every deploy.
+    await provider.update(
+      'RouteLogical',
+      'route-1',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: API_ID, AuthorizationScopes: ['email', 'openid'], OperationName: 'GetDefault' },
+      { ApiId: API_ID, AuthorizationScopes: ['email', 'openid'], OperationName: 'GetDefault' }
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Route create(): omits AuthorizationScopes / OperationName from CreateRoute when absent', async () => {
+    mockSend.mockResolvedValueOnce({ RouteId: 'route-1' });
+    await provider.create('RouteLogical', 'AWS::ApiGatewayV2::Route', {
+      ApiId: API_ID,
+      RouteKey: '$default',
+    });
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateRouteCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['AuthorizationScopes']).toBeUndefined();
+    expect(input['OperationName']).toBeUndefined();
+  });
+
+  it('Route readCurrentState: emits OperationName when present, omits when absent', async () => {
+    mockSend.mockResolvedValueOnce({
+      RouteKey: 'GET /pets',
+      Target: 'integrations/int-1',
+      AuthorizationType: 'NONE',
+      OperationName: 'GetPets',
+    });
+    const withName = await provider.readCurrentState(
+      'route-1',
+      'RouteLogical',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: API_ID }
+    );
+    expect(withName!['OperationName']).toBe('GetPets');
+
+    mockSend.mockResolvedValueOnce({
+      RouteKey: 'GET /pets',
+      Target: 'integrations/int-1',
+      AuthorizationType: 'NONE',
+    });
+    const without = await provider.readCurrentState(
+      'route-1',
+      'RouteLogical',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: API_ID }
+    );
+    expect(without!).not.toHaveProperty('OperationName');
+  });
+
+  // ─── Authorizer ───────────────────────────────────────────────────
+
+  it('Authorizer create(): AuthorizerResultTtlInSeconds / EnableSimpleResponses reach CreateAuthorizer', async () => {
+    mockSend.mockResolvedValueOnce({ AuthorizerId: 'auth-1' });
+
+    await provider.create('AuthorizerLogical', 'AWS::ApiGatewayV2::Authorizer', {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      Name: 'request-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      AuthorizerPayloadFormatVersion: '2.0',
+      AuthorizerResultTtlInSeconds: 300,
+      EnableSimpleResponses: true,
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['AuthorizerResultTtlInSeconds']).toBe(300);
+    expect(input['EnableSimpleResponses']).toBe(true);
+  });
+
+  it('Authorizer create(): omits AuthorizerResultTtlInSeconds / EnableSimpleResponses from CreateAuthorizer when absent', async () => {
+    mockSend.mockResolvedValueOnce({ AuthorizerId: 'auth-1' });
+    await provider.create('AuthorizerLogical', 'AWS::ApiGatewayV2::Authorizer', {
+      ApiId: API_ID,
+      AuthorizerType: 'JWT',
+      Name: 'jwt-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      JwtConfiguration: { Audience: ['aud'], Issuer: 'https://issuer.example.com' },
+    });
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['AuthorizerResultTtlInSeconds']).toBeUndefined();
+    expect(input['EnableSimpleResponses']).toBeUndefined();
+  });
+
+  it('Authorizer update(): AuthorizerResultTtlInSeconds / EnableSimpleResponses change emits UpdateAuthorizer with only diffed fields', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthorizerLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        AuthorizerResultTtlInSeconds: 300,
+        EnableSimpleResponses: true,
+      },
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        AuthorizerResultTtlInSeconds: 0,
+        EnableSimpleResponses: false,
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      AuthorizerId: 'auth-1',
+      AuthorizerResultTtlInSeconds: 300,
+      EnableSimpleResponses: true,
+    });
+  });
+
+  it('Authorizer update(): EnableSimpleResponses=false reaches AWS (not-truthy gate)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthorizerLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: API_ID, AuthorizerType: 'REQUEST', EnableSimpleResponses: false },
+      { ApiId: API_ID, AuthorizerType: 'REQUEST', EnableSimpleResponses: true }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['EnableSimpleResponses']).toBe(false);
+  });
+
+  it('Authorizer update(): unchanged AuthorizerResultTtlInSeconds / EnableSimpleResponses produce zero SDK calls', async () => {
+    const same = {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      AuthorizerResultTtlInSeconds: 300,
+      EnableSimpleResponses: true,
+    };
+    await provider.update('AuthorizerLogical', 'auth-1', 'AWS::ApiGatewayV2::Authorizer', same, same);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

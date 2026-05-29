@@ -188,6 +188,132 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     });
   });
 
+  // ─── #609 backfill: Route OperationName emit/omit ──────────────────
+
+  it('emits Route OperationName when AWS returns it (emit-when-present)', async () => {
+    mockSend.mockResolvedValueOnce({
+      RouteKey: 'GET /pets',
+      Target: 'integrations/int-1',
+      AuthorizationType: 'NONE',
+      OperationName: 'GetPets',
+    });
+
+    const result = await provider.readCurrentState(
+      'route-1',
+      'RouteLogical',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!['OperationName']).toBe('GetPets');
+  });
+
+  it('omits Route OperationName when AWS does not return it (omit-when-absent)', async () => {
+    mockSend.mockResolvedValueOnce({
+      RouteKey: 'GET /pets',
+      Target: 'integrations/int-1',
+      AuthorizationType: 'NONE',
+    });
+
+    const result = await provider.readCurrentState(
+      'route-1',
+      'RouteLogical',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!).not.toHaveProperty('OperationName');
+  });
+
+  // ─── #609 backfill: Authorizer REQUEST-discriminated emit/omit ──────
+
+  it('emits AuthorizerResultTtlInSeconds / EnableSimpleResponses on a REQUEST authorizer when present', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'REQUEST',
+      Name: 'request-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      AuthorizerPayloadFormatVersion: '2.0',
+      AuthorizerResultTtlInSeconds: 300,
+      EnableSimpleResponses: true,
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!['AuthorizerResultTtlInSeconds']).toBe(300);
+    expect(result!['EnableSimpleResponses']).toBe(true);
+  });
+
+  it('emits EnableSimpleResponses=false on a REQUEST authorizer (emit-when-present, not truthy)', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'REQUEST',
+      Name: 'request-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      AuthorizerPayloadFormatVersion: '2.0',
+      AuthorizerResultTtlInSeconds: 0,
+      EnableSimpleResponses: false,
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!).toHaveProperty('EnableSimpleResponses');
+    expect(result!['EnableSimpleResponses']).toBe(false);
+    expect(result!['AuthorizerResultTtlInSeconds']).toBe(0);
+  });
+
+  it('omits AuthorizerResultTtlInSeconds / EnableSimpleResponses on a REQUEST authorizer when AWS does not return them', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'REQUEST',
+      Name: 'request-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      AuthorizerPayloadFormatVersion: '2.0',
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!).not.toHaveProperty('AuthorizerResultTtlInSeconds');
+    expect(result!).not.toHaveProperty('EnableSimpleResponses');
+  });
+
+  it('never emits AuthorizerResultTtlInSeconds / EnableSimpleResponses on a JWT authorizer (REQUEST discriminator guard)', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'JWT',
+      Name: 'my-jwt-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      JwtConfiguration: { Audience: ['client-id'], Issuer: 'https://issuer.example.com' },
+      // AWS may echo server-side defaults; they must NOT surface on JWT.
+      AuthorizerResultTtlInSeconds: 300,
+      EnableSimpleResponses: true,
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!).not.toHaveProperty('AuthorizerResultTtlInSeconds');
+    expect(result!).not.toHaveProperty('EnableSimpleResponses');
+  });
+
   it('returns undefined for sub-resources when properties.ApiId is missing', async () => {
     const result = await provider.readCurrentState(
       'route-id',

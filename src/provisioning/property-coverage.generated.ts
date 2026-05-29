@@ -178,16 +178,16 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'ApiId',
         'AuthorizerPayloadFormatVersion',
+        'AuthorizerResultTtlInSeconds',
         'AuthorizerType',
         'AuthorizerUri',
+        'EnableSimpleResponses',
         'IdentitySource',
         'JwtConfiguration',
         'Name',
       ]),
       silentDrop: new Map<string, string>([
         ['AuthorizerCredentialsArn', 'not yet implemented by cdkd'],
-        ['AuthorizerResultTtlInSeconds', 'not yet implemented by cdkd'],
-        ['EnableSimpleResponses', 'not yet implemented by cdkd'],
         ['IdentityValidationExpression', 'not yet implemented by cdkd'],
       ]),
     },
@@ -224,16 +224,16 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'ApiId',
+        'AuthorizationScopes',
         'AuthorizationType',
         'AuthorizerId',
+        'OperationName',
         'RouteKey',
         'Target',
       ]),
       silentDrop: new Map<string, string>([
         ['ApiKeyRequired', 'not yet implemented by cdkd'],
-        ['AuthorizationScopes', 'not yet implemented by cdkd'],
         ['ModelSelectionExpression', 'not yet implemented by cdkd'],
-        ['OperationName', 'not yet implemented by cdkd'],
         ['RequestModels', 'not yet implemented by cdkd'],
         ['RequestParameters', 'not yet implemented by cdkd'],
         ['RouteResponseSelectionExpression', 'not yet implemented by cdkd'],
