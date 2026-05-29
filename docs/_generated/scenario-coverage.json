@@ -342,6 +342,11 @@
       ]
     },
     {
+      "name": "dynamodb-ondemand",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-streams",
       "annotated": true,
       "scenarios": []
@@ -1150,6 +1155,7 @@
     "acm-certificate",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "dynamodb-ondemand",
     "export-nested-stack",
     "iam-managed-policy",
     "nested-stack",

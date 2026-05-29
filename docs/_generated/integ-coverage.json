@@ -636,6 +636,7 @@
         "bench-sdk",
         "composite-stack",
         "data-pipeline",
+        "dynamodb-ondemand",
         "dynamodb-streams",
         "full-stack-demo",
         "lambda",
@@ -658,6 +659,9 @@
           "literal"
         ],
         "data-pipeline": [
+          "l2"
+        ],
+        "dynamodb-ondemand": [
           "l2"
         ],
         "dynamodb-streams": [

@@ -297,6 +297,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // plane API like PITR / TTL). Fire only when the value changed so a
       // no-op update doesn't issue a redundant UpdateTable; AWS validates
       // the PAY_PER_REQUEST-only constraint.
+      //
+      // Caveat (pre-existing gap, fails loud not silent): a one-shot
+      // PROVISIONED -> PAY_PER_REQUEST switch that ALSO adds caps would issue
+      // this UpdateTable against a table AWS still considers PROVISIONED and
+      // get a clear ValidationException — update() does not yet send a
+      // BillingMode change. A future BillingMode-update wiring closes it.
       if (
         JSON.stringify(properties['OnDemandThroughput']) !==
         JSON.stringify(previousProperties['OnDemandThroughput'])
