@@ -144,6 +144,30 @@ describe('SQSQueueProvider.readCurrentState', () => {
     expect(result).toHaveProperty('KmsMasterKeyId', '');
   });
 
+  it('emits a parsed RedriveAllowPolicy when AWS returns it', async () => {
+    const redriveAllow = { redrivePermission: 'byQueue', sourceQueueArns: ['arn:aws:sqs:us-east-1:1:src'] };
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        VisibilityTimeout: '30',
+        RedriveAllowPolicy: JSON.stringify(redriveAllow),
+      },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: {} });
+
+    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    expect(result?.['RedriveAllowPolicy']).toEqual(redriveAllow);
+  });
+
+  it('omits RedriveAllowPolicy when AWS does not return it (emit-when-present, no placeholder)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Attributes: { VisibilityTimeout: '30' /* no RedriveAllowPolicy */ },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: {} });
+
+    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    expect(result).not.toHaveProperty('RedriveAllowPolicy');
+  });
+
   it('emits FIFO-only attributes (DeduplicationScope / FifoThroughputLimit) on FIFO queues', async () => {
     mockSend.mockResolvedValueOnce({
       Attributes: { VisibilityTimeout: '30', FifoQueue: 'true' },

@@ -70,6 +70,57 @@ describe('SNSSubscriptionProvider.readCurrentState', () => {
     });
   });
 
+  it('emits the backfilled attributes when AWS returns them (issue #609)', async () => {
+    const redrive = { deadLetterTargetArn: 'arn:aws:sqs:us-east-1:1:dlq' };
+    const delivery = { healthyRetryPolicy: { numRetries: 3 } };
+    const replay = { pointType: 'TIMESTAMP' };
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: 'arn:aws:sns:us-east-1:1:my-topic',
+        Protocol: 'sqs',
+        Endpoint: 'arn:aws:sqs:us-east-1:1:queue',
+        FilterPolicyScope: 'MessageBody',
+        SubscriptionRoleArn: 'arn:aws:iam::1:role/r',
+        RedrivePolicy: JSON.stringify(redrive),
+        DeliveryPolicy: JSON.stringify(delivery),
+        ReplayPolicy: JSON.stringify(replay),
+        Owner: '1',
+        SubscriptionArn: SUB_ARN,
+      },
+    });
+
+    const result = await provider.readCurrentState(SUB_ARN, 'L', 'AWS::SNS::Subscription');
+    expect(result).toEqual({
+      TopicArn: 'arn:aws:sns:us-east-1:1:my-topic',
+      Protocol: 'sqs',
+      Endpoint: 'arn:aws:sqs:us-east-1:1:queue',
+      FilterPolicyScope: 'MessageBody',
+      SubscriptionRoleArn: 'arn:aws:iam::1:role/r',
+      RedrivePolicy: redrive,
+      DeliveryPolicy: delivery,
+      ReplayPolicy: replay,
+    });
+  });
+
+  it('omits the backfilled attributes when AWS does not return them (emit-when-present)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: 'arn:aws:sns:us-east-1:1:my-topic',
+        Protocol: 'email',
+        Endpoint: 'me@example.com',
+        Owner: '1',
+        SubscriptionArn: SUB_ARN,
+      },
+    });
+
+    const result = await provider.readCurrentState(SUB_ARN, 'L', 'AWS::SNS::Subscription');
+    expect(result).not.toHaveProperty('FilterPolicyScope');
+    expect(result).not.toHaveProperty('SubscriptionRoleArn');
+    expect(result).not.toHaveProperty('RedrivePolicy');
+    expect(result).not.toHaveProperty('DeliveryPolicy');
+    expect(result).not.toHaveProperty('ReplayPolicy');
+  });
+
   it('returns undefined when subscription is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new NotFoundException({ message: 'gone', $metadata: {} })

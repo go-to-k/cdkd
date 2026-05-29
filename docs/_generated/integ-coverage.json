@@ -2623,10 +2623,14 @@
     {
       "resourceType": "AWS::SNS::Subscription",
       "integs": [
-        "composite-stack"
+        "composite-stack",
+        "sns-sqs-event"
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "sns-sqs-event": [
           "literal"
         ]
       }

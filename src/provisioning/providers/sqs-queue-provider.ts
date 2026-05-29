@@ -63,6 +63,25 @@ function serializeRedrivePolicy(value: unknown): string {
 }
 
 /**
+ * Serialise a CFn-shape `RedriveAllowPolicy` to the string form
+ * `SetQueueAttributes` / `CreateQueue` expect.
+ *
+ * In CloudFormation `RedriveAllowPolicy` is a JSON object (e.g.
+ * `{ redrivePermission: 'allowAll' }`); the SQS API expects it as a JSON
+ * string, exactly like `RedrivePolicy`. Unlike `serializeRedrivePolicy`,
+ * this does NOT collapse an empty object to `""` — that quirk is specific
+ * to `RedrivePolicy`, whose empty-object placeholder `readCurrentState`
+ * always-emits and which AWS rejects when round-tripped as `"{}"`.
+ * `RedriveAllowPolicy` has no such placeholder (it is emitted only when
+ * AWS returns it), so an object is JSON-stringified verbatim and a string
+ * passes through unchanged.
+ */
+function serializeRedriveAllowPolicy(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
+/**
  * CDK property name to SQS attribute name mapping
  */
 const CDK_TO_SQS_ATTRIBUTES: Record<string, string> = {
@@ -72,6 +91,7 @@ const CDK_TO_SQS_ATTRIBUTES: Record<string, string> = {
   DelaySeconds: 'DelaySeconds',
   ReceiveMessageWaitTimeSeconds: 'ReceiveMessageWaitTimeSeconds',
   RedrivePolicy: 'RedrivePolicy',
+  RedriveAllowPolicy: 'RedriveAllowPolicy',
   FifoQueue: 'FifoQueue',
   ContentBasedDeduplication: 'ContentBasedDeduplication',
   KmsMasterKeyId: 'KmsMasterKeyId',
@@ -104,6 +124,7 @@ export class SQSQueueProvider implements ResourceProvider {
         'DelaySeconds',
         'ReceiveMessageWaitTimeSeconds',
         'RedrivePolicy',
+        'RedriveAllowPolicy',
         'FifoQueue',
         'ContentBasedDeduplication',
         'KmsMasterKeyId',
@@ -144,6 +165,8 @@ export class SQSQueueProvider implements ResourceProvider {
           const value = properties[cdkKey];
           if (cdkKey === 'RedrivePolicy' && typeof value === 'object') {
             attributes[sqsKey] = serializeRedrivePolicy(value);
+          } else if (cdkKey === 'RedriveAllowPolicy') {
+            attributes[sqsKey] = serializeRedriveAllowPolicy(value);
           } else {
             attributes[sqsKey] = stringifyValue(value);
           }
@@ -219,6 +242,8 @@ export class SQSQueueProvider implements ResourceProvider {
           const value = properties[cdkKey];
           if (cdkKey === 'RedrivePolicy' && typeof value === 'object') {
             attributes[sqsKey] = serializeRedrivePolicy(value);
+          } else if (cdkKey === 'RedriveAllowPolicy') {
+            attributes[sqsKey] = serializeRedriveAllowPolicy(value);
           } else {
             attributes[sqsKey] = stringifyValue(value);
           }
@@ -523,6 +548,20 @@ export class SQSQueueProvider implements ResourceProvider {
       }
     } else {
       result['RedrivePolicy'] = {};
+    }
+
+    // RedriveAllowPolicy: AWS returns as a JSON string; cdkd state holds the
+    // parsed object (post intrinsic resolution). Emit-when-present (NOT the
+    // always-emit-placeholder convention): unlike RedrivePolicy there is no
+    // empty-object placeholder to round-trip, so the key is surfaced only
+    // when AWS actually returns it (a queue without a source-queue restriction
+    // has none).
+    if (attributes['RedriveAllowPolicy']) {
+      try {
+        result['RedriveAllowPolicy'] = JSON.parse(attributes['RedriveAllowPolicy']) as unknown;
+      } catch {
+        result['RedriveAllowPolicy'] = attributes['RedriveAllowPolicy'];
+      }
     }
 
     // Tags via ListQueueTags. SQS returns Tags as a tag-name → value map.

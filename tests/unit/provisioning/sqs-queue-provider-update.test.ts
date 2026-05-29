@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  CreateQueueCommand,
   GetQueueAttributesCommand,
   SetQueueAttributesCommand,
 } from '@aws-sdk/client-sqs';
@@ -99,6 +100,40 @@ describe('SQSQueueProvider.update', () => {
     expect(input.Attributes['RedrivePolicy']).toBe(JSON.stringify(redrive));
   });
 
+  it('serialises a RedriveAllowPolicy object to canonical JSON on update', async () => {
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    const redriveAllow = { redrivePermission: 'allowAll' };
+
+    await provider.update('L', QUEUE_URL, 'AWS::SQS::Queue', { RedriveAllowPolicy: redriveAllow }, {});
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['RedriveAllowPolicy']).toBe(JSON.stringify(redriveAllow));
+  });
+
+  it('passes a RedriveAllowPolicy string through unchanged on update (no empty-object quirk)', async () => {
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    const raw = '{"redrivePermission":"byQueue","sourceQueueArns":["arn:aws:sqs:us-east-1:0:src"]}';
+
+    await provider.update('L', QUEUE_URL, 'AWS::SQS::Queue', { RedriveAllowPolicy: raw }, {});
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    // Unlike RedrivePolicy, an empty object is NOT collapsed to "" — verify the
+    // string passes through verbatim (no JSON re-stringify).
+    expect(input.Attributes['RedriveAllowPolicy']).toBe(raw);
+  });
+
   it('issues GetQueueAttributes for the QueueArn after the update', async () => {
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
@@ -113,6 +148,22 @@ describe('SQSQueueProvider.update', () => {
 
     expect(result.attributes?.['Arn']).toBe('arn:aws:sqs:us-east-1:0:q');
     expect(mockSend.mock.calls.some((c) => c[0] instanceof GetQueueAttributesCommand)).toBe(true);
+  });
+
+  it('sends a RedriveAllowPolicy object as a JSON string on create', async () => {
+    mockSend.mockResolvedValueOnce({ QueueUrl: QUEUE_URL }); // CreateQueue
+
+    const redriveAllow = { redrivePermission: 'allowAll' };
+
+    await provider.create('L', 'AWS::SQS::Queue', {
+      QueueName: 'my-queue',
+      RedriveAllowPolicy: redriveAllow,
+    });
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateQueueCommand);
+    expect(createCall).toBeDefined();
+    const input = createCall![0].input as { Attributes?: Record<string, string> };
+    expect(input.Attributes?.['RedriveAllowPolicy']).toBe(JSON.stringify(redriveAllow));
   });
 
   it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
