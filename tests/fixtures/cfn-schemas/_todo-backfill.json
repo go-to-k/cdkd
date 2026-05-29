@@ -192,8 +192,7 @@
       "ContributorInsightsSpecification",
       "ImportSourceSpecification",
       "KinesisStreamSpecification",
-      "ResourcePolicy",
-      "WarmThroughput"
+      "ResourcePolicy"
     ],
     "AWS::EC2::Instance": [
       "AdditionalInfo",
