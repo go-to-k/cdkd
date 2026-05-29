@@ -1,3 +1,10 @@
+# [0.176.0](https://github.com/go-to-k/cdkd/compare/v0.175.0...v0.176.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill ApiGateway::Stage TracingEnabled + Variables ([#700](https://github.com/go-to-k/cdkd/issues/700)) ([e31c004](https://github.com/go-to-k/cdkd/commit/e31c004397724032a1505151d728ee2e62d83a3c))
+
 # [0.175.0](https://github.com/go-to-k/cdkd/compare/v0.174.0...v0.175.0) (2026-05-29)
 
 
