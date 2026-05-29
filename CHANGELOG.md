@@ -1,3 +1,10 @@
+# [0.179.0](https://github.com/go-to-k/cdkd/compare/v0.178.0...v0.179.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill ApiGatewayV2 Route + Authorizer config props ([#703](https://github.com/go-to-k/cdkd/issues/703)) ([06894f2](https://github.com/go-to-k/cdkd/commit/06894f253a838b383b8111a131d57d747548811d))
+
 # [0.178.0](https://github.com/go-to-k/cdkd/compare/v0.177.0...v0.178.0) (2026-05-29)
 
 
