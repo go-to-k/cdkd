@@ -41,14 +41,7 @@
       "MethodSettings"
     ],
     "AWS::ApiGatewayV2::Api": [
-      "ApiKeySelectionExpression",
-      "CredentialsArn",
-      "DisableExecuteApiEndpoint",
-      "IpAddressType",
-      "RouteKey",
-      "RouteSelectionExpression",
-      "Target",
-      "Version"
+      "IpAddressType"
     ],
     "AWS::ApiGatewayV2::Authorizer": [
       "AuthorizerCredentialsArn",
@@ -61,14 +54,11 @@
       "ConnectionType",
       "ContentHandlingStrategy",
       "CredentialsArn",
-      "Description",
       "IntegrationSubtype",
       "PassthroughBehavior",
-      "RequestParameters",
       "RequestTemplates",
       "ResponseParameters",
       "TemplateSelectionExpression",
-      "TimeoutInMillis",
       "TlsConfig"
     ],
     "AWS::ApiGatewayV2::Route": [
@@ -83,10 +73,8 @@
     "AWS::ApiGatewayV2::Stage": [
       "AccessLogSettings",
       "ClientCertificateId",
-      "DefaultRouteSettings",
       "DeploymentId",
-      "RouteSettings",
-      "StageVariables"
+      "RouteSettings"
     ],
     "AWS::AppSync::DataSource": [
       "ElasticsearchConfig",
