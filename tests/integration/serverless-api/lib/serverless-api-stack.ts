@@ -85,25 +85,45 @@ def handler(event, context):
     const userPoolClient = userPool.addClient('ApiClient');
 
     // API Gateway V2 HTTP API (L1 constructs)
+    // disableExecuteApiEndpoint / version exercise the #609 Api backfill
+    // (both ride on CreateApi/UpdateApi for HTTP APIs).
     const httpApi = new apigatewayv2.CfnApi(this, 'HttpApi', {
       name: 'cdkd-serverless-api',
       protocolType: 'HTTP',
       description: 'Serverless HTTP API for cdkd testing',
+      disableExecuteApiEndpoint: false,
+      version: 'v1',
     });
 
-    // Default stage with auto-deploy
+    // Default stage with auto-deploy.
+    // stageVariables / defaultRouteSettings exercise the #609 Stage backfill.
     new apigatewayv2.CfnStage(this, 'DefaultStage', {
       apiId: httpApi.ref,
       stageName: '$default',
       autoDeploy: true,
+      stageVariables: {
+        env: 'test',
+      },
+      defaultRouteSettings: {
+        detailedMetricsEnabled: true,
+        throttlingBurstLimit: 100,
+        throttlingRateLimit: 50,
+      },
     });
 
-    // Lambda integration
+    // Lambda integration.
+    // timeoutInMillis / requestParameters / description exercise the
+    // #609 Integration backfill (all ride on CreateIntegration/UpdateIntegration).
     const integration = new apigatewayv2.CfnIntegration(this, 'LambdaIntegration', {
       apiId: httpApi.ref,
       integrationType: 'AWS_PROXY',
       integrationUri: fn.functionArn,
       payloadFormatVersion: '2.0',
+      timeoutInMillis: 15000,
+      description: 'Lambda proxy integration for cdkd testing',
+      requestParameters: {
+        'append:header.x-cdkd-test': "'serverless-api'",
+      },
     });
 
     // JWT Authorizer

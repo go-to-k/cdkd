@@ -26,6 +26,7 @@ import {
   type IntegrationType,
   type AuthorizationType,
   type AuthorizerType,
+  type RouteSettings,
   type UpdateApiCommandInput,
   type UpdateStageCommandInput,
   type UpdateIntegrationCommandInput,
@@ -67,11 +68,29 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::ApiGatewayV2::Api',
-      new Set(['Name', 'ProtocolType', 'Description', 'CorsConfiguration', 'Tags']),
+      new Set([
+        'Name',
+        'ProtocolType',
+        'Description',
+        'CorsConfiguration',
+        'Tags',
+        'DisableExecuteApiEndpoint',
+        'Version',
+        'RouteSelectionExpression',
+        'ApiKeySelectionExpression',
+      ]),
     ],
     [
       'AWS::ApiGatewayV2::Stage',
-      new Set(['ApiId', 'StageName', 'AutoDeploy', 'Description', 'Tags']),
+      new Set([
+        'ApiId',
+        'StageName',
+        'AutoDeploy',
+        'Description',
+        'Tags',
+        'StageVariables',
+        'DefaultRouteSettings',
+      ]),
     ],
     [
       'AWS::ApiGatewayV2::Integration',
@@ -81,6 +100,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'IntegrationUri',
         'IntegrationMethod',
         'PayloadFormatVersion',
+        'TimeoutInMillis',
+        'RequestParameters',
+        'Description',
       ]),
     ],
     [
@@ -133,6 +155,18 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         [
           'BasePath',
           'OpenAPI-import-only basePath override; meaningful only on the ImportApi code path.',
+        ],
+        [
+          'RouteKey',
+          'Quick-create shortcut: CreateApi inline-creates a default route+integration from RouteKey/Target/CredentialsArn. cdkd models routes/integrations as explicit AWS::ApiGatewayV2::Route/::Integration resources, so this convenience field is not wired.',
+        ],
+        [
+          'Target',
+          'Quick-create shortcut (paired with RouteKey/CredentialsArn); cdkd models the integration as an explicit AWS::ApiGatewayV2::Integration resource instead.',
+        ],
+        [
+          'CredentialsArn',
+          'Quick-create shortcut (paired with RouteKey/Target); cdkd models the integration as an explicit AWS::ApiGatewayV2::Integration resource instead.',
         ],
       ]),
     ],
@@ -318,6 +352,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
                 MaxAge?: number;
               }
             | undefined,
+          DisableExecuteApiEndpoint: properties['DisableExecuteApiEndpoint'] as boolean | undefined,
+          Version: properties['Version'] as string | undefined,
+          RouteSelectionExpression: properties['RouteSelectionExpression'] as string | undefined,
+          ApiKeySelectionExpression: properties['ApiKeySelectionExpression'] as string | undefined,
           Tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
@@ -414,6 +452,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           StageName: stageName,
           AutoDeploy: properties['AutoDeploy'] as boolean | undefined,
           Description: properties['Description'] as string | undefined,
+          StageVariables: properties['StageVariables'] as Record<string, string> | undefined,
+          DefaultRouteSettings: properties['DefaultRouteSettings'] as RouteSettings | undefined,
           Tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
@@ -516,6 +556,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           IntegrationUri: properties['IntegrationUri'] as string | undefined,
           IntegrationMethod: properties['IntegrationMethod'] as string | undefined,
           PayloadFormatVersion: properties['PayloadFormatVersion'] as string | undefined,
+          TimeoutInMillis: properties['TimeoutInMillis'] as number | undefined,
+          RequestParameters: properties['RequestParameters'] as Record<string, string> | undefined,
+          Description: properties['Description'] as string | undefined,
         })
       );
 
@@ -878,6 +921,22 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['RouteSelectionExpression'] = resp.RouteSelectionExpression;
       }
 
+      // Class 1 — ApiKeySelectionExpression is supported only for
+      // WEBSOCKET APIs (AWS docs). Emitting it on an HTTP API would push
+      // an AWS-rejected value back through `cdkd drift --revert`. Same
+      // discriminator guard as RouteSelectionExpression above.
+      if (resp.ProtocolType === 'WEBSOCKET' && resp.ApiKeySelectionExpression !== undefined) {
+        result['ApiKeySelectionExpression'] = resp.ApiKeySelectionExpression;
+      }
+
+      // DisableExecuteApiEndpoint / Version ride on both protocols and
+      // are user-controllable on CreateApi/UpdateApi — emit when present
+      // (no default-when-absent, matching the provider's convention).
+      if (resp.DisableExecuteApiEndpoint !== undefined) {
+        result['DisableExecuteApiEndpoint'] = resp.DisableExecuteApiEndpoint;
+      }
+      if (resp.Version !== undefined) result['Version'] = resp.Version;
+
       // Tags from the same GetApi response (returned as a tag-name → value map).
       const tags = normalizeAwsTagsToCfn(resp.Tags);
       result['Tags'] = tags;
@@ -903,6 +962,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.StageName !== undefined) result['StageName'] = resp.StageName;
       result['AutoDeploy'] = resp.AutoDeploy ?? false;
       result['Description'] = resp.Description ?? '';
+
+      // StageVariables / DefaultRouteSettings are user-controllable on
+      // CreateStage/UpdateStage — emit when present (no default-when-absent,
+      // matching the provider's convention). The drift comparator is
+      // state-keys-only, so emit-when-present cannot cause phantom drift.
+      if (resp.StageVariables !== undefined) result['StageVariables'] = resp.StageVariables;
+      if (resp.DefaultRouteSettings !== undefined) {
+        result['DefaultRouteSettings'] = resp.DefaultRouteSettings;
+      }
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -939,6 +1007,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       result['IntegrationMethod'] = resp.IntegrationMethod ?? '';
       result['PayloadFormatVersion'] = resp.PayloadFormatVersion ?? '';
+
+      // TimeoutInMillis / RequestParameters / Description are
+      // user-controllable on CreateIntegration/UpdateIntegration — emit
+      // when present (no default-when-absent, matching the provider's
+      // convention). The drift comparator is state-keys-only, so
+      // emit-when-present cannot cause phantom drift.
+      if (resp.TimeoutInMillis !== undefined) result['TimeoutInMillis'] = resp.TimeoutInMillis;
+      if (resp.RequestParameters !== undefined) {
+        result['RequestParameters'] = resp.RequestParameters;
+      }
+      if (resp.Description !== undefined) result['Description'] = resp.Description;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1080,9 +1159,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * `UpdateApi` accepts the full Update input shape (not JSON Patch).
    * Mutable fields cdkd manages: `Name` / `Description` /
-   * `CorsConfiguration`. `ProtocolType` is immutable — the deploy
-   * engine handles changes via the replacement path; we surface a
-   * `ResourceUpdateNotSupportedError` if it ever reaches us anyway.
+   * `CorsConfiguration` / `DisableExecuteApiEndpoint` / `Version` /
+   * `RouteSelectionExpression` / `ApiKeySelectionExpression`.
+   * `ProtocolType` is immutable — the deploy engine handles changes via
+   * the replacement path; we surface a `ResourceUpdateNotSupportedError`
+   * if it ever reaches us anyway.
    */
   private async updateApi(
     logicalId: string,
@@ -1126,6 +1207,34 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       ] as UpdateApiCommandInput['CorsConfiguration'];
       changed = true;
     }
+    if (
+      properties['DisableExecuteApiEndpoint'] !== undefined &&
+      properties['DisableExecuteApiEndpoint'] !== previousProperties['DisableExecuteApiEndpoint']
+    ) {
+      input.DisableExecuteApiEndpoint = properties['DisableExecuteApiEndpoint'] as boolean;
+      changed = true;
+    }
+    if (
+      properties['Version'] !== undefined &&
+      properties['Version'] !== previousProperties['Version']
+    ) {
+      input.Version = properties['Version'] as string;
+      changed = true;
+    }
+    if (
+      properties['RouteSelectionExpression'] !== undefined &&
+      properties['RouteSelectionExpression'] !== previousProperties['RouteSelectionExpression']
+    ) {
+      input.RouteSelectionExpression = properties['RouteSelectionExpression'] as string;
+      changed = true;
+    }
+    if (
+      properties['ApiKeySelectionExpression'] !== undefined &&
+      properties['ApiKeySelectionExpression'] !== previousProperties['ApiKeySelectionExpression']
+    ) {
+      input.ApiKeySelectionExpression = properties['ApiKeySelectionExpression'] as string;
+      changed = true;
+    }
 
     if (!changed) {
       this.logger.debug(`No mutable Api fields changed for ${logicalId}; skipping UpdateApi`);
@@ -1152,8 +1261,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * `UpdateStage` keys on `(ApiId, StageName)` — `StageName` is the
    * physicalId and immutable. Mutable fields cdkd manages:
-   * `AutoDeploy` / `Description`. `ApiId` is also immutable (a stage
-   * cannot be moved between APIs).
+   * `AutoDeploy` / `Description` / `StageVariables` /
+   * `DefaultRouteSettings`. `ApiId` is also immutable (a stage cannot be
+   * moved between APIs).
    */
   private async updateStage(
     logicalId: string,
@@ -1212,6 +1322,23 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Description = properties['Description'] as string;
       changed = true;
     }
+    if (
+      properties['StageVariables'] !== undefined &&
+      !this.deepEqual(properties['StageVariables'], previousProperties['StageVariables'])
+    ) {
+      input.StageVariables = properties['StageVariables'] as Record<string, string>;
+      changed = true;
+    }
+    if (
+      properties['DefaultRouteSettings'] !== undefined &&
+      !this.deepEqual(
+        properties['DefaultRouteSettings'],
+        previousProperties['DefaultRouteSettings']
+      )
+    ) {
+      input.DefaultRouteSettings = properties['DefaultRouteSettings'] as RouteSettings;
+      changed = true;
+    }
 
     if (!changed) {
       this.logger.debug(`No mutable Stage fields changed for ${logicalId}; skipping UpdateStage`);
@@ -1238,7 +1365,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * `UpdateIntegration` keys on `(ApiId, IntegrationId)`. Mutable
    * fields cdkd manages: `IntegrationType` / `IntegrationUri` /
-   * `IntegrationMethod` / `PayloadFormatVersion`.
+   * `IntegrationMethod` / `PayloadFormatVersion` / `TimeoutInMillis` /
+   * `RequestParameters` / `Description`.
    */
   private async updateIntegration(
     logicalId: string,
@@ -1298,6 +1426,27 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['PayloadFormatVersion'] !== previousProperties['PayloadFormatVersion']
     ) {
       input.PayloadFormatVersion = properties['PayloadFormatVersion'] as string;
+      changed = true;
+    }
+    if (
+      properties['TimeoutInMillis'] !== undefined &&
+      properties['TimeoutInMillis'] !== previousProperties['TimeoutInMillis']
+    ) {
+      input.TimeoutInMillis = properties['TimeoutInMillis'] as number;
+      changed = true;
+    }
+    if (
+      properties['RequestParameters'] !== undefined &&
+      !this.deepEqual(properties['RequestParameters'], previousProperties['RequestParameters'])
+    ) {
+      input.RequestParameters = properties['RequestParameters'] as Record<string, string>;
+      changed = true;
+    }
+    if (
+      properties['Description'] !== undefined &&
+      properties['Description'] !== previousProperties['Description']
+    ) {
+      input.Description = properties['Description'] as string;
       changed = true;
     }
 
