@@ -21,6 +21,10 @@ import {
   type TracingConfig,
   type EphemeralStorage,
   type VpcConfig,
+  type DeadLetterConfig,
+  type FileSystemConfig,
+  type ImageConfig,
+  type SnapStart,
 } from '@aws-sdk/client-lambda';
 import {
   CDK_PATH_TAG,
@@ -93,6 +97,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'TracingConfig',
         'EphemeralStorage',
         'VpcConfig',
+        'DeadLetterConfig',
+        'KmsKeyArn',
+        'FileSystemConfigs',
+        'ImageConfig',
+        'SnapStart',
       ]),
     ],
   ]);
@@ -203,6 +212,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
         TracingConfig: properties['TracingConfig'] as TracingConfig | undefined,
         EphemeralStorage: properties['EphemeralStorage'] as EphemeralStorage | undefined,
         VpcConfig: this.buildVpcConfig(properties['VpcConfig']),
+        DeadLetterConfig: properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
+        // CFn names this `KmsKeyArn`; the Lambda SDK input field is `KMSKeyArn`.
+        KMSKeyArn: properties['KmsKeyArn'] as string | undefined,
+        FileSystemConfigs: properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
+        ImageConfig: properties['ImageConfig'] as ImageConfig | undefined,
+        SnapStart: properties['SnapStart'] as SnapStart | undefined,
         Tags: tags,
       };
 
@@ -270,6 +285,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'TracingConfig',
         'EphemeralStorage',
         'VpcConfig',
+        'DeadLetterConfig',
+        'KmsKeyArn',
+        'FileSystemConfigs',
+        'ImageConfig',
+        'SnapStart',
       ];
 
       let hasConfigChanges = false;
@@ -298,6 +318,42 @@ export class LambdaFunctionProvider implements ResourceProvider {
           VpcConfig: this.buildVpcConfigForUpdate(
             properties['VpcConfig'],
             previousProperties['VpcConfig']
+          ),
+          // Each of these five is cleared-on-removal (see clearOnUpdateRemoval):
+          // UpdateFunctionConfiguration treats an ABSENT field as "no change",
+          // so a template that drops a previously-set field must send an
+          // explicit reset value or AWS silently keeps the old one. Same
+          // hazard VpcConfig handles via buildVpcConfigForUpdate.
+          DeadLetterConfig: this.clearOnUpdateRemoval(
+            properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
+            previousProperties['DeadLetterConfig'] as DeadLetterConfig | undefined,
+            // Empty TargetArn detaches the DLQ.
+            { TargetArn: '' }
+          ),
+          // CFn names this `KmsKeyArn`; the Lambda SDK input field is `KMSKeyArn`.
+          // Empty string resets to the AWS-managed default key.
+          KMSKeyArn: this.clearOnUpdateRemoval(
+            properties['KmsKeyArn'] as string | undefined,
+            previousProperties['KmsKeyArn'] as string | undefined,
+            ''
+          ),
+          // Empty list removes all EFS mounts.
+          FileSystemConfigs: this.clearOnUpdateRemoval(
+            properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
+            previousProperties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
+            []
+          ),
+          // Empty object resets container image overrides to the image defaults.
+          ImageConfig: this.clearOnUpdateRemoval(
+            properties['ImageConfig'] as ImageConfig | undefined,
+            previousProperties['ImageConfig'] as ImageConfig | undefined,
+            {}
+          ),
+          // ApplyOn: 'None' disables SnapStart.
+          SnapStart: this.clearOnUpdateRemoval(
+            properties['SnapStart'] as SnapStart | undefined,
+            previousProperties['SnapStart'] as SnapStart | undefined,
+            { ApplyOn: 'None' }
           ),
         };
 
@@ -519,6 +575,27 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (this.hasVpcConfig(previousRaw)) {
       return { SubnetIds: [], SecurityGroupIds: [] };
     }
+    return undefined;
+  }
+
+  /**
+   * Build an UpdateFunctionConfiguration field value that clears on removal.
+   *
+   * `UpdateFunctionConfiguration` treats an absent field as "no change", so
+   * passing `undefined` for a field the user just dropped from the template
+   * leaves the old value live on AWS — the update reports success while the
+   * field silently persists. For fields that support an explicit reset value
+   * (DeadLetterConfig `{TargetArn:''}`, KMSKeyArn `''`, FileSystemConfigs `[]`,
+   * ImageConfig `{}`, SnapStart `{ApplyOn:'None'}`) we send that reset when the
+   * field was present before and is now absent. Mirrors `buildVpcConfigForUpdate`.
+   */
+  private clearOnUpdateRemoval<T>(
+    newValue: T | undefined,
+    previousValue: T | undefined,
+    clearValue: T
+  ): T | undefined {
+    if (newValue !== undefined) return newValue;
+    if (previousValue !== undefined) return clearValue;
     return undefined;
   }
 
@@ -988,8 +1065,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * Issues a single `GetFunction` and surfaces the same property keys
    * `create()` accepts (`Runtime`, `Handler`, `Role`, `Timeout`, `MemorySize`,
    * `Description`, `Environment`, `Layers`, `Architectures`, `PackageType`,
-   * `TracingConfig`, `EphemeralStorage`, `VpcConfig`, plus the physical
-   * `FunctionName`). The drift comparator only descends into keys present in
+   * `TracingConfig`, `EphemeralStorage`, `VpcConfig`, `DeadLetterConfig`,
+   * `KmsKeyArn`, `FileSystemConfigs`, `ImageConfig`, `SnapStart`, plus the
+   * physical `FunctionName`). The drift comparator only descends into keys
+   * present in
    * cdkd state, so AWS-managed fields (timestamps, FunctionArn, RevisionId,
    * etc.) are filtered at compare time — we still avoid serializing them on
    * the wire.
@@ -1071,6 +1150,43 @@ export class LambdaFunctionProvider implements ResourceProvider {
           : [],
         Ipv6AllowedForDualStack: cfg.VpcConfig?.Ipv6AllowedForDualStack ?? false,
       };
+
+      // The following fields are emitted ONLY when AWS reports a value (unlike
+      // the always-emit placeholders above). AWS echoes back exactly what
+      // create()/update() sent, so emit-when-present cannot drop a
+      // user-templated value, and the drift comparator's state-keys-only
+      // top-level walk ignores any key not present in state — so emitting an
+      // AWS-default value the user never templated (e.g. SnapStart.ApplyOn=None)
+      // never fires false-positive drift. Emitting them unconditionally would
+      // instead break the "AWS minimum response" key-set regression test
+      // (lambda-function-provider-readcurrentstate.test.ts).
+      if (cfg.DeadLetterConfig?.TargetArn !== undefined) {
+        result['DeadLetterConfig'] = { TargetArn: cfg.DeadLetterConfig.TargetArn };
+      }
+      // CFn names this `KmsKeyArn`; GetFunction returns it as `KMSKeyArn`.
+      if (cfg.KMSKeyArn !== undefined) {
+        result['KmsKeyArn'] = cfg.KMSKeyArn;
+      }
+      if (cfg.FileSystemConfigs !== undefined && cfg.FileSystemConfigs.length > 0) {
+        result['FileSystemConfigs'] = cfg.FileSystemConfigs.map((f) => ({
+          Arn: f.Arn,
+          LocalMountPath: f.LocalMountPath,
+        }));
+      }
+      // Container Lambdas: GetFunction nests ImageConfig under ImageConfigResponse.
+      const imageConfig = cfg.ImageConfigResponse?.ImageConfig;
+      if (imageConfig !== undefined) {
+        const ic: Record<string, unknown> = {};
+        if (imageConfig.EntryPoint !== undefined) ic['EntryPoint'] = [...imageConfig.EntryPoint];
+        if (imageConfig.Command !== undefined) ic['Command'] = [...imageConfig.Command];
+        if (imageConfig.WorkingDirectory !== undefined)
+          ic['WorkingDirectory'] = imageConfig.WorkingDirectory;
+        if (Object.keys(ic).length > 0) result['ImageConfig'] = ic;
+      }
+      if (cfg.SnapStart?.ApplyOn !== undefined) {
+        // CFn SnapStart is { ApplyOn } only; OptimizationStatus is AWS-managed.
+        result['SnapStart'] = { ApplyOn: cfg.SnapStart.ApplyOn };
+      }
 
       // Tags: GetFunction returns a map keyed by tag name. Filter
       // CDK / aws:* auto-tags, re-shape to CFn's `[{Key, Value}]`, and

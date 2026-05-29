@@ -295,4 +295,87 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       'Code.SourceKMSKeyArn',
     ]);
   });
+
+  // Issue #609: the five native config fields backfilled into create()/update()
+  // are also read back so a console-side change surfaces as drift instead of
+  // firing a false positive (state has the field, AWS readback omits it).
+  it('surfaces DeadLetterConfig / KmsKeyArn / FileSystemConfigs / SnapStart when AWS returns them', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        DeadLetterConfig: { TargetArn: 'arn:aws:sqs:us-east-1:123:dlq' },
+        KMSKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
+        FileSystemConfigs: [
+          {
+            Arn: 'arn:aws:elasticfilesystem:us-east-1:123:access-point/fsap-1',
+            LocalMountPath: '/mnt/data',
+          },
+        ],
+        SnapStart: { ApplyOn: 'PublishedVersions', OptimizationStatus: 'On' },
+      },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(result?.DeadLetterConfig).toEqual({ TargetArn: 'arn:aws:sqs:us-east-1:123:dlq' });
+    // GetFunction returns KMSKeyArn; cdkd surfaces it under the CFn name KmsKeyArn.
+    expect(result?.KmsKeyArn).toBe('arn:aws:kms:us-east-1:123:key/abc');
+    expect(result?.FileSystemConfigs).toEqual([
+      {
+        Arn: 'arn:aws:elasticfilesystem:us-east-1:123:access-point/fsap-1',
+        LocalMountPath: '/mnt/data',
+      },
+    ]);
+    // OptimizationStatus is AWS-managed and must NOT be surfaced (CFn SnapStart
+    // is { ApplyOn } only).
+    expect(result?.SnapStart).toEqual({ ApplyOn: 'PublishedVersions' });
+  });
+
+  it('surfaces ImageConfig nested under ImageConfigResponse for container Lambdas', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        PackageType: 'Image',
+        ImageConfigResponse: {
+          ImageConfig: {
+            Command: ['app.handler'],
+            EntryPoint: ['/lambda-entrypoint.sh'],
+            WorkingDirectory: '/var/task',
+          },
+        },
+      },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(result?.ImageConfig).toEqual({
+      EntryPoint: ['/lambda-entrypoint.sh'],
+      Command: ['app.handler'],
+      WorkingDirectory: '/var/task',
+    });
+  });
+
+  it('omits the native config fields when AWS does not return them (no false-positive drift)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        // None of the five native config fields present.
+      },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(result).not.toHaveProperty('DeadLetterConfig');
+    expect(result).not.toHaveProperty('KmsKeyArn');
+    expect(result).not.toHaveProperty('FileSystemConfigs');
+    expect(result).not.toHaveProperty('ImageConfig');
+    expect(result).not.toHaveProperty('SnapStart');
+  });
 });
