@@ -100,6 +100,32 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
       });
     });
 
+    it('passes RecoveryPeriodInDays through to UpdateContinuousBackups when enabling PITR', async () => {
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      }); // DescribeTable -> ACTIVE
+      mockSend.mockResolvedValueOnce({}); // UpdateContinuousBackups
+
+      await provider.create('L', RESOURCE_TYPE, {
+        TableName: TABLE_NAME,
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        PointInTimeRecoverySpecification: {
+          PointInTimeRecoveryEnabled: true,
+          RecoveryPeriodInDays: 14,
+        },
+      });
+
+      const pitrCalls = findCalls(UpdateContinuousBackupsCommand);
+      expect(pitrCalls).toHaveLength(1);
+      expect(pitrCalls[0]!.input.PointInTimeRecoverySpecification).toEqual({
+        PointInTimeRecoveryEnabled: true,
+        RecoveryPeriodInDays: 14,
+      });
+    });
+
     it('defaults TTL Enabled to true when only AttributeName is given', async () => {
       mockSend.mockResolvedValueOnce({}); // CreateTable
       mockSend.mockResolvedValueOnce({
@@ -341,6 +367,26 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
       expect(result?.TimeToLiveSpecification).toEqual({
         AttributeName: 'expiresAt',
         Enabled: true,
+      });
+    });
+
+    it('surfaces RecoveryPeriodInDays when AWS reports it on an enabled PITR table', async () => {
+      primeBase();
+      mockSend.mockResolvedValueOnce({
+        ContinuousBackupsDescription: {
+          PointInTimeRecoveryDescription: {
+            PointInTimeRecoveryStatus: 'ENABLED',
+            RecoveryPeriodInDays: 14,
+          },
+        },
+      }); // DescribeContinuousBackups
+      mockSend.mockResolvedValueOnce({ TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } }); // DescribeTimeToLive
+
+      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+
+      expect(result?.PointInTimeRecoverySpecification).toEqual({
+        PointInTimeRecoveryEnabled: true,
+        RecoveryPeriodInDays: 14,
       });
     });
 

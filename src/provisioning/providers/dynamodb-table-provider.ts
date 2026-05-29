@@ -11,6 +11,7 @@ import {
   UntagResourceCommand,
   UpdateTableCommand,
   UpdateContinuousBackupsCommand,
+  type PointInTimeRecoverySpecification,
   UpdateTimeToLiveCommand,
   ResourceNotFoundException,
   type CreateTableCommandInput,
@@ -468,9 +469,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
     previousSpec?: unknown
   ): Promise<void> {
     let enabled: boolean | undefined;
+    let recoveryPeriodInDays: number | undefined;
     if (spec !== undefined && spec !== null) {
       const s = spec as Record<string, unknown>;
       enabled = Boolean(s['PointInTimeRecoveryEnabled']);
+      // RecoveryPeriodInDays only applies when PITR is enabled; AWS rejects it
+      // alongside PointInTimeRecoveryEnabled: false.
+      if (enabled && s['RecoveryPeriodInDays'] !== undefined) {
+        recoveryPeriodInDays = Number(s['RecoveryPeriodInDays']);
+      }
     } else if (previousSpec !== undefined && previousSpec !== null) {
       // Removed from the template: disable.
       enabled = false;
@@ -478,17 +485,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
     if (enabled === undefined) return;
 
+    const pitrSpec: PointInTimeRecoverySpecification = { PointInTimeRecoveryEnabled: enabled };
+    if (recoveryPeriodInDays !== undefined) {
+      pitrSpec.RecoveryPeriodInDays = recoveryPeriodInDays;
+    }
+
     await this.retryOnTransientControlPlane(
       () =>
         this.dynamoDBClient.send(
           new UpdateContinuousBackupsCommand({
             TableName: tableName,
-            PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: enabled },
+            PointInTimeRecoverySpecification: pitrSpec,
           })
         ),
       `enable PITR on ${tableName}`
     );
-    this.logger.debug(`Set PointInTimeRecoveryEnabled=${enabled} on DynamoDB table ${tableName}`);
+    this.logger.debug(
+      `Set PointInTimeRecoveryEnabled=${enabled}${
+        recoveryPeriodInDays !== undefined ? ` RecoveryPeriodInDays=${recoveryPeriodInDays}` : ''
+      } on DynamoDB table ${tableName}`
+    );
   }
 
   /**
@@ -820,13 +836,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const pitrResp = await this.dynamoDBClient.send(
           new DescribeContinuousBackupsCommand({ TableName: physicalId })
         );
-        const pitrStatus =
-          pitrResp.ContinuousBackupsDescription?.PointInTimeRecoveryDescription
-            ?.PointInTimeRecoveryStatus;
+        const pitrDesc = pitrResp.ContinuousBackupsDescription?.PointInTimeRecoveryDescription;
+        const pitrStatus = pitrDesc?.PointInTimeRecoveryStatus;
         if (pitrStatus) {
-          result['PointInTimeRecoverySpecification'] = {
+          const pitr: Record<string, unknown> = {
             PointInTimeRecoveryEnabled: pitrStatus === 'ENABLED',
           };
+          // RecoveryPeriodInDays is only meaningful while enabled; surface it
+          // emit-when-present so a templated value is drift-comparable.
+          if (pitrStatus === 'ENABLED' && pitrDesc?.RecoveryPeriodInDays !== undefined) {
+            pitr['RecoveryPeriodInDays'] = pitrDesc.RecoveryPeriodInDays;
+          }
+          result['PointInTimeRecoverySpecification'] = pitr;
         }
       } catch (err) {
         this.logger.debug(
