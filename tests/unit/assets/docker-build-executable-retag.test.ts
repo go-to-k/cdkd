@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
-// Covers the `actualTag !== tag` re-tag branch in all three consumers of
-// `buildDockerImage` (publisher / local-invoke / ECS run-task). In
-// `executable` source mode the user script returns its own image tag on
-// stdout; each consumer then re-tags it to the deterministic
-// `cdkd-asset-<hash>` / `cdkd-local-invoke-<hash>` / `cdkd-local-run-task-<hash>`
-// so downstream push / `docker run` / `--no-build` cache reuse keep
-// working unchanged. Pre-fix this branch was untested — flagged by the
-// pr-test-reviewer agent on PR 437.
+// Covers the `actualTag !== tag` re-tag branch in `docker-asset-publisher`
+// (the cdkd ECR publish path). In `executable` source mode the user script
+// returns its own image tag on stdout; the publisher then re-tags it to the
+// deterministic `cdkd-asset-<hash>` so downstream push keeps working. Pre-fix
+// this branch was untested — flagged by the pr-test-reviewer agent on PR 437.
+// The `local-invoke (docker-image-builder)` re-tag cases that used to live here
+// moved to cdk-local alongside the docker-image-builder shim (cdk-local owns the
+// impl, owns the test).
 
 const { mockBuildDockerImage, mockRunDocker } = vi.hoisted(() => ({
   mockBuildDockerImage: vi.fn(),
@@ -112,59 +112,5 @@ describe('publisher (docker-asset-publisher): executable source re-tag', () => {
     expect((caught as Error).message).toMatch(
       /re-tagging 'user-script-image:v2' → 'cdkd-asset-feedface'/
     );
-  });
-});
-
-describe('local-invoke (docker-image-builder): executable source re-tag', () => {
-  it('re-tags the executable-built image to the deterministic local tag', async () => {
-    // Executable mode: script returned its own tag on stdout.
-    mockBuildDockerImage.mockResolvedValueOnce('user-script-image:v1');
-    const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
-    const tag = await buildContainerImage(
-      { source: { executable: ['./build.sh'] } },
-      '/cdk.out',
-      { architecture: 'x86_64' }
-    );
-    expect(tag).toMatch(/^cdkd-local-invoke-/);
-    // Exactly one docker tag call with the right argv.
-    const tagCall = mockRunDocker.mock.calls.find(
-      ([args]) => Array.isArray(args) && args[0] === 'tag'
-    );
-    expect(tagCall).toBeDefined();
-    expect(tagCall![0]).toEqual(['tag', 'user-script-image:v1', tag]);
-  });
-
-  it('skips the re-tag when actualTag matches the requested tag (directory mode)', async () => {
-    // The build returns the input tag verbatim — re-tag is a no-op.
-    mockBuildDockerImage.mockImplementationOnce(async (_asset, _ctx, opts) => opts.tag!);
-    const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
-    await buildContainerImage(
-      { source: { directory: 'asset.x' } },
-      '/cdk.out',
-      { architecture: 'x86_64' }
-    );
-    const tagCall = mockRunDocker.mock.calls.find(
-      ([args]) => Array.isArray(args) && args[0] === 'tag'
-    );
-    expect(tagCall).toBeUndefined();
-  });
-
-  it('wraps the docker tag failure with actualTag + requested tag in the message', async () => {
-    mockBuildDockerImage.mockResolvedValueOnce('user-script-image:v1');
-    mockRunDocker.mockImplementationOnce(async (args: string[]) => {
-      if (args[0] === 'tag') {
-        const err = Object.assign(new Error('tag failed'), { stderr: 'permission denied' });
-        throw err;
-      }
-      return { stdout: '', stderr: '' };
-    });
-    const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
-    await expect(
-      buildContainerImage(
-        { source: { executable: ['./build.sh'] } },
-        '/cdk.out',
-        { architecture: 'x86_64' }
-      )
-    ).rejects.toThrow(/re-tagging 'user-script-image:v1' → 'cdkd-local-invoke-/);
   });
 });
