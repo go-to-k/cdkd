@@ -43,7 +43,7 @@ cleanup() {
   set +e
   # Try the v7 binary's destroy first (cleanest path).
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # Direct API fallback so a half-deployed AWS resource doesn't leak.
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true

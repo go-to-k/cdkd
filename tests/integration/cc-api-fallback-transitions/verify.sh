@@ -59,8 +59,8 @@ cleanup() {
   # cleanup should run as much as it can with the env it has.
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${OVERRIDE_STACK}" --region "${REGION}" --force >/dev/null 2>&1
-    node "${LOCAL_DIST}" state destroy "${TRANSITION_STACK}" --region "${REGION}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${OVERRIDE_STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${TRANSITION_STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${OVERRIDE_FN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws lambda delete-function --function-name "${TRANSITION_FN}" --region "${REGION}" >/dev/null 2>&1 || true
