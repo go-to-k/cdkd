@@ -120,12 +120,14 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       }
 
       // The remaining attributes all ride on the same `Subscribe` Attributes
-      // map. `!== undefined` gates (NOT truthy) for the same reason as
-      // FilterPolicy above: an explicit empty / falsey value is a meaningful
-      // "clear it" signal AWS treats specially, and a truthy gate would drop
-      // it when `cdkd drift --revert` round-trips an observedProperties
-      // snapshot. `update()` delegates to `create()` (delete + recreate), so
-      // these flow through the update path automatically.
+      // map. `!== undefined` gates (NOT truthy) so an explicitly-templated
+      // value is preserved regardless of truthiness: `RawMessageDelivery:
+      // false` is a genuine value (not a "clear" signal), and a truthy gate
+      // would also drop a `cdkd drift --revert` observedProperties snapshot
+      // that round-trips an empty FilterPolicy / policy object (which AWS
+      // does treat as "clear", per the FilterPolicy comment above).
+      // `update()` delegates to `create()` (delete + recreate), so these flow
+      // through the update path automatically.
 
       // FilterPolicyScope: string passthrough.
       const filterPolicyScope = properties['FilterPolicyScope'];
@@ -326,8 +328,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     }
 
     // FilterPolicyScope / SubscriptionRoleArn: string passthrough.
-    // Emit-when-present so a console-side change surfaces as drift; these are
-    // protocol- / scope-discriminated, so AWS omits them when not applicable.
+    // Emit-when-present so a console-side change surfaces as drift. The drift
+    // comparator only walks keys present in cdkd state, so surfacing a value
+    // the user never templated (e.g. FilterPolicyScope's MessageAttributes
+    // default, which AWS may return even when unset) cannot create a
+    // false-positive drift.
     if (attributes['FilterPolicyScope'] !== undefined) {
       result['FilterPolicyScope'] = attributes['FilterPolicyScope'];
     }
