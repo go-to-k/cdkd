@@ -1,3 +1,10 @@
+# [0.182.0](https://github.com/go-to-k/cdkd/compare/v0.181.0...v0.182.0) (2026-05-29)
+
+
+### Features
+
+* **provisioning:** backfill Route53::RecordSet CidrRoutingConfig ([#707](https://github.com/go-to-k/cdkd/issues/707)) ([f4f59dc](https://github.com/go-to-k/cdkd/commit/f4f59dc8f762536ae410d192b9344d04f21b5f27))
+
 # [0.181.0](https://github.com/go-to-k/cdkd/compare/v0.180.0...v0.181.0) (2026-05-29)
 
 
