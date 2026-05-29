@@ -179,6 +179,44 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     });
   });
 
+  it('emits Stage TracingEnabled/Variables when GetStage returns them (#609 backfill)', async () => {
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+      description: 'production stage',
+      tracingEnabled: true,
+      variables: { appVersion: '1.0.0' },
+    });
+
+    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+    });
+
+    expect(result).toEqual({
+      RestApiId: 'api-1',
+      StageName: 'prod',
+      DeploymentId: 'dep-1',
+      Description: 'production stage',
+      TracingEnabled: true,
+      Variables: { appVersion: '1.0.0' },
+    });
+  });
+
+  it('omits Stage TracingEnabled/Variables when GetStage does not return them (#609 backfill)', async () => {
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+      description: 'production stage',
+    });
+
+    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+    });
+
+    expect(result).not.toHaveProperty('TracingEnabled');
+    expect(result).not.toHaveProperty('Variables');
+  });
+
   it('returns undefined for sub-resources when properties.RestApiId is missing', async () => {
     const result = await provider.readCurrentState(
       'prod',

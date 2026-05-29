@@ -20,6 +20,9 @@ This stack includes the following resources:
 4. **Multiple Resource Types**: API Gateway, Lambda, IAM in one stack
 5. **CfnOutput Resolution**: API URL constructed with Fn::Join (region, API ID, stage)
 6. **Resource Dependencies**: API Gateway resources depend on Lambda function and IAM role
+7. **Stage config props (#609)**: `tracingEnabled` (X-Ray) + stage `variables` set
+   via `deployOptions` ride on the Stage's own CreateStage / UpdateStage call.
+   `verify.sh` asserts both reached AWS via `aws apigateway get-stage`.
 
 ## Deploy
 
@@ -63,6 +66,7 @@ Expected response:
 - [ ] IAM execution role is created and attached to Lambda
 - [ ] Outputs are correctly resolved (API URL, API ID, function name, ARN)
 - [ ] The endpoint responds with the expected JSON payload
+- [ ] Stage `tracingEnabled` and stage `variables` reach AWS (#609 backfill)
 
 ## Clean up
 
