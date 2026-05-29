@@ -3,11 +3,16 @@ import {
   CreateTableCommand,
   DeleteTableCommand,
   DescribeTableCommand,
+  DescribeContinuousBackupsCommand,
+  DescribeTimeToLiveCommand,
   ListTablesCommand,
   ListTagsOfResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
   UpdateTableCommand,
+  UpdateContinuousBackupsCommand,
+  type PointInTimeRecoverySpecification,
+  UpdateTimeToLiveCommand,
   ResourceNotFoundException,
   type CreateTableCommandInput,
   type KeySchemaElement,
@@ -63,6 +68,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         'Tags',
         'DeletionProtectionEnabled',
         'TableClass',
+        'PointInTimeRecoverySpecification',
+        'TimeToLiveSpecification',
       ]),
     ],
   ]);
@@ -105,6 +112,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
         logicalId
       );
     }
+
+    // Tracks whether CreateTable succeeded this call, so the catch can roll
+    // back a table whose post-ACTIVE config step (PITR / TTL) failed —
+    // otherwise create() throws before returning the physicalId, the deploy
+    // engine never learns the table exists, and it orphans.
+    let tableCreated = false;
 
     try {
       // BillingMode (default: PROVISIONED)
@@ -174,11 +187,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
 
       await this.dynamoDBClient.send(new CreateTableCommand(createParams));
+      tableCreated = true;
 
       this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
 
       // Poll until table is ACTIVE
       const tableInfo = await this.waitForTableActive(tableName);
+
+      // PointInTimeRecoverySpecification and TimeToLiveSpecification do NOT
+      // ride on CreateTable — both are separate post-ACTIVE API calls
+      // (UpdateContinuousBackups / UpdateTimeToLive). AWS rejects them
+      // against a still-CREATING table, which is why they run after the
+      // wait above.
+      await this.applyPointInTimeRecovery(
+        tableName,
+        properties['PointInTimeRecoverySpecification']
+      );
+      await this.applyTimeToLive(tableName, properties['TimeToLiveSpecification']);
 
       this.logger.debug(`Successfully created DynamoDB table ${logicalId}: ${tableName}`);
 
@@ -192,6 +217,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Atomicity: if CreateTable succeeded but a post-ACTIVE step (PITR / TTL)
+      // failed, the table exists but create() is about to throw without
+      // returning its physicalId — the deploy engine can't roll it back, so
+      // best-effort delete it here to avoid an orphan + a "Table already
+      // exists" failure on the next deploy attempt.
+      if (tableCreated) {
+        try {
+          await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+          this.logger.debug(`Rolled back partially-created DynamoDB table ${tableName}`);
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to roll back partially-created DynamoDB table ${tableName}: ${
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+            }`
+          );
+        }
+      }
       if (error instanceof ProvisioningError) {
         throw error;
       }
@@ -238,6 +280,34 @@ export class DynamoDBTableProvider implements ResourceProvider {
           table.TableArn,
           previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
           properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
+
+      // PointInTimeRecoverySpecification — separate UpdateContinuousBackups
+      // API. Fire only when the value changed; a removal disables PITR.
+      if (
+        JSON.stringify(properties['PointInTimeRecoverySpecification']) !==
+        JSON.stringify(previousProperties['PointInTimeRecoverySpecification'])
+      ) {
+        await this.applyPointInTimeRecovery(
+          physicalId,
+          properties['PointInTimeRecoverySpecification'],
+          // On removal (new absent, previous present) explicitly disable.
+          previousProperties['PointInTimeRecoverySpecification']
+        );
+      }
+
+      // TimeToLiveSpecification — separate UpdateTimeToLive API. Fire only
+      // when the value changed; a removal disables TTL using the previous
+      // AttributeName (AWS requires it to disable).
+      if (
+        JSON.stringify(properties['TimeToLiveSpecification']) !==
+        JSON.stringify(previousProperties['TimeToLiveSpecification'])
+      ) {
+        await this.applyTimeToLive(
+          physicalId,
+          properties['TimeToLiveSpecification'],
+          previousProperties['TimeToLiveSpecification']
         );
       }
 
@@ -378,6 +448,155 @@ export class DynamoDBTableProvider implements ResourceProvider {
         new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
       );
       this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on DynamoDB table ${tableArn}`);
+    }
+  }
+
+  /**
+   * Apply the table's `PointInTimeRecoverySpecification` via the separate
+   * `UpdateContinuousBackups` API (PITR does NOT ride on CreateTable).
+   *
+   * CFn shape is `{ PointInTimeRecoveryEnabled: boolean, RecoveryPeriodInDays?: number }`.
+   * Called from both `create()` (after the table is ACTIVE) and `update()`
+   * (only when the value changed). On `update()`-side removal — when the
+   * template drops the block but it was present before — we explicitly
+   * disable PITR (`UpdateContinuousBackups` treats an absent spec as "no
+   * change", so a dropped block must be turned into an explicit
+   * `PointInTimeRecoveryEnabled: false`).
+   */
+  private async applyPointInTimeRecovery(
+    tableName: string,
+    spec: unknown,
+    previousSpec?: unknown
+  ): Promise<void> {
+    let enabled: boolean | undefined;
+    let recoveryPeriodInDays: number | undefined;
+    if (spec !== undefined && spec !== null) {
+      const s = spec as Record<string, unknown>;
+      enabled = Boolean(s['PointInTimeRecoveryEnabled']);
+      // RecoveryPeriodInDays only applies when PITR is enabled; AWS rejects it
+      // alongside PointInTimeRecoveryEnabled: false.
+      if (enabled && s['RecoveryPeriodInDays'] !== undefined) {
+        recoveryPeriodInDays = Number(s['RecoveryPeriodInDays']);
+      }
+    } else if (previousSpec !== undefined && previousSpec !== null) {
+      // Removed from the template: disable.
+      enabled = false;
+    }
+
+    if (enabled === undefined) return;
+
+    const pitrSpec: PointInTimeRecoverySpecification = { PointInTimeRecoveryEnabled: enabled };
+    if (recoveryPeriodInDays !== undefined) {
+      pitrSpec.RecoveryPeriodInDays = recoveryPeriodInDays;
+    }
+
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.dynamoDBClient.send(
+          new UpdateContinuousBackupsCommand({
+            TableName: tableName,
+            PointInTimeRecoverySpecification: pitrSpec,
+          })
+        ),
+      `enable PITR on ${tableName}`
+    );
+    this.logger.debug(
+      `Set PointInTimeRecoveryEnabled=${enabled}${
+        recoveryPeriodInDays !== undefined ? ` RecoveryPeriodInDays=${recoveryPeriodInDays}` : ''
+      } on DynamoDB table ${tableName}`
+    );
+  }
+
+  /**
+   * Retry a DynamoDB control-plane call on the transient "settling" errors AWS
+   * returns when two table-modifying operations land back-to-back. Enabling
+   * PITR (`UpdateContinuousBackups`) puts the table in a transient state, and a
+   * subsequent `UpdateTimeToLive` is then rejected with "Backups are being
+   * enabled for the table ... Please retry later". `ResourceInUseException`
+   * ("table is being updated") and `LimitExceededException` are the same class.
+   * Backoff: ~2s,4s,8s,16s,30s,30s... bounded to ~2min total, which comfortably
+   * covers the few-second PITR-enable window.
+   */
+  private async retryOnTransientControlPlane<T>(
+    op: () => Promise<T>,
+    label: string,
+    maxAttempts = 8
+  ): Promise<T> {
+    let delayMs = 2000;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await op();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const name = error instanceof Error ? error.name : '';
+        const transient =
+          /being enabled|being updated|please retry later|backups are being/i.test(msg) ||
+          name === 'ResourceInUseException' ||
+          name === 'LimitExceededException';
+        if (!transient || attempt >= maxAttempts) throw error;
+        this.logger.debug(
+          `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs = Math.min(delayMs * 2, 30000);
+      }
+    }
+  }
+
+  /**
+   * Apply the table's `TimeToLiveSpecification` via the separate
+   * `UpdateTimeToLive` API (TTL does NOT ride on CreateTable).
+   *
+   * CFn shape is `{ AttributeName: string, Enabled: boolean }`. Called from
+   * both `create()` (after the table is ACTIVE) and `update()` (only when the
+   * value changed). On `update()`-side removal — when the template drops the
+   * block but it was present before — we disable TTL using the PREVIOUS
+   * `AttributeName` (AWS requires the attribute name even to disable TTL).
+   */
+  private async applyTimeToLive(
+    tableName: string,
+    spec: unknown,
+    previousSpec?: unknown
+  ): Promise<void> {
+    if (spec !== undefined && spec !== null) {
+      const s = spec as Record<string, unknown>;
+      const attributeName = s['AttributeName'] as string | undefined;
+      if (!attributeName) return;
+      const enabled = s['Enabled'] !== undefined ? Boolean(s['Enabled']) : true;
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new UpdateTimeToLiveCommand({
+              TableName: tableName,
+              TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
+            })
+          ),
+        `set TTL on ${tableName}`
+      );
+      this.logger.debug(
+        `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
+      );
+      return;
+    }
+
+    // Removed from the template: disable using the previous AttributeName.
+    if (previousSpec !== undefined && previousSpec !== null) {
+      const prev = previousSpec as Record<string, unknown>;
+      const prevAttributeName = prev['AttributeName'] as string | undefined;
+      if (!prevAttributeName) return;
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new UpdateTimeToLiveCommand({
+              TableName: tableName,
+              TimeToLiveSpecification: { Enabled: false, AttributeName: prevAttributeName },
+            })
+          ),
+        `disable TTL on ${tableName}`
+      );
+      this.logger.debug(
+        `Disabled TimeToLive (AttributeName=${prevAttributeName}) on DynamoDB table ${tableName}`
+      );
     }
   }
 
@@ -604,6 +823,59 @@ export class DynamoDBTableProvider implements ResourceProvider {
           if (err instanceof ResourceNotFoundException) return undefined;
           throw err;
         }
+      }
+
+      // PointInTimeRecoverySpecification — separate DescribeContinuousBackups
+      // call (not part of DescribeTable). Emit-when-present: only surface the
+      // key when AWS reports a PITR status so a table that never configured
+      // PITR doesn't grow a placeholder (keeps the comparator's state-keys-only
+      // top-level walk + the "AWS minimum response" key-set test green).
+      // Best-effort: a failed read omits the key rather than failing the
+      // whole drift read.
+      try {
+        const pitrResp = await this.dynamoDBClient.send(
+          new DescribeContinuousBackupsCommand({ TableName: physicalId })
+        );
+        const pitrDesc = pitrResp.ContinuousBackupsDescription?.PointInTimeRecoveryDescription;
+        const pitrStatus = pitrDesc?.PointInTimeRecoveryStatus;
+        if (pitrStatus) {
+          const pitr: Record<string, unknown> = {
+            PointInTimeRecoveryEnabled: pitrStatus === 'ENABLED',
+          };
+          // RecoveryPeriodInDays is only meaningful while enabled; surface it
+          // emit-when-present so a templated value is drift-comparable.
+          if (pitrStatus === 'ENABLED' && pitrDesc?.RecoveryPeriodInDays !== undefined) {
+            pitr['RecoveryPeriodInDays'] = pitrDesc.RecoveryPeriodInDays;
+          }
+          result['PointInTimeRecoverySpecification'] = pitr;
+        }
+      } catch (err) {
+        this.logger.debug(
+          `Could not read PointInTimeRecovery for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      // TimeToLiveSpecification — separate DescribeTimeToLive call.
+      // Race-tolerant: only surface when AWS reports `ENABLED` with an
+      // AttributeName. `DISABLED` carries no AttributeName and CFn rejects a
+      // TimeToLiveSpecification without one, so we omit it; ENABLING /
+      // DISABLING are transient and also omitted so drift doesn't fire on a
+      // momentary state.
+      try {
+        const ttlResp = await this.dynamoDBClient.send(
+          new DescribeTimeToLiveCommand({ TableName: physicalId })
+        );
+        const ttlDesc = ttlResp.TimeToLiveDescription;
+        if (ttlDesc?.TimeToLiveStatus === 'ENABLED' && ttlDesc.AttributeName) {
+          result['TimeToLiveSpecification'] = {
+            AttributeName: ttlDesc.AttributeName,
+            Enabled: true,
+          };
+        }
+      } catch (err) {
+        this.logger.debug(
+          `Could not read TimeToLive for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
 
       return result;
