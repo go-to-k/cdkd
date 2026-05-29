@@ -37,7 +37,7 @@ cleanup() {
   # cleanup should run as much as it can with the env it has.
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   # Empty + delete the S3 probe bucket if it leaked from a prior run.

@@ -52,8 +52,8 @@ cleanup() {
   # producer last — Fn::GetStackOutput is a weak reference so order
   # doesn't strictly matter, but mirrors real-world recommended order.
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${CONSUMER_STACK}" --region "${REGION}" --force >/dev/null 2>&1
-    node "${LOCAL_DIST}" state destroy "${PRODUCER_STACK}" --region "${REGION}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${CONSUMER_STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${PRODUCER_STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # Direct API fallback so a half-deployed AWS resource doesn't leak.
   aws ssm delete-parameter --name "${CONSUMER_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true

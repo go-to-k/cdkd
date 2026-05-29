@@ -47,12 +47,12 @@ cleanup() {
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
-      --region "${REGION}" --force >/dev/null 2>&1
+      --region "${REGION}" --yes >/dev/null 2>&1
     destroy_rc=$?
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     # Only force-remove the state key when `state destroy` SUCCEEDED. A clean
-    # `state destroy --force` already removes state; a FAILED one must leave
+    # `state destroy --yes` already removes state; a FAILED one must leave
     # state behind so the resources it could not delete are NOT orphaned (and
     # so a retry / diagnosis can still find them). The lock key is always safe
     # to drop so a subsequent run can acquire it.
