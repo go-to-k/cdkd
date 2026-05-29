@@ -2043,6 +2043,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Comment',
         'Failover',
         'GeoLocation',
+        'GeoProximityLocation',
         'HealthCheckId',
         'HostedZoneId',
         'HostedZoneName',
@@ -2055,10 +2056,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Type',
         'Weight',
       ]),
-      silentDrop: new Map<string, string>([
-        ['CidrRoutingConfig', 'not yet implemented by cdkd'],
-        ['GeoProximityLocation', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>([['CidrRoutingConfig', 'not yet implemented by cdkd']]),
     },
   ],
   [

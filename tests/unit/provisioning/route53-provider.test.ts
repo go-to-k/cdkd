@@ -188,6 +188,95 @@ describe('Route53Provider', () => {
         expect(recordSet.TTL).toBeUndefined();
         expect(recordSet.ResourceRecords).toBeUndefined();
       });
+
+      it('should send GeoProximityLocation (AWSRegion + Bias) into the ChangeResourceRecordSets ResourceRecordSet', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyGeoProximity', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'geo.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['198.51.100.1'],
+          SetIdentifier: 'geo-use1',
+          GeoProximityLocation: { AWSRegion: 'us-east-1', Bias: 10 },
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        expect(recordSet.SetIdentifier).toBe('geo-use1');
+        expect(recordSet.GeoProximityLocation).toEqual({
+          AWSRegion: 'us-east-1',
+          Bias: 10,
+        });
+      });
+
+      it('should coerce a string Bias to a number (CFn may emit numeric props as strings)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyGeoProximityStrBias', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'geo3.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['198.51.100.3'],
+          SetIdentifier: 'geo-strbias',
+          GeoProximityLocation: { AWSRegion: 'us-east-1', Bias: '10' },
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        // `Bias` must reach the SDK as a number, not the string '10'.
+        expect(recordSet.GeoProximityLocation).toEqual({
+          AWSRegion: 'us-east-1',
+          Bias: 10,
+        });
+      });
+
+      it('should map GeoProximityLocation Coordinates + LocalZoneGroup when present', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyGeoProximityCoords', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'geo2.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['198.51.100.2'],
+          SetIdentifier: 'geo-coords',
+          GeoProximityLocation: {
+            Coordinates: { Latitude: '49.22', Longitude: '-74.01' },
+            Bias: 0,
+          },
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        // Bias=0 must survive the omit-when-absent gate (falsy-value guard).
+        expect(recordSet.GeoProximityLocation).toEqual({
+          Coordinates: { Latitude: '49.22', Longitude: '-74.01' },
+          Bias: 0,
+        });
+      });
+
+      it('should omit GeoProximityLocation when absent', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyPlainRecord', 'AWS::Route53::RecordSet', {
+          HostedZoneId: 'Z1234567890',
+          Name: 'www.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['1.2.3.4'],
+        });
+
+        const changeCall = mockSend.mock.calls[0][0];
+        const recordSet =
+          changeCall.input.ChangeBatch.Changes[0].ResourceRecordSet;
+        expect(recordSet.GeoProximityLocation).toBeUndefined();
+      });
     });
 
     describe('update', () => {

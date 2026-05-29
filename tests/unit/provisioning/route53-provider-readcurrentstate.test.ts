@@ -216,6 +216,90 @@ describe('Route53Provider.readCurrentState', () => {
       });
     });
 
+    it('emits GeoProximityLocation (emit-when-present) when AWS returns it', async () => {
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          {
+            Name: 'geo.example.com.',
+            Type: 'A',
+            TTL: 300,
+            ResourceRecords: [{ Value: '198.51.100.1' }],
+            SetIdentifier: 'geo-use1',
+            GeoProximityLocation: { AWSRegion: 'us-east-1', Bias: 10 },
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z1|geo.example.com.|A',
+        'L',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(result).toEqual({
+        HostedZoneId: 'Z1',
+        Name: 'geo.example.com.',
+        Type: 'A',
+        TTL: 300,
+        ResourceRecords: ['198.51.100.1'],
+        SetIdentifier: 'geo-use1',
+        GeoProximityLocation: { AWSRegion: 'us-east-1', Bias: 10 },
+      });
+    });
+
+    it('emits GeoProximityLocation Coordinates + LocalZoneGroup sub-fields when present', async () => {
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          {
+            Name: 'geo2.example.com.',
+            Type: 'A',
+            TTL: 300,
+            ResourceRecords: [{ Value: '198.51.100.2' }],
+            SetIdentifier: 'geo-coords',
+            GeoProximityLocation: {
+              LocalZoneGroup: 'us-east-1-bue-1',
+              Coordinates: { Latitude: '49.22', Longitude: '-74.01' },
+              Bias: 0,
+            },
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z1|geo2.example.com.|A',
+        'L',
+        'AWS::Route53::RecordSet'
+      );
+
+      // Bias=0 survives the `!== undefined` emit gate.
+      expect(result?.['GeoProximityLocation']).toEqual({
+        LocalZoneGroup: 'us-east-1-bue-1',
+        Coordinates: { Latitude: '49.22', Longitude: '-74.01' },
+        Bias: 0,
+      });
+    });
+
+    it('omits GeoProximityLocation when AWS does not return it', async () => {
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          {
+            Name: 'plain.example.com.',
+            Type: 'A',
+            TTL: 300,
+            ResourceRecords: [{ Value: '1.2.3.4' }],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z1|plain.example.com.|A',
+        'L',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(result).not.toHaveProperty('GeoProximityLocation');
+    });
+
     it('returns undefined when no matching record', async () => {
       mockSend.mockResolvedValueOnce({
         ResourceRecordSets: [

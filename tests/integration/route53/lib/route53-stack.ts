@@ -9,6 +9,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * - HostedZone creation
  * - A Record with static IP target
  * - AWS::Route53::HealthCheck (HTTP health check)
+ * - AWS::Route53::RecordSet with GeoProximityLocation (#609 backfill)
  * - Resource dependencies (RecordSet depends on HostedZone)
  * - Fn::GetAtt for outputs (HostedZoneId, HealthCheckId)
  *
@@ -42,6 +43,19 @@ export class Route53Stack extends cdk.Stack {
         requestInterval: 30,
         failureThreshold: 3,
       },
+    });
+
+    // Exercises the #609 GeoProximityLocation backfill: a geoproximity
+    // routing-policy RecordSet (requires a setIdentifier + an anchor — here
+    // awsRegion, the simplest anchor needing no extra resource — plus a bias).
+    new route53.CfnRecordSet(this, 'GeoProximityRecord', {
+      hostedZoneId: zone.hostedZoneId,
+      name: `geo.cdkd-test-${this.account}.internal`,
+      type: 'A',
+      ttl: '300',
+      resourceRecords: ['198.51.100.1'],
+      setIdentifier: 'geo-use1',
+      geoProximityLocation: { awsRegion: 'us-east-1', bias: 10 },
     });
 
     // Outputs
