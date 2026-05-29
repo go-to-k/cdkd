@@ -70,6 +70,7 @@ export class Route53Provider implements ResourceProvider {
         'HealthCheckId',
         'Comment',
         'GeoLocation',
+        'GeoProximityLocation',
       ]),
     ],
   ]);
@@ -589,7 +590,8 @@ export class Route53Provider implements ResourceProvider {
    * Handles conversion of CDK-style ResourceRecords (array of strings)
    * to SDK-style ResourceRecords (array of {Value}).
    * Also handles routing policy properties: Weight, Region, Failover,
-   * MultiValueAnswer, GeoLocation, SetIdentifier, and HealthCheckId.
+   * MultiValueAnswer, GeoLocation, GeoProximityLocation, SetIdentifier, and
+   * HealthCheckId.
    */
   private buildResourceRecordSet(properties: Record<string, unknown>): ResourceRecordSet {
     const name = properties['Name'] as string;
@@ -677,6 +679,38 @@ export class Route53Provider implements ResourceProvider {
           ? { SubdivisionCode: geoLocation['SubdivisionCode'] as string }
           : {}),
       };
+    }
+
+    // Geoproximity routing — the CFn `GeoProximityLocation` object shares the
+    // SDK PascalCase shape (`AWSRegion` / `LocalZoneGroup` /
+    // `Coordinates: { Latitude, Longitude }` / `Bias`). Map each sub-field
+    // when present (omit-when-absent) so a falsy value (e.g. `Bias: 0`) is not
+    // dropped. AWS requires exactly one anchor (AWSRegion / LocalZoneGroup /
+    // Coordinates) per request; cdkd forwards whatever the template supplied.
+    const geoProximityLocation = properties['GeoProximityLocation'] as
+      | Record<string, unknown>
+      | undefined;
+    if (geoProximityLocation) {
+      const gpl: ResourceRecordSet['GeoProximityLocation'] = {};
+      if (geoProximityLocation['AWSRegion'] !== undefined) {
+        gpl.AWSRegion = geoProximityLocation['AWSRegion'] as string;
+      }
+      if (geoProximityLocation['LocalZoneGroup'] !== undefined) {
+        gpl.LocalZoneGroup = geoProximityLocation['LocalZoneGroup'] as string;
+      }
+      const coordinates = geoProximityLocation['Coordinates'] as
+        | Record<string, unknown>
+        | undefined;
+      if (coordinates) {
+        gpl.Coordinates = {
+          Latitude: coordinates['Latitude'] as string,
+          Longitude: coordinates['Longitude'] as string,
+        };
+      }
+      if (geoProximityLocation['Bias'] !== undefined) {
+        gpl.Bias = Number(geoProximityLocation['Bias']);
+      }
+      recordSet.GeoProximityLocation = gpl;
     }
 
     return recordSet;
@@ -916,7 +950,7 @@ export class Route53Provider implements ResourceProvider {
    *    (`{zoneId}|{name}|{type}`). Surfaces TTL, ResourceRecords (with
    *    `[{Value}]` -> string[] re-shape to match cdkd state), AliasTarget,
    *    Weight, Region, Failover, MultiValueAnswer, HealthCheckId,
-   *    GeoLocation, SetIdentifier.
+   *    GeoLocation, GeoProximityLocation, SetIdentifier.
    *
    * Returns `undefined` when the parent zone is gone (`NoSuchHostedZone`).
    */
@@ -1092,6 +1126,29 @@ export class Route53Provider implements ResourceProvider {
         geo['SubdivisionCode'] = recordSet.GeoLocation.SubdivisionCode;
       }
       result['GeoLocation'] = geo;
+    }
+    if (recordSet.GeoProximityLocation) {
+      const gpl: Record<string, unknown> = {};
+      if (recordSet.GeoProximityLocation.AWSRegion !== undefined) {
+        gpl['AWSRegion'] = recordSet.GeoProximityLocation.AWSRegion;
+      }
+      if (recordSet.GeoProximityLocation.LocalZoneGroup !== undefined) {
+        gpl['LocalZoneGroup'] = recordSet.GeoProximityLocation.LocalZoneGroup;
+      }
+      if (recordSet.GeoProximityLocation.Coordinates) {
+        const coords: Record<string, unknown> = {};
+        if (recordSet.GeoProximityLocation.Coordinates.Latitude !== undefined) {
+          coords['Latitude'] = recordSet.GeoProximityLocation.Coordinates.Latitude;
+        }
+        if (recordSet.GeoProximityLocation.Coordinates.Longitude !== undefined) {
+          coords['Longitude'] = recordSet.GeoProximityLocation.Coordinates.Longitude;
+        }
+        gpl['Coordinates'] = coords;
+      }
+      if (recordSet.GeoProximityLocation.Bias !== undefined) {
+        gpl['Bias'] = recordSet.GeoProximityLocation.Bias;
+      }
+      result['GeoProximityLocation'] = gpl;
     }
     return result;
   }

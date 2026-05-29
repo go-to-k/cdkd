@@ -512,8 +512,7 @@
       "HostedZoneFeatures"
     ],
     "AWS::Route53::RecordSet": [
-      "CidrRoutingConfig",
-      "GeoProximityLocation"
+      "CidrRoutingConfig"
     ],
     "AWS::S3::Bucket": [
       "AbacStatus",
