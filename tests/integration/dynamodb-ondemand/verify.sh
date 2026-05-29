@@ -107,8 +107,19 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --force
 
-if aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: DynamoDB table ${TABLE_NAME} still exists after destroy" >&2
+# DynamoDB DeleteTable is async: the table lingers in DELETING for a few
+# seconds before describe-table returns ResourceNotFoundException. Poll
+# until it is truly gone rather than racing the async delete.
+TABLE_GONE=""
+for _ in $(seq 1 24); do
+  if ! aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+    TABLE_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${TABLE_GONE}" ]; then
+  echo "FAIL: DynamoDB table ${TABLE_NAME} still exists ~2min after destroy" >&2
   exit 1
 fi
 echo "    OK: DynamoDB table is gone"
