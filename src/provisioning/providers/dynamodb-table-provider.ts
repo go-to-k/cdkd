@@ -21,6 +21,7 @@ import {
   type LocalSecondaryIndex,
   type StreamSpecification,
   type OnDemandThroughput,
+  type WarmThroughput,
   type Tag,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
@@ -63,6 +64,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         'BillingMode',
         'ProvisionedThroughput',
         'OnDemandThroughput',
+        'WarmThroughput',
         'StreamSpecification',
         'GlobalSecondaryIndexes',
         'LocalSecondaryIndexes',
@@ -147,6 +149,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // PAY_PER_REQUEST-only constraint.
       if (properties['OnDemandThroughput']) {
         createParams.OnDemandThroughput = properties['OnDemandThroughput'] as OnDemandThroughput;
+      }
+
+      // Warm throughput — pre-warmed read/write capacity. Like
+      // OnDemandThroughput it rides directly on CreateTable (the
+      // WarmThroughput input field), NOT a post-ACTIVE control-plane call.
+      // Works with BOTH PROVISIONED and PAY_PER_REQUEST billing modes. Pass
+      // it through verbatim when present.
+      if (properties['WarmThroughput']) {
+        createParams.WarmThroughput = properties['WarmThroughput'] as WarmThroughput;
       }
 
       // Stream specification - CDK omits StreamEnabled, SDK requires it
@@ -315,6 +326,27 @@ export class DynamoDBTableProvider implements ResourceProvider {
             })
           );
           this.logger.debug(`Updated OnDemandThroughput on DynamoDB table ${physicalId}`);
+        }
+      }
+
+      // WarmThroughput — rides on UpdateTable (NOT a separate control-plane
+      // API like PITR / TTL). Fire only when the value changed so a no-op
+      // update doesn't issue a redundant UpdateTable. A pure removal (new
+      // absent, previous present) is a deliberate no-op — CFn has no clean
+      // "drop warm throughput" mapping and AWS keeps the last-set value, so
+      // there is no spec to send.
+      if (
+        JSON.stringify(properties['WarmThroughput']) !==
+        JSON.stringify(previousProperties['WarmThroughput'])
+      ) {
+        if (properties['WarmThroughput']) {
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              WarmThroughput: properties['WarmThroughput'] as WarmThroughput,
+            })
+          );
+          this.logger.debug(`Updated WarmThroughput on DynamoDB table ${physicalId}`);
         }
       }
 
@@ -808,6 +840,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
         if (Object.keys(odt).length > 0) {
           result['OnDemandThroughput'] = odt;
+        }
+      }
+      // WarmThroughput — DescribeTable returns it (as a
+      // TableWarmThroughputDescription carrying ReadUnitsPerSecond /
+      // WriteUnitsPerSecond / Status) only on tables that set warm
+      // throughput. Emit-when-present (no default when absent) and surface
+      // ONLY the user-settable sub-fields — Status is AWS-managed — so a
+      // table that never configured warm throughput doesn't grow a
+      // placeholder that would round-trip through update() as a spurious
+      // UpdateTable.
+      if (table.WarmThroughput) {
+        const wt: Record<string, unknown> = {};
+        if (table.WarmThroughput.ReadUnitsPerSecond !== undefined) {
+          wt['ReadUnitsPerSecond'] = table.WarmThroughput.ReadUnitsPerSecond;
+        }
+        if (table.WarmThroughput.WriteUnitsPerSecond !== undefined) {
+          wt['WriteUnitsPerSecond'] = table.WarmThroughput.WriteUnitsPerSecond;
+        }
+        if (Object.keys(wt).length > 0) {
+          result['WarmThroughput'] = wt;
         }
       }
       // Class 1 guard: StreamSpecification.StreamViewType is only valid when

@@ -31,6 +31,11 @@ export class DynamodbStreamsStack extends cdk.Stack {
     // PointInTimeRecoverySpecification / TimeToLiveSpecification properties
     // (issue #609) — both are wired via separate post-ACTIVE API calls
     // (UpdateContinuousBackups / UpdateTimeToLive), not CreateTable.
+    //
+    // warmThroughput exercises the WarmThroughput property (issue #609) —
+    // pre-warmed read/write capacity that rides DIRECTLY on CreateTable (the
+    // WarmThroughput input field), not a post-ACTIVE control-plane call. AWS
+    // enforces minimums of 12000 read units / 4000 write units per second.
     const table = new dynamodb.Table(this, 'EventsTable', {
       partitionKey: {
         name: 'id',
@@ -45,6 +50,10 @@ export class DynamodbStreamsStack extends cdk.Stack {
         pointInTimeRecoveryEnabled: true,
       },
       timeToLiveAttribute: 'expiresAt',
+      warmThroughput: {
+        readUnitsPerSecond: 12000,
+        writeUnitsPerSecond: 4000,
+      },
     });
 
     // Auto-scaling for read capacity
