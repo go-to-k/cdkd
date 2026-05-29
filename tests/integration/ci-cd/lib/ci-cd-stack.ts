@@ -41,6 +41,8 @@ export class CiCdStack extends cdk.Stack {
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
       },
+      // Exercises the #609 AutoRetryLimit backfill (rides CreateProject directly).
+      autoRetryLimit: 2,
     });
 
     // CodePipeline (S3 source → CodeBuild)

@@ -204,6 +204,25 @@ describe('CodeBuildProvider.readCurrentState', () => {
     });
   });
 
+  it('emits AutoRetryLimit when BatchGetProjects returns it (#609 backfill)', async () => {
+    mockSend.mockResolvedValueOnce({
+      projects: [{ name: 'myproj', autoRetryLimit: 2 }],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    expect(result?.AutoRetryLimit).toBe(2);
+  });
+
+  it('omits AutoRetryLimit when BatchGetProjects does not return it', async () => {
+    mockSend.mockResolvedValueOnce({
+      projects: [{ name: 'myproj' }],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    expect(result).toBeDefined();
+    expect('AutoRetryLimit' in result!).toBe(false);
+  });
+
   it('returns undefined when project is gone (empty projects array)', async () => {
     mockSend.mockResolvedValueOnce({ projects: [] });
     const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');

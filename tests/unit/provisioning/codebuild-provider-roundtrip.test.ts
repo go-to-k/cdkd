@@ -270,6 +270,83 @@ describe('CodeBuildProvider read-update round-trip', () => {
     expect(input.sourceVersion).toBeUndefined();
   });
 
+  it('create() sends AutoRetryLimit into CreateProjectCommand (#609 backfill)', async () => {
+    const props = {
+      Name: 'myproj',
+      ServiceRole: 'arn:aws:iam::1:role/r',
+      Source: { Type: 'NO_SOURCE' },
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+      Environment: {
+        Type: 'LINUX_CONTAINER',
+        Image: 'aws/codebuild/standard:7.0',
+        ComputeType: 'BUILD_GENERAL1_SMALL',
+      },
+      AutoRetryLimit: 2,
+    };
+
+    mockSend.mockResolvedValueOnce({ project: { name: 'myproj', arn: 'arn:1' } });
+
+    await provider.create('L', RESOURCE_TYPE, props);
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateProjectCommand);
+    expect(createCall).toBeDefined();
+    const input = (createCall![0] as CreateProjectCommand).input;
+    expect(input.autoRetryLimit).toBe(2);
+  });
+
+  it('update() sends AutoRetryLimit into UpdateProjectCommand (#609 backfill)', async () => {
+    const props = {
+      Name: 'myproj',
+      ServiceRole: 'arn:aws:iam::1:role/r',
+      Source: { Type: 'NO_SOURCE' },
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+      Environment: {
+        Type: 'LINUX_CONTAINER',
+        Image: 'aws/codebuild/standard:7.0',
+        ComputeType: 'BUILD_GENERAL1_SMALL',
+      },
+      AutoRetryLimit: 3,
+    };
+
+    mockSend.mockResolvedValueOnce({ project: { name: 'myproj', arn: 'arn:1' } });
+
+    await provider.update('L', 'myproj', RESOURCE_TYPE, props, props);
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateProjectCommand);
+    expect(updateCall).toBeDefined();
+    const input = (updateCall![0] as UpdateProjectCommand).input;
+    expect(input.autoRetryLimit).toBe(3);
+  });
+
+  it('omits AutoRetryLimit on create/update when the template does not set it', async () => {
+    const props = {
+      Name: 'myproj',
+      ServiceRole: 'arn:aws:iam::1:role/r',
+      Source: { Type: 'NO_SOURCE' },
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+      Environment: {
+        Type: 'LINUX_CONTAINER',
+        Image: 'aws/codebuild/standard:7.0',
+        ComputeType: 'BUILD_GENERAL1_SMALL',
+      },
+    };
+
+    mockSend.mockResolvedValueOnce({ project: { name: 'myproj', arn: 'arn:1' } });
+    await provider.create('L', RESOURCE_TYPE, props);
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateProjectCommand);
+    expect(createCall).toBeDefined();
+    expect((createCall![0] as CreateProjectCommand).input.autoRetryLimit).toBeUndefined();
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValueOnce({ project: { name: 'myproj', arn: 'arn:1' } });
+    await provider.update('L', 'myproj', RESOURCE_TYPE, props, props);
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateProjectCommand);
+    expect(updateCall).toBeDefined();
+    expect((updateCall![0] as UpdateProjectCommand).input.autoRetryLimit).toBeUndefined();
+  });
+
   // Suppress unused-import warning for BatchGetProjectsCommand (used by
   // readCurrentState pipeline test path indirectly through mockSend).
   it('imports stay live', () => {

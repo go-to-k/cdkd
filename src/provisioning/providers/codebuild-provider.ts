@@ -72,6 +72,7 @@ export class CodeBuildProvider implements ResourceProvider {
         'BuildBatchConfig',
         'BadgeEnabled',
         'SourceVersion',
+        'AutoRetryLimit',
       ]),
     ],
   ]);
@@ -297,6 +298,10 @@ export class CodeBuildProvider implements ResourceProvider {
       vpcConfig,
       logsConfig,
       concurrentBuildLimit: properties['ConcurrentBuildLimit'] as number | undefined,
+      // AutoRetryLimit (#609 backfill): integer 0-10; rides CreateProject /
+      // UpdateProject directly (no separate control-plane API). Omit-when-
+      // absent so a template that does not set it sends no field to AWS.
+      autoRetryLimit: properties['AutoRetryLimit'] as number | undefined,
       secondarySources,
       secondaryArtifacts,
       secondarySourceVersions,
@@ -473,9 +478,13 @@ export class CodeBuildProvider implements ResourceProvider {
     }
     if (!project) return undefined;
 
-    // CodeBuild projects are mutable via UpdateProject; emit user-controllable
-    // top-level keys with placeholders so a console-side ADD on a property
-    // not templated at deploy time surfaces as drift.
+    // CodeBuild projects are mutable via UpdateProject. Top-level keys are
+    // surfaced two ways: keys AWS always returns (Description / ServiceRole /
+    // EncryptionKey / ...) get a placeholder default so a console-side ADD on
+    // a property not templated at deploy time surfaces as drift; keys AWS
+    // returns only when set (ConcurrentBuildLimit / AutoRetryLimit / ...) are
+    // emit-when-present (gated on `!== undefined`) so a project that never set
+    // them does not grow a phantom-drift key.
     const result: Record<string, unknown> = {};
     if (project.name !== undefined) result['Name'] = project.name;
     result['Description'] = project.description ?? '';
@@ -489,6 +498,13 @@ export class CodeBuildProvider implements ResourceProvider {
     result['EncryptionKey'] = project.encryptionKey ?? '';
     if (project.concurrentBuildLimit !== undefined) {
       result['ConcurrentBuildLimit'] = project.concurrentBuildLimit;
+    }
+    // AutoRetryLimit (#609 backfill): emit-when-present — BatchGetProjects
+    // returns project.autoRetryLimit only when the project sets it, so a
+    // template that never set it stays absent from the snapshot (no default
+    // placeholder, which would fire phantom drift on every project).
+    if (project.autoRetryLimit !== undefined) {
+      result['AutoRetryLimit'] = project.autoRetryLimit;
     }
     result['BadgeEnabled'] = project.badge?.badgeEnabled ?? false;
     result['SourceVersion'] = project.sourceVersion ?? '';
