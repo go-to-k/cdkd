@@ -568,6 +568,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'Artifacts',
+        'AutoRetryLimit',
         'BadgeEnabled',
         'BuildBatchConfig',
         'Cache',
@@ -590,7 +591,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcConfig',
       ]),
       silentDrop: new Map<string, string>([
-        ['AutoRetryLimit', 'not yet implemented by cdkd'],
         ['ResourceAccessRole', 'not yet implemented by cdkd'],
         ['Triggers', 'not yet implemented by cdkd'],
         ['Visibility', 'not yet implemented by cdkd'],

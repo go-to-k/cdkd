@@ -128,7 +128,6 @@
       "EvaluationInterval"
     ],
     "AWS::CodeBuild::Project": [
-      "AutoRetryLimit",
       "ResourceAccessRole",
       "Triggers",
       "Visibility"

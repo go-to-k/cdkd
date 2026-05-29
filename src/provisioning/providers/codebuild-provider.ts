@@ -72,6 +72,7 @@ export class CodeBuildProvider implements ResourceProvider {
         'BuildBatchConfig',
         'BadgeEnabled',
         'SourceVersion',
+        'AutoRetryLimit',
       ]),
     ],
   ]);
@@ -297,6 +298,10 @@ export class CodeBuildProvider implements ResourceProvider {
       vpcConfig,
       logsConfig,
       concurrentBuildLimit: properties['ConcurrentBuildLimit'] as number | undefined,
+      // AutoRetryLimit (#609 backfill): integer 0-10; rides CreateProject /
+      // UpdateProject directly (no separate control-plane API). Omit-when-
+      // absent so a template that does not set it sends no field to AWS.
+      autoRetryLimit: properties['AutoRetryLimit'] as number | undefined,
       secondarySources,
       secondaryArtifacts,
       secondarySourceVersions,
@@ -489,6 +494,13 @@ export class CodeBuildProvider implements ResourceProvider {
     result['EncryptionKey'] = project.encryptionKey ?? '';
     if (project.concurrentBuildLimit !== undefined) {
       result['ConcurrentBuildLimit'] = project.concurrentBuildLimit;
+    }
+    // AutoRetryLimit (#609 backfill): emit-when-present — BatchGetProjects
+    // returns project.autoRetryLimit only when the project sets it, so a
+    // template that never set it stays absent from the snapshot (no default
+    // placeholder, which would fire phantom drift on every project).
+    if (project.autoRetryLimit !== undefined) {
+      result['AutoRetryLimit'] = project.autoRetryLimit;
     }
     result['BadgeEnabled'] = project.badge?.badgeEnabled ?? false;
     result['SourceVersion'] = project.sourceVersion ?? '';
