@@ -112,6 +112,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
       );
     }
 
+    // Tracks whether CreateTable succeeded this call, so the catch can roll
+    // back a table whose post-ACTIVE config step (PITR / TTL) failed —
+    // otherwise create() throws before returning the physicalId, the deploy
+    // engine never learns the table exists, and it orphans.
+    let tableCreated = false;
+
     try {
       // BillingMode (default: PROVISIONED)
       const billingMode = (properties['BillingMode'] as string | undefined) || 'PROVISIONED';
@@ -180,6 +186,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
 
       await this.dynamoDBClient.send(new CreateTableCommand(createParams));
+      tableCreated = true;
 
       this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
 
@@ -209,6 +216,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Atomicity: if CreateTable succeeded but a post-ACTIVE step (PITR / TTL)
+      // failed, the table exists but create() is about to throw without
+      // returning its physicalId — the deploy engine can't roll it back, so
+      // best-effort delete it here to avoid an orphan + a "Table already
+      // exists" failure on the next deploy attempt.
+      if (tableCreated) {
+        try {
+          await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+          this.logger.debug(`Rolled back partially-created DynamoDB table ${tableName}`);
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to roll back partially-created DynamoDB table ${tableName}: ${
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+            }`
+          );
+        }
+      }
       if (error instanceof ProvisioningError) {
         throw error;
       }
@@ -454,13 +478,53 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
     if (enabled === undefined) return;
 
-    await this.dynamoDBClient.send(
-      new UpdateContinuousBackupsCommand({
-        TableName: tableName,
-        PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: enabled },
-      })
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.dynamoDBClient.send(
+          new UpdateContinuousBackupsCommand({
+            TableName: tableName,
+            PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: enabled },
+          })
+        ),
+      `enable PITR on ${tableName}`
     );
     this.logger.debug(`Set PointInTimeRecoveryEnabled=${enabled} on DynamoDB table ${tableName}`);
+  }
+
+  /**
+   * Retry a DynamoDB control-plane call on the transient "settling" errors AWS
+   * returns when two table-modifying operations land back-to-back. Enabling
+   * PITR (`UpdateContinuousBackups`) puts the table in a transient state, and a
+   * subsequent `UpdateTimeToLive` is then rejected with "Backups are being
+   * enabled for the table ... Please retry later". `ResourceInUseException`
+   * ("table is being updated") and `LimitExceededException` are the same class.
+   * Backoff: ~2s,4s,8s,16s,30s,30s... bounded to ~2min total, which comfortably
+   * covers the few-second PITR-enable window.
+   */
+  private async retryOnTransientControlPlane<T>(
+    op: () => Promise<T>,
+    label: string,
+    maxAttempts = 8
+  ): Promise<T> {
+    let delayMs = 2000;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await op();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const name = error instanceof Error ? error.name : '';
+        const transient =
+          /being enabled|being updated|please retry later|backups are being/i.test(msg) ||
+          name === 'ResourceInUseException' ||
+          name === 'LimitExceededException';
+        if (!transient || attempt >= maxAttempts) throw error;
+        this.logger.debug(
+          `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs = Math.min(delayMs * 2, 30000);
+      }
+    }
   }
 
   /**
@@ -483,11 +547,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       const attributeName = s['AttributeName'] as string | undefined;
       if (!attributeName) return;
       const enabled = s['Enabled'] !== undefined ? Boolean(s['Enabled']) : true;
-      await this.dynamoDBClient.send(
-        new UpdateTimeToLiveCommand({
-          TableName: tableName,
-          TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
-        })
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new UpdateTimeToLiveCommand({
+              TableName: tableName,
+              TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
+            })
+          ),
+        `set TTL on ${tableName}`
       );
       this.logger.debug(
         `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
@@ -500,11 +568,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       const prev = previousSpec as Record<string, unknown>;
       const prevAttributeName = prev['AttributeName'] as string | undefined;
       if (!prevAttributeName) return;
-      await this.dynamoDBClient.send(
-        new UpdateTimeToLiveCommand({
-          TableName: tableName,
-          TimeToLiveSpecification: { Enabled: false, AttributeName: prevAttributeName },
-        })
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new UpdateTimeToLiveCommand({
+              TableName: tableName,
+              TimeToLiveSpecification: { Enabled: false, AttributeName: prevAttributeName },
+            })
+          ),
+        `disable TTL on ${tableName}`
       );
       this.logger.debug(
         `Disabled TimeToLive (AttributeName=${prevAttributeName}) on DynamoDB table ${tableName}`

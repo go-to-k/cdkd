@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateTableCommand,
+  DeleteTableCommand,
   DescribeTableCommand,
   DescribeContinuousBackupsCommand,
   DescribeTimeToLiveCommand,
@@ -141,6 +142,70 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
       const createCall = findCalls(CreateTableCommand)[0]!;
       expect(createCall.input).not.toHaveProperty('PointInTimeRecoverySpecification');
       expect(createCall.input).not.toHaveProperty('TimeToLiveSpecification');
+    });
+
+    it('retries UpdateTimeToLive when AWS reports PITR is still being enabled', async () => {
+      // Enabling PITR puts the table in a transient state; the immediate
+      // UpdateTimeToLive is rejected with "Backups are being enabled ...
+      // Please retry later" until that settles. The provider must retry.
+      vi.useFakeTimers();
+      try {
+        mockSend.mockResolvedValueOnce({}); // CreateTable
+        mockSend.mockResolvedValueOnce({
+          Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+        }); // DescribeTable -> ACTIVE
+        mockSend.mockResolvedValueOnce({}); // UpdateContinuousBackups (PITR) ok
+        mockSend.mockRejectedValueOnce(
+          new Error('Backups are being enabled for the table: my-table. Please retry later')
+        ); // UpdateTimeToLive attempt 1 -> transient
+        mockSend.mockResolvedValueOnce({}); // UpdateTimeToLive attempt 2 -> ok
+
+        const promise = provider.create('L', RESOURCE_TYPE, {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PAY_PER_REQUEST',
+          PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+          TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+        });
+        await vi.runAllTimersAsync(); // flush the backoff sleep
+        const result = await promise;
+
+        expect(result.physicalId).toBe(TABLE_NAME);
+        // UpdateTimeToLive called twice (transient reject, then success).
+        expect(findCalls(UpdateTimeToLiveCommand)).toHaveLength(2);
+        // The table was NOT rolled back (the retry recovered).
+        expect(findCalls(DeleteTableCommand)).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('rolls back the table when a post-ACTIVE config step fails permanently', async () => {
+      // A non-transient failure on UpdateContinuousBackups must not orphan the
+      // already-created table: create() best-effort deletes it before throwing.
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      }); // DescribeTable -> ACTIVE
+      const permanent = new Error('User is not authorized to perform: dynamodb:UpdateContinuousBackups');
+      permanent.name = 'AccessDeniedException';
+      mockSend.mockRejectedValueOnce(permanent); // UpdateContinuousBackups -> permanent failure
+      mockSend.mockResolvedValueOnce({}); // DeleteTable (rollback)
+
+      await expect(
+        provider.create('L', RESOURCE_TYPE, {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PAY_PER_REQUEST',
+          PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+        })
+      ).rejects.toThrow(/UpdateContinuousBackups|Failed to create DynamoDB table/);
+
+      // The partially-created table was rolled back.
+      expect(findCalls(DeleteTableCommand)).toHaveLength(1);
+      expect(findCalls(DeleteTableCommand)[0]!.input.TableName).toBe(TABLE_NAME);
     });
   });
 
