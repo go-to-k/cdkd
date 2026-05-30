@@ -75,7 +75,12 @@ cleanup() {
 
   if [[ "${DEPLOYED}" -eq 1 ]]; then
     echo "==> Cleanup: cdkd destroy (best-effort)"
-    ${CDKD} destroy "${STACK_NAME}" --state-bucket "${STATE_BUCKET}" --force \
+    # `--region` is required so the trap-path destroy reads the same
+    # region-prefixed state key (`cdkd/<stack>/<region>/state.json`)
+    # as the explicit destroy on the happy path. Without it the trap
+    # could miss state and leave the stack orphan when AWS_REGION env
+    # is unset.
+    ${CDKD} destroy "${STACK_NAME}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force \
       || echo "WARN: destroy in trap failed; the orchestrator's orphan sweep will pick it up"
   fi
 
