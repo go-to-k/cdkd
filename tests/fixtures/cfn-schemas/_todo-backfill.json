@@ -23,9 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::ApiGateway::Authorizer": [
-      "AuthType"
-    ],
     "AWS::ApiGateway::Deployment": [
       "DeploymentCanarySettings",
       "StageDescription",

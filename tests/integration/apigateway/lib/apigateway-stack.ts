@@ -93,6 +93,22 @@ exports.handler = async (event) => {
     const helloResource = api.root.addResource('hello');
     helloResource.addMethod('GET', new apigateway.LambdaIntegration(handler));
 
+    // Standalone REQUEST authorizer (not attached to any method - no IAM
+    // role / lambda permission needed since it is never invoked). It exists
+    // solely to exercise the #609 Authorizer `authType` backfill — a
+    // customer-defined free-form label used by OpenAPI import/export
+    // tooling with no functional impact on the deployed authorizer. The
+    // verify.sh asserts `aws apigateway get-authorizer --query 'authType'`
+    // returns 'custom' post-deploy.
+    new apigateway.CfnAuthorizer(this, 'RequestAuthorizer', {
+      restApiId: api.restApiId,
+      type: 'REQUEST',
+      name: 'cdkd-request-authorizer',
+      authType: 'custom',
+      authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${handler.functionArn}/invocations`,
+      identitySource: 'method.request.header.Authorization',
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'ApiUrl', {
       value: api.url,

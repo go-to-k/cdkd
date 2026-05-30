@@ -4,6 +4,7 @@ import {
   GetAccountCommand,
   UpdateAccountCommand,
   PutMethodCommand,
+  CreateAuthorizerCommand,
   UpdateAuthorizerCommand,
   UpdateMethodCommand,
 } from '@aws-sdk/client-api-gateway';
@@ -538,6 +539,63 @@ describe('ApiGatewayProvider read-update round-trip', () => {
       )
     ).rejects.toThrow(/RestApiId is required/);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Authorizer #609 backfill: AuthType ────────────────────────────
+
+  it('Authorizer create() forwards AuthType to CreateAuthorizerCommand', async () => {
+    mockSend.mockResolvedValueOnce({ id: 'auth-1' });
+
+    await provider.create('AuthLogical', 'AWS::ApiGateway::Authorizer', {
+      RestApiId: 'api-1',
+      Name: 'Auth',
+      Type: 'REQUEST',
+      AuthType: 'custom',
+      AuthorizerUri:
+        'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123:function:fn/invocations',
+      IdentitySource: 'method.request.header.Authorization',
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const call = mockSend.mock.calls[0]?.[0];
+    expect(call).toBeInstanceOf(CreateAuthorizerCommand);
+    expect((call as CreateAuthorizerCommand).input.authType).toBe('custom');
+  });
+
+  it('Authorizer create() omits authType from CreateAuthorizerCommand when AuthType is absent', async () => {
+    mockSend.mockResolvedValueOnce({ id: 'auth-1' });
+
+    await provider.create('AuthLogical', 'AWS::ApiGateway::Authorizer', {
+      RestApiId: 'api-1',
+      Name: 'Auth',
+      Type: 'REQUEST',
+      AuthorizerUri:
+        'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123:function:fn/invocations',
+      IdentitySource: 'method.request.header.Authorization',
+    });
+
+    const call = mockSend.mock.calls[0]?.[0] as CreateAuthorizerCommand;
+    expect(call.input.authType).toBeUndefined();
+  });
+
+  it('Authorizer update() emits replace patch when AuthType changes (existing patch-op machinery)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'api-1', Name: 'Auth', Type: 'REQUEST', AuthType: 'custom' },
+      { RestApiId: 'api-1', Name: 'Auth', Type: 'REQUEST', AuthType: 'cognito_user_pools' }
+    );
+
+    const call = mockSend.mock.calls[0]?.[0] as UpdateAuthorizerCommand;
+    const patches = call.input.patchOperations as Array<{
+      op: string;
+      path: string;
+      value: string;
+    }>;
+    expect(patches).toContainEqual({ op: 'replace', path: '/authType', value: 'custom' });
   });
 
   // ─── Other immutable-update sub-resources (parity with Method) ──────

@@ -69,6 +69,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         'RestApiId',
         'Name',
         'Type',
+        'AuthType',
         'ProviderARNs',
         'AuthorizerUri',
         'AuthorizerCredentials',
@@ -488,6 +489,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           restApiId,
           name,
           type: type as 'TOKEN' | 'REQUEST' | 'COGNITO_USER_POOLS',
+          authType: properties['AuthType'] as string | undefined,
           providerARNs: providerArns,
           authorizerUri: properties['AuthorizerUri'] as string | undefined,
           authorizerCredentials: properties['AuthorizerCredentials'] as string | undefined,
@@ -1885,6 +1887,12 @@ export class ApiGatewayProvider implements ResourceProvider {
       const result: Record<string, unknown> = { RestApiId: restApiId };
       result['Name'] = resp.name ?? '';
       if (resp.type !== undefined) result['Type'] = resp.type;
+      // AuthType is a customer-defined label (free-form string used by
+      // OpenAPI import/export tooling, no functional impact on the
+      // deployed authorizer). Emit-when-present so an Authorizer that
+      // never set AuthType does not grow a phantom field that would
+      // round-trip into drift.
+      if (resp.authType !== undefined) result['AuthType'] = resp.authType;
       result['ProviderARNs'] = resp.providerARNs ? [...resp.providerARNs] : [];
       result['AuthorizerUri'] = resp.authorizerUri ?? '';
       result['AuthorizerCredentials'] = resp.authorizerCredentials ?? '';

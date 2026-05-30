@@ -115,12 +115,22 @@ if [ "${FEATURE_FLAG}" != "enabled" ]; then
 fi
 echo "    OK: Stage variables {appVersion, featureFlag} reached AWS (Variables backfill CLOSED)"
 
+# --- Assertion 3: Authorizer AuthType reached AWS (#609 backfill) -----
+AUTHORIZERS=$(aws apigateway get-authorizers --rest-api-id "${API_ID}" --region "${REGION}")
+AUTHORIZER_AUTH_TYPE=$(echo "${AUTHORIZERS}" | jq -r '.items[] | select(.name == "cdkd-request-authorizer") | .authType // empty')
+if [ "${AUTHORIZER_AUTH_TYPE}" != "custom" ]; then
+  echo "FAIL: Authorizer authType is '${AUTHORIZER_AUTH_TYPE}', expected 'custom'" >&2
+  echo "      raw authorizers: ${AUTHORIZERS}" >&2
+  exit 1
+fi
+echo "    OK: Authorizer authType == 'custom' on AWS (AuthType backfill CLOSED)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --force
+  --yes
 
 API_ID_AFTER=$(aws apigateway get-rest-apis --region "${REGION}" \
   --query "items[?name=='${API_NAME}'].id | [0]" --output text)
