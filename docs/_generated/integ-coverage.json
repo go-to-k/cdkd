@@ -2102,6 +2102,7 @@
       "integs": [
         "composite-stack",
         "drift-revert",
+        "dynamodb-streams",
         "infra-security",
         "kms-encryption"
       ],
@@ -2110,6 +2111,9 @@
           "literal"
         ],
         "drift-revert": [
+          "l2"
+        ],
+        "dynamodb-streams": [
           "l2"
         ],
         "infra-security": [

@@ -111,7 +111,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::IAM::User` | [`infra-security`](../tests/integration/infra-security/) (l2) |
 | `AWS::IAM::UserToGroupAddition` | [`infra-security`](../tests/integration/infra-security/) (literal) |
 | `AWS::KMS::Alias` | [`composite-stack`](../tests/integration/composite-stack/) (literal)<br>[`infra-security`](../tests/integration/infra-security/) (literal)<br>[`kms-encryption`](../tests/integration/kms-encryption/) (literal) |
-| `AWS::KMS::Key` | [`composite-stack`](../tests/integration/composite-stack/) (literal)<br>[`drift-revert`](../tests/integration/drift-revert/) (l2)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`kms-encryption`](../tests/integration/kms-encryption/) (l2,literal) |
+| `AWS::KMS::Key` | [`composite-stack`](../tests/integration/composite-stack/) (literal)<br>[`drift-revert`](../tests/integration/drift-revert/) (l2)<br>[`dynamodb-streams`](../tests/integration/dynamodb-streams/) (l2)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`kms-encryption`](../tests/integration/kms-encryption/) (l2,literal) |
 | `AWS::Kinesis::Stream` | [`cache-streaming`](../tests/integration/cache-streaming/) (l2)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2) |
 | `AWS::KinesisFirehose::DeliveryStream` | [`log-pipeline`](../tests/integration/log-pipeline/) (l1,literal) |
 | `AWS::Lambda::EventSourceMapping` | [`dynamodb-streams`](../tests/integration/dynamodb-streams/) (literal) |
