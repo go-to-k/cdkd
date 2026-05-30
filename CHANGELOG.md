@@ -1,3 +1,10 @@
+# [0.197.0](https://github.com/go-to-k/cdkd/compare/v0.196.0...v0.197.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill Lambda::Function ReservedConcurrentExecutions ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#732](https://github.com/go-to-k/cdkd/issues/732)) ([f02638a](https://github.com/go-to-k/cdkd/commit/f02638a96132032af1ff81306b7e5122fec4949e))
+
 # [0.196.0](https://github.com/go-to-k/cdkd/compare/v0.195.0...v0.196.0) (2026-05-30)
 
 
