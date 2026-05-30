@@ -160,9 +160,14 @@ describe('S3TablesProvider', () => {
   // ─── createTable ──────────────────────────────────────────────────
 
   describe('createTable', () => {
-    it('should create a table and return composite physical ID', async () => {
+    it('should create a table, return composite physical ID, and capture the AWS-issued TableARN in attributes', async () => {
       const tableBucketARN = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket';
-      mockSend.mockResolvedValueOnce({});
+      // The REAL AWS-issued ARN — its shape is opaque (NOT derivable
+      // from the compound parts). createTable captures it so the
+      // resolver can return it via `Fn::GetAtt: [<Table>, TableARN]`.
+      const realArn =
+        'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket/table/OPAQUE-AWS-ID';
+      mockSend.mockResolvedValueOnce({ tableARN: realArn });
 
       const result = await provider.create('MyTable', 'AWS::S3Tables::Table', {
         TableBucketARN: tableBucketARN,
@@ -172,7 +177,7 @@ describe('S3TablesProvider', () => {
       });
 
       expect(result.physicalId).toBe(`${tableBucketARN}|my-namespace|my-table`);
-      expect(result.attributes).toEqual({});
+      expect(result.attributes).toEqual({ TableARN: realArn });
       expect(mockSend).toHaveBeenCalledWith(expect.any(CreateTableCommand));
     });
   });

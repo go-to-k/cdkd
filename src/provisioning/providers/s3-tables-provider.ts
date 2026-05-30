@@ -12,6 +12,8 @@ import {
   ListTablesCommand,
   ListTableBucketsCommand,
   ListTagsForResourceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   NotFoundException,
 } from '@aws-sdk/client-s3tables';
 import { getLogger } from '../../utils/logger.js';
@@ -47,7 +49,18 @@ export class S3TablesProvider implements ResourceProvider {
     ['AWS::S3Tables::Namespace', new Set(['TableBucketARN', 'Namespace'])],
     [
       'AWS::S3Tables::Table',
-      new Set(['TableBucketARN', 'Namespace', 'TableName', 'Name', 'Format']),
+      new Set([
+        'TableBucketARN',
+        'Namespace',
+        'TableName',
+        'Name',
+        // `OpenTableFormat` is the canonical CFn schema name (per AWS
+        // docs); `Format` is accepted as a legacy/SDK-API-style alias.
+        // The handler reads either and prefers the CFn-canonical form.
+        'OpenTableFormat',
+        'Format',
+        'Tags',
+      ]),
     ],
   ]);
 
@@ -81,16 +94,27 @@ export class S3TablesProvider implements ResourceProvider {
     }
   }
 
-  update(
+  async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    // All S3 Tables resources are immutable - no update supported
-    this.logger.debug(`Update is no-op for ${resourceType} ${logicalId}`);
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    // S3 Tables RESOURCES themselves are immutable (no UpdateTable /
+    // UpdateTableBucket / UpdateNamespace APIs), but TAGS ARE mutable
+    // via the separate TagResource / UntagResource control-plane calls.
+    // So `update()` is no longer a blanket no-op: when the only property
+    // that changed is `Tags`, dispatch a tag-diff against the underlying
+    // resource ARN. For now only AWS::S3Tables::Table has Tags wired
+    // (this PR); the TableBucket / Namespace cases stay no-op until
+    // their own backfill PRs (U / V).
+    if (resourceType === 'AWS::S3Tables::Table') {
+      await this.applyTableTagsDiff(physicalId, previousProperties['Tags'], properties['Tags']);
+    } else {
+      this.logger.debug(`Update is no-op for ${resourceType} ${logicalId}`);
+    }
+    return { physicalId, wasReplaced: false };
   }
 
   async delete(
@@ -299,16 +323,24 @@ export class S3TablesProvider implements ResourceProvider {
       );
     }
 
-    const namespace = properties['Namespace'] as string[] | undefined;
-    if (!namespace || namespace.length === 0) {
+    // CFn schema types `Namespace` as `List<String>`, but CDK 2.x's
+    // `s3tables.CfnNamespace` accepts a plain `string` and emits it as
+    // a string (not a singleton array). AWS's CreateNamespace API takes
+    // an array. Accept both wire shapes from the template here.
+    const rawNs = properties['Namespace'];
+    let namespaceName: string | undefined;
+    if (Array.isArray(rawNs) && rawNs.length > 0 && typeof rawNs[0] === 'string') {
+      namespaceName = rawNs[0];
+    } else if (typeof rawNs === 'string' && rawNs.length > 0) {
+      namespaceName = rawNs;
+    }
+    if (!namespaceName) {
       throw new ProvisioningError(
         `Namespace is required for S3 Tables Namespace ${logicalId}`,
         resourceType,
         logicalId
       );
     }
-
-    const namespaceName = namespace[0]!;
 
     try {
       await this.getClient().send(
@@ -428,32 +460,64 @@ export class S3TablesProvider implements ResourceProvider {
       );
     }
 
-    const format = properties['Format'] as string | undefined;
+    // CFn schema spells this `OpenTableFormat`; the SDK API call uses
+    // `format`. Accept the CFn-canonical name first, then the legacy
+    // `Format` alias for state files written by older fixtures.
+    const format =
+      (properties['OpenTableFormat'] as string | undefined) ??
+      (properties['Format'] as string | undefined);
     if (!format) {
       throw new ProvisioningError(
-        `Format is required for S3 Tables Table ${logicalId}`,
+        `OpenTableFormat is required for S3 Tables Table ${logicalId}`,
         resourceType,
         logicalId
       );
     }
 
+    // CFn `Tags: [{ Key, Value }]` → SDK `tags: Record<string, string>`.
+    // CreateTableCommand accepts tags atomically (no separate TagResource
+    // call needed); the SDK errors with InvalidRequestException on an empty
+    // map, so omit the field entirely when no tags are set.
+    const tags = this.cfnTagsToSdkMap(properties['Tags']);
+
     try {
-      await this.getClient().send(
+      const response = await this.getClient().send(
         new CreateTableCommand({
           tableBucketARN,
           namespace,
           name,
           format: format as 'ICEBERG',
+          ...(tags !== undefined && { tags }),
         })
       );
 
       const physicalId = `${tableBucketARN}|${namespace}|${name}`;
+      // Capture the REAL table ARN AWS returns — its actual format is
+      // NOT inferrable from the compound parts (we tried; AWS rejected
+      // `<bucketArn>/table/<ns>/<name>` with BadRequestException), so
+      // we store it as an attribute so the resolver can return it for
+      // `Fn::GetAtt: [Table, TableARN]` without a follow-up GetTable.
+      // A missing tableARN in the response would mean the SDK / AWS
+      // changed something underfoot — error LOUD rather than silently
+      // propagating `''` to downstream consumers (which would receive
+      // an empty ARN and surface cryptic AWS-side errors much later).
+      if (!response.tableARN) {
+        throw new ProvisioningError(
+          `CreateTable did not return a tableARN for ${logicalId} (${physicalId}) — refusing to record an empty TableARN attribute`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      const tableARN = response.tableARN;
 
       this.logger.debug(`Successfully created S3 Tables Table ${logicalId}: ${physicalId}`);
 
       return {
         physicalId,
-        attributes: {},
+        attributes: {
+          TableARN: tableARN,
+        },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -533,9 +597,19 @@ export class S3TablesProvider implements ResourceProvider {
     const [tableBucketARN, namespaceName] = physicalId.split('|');
     if (!tableBucketARN || !namespaceName) return undefined;
 
+    // CDK 2.x's `s3tables.CfnNamespace` emits `Namespace` as a plain
+    // string (not a singleton array as CFn docs / AWS SDK suggest); the
+    // drift comparator only descends into keys present in state, so the
+    // readback shape must match the template-as-written shape. Emit the
+    // string form because (a) CDK is the dominant template source and
+    // (b) `createNamespace`'s string-vs-array tolerance accepts both
+    // inputs but state preserves the template-emitted shape. Templates
+    // that explicitly use the array form would see a one-time drift on
+    // the first `cdkd drift` invocation; not load-bearing for the
+    // dominant CDK-authored case.
     return {
       TableBucketARN: tableBucketARN,
-      Namespace: [namespaceName],
+      Namespace: namespaceName,
     };
   }
 
@@ -571,7 +645,22 @@ export class S3TablesProvider implements ResourceProvider {
       Name: tableNameValue,
       TableName: tableNameValue,
     };
-    if (resp.format !== undefined) result['Format'] = resp.format;
+    // Emit BOTH `OpenTableFormat` (CFn-canonical) AND `Format`
+    // (legacy/SDK-API alias) so drift comparison works for state files
+    // written by either name (same #613 B-bucket symmetry as TableName/Name).
+    if (resp.format !== undefined) {
+      result['OpenTableFormat'] = resp.format;
+      result['Format'] = resp.format;
+    }
+    // Tags: best-effort second call. ListTagsForResource takes the REAL
+    // table ARN AWS returned at create time — surfaced by `GetTable`'s
+    // `tableARN` field (the SAME response we just used to verify the
+    // table exists). Emit Tags: [] when AWS returned no tableARN, no
+    // tags, or when the read itself fails (matches the S3Vectors /
+    // CloudFront patterns; the drift comparator only descends into
+    // state-side keys, so an empty array does not surface noise on a
+    // pre-PR state file that had no Tags entry).
+    result['Tags'] = resp.tableARN ? await this.readTagsBestEffort(resp.tableARN) : [];
     return result;
   }
 
@@ -793,6 +882,170 @@ export class S3TablesProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  // ─── Tag helpers (#609 backfill for AWS::S3Tables::Table) ─────────
+
+  /**
+   * Convert CFn `Tags: [{ Key, Value }]` to the S3Tables SDK's
+   * `Record<string, string>` shape. Returns `undefined` when the input
+   * is absent, empty, or invalid (so the caller can omit the field
+   * from CreateTableCommand — the SDK rejects an empty `tags: {}` map
+   * with InvalidRequestException). Entries missing a `Key` are skipped;
+   * a missing `Value` is normalized to `''` (matches the on-AWS
+   * representation — empty-string tag values are legal).
+   */
+  private cfnTagsToSdkMap(value: unknown): Record<string, string> | undefined {
+    if (!Array.isArray(value) || value.length === 0) return undefined;
+    const map: Record<string, string> = {};
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object') continue;
+      const key = (entry as { Key?: unknown }).Key;
+      if (typeof key !== 'string' || key.length === 0) continue;
+      const raw = (entry as { Value?: unknown }).Value;
+      if (typeof raw === 'string') {
+        map[key] = raw;
+      } else if (raw === undefined || raw === null) {
+        map[key] = '';
+      } else if (typeof raw === 'number' || typeof raw === 'boolean') {
+        map[key] = String(raw);
+      } else {
+        // Skip non-stringifiable values rather than emit '[object Object]'.
+        continue;
+      }
+    }
+    return Object.keys(map).length > 0 ? map : undefined;
+  }
+
+  /**
+   * Look up a table's real AWS ARN given its cdkd-compound physical
+   * id parts. The real ARN is opaque (NOT `<bucketArn>/table/<ns>/<name>`
+   * — that shape returns BadRequestException) and only AWS knows it,
+   * so we call `GetTable` and pull `tableARN` from the response. Used
+   * by the tag-diff path in update() and the readback's tag-fetch leg.
+   * Returns null if the table is gone (NotFoundException → caller can
+   * skip the tag op gracefully).
+   */
+  private async lookupTableArn(
+    tableBucketARN: string,
+    namespace: string,
+    name: string
+  ): Promise<string | null> {
+    try {
+      const resp = await this.getClient().send(
+        new GetTableCommand({ tableBucketARN, namespace, name })
+      );
+      return resp.tableARN ?? null;
+    } catch (err) {
+      if (err instanceof NotFoundException) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Best-effort tag readback. ListTagsForResource against a freshly-
+   * created table can briefly 404 due to eventual consistency; emit
+   * `[]` on any failure rather than propagate (matches the S3Vectors /
+   * CloudFront patterns and keeps the drift comparator happy).
+   */
+  private async readTagsBestEffort(
+    resourceArn: string
+  ): Promise<Array<{ Key: string; Value: string }>> {
+    try {
+      const resp = await this.getClient().send(new ListTagsForResourceCommand({ resourceArn }));
+      // S3Tables' ListTagsForResource returns `tags: Record<string, string>`
+      // (a flat map), not an array of {Key, Value} objects. Reshape to CFn's
+      // canonical array form for drift-comparison parity.
+      const tags = resp.tags ?? {};
+      const out: Array<{ Key: string; Value: string }> = [];
+      for (const [Key, Value] of Object.entries(tags)) {
+        out.push({ Key, Value });
+      }
+      return out;
+    } catch (err) {
+      this.logger.debug(
+        `readTagsBestEffort: ListTagsForResource failed for ${resourceArn}: ${err instanceof Error ? err.message : String(err)} — emitting Tags: []`
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Apply a tag-diff against a Table resource ARN: keys present in
+   * `previousTags` but absent / value-changed in `newTags` go through
+   * `UntagResource`, then the full upsert set (additions + value
+   * rewrites) goes through `TagResource`. Removal runs FIRST so a
+   * value-only rewrite on key K isn't accidentally cleared by a stale
+   * UntagResource pass (matches the CloudFront / S3Vectors pattern).
+   *
+   * Tag ops are best-effort post-step in update(): a tag-side failure
+   * MUST NOT flip the deploy engine into a retry that would re-issue
+   * the no-op `update()` body. Log at warn instead so the user sees
+   * the unapplied delta but the deploy still progresses.
+   */
+  private async applyTableTagsDiff(
+    physicalId: string,
+    previousTags: unknown,
+    newTags: unknown
+  ): Promise<void> {
+    const parts = physicalId.split('|');
+    if (parts.length < 3) {
+      this.logger.warn(
+        `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' — skipping tag-diff`
+      );
+      return;
+    }
+    const [tableBucketARN, namespace, name] = parts;
+    if (!tableBucketARN || !namespace || !name) {
+      this.logger.warn(
+        `applyTableTagsDiff: cannot derive table ARN from malformed physicalId '${physicalId}' (empty part after split) — skipping tag-diff`
+      );
+      return;
+    }
+
+    const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
+    const next = this.cfnTagsToSdkMap(newTags) ?? {};
+
+    const removedKeys = Object.keys(prev).filter((k) => !(k in next));
+    const upserts: Record<string, string> = {};
+    for (const [k, v] of Object.entries(next)) {
+      if (prev[k] !== v) upserts[k] = v;
+    }
+
+    if (removedKeys.length === 0 && Object.keys(upserts).length === 0) return;
+
+    // Tag APIs need the REAL table ARN (not cdkd's compound physical id
+    // and not a guessed derivation from the parts — AWS rejects every
+    // form except its own). Look it up via GetTable.
+    const resourceArn = await this.lookupTableArn(tableBucketARN, namespace, name);
+    if (!resourceArn) {
+      this.logger.warn(
+        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — skipping tag-diff (table gone? state out-of-sync?)`
+      );
+      return;
+    }
+
+    if (removedKeys.length > 0) {
+      try {
+        await this.getClient().send(
+          new UntagResourceCommand({ resourceArn, tagKeys: removedKeys })
+        );
+      } catch (err) {
+        this.logger.warn(
+          `applyTableTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    if (Object.keys(upserts).length > 0) {
+      try {
+        await this.getClient().send(new TagResourceCommand({ resourceArn, tags: upserts }));
+      } catch (err) {
+        this.logger.warn(
+          `applyTableTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
   }
 }

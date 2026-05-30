@@ -2782,6 +2782,29 @@
       }
     },
     {
+      "resourceType": "AWS::S3Tables::Namespace",
+      "integs": [
+        "s3-tables"
+      ],
+      "signals": {
+        "s3-tables": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::S3Tables::Table",
+      "integs": [
+        "s3-tables"
+      ],
+      "signals": {
+        "s3-tables": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::S3Tables::TableBucket",
       "integs": [
         "s3-tables"
@@ -3174,14 +3197,6 @@
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",
       "rationale": "see DBProxy above — same rds-aurora-extend reasoning."
-    },
-    {
-      "resourceType": "AWS::S3Tables::Namespace",
-      "rationale": "existing s3-tables integ exercises only TableBucket. Namespace + Table are sub-resources sharing the same provider; unit roundtrip + parent-bucket integ suffice for now."
-    },
-    {
-      "resourceType": "AWS::S3Tables::Table",
-      "rationale": "see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces."
     }
   ],
   "unknownTypesInIntegs": [

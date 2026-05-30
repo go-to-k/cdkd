@@ -2131,14 +2131,20 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::S3Tables::Table',
     {
-      handled: new Set<string>(['Format', 'Name', 'Namespace', 'TableBucketARN', 'TableName']),
+      handled: new Set<string>([
+        'Format',
+        'Name',
+        'Namespace',
+        'OpenTableFormat',
+        'TableBucketARN',
+        'TableName',
+        'Tags',
+      ]),
       silentDrop: new Map<string, string>([
         ['Compaction', 'not yet implemented by cdkd'],
         ['IcebergMetadata', 'not yet implemented by cdkd'],
-        ['OpenTableFormat', 'not yet implemented by cdkd'],
         ['SnapshotManagement', 'not yet implemented by cdkd'],
         ['StorageClassConfiguration', 'not yet implemented by cdkd'],
-        ['Tags', 'not yet implemented by cdkd'],
         ['WithoutMetadata', 'not yet implemented by cdkd'],
       ]),
     },

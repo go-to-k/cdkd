@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**103 / 114 registered SDK Providers** have at least one integ fixture exercising them. 11 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**105 / 114 registered SDK Providers** have at least one integ fixture exercising them. 9 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -20,7 +20,7 @@ L2 detection is a hand-curated lower bound — a missed L2 wrapper produces a fa
 
 _None._ Every registered SDK Provider has at least one integ fixture or an explicit `// allow-no-integ:` rationale.
 
-## Allow-listed providers (11)
+## Allow-listed providers (9)
 
 Registered without an integ fixture, with an explicit `// allow-no-integ: <rationale>` comment on the register line in [src/provisioning/register-providers.ts](../src/provisioning/register-providers.ts). The hook accepts these — but each is a deliberate verification gap and should be revisited if a real-AWS bug surfaces against the type.
 
@@ -35,10 +35,8 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::Kinesis::StreamConsumer` | immutable type (every property change replaces); unit roundtrip suffices. Add integ if a Lambda EFO consumer pattern bug surfaces. |
 | `AWS::RDS::DBProxy` | rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
-| `AWS::S3Tables::Namespace` | existing s3-tables integ exercises only TableBucket. Namespace + Table are sub-resources sharing the same provider; unit roundtrip + parent-bucket integ suffice for now. |
-| `AWS::S3Tables::Table` | see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces. |
 
-## Covered providers (103)
+## Covered providers (105)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -132,6 +130,8 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::S3::Bucket` | [`basic`](../tests/integration/basic/) (l2)<br>[`bench-sdk`](../tests/integration/bench-sdk/) (l2)<br>[`ci-cd`](../tests/integration/ci-cd/) (l2,literal)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`conditions`](../tests/integration/conditions/) (l1,l2)<br>[`context-test`](../tests/integration/context-test/) (l2)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/) (l2)<br>[`data-analytics`](../tests/integration/data-analytics/) (l2,literal)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/) (l2)<br>[`drift-revert`](../tests/integration/drift-revert/) (l2)<br>[`event-driven`](../tests/integration/event-driven/) (l2)<br>[`export`](../tests/integration/export/) (l2,literal)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/) (l2)<br>[`infra-security`](../tests/integration/infra-security/) (l2)<br>[`intrinsic-functions`](../tests/integration/intrinsic-functions/) (l2)<br>[`kms-encryption`](../tests/integration/kms-encryption/) (l2,literal)<br>[`local-invoke-agentcore-from-state`](../tests/integration/local-invoke-agentcore-from-state/) (l2)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/) (l2)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (l2)<br>[`multi-resource`](../tests/integration/multi-resource/) (l2)<br>[`multi-stack-deps`](../tests/integration/multi-stack-deps/) (l2)<br>[`nested-stack`](../tests/integration/nested-stack/) (l2)<br>[`orphan-resource`](../tests/integration/orphan-resource/) (l2,literal)<br>[`recreate-via-cc-api`](../tests/integration/recreate-via-cc-api/) (l1)<br>[`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2)<br>[`state-destroy`](../tests/integration/state-destroy/) (l2) |
 | `AWS::S3::BucketPolicy` | [`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (literal) |
 | `AWS::S3Express::DirectoryBucket` | [`s3-directory-bucket`](../tests/integration/s3-directory-bucket/) (l1) |
+| `AWS::S3Tables::Namespace` | [`s3-tables`](../tests/integration/s3-tables/) (l1) |
+| `AWS::S3Tables::Table` | [`s3-tables`](../tests/integration/s3-tables/) (l1,literal) |
 | `AWS::S3Tables::TableBucket` | [`s3-tables`](../tests/integration/s3-tables/) (l1) |
 | `AWS::S3Vectors::VectorBucket` | [`s3-vectors`](../tests/integration/s3-vectors/) (l1) |
 | `AWS::SNS::Subscription` | [`composite-stack`](../tests/integration/composite-stack/) (literal)<br>[`sns-sqs-event`](../tests/integration/sns-sqs-event/) (literal) |

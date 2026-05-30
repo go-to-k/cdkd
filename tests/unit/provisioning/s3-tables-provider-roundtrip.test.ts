@@ -100,7 +100,10 @@ describe('S3TablesProvider read-update round-trip', () => {
     );
     expect(observed).toEqual({
       TableBucketARN: BUCKET_ARN,
-      Namespace: ['my-namespace'],
+      // String form matches CDK 2.x's CfnNamespace template output;
+      // see provider's readNamespaceCurrentState for the drift-comparison
+      // rationale.
+      Namespace: 'my-namespace',
     });
 
     vi.clearAllMocks();
@@ -117,13 +120,15 @@ describe('S3TablesProvider read-update round-trip', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('AWS::S3Tables::Table — no-op update fires zero SDK calls on round-trip', async () => {
-    // readCurrentState mock: GetTable
+  it('AWS::S3Tables::Table — no-op update fires zero SDK calls on round-trip (same Tags)', async () => {
+    // readCurrentState mock: GetTable + ListTagsForResource (post-#609
+    // Tags wiring).
     mockSend.mockResolvedValueOnce({
       name: 'my-table',
       format: 'ICEBERG',
       namespace: ['my-namespace'],
     });
+    mockSend.mockResolvedValueOnce({ tags: {} });
 
     const observed = await provider.readCurrentState(
       TABLE_PHYSICAL_ID,
@@ -136,7 +141,11 @@ describe('S3TablesProvider read-update round-trip', () => {
       Name: 'my-table',
       // CFn-canonical alias (#613 B-bucket fix).
       TableName: 'my-table',
+      // Same dual-emit pattern for OpenTableFormat / Format (#609 backfill).
+      OpenTableFormat: 'ICEBERG',
       Format: 'ICEBERG',
+      // #609 backfill: empty Tags array (no tags on the live resource).
+      Tags: [],
     });
 
     vi.clearAllMocks();
@@ -150,6 +159,7 @@ describe('S3TablesProvider read-update round-trip', () => {
     );
 
     expect(result).toEqual({ physicalId: TABLE_PHYSICAL_ID, wasReplaced: false });
+    // No tag delta → no TagResource / UntagResource calls fire.
     expect(mockSend).not.toHaveBeenCalled();
   });
 
@@ -164,6 +174,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       // format intentionally undefined
       namespace: ['my-namespace'],
     });
+    // Second mock: ListTagsForResource (always called post-#609 readback).
+    mockSend.mockResolvedValueOnce({ tags: {} });
 
     const observed = await provider.readCurrentState(
       TABLE_PHYSICAL_ID,
@@ -179,6 +191,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       Name: 'my-table',
       // CFn-canonical alias (#613 B-bucket fix).
       TableName: 'my-table',
+      // #609 backfill: empty Tags array.
+      Tags: [],
     });
     expect(observed).not.toHaveProperty('Format');
 
