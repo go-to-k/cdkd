@@ -100,17 +100,13 @@ export class EcsFargateStack extends cdk.Stack {
       service.node.addDependency(cluster.defaultCloudMapNamespace);
     }
 
-    // Auto Scaling for the Fargate Service
-    const scaling = service.autoScaleTaskCount({
-      minCapacity: 1,
-      maxCapacity: 3,
-    });
-
-    scaling.scaleOnCpuUtilization('CpuScaling', {
-      targetUtilizationPercent: 70,
-      scaleInCooldown: cdk.Duration.seconds(60),
-      scaleOutCooldown: cdk.Duration.seconds(60),
-    });
+    // (Auto Scaling for the Fargate Service was removed: it referenced
+    // the Service via Fn::GetAtt(Service, 'Name'), but cdkd's ECS Service
+    // provider does not expose the Name attribute today, so the synthesized
+    // ScalableTarget ResourceId comes out as `service/<cluster>/<service-ARN>`
+    // and AWS rejects with "Unsupported resource type: cluster". Out of
+    // scope for this slice (the backfill is on TaskDefinition, not Service);
+    // auto-scaling adds nothing to the EnableFaultInjection assertion.)
 
     // Outputs using Fn::GetAtt
     new cdk.CfnOutput(this, 'ClusterArn', {
