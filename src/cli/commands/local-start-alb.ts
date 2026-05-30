@@ -18,7 +18,8 @@ import { cdkdExtraStateProviders } from './local-state-source.js';
  * the engine calls `createLocalStateProvider` internally. `--from-cfn-stack`
  * + `--stack-region` are inherited from `addCommonEcsServiceOptions`; the
  * ALB-specific flags (`--lb-port` / `--tls` / `--tls-cert` / `--tls-key` /
- * `--no-verify-auth` / `--bearer-token`) come from `addAlbSpecificOptions`.
+ * `--no-verify-auth` / `--bearer-token`) ride through via
+ * `EcsServiceEmulatorOptions`'s upstream declarations + `addAlbSpecificOptions`.
  */
 export interface LocalStartAlbOptions extends EcsServiceEmulatorOptions {
   /**
@@ -33,8 +34,6 @@ export interface LocalStartAlbOptions extends EcsServiceEmulatorOptions {
   stateBucket?: string;
   /** S3 key prefix for `--from-state` (commander always supplies the default). */
   statePrefix: string;
-  /** `--tls` — terminate TLS locally for cloud-HTTPS listeners (default: plain HTTP). */
-  tls?: boolean;
 }
 
 /**
