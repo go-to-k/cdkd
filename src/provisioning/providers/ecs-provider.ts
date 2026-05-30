@@ -104,6 +104,7 @@ export class ECSProvider implements ResourceProvider {
         'DefaultCapacityProviderStrategy',
         'Configuration',
         'ClusterSettings',
+        'ServiceConnectDefaults',
         'Tags',
       ]),
     ],
@@ -312,6 +313,13 @@ export class ECSProvider implements ResourceProvider {
                 value: ((s['Value'] || s['value']) as string) ?? undefined,
               }))
             : undefined,
+          serviceConnectDefaults: properties['ServiceConnectDefaults']
+            ? {
+                namespace: (properties['ServiceConnectDefaults'] as Record<string, unknown>)[
+                  'Namespace'
+                ] as string,
+              }
+            : undefined,
           tags: convertTags(
             properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
           ),
@@ -368,24 +376,22 @@ export class ECSProvider implements ResourceProvider {
         this.logger.debug(`Updated capacity providers for ECS cluster ${physicalId}`);
       }
 
-      // Apply ClusterSettings / Configuration via UpdateClusterCommand when
-      // either changed. Issue a single call so AWS evaluates the new shape
-      // atomically (avoids partial-apply on a per-field call). Skipped
-      // entirely when nothing differs so a no-drift round-trip stays
-      // mutation-free against AWS. ServiceConnectDefaults is also accepted
-      // by UpdateClusterCommand but is intentionally NOT applied here —
-      // create() and readCurrentState() do not surface it either, so
-      // adding update support without the matching create/read coverage
-      // would only fire for users who set it via console (a separate
-      // follow-up extends all three).
+      // Apply ClusterSettings / Configuration / ServiceConnectDefaults via
+      // UpdateClusterCommand when any changed. Issue a single call so AWS
+      // evaluates the new shape atomically (avoids partial-apply on a
+      // per-field call). Skipped entirely when nothing differs so a
+      // no-drift round-trip stays mutation-free against AWS.
       const settingsChanged =
         JSON.stringify(previousProperties['ClusterSettings'] ?? null) !==
         JSON.stringify(properties['ClusterSettings'] ?? null);
       const configChanged =
         JSON.stringify(previousProperties['Configuration'] ?? null) !==
         JSON.stringify(properties['Configuration'] ?? null);
+      const svcConnectChanged =
+        JSON.stringify(previousProperties['ServiceConnectDefaults'] ?? null) !==
+        JSON.stringify(properties['ServiceConnectDefaults'] ?? null);
 
-      if (settingsChanged || configChanged) {
+      if (settingsChanged || configChanged || svcConnectChanged) {
         const settingsInput = settingsChanged
           ? (
               (properties['ClusterSettings'] as Array<Record<string, unknown>> | undefined) ?? []
@@ -395,6 +401,21 @@ export class ECSProvider implements ResourceProvider {
             }))
           : undefined;
 
+        // AWS UpdateCluster accepts `serviceConnectDefaults: { namespace: '' }`
+        // as the "clear the cluster's default namespace" sentinel (per
+        // ClusterServiceConnectDefaultsRequest docs). When the user removes
+        // the property from their template, pass that sentinel so AWS
+        // actually clears the value instead of treating "absent" as no-op.
+        const svcConnectInput = svcConnectChanged
+          ? properties['ServiceConnectDefaults']
+            ? {
+                namespace: (properties['ServiceConnectDefaults'] as Record<string, unknown>)[
+                  'Namespace'
+                ] as string,
+              }
+            : { namespace: '' }
+          : undefined;
+
         await client.send(
           new UpdateClusterCommand({
             cluster: physicalId,
@@ -402,10 +423,11 @@ export class ECSProvider implements ResourceProvider {
             ...(configChanged && {
               configuration: properties['Configuration'] as ClusterConfiguration | undefined,
             }),
+            ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
           })
         );
         this.logger.debug(
-          `Updated ECS cluster ${physicalId} (settings=${settingsChanged}, config=${configChanged})`
+          `Updated ECS cluster ${physicalId} (settings=${settingsChanged}, config=${configChanged}, svcConnect=${svcConnectChanged})`
         );
       }
 
@@ -1285,6 +1307,7 @@ export class ECSProvider implements ResourceProvider {
         defaultCapacityProviderStrategy?: CapacityProviderStrategyItem[];
         configuration?: ClusterConfiguration;
         settings?: Array<{ name?: string; value?: string }>;
+        serviceConnectDefaults?: { namespace?: string };
         tags?: Array<{ key?: string; value?: string }>;
       }>;
     };
@@ -1317,6 +1340,14 @@ export class ECSProvider implements ResourceProvider {
       Name: s.name,
       Value: s.value,
     }));
+    // `ServiceConnectDefaults`: emit-when-present (NOT a default-when-absent
+    // placeholder — a cluster that never set a default Service Connect
+    // namespace returns no `serviceConnectDefaults` from `DescribeClusters`,
+    // and emitting a phantom `{ Namespace: '' }` placeholder would force
+    // guaranteed drift on every clean run for the typical case).
+    if (c.serviceConnectDefaults?.namespace !== undefined) {
+      result['ServiceConnectDefaults'] = { Namespace: c.serviceConnectDefaults.namespace };
+    }
     const tags = normalizeAwsTagsToCfn(c.tags);
     result['Tags'] = tags;
     return result;
