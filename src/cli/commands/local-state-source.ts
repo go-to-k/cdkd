@@ -29,12 +29,14 @@ import { S3LocalStateProvider } from '../../local/s3-local-state-provider.js';
 export {
   CfnLocalStateProvider,
   type CfnLocalStateProviderOptions,
+  type ExtraStateProviders,
   isCfnFlagPresent,
   LocalStateSourceError,
   type LocalStateProvider,
   type LocalStateProviderFactory,
   type LocalStateRecord,
   rejectExplicitCfnStackWithMultipleStacks,
+  resolveCfnFallbackRegion,
   resolveCfnRegion,
   resolveCfnStackName,
 } from 'cdk-local';

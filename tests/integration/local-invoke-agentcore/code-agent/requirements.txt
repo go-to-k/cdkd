@@ -1,0 +1,2 @@
+# No third-party dependencies — this agent uses only the Python stdlib.
+# Kept so `cdkl invoke-agentcore` exercises the from-source pip-install build step.

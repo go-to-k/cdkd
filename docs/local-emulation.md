@@ -13,6 +13,7 @@ directly.
 | `cdkd local start-api` | Long-running API Gateway (REST v1 / HTTP API / Function URL) | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkd local run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkd local start-service <target>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
+| `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | AgentCore container on port 8080 (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / WebSocket `/ws`) |
 
 ## Requirements
 
@@ -1361,3 +1362,52 @@ ECS Services on Fargate require `awsvpc`. cdkd maps `awsvpc` to a
 per-task docker bridge network with a startup warn; security groups
 are NOT enforced locally and per-task ENIs are not emulated. Full
 rationale at [design/461-awsvpc-decision.md](design/461-awsvpc-decision.md).
+
+## `local invoke-agentcore` (run Bedrock AgentCore Runtime locally)
+
+`cdkd local invoke-agentcore <target>` runs one Bedrock AgentCore Runtime container locally and invokes it once over the AgentCore protocol declared by the target. Supports the container artifact (`fromContainerAsset` / `fromEcr`) and the `CodeConfiguration` managed-runtime artifact (`fromCodeAsset`, built from source) on the HTTP, MCP, A2A, and AGUI protocols, plus a bidirectional `--ws` mode for streaming. Models cdk-local's `cdkl invoke-agentcore`, ported into cdkd's command tree as a shim over `cdk-local/internal`.
+
+### Target resolution
+
+Same shape as `cdkd local invoke`: accepts a CDK display path (`MyStack/MyAgent`) or stack-qualified logical ID (`MyStack:MyAgentRuntime1234`). Single-stack apps may omit the stack prefix. When the target is omitted in an interactive terminal, an interactive picker prompts from the discovered list (no TTY -> command's required-arg error).
+
+### Supported protocols
+
+| `Protocol` (CFn) | What runs | Container ports | cdkd dispatch |
+| --- | --- | --- | --- |
+| `HTTP` (default) | `POST /invocations` (single response or SSE stream) + `GET /ping` | 8080 | `POST /invocations` with `--event` body. SSE stream prints incrementally; non-stream prints `tail -1`. |
+| `MCP` | Model Context Protocol streamable HTTP | 8000 | Session handshake (`initialize` -> `notifications/initialized`) + one JSON-RPC request: defaults to `tools/list` when `--event` is omitted; otherwise `--event` is the JSON-RPC request body. |
+| `A2A` | Agent-to-Agent JSON-RPC at `POST /` | 9000 | Defaults to `agent/getAgentCard` when `--event` is omitted; otherwise `--event` is the JSON-RPC request body. |
+| `AGUI` | AGUI JSON-RPC streaming | 8800 | Streams the agent's response frames. |
+| `--ws` (HTTP only) | Bidirectional `/ws` WebSocket on the HTTP container | 8080 | First frame = `--event` body. Subsequent frames (`--ws-interactive`) read from stdin (one per line) until EOF or close. |
+
+### Inbound JWT auth (`customJwtAuthorizer`)
+
+When the runtime declares an inbound `customJwtAuthorizer`, `--jwt <token>` verifies the supplied Bearer JWT against the runtime's OIDC discovery URL before the container starts, then forwards it on `/invocations` as `Authorization: Bearer <jwt>`. Verification covers `iss` / `aud` / `exp` / signature + allowedScopes + customClaims. Without `--jwt`, the local invoke proceeds without authorization (mirrors `cdkl`).
+
+### State-source flags
+
+Same shape as `cdkd local invoke`. Use `--from-state` to substitute Ref / Fn::GetAtt / Fn::Sub / Fn::ImportValue in env vars from cdkd's S3 state for the target stack (after a prior `cdkd deploy`). Use `--from-cfn-stack [name]` to read a deployed CFn stack via `DescribeStackResources` (for CDK apps deployed via the upstream CDK CLI). Mutually exclusive.
+
+### Credentials + role-assumption
+
+Same shape as `cdkd local invoke`. The container receives the developer's AWS credentials by default (so the agent's outbound AWS calls reach real AWS as the developer); `--assume-role <arn>` (or bare `--assume-role` to auto-resolve from state) assumes the runtime's deployed `RoleArn` first so the agent runs with the narrow function role. `--ecr-role-arn <arn>` is the cross-account ECR image-pull escape hatch.
+
+### Options
+
+- `--event <file>` / `--event-stdin` — request body / stdin source.
+- `--env-vars <file>` — SAM-shape env-var overrides.
+- `--platform <linux/amd64|linux/arm64>` — defaults to `linux/arm64` (AgentCore's required arch).
+- `--container-host <host>` — host to bind the container ports to (default `127.0.0.1`).
+- `--session-id <id>` — value of the AgentCore session-id header (auto-generated when omitted).
+- `--jwt <bearer-token>` — verified + forwarded when the runtime declares `customJwtAuthorizer`.
+- `--timeout <ms>` — per-request timeout (default 120000 / 120s).
+- `--ws` / `--ws-interactive` — WebSocket modes (HTTP protocol only).
+- `--sigv4` — sign `/invocations` with SigV4 (for SigV4-protected runtimes).
+- `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` / `--state-prefix` / `--stack-region` — state-source flags.
+- `--assume-role [arn]` / `--no-assume-role` / `--ecr-role-arn <arn>` — role-assumption flags.
+- `--no-pull` / `--no-build` — pull / build skip.
+
+### Implementation notes
+
+cdkd consumes cdk-local's AgentCore implementation verbatim via shim files (`src/local/agentcore-*.ts`). The actual runtime resolver, code-image builder, S3 bundle downloader, protocol clients (HTTP / MCP / A2A / WebSocket), and SigV4 signer all live in cdk-local (`@cdk-local/internal`); cdkd's command file ports the CLI surface + state-source integration only, mirroring the established pattern from `cdkd local invoke` / `start-api` / `run-task` / `start-service`.

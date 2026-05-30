@@ -63,6 +63,7 @@ import type { StackState } from '../../types/state.js';
 import { createLocalStartApiCommand, resolveProfileCredentials } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
 import { createLocalStartServiceCommand } from './local-start-service.js';
+import { createLocalInvokeAgentCoreCommand } from './local-invoke-agentcore.js';
 import { setEmbedConfig } from 'cdk-local';
 
 /**
@@ -1487,13 +1488,15 @@ function suggestAssumeRoleFromState(state: StackState, logicalId: string): void 
  * Exported for unit testing.
  */
 export function resolveExecutionRoleArnFromState(
-  state: StackState,
-  logicalId: string
+  state: Pick<StackState, 'resources'>,
+  logicalId: string,
+  roleProperty = 'Role'
 ): string | undefined {
   const lambda = state.resources[logicalId];
   if (!lambda) return undefined;
 
-  const roleRef = lambda.properties?.['Role'] ?? lambda.observedProperties?.['Role'];
+  const roleRef =
+    lambda.properties?.[roleProperty] ?? lambda.observedProperties?.[roleProperty];
   if (typeof roleRef === 'string' && roleRef.startsWith('arn:')) {
     return roleRef;
   }
@@ -1647,5 +1650,6 @@ export function createLocalCommand(): Command {
   local.addCommand(createLocalStartApiCommand());
   local.addCommand(createLocalRunTaskCommand());
   local.addCommand(createLocalStartServiceCommand());
+  local.addCommand(createLocalInvokeAgentCoreCommand());
   return local;
 }

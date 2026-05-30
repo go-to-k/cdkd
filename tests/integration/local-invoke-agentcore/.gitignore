@@ -1,0 +1,19 @@
+# The integ runner installs deps fresh via `vp install`, so the lockfile
+# is a build artifact, not a committed source (matches local-run-task).
+pnpm-lock.yaml
+
+# Override the parent integ .gitignore so the agent containers' source
+# files are tracked. Each Dockerfile builds against its /app/server.js inside
+# a plain node base image:
+#   agent/      — AgentCore HTTP contract on 8080
+#   mcp-agent/  — MCP Streamable-HTTP contract on 8000
+#   a2a-agent/  — Agent2Agent JSON-RPC 2.0 on 9000
+#   agui-agent/ — AG-UI SSE on 8080
+!agent/*.js
+!agent/Dockerfile
+!mcp-agent/*.js
+!mcp-agent/Dockerfile
+!a2a-agent/*.js
+!a2a-agent/Dockerfile
+!agui-agent/*.js
+!agui-agent/Dockerfile
