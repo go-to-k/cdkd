@@ -15,8 +15,9 @@
 #   - AWS::ApiGatewayV2::Route  AuthorizationScopes (email + openid) +
 #     OperationName (GetDefault) on the $default route via CreateRoute.
 #   - AWS::ApiGatewayV2::Authorizer  AuthorizerResultTtlInSeconds (300) +
-#     EnableSimpleResponses (true) on the standalone REQUEST authorizer
-#     via CreateAuthorizer.
+#     EnableSimpleResponses (true) + IdentityValidationExpression
+#     ('^Bearer .+$') on the standalone REQUEST authorizer via
+#     CreateAuthorizer.
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -193,7 +194,7 @@ if [ "${OP_NAME}" != "GetDefault" ]; then
 fi
 echo "    OK: Route AuthorizationScopes (email+openid) + OperationName == GetDefault reached AWS (Route backfill CLOSED)"
 
-# --- Assertion 5: Authorizer AuthorizerResultTtlInSeconds + EnableSimpleResponses
+# --- Assertion 5: Authorizer AuthorizerResultTtlInSeconds + EnableSimpleResponses + IdentityValidationExpression
 AUTHORIZERS=$(aws apigatewayv2 get-authorizers --api-id "${API_ID}" --region "${REGION}")
 AUTHORIZER=$(echo "${AUTHORIZERS}" | jq -c --arg name "${REQUEST_AUTHORIZER_NAME}" \
   '.Items[] | select(.Name == $name)')
@@ -204,6 +205,7 @@ if [ -z "${AUTHORIZER}" ]; then
 fi
 TTL=$(echo "${AUTHORIZER}" | jq -r '.AuthorizerResultTtlInSeconds // empty')
 SIMPLE=$(echo "${AUTHORIZER}" | jq -r '.EnableSimpleResponses // empty')
+IDENTITY_VALIDATION=$(echo "${AUTHORIZER}" | jq -r '.IdentityValidationExpression // empty')
 if [ "${TTL}" != "300" ]; then
   echo "FAIL: Authorizer AuthorizerResultTtlInSeconds is '${TTL}', expected '300'" >&2
   echo "      raw authorizer: ${AUTHORIZER}" >&2
@@ -213,7 +215,12 @@ if [ "${SIMPLE}" != "true" ]; then
   echo "FAIL: Authorizer EnableSimpleResponses is '${SIMPLE}', expected 'true'" >&2
   exit 1
 fi
-echo "    OK: Authorizer AuthorizerResultTtlInSeconds == 300 + EnableSimpleResponses == true reached AWS (Authorizer backfill CLOSED)"
+if [ "${IDENTITY_VALIDATION}" != '^Bearer .+$' ]; then
+  echo "FAIL: Authorizer IdentityValidationExpression is '${IDENTITY_VALIDATION}', expected '^Bearer .+\$'" >&2
+  echo "      raw authorizer: ${AUTHORIZER}" >&2
+  exit 1
+fi
+echo "    OK: Authorizer AuthorizerResultTtlInSeconds == 300 + EnableSimpleResponses == true + IdentityValidationExpression == '^Bearer .+\$' reached AWS (Authorizer backfill CLOSED)"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy"

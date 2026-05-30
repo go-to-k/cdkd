@@ -314,6 +314,65 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     expect(result!).not.toHaveProperty('EnableSimpleResponses');
   });
 
+  it('emits IdentityValidationExpression on a REQUEST authorizer when present', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'REQUEST',
+      Name: 'request-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      AuthorizerPayloadFormatVersion: '2.0',
+      IdentityValidationExpression: '^Bearer .+$',
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!['IdentityValidationExpression']).toBe('^Bearer .+$');
+  });
+
+  it('omits IdentityValidationExpression on a REQUEST authorizer when AWS does not return it', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'REQUEST',
+      Name: 'request-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      AuthorizerPayloadFormatVersion: '2.0',
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!).not.toHaveProperty('IdentityValidationExpression');
+  });
+
+  it('never emits IdentityValidationExpression on a JWT authorizer (REQUEST discriminator guard)', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'JWT',
+      Name: 'my-jwt-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      JwtConfiguration: { Audience: ['client-id'], Issuer: 'https://issuer.example.com' },
+      // AWS may echo a server-side default; it must NOT surface on JWT.
+      IdentityValidationExpression: '^Bearer .+$',
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result!).not.toHaveProperty('IdentityValidationExpression');
+  });
+
   it('returns undefined for sub-resources when properties.ApiId is missing', async () => {
     const result = await provider.readCurrentState(
       'route-id',

@@ -183,12 +183,12 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'AuthorizerUri',
         'EnableSimpleResponses',
         'IdentitySource',
+        'IdentityValidationExpression',
         'JwtConfiguration',
         'Name',
       ]),
       silentDrop: new Map<string, string>([
         ['AuthorizerCredentialsArn', 'not yet implemented by cdkd'],
-        ['IdentityValidationExpression', 'not yet implemented by cdkd'],
       ]),
     },
   ],

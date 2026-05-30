@@ -155,7 +155,8 @@ def handler(event, context):
     // Standalone REQUEST authorizer (not attached to any route, no IAM role
     // or lambda permission needed since it is never invoked). It exists
     // solely to exercise the #609 Authorizer backfill props
-    // authorizerResultTtlInSeconds / enableSimpleResponses (both ride on
+    // authorizerResultTtlInSeconds / enableSimpleResponses /
+    // identityValidationExpression (all ride on
     // CreateAuthorizer/UpdateAuthorizer directly).
     new apigatewayv2.CfnAuthorizer(this, 'RequestAuthorizer', {
       apiId: httpApi.ref,
@@ -166,6 +167,7 @@ def handler(event, context):
       authorizerPayloadFormatVersion: '2.0', // 2.0 required for enableSimpleResponses
       enableSimpleResponses: true,
       authorizerResultTtlInSeconds: 300,
+      identityValidationExpression: '^Bearer .+$',
     });
 
     // Outputs
