@@ -137,6 +137,58 @@ describe('S3VectorsProvider.readCurrentState', () => {
     expect((result?.Tags as Array<unknown>).length).toBe(2);
   });
 
+  it('filters aws:cdk:path (and other AWS-reserved aws:* tags) out of Tags readback', async () => {
+    // Every CDK-deployed VectorBucket carries an `aws:cdk:path` tag AWS
+    // returns via ListTagsForResource. Without the filter, the drift
+    // comparator would see [{Key: 'env', Value: 'prod'}, {Key:
+    // 'aws:cdk:path', Value: 'Stack/Bucket/Resource'}] in AWS-current
+    // vs [{Key: 'env', Value: 'prod'}] in cdkd state and fire false
+    // drift on every clean run. normalizeAwsTagsToCfn strips them.
+    mockSend.mockResolvedValueOnce({
+      vectorBucket: {
+        vectorBucketName: 'cdk-deployed',
+        vectorBucketArn: 'arn:aws:s3vectors:us-east-1:0:bucket/cdk-deployed',
+      },
+    });
+    mockSend.mockResolvedValueOnce({
+      tags: {
+        env: 'prod',
+        'aws:cdk:path': 'MyStack/MyBucket/Resource',
+        'aws:cloudformation:logical-id': 'MyBucket',
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'cdk-deployed',
+      'Logical',
+      'AWS::S3Vectors::VectorBucket'
+    );
+
+    expect(result?.Tags).toEqual([{ Key: 'env', Value: 'prod' }]);
+  });
+
+  it('omits Tags from readback when GetVectorBucket returns no vectorBucketArn (SDK shape regression guard)', async () => {
+    // Defensive guard: if AWS SDK ever drops vectorBucketArn from the
+    // GetVectorBucket response, the readback omits the Tags key entirely
+    // rather than emitting an empty `Tags: []` that would silently mask
+    // the API shape mismatch. The drift comparator's state-keys-only
+    // walk then surfaces no false positive on the Tags key.
+    mockSend.mockResolvedValueOnce({
+      vectorBucket: {
+        vectorBucketName: 'no-arn-bucket',
+        // vectorBucketArn: undefined  — simulated SDK regression
+      },
+    });
+    // No ListTagsForResource mock — the readback short-circuits.
+
+    const result = await provider.readCurrentState(
+      'no-arn-bucket',
+      'Logical',
+      'AWS::S3Vectors::VectorBucket'
+    );
+    expect(result).not.toHaveProperty('Tags');
+  });
+
   it('emits Tags=[] when ListTagsForResource itself fails (best-effort, drift comparator stays happy)', async () => {
     mockSend.mockResolvedValueOnce({
       vectorBucket: {

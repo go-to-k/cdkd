@@ -12,7 +12,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG } from '../import-helpers.js';
+import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -309,17 +309,23 @@ export class S3VectorsProvider implements ResourceProvider {
     }
     // `Tags`: read back via `ListTagsForResource(resourceArn=vectorBucketArn)`
     // and convert SDK `Record<string, string>` → CFn `[{ Key, Value }]`.
-    // Emit-when-present (an empty `[]` placeholder is fine — bucket
-    // creation rejects tags after-the-fact via this resource type, so
-    // the only mutation path is the next deploy's re-create; no drift
-    // false-positive risk vs the typical no-tags bucket).
+    // The conversion goes through `normalizeAwsTagsToCfn` which strips
+    // CDK's auto-injected `aws:cdk:path` (and any other `aws:`-prefixed
+    // tag AWS reserves) — without that filter every CDK-deployed bucket
+    // would fire false-positive drift on its first clean `cdkd drift` run
+    // (state has only user tags; AWS-current carries the `aws:cdk:path`
+    // overlay CDK adds for stack-resource resolution). When the bucket's
+    // ARN is unexpectedly absent in the GetVectorBucket response (SDK
+    // shape regression) the `Tags` field is intentionally omitted from
+    // the readback result — the drift comparator's state-keys-only walk
+    // then surfaces no false positive, while a `logger.debug` notes the
+    // shape mismatch for operator investigation.
     if (bucket?.vectorBucketArn) {
       try {
         const tagsResp = await this.getClient().send(
           new ListTagsForResourceCommand({ resourceArn: bucket.vectorBucketArn })
         );
-        const sdkTags = tagsResp.tags ?? {};
-        result['Tags'] = Object.entries(sdkTags).map(([Key, Value]) => ({ Key, Value }));
+        result['Tags'] = normalizeAwsTagsToCfn(tagsResp.tags);
       } catch (err) {
         this.logger.debug(
           `S3Vectors ListTagsForResource(${bucket.vectorBucketArn}) failed: ${err instanceof Error ? err.message : String(err)}`
@@ -327,7 +333,9 @@ export class S3VectorsProvider implements ResourceProvider {
         result['Tags'] = [];
       }
     } else {
-      result['Tags'] = [];
+      this.logger.debug(
+        `S3Vectors GetVectorBucket(${physicalId}) returned no vectorBucketArn; skipping Tags readback`
+      );
     }
     return result;
   }
