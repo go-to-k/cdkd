@@ -256,9 +256,6 @@
       "VolumeConfigurations",
       "VpcLatticeConfigurations"
     ],
-    "AWS::ECS::TaskDefinition": [
-      "InferenceAccelerators"
-    ],
     "AWS::EFS::AccessPoint": [
       "ClientToken"
     ],
