@@ -48,7 +48,7 @@ LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 # function. Returns the value ('FunctionUpdate' / 'Auto') or empty when the
 # function is gone. RuntimeManagementConfig lives on its own control-plane
 # API (get-runtime-management-config), not on get-function-configuration.
-recursion_loop() {
+read_update_runtime_on() {
   aws lambda get-runtime-management-config \
     --function-name "$1" --region "${REGION}" \
     --query 'UpdateRuntimeOn' --output text 2>/dev/null
@@ -140,12 +140,12 @@ echo "    OK: OverrideStack Lambda provisionedBy == 'sdk' (override forced SDK p
 # Item 3 assertion 2: AWS does NOT have RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate
 # — the silent drop actually dropped. The SDK provider doesn't wire
 # RuntimeManagementConfig, so the function stays at the AWS default 'Auto'.
-OVERRIDE_RECURSIVE_LOOP=$(recursion_loop "${OVERRIDE_FN}")
-if [ "${OVERRIDE_RECURSIVE_LOOP}" = "FunctionUpdate" ]; then
+OVERRIDE_UPDATE_RUNTIME_ON=$(read_update_runtime_on "${OVERRIDE_FN}")
+if [ "${OVERRIDE_UPDATE_RUNTIME_ON}" = "FunctionUpdate" ]; then
   echo "FAIL: OverrideStack Lambda received RuntimeManagementConfig.UpdateRuntimeOn='FunctionUpdate' — override should have silent-dropped it (expected the 'Auto' default)" >&2
   exit 1
 fi
-echo "    OK: OverrideStack Lambda did NOT receive RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate (AWS UpdateRuntimeOn='${OVERRIDE_RECURSIVE_LOOP}' — silent drop honored)"
+echo "    OK: OverrideStack Lambda did NOT receive RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate (AWS UpdateRuntimeOn='${OVERRIDE_UPDATE_RUNTIME_ON}' — silent drop honored)"
 
 # --- Phase 1B: deploy TransitionStack baseline (NO RuntimeManagementConfig) ----------
 #
@@ -168,12 +168,12 @@ fi
 echo "    OK: TransitionStack Lambda provisionedBy == 'sdk' (baseline, no silent-drop property in template)"
 
 # Item 4 baseline AWS check: RuntimeManagementConfig.UpdateRuntimeOn should NOT be FunctionUpdate yet.
-TRANSITION_RECURSIVE_LOOP_1=$(recursion_loop "${TRANSITION_FN}")
-if [ "${TRANSITION_RECURSIVE_LOOP_1}" = "FunctionUpdate" ]; then
+TRANSITION_UPDATE_RUNTIME_ON_1=$(read_update_runtime_on "${TRANSITION_FN}")
+if [ "${TRANSITION_UPDATE_RUNTIME_ON_1}" = "FunctionUpdate" ]; then
   echo "FAIL: TransitionStack Lambda has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate after baseline deploy — fixture forgot to omit RuntimeManagementConfig" >&2
   exit 1
 fi
-echo "    OK: TransitionStack Lambda has no RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate on AWS yet (baseline UpdateRuntimeOn='${TRANSITION_RECURSIVE_LOOP_1}')"
+echo "    OK: TransitionStack Lambda has no RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate on AWS yet (baseline UpdateRuntimeOn='${TRANSITION_UPDATE_RUNTIME_ON_1}')"
 
 # --- Phase 2: re-deploy TransitionStack WITH RuntimeManagementConfig (mid-life flip) -
 #
@@ -198,9 +198,9 @@ fi
 echo "    OK: TransitionStack Lambda provisionedBy flipped 'sdk' → 'cc-api' (mid-life re-route fired)"
 
 # Item 4 post-flip AWS check: RuntimeManagementConfig.UpdateRuntimeOn should now be FunctionUpdate (CC forwarded it).
-TRANSITION_RECURSIVE_LOOP_2=$(recursion_loop "${TRANSITION_FN}")
-if [ "${TRANSITION_RECURSIVE_LOOP_2}" != "FunctionUpdate" ]; then
-  echo "FAIL: TransitionStack Lambda has RuntimeManagementConfig.UpdateRuntimeOn='${TRANSITION_RECURSIVE_LOOP_2}' after CC re-route, expected 'FunctionUpdate' (CC should have forwarded RuntimeManagementConfig)" >&2
+TRANSITION_UPDATE_RUNTIME_ON_2=$(read_update_runtime_on "${TRANSITION_FN}")
+if [ "${TRANSITION_UPDATE_RUNTIME_ON_2}" != "FunctionUpdate" ]; then
+  echo "FAIL: TransitionStack Lambda has RuntimeManagementConfig.UpdateRuntimeOn='${TRANSITION_UPDATE_RUNTIME_ON_2}' after CC re-route, expected 'FunctionUpdate' (CC should have forwarded RuntimeManagementConfig)" >&2
   exit 1
 fi
 echo "    OK: TransitionStack Lambda RuntimeManagementConfig reached AWS via CC API (UpdateRuntimeOn=FunctionUpdate)"
