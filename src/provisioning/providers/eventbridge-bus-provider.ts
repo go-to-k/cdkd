@@ -79,6 +79,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
         'KmsKeyIdentifier',
         'Policy',
         'DeadLetterConfig',
+        'LogConfig',
       ]),
     ],
   ]);
@@ -123,6 +124,12 @@ export class EventBridgeBusProvider implements ResourceProvider {
       if (dlcCreate) {
         createParams.DeadLetterConfig = dlcCreate;
       }
+      if (properties['LogConfig'] !== undefined) {
+        createParams.LogConfig = properties['LogConfig'] as {
+          IncludeDetail?: 'NONE' | 'FULL';
+          Level?: 'OFF' | 'ERROR' | 'INFO' | 'TRACE';
+        };
+      }
 
       const response = await this.eventBridgeClient.send(new CreateEventBusCommand(createParams));
 
@@ -162,14 +169,16 @@ export class EventBridgeBusProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating EventBus ${_logicalId}: ${physicalId}`);
 
-    // Update mutable properties (Description, KmsKeyIdentifier, DeadLetterConfig)
+    // Update mutable properties (Description, KmsKeyIdentifier, DeadLetterConfig, LogConfig)
     const descChanged = properties['Description'] !== previousProperties['Description'];
     const kmsChanged = properties['KmsKeyIdentifier'] !== previousProperties['KmsKeyIdentifier'];
     const dlcChanged =
       JSON.stringify(properties['DeadLetterConfig']) !==
       JSON.stringify(previousProperties['DeadLetterConfig']);
+    const logCfgChanged =
+      JSON.stringify(properties['LogConfig']) !== JSON.stringify(previousProperties['LogConfig']);
 
-    if (descChanged || kmsChanged || dlcChanged) {
+    if (descChanged || kmsChanged || dlcChanged || logCfgChanged) {
       const updateParams: import('@aws-sdk/client-eventbridge').UpdateEventBusCommandInput = {
         Name: physicalId,
       };
@@ -184,6 +193,12 @@ export class EventBridgeBusProvider implements ResourceProvider {
         if (dlcUpdate) {
           updateParams.DeadLetterConfig = dlcUpdate;
         }
+      }
+      if (properties['LogConfig'] !== undefined) {
+        updateParams.LogConfig = properties['LogConfig'] as {
+          IncludeDetail?: 'NONE' | 'FULL';
+          Level?: 'OFF' | 'ERROR' | 'INFO' | 'TRACE';
+        };
       }
       await this.eventBridgeClient.send(new UpdateEventBusCommand(updateParams));
     }
@@ -386,6 +401,17 @@ export class EventBridgeBusProvider implements ResourceProvider {
       result['Description'] = resp.Description ?? '';
       result['KmsKeyIdentifier'] = resp.KmsKeyIdentifier ?? '';
       result['DeadLetterConfig'] = { Arn: resp.DeadLetterConfig?.Arn ?? '' };
+      // LogConfig: emit-when-present (NOT the always-emit-placeholder
+      // pattern). AWS returns LogConfig only when set; a never-configured
+      // bus does not get a phantom `{ Level: 'OFF', IncludeDetail: 'NONE' }`
+      // placeholder that would round-trip into spurious drift.
+      if (resp.LogConfig !== undefined) {
+        const lc: Record<string, unknown> = {};
+        if (resp.LogConfig.IncludeDetail !== undefined)
+          lc['IncludeDetail'] = resp.LogConfig.IncludeDetail;
+        if (resp.LogConfig.Level !== undefined) lc['Level'] = resp.LogConfig.Level;
+        if (Object.keys(lc).length > 0) result['LogConfig'] = lc;
+      }
       if (resp.Policy) {
         try {
           result['Policy'] = JSON.parse(resp.Policy) as unknown;

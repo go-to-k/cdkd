@@ -302,9 +302,6 @@
       "TargetGroupAttributes",
       "Targets"
     ],
-    "AWS::Events::EventBus": [
-      "LogConfig"
-    ],
     "AWS::Kinesis::Stream": [
       "DesiredShardLevelMetrics",
       "MaxRecordSizeInKiB",

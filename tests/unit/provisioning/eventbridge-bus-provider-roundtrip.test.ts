@@ -182,4 +182,69 @@ describe('EventBridgeBusProvider read-update round-trip', () => {
     };
     expect(input.Description).toBe('');
   });
+
+  // ─── #609 backfill: LogConfig ─────────────────────────────────────
+
+  it('LogConfig backfill — create() forwards LogConfig to CreateEventBus', async () => {
+    mockSend.mockResolvedValueOnce({ EventBusArn: BUS_ARN });
+
+    await provider.create('L', RESOURCE_TYPE, {
+      Name: BUS_NAME,
+      LogConfig: { Level: 'INFO', IncludeDetail: 'FULL' },
+    });
+
+    const createCalls = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof CreateEventBusCommand
+    );
+    expect(createCalls).toHaveLength(1);
+    const input = createCalls[0][0].input as {
+      LogConfig?: { Level?: string; IncludeDetail?: string };
+    };
+    expect(input.LogConfig).toEqual({ Level: 'INFO', IncludeDetail: 'FULL' });
+  });
+
+  it('LogConfig backfill — create() omits LogConfig when absent', async () => {
+    mockSend.mockResolvedValueOnce({ EventBusArn: BUS_ARN });
+
+    await provider.create('L', RESOURCE_TYPE, { Name: BUS_NAME });
+
+    const createCalls = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof CreateEventBusCommand
+    );
+    const input = createCalls[0][0].input as { LogConfig?: unknown };
+    expect(input.LogConfig).toBeUndefined();
+  });
+
+  it('LogConfig backfill — update() emits UpdateEventBus when LogConfig changes', async () => {
+    mockSend.mockResolvedValue({ Arn: BUS_ARN });
+
+    await provider.update(
+      'L',
+      BUS_NAME,
+      RESOURCE_TYPE,
+      { Name: BUS_NAME, LogConfig: { Level: 'TRACE', IncludeDetail: 'FULL' } },
+      { Name: BUS_NAME, LogConfig: { Level: 'INFO', IncludeDetail: 'NONE' } }
+    );
+
+    const updateCalls = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof UpdateEventBusCommand
+    );
+    expect(updateCalls).toHaveLength(1);
+    const input = updateCalls[0][0].input as {
+      LogConfig?: { Level?: string; IncludeDetail?: string };
+    };
+    expect(input.LogConfig).toEqual({ Level: 'TRACE', IncludeDetail: 'FULL' });
+  });
+
+  it('LogConfig backfill — update() unchanged LogConfig produces zero UpdateEventBus calls', async () => {
+    mockSend.mockResolvedValue({ Arn: BUS_ARN });
+
+    const same = { Name: BUS_NAME, LogConfig: { Level: 'INFO', IncludeDetail: 'FULL' } };
+    await provider.update('L', BUS_NAME, RESOURCE_TYPE, same, same);
+
+    const updateCalls = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof UpdateEventBusCommand
+    );
+    expect(updateCalls).toHaveLength(0);
+  });
 });

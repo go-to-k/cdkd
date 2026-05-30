@@ -1283,11 +1283,12 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Description',
         'EventSourceName',
         'KmsKeyIdentifier',
+        'LogConfig',
         'Name',
         'Policy',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([['LogConfig', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

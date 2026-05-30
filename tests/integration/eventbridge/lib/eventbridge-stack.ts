@@ -26,8 +26,16 @@ export class EventBridgeStack extends cdk.Stack {
     super(scope, id, props);
 
     // Create custom EventBridge event bus
+    // logConfig exercises the #609 LogConfig backfill — rides on
+    // CreateEventBus/UpdateEventBus directly, NO separate control-plane
+    // API. Default is no LogConfig at all; setting Level + IncludeDetail
+    // gives unambiguous readback via `aws events describe-event-bus`.
     const bus = new events.EventBus(this, 'CustomBus', {
       eventBusName: `cdkd-test-bus-${cdk.Aws.ACCOUNT_ID}`,
+      logConfig: {
+        level: events.Level.INFO,
+        includeDetail: events.IncludeDetail.FULL,
+      },
     });
 
     // Create Lambda function with inline code as the rule target

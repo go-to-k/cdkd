@@ -105,4 +105,28 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
     const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
     expect(result?.Tags).toEqual([]);
   });
+
+  it('emits LogConfig when DescribeEventBus returns it (#609 backfill)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-bus',
+      Arn: 'arn:aws:events:us-east-1:123:event-bus/my-bus',
+      LogConfig: { Level: 'INFO', IncludeDetail: 'FULL' },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+    expect(result?.LogConfig).toEqual({ Level: 'INFO', IncludeDetail: 'FULL' });
+  });
+
+  it('omits LogConfig when DescribeEventBus does not return it (emit-when-present)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-bus',
+      Arn: 'arn:aws:events:us-east-1:123:event-bus/my-bus',
+      // No LogConfig — never configured on this bus.
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+    expect(result).not.toHaveProperty('LogConfig');
+  });
 });
