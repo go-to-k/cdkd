@@ -421,7 +421,12 @@ describe('B-bucket silent-drop alias fixes (issue #613)', () => {
 
   describe('AWS::S3Tables::Table:TableName', () => {
     it('reads the CFn-schema-canonical `TableName` key and passes it to SDK `name`', async () => {
-      mockS3TablesSend.mockResolvedValueOnce({});
+      // createTable now throws if response.tableARN is missing (#609 Tags
+      // backfill captures it into attributes.TableARN); include a stub
+      // ARN so the alias test stays focused on the TableName wire flip.
+      mockS3TablesSend.mockResolvedValueOnce({
+        tableARN: 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket/table/OPAQUE',
+      });
       const provider = new S3TablesProvider();
 
       await provider.create('MyTable', 'AWS::S3Tables::Table', {

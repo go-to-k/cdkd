@@ -497,7 +497,19 @@ export class S3TablesProvider implements ResourceProvider {
       // `<bucketArn>/table/<ns>/<name>` with BadRequestException), so
       // we store it as an attribute so the resolver can return it for
       // `Fn::GetAtt: [Table, TableARN]` without a follow-up GetTable.
-      const tableARN = response.tableARN ?? '';
+      // A missing tableARN in the response would mean the SDK / AWS
+      // changed something underfoot — error LOUD rather than silently
+      // propagating `''` to downstream consumers (which would receive
+      // an empty ARN and surface cryptic AWS-side errors much later).
+      if (!response.tableARN) {
+        throw new ProvisioningError(
+          `CreateTable did not return a tableARN for ${logicalId} (${physicalId}) — refusing to record an empty TableARN attribute`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      const tableARN = response.tableARN;
 
       this.logger.debug(`Successfully created S3 Tables Table ${logicalId}: ${physicalId}`);
 
@@ -585,9 +597,19 @@ export class S3TablesProvider implements ResourceProvider {
     const [tableBucketARN, namespaceName] = physicalId.split('|');
     if (!tableBucketARN || !namespaceName) return undefined;
 
+    // CDK 2.x's `s3tables.CfnNamespace` emits `Namespace` as a plain
+    // string (not a singleton array as CFn docs / AWS SDK suggest); the
+    // drift comparator only descends into keys present in state, so the
+    // readback shape must match the template-as-written shape. Emit the
+    // string form because (a) CDK is the dominant template source and
+    // (b) `createNamespace`'s string-vs-array tolerance accepts both
+    // inputs but state preserves the template-emitted shape. Templates
+    // that explicitly use the array form would see a one-time drift on
+    // the first `cdkd drift` invocation; not load-bearing for the
+    // dominant CDK-authored case.
     return {
       TableBucketARN: tableBucketARN,
-      Namespace: [namespaceName],
+      Namespace: namespaceName,
     };
   }
 
@@ -975,7 +997,12 @@ export class S3TablesProvider implements ResourceProvider {
       return;
     }
     const [tableBucketARN, namespace, name] = parts;
-    if (!tableBucketARN || !namespace || !name) return;
+    if (!tableBucketARN || !namespace || !name) {
+      this.logger.warn(
+        `applyTableTagsDiff: cannot derive table ARN from malformed physicalId '${physicalId}' (empty part after split) — skipping tag-diff`
+      );
+      return;
+    }
 
     const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
     const next = this.cfnTagsToSdkMap(newTags) ?? {};

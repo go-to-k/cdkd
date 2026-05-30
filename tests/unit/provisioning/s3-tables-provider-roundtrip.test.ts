@@ -100,7 +100,10 @@ describe('S3TablesProvider read-update round-trip', () => {
     );
     expect(observed).toEqual({
       TableBucketARN: BUCKET_ARN,
-      Namespace: ['my-namespace'],
+      // String form matches CDK 2.x's CfnNamespace template output;
+      // see provider's readNamespaceCurrentState for the drift-comparison
+      // rationale.
+      Namespace: 'my-namespace',
     });
 
     vi.clearAllMocks();

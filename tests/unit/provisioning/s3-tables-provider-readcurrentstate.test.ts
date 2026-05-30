@@ -89,7 +89,9 @@ describe('S3TablesProvider.readCurrentState', () => {
 
       expect(result).toEqual({
         TableBucketARN: 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
-        Namespace: ['my-namespace'],
+        // String form (matches CDK 2.x CfnNamespace template output);
+        // see provider comment for the drift-comparison rationale.
+        Namespace: 'my-namespace',
       });
       expect(mockSend).not.toHaveBeenCalled();
     });

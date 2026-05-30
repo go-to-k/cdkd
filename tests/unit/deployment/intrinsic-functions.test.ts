@@ -1609,7 +1609,6 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
       expect(result).toBe(arn);
     });
   });
-
 });
 
 describe('IntrinsicFunctionResolver - unknown intrinsic detection', () => {
