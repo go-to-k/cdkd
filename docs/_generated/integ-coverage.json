@@ -3018,6 +3018,7 @@
   ],
   "unknownTypesInIntegs": [
     "AWS::ApiGateway::RestApi",
+    "AWS::ApplicationAutoScaling::ScalableTarget",
     "AWS::Athena::NamedQuery",
     "AWS::Athena::WorkGroup",
     "AWS::CloudFront::OriginAccessControl",

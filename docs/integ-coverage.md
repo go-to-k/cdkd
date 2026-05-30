@@ -146,11 +146,12 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`stepfunctions`](../tests/integration/stepfunctions/) (l2) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (24)
+## Resource types referenced in integs without an SDK Provider (25)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
 - `AWS::ApiGateway::RestApi`
+- `AWS::ApplicationAutoScaling::ScalableTarget`
 - `AWS::Athena::NamedQuery`
 - `AWS::Athena::WorkGroup`
 - `AWS::CloudFront::OriginAccessControl`

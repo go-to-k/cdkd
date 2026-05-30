@@ -1549,6 +1549,66 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
     // Custom resource type → constructAttribute falls through to physicalId.
     expect(result).toBe('r');
   });
+
+  describe('AWS::ECS::Service Name attribute (constructAttribute fallback)', () => {
+    const mkContext = (physicalId: string, attributes: Record<string, unknown> = {}): ResolverContext => {
+      const template: CloudFormationTemplate = {
+        Resources: { Svc: { Type: 'AWS::ECS::Service', Properties: {} } },
+      };
+      return {
+        template,
+        resources: {
+          Svc: {
+            physicalId,
+            resourceType: 'AWS::ECS::Service',
+            properties: {},
+            attributes,
+            dependencies: [],
+          },
+        },
+      };
+    };
+
+    it('returns the last `/` segment of a plain service ARN as Name', async () => {
+      const arn = 'arn:aws:ecs:us-east-1:111111111111:service/my-cluster/MyStack-MyService';
+      const result = await resolver.resolve({ 'Fn::GetAtt': ['Svc', 'Name'] }, mkContext(arn));
+      expect(result).toBe('MyStack-MyService');
+    });
+
+    it('handles the <serviceArn>|<clusterName> composite shape — strips suffix, returns last ARN segment', async () => {
+      const composite =
+        'arn:aws:ecs:us-east-1:111111111111:service/my-cluster/MyStack-MyService|my-cluster';
+      const result = await resolver.resolve({ 'Fn::GetAtt': ['Svc', 'Name'] }, mkContext(composite));
+      expect(result).toBe('MyStack-MyService');
+    });
+
+    it('handles the import-format <clusterArn>|<serviceName> composite shape — returns RHS', async () => {
+      const composite =
+        'arn:aws:ecs:us-east-1:111111111111:cluster/my-cluster|MyStack-MyService';
+      const result = await resolver.resolve({ 'Fn::GetAtt': ['Svc', 'Name'] }, mkContext(composite));
+      expect(result).toBe('MyStack-MyService');
+    });
+
+    it('prefers the flat-key attributes.Name when set (does not fall through to constructAttribute)', async () => {
+      // The provider stores `attributes.Name` at create time; the flat-key
+      // lookup hits before constructAttribute, so this is the happy path.
+      const arn = 'arn:aws:ecs:us-east-1:111111111111:service/my-cluster/MyStack-MyService';
+      const result = await resolver.resolve(
+        { 'Fn::GetAtt': ['Svc', 'Name'] },
+        mkContext(arn, { Name: 'cached-from-create' })
+      );
+      expect(result).toBe('cached-from-create');
+    });
+
+    it('falls back to physicalId for unknown attributes on AWS::ECS::Service', async () => {
+      const arn = 'arn:aws:ecs:us-east-1:111111111111:service/my-cluster/MyStack-MyService';
+      const result = await resolver.resolve(
+        { 'Fn::GetAtt': ['Svc', 'NotAnAttribute'] },
+        mkContext(arn)
+      );
+      expect(result).toBe(arn);
+    });
+  });
 });
 
 describe('IntrinsicFunctionResolver - unknown intrinsic detection', () => {

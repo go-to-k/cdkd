@@ -95,6 +95,38 @@ if [ "${ACTUAL}" != "true" ]; then
 fi
 echo "    OK: taskDefinition.enableFaultInjection == true on AWS (silent-drop CLOSED by #609)"
 
+# --- Assertion: ScalableTarget reached AWS ----------------------------
+# The fixture's `service.autoScaleTaskCount({...})` synthesizes an
+# `AWS::ApplicationAutoScaling::ScalableTarget` whose `ResourceId` is
+# `Fn::Join('', ['service/', cluster.clusterName, '/', service.serviceName])`
+# — exercising `Fn::GetAtt(<Service>, 'Name')` end-to-end against cdkd's
+# intrinsic resolver. Before this fix, the resolver had no per-type
+# fallback for `AWS::ECS::Service.Name` and returned the service ARN
+# (sometimes in `<arn>|<clusterName>` composite form), producing a
+# malformed ResourceId AWS rejected with
+# `Unsupported resource type: cluster`. Seeing a ScalableTarget
+# successfully registered for the deployed cluster + service proves the
+# resolver returns the short service name.
+CLUSTER_NAME=$(echo "${STATE}" | jq -r '.outputs.ClusterName // empty')
+SERVICE_NAME=$(echo "${STATE}" | jq -r '.outputs.ServiceName // empty')
+if [ -z "${CLUSTER_NAME}" ] || [ -z "${SERVICE_NAME}" ]; then
+  echo "FAIL: ClusterName / ServiceName missing from state outputs" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+RESOURCE_ID="service/${CLUSTER_NAME}/${SERVICE_NAME}"
+SCALABLE_TARGET_RID=$(aws application-autoscaling describe-scalable-targets \
+  --region "${REGION}" --service-namespace ecs \
+  --query "ScalableTargets[?ResourceId=='${RESOURCE_ID}'].ResourceId" \
+  --output text 2>/dev/null || true)
+if [ "${SCALABLE_TARGET_RID}" != "${RESOURCE_ID}" ]; then
+  echo "FAIL: no ScalableTarget registered for ResourceId '${RESOURCE_ID}' (Fn::GetAtt(Service, 'Name') round-trip BROKEN)" >&2
+  aws application-autoscaling describe-scalable-targets \
+    --region "${REGION}" --service-namespace ecs --output json | jq .
+  exit 1
+fi
+echo "    OK: ScalableTarget registered for ${RESOURCE_ID} (Fn::GetAtt(Service, 'Name') round-trip CLOSED)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
