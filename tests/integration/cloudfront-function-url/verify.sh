@@ -3,11 +3,12 @@
 # test (issue #609).
 #
 # Asserts that a Lambda Permission whose template sets
-# `InvokedViaFunctionUrl: true` has the AWS-side condition
-# `Condition.StringEquals."lambda:FunctionUrlAuthType"` present on the
-# resource-policy statement after `cdkd deploy` — the property was a
-# silent-drop before the #609 backfill. Also asserts the destroy path
-# cleans up.
+# `InvokedViaFunctionUrl: true` (paired with the only AWS-accepted
+# action `lambda:InvokeFunction`) has the AWS-side condition
+# `Condition.Bool."lambda:InvokedViaFunctionUrl" == "true"` present on
+# the resource-policy statement after `cdkd deploy` — the property was
+# a silent-drop before the #609 backfill. Also asserts the destroy
+# path cleans up.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})

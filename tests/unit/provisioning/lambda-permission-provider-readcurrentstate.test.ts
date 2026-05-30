@@ -225,6 +225,39 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('InvokedViaFunctionUrl');
   });
 
+  it('omits InvokedViaFunctionUrl when the Bool value is "false" (defensive non-`true` branch)', async () => {
+    // AWS empirically only injects the `Bool.lambda:InvokedViaFunctionUrl`
+    // Condition when the CFn property is `true`; setting `false` is a
+    // no-op on the wire (no Condition emitted). This test guards against
+    // a future AWS-side behavior change that DID surface a `"false"`
+    // value — the readback omits the key in that case, so a `false`
+    // round-trip stays a no-op (and matches CFn's default-omit
+    // convention).
+    const policy = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Sid: 'FalseVal',
+          Action: 'lambda:InvokeFunction',
+          Principal: '*',
+          Condition: {
+            Bool: { 'lambda:InvokedViaFunctionUrl': 'false' },
+          },
+        },
+      ],
+    };
+    mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(policy) });
+
+    const result = await provider.readCurrentState(
+      'FalseVal',
+      'PermissionLogical',
+      'AWS::Lambda::Permission',
+      { FunctionName: 'my-function' }
+    );
+
+    expect(result).not.toHaveProperty('InvokedViaFunctionUrl');
+  });
+
   it('parses legacy "functionArn|statementId" physicalId format', async () => {
     const policy = {
       Version: '2012-10-17',
