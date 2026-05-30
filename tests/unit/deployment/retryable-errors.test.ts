@@ -67,6 +67,12 @@ describe('isRetryableTransientError', () => {
       ['KMS key is invalid for CreateGrant', 'KMS CreateGrant'],
       // Eventual consistency
       ['Resource does not exist', 'eventual consistency'],
+      // Lambda AddPermission concurrent update (multiple
+      // Lambda::Permission for the same function dispatching in parallel)
+      [
+        'The function could not be updated due to a concurrent update operation. Please try again later.',
+        'Lambda AddPermission concurrent update',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });

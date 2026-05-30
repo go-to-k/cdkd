@@ -54,6 +54,13 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // (a common dev / iteration loop). Retry recovers within ~60s instead
   // of failing the whole deploy.
   'wait 60 seconds',
+  // Lambda: AddPermission serializes resource-policy updates server-side.
+  // When multiple Lambda::Permission resources for the same function
+  // dispatch in parallel, AWS rejects the losers with
+  // `The function could not be updated due to a concurrent update
+  // operation`. The conflicting writer typically finishes within
+  // milliseconds, so a retry recovers.
+  'concurrent update operation',
 ];
 
 /**
