@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { createLocalStartServiceCommand } from '../../../src/cli/commands/local-start-service.js';
+import {
+  createLocalStartServiceCommand,
+  serviceStrategy,
+} from '../../../src/cli/commands/local-start-service.js';
+import { LocalStartServiceError } from '../../../src/utils/error-handler.js';
+import type { EcsServiceEmulatorOptions } from '../../../src/cli/commands/ecs-service-emulator.js';
+import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 describe('createLocalStartServiceCommand', () => {
   // `cmd.parse([...])` runs the registered `.action(handler)` body. The
@@ -97,10 +103,11 @@ describe('createLocalStartServiceCommand', () => {
   });
 
   it('accepts --max-tasks at the subnet-allocator cap (83)', () => {
-    // Issue #544 — the cap dropped from 84 to 83 because the
-    // per-replica subnet allocator (`pickSubnetOctet`) skips
-    // SHARED_SVC_SUBNET_OCTET (171) to avoid colliding with the
-    // shared-service network /24.
+    // Issue #544 — cdk-local's `parseMaxTasks` (re-exported via the
+    // `ecs-service-emulator` shim and registered by
+    // `addCommonEcsServiceOptions`) enforces a cap of 83 because the
+    // engine's per-replica link-local /24 subnet allocator skips one
+    // octet (the shared-svc network's `169.254.171.0/24`).
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
     const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '83'], { from: 'user' });
@@ -108,15 +115,14 @@ describe('createLocalStartServiceCommand', () => {
   });
 
   it('rejects --max-tasks above the subnet-allocator cap (84)', () => {
-    // The per-replica subnet allocator in `ecs-service-runner.ts`
-    // (`pickSubnetOctet`) serves 83 distinct octets out of the
-    // link-local /24 range 169.254.170.0..169.254.253.0 (one octet,
-    // SHARED_SVC_SUBNET_OCTET=171, is reserved for the shared-service
-    // network). At index 83 the modulo wraps and collapses the /24
-    // onto an earlier replica's allocation, causing Docker to reject
-    // the duplicate-subnet network creation. Surfacing the cap at
-    // parse time gives the user an actionable error before any boot
-    // work.
+    // cdk-local's `parseMaxTasks` (consumed via the
+    // `ecs-service-emulator` shim) serves 83 distinct octets out of
+    // the link-local /24 range 169.254.170.0..169.254.253.0 (one
+    // octet reserved for the shared-svc network). At index 83 the
+    // modulo wraps and collapses the /24 onto an earlier replica's
+    // allocation, causing Docker to reject the duplicate-subnet
+    // network creation. Surfacing the cap at parse time gives the
+    // user an actionable error before any boot work.
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
     expect(() =>
@@ -130,5 +136,92 @@ describe('createLocalStartServiceCommand', () => {
     expect(() =>
       fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '100'], { from: 'user' })
     ).toThrow(/--max-tasks 100 exceeds.*83/);
+  });
+});
+
+describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
+  // Mirrors `albStrategy.resolveBoots` coverage in `local-start-alb.test.ts`.
+  // `serviceStrategy` is the load-bearing logic the engine consumes per CLI
+  // invocation — the engine's `runEcsServiceEmulator` calls each field on the
+  // returned `EmulatorStrategy` exactly once + this test pins each field's
+  // contract without spinning up the engine.
+
+  function makeOptions(over: Partial<EcsServiceEmulatorOptions> = {}): EcsServiceEmulatorOptions {
+    return {
+      output: 'cdk.out',
+      verbose: false,
+      cluster: 'cdkd-local',
+      containerHost: '127.0.0.1',
+      pull: true,
+      maxTasks: 3,
+      restartPolicy: 'on-failure',
+      ...over,
+    } as EcsServiceEmulatorOptions;
+  }
+
+  it('declares the picker text + noun the engine surfaces in TTY mode', () => {
+    const strategy = serviceStrategy(makeOptions());
+    expect(strategy.pickerMessage).toMatch(/Select.*ECS services/i);
+    expect(strategy.pickerNoun).toBe('ECS services');
+  });
+
+  it("onMissing throws LocalStartServiceError carrying cdkd's branded CLI name", () => {
+    // Engine calls strategy.onMissing() when no <target> is supplied in a
+    // non-interactive context. The thrown class is cdkd's so the surface
+    // matches the rest of cdkd's error handling.
+    const strategy = serviceStrategy(makeOptions());
+    const err = strategy.onMissing();
+    expect(err).toBeInstanceOf(LocalStartServiceError);
+    // The message embeds `getEmbedConfig().cliName` (= 'cdkd local' under
+    // cdkd's setEmbedConfig install in local-invoke.ts createLocalCommand).
+    expect(err.message).toMatch(/start-service requires at least one <target>/);
+  });
+
+  it('declares an empty lbPortOverrides (no listener ports for start-service)', () => {
+    // start-service has no front-door / listener layer (unlike start-alb),
+    // so the override map MUST be empty even when --lb-port-like options
+    // ride through the shared options bag.
+    const strategy = serviceStrategy(makeOptions());
+    expect(strategy.lbPortOverrides).toEqual({});
+  });
+
+  it('resolveBoots maps each chosen target to a ServiceBoot with no front-door', () => {
+    // The engine's bootOneTarget resolves the cdk template internally, so
+    // serviceStrategy.resolveBoots only needs to forward the chosen target
+    // strings. The return shape pins the contract: ServiceBoot[] + empty
+    // warnings + no frontDoor (start-service has no listeners).
+    const strategy = serviceStrategy(makeOptions());
+    const stacks: StackInfo[] = [];
+    const out = strategy.resolveBoots(stacks, ['MyStack:Orders', 'MyStack:Web']);
+    expect(out.boots).toEqual([{ target: 'MyStack:Orders' }, { target: 'MyStack:Web' }]);
+    expect(out.warnings).toEqual([]);
+    expect(out.frontDoor).toBeUndefined();
+  });
+
+  it('resolveBoots preserves target order (peer-discovery boot order is producer-first)', () => {
+    // Issue #460: peer-discovery requires booting producers before consumers
+    // so the Cloud Map registry populates BEFORE consumers' `docker run`
+    // reads it. The engine boots sequentially; the strategy MUST NOT
+    // re-order chosenTargets.
+    const strategy = serviceStrategy(makeOptions());
+    const out = strategy.resolveBoots(
+      [],
+      ['Stack:Producer', 'Stack:Middle', 'Stack:Consumer']
+    );
+    expect(out.boots.map((b) => b.target)).toEqual([
+      'Stack:Producer',
+      'Stack:Middle',
+      'Stack:Consumer',
+    ]);
+  });
+
+  it('resolveBoots on an empty target list returns empty boots + empty warnings', () => {
+    // Edge: an empty target list comes from the TTY picker if the user
+    // cancels mid-selection. The engine then surfaces "no runnable target"
+    // via its own check; the strategy itself MUST NOT throw.
+    const strategy = serviceStrategy(makeOptions());
+    const out = strategy.resolveBoots([], []);
+    expect(out.boots).toEqual([]);
+    expect(out.warnings).toEqual([]);
   });
 });

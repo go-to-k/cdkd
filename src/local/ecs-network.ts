@@ -15,7 +15,9 @@ const execFileAsync = promisify(execFile);
  * metadata AND `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<role-arn>`
  * for IAM task-role credentials. cdkd does NOT re-implement the sidecar
  * — pulling the AWS-published image keeps cdkd in lock-step with whatever
- * ECS-Agent fidelity AWS chooses to provide.
+ * ECS-Agent fidelity AWS chooses to provide. The `cdkd local start-service`
+ * / `start-alb` shared-network shape lives in cdk-local's bundled ECS
+ * service emulator engine (see `src/cli/commands/ecs-service-emulator.ts`).
  */
 
 /** AWS-published sidecar image (latest tag). amd64 is the only image AWS ships. */
@@ -25,11 +27,7 @@ export const METADATA_ENDPOINT_IMAGE = 'amazon/amazon-ecs-local-container-endpoi
  * Default well-known IP for the ECS local-container-endpoints sidecar —
  * matches the documented AWS task-metadata endpoint address. Containers
  * inject `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<id>`
- * to reach it. `cdkd local run-task` keeps this verbatim; `cdkd local
- * start-service` creates ONE shared network at CLI startup (design
- * § 5 Option A) — the shared sidecar lives at `169.254.171.2` (see
- * `SHARED_SVC_SUBNET_OCTET` below), one octet up so the two CLI
- * variants can run on the same host without bridge-pool collision.
+ * to reach it.
  */
 export const METADATA_ENDPOINT_IP = '169.254.170.2';
 
@@ -38,18 +36,11 @@ const DEFAULT_METADATA_ENDPOINT_SUBNET = '169.254.170.0/24';
 
 /**
  * Pure-functional subnet allocator. `cdkd local run-task` uses the
- * default subnet; `cdkd local start-service` walks `subnetOctet=170,
- * 171, 172, ...` (one per replica) to keep parallel docker networks
- * from clashing. The link-local 169.254.0.0/16 space is reserved AWS-
- * wide for cloud metadata so collisions with user workloads are
- * unlikely, but each replica still gets its own /24 to ensure
- * docker's `--subnet` allocator does not reject "Pool overlaps".
- *
- * `subnetOctet` is the second-from-last byte of the network: 170 →
- * 169.254.170.0/24 (default), 171 → 169.254.171.0/24, etc. Valid
- * range is 1..254; the runner clamps to `(170 + replicaIndex) % 84`
- * + 170 in practice (rolling window) — exported here so the runner
- * keeps the allocation logic in one place.
+ * default subnet (`subnetOctet=170`). The link-local 169.254.0.0/16
+ * space is reserved AWS-wide for cloud metadata so collisions with
+ * user workloads are unlikely. `subnetOctet` is the second-from-last
+ * byte of the network: 170 → 169.254.170.0/24 (default). Valid range
+ * is 1..254.
  */
 export function buildEndpointSubnet(subnetOctet: number): {
   cidr: string;
@@ -67,24 +58,21 @@ export function buildEndpointSubnet(subnetOctet: number): {
 }
 
 export interface TaskNetwork {
-  /** Generated docker network name (`<prefix>-task-<rand>` or `<prefix>-svc-<rand>` for shared). */
+  /** Generated docker network name (`<prefix>-task-<rand>`). */
   networkName: string;
   /** Container id of the metadata-endpoints sidecar. Cleaned up at teardown. */
   sidecarContainerId: string;
   /**
-   * Resolved sidecar IP for THIS network instance. `cdkd local run-task`
-   * sees 169.254.170.2 (the default); `cdkd local start-service` shares
-   * a single network across every service in the run at
-   * `169.254.171.2`. Containers' `ECS_CONTAINER_METADATA_URI_V4` is
-   * derived from this so each replica's containers hit the right
-   * sidecar regardless of which network they joined.
+   * Resolved sidecar IP for THIS network instance — `169.254.170.2`
+   * for the run-task default. Containers' `ECS_CONTAINER_METADATA_URI_V4`
+   * is derived from this.
    */
   sidecarIp: string;
   /**
    * When true, the network + sidecar are owned by the caller (the CLI
-   * created them once and reuses across every task / replica boot in
-   * the run) and `cleanupEcsRun()` MUST NOT teardown — only the caller
-   * tears down at the end of the CLI lifecycle. When false / undefined,
+   * created them once and reuses across every task boot in the run)
+   * and `cleanupEcsRun()` MUST NOT teardown — only the caller tears
+   * down at the end of the CLI lifecycle. When false / undefined,
    * the task runner owns the lifecycle (the pre-existing
    * `cdkd local run-task` shape: one network per task, torn down
    * with the task).
@@ -118,59 +106,17 @@ export interface CreateTaskNetworkOptions {
   /**
    * Optional second-from-last octet of the link-local /24 subnet
    * (1..254). Default 170 (the AWS-documented metadata-endpoint subnet).
-   * `cdkd local start-service` walks this value per replica so
-   * concurrent docker networks don't collide on the same /24 range.
    */
   subnetOctet?: number;
 }
 
 /**
- * Subnet octet for the shared-service docker network used by
- * `cdkd local start-service`. One octet up from `cdkd local run-task`'s
- * default (170 → 171) so the two CLI variants can run on the same host
- * without docker rejecting the second `--subnet`. The shared-service
- * network reuses the same `createTaskNetwork` machinery; the sidecar at
- * `169.254.171.2` serves the same metadata-endpoint API to every
- * container that joins this one network.
- */
-export const SHARED_SVC_SUBNET_OCTET = 171;
-
-/**
- * Create the one shared docker network + metadata-endpoints sidecar
- * used by every service-replica boot in a single
- * `cdkd local start-service` invocation. This is design doc § 5
- * Option A — one network per CLI invocation instead of one network
- * per task — so peer services can reach each other by IP / network
- * alias without docker `--network connect` choreography (Option B,
- * rejected in design § 5 as "unwieldy and racy"). The returned
- * `TaskNetwork` carries `ownedByCaller: true` so `cleanupEcsRun()`
- * (called per replica by the service runner) does NOT teardown — the
- * CLI tears down ONCE at the end of the run.
- */
-export async function createSharedSvcNetwork(
-  options: Omit<CreateTaskNetworkOptions, 'subnetOctet'> = {}
-): Promise<TaskNetwork> {
-  const prefix = options.prefix ?? 'cdkd-local';
-  const suffix = randomBytes(4).toString('hex');
-  const networkName = `${prefix}-svc-${suffix}`;
-  const { cidr, sidecarIp } = buildEndpointSubnet(SHARED_SVC_SUBNET_OCTET);
-  const sidecarContainerId = await createNetworkAndSidecar({
-    networkName,
-    cidr,
-    sidecarIp,
-    skipPull: options.skipPull ?? false,
-    ...(options.credentials !== undefined ? { credentials: options.credentials } : {}),
-    ...(options.cluster !== undefined ? { cluster: options.cluster } : {}),
-  });
-  return { networkName, sidecarContainerId, sidecarIp, ownedByCaller: true };
-}
-
-/**
- * Internal helper shared by `createTaskNetwork` (per-task) and
- * `createSharedSvcNetwork` (per-CLI-run). Creates the docker network,
- * pulls the sidecar image, and starts the sidecar at the documented
- * IP. Throws `DockerRunnerError` with a hint when the network already
- * exists (the typical "leftover from previous run" path).
+ * Internal helper that creates the docker network, pulls the sidecar image,
+ * and starts the sidecar at the documented IP. Throws `DockerRunnerError`
+ * with a hint when the network already exists (the typical "leftover from
+ * previous run" path). Used by `createTaskNetwork` (per-task) only;
+ * `cdkd local start-service` / `start-alb` share-network creation is owned
+ * by cdk-local's bundled ECS service emulator engine.
  */
 async function createNetworkAndSidecar(args: {
   networkName: string;

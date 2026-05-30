@@ -126,11 +126,16 @@ export interface RunEcsTaskOptions {
   addHostFlags?: ReadonlyArray<string>;
   /**
    * Pre-existing docker network + sidecar to reuse instead of letting
-   * the runner create a fresh per-task one. Set by the
-   * `cdkd local start-service` CLI which creates ONE shared network at
-   * the start of the run (per design doc § 5 Option A — peer services
-   * can reach each other by IP without docker `network connect`
-   * choreography). When this option is supplied, `runEcsTask`:
+   * the runner create a fresh per-task one. Originally used by
+   * `cdkd local start-service`'s per-replica boot loop to share ONE
+   * docker network across every replica (per design doc § 5 Option A —
+   * peer services can reach each other by IP without docker
+   * `network connect` choreography). With the Part B refactor onto
+   * cdk-local's `runEcsServiceEmulator` engine, the live caller has
+   * moved into cdk-local's bundled implementation; cdkd's own runner
+   * keeps the option for the per-task lifecycle of `cdkd local run-task`
+   * (which never sets it — see `local-run-task.ts`) and for any future
+   * cdkd-side caller. When supplied, `runEcsTask`:
    *   1. Skips `createTaskNetwork()`.
    *   2. Uses `existingNetwork.networkName` / `sidecarIp` for every
    *      container's `--network` and `ECS_CONTAINER_METADATA_URI_V4`
