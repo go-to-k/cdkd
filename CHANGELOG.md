@@ -1,3 +1,10 @@
+# [0.188.0](https://github.com/go-to-k/cdkd/compare/v0.187.0...v0.188.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill Lambda::Function RecursiveLoop via post-create control-plane ([#719](https://github.com/go-to-k/cdkd/issues/719)) ([871b7ec](https://github.com/go-to-k/cdkd/commit/871b7ecdef7c3a6171585c975d48499205bfee09))
+
 # [0.187.0](https://github.com/go-to-k/cdkd/compare/v0.186.0...v0.187.0) (2026-05-30)
 
 
