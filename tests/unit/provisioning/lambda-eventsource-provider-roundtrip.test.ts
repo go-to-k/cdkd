@@ -157,4 +157,128 @@ describe('LambdaEventSourceMappingProvider read-update round-trip', () => {
     const input = updateCall?.[0].input as Record<string, unknown>;
     expect(input.SourceAccessConfigurations).toBeUndefined();
   });
+
+  describe('#609 backfill: 4 mutable props on update', () => {
+    function getUpdateInput(): Record<string, unknown> {
+      const call = mockSend.mock.calls.find(
+        (c) => c[0] instanceof UpdateEventSourceMappingCommand
+      );
+      return (call?.[0] as { input: Record<string, unknown> }).input;
+    }
+
+    it('CFn KmsKeyArn → SDK KMSKeyArn (casing flip mirrors create)', async () => {
+      const arn = 'arn:aws:kms:us-east-1:123:key/abc';
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        {
+          FunctionName: 'fn',
+          EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+          KmsKeyArn: arn,
+        },
+        {
+          FunctionName: 'fn',
+          EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+        }
+      );
+
+      const input = getUpdateInput();
+      expect(input['KMSKeyArn']).toBe(arn);
+      expect(input['KmsKeyArn']).toBeUndefined();
+    });
+
+    it('empty-string KmsKeyArn → SDK KMSKeyArn=\'\' (Lambda-documented clear sentinel)', async () => {
+      // Use `!== undefined` so an explicit `''` reaches AWS as the
+      // clear-back-to-AWS-owned-key sentinel rather than being silently
+      // dropped by a truthy gate.
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        {
+          FunctionName: 'fn',
+          EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+          KmsKeyArn: '',
+        },
+        {
+          FunctionName: 'fn',
+          EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+          KmsKeyArn: 'arn:aws:kms:us-east-1:123:key/old',
+        }
+      );
+
+      const input = getUpdateInput();
+      expect(input['KMSKeyArn']).toBe('');
+    });
+
+    it('forwards LoggingConfig / MetricsConfig / ProvisionedPollerConfig to UpdateEventSourceMapping', async () => {
+      const loggingConfig = { Level: 'DEBUG', LogGroup: 'lg' };
+      const metricsConfig = { Metrics: ['EventCount'] };
+      const provisionedPollerConfig = { MinimumPollers: 2, MaximumPollers: 8 };
+
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        {
+          FunctionName: 'fn',
+          EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+          LoggingConfig: loggingConfig,
+          MetricsConfig: metricsConfig,
+          ProvisionedPollerConfig: provisionedPollerConfig,
+        },
+        {
+          FunctionName: 'fn',
+          EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+        }
+      );
+
+      const input = getUpdateInput();
+      expect(input['LoggingConfig']).toBe(loggingConfig);
+      expect(input['MetricsConfig']).toBe(metricsConfig);
+      expect(input['ProvisionedPollerConfig']).toBe(provisionedPollerConfig);
+    });
+  });
+
+  describe('#609 backfill: 3 create-only props are silently omitted on update', () => {
+    function getUpdateInput(): Record<string, unknown> {
+      const call = mockSend.mock.calls.find(
+        (c) => c[0] instanceof UpdateEventSourceMappingCommand
+      );
+      return (call?.[0] as { input: Record<string, unknown> }).input;
+    }
+
+    it('omits Queues / Topics / StartingPositionTimestamp from UpdateEventSourceMapping', async () => {
+      // These 3 props are absent from `UpdateEventSourceMappingRequest`
+      // (confirmed against `@aws-sdk/client-lambda` 3.x type defs). AWS
+      // would reject a forwarded value with `ValidationException`; CFn
+      // semantics treat a template change to these as a replace, which
+      // cdkd's diff layer schedules independently of update(). The
+      // provider's update() must NOT forward them even when present in
+      // properties — this test guards against a future copy-paste
+      // regression that wires them into the update input shape.
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        {
+          FunctionName: 'fn',
+          SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b.example:9092'] } },
+          Queues: ['queue-a'],
+          Topics: ['topic-a'],
+          StartingPositionTimestamp: 1717000000,
+        },
+        {
+          FunctionName: 'fn',
+          SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b.example:9092'] } },
+        }
+      );
+
+      const input = getUpdateInput();
+      expect(input['Queues']).toBeUndefined();
+      expect(input['Topics']).toBeUndefined();
+      expect(input['StartingPositionTimestamp']).toBeUndefined();
+    });
+  });
 });

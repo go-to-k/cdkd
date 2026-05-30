@@ -118,6 +118,55 @@ if [ "${ACTUAL_WRITE}" != "${EXPECTED_WRITE}" ]; then
 fi
 echo "    OK: Table.WarmThroughput.WriteUnitsPerSecond == ${EXPECTED_WRITE} on AWS (silent-drop CLOSED by #609)"
 
+# --- Assertion: Lambda::EventSourceMapping 7-props backfill (#609) ----
+# Resolve the ESM UUID from cdkd state, then GetEventSourceMapping and
+# assert the 2 universally-applicable props (KmsKeyArn / MetricsConfig)
+# made it to AWS. The other 5 props in the R bundle (LoggingConfig /
+# ProvisionedPollerConfig / Queues / Topics / StartingPositionTimestamp)
+# are source-kind-discriminated (Kafka / SQS / Kinesis-AT_TIMESTAMP-only)
+# and are unit-test-covered; this fixture's DynamoDB Streams source
+# doesn't accept them.
+ESM_UUID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::EventSourceMapping") | .value.physicalId] | first // ""')
+if [ -z "${ESM_UUID}" ] || [ "${ESM_UUID}" = "null" ]; then
+  echo "FAIL: could not resolve EventSourceMapping UUID from state" >&2
+  echo "${STATE}" | jq .
+  exit 1
+fi
+echo "    resolved ESM UUID: ${ESM_UUID}"
+
+EXPECTED_KMS_ARN=$(echo "${STATE}" | jq -r '.outputs.EsmFilterKeyArn // ""')
+if [ -z "${EXPECTED_KMS_ARN}" ] || [ "${EXPECTED_KMS_ARN}" = "null" ]; then
+  echo "FAIL: cdkd state did not emit an EsmFilterKeyArn output" >&2
+  echo "${STATE}" | jq .outputs
+  exit 1
+fi
+
+ESM_JSON=$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" 2>/dev/null)
+if [ -z "${ESM_JSON}" ]; then
+  echo "FAIL: GetEventSourceMapping returned empty for UUID ${ESM_UUID}" >&2
+  exit 1
+fi
+
+# Assert KMSKeyArn (SDK casing is upper-case `MS`; CFn casing is lower-
+# case `Ms`). The provider's create() does the flip — a missed flip would
+# silently drop KmsKeyArn, exactly what #609 closes.
+ACTUAL_KMS=$(echo "${ESM_JSON}" | jq -r '.KMSKeyArn // "null"')
+if [ "${ACTUAL_KMS}" != "${EXPECTED_KMS_ARN}" ]; then
+  echo "FAIL: ESM KMSKeyArn is '${ACTUAL_KMS}', expected '${EXPECTED_KMS_ARN}' (KmsKeyArn silent-drop NOT closed)" >&2
+  echo "${ESM_JSON}" | jq .
+  exit 1
+fi
+echo "    OK: ESM.KMSKeyArn matches the deployed key (KmsKeyArn silent-drop CLOSED by #609)"
+
+# Assert MetricsConfig.Metrics contains 'EventCount'.
+ACTUAL_METRICS=$(echo "${ESM_JSON}" | jq -r '.MetricsConfig.Metrics // [] | sort | join(",")')
+if [ "${ACTUAL_METRICS}" != "EventCount" ]; then
+  echo "FAIL: ESM MetricsConfig.Metrics is '${ACTUAL_METRICS}', expected 'EventCount' (MetricsConfig silent-drop NOT closed)" >&2
+  echo "${ESM_JSON}" | jq .
+  exit 1
+fi
+echo "    OK: ESM.MetricsConfig.Metrics == ['EventCount'] (MetricsConfig silent-drop CLOSED by #609)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -149,4 +198,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-streams test passed (WarmThroughput backfill closed + clean destroy)"
+echo "==> dynamodb-streams test passed (WarmThroughput + ESM KmsKeyArn + ESM MetricsConfig backfills closed + clean destroy)"

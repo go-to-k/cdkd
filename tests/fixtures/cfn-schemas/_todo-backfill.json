@@ -305,15 +305,6 @@
       "MSKSourceConfiguration",
       "SnowflakeDestinationConfiguration"
     ],
-    "AWS::Lambda::EventSourceMapping": [
-      "KmsKeyArn",
-      "LoggingConfig",
-      "MetricsConfig",
-      "ProvisionedPollerConfig",
-      "Queues",
-      "StartingPositionTimestamp",
-      "Topics"
-    ],
     "AWS::Lambda::Function": [
       "CapacityProviderConfig",
       "CodeSigningConfigArn",
