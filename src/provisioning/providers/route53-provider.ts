@@ -5,6 +5,7 @@ import {
   GetHostedZoneCommand,
   ChangeResourceRecordSetsCommand,
   UpdateHostedZoneCommentCommand,
+  UpdateHostedZoneFeaturesCommand,
   ChangeTagsForResourceCommand,
   AssociateVPCWithHostedZoneCommand,
   DisassociateVPCFromHostedZoneCommand,
@@ -50,7 +51,14 @@ export class Route53Provider implements ResourceProvider {
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Route53::HostedZone',
-      new Set(['Name', 'HostedZoneConfig', 'HostedZoneTags', 'VPCs', 'QueryLoggingConfig']),
+      new Set([
+        'Name',
+        'HostedZoneConfig',
+        'HostedZoneTags',
+        'VPCs',
+        'QueryLoggingConfig',
+        'HostedZoneFeatures',
+      ]),
     ],
     [
       'AWS::Route53::RecordSet',
@@ -111,11 +119,17 @@ export class Route53Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
-        return this.updateHostedZone(logicalId, physicalId, resourceType, properties);
+        return this.updateHostedZone(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::Route53::RecordSet':
         return this.updateRecordSet(logicalId, physicalId, resourceType, properties);
       default:
@@ -250,6 +264,60 @@ export class Route53Provider implements ResourceProvider {
       // Configure query logging
       await this.applyQueryLoggingConfig(zoneId, properties, logicalId);
 
+      // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
+      // control-plane call. CreateHostedZone does NOT accept this field;
+      // it requires a separate UpdateHostedZoneFeatures call AFTER the
+      // zone is created. Same pattern as RecursiveLoop on Lambda::Function
+      // (PR #719). AWS default is DISABLED, so we only call AWS when the
+      // template explicitly requests ENABLED (calling with `false` would
+      // be a no-op API hit). Failure here triggers `delete-on-post-create-
+      // failure` atomicity — delete the just-created hosted zone before
+      // bubbling the error, otherwise the next deploy retry sees an orphan
+      // zone (live on AWS, not in cdkd state) and CREATE-collides.
+      const desiredAcceleratedRecovery = (
+        properties['HostedZoneFeatures'] as Record<string, unknown> | undefined
+      )?.['AcceleratedRecoveryStatus'] as string | undefined;
+      if (desiredAcceleratedRecovery === 'ENABLED') {
+        try {
+          await this.getClient().send(
+            new UpdateHostedZoneFeaturesCommand({
+              HostedZoneId: zoneId,
+              EnableAcceleratedRecovery: true,
+            })
+          );
+        } catch (uhfError) {
+          this.logger.error(
+            `UpdateHostedZoneFeatures failed for ${zoneId} after CreateHostedZone — rolling back the hosted zone to keep deploy retry idempotent`
+          );
+          try {
+            // Detach query logging config first (applied above as part of
+            // create()). AWS rejects DeleteHostedZone with
+            // HostedZoneNotEmpty when a logging config is still attached,
+            // so a template that sets BOTH `QueryLoggingConfig` and
+            // `HostedZoneFeatures.AcceleratedRecoveryStatus: ENABLED`
+            // would leak the zone if the UHF rollback skipped this step.
+            await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
+            await this.getClient().send(new DeleteHostedZoneCommand({ Id: zoneId }));
+          } catch (deleteError) {
+            this.logger.warn(
+              `Best-effort rollback DeleteHostedZone for ${zoneId} also failed: ${
+                deleteError instanceof Error ? deleteError.message : String(deleteError)
+              } — operator may need to clean up the orphan zone`
+            );
+          }
+          const cause = uhfError instanceof Error ? uhfError : undefined;
+          throw new ProvisioningError(
+            `Failed to enable Accelerated Recovery on hosted zone ${logicalId} (${zoneId}): ${
+              uhfError instanceof Error ? uhfError.message : String(uhfError)
+            }`,
+            resourceType,
+            logicalId,
+            zoneId,
+            cause
+          );
+        }
+      }
+
       // Collect name servers
       const nameServers = response.DelegationSet?.NameServers ?? [];
 
@@ -279,7 +347,8 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route 53 hosted zone ${logicalId}: ${physicalId}`);
 
@@ -306,6 +375,31 @@ export class Route53Provider implements ResourceProvider {
       // For now, we handle VPCs that need to be added. Full diff requires GetHostedZone
       // to compare current VPCs, which we'll do here.
       await this.syncVPCAssociations(physicalId, properties, logicalId);
+
+      // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
+      // control-plane call, gated on the BOOLEAN-effective diff (i.e.
+      // "is this zone supposed to have AcceleratedRecovery enabled").
+      // Comparing the raw strings would fire an unnecessary AWS call for
+      // `prev: undefined, next: 'DISABLED'` (both map to disabled — AWS
+      // default; no transition needed). Removal of the property is
+      // treated as DISABLED so a user dropping the template field
+      // implicitly turns the feature off on the next deploy.
+      const prevEnabled =
+        ((previousProperties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
+          'AcceleratedRecoveryStatus'
+        ] as string | undefined) === 'ENABLED';
+      const nextEnabled =
+        ((properties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
+          'AcceleratedRecoveryStatus'
+        ] as string | undefined) === 'ENABLED';
+      if (prevEnabled !== nextEnabled) {
+        await this.getClient().send(
+          new UpdateHostedZoneFeaturesCommand({
+            HostedZoneId: physicalId,
+            EnableAcceleratedRecovery: nextEnabled,
+          })
+        );
+      }
 
       // Retrieve name servers
       const getResponse = await this.getClient().send(new GetHostedZoneCommand({ Id: physicalId }));
@@ -345,6 +439,15 @@ export class Route53Provider implements ResourceProvider {
       // Delete query logging config before deleting hosted zone
       await this.deleteQueryLoggingConfigForZone(physicalId, logicalId);
 
+      // AWS rejects DeleteHostedZone when Accelerated Recovery is ENABLED
+      // (or ENABLING / any non-DISABLED state) with
+      // "Cannot delete a hosted zone with accelerated recovery enabled.
+      // Please disable first.". The feature toggle is an async control
+      // plane API (UpdateHostedZoneFeatures) and the transition takes
+      // ~2-10 minutes to settle. Issue the disable + poll for DISABLED
+      // BEFORE attempting the zone delete so the destroy path is closed.
+      await this.ensureAcceleratedRecoveryDisabledForDelete(physicalId, logicalId);
+
       await this.getClient().send(new DeleteHostedZoneCommand({ Id: physicalId }));
       this.logger.debug(`Successfully deleted hosted zone ${logicalId}`);
     } catch (error) {
@@ -360,6 +463,13 @@ export class Route53Provider implements ResourceProvider {
         this.logger.debug(`Hosted zone ${physicalId} does not exist, skipping deletion`);
         return;
       }
+      // Preserve actionable ProvisioningError messages thrown by
+      // `ensureAcceleratedRecoveryDisabledForDelete` (e.g. the
+      // operator-recovery prompt on `*_FAILED` / timeout) — re-wrapping
+      // them with the generic "Failed to delete hosted zone" prefix
+      // would bury the actionable text in the `cause` chain. Mirrors
+      // the same guard in `createHostedZone`.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -369,6 +479,155 @@ export class Route53Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Pre-delete guard for `AWS::Route53::HostedZone:HostedZoneFeatures`.
+   *
+   * AWS rejects `DeleteHostedZone` while AcceleratedRecovery is anything
+   * other than DISABLED (the feature uses an async control plane API —
+   * `UpdateHostedZoneFeatures` — and AWS won't tear down a zone whose
+   * feature state is still in flight). This helper:
+   *
+   *   1. Reads the current `HostedZone.Features.AcceleratedRecoveryStatus`.
+   *      DISABLED / undefined / NoSuchHostedZone → return early (nothing
+   *      to do, the delete will proceed normally or hit the existing
+   *      NoSuchHostedZone short-circuit).
+   *   2. ENABLING / ENABLED → issue `UpdateHostedZoneFeatures(false)` then
+   *      poll `GetHostedZone` until the status settles to DISABLED.
+   *   3. DISABLING → poll without re-issuing the toggle.
+   *   4. *_FAILED / *_HOSTED_ZONE_LOCKED → surface the AWS error to the
+   *      operator (out of scope for cdkd to recover automatically).
+   *
+   * Poll budget: env-overridable timeout (default 10 min) + interval
+   * (default 15s; tests override via env to keep runs fast). Failure to
+   * settle within the budget throws — the operator can either re-run
+   * `cdkd state destroy` (poll resets) or disable manually.
+   */
+  private async ensureAcceleratedRecoveryDisabledForDelete(
+    physicalId: string,
+    logicalId: string
+  ): Promise<void> {
+    const client = this.getClient();
+    const pollIntervalMs = Number.parseInt(
+      process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] ?? '15000',
+      10
+    );
+    const timeoutMs = Number.parseInt(
+      process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] ?? '600000',
+      10
+    );
+
+    const readStatus = async (): Promise<string | undefined> => {
+      try {
+        const resp = await client.send(new GetHostedZoneCommand({ Id: physicalId }));
+        return resp.HostedZone?.Features?.AcceleratedRecoveryStatus;
+      } catch (err) {
+        if (err instanceof Error && err.name === 'NoSuchHostedZone') return undefined;
+        throw err;
+      }
+    };
+
+    const deadline = Date.now() + timeoutMs;
+
+    // Failed / locked states are operator-recovery only — sentinel set is
+    // shared by both the initial check below and the in-flight `waitFor`
+    // loop (a zone that transitions to `*_FAILED` during the wait must
+    // surface the actionable failure error immediately rather than
+    // racing the 10-min timeout).
+    const TERMINAL_FAILED = new Set<string>([
+      'ENABLE_FAILED',
+      'DISABLE_FAILED',
+      'ENABLING_HOSTED_ZONE_LOCKED',
+      'DISABLING_HOSTED_ZONE_LOCKED',
+    ]);
+
+    // Helper: poll until status reaches one of `targets`, or throw on
+    // timeout / failed-state transition.
+    const waitFor = async (
+      targets: ReadonlySet<string>,
+      label: string
+    ): Promise<string | undefined> => {
+      while (Date.now() < deadline) {
+        const status = await readStatus();
+        if (status === undefined || targets.has(status)) return status;
+        if (TERMINAL_FAILED.has(status)) {
+          throw new ProvisioningError(
+            `Cannot delete hosted zone ${logicalId} (${physicalId}): AcceleratedRecoveryStatus transitioned to '${status}' while waiting for ${label} — operator must resolve before destroy can proceed`,
+            'AWS::Route53::HostedZone',
+            logicalId,
+            physicalId
+          );
+        }
+        this.logger.debug(
+          `Polling AcceleratedRecoveryStatus for ${physicalId}: ${status} (waiting for ${label}, will re-poll in ~${pollIntervalMs}ms)`
+        );
+        // Sleep in 1s slices to stay SIGINT-responsive (CTRL-C surfaces
+        // within a second) while still respecting the configured
+        // `pollIntervalMs` between AWS API hits — break early when the
+        // overall deadline runs out.
+        const sliceEnd = Math.min(Date.now() + pollIntervalMs, deadline);
+        while (Date.now() < sliceEnd) {
+          const tick = Math.min(1000, sliceEnd - Date.now());
+          if (tick <= 0) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, tick));
+        }
+      }
+      throw new ProvisioningError(
+        `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalId} (${physicalId}); re-run \`cdkd state destroy\` or disable manually via \`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery\``,
+        'AWS::Route53::HostedZone',
+        logicalId,
+        physicalId
+      );
+    };
+
+    let current = await readStatus();
+    if (current === undefined || current === 'DISABLED') return;
+
+    // Failed / locked states are operator-recovery only.
+    if (TERMINAL_FAILED.has(current)) {
+      throw new ProvisioningError(
+        `Cannot delete hosted zone ${logicalId} (${physicalId}): AcceleratedRecoveryStatus is '${current}' — operator must resolve before destroy can proceed`,
+        'AWS::Route53::HostedZone',
+        logicalId,
+        physicalId
+      );
+    }
+
+    // Phase 1: if ENABLING, wait for the transition to settle (AWS rejects
+    // `UpdateHostedZoneFeatures(false)` while ENABLING is in flight —
+    // "Accelerated recovery is already being enabled for this hosted zone").
+    if (current === 'ENABLING') {
+      this.logger.debug(
+        `Hosted zone ${physicalId} is ENABLING; waiting for it to settle before issuing disable`
+      );
+      current = await waitFor(new Set(['ENABLED', 'DISABLED']), 'ENABLED or DISABLED');
+      if (current === undefined || current === 'DISABLED') return;
+    }
+
+    // Phase 2: issue disable when ENABLED, then wait for DISABLED. When
+    // already DISABLING (raced with a prior in-flight disable), skip the
+    // toggle and just wait.
+    if (current === 'ENABLED') {
+      this.logger.debug(
+        `Hosted zone ${physicalId} is ENABLED; issuing UpdateHostedZoneFeatures(false) before delete`
+      );
+      await client.send(
+        new UpdateHostedZoneFeaturesCommand({
+          HostedZoneId: physicalId,
+          EnableAcceleratedRecovery: false,
+        })
+      );
+    } else if (current === 'DISABLING') {
+      this.logger.debug(
+        `Hosted zone ${physicalId} AcceleratedRecovery is already DISABLING; waiting for settle`
+      );
+    }
+
+    const settled = await waitFor(new Set(['DISABLED']), 'DISABLED');
+    this.logger.debug(
+      `Hosted zone ${physicalId} AcceleratedRecoveryStatus settled to ${settled ?? 'undefined (zone gone)'}`
+    );
   }
 
   private async getHostedZoneAttribute(
@@ -1014,6 +1273,20 @@ export class Route53Provider implements ResourceProvider {
       }
       result['HostedZoneConfig'] = cfg;
     }
+    // `HostedZoneFeatures.AcceleratedRecoveryStatus`: emit-when-present
+    // (gated on `!== undefined`, NOT a default-when-absent placeholder).
+    // GetHostedZone returns `HostedZone.Features?.AcceleratedRecoveryStatus`
+    // only when the feature was explicitly toggled (zones older than the
+    // 2025 feature launch may return undefined indefinitely); emitting a
+    // phantom `{ AcceleratedRecoveryStatus: 'DISABLED' }` placeholder
+    // would force guaranteed drift on every clean run for the typical
+    // zone that never opted in.
+    if (resp.HostedZone.Features?.AcceleratedRecoveryStatus !== undefined) {
+      result['HostedZoneFeatures'] = {
+        AcceleratedRecoveryStatus: resp.HostedZone.Features.AcceleratedRecoveryStatus,
+      };
+    }
+
     // Class 1: VPCs is a private-zone-only field. AWS rejects
     // AssociateVPCWithHostedZone on public zones, and emitting an empty
     // [] placeholder on a public zone fires false drift against state

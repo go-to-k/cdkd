@@ -26,6 +26,17 @@ export class Route53Stack extends cdk.Stack {
       zoneName: `cdkd-test-${this.account}.internal`,
     });
 
+    // Exercise the #609 HostedZoneFeatures backfill: the AcceleratedRecovery
+    // feature (free; targets a 60-minute RTO for DNS operations during
+    // us-east-1 service disruptions) is set via a post-create
+    // UpdateHostedZoneFeatures control-plane call. CDK L2's `HostedZone`
+    // does not expose the `hostedZoneFeatures` property, so reach the L1
+    // via `addPropertyOverride`.
+    (zone.node.defaultChild as route53.CfnHostedZone).addPropertyOverride(
+      'HostedZoneFeatures.AcceleratedRecoveryStatus',
+      'ENABLED'
+    );
+
     // A Record
     new route53.ARecord(this, 'TestARecord', {
       zone,
