@@ -2324,6 +2324,7 @@
         "cloudwatch",
         "composite-stack",
         "drift-revert",
+        "ecs-fargate",
         "full-stack-demo",
         "log-pipeline",
         "monitoring",
@@ -2340,6 +2341,9 @@
         ],
         "drift-revert": [
           "l1"
+        ],
+        "ecs-fargate": [
+          "l2"
         ],
         "full-stack-demo": [
           "l2"
