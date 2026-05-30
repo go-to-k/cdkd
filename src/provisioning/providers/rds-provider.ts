@@ -85,6 +85,25 @@ export class RDSProvider implements ResourceProvider {
         'DBSubnetGroupName',
         'PubliclyAccessible',
         'Tags',
+        // #609 backfill — 8 sibling props already handled on DBCluster.
+        // 6 mutable (DeletionProtection / EngineVersion / Port / MasterUserPassword /
+        // VPCSecurityGroups / AllocatedStorage ride both CreateDBInstance + ModifyDBInstance) +
+        // 2 create-only (StorageEncrypted is set at instance creation and immutable
+        // post-create per AWS RDS docs — absent from ModifyDBInstanceMessage;
+        // MasterUsername is also immutable post-create — AWS rejects changes via
+        // ModifyDBInstance). Two wire-format name flips: CFn `Port` → SDK `DBPortNumber`
+        // (different field name entirely on the DB instance), CFn `VPCSecurityGroups`
+        // → SDK `VpcSecurityGroupIds` (casing + suffix). `MasterUsername` +
+        // `AllocatedStorage` are AWS-required for standalone (non-cluster) DBInstance
+        // create — wired here so a standalone instance can SDK-route end-to-end.
+        'AllocatedStorage',
+        'DeletionProtection',
+        'EngineVersion',
+        'MasterUsername',
+        'MasterUserPassword',
+        'Port',
+        'StorageEncrypted',
+        'VPCSecurityGroups',
       ]),
     ],
   ]);
@@ -686,6 +705,46 @@ export class RDSProvider implements ResourceProvider {
           DBClusterIdentifier: properties['DBClusterIdentifier'] as string | undefined,
           DBSubnetGroupName: properties['DBSubnetGroupName'] as string | undefined,
           PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
+          // #609 backfill — 8 sibling props matching DBCluster.
+          // Use `!== undefined` for booleans (DeletionProtection,
+          // StorageEncrypted) so an explicit `false` is forwarded as the
+          // user-set opt-out rather than silently dropped by a truthy gate.
+          // AllocatedStorage / MasterUsername are AWS-required for standalone
+          // (non-cluster-member) DBInstance. CFn accepts AllocatedStorage as
+          // a numeric STRING (CDK emits `"20"`); coerce through Number().
+          ...(properties['AllocatedStorage'] !== undefined && {
+            AllocatedStorage: Number(properties['AllocatedStorage']),
+          }),
+          ...(properties['MasterUsername'] !== undefined && {
+            MasterUsername: properties['MasterUsername'] as string,
+          }),
+          ...(properties['DeletionProtection'] !== undefined && {
+            DeletionProtection: properties['DeletionProtection'] as boolean,
+          }),
+          ...(properties['EngineVersion'] !== undefined && {
+            EngineVersion: properties['EngineVersion'] as string,
+          }),
+          // CFn `Port` → SDK `Port` on CreateDBInstance (not DBPortNumber —
+          // that's the MODIFY-side name; AWS uses different field names for
+          // the same logical setting across the create vs modify shapes).
+          // CFn types Port as a STRING in the template ("5432"); the SDK
+          // requires a number, so coerce here.
+          ...(properties['Port'] !== undefined && {
+            Port: Number(properties['Port']),
+          }),
+          ...(properties['MasterUserPassword'] !== undefined && {
+            MasterUserPassword: properties['MasterUserPassword'] as string,
+          }),
+          // StorageEncrypted is create-only per AWS RDS docs — set here, not
+          // forwarded on update. `!== undefined` so explicit `false` reaches
+          // AWS (vs. the AWS-side default, which depends on engine + storage class).
+          ...(properties['StorageEncrypted'] !== undefined && {
+            StorageEncrypted: properties['StorageEncrypted'] as boolean,
+          }),
+          // CFn `VPCSecurityGroups` → SDK `VpcSecurityGroupIds` (casing + name flip).
+          ...(properties['VPCSecurityGroups'] !== undefined && {
+            VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
+          }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -736,12 +795,53 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
 
     try {
+      // #609 backfill — 6 mutable sibling props matching DBCluster.
+      // StorageEncrypted + MasterUsername are create-only per AWS RDS docs
+      // and intentionally NOT forwarded here; a template change to either
+      // would CFn-replace the instance, which cdkd's diff layer schedules
+      // independently. Wire-format flips: CFn `Port` → SDK `DBPortNumber`
+      // (different field name on the Modify shape — AWS uses `Port` on
+      // Create and `DBPortNumber` on Modify), CFn `VPCSecurityGroups` →
+      // SDK `VpcSecurityGroupIds`. `EngineVersion` is paired with
+      // `AllowMajorVersionUpgrade: true` so a major-version bump is
+      // permitted without a separate template toggle (matches CFn's
+      // documented behavior when the user has raised EngineVersion across
+      // a major boundary).
+      const newEngineVersion = properties['EngineVersion'] as string | undefined;
+      const prevEngineVersion = previousProperties['EngineVersion'] as string | undefined;
+      const allowMajorVersionUpgrade =
+        newEngineVersion !== undefined &&
+        newEngineVersion !== prevEngineVersion &&
+        prevEngineVersion !== undefined &&
+        newEngineVersion.split('.')[0] !== prevEngineVersion.split('.')[0];
       await this.getClient().send(
         new ModifyDBInstanceCommand({
           DBInstanceIdentifier: physicalId,
           DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
           PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
           ApplyImmediately: true,
+          // AllocatedStorage is mutable on ModifyDBInstance (scale-up).
+          // AWS rejects scale-down except in narrow cases; cdkd forwards the
+          // user's value and lets AWS surface the rejection if any.
+          ...(properties['AllocatedStorage'] !== undefined && {
+            AllocatedStorage: Number(properties['AllocatedStorage']),
+          }),
+          ...(properties['DeletionProtection'] !== undefined && {
+            DeletionProtection: properties['DeletionProtection'] as boolean,
+          }),
+          ...(newEngineVersion !== undefined && {
+            EngineVersion: newEngineVersion,
+            ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
+          }),
+          ...(properties['Port'] !== undefined && {
+            DBPortNumber: Number(properties['Port']),
+          }),
+          ...(properties['MasterUserPassword'] !== undefined && {
+            MasterUserPassword: properties['MasterUserPassword'] as string,
+          }),
+          ...(properties['VPCSecurityGroups'] !== undefined && {
+            VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
+          }),
         })
       );
 
@@ -1129,6 +1229,41 @@ export class RDSProvider implements ResourceProvider {
     if (inst.PubliclyAccessible !== undefined) {
       result['PubliclyAccessible'] = inst.PubliclyAccessible;
     }
+    // #609 backfill — AllocatedStorage + MasterUsername readbacks
+    // (AWS-required sibling props, paired with the 5 below). MasterUsername
+    // IS surfaced (unlike MasterUserPassword which AWS never returns).
+    if (inst.AllocatedStorage !== undefined) {
+      result['AllocatedStorage'] = inst.AllocatedStorage;
+    }
+    if (inst.MasterUsername !== undefined) result['MasterUsername'] = inst.MasterUsername;
+    // #609 backfill — 5 readable sibling props matching DBCluster.
+    // `MasterUserPassword` is intentionally NOT surfaced here: RDS never
+    // returns the password in the Describe response (security), so any
+    // value would be a phantom drift on every read.
+    if (inst.DeletionProtection !== undefined) {
+      result['DeletionProtection'] = inst.DeletionProtection;
+    }
+    if (inst.EngineVersion !== undefined) result['EngineVersion'] = inst.EngineVersion;
+    // CFn `Port` → AWS Describe surface is `Endpoint.Port` (the active
+    // listener port). The DBInstance shape has no top-level `Port` field
+    // and no `DBPortNumber` either; the Modify-side `DBPortNumber` is a
+    // request-shape oddity. Emit only when the endpoint is present
+    // (briefly absent during create/modify transitions).
+    if (inst.Endpoint?.Port !== undefined) result['Port'] = inst.Endpoint.Port;
+    if (inst.StorageEncrypted !== undefined) {
+      result['StorageEncrypted'] = inst.StorageEncrypted;
+    }
+    // CFn `VPCSecurityGroups` (string[]) ↔ AWS `VpcSecurityGroups[].VpcSecurityGroupId`.
+    // Emit only when AWS returned a non-empty list — matches DBInstance's
+    // overall "emit-when-present" pattern (vs DBCluster's "emit-always"
+    // shape, which is a minor inconsistency in the cluster readback). The
+    // drift calculator only descends into keys present in state, so an
+    // omit-when-empty here still surfaces "state has SGs → AWS has none"
+    // drift correctly via the state-side branch.
+    const sgIds = (inst.VpcSecurityGroups ?? [])
+      .map((sg) => sg.VpcSecurityGroupId)
+      .filter((id): id is string => !!id);
+    if (sgIds.length > 0) result['VPCSecurityGroups'] = sgIds;
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }
