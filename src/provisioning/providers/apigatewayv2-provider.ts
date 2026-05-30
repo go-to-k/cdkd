@@ -23,6 +23,7 @@ import {
   GetApisCommand,
   NotFoundException,
   type ProtocolType,
+  type IpAddressType,
   type IntegrationType,
   type AuthorizationType,
   type AuthorizerType,
@@ -78,6 +79,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'Version',
         'RouteSelectionExpression',
         'ApiKeySelectionExpression',
+        'IpAddressType',
       ]),
     ],
     [
@@ -366,6 +368,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           Version: properties['Version'] as string | undefined,
           RouteSelectionExpression: properties['RouteSelectionExpression'] as string | undefined,
           ApiKeySelectionExpression: properties['ApiKeySelectionExpression'] as string | undefined,
+          IpAddressType: properties['IpAddressType'] as IpAddressType | undefined,
           Tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
@@ -945,13 +948,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['ApiKeySelectionExpression'] = resp.ApiKeySelectionExpression;
       }
 
-      // DisableExecuteApiEndpoint / Version ride on both protocols and
-      // are user-controllable on CreateApi/UpdateApi — emit when present
-      // (no default-when-absent, matching the provider's convention).
+      // DisableExecuteApiEndpoint / Version / IpAddressType ride on both
+      // protocols and are user-controllable on CreateApi/UpdateApi — emit
+      // when present (no default-when-absent, matching the provider's
+      // convention).
       if (resp.DisableExecuteApiEndpoint !== undefined) {
         result['DisableExecuteApiEndpoint'] = resp.DisableExecuteApiEndpoint;
       }
       if (resp.Version !== undefined) result['Version'] = resp.Version;
+      if (resp.IpAddressType !== undefined) result['IpAddressType'] = resp.IpAddressType;
 
       // Tags from the same GetApi response (returned as a tag-name → value map).
       const tags = normalizeAwsTagsToCfn(resp.Tags);
@@ -1191,7 +1196,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * `UpdateApi` accepts the full Update input shape (not JSON Patch).
    * Mutable fields cdkd manages: `Name` / `Description` /
    * `CorsConfiguration` / `DisableExecuteApiEndpoint` / `Version` /
-   * `RouteSelectionExpression` / `ApiKeySelectionExpression`.
+   * `RouteSelectionExpression` / `ApiKeySelectionExpression` /
+   * `IpAddressType`.
    * `ProtocolType` is immutable — the deploy engine handles changes via
    * the replacement path; we surface a `ResourceUpdateNotSupportedError`
    * if it ever reaches us anyway.
@@ -1264,6 +1270,13 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['ApiKeySelectionExpression'] !== previousProperties['ApiKeySelectionExpression']
     ) {
       input.ApiKeySelectionExpression = properties['ApiKeySelectionExpression'] as string;
+      changed = true;
+    }
+    if (
+      properties['IpAddressType'] !== undefined &&
+      properties['IpAddressType'] !== previousProperties['IpAddressType']
+    ) {
+      input.IpAddressType = properties['IpAddressType'] as IpAddressType;
       changed = true;
     }
 

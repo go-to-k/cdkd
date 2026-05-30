@@ -52,7 +52,8 @@ const API_ID = 'abcd1234';
  * Property-coverage backfill tests (issue #609) for the config props that
  * ride on each sub-type's own CreateX/UpdateX call:
  *   - Api:         DisableExecuteApiEndpoint / Version /
- *                  RouteSelectionExpression / ApiKeySelectionExpression
+ *                  RouteSelectionExpression / ApiKeySelectionExpression /
+ *                  IpAddressType
  *   - Stage:       StageVariables / DefaultRouteSettings
  *   - Integration: TimeoutInMillis / RequestParameters / Description
  *   - Route:       AuthorizationScopes / OperationName
@@ -241,6 +242,66 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
     });
     const http = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
     expect(http!).not.toHaveProperty('ApiKeySelectionExpression');
+  });
+
+  it('Api create(): IpAddressType reaches CreateApi', async () => {
+    mockSend.mockResolvedValueOnce({ ApiId: API_ID, ApiEndpoint: 'https://x' });
+
+    await provider.create('ApiLogical', 'AWS::ApiGatewayV2::Api', {
+      Name: 'my-api',
+      ProtocolType: 'HTTP',
+      IpAddressType: 'dualstack',
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateApiCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['IpAddressType']).toBe('dualstack');
+  });
+
+  it('Api update(): IpAddressType change emits UpdateApi with only the diffed field', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      { ProtocolType: 'HTTP', IpAddressType: 'dualstack' },
+      { ProtocolType: 'HTTP', IpAddressType: 'ipv4' }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateApiCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      IpAddressType: 'dualstack',
+    });
+  });
+
+  it('Api update(): unchanged IpAddressType produces zero SDK calls', async () => {
+    const same = { ProtocolType: 'HTTP', IpAddressType: 'dualstack' };
+    await provider.update('ApiLogical', API_ID, 'AWS::ApiGatewayV2::Api', same, same);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Api readCurrentState: emits IpAddressType when present, omits when absent', async () => {
+    mockSend.mockResolvedValueOnce({
+      ApiId: API_ID,
+      Name: 'my-api',
+      ProtocolType: 'HTTP',
+      IpAddressType: 'dualstack',
+    });
+    const withIp = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
+    expect(withIp!['IpAddressType']).toBe('dualstack');
+
+    mockSend.mockResolvedValueOnce({
+      ApiId: API_ID,
+      Name: 'my-api',
+      ProtocolType: 'HTTP',
+    });
+    const without = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
+    expect(without!).not.toHaveProperty('IpAddressType');
   });
 
   // ─── Stage ────────────────────────────────────────────────────────

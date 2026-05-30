@@ -40,9 +40,6 @@
       "DocumentationVersion",
       "MethodSettings"
     ],
-    "AWS::ApiGatewayV2::Api": [
-      "IpAddressType"
-    ],
     "AWS::ApiGatewayV2::Authorizer": [
       "AuthorizerCredentialsArn",
       "IdentityValidationExpression"

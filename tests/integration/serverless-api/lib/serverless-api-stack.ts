@@ -85,14 +85,15 @@ def handler(event, context):
     const userPoolClient = userPool.addClient('ApiClient');
 
     // API Gateway V2 HTTP API (L1 constructs)
-    // disableExecuteApiEndpoint / version exercise the #609 Api backfill
-    // (both ride on CreateApi/UpdateApi for HTTP APIs).
+    // disableExecuteApiEndpoint / version / ipAddressType exercise the
+    // #609 Api backfill (all ride on CreateApi/UpdateApi for HTTP APIs).
     const httpApi = new apigatewayv2.CfnApi(this, 'HttpApi', {
       name: 'cdkd-serverless-api',
       protocolType: 'HTTP',
       description: 'Serverless HTTP API for cdkd testing',
       disableExecuteApiEndpoint: false,
       version: 'v1',
+      ipAddressType: 'dualstack',
     });
 
     // Default stage with auto-deploy.
