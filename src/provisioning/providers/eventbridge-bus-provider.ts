@@ -125,10 +125,9 @@ export class EventBridgeBusProvider implements ResourceProvider {
         createParams.DeadLetterConfig = dlcCreate;
       }
       if (properties['LogConfig'] !== undefined) {
-        createParams.LogConfig = properties['LogConfig'] as {
-          IncludeDetail?: 'NONE' | 'FULL';
-          Level?: 'OFF' | 'ERROR' | 'INFO' | 'TRACE';
-        };
+        createParams.LogConfig = properties[
+          'LogConfig'
+        ] as import('@aws-sdk/client-eventbridge').LogConfig;
       }
 
       const response = await this.eventBridgeClient.send(new CreateEventBusCommand(createParams));
@@ -195,10 +194,9 @@ export class EventBridgeBusProvider implements ResourceProvider {
         }
       }
       if (properties['LogConfig'] !== undefined) {
-        updateParams.LogConfig = properties['LogConfig'] as {
-          IncludeDetail?: 'NONE' | 'FULL';
-          Level?: 'OFF' | 'ERROR' | 'INFO' | 'TRACE';
-        };
+        updateParams.LogConfig = properties[
+          'LogConfig'
+        ] as import('@aws-sdk/client-eventbridge').LogConfig;
       }
       await this.eventBridgeClient.send(new UpdateEventBusCommand(updateParams));
     }
