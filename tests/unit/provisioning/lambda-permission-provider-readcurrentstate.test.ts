@@ -173,16 +173,16 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('surfaces InvokedViaFunctionUrl: true when AWS injects the lambda:FunctionUrlAuthType condition (issue #609)', async () => {
+  it('surfaces InvokedViaFunctionUrl: true when AWS injects the Bool lambda:InvokedViaFunctionUrl condition (issue #609)', async () => {
     const policy = {
       Version: '2012-10-17',
       Statement: [
         {
           Sid: 'FnUrlPerm',
-          Action: 'lambda:InvokeFunctionUrl',
+          Action: 'lambda:InvokeFunction',
           Principal: '*',
           Condition: {
-            StringEquals: { 'lambda:FunctionUrlAuthType': 'NONE' },
+            Bool: { 'lambda:InvokedViaFunctionUrl': 'true' },
           },
         },
       ],
@@ -202,7 +202,7 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
     });
   });
 
-  it('omits InvokedViaFunctionUrl when the lambda:FunctionUrlAuthType condition is absent', async () => {
+  it('omits InvokedViaFunctionUrl when the Bool lambda:InvokedViaFunctionUrl condition is absent', async () => {
     const policy = {
       Version: '2012-10-17',
       Statement: [

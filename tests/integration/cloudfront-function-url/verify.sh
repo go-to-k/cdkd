@@ -105,22 +105,23 @@ echo "    OK: explicit permission statement with SID '${EXPLICIT_SID}' is on the
 
 echo "    statement shape: $(echo "${STATEMENT}" | jq -c .)"
 
-# Setting InvokedViaFunctionUrl: true on a Permission with
-# Action: lambda:InvokeFunction makes AWS inject a Condition entry on
-# the resource-policy statement that gates the statement on the
-# lambda:FunctionUrlAuthType IAM context key. The exact JSON shape can
-# vary by AWS-side encoding (StringEquals vs Bool, value NONE vs true),
-# so the assertion only checks that the key is referenced anywhere
-# inside the statement Condition block — its presence is what proves
-# the property reached AWS and was not silent-dropped.
-HAS_FUNCTIONURL_CONDITION=$(echo "${STATEMENT}" \
-  | jq -r '.Condition // {} | tostring | test("lambda:FunctionUrlAuthType")')
-if [ "${HAS_FUNCTIONURL_CONDITION}" != "true" ]; then
-  echo "FAIL: explicit permission statement Condition does not reference lambda:FunctionUrlAuthType (InvokedViaFunctionUrl silent-drop NOT closed)" >&2
+# Setting InvokedViaFunctionUrl: true on a Permission with Action
+# lambda:InvokeFunction makes AWS inject a `Bool` Condition keyed on
+# the `lambda:InvokedViaFunctionUrl` IAM context key (verified
+# empirically against the live us-east-1 endpoint, 2026-05-29):
+#
+#   "Condition": { "Bool": { "lambda:InvokedViaFunctionUrl": "true" } }
+#
+# The condition's presence is what proves the property reached AWS and
+# was not silent-dropped on the way.
+INVOKED_VIA_URL=$(echo "${STATEMENT}" \
+  | jq -r '.Condition.Bool."lambda:InvokedViaFunctionUrl" // empty')
+if [ "${INVOKED_VIA_URL}" != "true" ]; then
+  echo "FAIL: explicit permission statement is missing Condition.Bool.\"lambda:InvokedViaFunctionUrl\" (InvokedViaFunctionUrl silent-drop NOT closed)" >&2
   echo "${STATEMENT}" | jq .
   exit 1
 fi
-echo "    OK: Condition references lambda:FunctionUrlAuthType (InvokedViaFunctionUrl silent-drop CLOSED by #609)"
+echo "    OK: Condition.Bool.\"lambda:InvokedViaFunctionUrl\" == 'true' (InvokedViaFunctionUrl silent-drop CLOSED by #609)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

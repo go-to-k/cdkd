@@ -361,11 +361,12 @@ export class LambdaPermissionProvider implements ResourceProvider {
       if (orgId !== undefined) {
         result['PrincipalOrgID'] = Array.isArray(orgId) ? orgId[0] : orgId;
       }
-      // AWS encodes `InvokedViaFunctionUrl: true` indirectly by injecting a
-      // `lambda:FunctionUrlAuthType` condition into the statement. Presence
-      // of the key (any value) is the signal — the literal auth-type value
-      // is already round-tripped via the `FunctionUrlAuthType` property.
-      if (condition['StringEquals']?.['lambda:FunctionUrlAuthType'] !== undefined) {
+      // AWS encodes `InvokedViaFunctionUrl: true` by injecting a
+      // `Bool` condition keyed on `lambda:InvokedViaFunctionUrl` into the
+      // statement (verified empirically against the live us-east-1 endpoint,
+      // 2026-05-29). The value comes back as the string "true" / "false".
+      const invokedViaUrl = condition['Bool']?.['lambda:InvokedViaFunctionUrl'];
+      if (invokedViaUrl === 'true') {
         result['InvokedViaFunctionUrl'] = true;
       }
     }
