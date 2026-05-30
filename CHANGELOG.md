@@ -1,3 +1,10 @@
+# [0.193.0](https://github.com/go-to-k/cdkd/compare/v0.192.0...v0.193.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill ECS::Cluster ServiceConnectDefaults ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#726](https://github.com/go-to-k/cdkd/issues/726)) ([7235194](https://github.com/go-to-k/cdkd/commit/72351948a5a26b4334e2e81691a95b6adcba7cad))
+
 # [0.192.0](https://github.com/go-to-k/cdkd/compare/v0.191.0...v0.192.0) (2026-05-30)
 
 
