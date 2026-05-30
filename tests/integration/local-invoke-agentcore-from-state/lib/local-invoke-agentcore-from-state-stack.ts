@@ -14,10 +14,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * One Bedrock AgentCore Runtime + one S3 bucket. The runtime's env carries:
  *
- *   - `BUCKET_NAME = Ref: MyBucket` — INTRINSIC; without `--from-state` the
- *     local-invoke-agentcore path drops it. With `--from-state` after a real
- *     `cdkd deploy`, the deployed bucket name is read from cdkd state and
- *     substituted, so the runtime echoes the literal physical bucket name back.
+ *   - `BUCKET_NAME = Ref: MyBucket` — INTRINSIC (`Ref` path); without
+ *     `--from-state` the local-invoke-agentcore path drops it. With
+ *     `--from-state` after a real `cdkd deploy`, the deployed bucket name
+ *     is read from cdkd state and substituted, so the runtime echoes the
+ *     literal physical bucket name back.
+ *
+ *   - `BUCKET_ARN = Fn::GetAtt: [MyBucket, Arn]` — INTRINSIC (`GetAtt`
+ *     path); covered separately from `Ref` because cdkd's state-resolver
+ *     reads `attributes.Arn` for `Fn::GetAtt` but `physicalId` for `Ref`
+ *     — they're different code paths in the resolver, so testing both
+ *     defends against an asymmetric regression.
  *
  *   - `STATIC_VALUE = 'cdkd-static'` — LITERAL; passes through unchanged in
  *     both modes (control case).
@@ -40,6 +47,7 @@ export class LocalInvokeAgentcoreFromStateStack extends cdk.Stack {
       }),
       environmentVariables: {
         BUCKET_NAME: bucket.bucketName,
+        BUCKET_ARN: bucket.bucketArn,
         STATIC_VALUE: 'cdkd-static',
       },
     });

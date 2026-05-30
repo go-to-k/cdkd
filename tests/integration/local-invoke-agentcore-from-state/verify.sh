@@ -71,11 +71,23 @@ if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "null" ]; then
 fi
 echo "[verify] deployed bucket: ${BUCKET}"
 
+BUCKET_ARN="arn:aws:s3:::${BUCKET}"
+
+# Pin assertions on the JSON line via `grep '"env":'` rather than `tail -1`:
+# `cdkd local invoke-agentcore` may grow a trailing log line on stdout
+# (container teardown, timing summary) — `tail -1` would silently capture
+# that instead of the response, producing a confusing assertion failure
+# with no JSON in the captured value.
+
 echo "[verify] step 3: baseline — cdkd local invoke-agentcore WITHOUT --from-state"
-RESULT_BASELINE=$(${CLI} local invoke-agentcore "${TARGET}" --no-pull 2>/dev/null | tail -1)
+RESULT_BASELINE=$(${CLI} local invoke-agentcore "${TARGET}" --no-pull 2>/dev/null | grep '"env":' | tail -1)
 echo "    response: ${RESULT_BASELINE}"
 echo "${RESULT_BASELINE}" | grep -q '"BUCKET_NAME":"unset"' || {
-  echo "FAIL: baseline (no --from-state) — expected BUCKET_NAME=\"unset\" (intrinsic dropped); got: ${RESULT_BASELINE}"
+  echo "FAIL: baseline (no --from-state) — expected BUCKET_NAME=\"unset\" (Ref intrinsic dropped); got: ${RESULT_BASELINE}"
+  exit 1
+}
+echo "${RESULT_BASELINE}" | grep -q '"BUCKET_ARN":"unset"' || {
+  echo "FAIL: baseline (no --from-state) — expected BUCKET_ARN=\"unset\" (Fn::GetAtt intrinsic dropped); got: ${RESULT_BASELINE}"
   exit 1
 }
 echo "${RESULT_BASELINE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {
@@ -85,10 +97,14 @@ echo "${RESULT_BASELINE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {
 
 echo "[verify] step 4: G2 — cdkd local invoke-agentcore WITH --from-state"
 RESULT_FROMSTATE=$(${CLI} local invoke-agentcore "${TARGET}" --from-state \
-  --state-bucket "${STATE_BUCKET}" --no-pull 2>/dev/null | tail -1)
+  --state-bucket "${STATE_BUCKET}" --no-pull 2>/dev/null | grep '"env":' | tail -1)
 echo "    response: ${RESULT_FROMSTATE}"
 echo "${RESULT_FROMSTATE}" | grep -q "\"BUCKET_NAME\":\"${BUCKET}\"" || {
-  echo "FAIL: --from-state — expected BUCKET_NAME=\"${BUCKET}\" (deployed bucket name substituted); got: ${RESULT_FROMSTATE}"
+  echo "FAIL: --from-state — expected BUCKET_NAME=\"${BUCKET}\" (Ref resolved from state); got: ${RESULT_FROMSTATE}"
+  exit 1
+}
+echo "${RESULT_FROMSTATE}" | grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" || {
+  echo "FAIL: --from-state — expected BUCKET_ARN=\"${BUCKET_ARN}\" (Fn::GetAtt Arn resolved from state); got: ${RESULT_FROMSTATE}"
   exit 1
 }
 echo "${RESULT_FROMSTATE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {

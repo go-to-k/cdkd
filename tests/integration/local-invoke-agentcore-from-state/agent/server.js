@@ -29,6 +29,7 @@ const server = http.createServer((req, res) => {
           echoed: event,
           env: {
             BUCKET_NAME: process.env.BUCKET_NAME ?? 'unset',
+            BUCKET_ARN: process.env.BUCKET_ARN ?? 'unset',
             STATIC_VALUE: process.env.STATIC_VALUE ?? 'unset',
           },
         })
