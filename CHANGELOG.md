@@ -1,3 +1,10 @@
+# [0.185.0](https://github.com/go-to-k/cdkd/compare/v0.184.0...v0.185.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill Lambda::Permission InvokedViaFunctionUrl + retry concurrent-update ([#711](https://github.com/go-to-k/cdkd/issues/711)) ([e9c11d2](https://github.com/go-to-k/cdkd/commit/e9c11d21991a40083974e4f125fb9d355d03a7c1))
+
 # [0.184.0](https://github.com/go-to-k/cdkd/compare/v0.183.0...v0.184.0) (2026-05-30)
 
 
