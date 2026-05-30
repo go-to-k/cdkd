@@ -1,3 +1,10 @@
+# [0.187.0](https://github.com/go-to-k/cdkd/compare/v0.186.0...v0.187.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill ApiGatewayV2::Authorizer IdentityValidationExpression ([#716](https://github.com/go-to-k/cdkd/issues/716)) ([399a276](https://github.com/go-to-k/cdkd/commit/399a276f586d111876b131a29387f0f410474d81))
+
 # [0.186.0](https://github.com/go-to-k/cdkd/compare/v0.185.1...v0.186.0) (2026-05-30)
 
 
