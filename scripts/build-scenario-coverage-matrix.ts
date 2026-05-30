@@ -192,6 +192,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).',
   'local-websocket-api':
     '`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane.',
+  'local-agentcore-runtime':
+    '`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build.',
 };
 
 interface ScenarioCoverageReport {

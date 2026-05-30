@@ -53,6 +53,10 @@
       "description": "New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution."
     },
     {
+      "tag": "local-agentcore-runtime",
+      "description": "`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build."
+    },
+    {
       "tag": "local-apigateway-server",
       "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool."
     },
@@ -486,6 +490,13 @@
       "annotated": true,
       "scenarios": [
         "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-agentcore",
+      "annotated": true,
+      "scenarios": [
+        "local-agentcore-runtime"
       ]
     },
     {
@@ -962,6 +973,13 @@
       "description": "New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution.",
       "fixtures": [
         "legacy-bucket-name-fallback"
+      ]
+    },
+    {
+      "scenario": "local-agentcore-runtime",
+      "description": "`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build.",
+      "fixtures": [
+        "local-invoke-agentcore"
       ]
     },
     {
