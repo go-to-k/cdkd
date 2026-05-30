@@ -597,6 +597,97 @@ describe('CloudFrontDistributionProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(3);
     });
 
+    it('update with tag diff but missing ARN warns and skips (does not throw)', async () => {
+      // Defensive guard against a hypothetical SDK regression where
+      // GetDistribution stops returning ARN. A silent drop here would
+      // exactly reintroduce the silent-drop this PR closes — assert
+      // that the warn fires instead.
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({}); // UpdateDistribution
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' /* no ARN */ },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'NewKey', Value: 'NewVal' }],
+        },
+        {
+          DistributionConfig: { Enabled: true },
+        }
+      );
+
+      // GetConfig + Update + GetDistribution = 3 (no Tag/Untag, no throw)
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('update with NO tag diff and no ARN does NOT warn (no-op skip is silent)', async () => {
+      // computeTagDiff short-circuits before touching ARN, so a no-op
+      // update never logs the "skipping tag diff" warn — that warn is
+      // reserved for the load-bearing case of a missing-ARN + non-empty
+      // delta (where the silent drop would actually lose user intent).
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' /* no ARN */ },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        { DistributionConfig: { Enabled: true } },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('update tag-side failure is logged but does NOT propagate (UpdateDistribution succeeded)', async () => {
+      // The deploy engine treats provider.update() failure as a need to
+      // retry. Since UpdateDistribution already committed before the tag
+      // call, an exception here would force an idempotent retry against
+      // the same etag — noisy but not destructive. The provider chooses
+      // warn-and-continue so the user sees the unapplied tag delta
+      // without rolling the whole deploy step.
+      const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({}); // UpdateDistribution
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net', ARN: arn },
+      });
+      mockSend.mockRejectedValueOnce(new Error('AccessDeniedException: tag policy denies')); // TagResource
+
+      const result = await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'NewKey', Value: 'NewVal' }],
+        },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      // update() returns normally (no throw) and the result is intact —
+      // wasReplaced=false, attributes carry the new domainName etc.
+      expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
+      expect(result.wasReplaced).toBe(false);
+    });
+
     it('update mixed adds + removes issues Untag then Tag in that order', async () => {
       const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
       mockSend.mockResolvedValueOnce({

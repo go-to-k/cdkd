@@ -99,12 +99,12 @@ if [ "${OWNER}" != "integ" ]; then
 fi
 echo "    OK: tag cdkd-test-owner=integ present on distribution"
 
-if [ "${ENV_TAG}" != "us-east-1" ]; then
-  echo "FAIL: tag 'cdkd-test-env' missing or wrong value (got: '${ENV_TAG}', expected 'us-east-1')" >&2
+if [ "${ENV_TAG}" != "integ-env" ]; then
+  echo "FAIL: tag 'cdkd-test-env' missing or wrong value (got: '${ENV_TAG}', expected 'integ-env')" >&2
   echo "${TAGS_JSON}" | jq .
   exit 1
 fi
-echo "    OK: tag cdkd-test-env=us-east-1 present on distribution"
+echo "    OK: tag cdkd-test-env=integ-env present on distribution"
 echo "    OK: CloudFront::Distribution Tags silent-drop CLOSED by #609"
 
 # --- Phase 2: destroy -------------------------------------------------

@@ -200,9 +200,15 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // when re-tagged), removals use UntagResource. Run the removal
       // first so a renamed key (e.g. value-only edit on key K) is not
       // accidentally cleared by a stale UntagResource pass.
-      if (arn) {
-        await this.applyTagDiff(arn, previousProperties['Tags'], properties['Tags']);
-      }
+      //
+      // Tags are best-effort post-step: a tag-side failure must not flip
+      // an otherwise-successful UpdateDistribution into a deploy-engine
+      // failure (the engine would then schedule a retry that re-issues
+      // the already-applied UpdateDistribution against the same etag,
+      // which is idempotent but adds noise to the next deploy). We log a
+      // warn instead so the user sees the unapplied tag delta but the
+      // deploy still progresses.
+      await this.tryApplyTagDiff(arn, previousProperties['Tags'], properties['Tags'], physicalId);
 
       this.logger.debug(`Updated CloudFront Distribution ${physicalId}`);
 
@@ -587,37 +593,30 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   /**
    * Convert CFn `Tags: [{ Key, Value }]` to the CloudFront SDK's `Tag[]`
    * shape (which happens to be the same `{ Key, Value }` per-entry shape),
-   * dropping entries missing a Key. Returns `undefined` when the input is
-   * absent or empty so the caller can route to `CreateDistributionCommand`
-   * instead of `CreateDistributionWithTagsCommand` — passing an empty
-   * `Tags.Items: []` to the latter is a silent no-op but uses the
-   * tags-enabled control-plane path for nothing.
+   * dropping entries missing a Key and normalizing missing-Value to `''`
+   * (matching `tagsArrayToMap`'s shape so the create-path and update-diff-
+   * path agree on what counts as "the same tag"). Returns `undefined`
+   * when the input is absent or empty so the caller can route to
+   * `CreateDistributionCommand` instead of `CreateDistributionWithTagsCommand`
+   * — passing an empty `Tags.Items: []` to the latter is a silent no-op
+   * but uses the tags-enabled control-plane path for nothing.
    */
   private toSdkTags(value: unknown): Tag[] | undefined {
-    if (!Array.isArray(value) || value.length === 0) return undefined;
-    const out: Tag[] = [];
-    for (const entry of value as Array<Record<string, unknown>>) {
-      const key = entry['Key'];
-      if (typeof key !== 'string') continue;
-      const val = entry['Value'];
-      out.push({ Key: key, Value: typeof val === 'string' ? val : '' });
-    }
-    return out.length > 0 ? out : undefined;
+    const map = this.tagsArrayToMap(value);
+    if (map.size === 0) return undefined;
+    return [...map.entries()].map(([Key, Value]) => ({ Key, Value }));
   }
 
   /**
-   * Apply a tag diff to a distribution.
-   *
-   * CloudFront has no atomic overlay API for tags — `TagResource` adds /
-   * overwrites and `UntagResource` removes. The diff is computed against
-   * the previous CFn `Tags` snapshot:
-   * - Keys present in prev but absent in next → UntagResource (TagKeys.Items)
-   * - Keys whose value changed OR are new in next → TagResource (Tags.Items)
-   *
-   * Runs the removal first, then the upsert, so a same-key value rewrite
-   * (which appears in the upsert set, not the removal set) is safe.
+   * Compute the (removed-keys, upserted-tags) diff between two CFn `Tags`
+   * snapshots. Pure function — does NOT touch AWS, so the caller can
+   * decide on the basis of the result whether the ARN is actually needed
+   * (no diff = no ARN required).
    */
-  private async applyTagDiff(arn: string, previousTags: unknown, newTags: unknown): Promise<void> {
+  private computeTagDiff(
+    previousTags: unknown,
+    newTags: unknown
+  ): { removed: string[]; upserts: Tag[] } {
     const prev = this.tagsArrayToMap(previousTags);
     const next = this.tagsArrayToMap(newTags);
 
@@ -626,25 +625,73 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     for (const [k, v] of next.entries()) {
       if (prev.get(k) !== v) upserts.push({ Key: k, Value: v });
     }
+    return { removed, upserts };
+  }
 
-    if (removed.length > 0) {
-      this.logger.debug(`Untagging CloudFront Distribution ${arn}: ${removed.join(', ')}`);
-      await this.cloudFrontClient.send(
-        new UntagResourceCommand({
-          Resource: arn,
-          TagKeys: { Items: removed },
-        })
+  /**
+   * Apply a tag diff to a distribution, best-effort.
+   *
+   * CloudFront has no atomic overlay API for tags — `TagResource` adds /
+   * overwrites and `UntagResource` removes. Run the removal first, then
+   * the upsert, so a same-key value rewrite (which lands in `upserts`)
+   * is not accidentally cleared by a stale Untag.
+   *
+   * Errors are logged but not rethrown — `update()` already succeeded
+   * the `UpdateDistribution` call before this is invoked, so propagating
+   * a tag-side error would flip a successful config update into a deploy
+   * failure that triggers an idempotent retry. A `warn` surfaces the
+   * unapplied delta to the operator without breaking the deploy.
+   *
+   * The ARN is unexpectedly absent only on a hypothetical SDK regression
+   * (`GetDistribution` returns ARN as a required string in every SDK
+   * shape verified so far). When that happens AND a tag delta exists,
+   * log a warn so the silent-drop this PR is closing does not silently
+   * resurface; when no delta exists, return without needing ARN.
+   */
+  private async tryApplyTagDiff(
+    arn: string | undefined,
+    previousTags: unknown,
+    newTags: unknown,
+    physicalId: string
+  ): Promise<void> {
+    const { removed, upserts } = this.computeTagDiff(previousTags, newTags);
+    if (removed.length === 0 && upserts.length === 0) return;
+
+    if (!arn) {
+      this.logger.warn(
+        `CloudFront Distribution ${physicalId}: GetDistribution returned no ARN; ` +
+          `skipping tag diff (removed=${removed.length}, upserts=${upserts.length}). ` +
+          `Tags on AWS may drift from the template.`
       );
+      return;
     }
-    if (upserts.length > 0) {
-      this.logger.debug(
-        `Tagging CloudFront Distribution ${arn}: ${upserts.map((t) => t.Key).join(', ')}`
-      );
-      await this.cloudFrontClient.send(
-        new TagResourceCommand({
-          Resource: arn,
-          Tags: { Items: upserts },
-        })
+
+    try {
+      if (removed.length > 0) {
+        this.logger.debug(`Untagging CloudFront Distribution ${arn}: ${removed.join(', ')}`);
+        await this.cloudFrontClient.send(
+          new UntagResourceCommand({
+            Resource: arn,
+            TagKeys: { Items: removed },
+          })
+        );
+      }
+      if (upserts.length > 0) {
+        this.logger.debug(
+          `Tagging CloudFront Distribution ${arn}: ${upserts.map((t) => t.Key).join(', ')}`
+        );
+        await this.cloudFrontClient.send(
+          new TagResourceCommand({
+            Resource: arn,
+            Tags: { Items: upserts },
+          })
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `CloudFront Distribution ${physicalId}: tag diff failed (removed=${removed.length}, ` +
+          `upserts=${upserts.length}): ${err instanceof Error ? err.message : String(err)}. ` +
+          `UpdateDistribution itself succeeded; tags on AWS may drift from the template until the next deploy.`
       );
     }
   }
