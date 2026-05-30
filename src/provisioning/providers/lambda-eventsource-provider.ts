@@ -234,16 +234,24 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       // #609 backfill — 7 props closed in one slice. The CFn field name
       // is `KmsKeyArn` (lower-case `ms`); the SDK field is `KMSKeyArn`
       // (upper-case `MS`) — wire-format casing flip happens here.
-      if (properties['KmsKeyArn']) params.KMSKeyArn = properties['KmsKeyArn'] as string;
-      if (properties['LoggingConfig'])
+      // Use `!== undefined` for the 4 mutable props to mirror update()'s
+      // gating, so an explicit `''` (the AWS-documented `KMSKeyArn`
+      // clear-back-to-AWS-owned-key sentinel) and explicit empty objects
+      // / arrays all reach AWS. Queues / Topics use truthy because they
+      // are create-only — an empty array at create is a degenerate "no
+      // self-managed targets" case that has no AWS meaning and would
+      // generate a no-op call.
+      if (properties['KmsKeyArn'] !== undefined)
+        params.KMSKeyArn = properties['KmsKeyArn'] as string;
+      if (properties['LoggingConfig'] !== undefined)
         params.LoggingConfig = properties[
           'LoggingConfig'
         ] as import('@aws-sdk/client-lambda').EventSourceMappingLoggingConfig;
-      if (properties['MetricsConfig'])
+      if (properties['MetricsConfig'] !== undefined)
         params.MetricsConfig = properties[
           'MetricsConfig'
         ] as import('@aws-sdk/client-lambda').EventSourceMappingMetricsConfig;
-      if (properties['ProvisionedPollerConfig'])
+      if (properties['ProvisionedPollerConfig'] !== undefined)
         params.ProvisionedPollerConfig = properties[
           'ProvisionedPollerConfig'
         ] as import('@aws-sdk/client-lambda').ProvisionedPollerConfig;
@@ -632,13 +640,16 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       result['ProvisionedPollerConfig'] = resp.ProvisionedPollerConfig;
     if (resp.Queues !== undefined) result['Queues'] = [...resp.Queues];
     if (resp.Topics !== undefined) result['Topics'] = [...resp.Topics];
-    // StartingPositionTimestamp: AWS returns a Date; cdkd state stores
-    // the epoch-seconds number the user supplied at create. Convert
-    // back so the comparator sees the same shape on both sides.
+    // StartingPositionTimestamp: AWS SDK v3 types this as Date, but
+    // older SDK shapes / non-AWS endpoints (LocalStack etc.) can return
+    // an ISO-string. Coerce via `new Date(...)` so either reaches the
+    // epoch-seconds conversion safely. cdkd state stores the
+    // epoch-seconds number the user supplied at create; this conversion
+    // back lets the drift comparator see the same shape on both sides.
     if (resp.StartingPositionTimestamp !== undefined) {
-      result['StartingPositionTimestamp'] = Math.floor(
-        resp.StartingPositionTimestamp.getTime() / 1000
-      );
+      const raw = resp.StartingPositionTimestamp;
+      const date = raw instanceof Date ? raw : new Date(raw as string);
+      result['StartingPositionTimestamp'] = Math.floor(date.getTime() / 1000);
     }
 
     // `Enabled` derives from `State`: AWS exposes the underlying state

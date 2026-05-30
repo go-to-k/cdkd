@@ -150,9 +150,17 @@ def handler(event, context):
     // Both props are kind-agnostic (KmsKeyArn always supported;
     // MetricsConfig: `EventCount` is the only documented value as of
     // 2025 and works for every source kind).
-    const esmL1 = fn.node
-      .findAll()
-      .find((c) => c instanceof lambda.CfnEventSourceMapping) as lambda.CfnEventSourceMapping;
+    //
+    // Assert exactly-one-ESM-in-subtree so a future fixture extension
+    // that adds a second ESM fails loudly here instead of silently
+    // overriding the wrong one (whichever findAll() returns first).
+    const esms = fn.node.findAll().filter((c) => c instanceof lambda.CfnEventSourceMapping);
+    if (esms.length !== 1) {
+      throw new Error(
+        `Expected exactly one CfnEventSourceMapping in the StreamProcessor subtree, found ${esms.length}`
+      );
+    }
+    const esmL1 = esms[0] as lambda.CfnEventSourceMapping;
     esmL1.addPropertyOverride('KmsKeyArn', esmKey.keyArn);
     esmL1.addPropertyOverride('MetricsConfig', { Metrics: ['EventCount'] });
 
