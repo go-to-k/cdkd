@@ -303,6 +303,21 @@ restart-on-exit, cross-service Service Connect / Cloud Map DNS
 discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
 No local load-balancer in v1.
 
+### `local start-alb`
+
+```bash
+cdkd local start-alb MyStack/MyAlb --lb-port 80=8080 # remap privileged listener port
+cdkd local start-alb MyStack/MyAlb --from-state      # OR --from-cfn-stack
+```
+
+Long-running local ALB front-door: names an `AWS::ElasticLoadBalancingV2::LoadBalancer`,
+boots every ECS service behind its listeners, and stands up a local
+HTTP / HTTPS front-door on each listener port that round-robins across
+the running replicas and routes its listener rules across the backing
+services. Forward / redirect / fixed-response actions; ECS or Lambda
+targets; authenticate-cognito / authenticate-oidc via a local Bearer-JWT
+check.
+
 See **[docs/local-emulation.md](docs/local-emulation.md)** for the
 full reference — runtimes, target resolution, every flag, integration
 and authorizer detail, route precedence, container pool, networking,

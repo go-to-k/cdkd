@@ -22,6 +22,31 @@ import {
   type PlannedForwardTarget,
   type PlannedFrontDoorListener,
 } from './ecs-service-emulator.js';
+import { cdkdExtraStateProviders } from './local-state-source.js';
+
+/**
+ * Cdkd-specific extension of cdk-local's `EcsServiceEmulatorOptions` carrying
+ * the `--from-state` / `--state-bucket` / `--state-prefix` fields (cdkd's
+ * S3-backed state source). cdk-local's option type already declares
+ * `[key: string]: unknown`, so these fields ride through the engine and reach
+ * cdkd's `fromStateFactory` (registered via `cdkdExtraStateProviders`) when
+ * the engine calls `createLocalStateProvider` internally. `--from-cfn-stack`
+ * + `--stack-region` are inherited from `addCommonEcsServiceOptions`.
+ */
+export interface LocalStartAlbOptions extends EcsServiceEmulatorOptions {
+  /**
+   * `--from-state` — read cdkd's S3 state for the target stack and substitute
+   * `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` / `Fn::GetStackOutput`
+   * intrinsics in the resolved ECS service container images, environment
+   * variables, secrets, role ARNs, and volumes. Mutually exclusive with
+   * `--from-cfn-stack`.
+   */
+  fromState: boolean;
+  /** S3 bucket for `--from-state`. Falls back to CDKD_STATE_BUCKET / cdk.json. */
+  stateBucket?: string;
+  /** S3 key prefix for `--from-state` (commander always supplies the default). */
+  statePrefix: string;
+}
 
 /**
  * Issue #86 v1 — parse `--lb-port <listenerPort>=<hostPort>` overrides into a
@@ -361,9 +386,34 @@ export function createLocalStartAlbCommand(): Command {
           '(AWSELBAuthSessionCookie-*) also works.'
       )
     )
+    .addOption(
+      new Option(
+        '--from-state',
+        "Read cdkd's S3 state for the target stack and substitute Ref / Fn::GetAtt / Fn::Sub / " +
+          'Fn::ImportValue / Fn::GetStackOutput intrinsics in container images, environment ' +
+          'variables, secrets, role ARNs, and volumes of the ECS services behind the ALB. ' +
+          'Mutually exclusive with --from-cfn-stack.'
+      ).default(false)
+    )
+    .addOption(
+      new Option(
+        '--state-bucket <bucket>',
+        'S3 bucket for --from-state. Falls back to CDKD_STATE_BUCKET env or cdk.json context.cdkd.stateBucket.'
+      )
+    )
+    .addOption(
+      new Option('--state-prefix <prefix>', 'S3 key prefix for --from-state state files.').default(
+        'cdkd'
+      )
+    )
     .action(
-      withErrorHandling(async (targets: string[], options: EcsServiceEmulatorOptions) => {
-        await runEcsServiceEmulator(targets, options, albStrategy(options), undefined);
+      withErrorHandling(async (targets: string[], options: LocalStartAlbOptions) => {
+        await runEcsServiceEmulator(
+          targets,
+          options,
+          albStrategy(options),
+          cdkdExtraStateProviders
+        );
       })
     );
 
