@@ -335,7 +335,6 @@
       "DurableConfig",
       "FunctionScalingConfig",
       "PublishToLatestPublished",
-      "RecursiveLoop",
       "ReservedConcurrentExecutions",
       "RuntimeManagementConfig",
       "TenancyConfig"

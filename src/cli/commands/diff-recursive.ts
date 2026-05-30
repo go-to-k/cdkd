@@ -42,7 +42,7 @@ export interface DiffTreeNode {
    * Per-resource Cloud Control API auto-route hits (issue [#614]). Maps each
    * logical ID that #614's auto-fallback would route via CC API to the
    * silent-drop property names that triggered the routing — surfaced as
-   * `[via CC API: RecursiveLoop]` annotations on each diff line so users can
+   * `[via CC API: RuntimeManagementConfig]` annotations on each diff line so users can
    * audit the routing decision before they deploy. Empty for stacks whose
    * template uses no silent-drop top-level property, and for state-only
    * DELETE branches (deletes route via the recorded `provisionedBy`, not via
@@ -334,7 +334,7 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
  *
  *  - **Fresh hits**: a resource whose template uses one or more
  *    silent-drop top-level CFn properties. Annotation value is the list
- *    of property names (e.g. `RecursiveLoop`).
+ *    of property names (e.g. `RuntimeManagementConfig`).
  *  - **Sticky hits**: a resource whose deployed state records
  *    `provisionedBy: 'cc-api'` (from a prior deploy) even when the
  *    current template's silent-drop set is empty. Annotation value is

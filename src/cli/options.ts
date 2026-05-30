@@ -599,7 +599,7 @@ export function parseAllowUnsupportedPropertiesToken(
       throw new Error(
         `Invalid --allow-unsupported-properties value "${token}": expected ` +
           `<ResourceType>:<PropertyName> with PascalCase on both halves ` +
-          `(e.g. AWS::Lambda::Function:RecursiveLoop).`
+          `(e.g. AWS::Lambda::Function:RuntimeManagementConfig).`
       );
     }
     if (token.startsWith('Custom::')) {
@@ -619,7 +619,7 @@ export const allowUnsupportedPropertiesOption = new Option(
   'Comma-separated <ResourceType>:<PropertyName> tokens to accept as silently dropped ' +
     'at deploy time. Escape hatch — the property will NOT be written to AWS, the ' +
     'deployed resource will be missing the field. Example: ' +
-    '--allow-unsupported-properties AWS::Lambda::Function:RecursiveLoop,AWS::RDS::DBInstance:CACertificateIdentifier'
+    '--allow-unsupported-properties AWS::Lambda::Function:RuntimeManagementConfig,AWS::RDS::DBInstance:CACertificateIdentifier'
 ).argParser(parseAllowUnsupportedPropertiesToken);
 
 /**
