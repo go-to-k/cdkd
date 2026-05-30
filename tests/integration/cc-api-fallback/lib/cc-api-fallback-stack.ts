@@ -11,23 +11,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Cloud Control API greenfield fallback integ fixture (issue #614).
  *
  * The Lambda Function below uses the top-level CFn property
- * `RecursiveLoop` which cdkd's `LambdaFunctionProvider` does not wire
- * to AWS (silent-drop). Pre-#614, this would either be silently dropped
- * (pre-PR #608) or rejected at deploy-time pre-flight (post-PR #608).
- * Post-#614, the resource is auto-routed via Cloud Control API which
- * forwards the full property map to AWS — closing the silent-drop bug
- * by default.
+ * `RuntimeManagementConfig` which cdkd's `LambdaFunctionProvider` does
+ * not wire to AWS (silent-drop). Pre-#614, this would either be silently
+ * dropped (pre-PR #608) or rejected at deploy-time pre-flight (post-PR
+ * #608). Post-#614, the resource is auto-routed via Cloud Control API
+ * which forwards the full property map to AWS — closing the silent-drop
+ * bug by default.
  *
- * `RecursiveLoop` is the canonical silent-drop CC-API-fallback example
- * as of the #609 LoggingConfig backfill (LoggingConfig used to play this
- * role but is now wired by the SDK provider, so this fixture and its
- * siblings moved to `RecursiveLoop`, which stays silent-drop). Default
- * is `Terminate`; we set `Allow` so the read-back is unambiguous.
+ * `RuntimeManagementConfig` is the canonical silent-drop CC-API-fallback
+ * example after the #609 RecursiveLoop backfill. Pre-history: LoggingConfig
+ * → RecursiveLoop (both got backfilled); RuntimeManagementConfig is the
+ * next still-silent-drop replacement trigger. Default
+ * `UpdateRuntimeOn: 'Auto'`; we set `'FunctionUpdate'` so the read-back is
+ * unambiguous (`'FunctionUpdate'` is a non-default value that requires the
+ * CC route to forward the prop).
  *
  * The fixture's verify.sh asserts:
  *   (a) state.resources.SilentDropLambda.provisionedBy === 'cc-api'
- *   (b) the Lambda's `RecursiveLoop` reached AWS (verified via
- *       `aws lambda get-function-recursion-config`)
+ *   (b) the Lambda's `RuntimeManagementConfig` reached AWS (verified via
+ *       `aws lambda get-runtime-management-config`)
  *   (c) `cdkd destroy` cleans up via the CC delete path
  */
 export class CcApiFallbackStack extends cdk.Stack {
@@ -46,9 +48,11 @@ export class CcApiFallbackStack extends cdk.Stack {
       ],
     });
 
-    // Lambda Function with `RecursiveLoop` (silent-drop in cdkd's SDK
-    // Provider). With #614, this resource is auto-routed via Cloud
-    // Control API instead of the SDK Provider.
+    // Lambda Function with `RuntimeManagementConfig` (silent-drop in
+    // cdkd's SDK Provider — wired via the separate post-create
+    // `PutRuntimeManagementConfig` AWS API, not `CreateFunction`). With
+    // #614, this resource is auto-routed via Cloud Control API instead of
+    // the SDK Provider.
     const fn = new lambda.CfnFunction(this, 'SilentDropLambda', {
       functionName: 'cdkd-cc-api-fallback-probe',
       runtime: 'python3.12',
@@ -60,7 +64,7 @@ export class CcApiFallbackStack extends cdk.Stack {
           '    return {"statusCode": 200, "body": "cdkd #614 probe"}',
         ].join('\n'),
       },
-      recursiveLoop: 'Allow',
+      runtimeManagementConfig: { updateRuntimeOn: 'FunctionUpdate' },
     });
 
     fn.addDependency(role.node.defaultChild as cdk.CfnElement);

@@ -3,9 +3,10 @@
 # (issue #614).
 #
 # Asserts that a Lambda Function whose template uses a silent-drop
-# property (`RecursiveLoop`) is auto-routed via Cloud Control API and
-# that `RecursiveLoop` reaches AWS verbatim — the silent-drop bug is
-# closed by default. Also asserts the destroy path works through CC API.
+# property (`RuntimeManagementConfig`) is auto-routed via Cloud Control
+# API and that `RuntimeManagementConfig.UpdateRuntimeOn` reaches AWS
+# verbatim — the silent-drop bug is closed by default. Also asserts the
+# destroy path works through CC API.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -78,7 +79,7 @@ fi
 # `SilentDropLambdaXXXXXXXX`).
 PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${PROVISIONED}" != "cc-api" ]; then
-  echo "FAIL: Lambda resource has provisionedBy='${PROVISIONED}', expected 'cc-api' (auto-route should have fired on RecursiveLoop)" >&2
+  echo "FAIL: Lambda resource has provisionedBy='${PROVISIONED}', expected 'cc-api' (auto-route should have fired on RuntimeManagementConfig)" >&2
   echo "${STATE}" | jq .
   exit 1
 fi
@@ -93,18 +94,19 @@ if [ "${ROLE_PROVISIONED}" != "sdk" ]; then
 fi
 echo "    OK: IAM Role resource provisionedBy == 'sdk' (heterogeneous routing in one stack)"
 
-# --- Assertion 3: RecursiveLoop actually reached AWS ----------------------
-# RecursiveLoop lives on its own control-plane API (get-function-recursion-config),
-# not on get-function-configuration. Default is 'Terminate'; the fixture sets
-# 'Allow', so seeing 'Allow' proves the CC route forwarded the silent-drop prop.
-RECURSIVE_LOOP=$(aws lambda get-function-recursion-config \
+# --- Assertion 3: RuntimeManagementConfig actually reached AWS ----------------------
+# RuntimeManagementConfig lives on its own control-plane API
+# (get-runtime-management-config), not on get-function-configuration.
+# Default is 'Auto'; the fixture sets 'FunctionUpdate', so seeing
+# 'FunctionUpdate' proves the CC route forwarded the silent-drop prop.
+RTM_UPDATE_ON=$(aws lambda get-runtime-management-config \
   --function-name "${FN_NAME}" --region "${REGION}" \
-  --query 'RecursiveLoop' --output text 2>/dev/null)
-if [ "${RECURSIVE_LOOP}" != "Allow" ]; then
-  echo "FAIL: Lambda RecursiveLoop is '${RECURSIVE_LOOP}', expected 'Allow' (silent-drop NOT closed by CC route)" >&2
+  --query 'UpdateRuntimeOn' --output text 2>/dev/null)
+if [ "${RTM_UPDATE_ON}" != "FunctionUpdate" ]; then
+  echo "FAIL: Lambda RuntimeManagementConfig.UpdateRuntimeOn is '${RTM_UPDATE_ON}', expected 'FunctionUpdate' (silent-drop NOT closed by CC route)" >&2
   exit 1
 fi
-echo "    OK: Lambda RecursiveLoop == 'Allow' on AWS (silent-drop CLOSED by #614)"
+echo "    OK: Lambda RuntimeManagementConfig.UpdateRuntimeOn == 'FunctionUpdate' on AWS (silent-drop CLOSED by #614)"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy via CC delete path"

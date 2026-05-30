@@ -66,7 +66,7 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: baseline — Fwd on SDK, Back on CC ------------------------
-echo "==> Phase 1: deploy ${STACK} (Fwd no RecursiveLoop -> SDK; Back has RecursiveLoop -> CC)"
+echo "==> Phase 1: deploy ${STACK} (Fwd no RuntimeManagementConfig -> SDK; Back has RuntimeManagementConfig -> CC)"
 export CDKD_INTEG_PHASE=1
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -141,22 +141,23 @@ if [ "${BACK_LAST_MOD_2}" = "${BACK_LAST_MOD_1}" ]; then
 fi
 echo "    OK: BackProbe LastModified updated across recreate"
 
-# AWS-side RecursiveLoop: Fwd now has Allow (CC route forwarded the new
-# property); Back now back at the Terminate default (SDK provider doesn't wire it).
-FWD_RL_2=$(aws lambda get-function-recursion-config --function-name "${FWD_FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
-BACK_RL_2=$(aws lambda get-function-recursion-config --function-name "${BACK_FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
+# AWS-side RuntimeManagementConfig.UpdateRuntimeOn: Fwd now has FunctionUpdate
+# (CC route forwarded the new property); Back now back at the Auto default
+# (SDK provider doesn't wire it).
+FWD_RL_2=$(aws lambda get-runtime-management-config --function-name "${FWD_FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
+BACK_RL_2=$(aws lambda get-runtime-management-config --function-name "${BACK_FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
 
-if [ "${FWD_RL_2}" != "Allow" ]; then
-  echo "FAIL: post-mixed FwdProbe RecursiveLoop='${FWD_RL_2}', expected 'Allow' (CC route should have set it)" >&2
+if [ "${FWD_RL_2}" != "FunctionUpdate" ]; then
+  echo "FAIL: post-mixed FwdProbe RuntimeManagementConfig.UpdateRuntimeOn='${FWD_RL_2}', expected 'FunctionUpdate' (CC route should have set it)" >&2
   exit 1
 fi
-echo "    OK: FwdProbe RecursiveLoop is Allow on AWS (CC route forwarded the new property)"
+echo "    OK: FwdProbe RuntimeManagementConfig.UpdateRuntimeOn is FunctionUpdate on AWS (CC route forwarded the new property)"
 
-if [ "${BACK_RL_2}" = "Allow" ]; then
-  echo "FAIL: post-mixed BackProbe still has RecursiveLoop=Allow on AWS (SDK recreate should NOT have wired RecursiveLoop)" >&2
+if [ "${BACK_RL_2}" = "FunctionUpdate" ]; then
+  echo "FAIL: post-mixed BackProbe still has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate on AWS (SDK recreate should NOT have wired RuntimeManagementConfig)" >&2
   exit 1
 fi
-echo "    OK: BackProbe RecursiveLoop is back at the default (SDK recreate did not wire it)"
+echo "    OK: BackProbe RuntimeManagementConfig.UpdateRuntimeOn is back at the default (SDK recreate did not wire it)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy via mixed delete path (FwdProbe via CC, BackProbe via SDK)"

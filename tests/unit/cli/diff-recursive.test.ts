@@ -288,8 +288,8 @@ describe('renderDiffTree', () => {
         { logicalId: 'NoTag', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue' },
       ],
       new Map<string, string[]>([
-        ['MyLambda', ['RecursiveLoop']],
-        ['OtherFn', ['RecursiveLoop', 'RuntimeManagementConfig']],
+        ['MyLambda', ['RuntimeManagementConfig']],
+        ['OtherFn', ['RuntimeManagementConfig', 'TenancyConfig']],
       ])
     );
     const lines: string[] = [];
@@ -299,9 +299,9 @@ describe('renderDiffTree', () => {
     // CREATE + UPDATE lines get the annotation; the comma-joined property
     // list appears verbatim so users can audit which property triggered
     // the CC-route.
-    expect(text).toContain('[+] MyLambda (AWS::Lambda::Function) [via CC API: RecursiveLoop]');
+    expect(text).toContain('[+] MyLambda (AWS::Lambda::Function) [via CC API: RuntimeManagementConfig]');
     expect(text).toContain(
-      '[~] OtherFn (AWS::Lambda::Function) [via CC API: RecursiveLoop, RuntimeManagementConfig]'
+      '[~] OtherFn (AWS::Lambda::Function) [via CC API: RuntimeManagementConfig, TenancyConfig]'
     );
     // Sibling without a hit still renders the plain line — no spurious tag.
     expect(text).toContain('[+] NoTag (AWS::SQS::Queue)');
@@ -315,7 +315,7 @@ describe('renderDiffTree', () => {
       [{ logicalId: 'GoneLambda', changeType: 'DELETE', resourceType: 'AWS::Lambda::Function' }],
       // Even when a hit is recorded, DELETE skips the annotation since
       // routing is not derived from the template at delete time.
-      new Map<string, string[]>([['GoneLambda', ['RecursiveLoop']]])
+      new Map<string, string[]>([['GoneLambda', ['RuntimeManagementConfig']]])
     );
     const lines: string[] = [];
     renderDiffTree(root, true, (m) => lines.push(m));
@@ -560,7 +560,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     expect(treeHasChanges(root)).toBe(true);
   });
 
-  it('populates ccApiRoutes for resources whose template uses #614 silent-drop properties (e.g. Lambda RecursiveLoop)', async () => {
+  it('populates ccApiRoutes for resources whose template uses #614 silent-drop properties (e.g. Lambda RuntimeManagementConfig)', async () => {
     const template: CloudFormationTemplate = {
       Resources: {
         SilentDropLambda: {
@@ -572,7 +572,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
             Runtime: 'nodejs20.x',
             Handler: 'index.handler',
             // Top-level CFn property cdkd's SDK provider does not yet wire.
-            RecursiveLoop: 'Allow',
+            RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' },
           },
         },
         // A sibling Lambda whose template uses NO silent-drop property —
@@ -602,20 +602,20 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       diffCalculator: new DiffCalculator(),
     });
 
-    expect(root.ccApiRoutes.get('SilentDropLambda')).toEqual(['RecursiveLoop']);
+    expect(root.ccApiRoutes.get('SilentDropLambda')).toEqual(['RuntimeManagementConfig']);
     expect(root.ccApiRoutes.has('OkayLambda')).toBe(false);
 
     // The annotation makes it into the human renderer + the JSON projection.
     const lines: string[] = [];
     renderDiffTree(root, true, (m) => lines.push(m));
     expect(lines.join('\n')).toContain(
-      '[+] SilentDropLambda (AWS::Lambda::Function) [via CC API: RecursiveLoop]'
+      '[+] SilentDropLambda (AWS::Lambda::Function) [via CC API: RuntimeManagementConfig]'
     );
 
     const json = diffTreeToJson(root);
     const silentDropChange = json.changes.find((c) => c.logicalId === 'SilentDropLambda');
     const okayChange = json.changes.find((c) => c.logicalId === 'OkayLambda');
-    expect(silentDropChange?.ccApi).toEqual(['RecursiveLoop']);
+    expect(silentDropChange?.ccApi).toEqual(['RuntimeManagementConfig']);
     expect(okayChange?.ccApi).toBeUndefined();
   });
 
