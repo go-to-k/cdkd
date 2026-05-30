@@ -477,11 +477,9 @@
     "AWS::S3Tables::Table": [
       "Compaction",
       "IcebergMetadata",
-      "OpenTableFormat",
       "SnapshotManagement",
       "StorageClassConfiguration",
       "TableName",
-      "Tags",
       "WithoutMetadata"
     ],
     "AWS::S3Tables::TableBucket": [

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   GetTableBucketCommand,
   GetTableCommand,
+  ListTagsForResourceCommand,
   NotFoundException,
 } from '@aws-sdk/client-s3tables';
 
@@ -104,11 +105,15 @@ describe('S3TablesProvider.readCurrentState', () => {
   });
 
   describe('AWS::S3Tables::Table', () => {
-    it('returns TableBucketARN + Namespace + Name + Format (happy path)', async () => {
+    it('returns TableBucketARN + Namespace + Name + Format + Tags (happy path)', async () => {
       mockSend.mockResolvedValueOnce({
         name: 'my-table',
         format: 'ICEBERG',
         namespace: ['my-namespace'],
+      });
+      // #609 backfill — readback adds a second ListTagsForResource call.
+      mockSend.mockResolvedValueOnce({
+        tags: { env: 'cdkd-integ', team: 'platform' },
       });
 
       const physicalId = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket|my-namespace|my-table';
@@ -119,6 +124,7 @@ describe('S3TablesProvider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetTableCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
       expect(result).toEqual({
         TableBucketARN: 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
         Namespace: 'my-namespace',
@@ -127,8 +133,44 @@ describe('S3TablesProvider.readCurrentState', () => {
         // the AWS-API-named `name` so drift comparison works for
         // templates that supply the CFn-canonical `TableName` form.
         TableName: 'my-table',
+        // Same dual-emit pattern: CFn-canonical `OpenTableFormat` +
+        // legacy `Format` alias both present (#609 backfill).
+        OpenTableFormat: 'ICEBERG',
         Format: 'ICEBERG',
+        Tags: [
+          { Key: 'env', Value: 'cdkd-integ' },
+          { Key: 'team', Value: 'platform' },
+        ],
       });
+    });
+
+    it('emits Tags: [] when ListTagsForResource returns no tags', async () => {
+      mockSend.mockResolvedValueOnce({ name: 't', format: 'ICEBERG' });
+      mockSend.mockResolvedValueOnce({ tags: {} });
+
+      const result = await provider.readCurrentState(
+        'arn:aws:s3tables:us-east-1:123:bucket/b|n|t',
+        'Logical',
+        'AWS::S3Tables::Table'
+      );
+
+      expect(result).toMatchObject({ Tags: [] });
+    });
+
+    it('emits Tags: [] (best-effort) when ListTagsForResource itself fails', async () => {
+      mockSend.mockResolvedValueOnce({ name: 't', format: 'ICEBERG' });
+      mockSend.mockRejectedValueOnce(new Error('throttled'));
+
+      const result = await provider.readCurrentState(
+        'arn:aws:s3tables:us-east-1:123:bucket/b|n|t',
+        'Logical',
+        'AWS::S3Tables::Table'
+      );
+
+      // Best-effort fallback: drift comparator only descends into
+      // state-side keys, so an empty array doesn't surface noise on a
+      // pre-PR state file that had no Tags entry.
+      expect(result).toMatchObject({ Tags: [] });
     });
 
     it('returns undefined when table gone', async () => {
