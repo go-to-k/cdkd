@@ -626,6 +626,11 @@
       "scenarios": []
     },
     {
+      "name": "local-start-alb-from-state",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-api",
       "annotated": true,
       "scenarios": [
@@ -1202,6 +1207,7 @@
     "export-nested-stack",
     "iam-managed-policy",
     "local-start-alb",
+    "local-start-alb-from-state",
     "nested-stack",
     "nested-stack-deep",
     "recreate-mixed-direction",

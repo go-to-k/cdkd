@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-local-start-alb-from-state",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-AWS integ for cdkd local start-alb --from-state — exercises the engine's S3 state-source dispatch + Fn::GetAtt intrinsic substitution + multi-target boot end-to-end against a deployed VPC + ALB + 2 ECS Fargate services",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.257.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

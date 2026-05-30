@@ -730,6 +730,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -776,6 +777,10 @@
         ],
         "infra-security": [
           "l2"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
         ],
         "multi-stack-deps": [
           "l2"
@@ -813,6 +818,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -858,6 +864,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "local-start-alb-from-state": [
           "l2"
         ],
         "multi-stack-deps": [
@@ -919,6 +928,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -965,6 +975,10 @@
         ],
         "infra-security": [
           "l2"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
         ],
         "multi-stack-deps": [
           "l2"
@@ -1002,6 +1016,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -1049,6 +1064,10 @@
         "infra-security": [
           "l2"
         ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
+        ],
         "multi-stack-deps": [
           "l2"
         ],
@@ -1082,6 +1101,7 @@
         "ec2-instance",
         "ec2-vpc",
         "efs-standalone",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -1117,6 +1137,10 @@
           "l2"
         ],
         "efs-standalone": [
+          "literal"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
           "literal"
         ],
         "multi-stack-deps": [
@@ -1163,6 +1187,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -1209,6 +1234,10 @@
         ],
         "infra-security": [
           "l2"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
         ],
         "multi-stack-deps": [
           "l2"
@@ -1257,6 +1286,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -1304,6 +1334,10 @@
         "infra-security": [
           "l2"
         ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
+        ],
         "multi-stack-deps": [
           "l2"
         ],
@@ -1340,6 +1374,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -1388,6 +1423,10 @@
         "infra-security": [
           "l2"
         ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
+        ],
         "multi-stack-deps": [
           "l2"
         ],
@@ -1424,6 +1463,7 @@
         "efs-lambda",
         "efs-standalone",
         "infra-security",
+        "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
         "remove-protection",
@@ -1470,6 +1510,10 @@
         ],
         "infra-security": [
           "l2"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
         ],
         "multi-stack-deps": [
           "l2"
@@ -1520,6 +1564,7 @@
         "ecs-fargate",
         "local-ecs-service-connect",
         "local-start-alb",
+        "local-start-alb-from-state",
         "local-start-service"
       ],
       "signals": {
@@ -1536,6 +1581,10 @@
           "l1",
           "literal"
         ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
+        ],
         "local-start-service": [
           "l1"
         ]
@@ -1547,6 +1596,7 @@
         "ecs-fargate",
         "local-ecs-service-connect",
         "local-start-alb",
+        "local-start-alb-from-state",
         "local-start-service"
       ],
       "signals": {
@@ -1559,6 +1609,10 @@
         ],
         "local-start-alb": [
           "l1",
+          "literal"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
           "literal"
         ],
         "local-start-service": [
@@ -1577,6 +1631,7 @@
         "local-run-task-from-state",
         "local-run-task-multi-container",
         "local-start-alb",
+        "local-start-alb-from-state",
         "local-start-service"
       ],
       "signals": {
@@ -1603,6 +1658,10 @@
         ],
         "local-start-alb": [
           "l1",
+          "literal"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
           "literal"
         ],
         "local-start-service": [
@@ -1697,7 +1756,8 @@
       "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
       "integs": [
         "alb",
-        "local-start-alb"
+        "local-start-alb",
+        "local-start-alb-from-state"
       ],
       "signals": {
         "alb": [
@@ -1705,6 +1765,9 @@
         ],
         "local-start-alb": [
           "l1",
+          "literal"
+        ],
+        "local-start-alb-from-state": [
           "literal"
         ]
       }
@@ -1716,6 +1779,7 @@
         "alb-advanced",
         "drift-revert-vpc",
         "local-start-alb",
+        "local-start-alb-from-state",
         "remove-protection"
       ],
       "signals": {
@@ -1733,6 +1797,10 @@
           "l1",
           "literal"
         ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
+        ],
         "remove-protection": [
           "l2",
           "literal"
@@ -1743,7 +1811,8 @@
       "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
       "integs": [
         "alb",
-        "local-start-alb"
+        "local-start-alb",
+        "local-start-alb-from-state"
       ],
       "signals": {
         "alb": [
@@ -1751,6 +1820,9 @@
         ],
         "local-start-alb": [
           "l1",
+          "literal"
+        ],
+        "local-start-alb-from-state": [
           "literal"
         ]
       }
@@ -1878,6 +1950,7 @@
         "local-invoke-provided",
         "local-invoke-ruby",
         "local-run-task-from-state",
+        "local-start-alb-from-state",
         "local-start-api-websocket",
         "log-pipeline",
         "macro-expansion",
@@ -1943,6 +2016,10 @@
         ],
         "local-run-task-from-state": [
           "l2"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
         ],
         "local-start-api-websocket": [
           "literal"
@@ -2365,6 +2442,7 @@
         "drift-revert",
         "ecs-fargate",
         "full-stack-demo",
+        "local-start-alb-from-state",
         "log-pipeline",
         "monitoring",
         "remove-protection",
@@ -2386,6 +2464,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
         ],
         "log-pipeline": [
           "l2"
