@@ -7,22 +7,24 @@
 # does not cover:
 #
 #   Stack CdkdCcApiOverride (item 3): deploy with
-#     `--allow-unsupported-properties AWS::Lambda::Function:RecursiveLoop`
+#     `--allow-unsupported-properties AWS::Lambda::Function:RuntimeManagementConfig`
 #     → state stamps `provisionedBy: 'sdk'`, AWS does NOT receive
-#     `RecursiveLoop` (silent drop accepted, warn-logged — stays at the
-#     `Terminate` default).
+#     `RuntimeManagementConfig` (silent drop accepted, warn-logged — stays at the
+#     `Auto` default).
 #
 #   Stack CdkdCcApiTransition (item 4): two-phase deploy that exercises
 #     the mid-life SDK→CC re-route path.
-#       Phase 1: synth WITHOUT RecursiveLoop (env var unset) → deploy →
+#       Phase 1: synth WITHOUT RuntimeManagementConfig (env var unset) → deploy →
 #         state stamps `provisionedBy: 'sdk'`.
-#       Phase 2: synth WITH RecursiveLoop (env var set) → re-deploy →
+#       Phase 2: synth WITH RuntimeManagementConfig (env var set) → re-deploy →
 #         `getProviderFor` returns CC, state flips to `'cc-api'`, AWS
-#         now has `RecursiveLoop=Allow`.
+#         now has `RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate`.
 #
-# RecursiveLoop is the canonical silent-drop CC-API-fallback example as of
-# the #609 LoggingConfig backfill. Default is `Terminate`; the fixtures set
-# `Allow` so the read-back is unambiguous.
+# RuntimeManagementConfig is the canonical silent-drop CC-API-fallback example.
+# Pre-history: LoggingConfig → RecursiveLoop (both got backfilled into the SDK
+# provider); RuntimeManagementConfig is the next still-silent-drop replacement
+# trigger. Default is `Auto`; the fixtures set `FunctionUpdate` so the
+# read-back is unambiguous.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -42,14 +44,14 @@ TRANSITION_FN="cdkd-cc-api-transition-probe"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
-# Read the AWS-side RecursiveLoop setting for a function. Returns the value
-# ('Allow' / 'Terminate') or empty when the function is gone. RecursiveLoop
-# lives on its own control-plane API (get-function-recursion-config), not on
-# get-function-configuration.
-recursion_loop() {
-  aws lambda get-function-recursion-config \
+# Read the AWS-side RuntimeManagementConfig.UpdateRuntimeOn setting for a
+# function. Returns the value ('FunctionUpdate' / 'Auto') or empty when the
+# function is gone. RuntimeManagementConfig lives on its own control-plane
+# API (get-runtime-management-config), not on get-function-configuration.
+read_update_runtime_on() {
+  aws lambda get-runtime-management-config \
     --function-name "$1" --region "${REGION}" \
-    --query 'RecursiveLoop' --output text 2>/dev/null
+    --query 'UpdateRuntimeOn' --output text 2>/dev/null
 }
 
 cleanup() {
@@ -109,12 +111,12 @@ cleanup
 
 # --- Phase 1A: deploy OverrideStack with --allow-unsupported-properties ---
 #
-# Item 3: the template emits `RecursiveLoop` but the CLI flag forces the
+# Item 3: the template emits `RuntimeManagementConfig` but the CLI flag forces the
 # SDK route. Expect: state stamps `provisionedBy: 'sdk'`, AWS does NOT
-# receive the recursive-loop config (stays at the Terminate default).
+# receive the runtime-management config (stays at the Auto default).
 echo "==> Phase 1A: deploy ${OVERRIDE_STACK} with --allow-unsupported-properties (item 3 override path)"
 node "${LOCAL_DIST}" deploy "${OVERRIDE_STACK}" \
-  --allow-unsupported-properties "AWS::Lambda::Function:RecursiveLoop" \
+  --allow-unsupported-properties "AWS::Lambda::Function:RuntimeManagementConfig" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -135,21 +137,21 @@ if [ "${OVERRIDE_PROVISIONED}" != "sdk" ]; then
 fi
 echo "    OK: OverrideStack Lambda provisionedBy == 'sdk' (override forced SDK path)"
 
-# Item 3 assertion 2: AWS does NOT have RecursiveLoop=Allow — the silent
-# drop actually dropped. The SDK provider doesn't wire RecursiveLoop, so the
-# function stays at the AWS default 'Terminate'.
-OVERRIDE_RECURSIVE_LOOP=$(recursion_loop "${OVERRIDE_FN}")
-if [ "${OVERRIDE_RECURSIVE_LOOP}" = "Allow" ]; then
-  echo "FAIL: OverrideStack Lambda received RecursiveLoop='Allow' — override should have silent-dropped it (expected the 'Terminate' default)" >&2
+# Item 3 assertion 2: AWS does NOT have RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate
+# — the silent drop actually dropped. The SDK provider doesn't wire
+# RuntimeManagementConfig, so the function stays at the AWS default 'Auto'.
+OVERRIDE_UPDATE_RUNTIME_ON=$(read_update_runtime_on "${OVERRIDE_FN}")
+if [ "${OVERRIDE_UPDATE_RUNTIME_ON}" = "FunctionUpdate" ]; then
+  echo "FAIL: OverrideStack Lambda received RuntimeManagementConfig.UpdateRuntimeOn='FunctionUpdate' — override should have silent-dropped it (expected the 'Auto' default)" >&2
   exit 1
 fi
-echo "    OK: OverrideStack Lambda did NOT receive RecursiveLoop=Allow (AWS RecursiveLoop='${OVERRIDE_RECURSIVE_LOOP}' — silent drop honored)"
+echo "    OK: OverrideStack Lambda did NOT receive RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate (AWS UpdateRuntimeOn='${OVERRIDE_UPDATE_RUNTIME_ON}' — silent drop honored)"
 
-# --- Phase 1B: deploy TransitionStack baseline (NO RecursiveLoop) ----------
+# --- Phase 1B: deploy TransitionStack baseline (NO RuntimeManagementConfig) ----------
 #
-# Item 4 stage 1: template has no RecursiveLoop → SDK route → state stamps
+# Item 4 stage 1: template has no RuntimeManagementConfig → SDK route → state stamps
 # `provisionedBy: 'sdk'`.
-echo "==> Phase 1B: deploy ${TRANSITION_STACK} WITHOUT RecursiveLoop (item 4 baseline → SDK route)"
+echo "==> Phase 1B: deploy ${TRANSITION_STACK} WITHOUT RuntimeManagementConfig (item 4 baseline → SDK route)"
 unset CDKD_INTEG_USE_SILENT_DROP
 node "${LOCAL_DIST}" deploy "${TRANSITION_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -165,20 +167,20 @@ if [ "${TRANSITION_PROVISIONED_1}" != "sdk" ]; then
 fi
 echo "    OK: TransitionStack Lambda provisionedBy == 'sdk' (baseline, no silent-drop property in template)"
 
-# Item 4 baseline AWS check: RecursiveLoop should NOT be Allow yet.
-TRANSITION_RECURSIVE_LOOP_1=$(recursion_loop "${TRANSITION_FN}")
-if [ "${TRANSITION_RECURSIVE_LOOP_1}" = "Allow" ]; then
-  echo "FAIL: TransitionStack Lambda has RecursiveLoop=Allow after baseline deploy — fixture forgot to omit RecursiveLoop" >&2
+# Item 4 baseline AWS check: RuntimeManagementConfig.UpdateRuntimeOn should NOT be FunctionUpdate yet.
+TRANSITION_UPDATE_RUNTIME_ON_1=$(read_update_runtime_on "${TRANSITION_FN}")
+if [ "${TRANSITION_UPDATE_RUNTIME_ON_1}" = "FunctionUpdate" ]; then
+  echo "FAIL: TransitionStack Lambda has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate after baseline deploy — fixture forgot to omit RuntimeManagementConfig" >&2
   exit 1
 fi
-echo "    OK: TransitionStack Lambda has no RecursiveLoop=Allow on AWS yet (baseline RecursiveLoop='${TRANSITION_RECURSIVE_LOOP_1}')"
+echo "    OK: TransitionStack Lambda has no RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate on AWS yet (baseline UpdateRuntimeOn='${TRANSITION_UPDATE_RUNTIME_ON_1}')"
 
-# --- Phase 2: re-deploy TransitionStack WITH RecursiveLoop (mid-life flip) -
+# --- Phase 2: re-deploy TransitionStack WITH RuntimeManagementConfig (mid-life flip) -
 #
-# Item 4 stage 2: env var flips synth to emit RecursiveLoop → diff sees
+# Item 4 stage 2: env var flips synth to emit RuntimeManagementConfig → diff sees
 # the new property → routing returns CC → state flips from 'sdk' to
-# 'cc-api' → AWS now has RecursiveLoop=Allow.
-echo "==> Phase 2: re-deploy ${TRANSITION_STACK} WITH RecursiveLoop (item 4 mid-life SDK→CC flip)"
+# 'cc-api' → AWS now has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate.
+echo "==> Phase 2: re-deploy ${TRANSITION_STACK} WITH RuntimeManagementConfig (item 4 mid-life SDK→CC flip)"
 export CDKD_INTEG_USE_SILENT_DROP=true
 node "${LOCAL_DIST}" deploy "${TRANSITION_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -189,19 +191,19 @@ unset CDKD_INTEG_USE_SILENT_DROP
 TRANSITION_STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${TRANSITION_KEY}" - 2>/dev/null)
 TRANSITION_PROVISIONED_2=$(echo "${TRANSITION_STATE_2}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${TRANSITION_PROVISIONED_2}" != "cc-api" ]; then
-  echo "FAIL: TransitionStack Lambda has provisionedBy='${TRANSITION_PROVISIONED_2}' after RecursiveLoop added, expected 'cc-api' (mid-life SDK→CC re-route)" >&2
+  echo "FAIL: TransitionStack Lambda has provisionedBy='${TRANSITION_PROVISIONED_2}' after RuntimeManagementConfig added, expected 'cc-api' (mid-life SDK→CC re-route)" >&2
   echo "${TRANSITION_STATE_2}" | jq .
   exit 1
 fi
 echo "    OK: TransitionStack Lambda provisionedBy flipped 'sdk' → 'cc-api' (mid-life re-route fired)"
 
-# Item 4 post-flip AWS check: RecursiveLoop should now be Allow (CC forwarded it).
-TRANSITION_RECURSIVE_LOOP_2=$(recursion_loop "${TRANSITION_FN}")
-if [ "${TRANSITION_RECURSIVE_LOOP_2}" != "Allow" ]; then
-  echo "FAIL: TransitionStack Lambda has RecursiveLoop='${TRANSITION_RECURSIVE_LOOP_2}' after CC re-route, expected 'Allow' (CC should have forwarded RecursiveLoop)" >&2
+# Item 4 post-flip AWS check: RuntimeManagementConfig.UpdateRuntimeOn should now be FunctionUpdate (CC forwarded it).
+TRANSITION_UPDATE_RUNTIME_ON_2=$(read_update_runtime_on "${TRANSITION_FN}")
+if [ "${TRANSITION_UPDATE_RUNTIME_ON_2}" != "FunctionUpdate" ]; then
+  echo "FAIL: TransitionStack Lambda has RuntimeManagementConfig.UpdateRuntimeOn='${TRANSITION_UPDATE_RUNTIME_ON_2}' after CC re-route, expected 'FunctionUpdate' (CC should have forwarded RuntimeManagementConfig)" >&2
   exit 1
 fi
-echo "    OK: TransitionStack Lambda RecursiveLoop reached AWS via CC API (RecursiveLoop=Allow)"
+echo "    OK: TransitionStack Lambda RuntimeManagementConfig reached AWS via CC API (UpdateRuntimeOn=FunctionUpdate)"
 
 # --- Phase 3: destroy both stacks -------------------------------------
 echo "==> Phase 3: destroy both stacks"

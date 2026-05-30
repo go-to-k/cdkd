@@ -151,9 +151,10 @@ describe('LambdaFunctionProvider', () => {
 
   // Issue #609: backfill of native CreateFunction /
   // UpdateFunctionConfiguration config fields cdkd previously silent-dropped.
-  // LoggingConfig joined this set once the CC-API-fallback integ fixtures +
-  // coverage-derived tests were migrated to RecursiveLoop as the new canonical
-  // silent-drop trigger (so backfilling LoggingConfig no longer flips them).
+  // Trigger lineage for the CC-API-fallback integ fixtures + coverage-derived
+  // tests: LoggingConfig (backfilled) → RecursiveLoop (backfilled next) →
+  // RuntimeManagementConfig (current canonical silent-drop trigger), so each
+  // backfill no longer flips the example fixtures.
   describe('native config properties (issue #609)', () => {
     it('passes all six native config fields to CreateFunction (KmsKeyArn -> KMSKeyArn)', async () => {
       mockLambdaSend.mockResolvedValueOnce({

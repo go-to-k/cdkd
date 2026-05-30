@@ -7,26 +7,28 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 /**
  * Integ fixture for #615 — `--recreate-via-cc-api <LogicalId>`.
  *
- * Single Lambda Function with a conditionally-emitted `RecursiveLoop`
+ * Single Lambda Function with a conditionally-emitted `RuntimeManagementConfig`
  * top-level property. The verify.sh deploys twice:
  *
  *   Phase 1 (env `CDKD_INTEG_USE_SILENT_DROP` unset): template
- *   omits `RecursiveLoop` → fresh deploy → `provisionedBy: 'sdk'`,
- *   AWS has the default RecursiveLoop=Terminate.
+ *   omits `RuntimeManagementConfig` → fresh deploy → `provisionedBy: 'sdk'`,
+ *   AWS has the default RuntimeManagementConfig.UpdateRuntimeOn=Auto.
  *
  *   Phase 2 (env=true + `--recreate-via-cc-api RecreateProbe`):
- *   template now emits `RecursiveLoop` AND the user opts into the
+ *   template now emits `RuntimeManagementConfig` AND the user opts into the
  *   recreate flag → cdkd detects the recreate target, forces the
  *   replacement code path even though the property change isn't
- *   `requiresReplacement` on its own (`RecursiveLoop` is otherwise
+ *   `requiresReplacement` on its own (`RuntimeManagementConfig` is otherwise
  *   in-place updatable on SDK but SDK doesn't wire it). The old
  *   physical id is destroyed via SDK; the new physical id is created
  *   via Cloud Control API and stamps `provisionedBy: 'cc-api'`. AWS
- *   now has RecursiveLoop=Allow.
+ *   now has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate.
  *
- * `RecursiveLoop` is the canonical silent-drop demo property as of the
- * #609 LoggingConfig backfill (cc-api-fallback / cc-api-fallback-transitions
- * both use it too). The function name is stable across recreates (the
+ * `RuntimeManagementConfig` is the canonical silent-drop demo property
+ * (cc-api-fallback / cc-api-fallback-transitions both use it too).
+ * Pre-history: LoggingConfig → RecursiveLoop (both got backfilled into
+ * the SDK provider); RuntimeManagementConfig is the next still-silent-drop
+ * replacement trigger. The function name is stable across recreates (the
  * destroy+create reuses the user-supplied name, so the physical-id is
  * identical post-recreate); the new Lambda instance is witnessed by
  * `LastModified` updating, not by the physical-id changing.
@@ -58,10 +60,12 @@ export class RecreateViaCcApiStack extends cdk.Stack {
           '    return {"statusCode": 200, "body": "cdkd #615 probe"}',
         ].join('\n'),
       },
-      // Phase 1: no RecursiveLoop → SDK route, `provisionedBy: 'sdk'`.
-      // Phase 2: RecursiveLoop added → with --recreate-via-cc-api the
+      // Phase 1: no RuntimeManagementConfig → SDK route, `provisionedBy: 'sdk'`.
+      // Phase 2: RuntimeManagementConfig added → with --recreate-via-cc-api the
       // resource is destroy+recreated via CC API.
-      ...(includeSilentDrop ? { recursiveLoop: 'Allow' } : {}),
+      ...(includeSilentDrop
+        ? { runtimeManagementConfig: { updateRuntimeOn: 'FunctionUpdate' } }
+        : {}),
     });
 
     fn.addDependency(role.node.defaultChild as cdk.CfnElement);

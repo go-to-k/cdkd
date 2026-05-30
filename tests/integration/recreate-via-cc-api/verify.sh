@@ -2,13 +2,13 @@
 # verify.sh — cdkd #615 --recreate-via-cc-api integ test
 #
 # Mid-life SDK→CC migration: a Lambda Function deployed without the
-# silent-drop `RecursiveLoop` (= state stamps `provisionedBy: 'sdk'`)
+# silent-drop `RuntimeManagementConfig` (= state stamps `provisionedBy: 'sdk'`)
 # is destroyed + recreated via Cloud Control API when the next deploy
-# adds `RecursiveLoop` AND passes `--recreate-via-cc-api`. The
+# adds `RuntimeManagementConfig` AND passes `--recreate-via-cc-api`. The
 # assertions confirm:
 #
 #   - state `provisionedBy` flips 'sdk' → 'cc-api'
-#   - the Lambda's `RecursiveLoop` reaches AWS via CC
+#   - the Lambda's `RuntimeManagementConfig` reaches AWS via CC
 #   - the physical id changed (recreate produced a NEW Lambda function;
 #     the old one was destroyed)
 #   - destroy via CC API delete path is clean
@@ -78,8 +78,8 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# --- Phase 1: deploy WITHOUT RecursiveLoop (lands SDK) -----------------
-echo "==> Phase 1: deploy ${STACK} WITHOUT RecursiveLoop (baseline → SDK route)"
+# --- Phase 1: deploy WITHOUT RuntimeManagementConfig (lands SDK) -----------------
+echo "==> Phase 1: deploy ${STACK} WITHOUT RuntimeManagementConfig (baseline → SDK route)"
 unset CDKD_INTEG_USE_SILENT_DROP
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -105,16 +105,16 @@ CODE_SHA_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" 
 LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
 echo "    Baseline CodeSha256: ${CODE_SHA_1}  LastModified: ${LAST_MOD_1}"
 
-# Baseline AWS check: RecursiveLoop should NOT be Allow yet (default Terminate).
-RL_1=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
-if [ "${RL_1}" = "Allow" ]; then
-  echo "FAIL: baseline Lambda has RecursiveLoop=Allow — fixture forgot to omit RecursiveLoop" >&2
+# Baseline AWS check: UpdateRuntimeOn should NOT be FunctionUpdate yet (default Auto).
+RL_1=$(aws lambda get-runtime-management-config --function-name "${FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
+if [ "${RL_1}" = "FunctionUpdate" ]; then
+  echo "FAIL: baseline Lambda has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate — fixture forgot to omit RuntimeManagementConfig" >&2
   exit 1
 fi
-echo "    OK: baseline Lambda has no RecursiveLoop=Allow on AWS yet (RecursiveLoop='${RL_1}')"
+echo "    OK: baseline Lambda has no RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate on AWS yet (UpdateRuntimeOn='${RL_1}')"
 
-# --- Phase 2: re-deploy WITH RecursiveLoop + --recreate-via-cc-api -----
-echo "==> Phase 2: re-deploy ${STACK} WITH RecursiveLoop + --recreate-via-cc-api (destroy+recreate via CC)"
+# --- Phase 2: re-deploy WITH RuntimeManagementConfig + --recreate-via-cc-api -----
+echo "==> Phase 2: re-deploy ${STACK} WITH RuntimeManagementConfig + --recreate-via-cc-api (destroy+recreate via CC)"
 export CDKD_INTEG_USE_SILENT_DROP=true
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -148,13 +148,13 @@ if [ "${LAST_MOD_2}" = "${LAST_MOD_1}" ]; then
 fi
 echo "    OK: LastModified updated across recreate (old destroyed, new created)"
 
-# Post-recreate AWS check: RecursiveLoop should now be Allow via CC.
-RL_2=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
-if [ "${RL_2}" != "Allow" ]; then
-  echo "FAIL: post-recreate Lambda has RecursiveLoop='${RL_2}', expected 'Allow' (CC should have forwarded RecursiveLoop)" >&2
+# Post-recreate AWS check: UpdateRuntimeOn should now be FunctionUpdate via CC.
+RL_2=$(aws lambda get-runtime-management-config --function-name "${FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
+if [ "${RL_2}" != "FunctionUpdate" ]; then
+  echo "FAIL: post-recreate Lambda has RuntimeManagementConfig.UpdateRuntimeOn='${RL_2}', expected 'FunctionUpdate' (CC should have forwarded RuntimeManagementConfig)" >&2
   exit 1
 fi
-echo "    OK: post-recreate RecursiveLoop reached AWS via CC (RecursiveLoop=Allow)"
+echo "    OK: post-recreate RuntimeManagementConfig reached AWS via CC (UpdateRuntimeOn=FunctionUpdate)"
 
 # --- Phase 3: S3 probe pre-flight refusal (#648) -----------------------
 echo "==> Phase 3: pre-flight S3 ListObjectsV2 probe — non-empty bucket must be refused"

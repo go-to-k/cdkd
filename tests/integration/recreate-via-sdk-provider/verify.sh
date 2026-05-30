@@ -2,13 +2,13 @@
 # verify.sh — cdkd #651 --recreate-via-sdk-provider integ test
 #
 # Mid-life CC→SDK migration: a Lambda Function deployed WITH
-# `RecursiveLoop` (= auto-routes via Cloud Control on the fresh deploy,
+# `RuntimeManagementConfig` (= auto-routes via Cloud Control on the fresh deploy,
 # state stamps `provisionedBy: 'cc-api'`) is destroyed + recreated via
-# cdkd's SDK Provider when the next deploy drops `RecursiveLoop` AND
+# cdkd's SDK Provider when the next deploy drops `RuntimeManagementConfig` AND
 # passes `--recreate-via-sdk-provider`. The assertions confirm:
 #
 #   - state `provisionedBy` flips 'cc-api' → 'sdk'
-#   - the Lambda's `RecursiveLoop` is back at the Terminate default on AWS
+#   - the Lambda's `RuntimeManagementConfig.UpdateRuntimeOn` is back at the Auto default on AWS
 #     (SDK Provider doesn't wire it, and the template no longer carries it)
 #   - LastModified changed (the recreate produced a new Lambda instance;
 #     the user-supplied functionName makes the physical id stable, so
@@ -69,8 +69,8 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# --- Phase 1: deploy WITH RecursiveLoop (lands CC via auto-route) ------
-echo "==> Phase 1: deploy ${STACK} WITH RecursiveLoop (baseline -> auto-route to CC)"
+# --- Phase 1: deploy WITH RuntimeManagementConfig (lands CC via auto-route) ------
+echo "==> Phase 1: deploy ${STACK} WITH RuntimeManagementConfig (baseline -> auto-route to CC)"
 export CDKD_INTEG_USE_SILENT_DROP=true
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -81,7 +81,7 @@ unset CDKD_INTEG_USE_SILENT_DROP
 STATE_1=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 PROVISIONED_1=$(echo "${STATE_1}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
 if [ "${PROVISIONED_1}" != "cc-api" ]; then
-  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api' (RecursiveLoop auto-route should land CC)" >&2
+  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api' (RuntimeManagementConfig auto-route should land CC)" >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi
@@ -90,16 +90,16 @@ echo "    OK: baseline Lambda provisionedBy == 'cc-api'"
 LAST_MOD_1=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text 2>/dev/null)
 echo "    Baseline LastModified: ${LAST_MOD_1}"
 
-# Baseline AWS check: RecursiveLoop should be Allow (CC route forwarded it).
-RL_1=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
-if [ "${RL_1}" != "Allow" ]; then
-  echo "FAIL: baseline Lambda has RecursiveLoop='${RL_1}', expected 'Allow' (CC route should have set it)" >&2
+# Baseline AWS check: UpdateRuntimeOn should be FunctionUpdate (CC route forwarded it).
+RL_1=$(aws lambda get-runtime-management-config --function-name "${FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
+if [ "${RL_1}" != "FunctionUpdate" ]; then
+  echo "FAIL: baseline Lambda has RuntimeManagementConfig.UpdateRuntimeOn='${RL_1}', expected 'FunctionUpdate' (CC route should have set it)" >&2
   exit 1
 fi
-echo "    OK: baseline Lambda RecursiveLoop is Allow on AWS (CC route confirmed)"
+echo "    OK: baseline Lambda RuntimeManagementConfig.UpdateRuntimeOn is FunctionUpdate on AWS (CC route confirmed)"
 
-# --- Phase 2: re-deploy WITHOUT RecursiveLoop + --recreate-via-sdk-provider
-echo "==> Phase 2: re-deploy ${STACK} WITHOUT RecursiveLoop + --recreate-via-sdk-provider (destroy+recreate via SDK)"
+# --- Phase 2: re-deploy WITHOUT RuntimeManagementConfig + --recreate-via-sdk-provider
+echo "==> Phase 2: re-deploy ${STACK} WITHOUT RuntimeManagementConfig + --recreate-via-sdk-provider (destroy+recreate via SDK)"
 unset CDKD_INTEG_USE_SILENT_DROP
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -124,15 +124,15 @@ if [ "${LAST_MOD_2}" = "${LAST_MOD_1}" ]; then
 fi
 echo "    OK: LastModified updated across recreate (old destroyed, new created)"
 
-# Post-recreate AWS check: RecursiveLoop should be back at the Terminate
+# Post-recreate AWS check: UpdateRuntimeOn should be back at the Auto
 # default (the template no longer carries it AND the SDK provider doesn't
 # wire it anyway).
-RL_2=$(aws lambda get-function-recursion-config --function-name "${FN_NAME}" --region "${REGION}" --query 'RecursiveLoop' --output text 2>/dev/null)
-if [ "${RL_2}" = "Allow" ]; then
-  echo "FAIL: post-recreate Lambda still has RecursiveLoop='Allow' on AWS — the SDK recreate should not have wired RecursiveLoop" >&2
+RL_2=$(aws lambda get-runtime-management-config --function-name "${FN_NAME}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text 2>/dev/null)
+if [ "${RL_2}" = "FunctionUpdate" ]; then
+  echo "FAIL: post-recreate Lambda still has RuntimeManagementConfig.UpdateRuntimeOn='FunctionUpdate' on AWS — the SDK recreate should not have wired RuntimeManagementConfig" >&2
   exit 1
 fi
-echo "    OK: post-recreate RecursiveLoop is back at the default (RecursiveLoop='${RL_2}' — SDK provider didn't wire it)"
+echo "    OK: post-recreate RuntimeManagementConfig.UpdateRuntimeOn is back at the default (UpdateRuntimeOn='${RL_2}' — SDK provider didn't wire it)"
 
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy via SDK delete path"
