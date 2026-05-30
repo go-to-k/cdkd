@@ -2161,8 +2161,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::S3Vectors::VectorBucket',
     {
-      handled: new Set<string>(['EncryptionConfiguration', 'VectorBucketName']),
-      silentDrop: new Map<string, string>([['Tags', 'not yet implemented by cdkd']]),
+      handled: new Set<string>(['EncryptionConfiguration', 'Tags', 'VectorBucketName']),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

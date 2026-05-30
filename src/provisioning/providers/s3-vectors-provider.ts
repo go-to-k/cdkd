@@ -36,7 +36,10 @@ export class S3VectorsProvider implements ResourceProvider {
   private logger = getLogger().child('S3VectorsProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::S3Vectors::VectorBucket', new Set(['VectorBucketName', 'EncryptionConfiguration'])],
+    [
+      'AWS::S3Vectors::VectorBucket',
+      new Set(['VectorBucketName', 'EncryptionConfiguration', 'Tags']),
+    ],
   ]);
 
   private getClient(): S3VectorsClient {
@@ -128,6 +131,18 @@ export class S3VectorsProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
 
+    // CFn shape: `Tags: [{ Key, Value }]`. SDK shape:
+    // `tags?: Record<string, string>`. Convert + omit-when-absent (an
+    // empty array would force a no-op CloudTrail event per Tag).
+    const tagsArray = properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
+    const tags =
+      tagsArray && tagsArray.length > 0
+        ? tagsArray.reduce<Record<string, string>>((acc, t) => {
+            if (t.Key !== undefined && t.Value !== undefined) acc[t.Key] = t.Value;
+            return acc;
+          }, {})
+        : undefined;
+
     try {
       const result = await this.getClient().send(
         new CreateVectorBucketCommand({
@@ -138,6 +153,7 @@ export class S3VectorsProvider implements ResourceProvider {
                 kmsKeyArn: encryptionConfiguration['KMSKeyArn'] as string | undefined,
               }
             : undefined,
+          ...(tags && Object.keys(tags).length > 0 ? { tags } : {}),
         })
       );
 
@@ -290,6 +306,28 @@ export class S3VectorsProvider implements ResourceProvider {
         enc['KMSKeyArn'] = bucket.encryptionConfiguration.kmsKeyArn;
       }
       if (Object.keys(enc).length > 0) result['EncryptionConfiguration'] = enc;
+    }
+    // `Tags`: read back via `ListTagsForResource(resourceArn=vectorBucketArn)`
+    // and convert SDK `Record<string, string>` → CFn `[{ Key, Value }]`.
+    // Emit-when-present (an empty `[]` placeholder is fine — bucket
+    // creation rejects tags after-the-fact via this resource type, so
+    // the only mutation path is the next deploy's re-create; no drift
+    // false-positive risk vs the typical no-tags bucket).
+    if (bucket?.vectorBucketArn) {
+      try {
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ resourceArn: bucket.vectorBucketArn })
+        );
+        const sdkTags = tagsResp.tags ?? {};
+        result['Tags'] = Object.entries(sdkTags).map(([Key, Value]) => ({ Key, Value }));
+      } catch (err) {
+        this.logger.debug(
+          `S3Vectors ListTagsForResource(${bucket.vectorBucketArn}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        result['Tags'] = [];
+      }
+    } else {
+      result['Tags'] = [];
     }
     return result;
   }
