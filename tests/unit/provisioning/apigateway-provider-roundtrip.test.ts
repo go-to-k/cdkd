@@ -4,6 +4,7 @@ import {
   GetAccountCommand,
   UpdateAccountCommand,
   PutMethodCommand,
+  CreateAuthorizerCommand,
   UpdateAuthorizerCommand,
   UpdateMethodCommand,
 } from '@aws-sdk/client-api-gateway';
@@ -538,6 +539,114 @@ describe('ApiGatewayProvider read-update round-trip', () => {
       )
     ).rejects.toThrow(/RestApiId is required/);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Authorizer #609 backfill: AuthType ────────────────────────────
+
+  it('Authorizer create() forwards AuthType to CreateAuthorizerCommand', async () => {
+    mockSend.mockResolvedValueOnce({ id: 'auth-1' });
+
+    await provider.create('AuthLogical', 'AWS::ApiGateway::Authorizer', {
+      RestApiId: 'api-1',
+      Name: 'Auth',
+      Type: 'REQUEST',
+      AuthType: 'custom',
+      AuthorizerUri:
+        'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123:function:fn/invocations',
+      IdentitySource: 'method.request.header.Authorization',
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const call = mockSend.mock.calls[0]?.[0];
+    expect(call).toBeInstanceOf(CreateAuthorizerCommand);
+    expect((call as CreateAuthorizerCommand).input.authType).toBe('custom');
+  });
+
+  it('Authorizer create() omits authType from CreateAuthorizerCommand when AuthType is absent', async () => {
+    mockSend.mockResolvedValueOnce({ id: 'auth-1' });
+
+    await provider.create('AuthLogical', 'AWS::ApiGateway::Authorizer', {
+      RestApiId: 'api-1',
+      Name: 'Auth',
+      Type: 'REQUEST',
+      AuthorizerUri:
+        'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123:function:fn/invocations',
+      IdentitySource: 'method.request.header.Authorization',
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const call = mockSend.mock.calls[0]?.[0];
+    expect(call).toBeInstanceOf(CreateAuthorizerCommand);
+    expect((call as CreateAuthorizerCommand).input.authType).toBeUndefined();
+  });
+
+  it('Authorizer update() emits replace patch when AuthType changes (existing patch-op machinery)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'api-1', Name: 'Auth', Type: 'REQUEST', AuthType: 'custom' },
+      { RestApiId: 'api-1', Name: 'Auth', Type: 'REQUEST', AuthType: 'cognito_user_pools' }
+    );
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const call = mockSend.mock.calls[0]?.[0];
+    expect(call).toBeInstanceOf(UpdateAuthorizerCommand);
+    const patches = (call as UpdateAuthorizerCommand).input.patchOperations as Array<{
+      op: string;
+      path: string;
+      value: string;
+    }>;
+    expect(patches).toContainEqual({ op: 'replace', path: '/authType', value: 'custom' });
+  });
+
+  it('Authorizer update() AuthType removal (prev set, new absent) emits clear-patch via empty string', async () => {
+    // Existing primitiveFields loop: `newVal !== undefined ? stringifyValue(newVal) : ''`,
+    // so removal hits the empty-string branch — locking that load-bearing
+    // clear-patch semantic (drift --revert needs to push an empty string
+    // back to AWS to actually clear a console-side change).
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'api-1', Name: 'Auth', Type: 'REQUEST' /* AuthType removed */ },
+      { RestApiId: 'api-1', Name: 'Auth', Type: 'REQUEST', AuthType: 'custom' }
+    );
+
+    const call = mockSend.mock.calls[0]?.[0] as UpdateAuthorizerCommand;
+    const patches = call.input.patchOperations as Array<{
+      op: string;
+      path: string;
+      value: string;
+    }>;
+    expect(patches).toContainEqual({ op: 'replace', path: '/authType', value: '' });
+  });
+
+  it('Authorizer update() AuthType absent in both prev+new emits NO /authType patch', async () => {
+    // Both prev and new lack AuthType; the primitiveFields gate
+    // `newVal !== prevVal` is false, so no patch op fires. Any other
+    // sibling field that changed would still produce its own patch.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'api-1', Name: 'AuthNew', Type: 'REQUEST' },
+      { RestApiId: 'api-1', Name: 'AuthOld', Type: 'REQUEST' }
+    );
+
+    const call = mockSend.mock.calls[0]?.[0] as UpdateAuthorizerCommand;
+    const patches = call.input.patchOperations as Array<{
+      op: string;
+      path: string;
+      value: string;
+    }>;
+    expect(patches.some((p) => p.path === '/authType')).toBe(false);
   });
 
   // ─── Other immutable-update sub-resources (parity with Method) ──────

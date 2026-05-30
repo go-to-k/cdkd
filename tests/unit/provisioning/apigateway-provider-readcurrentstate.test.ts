@@ -131,6 +131,43 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     });
   });
 
+  it('Authorizer readCurrentState emits AuthType when AWS returns it (#609 backfill)', async () => {
+    mockSend.mockResolvedValueOnce({
+      id: 'auth-1',
+      name: 'my-authorizer',
+      type: 'REQUEST',
+      authType: 'custom',
+      identitySource: 'method.request.header.Authorization',
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'api-1' }
+    );
+
+    expect(result!['AuthType']).toBe('custom');
+  });
+
+  it('Authorizer readCurrentState omits AuthType when AWS does not return it', async () => {
+    mockSend.mockResolvedValueOnce({
+      id: 'auth-1',
+      name: 'my-authorizer',
+      type: 'COGNITO_USER_POOLS',
+      // No authType (user never templated it).
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'api-1' }
+    );
+
+    expect(result!).not.toHaveProperty('AuthType');
+  });
+
   it('returns Resource fields via GetResource using properties.RestApiId', async () => {
     mockSend.mockResolvedValueOnce({ id: 'res-1', parentId: 'root', pathPart: 'users' });
 

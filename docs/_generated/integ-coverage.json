@@ -131,10 +131,14 @@
       "resourceType": "AWS::ApiGateway::Authorizer",
       "integs": [
         "api-cognito",
+        "apigateway",
         "local-start-api"
       ],
       "signals": {
         "api-cognito": [
+          "l1"
+        ],
+        "apigateway": [
           "l1"
         ],
         "local-start-api": [

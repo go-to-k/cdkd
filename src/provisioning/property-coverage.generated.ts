@@ -46,6 +46,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'AuthorizerCredentials',
         'AuthorizerResultTtlInSeconds',
         'AuthorizerUri',
+        'AuthType',
         'IdentitySource',
         'IdentityValidationExpression',
         'Name',
@@ -53,7 +54,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RestApiId',
         'Type',
       ]),
-      silentDrop: new Map<string, string>([['AuthType', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [
