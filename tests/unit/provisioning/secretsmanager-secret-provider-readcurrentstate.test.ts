@@ -122,4 +122,36 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
 
     expect(result?.Tags).toEqual([]);
   });
+
+  it('emits Type when DescribeSecret returns one (managed external secret)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'partner-secret',
+      Type: 'urn:partner:example',
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:secretsmanager:us-east-1:123:secret:partner-secret-AbCdEf',
+      'SecretLogical',
+      'AWS::SecretsManager::Secret'
+    );
+
+    expect(result?.Type).toBe('urn:partner:example');
+  });
+
+  it('omits Type for ordinary secrets (DescribeSecret returns no Type)', async () => {
+    // Emit-when-present: AWS returns undefined Type for the typical
+    // (non-partner-managed) secret. A placeholder '' would force a
+    // guaranteed drift on every clean run for the common case.
+    mockSend.mockResolvedValueOnce({
+      Name: 'ordinary-secret',
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:secretsmanager:us-east-1:123:secret:ordinary-secret-AbCdEf',
+      'SecretLogical',
+      'AWS::SecretsManager::Secret'
+    );
+
+    expect(result).not.toHaveProperty('Type');
+  });
 });
