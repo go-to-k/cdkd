@@ -42,19 +42,22 @@ def handler(event, context):
 
     // Exercise the issue #609 backfill of
     // `AWS::Lambda::Permission.InvokedViaFunctionUrl`. CDK's
-    // `addFunctionUrl` does not set this flag on its auto-synthesized
-    // permission, so an explicit `CfnPermission` is added to ensure the
-    // flag reaches AWS via cdkd's provider. AWS requires
-    // `Action = 'lambda:InvokeFunction'` when `InvokedViaFunctionUrl` is
-    // set (the flag adds a Condition that restricts that action to
-    // Function URL invocations). AWS reflects the flag by injecting a
-    // `lambda:FunctionUrlAuthType` condition on the resource policy
-    // statement — the verify.sh asserts that condition is present.
+    // `addFunctionUrl` synthesizes a permission with Action
+    // `lambda:InvokeFunctionUrl` + `FunctionUrlAuthType: NONE` (NOT
+    // `InvokedViaFunctionUrl`). An explicit `CfnPermission` here
+    // exercises the OTHER AWS-supported encoding: Action
+    // `lambda:InvokeFunction` + `InvokedViaFunctionUrl: true`. The two
+    // knobs are mutually exclusive on the wire — AWS rejects
+    // `FunctionUrlAuthType` on `lambda:InvokeFunction` and rejects
+    // `InvokedViaFunctionUrl` on `lambda:InvokeFunctionUrl`. AWS
+    // reflects `InvokedViaFunctionUrl: true` by injecting a
+    // `Condition` on the resource policy statement referencing the
+    // `lambda:FunctionUrlAuthType` IAM context key — the verify.sh
+    // asserts that condition shape is present.
     new lambda.CfnPermission(this, 'ExplicitFnUrlPermission', {
       action: 'lambda:InvokeFunction',
       principal: '*',
       functionName: fn.functionName,
-      functionUrlAuthType: 'NONE',
       invokedViaFunctionUrl: true,
     });
 

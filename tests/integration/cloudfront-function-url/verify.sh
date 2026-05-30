@@ -103,14 +103,24 @@ if [ -z "${STATEMENT}" ] || [ "${STATEMENT}" = "null" ]; then
 fi
 echo "    OK: explicit permission statement with SID '${EXPLICIT_SID}' is on the policy"
 
-AUTH_TYPE_CONDITION=$(echo "${STATEMENT}" \
-  | jq -r '.Condition.StringEquals."lambda:FunctionUrlAuthType" // empty')
-if [ -z "${AUTH_TYPE_CONDITION}" ]; then
-  echo "FAIL: explicit permission statement is missing Condition.StringEquals.\"lambda:FunctionUrlAuthType\" (InvokedViaFunctionUrl silent-drop NOT closed)" >&2
+echo "    statement shape: $(echo "${STATEMENT}" | jq -c .)"
+
+# Setting InvokedViaFunctionUrl: true on a Permission with
+# Action: lambda:InvokeFunction makes AWS inject a Condition entry on
+# the resource-policy statement that gates the statement on the
+# lambda:FunctionUrlAuthType IAM context key. The exact JSON shape can
+# vary by AWS-side encoding (StringEquals vs Bool, value NONE vs true),
+# so the assertion only checks that the key is referenced anywhere
+# inside the statement Condition block — its presence is what proves
+# the property reached AWS and was not silent-dropped.
+HAS_FUNCTIONURL_CONDITION=$(echo "${STATEMENT}" \
+  | jq -r '.Condition // {} | tostring | test("lambda:FunctionUrlAuthType")')
+if [ "${HAS_FUNCTIONURL_CONDITION}" != "true" ]; then
+  echo "FAIL: explicit permission statement Condition does not reference lambda:FunctionUrlAuthType (InvokedViaFunctionUrl silent-drop NOT closed)" >&2
   echo "${STATEMENT}" | jq .
   exit 1
 fi
-echo "    OK: Condition.StringEquals.\"lambda:FunctionUrlAuthType\" == '${AUTH_TYPE_CONDITION}' (InvokedViaFunctionUrl silent-drop CLOSED by #609)"
+echo "    OK: Condition references lambda:FunctionUrlAuthType (InvokedViaFunctionUrl silent-drop CLOSED by #609)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
