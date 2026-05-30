@@ -1,3 +1,10 @@
+# [0.198.0](https://github.com/go-to-k/cdkd/compare/v0.197.0...v0.198.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill CloudFront::Distribution Tags ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#733](https://github.com/go-to-k/cdkd/issues/733)) ([78fd828](https://github.com/go-to-k/cdkd/commit/78fd8286e0ed7550844a99dee70a28fb049afadb))
+
 # [0.197.0](https://github.com/go-to-k/cdkd/compare/v0.196.0...v0.197.0) (2026-05-30)
 
 
