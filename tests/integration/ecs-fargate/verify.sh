@@ -127,6 +127,31 @@ if [ "${SCALABLE_TARGET_RID}" != "${RESOURCE_ID}" ]; then
 fi
 echo "    OK: ScalableTarget registered for ${RESOURCE_ID} (Fn::GetAtt(Service, 'Name') round-trip CLOSED)"
 
+# --- Assertion: Cluster ServiceConnectDefaults reached AWS ------------
+# The fixture's `new ecs.Cluster({ defaultCloudMapNamespace: { ... } })`
+# synthesizes an `AWS::ECS::Cluster` whose `ServiceConnectDefaults`
+# property carries the auto-created `AWS::ServiceDiscovery::PrivateDnsNamespace`'s
+# Arn. Seeing the namespace round-trip via DescribeClusters proves the
+# silent-drop is closed by the #609 backfill.
+CLUSTER_SVC_CONNECT=$(aws ecs describe-clusters \
+  --clusters "${CLUSTER_NAME}" --region "${REGION}" \
+  --query 'clusters[0].serviceConnectDefaults.namespace' --output text 2>/dev/null)
+
+if [ -z "${CLUSTER_SVC_CONNECT}" ] || [ "${CLUSTER_SVC_CONNECT}" = "None" ]; then
+  echo "FAIL: cluster.serviceConnectDefaults.namespace is empty/None, expected the CloudMap namespace ARN (silent-drop NOT closed)" >&2
+  aws ecs describe-clusters --clusters "${CLUSTER_NAME}" --region "${REGION}" | jq .
+  exit 1
+fi
+# Sanity: the namespace ARN starts with the AWS ServiceDiscovery prefix.
+case "${CLUSTER_SVC_CONNECT}" in
+  arn:*:servicediscovery:*:namespace/*) ;;
+  *)
+    echo "FAIL: cluster.serviceConnectDefaults.namespace '${CLUSTER_SVC_CONNECT}' is not a ServiceDiscovery namespace ARN" >&2
+    exit 1
+    ;;
+esac
+echo "    OK: cluster.serviceConnectDefaults.namespace == '${CLUSTER_SVC_CONNECT}' on AWS (silent-drop CLOSED by #609)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

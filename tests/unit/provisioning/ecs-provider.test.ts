@@ -95,6 +95,42 @@ describe('ECSProvider', () => {
           })
         ).rejects.toThrow('Failed to create ECS cluster MyCluster');
       });
+
+      it('forwards ServiceConnectDefaults to CreateCluster when present', async () => {
+        mockSend.mockResolvedValueOnce({
+          cluster: {
+            clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            clusterName: 'my-cluster',
+          },
+        });
+
+        await provider.create('MyCluster', 'AWS::ECS::Cluster', {
+          ClusterName: 'my-cluster',
+          ServiceConnectDefaults: { Namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo' },
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateClusterCommand');
+        expect(createCall.input.serviceConnectDefaults).toEqual({
+          namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',
+        });
+      });
+
+      it('omits ServiceConnectDefaults from CreateCluster when absent', async () => {
+        mockSend.mockResolvedValueOnce({
+          cluster: {
+            clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            clusterName: 'my-cluster',
+          },
+        });
+
+        await provider.create('MyCluster', 'AWS::ECS::Cluster', {
+          ClusterName: 'my-cluster',
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.input.serviceConnectDefaults).toBeUndefined();
+      });
     });
 
     describe('delete', () => {

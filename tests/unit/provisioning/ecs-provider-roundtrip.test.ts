@@ -197,6 +197,116 @@ describe('ECSProvider read-update round-trip', () => {
     expect(input.settings).toBeUndefined();
   });
 
+  it('Cluster: ServiceConnectDefaults change fires UpdateClusterCommand with new namespace', async () => {
+    const prev = {
+      ClusterName: CLUSTER_NAME,
+      CapacityProviders: [],
+      DefaultCapacityProviderStrategy: [],
+      ClusterSettings: [],
+      Tags: [],
+    };
+    const next = {
+      ...prev,
+      ServiceConnectDefaults: {
+        Namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',
+      },
+    };
+
+    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders
+    mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
+    mockSend.mockResolvedValueOnce({
+      clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
+    });
+
+    await provider.update('L', CLUSTER_NAME, 'AWS::ECS::Cluster', next, prev);
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateClusterCommand);
+    expect(updates).toHaveLength(1);
+    const input = updates[0]![0].input as {
+      serviceConnectDefaults?: { namespace?: string };
+      settings?: unknown;
+      configuration?: unknown;
+    };
+    expect(input.serviceConnectDefaults).toEqual({
+      namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',
+    });
+    expect(input.settings).toBeUndefined();
+    expect(input.configuration).toBeUndefined();
+  });
+
+  it('Cluster: ServiceConnectDefaults removal sends namespace="" sentinel to clear', async () => {
+    // AWS UpdateCluster docs: passing `serviceConnectDefaults: { namespace: '' }`
+    // is the sentinel that clears the cluster's default Service Connect
+    // namespace. When the user removes the property from their template,
+    // the diff must trigger that clear (otherwise "absent" is silently
+    // treated as no-op and the cluster keeps the old default).
+    const prev = {
+      ClusterName: CLUSTER_NAME,
+      CapacityProviders: [],
+      DefaultCapacityProviderStrategy: [],
+      ClusterSettings: [],
+      ServiceConnectDefaults: {
+        Namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',
+      },
+      Tags: [],
+    };
+    const next = {
+      ClusterName: CLUSTER_NAME,
+      CapacityProviders: [],
+      DefaultCapacityProviderStrategy: [],
+      ClusterSettings: [],
+      Tags: [],
+    };
+
+    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders
+    mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
+    mockSend.mockResolvedValueOnce({
+      clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
+    });
+
+    await provider.update('L', CLUSTER_NAME, 'AWS::ECS::Cluster', next, prev);
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateClusterCommand);
+    expect(updates).toHaveLength(1);
+    const input = updates[0]![0].input as { serviceConnectDefaults?: { namespace?: string } };
+    expect(input.serviceConnectDefaults).toEqual({ namespace: '' });
+  });
+
+  it('Cluster: no ServiceConnectDefaults diff → not in UpdateClusterCommand input', async () => {
+    const observed = {
+      ClusterName: CLUSTER_NAME,
+      CapacityProviders: [],
+      DefaultCapacityProviderStrategy: [],
+      ClusterSettings: [{ Name: 'containerInsights', Value: 'enabled' }],
+      ServiceConnectDefaults: {
+        Namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',
+      },
+      Tags: [],
+    };
+    const next = {
+      ...observed,
+      ClusterSettings: [{ Name: 'containerInsights', Value: 'enhanced' }],
+    };
+
+    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders
+    mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
+    mockSend.mockResolvedValueOnce({
+      clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
+    });
+
+    await provider.update('L', CLUSTER_NAME, 'AWS::ECS::Cluster', next, observed);
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateClusterCommand);
+    expect(updates).toHaveLength(1);
+    const input = updates[0]![0].input as {
+      serviceConnectDefaults?: unknown;
+      settings?: unknown;
+    };
+    // settings did change → present; serviceConnectDefaults did not change → absent.
+    expect(input.settings).toBeDefined();
+    expect(input.serviceConnectDefaults).toBeUndefined();
+  });
+
   it('Cluster: no Settings/Configuration diff → no UpdateClusterCommand', async () => {
     // No-diff no-op guard for the new code path. State == AWS for
     // ClusterSettings + Configuration must NOT issue UpdateClusterCommand

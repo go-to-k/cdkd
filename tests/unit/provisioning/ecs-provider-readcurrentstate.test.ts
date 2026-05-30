@@ -250,4 +250,50 @@ describe('ECSProvider.readCurrentState', () => {
 
     expect(result?.Tags).toEqual([]);
   });
+
+  it('emits ServiceConnectDefaults when DescribeClusters returns one', async () => {
+    mockSend.mockResolvedValueOnce({
+      clusters: [
+        {
+          clusterName: 'my-cluster',
+          serviceConnectDefaults: {
+            namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',
+          },
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-cluster',
+      'ClusterLogical',
+      'AWS::ECS::Cluster'
+    );
+
+    expect(result?.ServiceConnectDefaults).toEqual({
+      Namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',
+    });
+  });
+
+  it('omits ServiceConnectDefaults when DescribeClusters returns none (typical cluster)', async () => {
+    // Emit-when-present: a cluster that never set a default Service
+    // Connect namespace returns no `serviceConnectDefaults` from
+    // DescribeClusters. Emitting a placeholder `{ Namespace: '' }`
+    // would force guaranteed drift on every clean run for the typical
+    // case where users do not configure a cluster-wide default.
+    mockSend.mockResolvedValueOnce({
+      clusters: [
+        {
+          clusterName: 'my-cluster',
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-cluster',
+      'ClusterLogical',
+      'AWS::ECS::Cluster'
+    );
+
+    expect(result).not.toHaveProperty('ServiceConnectDefaults');
+  });
 });

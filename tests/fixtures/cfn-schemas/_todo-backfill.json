@@ -246,9 +246,6 @@
     "AWS::EC2::VPCGatewayAttachment": [
       "VpnGatewayId"
     ],
-    "AWS::ECS::Cluster": [
-      "ServiceConnectDefaults"
-    ],
     "AWS::ECS::Service": [
       "AvailabilityZoneRebalancing",
       "DeploymentController",

@@ -1037,11 +1037,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ClusterSettings',
         'Configuration',
         'DefaultCapacityProviderStrategy',
+        'ServiceConnectDefaults',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
-        ['ServiceConnectDefaults', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [
