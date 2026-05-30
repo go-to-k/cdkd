@@ -1,3 +1,10 @@
+# [0.189.0](https://github.com/go-to-k/cdkd/compare/v0.188.0...v0.189.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill ApiGateway::Authorizer AuthType ([#720](https://github.com/go-to-k/cdkd/issues/720)) ([cbc5720](https://github.com/go-to-k/cdkd/commit/cbc5720023d5a28f46f4e84792b81c636cbd3dcb))
+
 # [0.188.0](https://github.com/go-to-k/cdkd/compare/v0.187.0...v0.188.0) (2026-05-30)
 
 
