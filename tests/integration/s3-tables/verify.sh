@@ -107,12 +107,21 @@ fi
 echo "    OK: AWS::S3Tables::Table routed via SDK provider (provisionedBy=sdk)"
 
 # --- Assertion: Tags reached AWS via ListTagsForResource --------------
+# Capture stdout + stderr + exit code separately so a failed AWS CLI
+# call surfaces its actual error rather than silently dying with a
+# parse error downstream.
+set +e
 TAGS_JSON=$(aws s3tables list-tags-for-resource \
   --region "${REGION}" \
   --resource-arn "${TABLE_ARN}" \
-  --output json 2>&1)
-if [ -z "${TAGS_JSON}" ]; then
-  echo "FAIL: ListTagsForResource returned empty for ${TABLE_ARN}" >&2
+  --output json 2>/tmp/s3tables-tags-err)
+TAGS_RC=$?
+set -e
+if [ "${TAGS_RC}" -ne 0 ] || [ -z "${TAGS_JSON}" ]; then
+  echo "FAIL: ListTagsForResource exited ${TAGS_RC} for ${TABLE_ARN}" >&2
+  echo "stdout: ${TAGS_JSON}" >&2
+  echo "stderr:" >&2
+  cat /tmp/s3tables-tags-err >&2 || true
   exit 1
 fi
 

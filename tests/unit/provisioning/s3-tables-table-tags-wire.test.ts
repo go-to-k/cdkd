@@ -42,7 +42,10 @@ const BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
 const NAMESPACE = 'my-namespace';
 const TABLE_NAME = 'my-table';
 const PHYSICAL_ID = `${BUCKET_ARN}|${NAMESPACE}|${TABLE_NAME}`;
-const TABLE_ARN = `${BUCKET_ARN}/table/${NAMESPACE}/${TABLE_NAME}`;
+// AWS's real table ARN is opaque (NOT `<bucketArn>/table/<ns>/<name>`).
+// The tag-diff path calls GetTable to look it up; tests mock GetTable
+// to return this stub value.
+const TABLE_ARN = `${BUCKET_ARN}/table/OPAQUE-AWS-ID`;
 
 describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', () => {
   let provider: S3TablesProvider;
@@ -130,7 +133,10 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('add-only → TagResource (only)', async () => {
+    it('add-only → TagResource (only, with GetTable ARN lookup first)', async () => {
+      // GetTable for tableARN lookup
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
+      // TagResource
       mockSend.mockResolvedValueOnce({});
       await provider.update(
         'L',
@@ -139,14 +145,16 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         { Tags: [{ Key: 'env', Value: 'prod' }] },
         {}
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      const call = mockSend.mock.calls[0][0];
+      // 2 sends: GetTable + TagResource
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const call = mockSend.mock.calls[1][0];
       expect(call).toBeInstanceOf(TagResourceCommand);
       expect(call.input.resourceArn).toBe(TABLE_ARN);
       expect(call.input.tags).toEqual({ env: 'prod' });
     });
 
-    it('removal-only → UntagResource (only)', async () => {
+    it('removal-only → UntagResource (only, with GetTable ARN lookup first)', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
       mockSend.mockResolvedValueOnce({});
       await provider.update(
         'L',
@@ -155,14 +163,15 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         {},
         { Tags: [{ Key: 'gone', Value: 'x' }] }
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      const call = mockSend.mock.calls[0][0];
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const call = mockSend.mock.calls[1][0];
       expect(call).toBeInstanceOf(UntagResourceCommand);
       expect(call.input.resourceArn).toBe(TABLE_ARN);
       expect(call.input.tagKeys).toEqual(['gone']);
     });
 
     it('value-rewrite on same key → TagResource (only, not Untag)', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
       mockSend.mockResolvedValueOnce({});
       await provider.update(
         'L',
@@ -171,12 +180,13 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         { Tags: [{ Key: 'env', Value: 'staging' }] },
         { Tags: [{ Key: 'env', Value: 'dev' }] }
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(TagResourceCommand);
-      expect(mockSend.mock.calls[0][0].input.tags).toEqual({ env: 'staging' });
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(TagResourceCommand);
+      expect(mockSend.mock.calls[1][0].input.tags).toEqual({ env: 'staging' });
     });
 
     it('mixed adds + removes → Untag THEN Tag in that order (rename safety)', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN }); // GetTable
       mockSend.mockResolvedValueOnce({}); // Untag
       mockSend.mockResolvedValueOnce({}); // Tag
 
@@ -188,15 +198,19 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
         { Tags: [{ Key: 'env', Value: 'dev' }, { Key: 'owner', Value: 'alice' }] }
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(2);
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(UntagResourceCommand);
-      expect(mockSend.mock.calls[0][0].input.tagKeys).toEqual(['owner']);
-      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(TagResourceCommand);
+      // 3 sends: GetTable + Untag + Tag
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(UntagResourceCommand);
+      expect(mockSend.mock.calls[1][0].input.tagKeys).toEqual(['owner']);
+      expect(mockSend.mock.calls[2][0]).toBeInstanceOf(TagResourceCommand);
       // env value-rewrite + team add — owner is in the Untag pass only.
-      expect(mockSend.mock.calls[1][0].input.tags).toEqual({ env: 'prod', team: 'platform' });
+      expect(mockSend.mock.calls[2][0].input.tags).toEqual({ env: 'prod', team: 'platform' });
     });
 
     it('tag-side AWS failure is best-effort — does NOT throw (deploy progresses)', async () => {
+      // GetTable succeeds, TagResource fails — the whole update() still
+      // resolves (warn-log only, no throw).
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
       mockSend.mockRejectedValueOnce(new Error('throttled'));
 
       // Must not throw — the deploy engine's outer retry would otherwise

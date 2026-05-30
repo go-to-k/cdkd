@@ -110,6 +110,10 @@ describe('S3TablesProvider.readCurrentState', () => {
         name: 'my-table',
         format: 'ICEBERG',
         namespace: ['my-namespace'],
+        // The REAL AWS-issued table ARN. Readback uses this directly for
+        // the follow-up ListTagsForResource — no derivation, no second
+        // GetTable hop.
+        tableARN: 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket/table/OPAQUE-AWS-ID',
       });
       // #609 backfill — readback adds a second ListTagsForResource call.
       mockSend.mockResolvedValueOnce({
@@ -145,7 +149,11 @@ describe('S3TablesProvider.readCurrentState', () => {
     });
 
     it('emits Tags: [] when ListTagsForResource returns no tags', async () => {
-      mockSend.mockResolvedValueOnce({ name: 't', format: 'ICEBERG' });
+      mockSend.mockResolvedValueOnce({
+        name: 't',
+        format: 'ICEBERG',
+        tableARN: 'arn:aws:s3tables:us-east-1:123:bucket/b/table/OPAQUE',
+      });
       mockSend.mockResolvedValueOnce({ tags: {} });
 
       const result = await provider.readCurrentState(
@@ -158,7 +166,13 @@ describe('S3TablesProvider.readCurrentState', () => {
     });
 
     it('emits Tags: [] (best-effort) when ListTagsForResource itself fails', async () => {
-      mockSend.mockResolvedValueOnce({ name: 't', format: 'ICEBERG' });
+      // tableARN MUST be present so the second AWS call (ListTagsForResource)
+      // actually fires — without it readback short-circuits to Tags: [].
+      mockSend.mockResolvedValueOnce({
+        name: 't',
+        format: 'ICEBERG',
+        tableARN: 'arn:aws:s3tables:us-east-1:123:bucket/b/table/OPAQUE',
+      });
       mockSend.mockRejectedValueOnce(new Error('throttled'));
 
       const result = await provider.readCurrentState(

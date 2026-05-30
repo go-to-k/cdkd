@@ -481,7 +481,7 @@ export class S3TablesProvider implements ResourceProvider {
     const tags = this.cfnTagsToSdkMap(properties['Tags']);
 
     try {
-      await this.getClient().send(
+      const response = await this.getClient().send(
         new CreateTableCommand({
           tableBucketARN,
           namespace,
@@ -492,12 +492,20 @@ export class S3TablesProvider implements ResourceProvider {
       );
 
       const physicalId = `${tableBucketARN}|${namespace}|${name}`;
+      // Capture the REAL table ARN AWS returns — its actual format is
+      // NOT inferrable from the compound parts (we tried; AWS rejected
+      // `<bucketArn>/table/<ns>/<name>` with BadRequestException), so
+      // we store it as an attribute so the resolver can return it for
+      // `Fn::GetAtt: [Table, TableARN]` without a follow-up GetTable.
+      const tableARN = response.tableARN ?? '';
 
       this.logger.debug(`Successfully created S3 Tables Table ${logicalId}: ${physicalId}`);
 
       return {
         physicalId,
-        attributes: {},
+        attributes: {
+          TableARN: tableARN,
+        },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -622,14 +630,15 @@ export class S3TablesProvider implements ResourceProvider {
       result['OpenTableFormat'] = resp.format;
       result['Format'] = resp.format;
     }
-    // Tags: best-effort second call. ListTagsForResource takes the table ARN
-    // (not the compound physical id); derive it from the parts. Emit Tags: []
-    // when AWS returns no tags or when the read itself fails (matches the
-    // S3Vectors / CloudFront patterns; the drift comparator only descends
-    // into state-side keys, so an empty array does not surface noise on a
+    // Tags: best-effort second call. ListTagsForResource takes the REAL
+    // table ARN AWS returned at create time — surfaced by `GetTable`'s
+    // `tableARN` field (the SAME response we just used to verify the
+    // table exists). Emit Tags: [] when AWS returned no tableARN, no
+    // tags, or when the read itself fails (matches the S3Vectors /
+    // CloudFront patterns; the drift comparator only descends into
+    // state-side keys, so an empty array does not surface noise on a
     // pre-PR state file that had no Tags entry).
-    const tableArn = this.deriveTableArn(tableBucketARN, namespace, name);
-    result['Tags'] = await this.readTagsBestEffort(tableArn);
+    result['Tags'] = resp.tableARN ? await this.readTagsBestEffort(resp.tableARN) : [];
     return result;
   }
 
@@ -888,16 +897,28 @@ export class S3TablesProvider implements ResourceProvider {
   }
 
   /**
-   * Derive a table's full ARN from its compound physical id parts.
-   * S3Tables' `TagResource` / `ListTagsForResource` / `UntagResource`
-   * APIs accept the table ARN (`<bucketArn>/table/<namespace>/<name>`),
-   * NOT cdkd's compound `<bucketArn>|<namespace>|<name>` physical id —
-   * derive it on demand so the existing physicalId encoding (committed
-   * in v0.18.0; changing it would require a state migration) stays
-   * intact.
+   * Look up a table's real AWS ARN given its cdkd-compound physical
+   * id parts. The real ARN is opaque (NOT `<bucketArn>/table/<ns>/<name>`
+   * — that shape returns BadRequestException) and only AWS knows it,
+   * so we call `GetTable` and pull `tableARN` from the response. Used
+   * by the tag-diff path in update() and the readback's tag-fetch leg.
+   * Returns null if the table is gone (NotFoundException → caller can
+   * skip the tag op gracefully).
    */
-  private deriveTableArn(tableBucketARN: string, namespace: string, name: string): string {
-    return `${tableBucketARN}/table/${namespace}/${name}`;
+  private async lookupTableArn(
+    tableBucketARN: string,
+    namespace: string,
+    name: string
+  ): Promise<string | null> {
+    try {
+      const resp = await this.getClient().send(
+        new GetTableCommand({ tableBucketARN, namespace, name })
+      );
+      return resp.tableARN ?? null;
+    } catch (err) {
+      if (err instanceof NotFoundException) return null;
+      throw err;
+    }
   }
 
   /**
@@ -967,7 +988,16 @@ export class S3TablesProvider implements ResourceProvider {
 
     if (removedKeys.length === 0 && Object.keys(upserts).length === 0) return;
 
-    const resourceArn = this.deriveTableArn(tableBucketARN, namespace, name);
+    // Tag APIs need the REAL table ARN (not cdkd's compound physical id
+    // and not a guessed derivation from the parts — AWS rejects every
+    // form except its own). Look it up via GetTable.
+    const resourceArn = await this.lookupTableArn(tableBucketARN, namespace, name);
+    if (!resourceArn) {
+      this.logger.warn(
+        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — skipping tag-diff (table gone? state out-of-sync?)`
+      );
+      return;
+    }
 
     if (removedKeys.length > 0) {
       try {

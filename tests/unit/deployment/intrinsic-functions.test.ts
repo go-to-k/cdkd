@@ -1610,8 +1610,11 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
     });
   });
 
-  describe('AWS::S3Tables::Table TableARN attribute (constructAttribute fallback)', () => {
-    const mkContext = (physicalId: string): ResolverContext => {
+  describe('AWS::S3Tables::Table TableARN attribute (attributes lookup wins)', () => {
+    const mkContext = (
+      physicalId: string,
+      attributes: Record<string, unknown> = {}
+    ): ResolverContext => {
       const template: CloudFormationTemplate = {
         Resources: { Tbl: { Type: 'AWS::S3Tables::Table', Properties: {} } },
       };
@@ -1622,22 +1625,40 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
             physicalId,
             resourceType: 'AWS::S3Tables::Table',
             properties: {},
-            attributes: {},
+            attributes,
             dependencies: [],
           },
         },
       };
     };
 
-    it('reshapes cdkd-compound physicalId into the real table ARN', async () => {
-      // cdkd's compound physical id (committed in v0.18.0) joins parts
-      // with `|`; the canonical AWS table ARN uses `/table/...`.
+    it('returns attributes.TableARN populated by the provider at create time', async () => {
+      // Provider's createTable captures the REAL AWS-issued tableARN into
+      // attributes; the resolver's flat-key lookup hits it before
+      // constructAttribute fires (the real AWS ARN shape is opaque and
+      // CANNOT be derived from the compound physicalId — AWS empirically
+      // rejects `<bucketArn>/table/<ns>/<name>` with BadRequestException).
       const compound = 'arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket|my-ns|my-tbl';
+      const realArn = 'arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket/table/UNKNOWN-OPAQUE-ID';
+      const result = await resolver.resolve(
+        { 'Fn::GetAtt': ['Tbl', 'TableARN'] },
+        mkContext(compound, { TableARN: realArn })
+      );
+      expect(result).toBe(realArn);
+    });
+
+    it('falls back to physicalId when attributes lacks TableARN (pre-PR state files)', async () => {
+      // Defensive: a state file written before this PR has no
+      // attributes.TableARN; constructAttribute then falls through to
+      // physicalId (the compound form). Downstream tag-API consumers will
+      // surface a clear error, but the resolver itself does not crash —
+      // and a fresh deploy on the same template repopulates the attribute.
+      const compound = 'arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket|ns|tbl';
       const result = await resolver.resolve(
         { 'Fn::GetAtt': ['Tbl', 'TableARN'] },
         mkContext(compound)
       );
-      expect(result).toBe('arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket/table/my-ns/my-tbl');
+      expect(result).toBe(compound);
     });
 
     it('falls back to physicalId for unknown attributes on AWS::S3Tables::Table', async () => {
@@ -1647,19 +1668,6 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
         mkContext(compound)
       );
       expect(result).toBe(compound);
-    });
-
-    it('falls back to physicalId when the compound shape is malformed (no reshape)', async () => {
-      // Defensive: a state file from before the compound layout (or a
-      // future provider that changes the encoding) should not crash —
-      // emit the raw physical id and let the downstream consumer error
-      // with the real value.
-      const notCompound = 'arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket';
-      const result = await resolver.resolve(
-        { 'Fn::GetAtt': ['Tbl', 'TableARN'] },
-        mkContext(notCompound)
-      );
-      expect(result).toBe(notCompound);
     });
   });
 });
