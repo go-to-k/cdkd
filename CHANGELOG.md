@@ -1,3 +1,10 @@
+# [0.191.0](https://github.com/go-to-k/cdkd/compare/v0.190.0...v0.191.0) (2026-05-30)
+
+
+### Features
+
+* **local-invoke-agentcore:** port cdkd local invoke-agentcore command ([#717](https://github.com/go-to-k/cdkd/issues/717)) ([7b7ae24](https://github.com/go-to-k/cdkd/commit/7b7ae24093108e076539b3112fbc187c95f7862c))
+
 # [0.190.0](https://github.com/go-to-k/cdkd/compare/v0.189.0...v0.190.0) (2026-05-30)
 
 
