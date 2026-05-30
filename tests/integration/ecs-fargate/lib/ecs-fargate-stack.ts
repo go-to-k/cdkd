@@ -91,6 +91,14 @@ export class EcsFargateStack extends cdk.Stack {
         ],
       },
     });
+    // The Service references `cluster.defaultCloudMapNamespace` by NAME for
+    // Service Connect (no Ref edge in the synthesized template), so cdkd's
+    // DAG cannot infer the dependency. Without this explicit addDependency
+    // the namespace and the Service race, and AWS rejects the Service create
+    // with "Failed to retrieve namespace for cdkd-test.local".
+    if (cluster.defaultCloudMapNamespace) {
+      service.node.addDependency(cluster.defaultCloudMapNamespace);
+    }
 
     // Auto Scaling for the Fargate Service
     const scaling = service.autoScaleTaskCount({
