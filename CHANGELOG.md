@@ -1,3 +1,10 @@
+# [0.184.0](https://github.com/go-to-k/cdkd/compare/v0.183.0...v0.184.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill ECS::TaskDefinition EnableFaultInjection ([#710](https://github.com/go-to-k/cdkd/issues/710)) ([fb6ab9d](https://github.com/go-to-k/cdkd/commit/fb6ab9da0a4228e6c058b3f26f18170e1fb6ccdd))
+
 # [0.183.0](https://github.com/go-to-k/cdkd/compare/v0.182.0...v0.183.0) (2026-05-29)
 
 
