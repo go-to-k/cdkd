@@ -1,3 +1,10 @@
+# [0.186.0](https://github.com/go-to-k/cdkd/compare/v0.185.1...v0.186.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill ApiGatewayV2::Api IpAddressType ([#715](https://github.com/go-to-k/cdkd/issues/715)) ([a3be8e6](https://github.com/go-to-k/cdkd/commit/a3be8e634865de23de3b8e30e459434c2a7aff06))
+
 ## [0.185.1](https://github.com/go-to-k/cdkd/compare/v0.185.0...v0.185.1) (2026-05-30)
 
 
