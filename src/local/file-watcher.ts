@@ -7,4 +7,4 @@
  * `createWatchPredicates` / `resolveWatchConfig` (imported directly from
  * `cdk-local`). See cdk-local's `src/local/file-watcher.ts`.
  */
-export { createFileWatcher, type FileWatcher, type FileWatcherOptions } from 'cdk-local';
+export { createFileWatcher, type FileWatcher, type FileWatcherOptions } from 'cdk-local/internal';

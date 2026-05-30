@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
-import { EcsTaskResolutionError } from 'cdk-local';
+import { EcsTaskResolutionError } from 'cdk-local/internal';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';

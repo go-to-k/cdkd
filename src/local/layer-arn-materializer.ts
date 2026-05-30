@@ -7,4 +7,4 @@
  * carrying a byte-identical copy. See cdk-local's
  * `src/local/layer-arn-materializer.ts`.
  */
-export { materializeLayerFromArn } from 'cdk-local';
+export { materializeLayerFromArn } from 'cdk-local/internal';

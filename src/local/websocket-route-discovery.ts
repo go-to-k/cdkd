@@ -11,4 +11,4 @@ export {
   parseSelectionExpressionPath,
   type DiscoveredWebSocketApi,
   type WebSocketRouteEntry,
-} from 'cdk-local';
+} from 'cdk-local/internal';

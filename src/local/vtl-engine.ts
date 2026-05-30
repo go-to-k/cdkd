@@ -78,7 +78,7 @@
  * acceptable and not in the contract.
  */
 
-import { VtlEvaluationError } from 'cdk-local';
+import { VtlEvaluationError } from 'cdk-local/internal';
 
 /**
  * Bindings available to a VTL template evaluation. Built up by

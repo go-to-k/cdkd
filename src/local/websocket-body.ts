@@ -1,4 +1,4 @@
-import { bufferToBody as bufferToBodyImpl } from 'cdk-local';
+import { bufferToBody as bufferToBodyImpl } from 'cdk-local/internal';
 
 /**
  * Thin spy-friendly wrapper over cdk-local's `bufferToBody` (which owns

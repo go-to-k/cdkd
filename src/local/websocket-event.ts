@@ -11,4 +11,4 @@ export {
   buildMessageEvent,
   type WebSocketHandshakeSnapshot,
   type WebSocketLambdaEvent,
-} from 'cdk-local';
+} from 'cdk-local/internal';

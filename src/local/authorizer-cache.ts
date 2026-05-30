@@ -9,4 +9,4 @@ export {
   createAuthorizerCache,
   type AuthorizerCache,
   type CachedAuthorizerResult,
-} from 'cdk-local';
+} from 'cdk-local/internal';

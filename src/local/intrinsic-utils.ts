@@ -4,4 +4,4 @@
  * cdk-local and cdkd consumes it verbatim instead of carrying a
  * byte-identical copy. See cdk-local's `src/local/intrinsic-utils.ts`.
  */
-export { pickRefLogicalId } from 'cdk-local';
+export { pickRefLogicalId } from 'cdk-local/internal';

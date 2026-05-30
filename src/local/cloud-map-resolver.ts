@@ -10,4 +10,4 @@
  * re-exported from cdk-local via `./ecs-task-resolver.js` so the throw and every
  * host-side `instanceof` / `toThrow` share one class identity.
  */
-export { buildCloudMapIndex, type CloudMapIndex } from 'cdk-local';
+export { buildCloudMapIndex, type CloudMapIndex } from 'cdk-local/internal';

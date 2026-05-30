@@ -10,4 +10,4 @@
  * flag via the `sigV4StrictByDefault` / `sigV4OptFlag` embedConfig fields.
  * See cdk-local's `src/local/sigv4-verify.ts`.
  */
-export { defaultCredentialsLoader, type CredentialsLoader } from 'cdk-local';
+export { defaultCredentialsLoader, type CredentialsLoader } from 'cdk-local/internal';

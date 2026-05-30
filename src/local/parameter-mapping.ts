@@ -10,4 +10,4 @@ export {
   resolveSelectionExpression,
   type RequestParameterContext,
   type ResolveParametersOutcome,
-} from 'cdk-local';
+} from 'cdk-local/internal';

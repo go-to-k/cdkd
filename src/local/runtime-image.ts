@@ -10,4 +10,4 @@ export {
   resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
   resolveRuntimeImage,
-} from 'cdk-local';
+} from 'cdk-local/internal';

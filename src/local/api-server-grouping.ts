@@ -12,4 +12,4 @@ export {
   filterRoutesByApiIdentifier,
   groupRoutesByServer,
   type ApiServerGroup,
-} from 'cdk-local';
+} from 'cdk-local/internal';
