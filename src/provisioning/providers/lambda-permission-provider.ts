@@ -40,6 +40,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
         'PrincipalOrgID',
         'EventSourceToken',
         'FunctionUrlAuthType',
+        'InvokedViaFunctionUrl',
       ]),
     ],
   ]);
@@ -114,6 +115,8 @@ export class LambdaPermissionProvider implements ResourceProvider {
         addParams.EventSourceToken = properties['EventSourceToken'] as string;
       if (properties['FunctionUrlAuthType'])
         addParams.FunctionUrlAuthType = properties['FunctionUrlAuthType'] as FunctionUrlAuthType;
+      if (properties['InvokedViaFunctionUrl'] !== undefined)
+        addParams.InvokedViaFunctionUrl = properties['InvokedViaFunctionUrl'] as boolean;
 
       await this.lambdaClient.send(new AddPermissionCommand(addParams));
 
@@ -274,6 +277,14 @@ export class LambdaPermissionProvider implements ResourceProvider {
    *   - `Condition.ArnLike.AWS:SourceArn` → `SourceArn`.
    *   - `Condition.StringEquals.AWS:SourceAccount` → `SourceAccount`.
    *   - `Condition.StringEquals.aws:PrincipalOrgID` → `PrincipalOrgID`.
+   *   - `Condition.Bool.lambda:InvokedViaFunctionUrl == "true"` →
+   *     `InvokedViaFunctionUrl: true` (AWS encodes the CFn boolean by
+   *     injecting a `Bool` condition keyed on the `lambda:InvokedViaFunctionUrl`
+   *     IAM context key; the value comes back as the IAM-canonical string
+   *     `"true"`, not a JSON boolean — verified empirically against the live
+   *     us-east-1 endpoint, 2026-05-29). Explicit `false` is a no-op at AWS:
+   *     no Condition is injected and readback omits the key, which round-trips
+   *     to "absent" matching CFn's default.
    *   - `Condition.ArnLike.AWS:SourceAccount` is left alone — drift on the
    *     condition operator key would be confusing here.
    */
@@ -353,6 +364,14 @@ export class LambdaPermissionProvider implements ResourceProvider {
       const orgId = condition['StringEquals']?.['aws:PrincipalOrgID'];
       if (orgId !== undefined) {
         result['PrincipalOrgID'] = Array.isArray(orgId) ? orgId[0] : orgId;
+      }
+      // AWS encodes `InvokedViaFunctionUrl: true` by injecting a
+      // `Bool` condition keyed on `lambda:InvokedViaFunctionUrl` into the
+      // statement (verified empirically against the live us-east-1 endpoint,
+      // 2026-05-29). The value comes back as the string "true" / "false".
+      const invokedViaUrl = condition['Bool']?.['lambda:InvokedViaFunctionUrl'];
+      if (invokedViaUrl === 'true') {
+        result['InvokedViaFunctionUrl'] = true;
       }
     }
 

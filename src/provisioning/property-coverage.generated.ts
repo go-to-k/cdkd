@@ -1681,14 +1681,13 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'EventSourceToken',
         'FunctionName',
         'FunctionUrlAuthType',
+        'InvokedViaFunctionUrl',
         'Principal',
         'PrincipalOrgID',
         'SourceAccount',
         'SourceArn',
       ]),
-      silentDrop: new Map<string, string>([
-        ['InvokedViaFunctionUrl', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

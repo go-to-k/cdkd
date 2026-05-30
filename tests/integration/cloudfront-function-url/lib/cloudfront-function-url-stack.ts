@@ -40,6 +40,27 @@ def handler(event, context):
       authType: lambda.FunctionUrlAuthType.NONE,
     });
 
+    // Exercise the issue #609 backfill of
+    // `AWS::Lambda::Permission.InvokedViaFunctionUrl`. CDK's
+    // `addFunctionUrl` synthesizes a permission with Action
+    // `lambda:InvokeFunctionUrl` + `FunctionUrlAuthType: NONE` (NOT
+    // `InvokedViaFunctionUrl`). An explicit `CfnPermission` here
+    // exercises the OTHER AWS-supported encoding: Action
+    // `lambda:InvokeFunction` + `InvokedViaFunctionUrl: true`. The two
+    // knobs are mutually exclusive on the wire — AWS rejects
+    // `FunctionUrlAuthType` on `lambda:InvokeFunction` and rejects
+    // `InvokedViaFunctionUrl` on `lambda:InvokeFunctionUrl`. AWS
+    // reflects `InvokedViaFunctionUrl: true` by injecting a
+    // `Condition` on the resource policy statement referencing the
+    // `lambda:FunctionUrlAuthType` IAM context key — the verify.sh
+    // asserts that condition shape is present.
+    new lambda.CfnPermission(this, 'ExplicitFnUrlPermission', {
+      action: 'lambda:InvokeFunction',
+      principal: '*',
+      functionName: fn.functionName,
+      invokedViaFunctionUrl: true,
+    });
+
     // Create CloudFront Distribution with Function URL as origin
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultBehavior: {
