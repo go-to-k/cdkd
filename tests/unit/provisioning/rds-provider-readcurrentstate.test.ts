@@ -79,6 +79,99 @@ describe('RDSProvider.readCurrentState', () => {
     });
   });
 
+  it('surfaces #609 backfilled DBInstance siblings (7 readable) in CFn shape', async () => {
+    mockSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          // #609 backfill — verify readback for each prop:
+          AllocatedStorage: 20,
+          MasterUsername: 'postgres',
+          DeletionProtection: true,
+          EngineVersion: '15.4',
+          // Port is read from Endpoint.Port (the active listener), not a
+          // top-level field — there is no top-level Port on DescribeDBInstance.
+          Endpoint: { Port: 5432, Address: 'my-instance.abc.us-east-1.rds.amazonaws.com' },
+          StorageEncrypted: true,
+          // CFn `VPCSecurityGroups` ↔ AWS `VpcSecurityGroups[].VpcSecurityGroupId`
+          VpcSecurityGroups: [{ VpcSecurityGroupId: 'sg-1' }, { VpcSecurityGroupId: 'sg-2' }],
+          // NOT readable: MasterUserPassword (AWS never returns the password —
+          // would be phantom drift on every read).
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-instance',
+      'InstanceLogical',
+      'AWS::RDS::DBInstance'
+    );
+
+    expect(result).toEqual({
+      DBInstanceIdentifier: 'my-instance',
+      DBInstanceClass: 'db.t3.micro',
+      Engine: 'postgres',
+      AllocatedStorage: 20,
+      MasterUsername: 'postgres',
+      DeletionProtection: true,
+      EngineVersion: '15.4',
+      Port: 5432,
+      StorageEncrypted: true,
+      VPCSecurityGroups: ['sg-1', 'sg-2'],
+    });
+    // MasterUserPassword is never in the readback — RDS never returns it.
+    expect(result).not.toHaveProperty('MasterUserPassword');
+  });
+
+  it('omits VPCSecurityGroups when AWS returns no security groups', async () => {
+    mockSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          // No VpcSecurityGroups field.
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-instance',
+      'InstanceLogical',
+      'AWS::RDS::DBInstance'
+    );
+
+    // Match DBInstance's overall "emit-when-present" pattern: no
+    // VPCSecurityGroups key at all when AWS returned nothing — drift
+    // calculator descends from state's branch if state has the prop,
+    // so omitting here does not mask a state-vs-AWS divergence.
+    expect(result).not.toHaveProperty('VPCSecurityGroups');
+  });
+
+  it('omits Port when DBInstance Endpoint is absent (mid-create / mid-modify)', async () => {
+    mockSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          // No Endpoint — AWS leaves it undefined while the instance is
+          // transitioning (creating / modifying). Don't fabricate a Port.
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-instance',
+      'InstanceLogical',
+      'AWS::RDS::DBInstance'
+    );
+
+    expect(result).not.toHaveProperty('Port');
+  });
+
   it('returns CFn-shaped DBCluster fields from DescribeDBClusters', async () => {
     mockSend.mockResolvedValueOnce({
       DBClusters: [

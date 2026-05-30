@@ -377,6 +377,261 @@ describe('RDSProvider', () => {
           })
         ).rejects.toThrow('Failed to create DBInstance MyInstance');
       });
+
+      // ─── #609 backfill — 8 sibling props ────────────────────────
+      it('forwards all 8 #609 backfilled props to CreateDBInstance (with VPCSecurityGroups→VpcSecurityGroupIds flip; CFn Port → SDK Port on create; AllocatedStorage stringly-typed→number)', async () => {
+        mockSend.mockResolvedValueOnce({
+          DBInstance: { DBInstanceIdentifier: 'my-instance' },
+        });
+        mockSend.mockResolvedValueOnce({
+          DBInstances: [{ DBInstanceStatus: 'available' }],
+        });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.create('MyInstance', 'AWS::RDS::DBInstance', {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          // AllocatedStorage as CFn-typed string (CDK emits "20" not 20).
+          AllocatedStorage: '20',
+          MasterUsername: 'postgres',
+          DeletionProtection: true,
+          EngineVersion: '15.4',
+          Port: 5432,
+          MasterUserPassword: 'secret-password',
+          StorageEncrypted: true,
+          VPCSecurityGroups: ['sg-1', 'sg-2'],
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateDBInstanceCommand');
+        // AllocatedStorage: coerced to number (AWS SDK requires number, not string).
+        expect(createCall.input.AllocatedStorage).toBe(20);
+        expect(createCall.input.MasterUsername).toBe('postgres');
+        expect(createCall.input.DeletionProtection).toBe(true);
+        expect(createCall.input.EngineVersion).toBe('15.4');
+        // CFn `Port` → SDK `Port` (NOT DBPortNumber, which is a Modify-side
+        // oddity unique to ModifyDBInstance).
+        expect(createCall.input.Port).toBe(5432);
+        expect(createCall.input.MasterUserPassword).toBe('secret-password');
+        expect(createCall.input.StorageEncrypted).toBe(true);
+        // CFn `VPCSecurityGroups` → SDK `VpcSecurityGroupIds` (name+casing flip).
+        expect(createCall.input.VpcSecurityGroupIds).toEqual(['sg-1', 'sg-2']);
+      });
+
+      it('forwards DeletionProtection=false explicitly (not silently dropped by a truthy gate)', async () => {
+        mockSend.mockResolvedValueOnce({
+          DBInstance: { DBInstanceIdentifier: 'my-instance' },
+        });
+        mockSend.mockResolvedValueOnce({
+          DBInstances: [{ DBInstanceStatus: 'available' }],
+        });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.create('MyInstance', 'AWS::RDS::DBInstance', {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          // Explicit opt-out: the user-set false MUST reach AWS, not be
+          // silently dropped by a `properties[...]` truthy gate.
+          DeletionProtection: false,
+          StorageEncrypted: false,
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.input.DeletionProtection).toBe(false);
+        expect(createCall.input.StorageEncrypted).toBe(false);
+      });
+    });
+
+    describe('update', () => {
+      it('forwards 5 mutable #609 props to ModifyDBInstance (with CFn Port → SDK DBPortNumber flip)', async () => {
+        // updateDBInstance does 2 sends: ModifyDBInstance + final describe.
+        // (No waitForInstanceAvailable polling on the update path.)
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.small',
+            Engine: 'postgres',
+            DeletionProtection: false,
+            EngineVersion: '15.5',
+            Port: 5433,
+            MasterUserPassword: 'new-password',
+            VPCSecurityGroups: ['sg-new'],
+            // StorageEncrypted is create-only; should NOT appear in modify input
+            // even if present in newProperties.
+            StorageEncrypted: true,
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            DeletionProtection: true,
+            EngineVersion: '15.4',
+            Port: 5432,
+            MasterUserPassword: 'old-password',
+            VPCSecurityGroups: ['sg-old'],
+            StorageEncrypted: true,
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.constructor.name).toBe('ModifyDBInstanceCommand');
+        expect(modifyCall.input.DBInstanceClass).toBe('db.t3.small');
+        expect(modifyCall.input.ApplyImmediately).toBe(true);
+        expect(modifyCall.input.DeletionProtection).toBe(false);
+        expect(modifyCall.input.EngineVersion).toBe('15.5');
+        // CFn `Port` → SDK `DBPortNumber` on Modify (different field name vs Create).
+        expect(modifyCall.input.DBPortNumber).toBe(5433);
+        expect(modifyCall.input.Port).toBeUndefined();
+        expect(modifyCall.input.MasterUserPassword).toBe('new-password');
+        expect(modifyCall.input.VpcSecurityGroupIds).toEqual(['sg-new']);
+        // StorageEncrypted is create-only and MUST NOT ride ModifyDBInstance —
+        // AWS rejects it and the diff layer schedules a replace separately.
+        expect(modifyCall.input.StorageEncrypted).toBeUndefined();
+      });
+
+      it('forwards AllocatedStorage scale-up to ModifyDBInstance (coerced to number)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            AllocatedStorage: '50',
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            AllocatedStorage: '20',
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.input.AllocatedStorage).toBe(50);
+      });
+
+      it('does NOT forward MasterUsername to ModifyDBInstance (create-only per AWS RDS)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            MasterUsername: 'new-user',
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            MasterUsername: 'old-user',
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        // MasterUsername is create-only on AWS RDS DBInstance (ModifyDBInstance
+        // rejects it). A template change here would CFn-replace the instance,
+        // which cdkd's diff layer schedules separately.
+        expect(modifyCall.input.MasterUsername).toBeUndefined();
+      });
+
+      it('adds AllowMajorVersionUpgrade when EngineVersion crosses a major boundary', async () => {
+        // updateDBInstance does 2 sends: ModifyDBInstance + final describe.
+        // (No waitForInstanceAvailable polling on the update path.)
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            EngineVersion: '16.1',
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            EngineVersion: '15.4',
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.input.EngineVersion).toBe('16.1');
+        // 15→16 crosses a major boundary; AllowMajorVersionUpgrade must be
+        // set so AWS accepts the upgrade without a separate template toggle.
+        expect(modifyCall.input.AllowMajorVersionUpgrade).toBe(true);
+      });
+
+      it('does NOT add AllowMajorVersionUpgrade for a minor-version bump', async () => {
+        // updateDBInstance does 2 sends: ModifyDBInstance + final describe.
+        // (No waitForInstanceAvailable polling on the update path.)
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            EngineVersion: '15.5',
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            EngineVersion: '15.4',
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.input.EngineVersion).toBe('15.5');
+        // Same major (15→15): AllowMajorVersionUpgrade must NOT be set
+        // (avoid a no-op flag, and avoid promoting to a major bump if the
+        // user did NOT intend one).
+        expect(modifyCall.input.AllowMajorVersionUpgrade).toBeUndefined();
+      });
+
+      it('forwards DeletionProtection=false explicitly on update (not silently dropped)', async () => {
+        // updateDBInstance does 2 sends: ModifyDBInstance + final describe.
+        // (No waitForInstanceAvailable polling on the update path.)
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            DeletionProtection: false,
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            DeletionProtection: true,
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        // User wants to disable deletion protection — explicit false MUST
+        // reach AWS, not be silently dropped.
+        expect(modifyCall.input.DeletionProtection).toBe(false);
+      });
     });
 
     describe('delete', () => {

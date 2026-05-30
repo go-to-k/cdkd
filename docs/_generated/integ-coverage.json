@@ -733,6 +733,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -788,6 +789,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbinstance-backfill": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -821,6 +825,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -873,6 +878,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -931,6 +939,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -984,6 +993,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1019,6 +1031,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1074,6 +1087,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbinstance-backfill": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -1104,6 +1120,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race"
@@ -1149,6 +1166,9 @@
         "rds-aurora": [
           "l2"
         ],
+        "rds-dbinstance-backfill": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -1190,6 +1210,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1243,6 +1264,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1289,6 +1313,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1342,6 +1367,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1377,6 +1405,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1431,6 +1460,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1466,6 +1498,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1519,6 +1552,9 @@
           "l2"
         ],
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -2535,10 +2571,14 @@
     {
       "resourceType": "AWS::RDS::DBInstance",
       "integs": [
-        "rds-aurora"
+        "rds-aurora",
+        "rds-dbinstance-backfill"
       ],
       "signals": {
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ]
       }
@@ -2557,10 +2597,14 @@
     {
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
-        "rds-aurora"
+        "rds-aurora",
+        "rds-dbinstance-backfill"
       ],
       "signals": {
         "rds-aurora": [
+          "l2"
+        ],
+        "rds-dbinstance-backfill": [
           "l2"
         ]
       }
