@@ -97,7 +97,7 @@ import {
   type ResolvedStage,
 } from '../../local/stage-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
-import { createWatchPredicates, resolveWatchConfig } from 'cdk-local';
+import { createWatchPredicates, resolveWatchConfig } from 'cdk-local/internal';
 import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,

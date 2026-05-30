@@ -16,4 +16,4 @@ export {
   type ServerState,
   type StartedApiServer,
   type MtlsServerConfig,
-} from 'cdk-local';
+} from 'cdk-local/internal';

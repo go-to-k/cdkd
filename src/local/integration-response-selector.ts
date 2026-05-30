@@ -16,4 +16,4 @@ export {
   selectIntegrationResponse,
   tryParseStatus,
   type IntegrationResponseEntry,
-} from 'cdk-local';
+} from 'cdk-local/internal';

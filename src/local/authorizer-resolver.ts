@@ -7,4 +7,4 @@
  * instead of carrying a byte-identical copy. See cdk-local's
  * `src/local/authorizer-resolver.ts`.
  */
-export { attachAuthorizers, type AuthorizerInfo, type RouteWithAuth } from 'cdk-local';
+export { attachAuthorizers, type AuthorizerInfo, type RouteWithAuth } from 'cdk-local/internal';

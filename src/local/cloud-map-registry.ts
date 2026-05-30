@@ -8,4 +8,4 @@
  * `ecs-service-runner.ts` imports it alongside the class. See cdk-local's
  * `src/local/cloud-map-registry.ts`.
  */
-export { CloudMapRegistry, type RegistrationHandle } from 'cdk-local';
+export { CloudMapRegistry, type RegistrationHandle } from 'cdk-local/internal';

@@ -5,4 +5,4 @@
  * and cdkd consumes it verbatim instead of carrying a byte-identical
  * copy. See cdk-local's `src/local/docker-inspect.ts`.
  */
-export { getContainerNetworkIp } from 'cdk-local';
+export { getContainerNetworkIp } from 'cdk-local/internal';

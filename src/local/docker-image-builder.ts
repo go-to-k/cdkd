@@ -20,7 +20,7 @@ import {
   buildContainerImage as buildContainerImageImpl,
   LocalInvokeBuildError as CdkLocalLocalInvokeBuildError,
   type BuildContainerImageOptions,
-} from 'cdk-local';
+} from 'cdk-local/internal';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 
 export { architectureToPlatform };

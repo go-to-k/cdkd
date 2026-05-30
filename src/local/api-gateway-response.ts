@@ -6,4 +6,4 @@
  * instead of carrying a byte-identical copy. See cdk-local's
  * `src/local/api-gateway-response.ts`.
  */
-export { translateLambdaResponse, type TranslatedHttpResponse } from 'cdk-local';
+export { translateLambdaResponse, type TranslatedHttpResponse } from 'cdk-local/internal';

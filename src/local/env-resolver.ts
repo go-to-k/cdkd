@@ -7,4 +7,4 @@
  * verbatim instead of carrying a byte-identical copy. See cdk-local's
  * `src/local/env-resolver.ts`.
  */
-export { resolveEnvVars, type EnvOverrideFile } from 'cdk-local';
+export { resolveEnvVars, type EnvOverrideFile } from 'cdk-local/internal';

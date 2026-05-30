@@ -12,4 +12,4 @@ export {
   verifyCognitoJwt,
   verifyJwtAuthorizer,
   type JwksCache,
-} from 'cdk-local';
+} from 'cdk-local/internal';

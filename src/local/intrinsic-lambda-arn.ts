@@ -6,4 +6,4 @@
  * consumes it verbatim instead of carrying a byte-identical copy. See
  * cdk-local's `src/local/intrinsic-lambda-arn.ts`.
  */
-export { resolveLambdaArnIntrinsic, type LambdaArnResolveOutcome } from 'cdk-local';
+export { resolveLambdaArnIntrinsic, type LambdaArnResolveOutcome } from 'cdk-local/internal';

@@ -6,4 +6,4 @@
  * verbatim instead of carrying a byte-identical copy. See cdk-local's
  * `src/local/docker-version.ts`.
  */
-export { HOST_GATEWAY_MIN_VERSION, probeHostGatewaySupport } from 'cdk-local';
+export { HOST_GATEWAY_MIN_VERSION, probeHostGatewaySupport } from 'cdk-local/internal';

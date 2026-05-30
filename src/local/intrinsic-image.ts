@@ -13,4 +13,4 @@ export {
   substituteImagePlaceholders,
   tryResolveImageFnJoin,
   type ImageResolutionContext,
-} from 'cdk-local';
+} from 'cdk-local/internal';

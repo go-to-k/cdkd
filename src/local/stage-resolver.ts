@@ -5,4 +5,4 @@
  * implementation lives in cdk-local and cdkd consumes it verbatim instead of
  * carrying a byte-identical copy. See cdk-local's `src/local/stage-resolver.ts`.
  */
-export { attachStageContext, buildStageMap, type ResolvedStage } from 'cdk-local';
+export { attachStageContext, buildStageMap, type ResolvedStage } from 'cdk-local/internal';

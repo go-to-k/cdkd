@@ -12,4 +12,4 @@ export {
   type HttpRequestSnapshot,
   type MatchedRouteContext,
   type AuthorizerEventOverlay,
-} from 'cdk-local';
+} from 'cdk-local/internal';

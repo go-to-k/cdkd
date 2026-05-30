@@ -5,4 +5,8 @@
  * consumes it verbatim instead of carrying a byte-identical copy. See
  * cdk-local's `src/local/route-discovery.ts`.
  */
-export { discoverRoutes, type DiscoveredRoute, type RestV1IntegrationConfig } from 'cdk-local';
+export {
+  discoverRoutes,
+  type DiscoveredRoute,
+  type RestV1IntegrationConfig,
+} from 'cdk-local/internal';

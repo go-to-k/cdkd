@@ -4,4 +4,4 @@
  * lives in cdk-local and cdkd consumes it verbatim instead of carrying a
  * byte-identical copy. See cdk-local's `src/local/route-matcher.ts`.
  */
-export { matchRoute, type RouteMatchResult } from 'cdk-local';
+export { matchRoute, type RouteMatchResult } from 'cdk-local/internal';

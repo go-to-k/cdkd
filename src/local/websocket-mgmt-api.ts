@@ -11,4 +11,4 @@ export {
   buildMgmtEndpointEnvUrl,
   handleConnectionsRequest,
   parseConnectionsPath,
-} from 'cdk-local';
+} from 'cdk-local/internal';

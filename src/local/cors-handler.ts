@@ -12,4 +12,4 @@ export {
   buildCorsConfigFromCloudFrontChain,
   matchPreflight,
   type CorsConfig,
-} from 'cdk-local';
+} from 'cdk-local/internal';
