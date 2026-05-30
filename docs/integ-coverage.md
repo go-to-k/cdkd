@@ -124,7 +124,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::Neptune::DBInstance` | [`docdb-neptune`](../tests/integration/docdb-neptune/) (l1) |
 | `AWS::Neptune::DBSubnetGroup` | [`docdb-neptune`](../tests/integration/docdb-neptune/) (l1) |
 | `AWS::RDS::DBCluster` | [`rds-aurora`](../tests/integration/rds-aurora/) (l2) |
-| `AWS::RDS::DBInstance` | [`rds-aurora`](../tests/integration/rds-aurora/) (l2)<br>[`rds-dbinstance-backfill`](../tests/integration/rds-dbinstance-backfill/) (l2) |
+| `AWS::RDS::DBInstance` | [`rds-aurora`](../tests/integration/rds-aurora/) (l2)<br>[`rds-dbinstance-backfill`](../tests/integration/rds-dbinstance-backfill/) (l1) |
 | `AWS::RDS::DBProxyEndpoint` | [`rds-aurora`](../tests/integration/rds-aurora/) (literal) |
 | `AWS::RDS::DBSubnetGroup` | [`rds-aurora`](../tests/integration/rds-aurora/) (l2)<br>[`rds-dbinstance-backfill`](../tests/integration/rds-dbinstance-backfill/) (l2) |
 | `AWS::Route53::HostedZone` | [`route53`](../tests/integration/route53/) (l2) |
