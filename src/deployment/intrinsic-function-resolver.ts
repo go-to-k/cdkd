@@ -1074,6 +1074,36 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // ECS Service — derive `Name` from the service ARN. The provider stores
+    // the service ARN as the physical id (with an optional composite
+    // `|<suffix>` used by some internal paths — readCurrentState's
+    // `<clusterArn>|<serviceName>` form, and a `<serviceArn>|<clusterName>`
+    // shape that has been observed at deploy time). Both shapes are
+    // disambiguated by checking the LHS for `:service/`:
+    //   - LHS is a service ARN (contains `:service/`) → last `/` segment
+    //     is the service name (works for plain ARN and `<serviceArn>|x`).
+    //   - LHS is a cluster ARN → the RHS after `|` is the service name
+    //     (matches the import/readCurrentState `<clusterArn>|<serviceName>`
+    //     format).
+    if (resourceType === 'AWS::ECS::Service') {
+      switch (attributeName) {
+        case 'Name': {
+          const pipeIdx = physicalId.indexOf('|');
+          const left = pipeIdx >= 0 ? physicalId.substring(0, pipeIdx) : physicalId;
+          if (left.includes(':service/')) {
+            const lastSlash = left.lastIndexOf('/');
+            return lastSlash >= 0 ? left.substring(lastSlash + 1) : physicalId;
+          }
+          if (pipeIdx >= 0) {
+            return physicalId.substring(pipeIdx + 1);
+          }
+          return physicalId;
+        }
+        default:
+          return physicalId;
+      }
+    }
+
     // EC2 Security Group
     if (resourceType === 'AWS::EC2::SecurityGroup') {
       switch (attributeName) {
