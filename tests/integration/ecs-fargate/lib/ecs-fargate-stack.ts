@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
  * ECS Fargate example stack
@@ -55,6 +56,14 @@ export class EcsFargateStack extends cdk.Stack {
     const cfnTaskDef = taskDefinition.node.defaultChild as ecs.CfnTaskDefinition;
     cfnTaskDef.enableFaultInjection = true;
 
+    // Explicit LogGroup so destroy actually deletes it (CDK's default
+    // awsLogs() auto-LogGroup uses RemovalPolicy.RETAIN, which leaves
+    // orphans across integ re-runs and trips the leftover-resources gate).
+    const containerLogGroup = new logs.LogGroup(this, 'AppContainerLogGroup', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      retention: logs.RetentionDays.ONE_DAY,
+    });
+
     // Add container using a public ECR image (no Docker build needed)
     const container = taskDefinition.addContainer('AppContainer', {
       image: ecs.ContainerImage.fromRegistry(
@@ -62,6 +71,7 @@ export class EcsFargateStack extends cdk.Stack {
       ),
       memoryLimitMiB: 512,
       logging: ecs.LogDrivers.awsLogs({
+        logGroup: containerLogGroup,
         streamPrefix: 'cdkd-ecs-fargate',
       }),
       command: ['echo', 'hello'],
