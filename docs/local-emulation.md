@@ -14,6 +14,7 @@ directly.
 | `cdkd local run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkd local start-service <target>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | AgentCore container on port 8080 (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / WebSocket `/ws`) |
+| `cdkd local start-alb <targets...>` | Long-running local ALB front-door for ECS / Lambda backing services | shared ECS service emulator engine (shimmed from cdk-local) + per-listener `node:http(s)` front-door with path / host / header / weighted / redirect / fixed-response routing |
 
 ## Requirements
 
@@ -1362,6 +1363,95 @@ ECS Services on Fargate require `awsvpc`. cdkd maps `awsvpc` to a
 per-task docker bridge network with a startup warn; security groups
 are NOT enforced locally and per-task ENIs are not emulated. Full
 rationale at [design/461-awsvpc-decision.md](design/461-awsvpc-decision.md).
+
+## `local start-alb` (run an Application Load Balancer locally)
+
+`cdkd local start-alb <Stack/Alb...>` (Issue
+[#86](https://github.com/go-to-k/cdkd/issues/86)) is the long-running
+local Application Load Balancer front-door. It names one or more
+`AWS::ElasticLoadBalancingV2::LoadBalancer` resources from the
+synthesized template, discovers the ECS / Lambda targets behind each
+listener's `forward` action, boots every backing ECS service via the
+same engine `local start-service` uses (replicas, restart-on-exit,
+Service Connect / Cloud Map), and stands up a per-listener local
+`node:http(s)` server that round-robins inbound requests across the
+running replicas and applies the listener rules (path / host / header /
+method / query-string / source-IP) against the backing targets. The
+symmetric counterpart of `local start-api` for ALB-fronted workloads.
+
+The command is a thin wrapper around the shared ECS service emulator
+engine (`runEcsServiceEmulator`, shimmed from `cdk-local/internal`);
+the per-listener front-door owns the routing + auth-guard logic, the
+underlying engine owns the container boot + Cloud Map plumbing.
+
+### `local start-alb` target resolution
+
+- `Stack/Alb/...` (display path) or `Stack:LogicalId` (logical id).
+- Single-stack apps may omit the stack prefix.
+- The target MUST resolve to an
+  `AWS::ElasticLoadBalancingV2::LoadBalancer`; passing a Listener or
+  TargetGroup surfaces a clear error naming the available ALBs in the
+  stack.
+- Variadic: multiple ALB targets in one invocation share a single
+  shared docker network + a single Cloud Map registry so ECS services
+  registered to different ALBs still discover each other.
+
+### `local start-alb` options
+
+| Flag | Default | Behavior |
+| --- | --- | --- |
+| `--lb-port <listenerPort=hostPort>` | host port == listener port | Remap the local front-door host port for a specific listener port. Repeatable (`--lb-port 80=8080 --lb-port 443=8443`). Use this on macOS to remap a privileged listener port (< 1024) to a non-privileged host port. |
+| `--tls-cert <path>` | auto-generated | PEM-encoded server certificate for HTTPS front-door listeners. Must be set together with `--tls-key`. Omit both flags to auto-generate a self-signed cert cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`. The deployed Listener Certificates are NOT fetched (ACM private keys are not retrievable). |
+| `--tls-key <path>` | — | PEM-encoded server private key matching `--tls-cert`. Must be set together. |
+| `--no-verify-auth` | off | Disable local enforcement of `authenticate-cognito` / `authenticate-oidc` actions. Every request is served as if the auth check passed. |
+| `--bearer-token <jwt>` | — | Default Bearer JWT injected as `Authorization: Bearer <jwt>` when the inbound request has none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would (signature + iss + aud + exp). Cookie pass-through (`AWSELBAuthSessionCookie-*`) also works. |
+| `--cluster <name>` | `cdkd-local` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and used as the docker network prefix. Same shape as `local start-service`. |
+| `--max-tasks <n>` | `3` | Per-service hard cap on local replica count regardless of template `DesiredCount`. Same shape as `local start-service`. |
+| `--restart-policy <p>` | `on-failure` | Restart-on-exit behavior for backing ECS containers. Same three-state grammar as `local start-service`. |
+| `--env-vars <file>` | — | SAM-shape JSON env-var overrides for backing containers; same format as `local run-task` / `local start-service`. |
+| `--container-host <ip>` | `127.0.0.1` | Host IP to bind published container + front-door ports to. Must be a numeric IP. |
+| `--assume-task-role [arn]` | unset | Assume each backing service's TaskRoleArn (or the supplied ARN). Same three-form grammar as `local start-service`. |
+| `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull`. Same shape as `local start-service`. |
+| `--platform <p>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
+| `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |
+| `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` / `Fn::GetStackOutput` intrinsics in the resolved backing services' container images, environment variables, secrets, role ARNs, and volumes. Mutually exclusive with `--from-cfn-stack`. Same shape as `local start-service --from-state`. |
+| `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` intrinsics. For CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Mutually exclusive with `--from-state`. Same shape as `local start-service --from-cfn-stack`. |
+| `--stack-region <region>` | — | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
+
+### `local start-alb` listener / action support
+
+The local front-door reads the synthesized template and emulates these
+listener / action shapes:
+
+- **Listener protocols:** HTTP and HTTPS. TLS is terminated locally —
+  pass `--tls-cert` / `--tls-key`, or omit both to auto-generate a
+  self-signed cert. Non-HTTP/HTTPS listeners (TCP / UDP / TLS / NLB) are
+  skipped with a warn.
+- **Rule conditions:** all six ALB fields — `path-pattern`,
+  `host-header`, `http-header`, `http-request-method`,
+  `query-string`, `source-ip`.
+- **Default + rule actions:** `forward` (single target group, weighted
+  forward across multiple target groups), `redirect`, `fixed-response`.
+  `authenticate-cognito` + `authenticate-oidc` enforce a local Bearer-JWT
+  check (or `AWSELBAuthSessionCookie` pass-through) against the same
+  JWKS / OIDC discovery URL the deployed ALB would.
+- **Target groups:** ECS (`AWS::ECS::Service.LoadBalancers[]` binding
+  the TG to the container + port) and Lambda (TG `Targets[].Id` =
+  `{Fn::GetAtt: [<FnLogicalId>, "Arn"]}`).
+
+Unsupported listener / action / target shapes are skipped with a per-line
+warn at boot; the front-door still serves what it can.
+
+### `local start-alb` lifecycle
+
+`^C` (SIGINT) and SIGTERM tear down the front-door servers first, then
+every backing service's replicas + sidecar + shared network in parallel.
+Double-`^C` bypasses cleanup and exits 130 immediately so users have an
+escape hatch when docker hangs. The front-door servers always rebind
+the requested host port on restart — there is no in-process state
+across `^C`.
 
 ## `local invoke-agentcore` (run Bedrock AgentCore Runtime locally)
 

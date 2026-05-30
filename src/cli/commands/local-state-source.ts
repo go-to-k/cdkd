@@ -20,6 +20,7 @@
 
 import {
   createLocalStateProvider as createLocalStateProviderBase,
+  type ExtraStateProviders,
   type LocalStateProvider,
   type LocalStateProviderFactory,
   type LocalStateSourceOptions as LocalStateSourceOptionsBase,
@@ -102,6 +103,17 @@ const fromStateFactory: LocalStateProviderFactory = (options) => {
 };
 
 /**
+ * Cdkd's `extraStateProviders` map for cdk-local's engine entry points
+ * (e.g. `runEcsServiceEmulator`) that accept a state-source factory
+ * registry directly instead of going through `createLocalStateProvider`.
+ * The engine calls `createLocalStateProvider` internally with this map,
+ * so cdkd's `--from-state` flow is wired in transparently.
+ */
+export const cdkdExtraStateProviders: ExtraStateProviders = {
+  fromState: fromStateFactory,
+};
+
+/**
  * Pick and construct the right `LocalStateProvider` for the supplied
  * flag set. Delegates to cdk-local's dispatcher with cdkd's
  * `--from-state` factory wired in. Returns `undefined` when neither
@@ -134,6 +146,6 @@ export function createLocalStateProvider(
     options as unknown as LocalStateSourceOptionsBase,
     cdkdStackName,
     synthRegion,
-    { fromState: fromStateFactory }
+    cdkdExtraStateProviders
   );
 }

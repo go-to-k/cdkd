@@ -242,6 +242,7 @@ maintain, no `cdk synth | sam ...` round-trip.
 | `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
 | `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws`) |
+| `cdkd local start-alb <targets...>` | Long-running local ALB front-door (HTTP + HTTPS listeners, path / host / header / weighted / redirect / fixed-response routing, authenticate-cognito / authenticate-oidc) for ECS / Lambda backing services |
 
 Requires Docker. Pass `--from-state` (cdkd-deployed) or
 `--from-cfn-stack` (cdk-deployed / CFn-managed) to substitute deployed
@@ -301,6 +302,21 @@ Long-running ECS Service emulator: `DesiredCount` replicas with
 restart-on-exit, cross-service Service Connect / Cloud Map DNS
 discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
 No local load-balancer in v1.
+
+### `local start-alb`
+
+```bash
+cdkd local start-alb MyStack/MyAlb --lb-port 80=8080 # remap privileged listener port
+cdkd local start-alb MyStack/MyAlb --from-state      # OR --from-cfn-stack
+```
+
+Long-running local ALB front-door: names an `AWS::ElasticLoadBalancingV2::LoadBalancer`,
+boots every ECS service behind its listeners, and stands up a local
+HTTP / HTTPS front-door on each listener port that round-robins across
+the running replicas and routes its listener rules across the backing
+services. Forward / redirect / fixed-response actions; ECS or Lambda
+targets; authenticate-cognito / authenticate-oidc via a local Bearer-JWT
+check.
 
 See **[docs/local-emulation.md](docs/local-emulation.md)** for the
 full reference — runtimes, target resolution, every flag, integration

@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-local-start-alb",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pure-local integ test for cdkd local start-alb — exercises the ALB front-door + ECS backing service emulator end-to-end without an AWS deploy",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.257.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

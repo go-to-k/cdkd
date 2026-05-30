@@ -621,6 +621,11 @@
       ]
     },
     {
+      "name": "local-start-alb",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-api",
       "annotated": true,
       "scenarios": [
@@ -1196,6 +1201,7 @@
     "dynamodb-ondemand",
     "export-nested-stack",
     "iam-managed-policy",
+    "local-start-alb",
     "nested-stack",
     "nested-stack-deep",
     "recreate-mixed-direction",
