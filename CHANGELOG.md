@@ -1,3 +1,10 @@
+# [0.194.0](https://github.com/go-to-k/cdkd/compare/v0.193.0...v0.194.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill Route53::HostedZone HostedZoneFeatures ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#728](https://github.com/go-to-k/cdkd/issues/728)) ([1a79eaf](https://github.com/go-to-k/cdkd/commit/1a79eafa51c4a5bf5b3cca558fc5df5538d90f68))
+
 # [0.193.0](https://github.com/go-to-k/cdkd/compare/v0.192.0...v0.193.0) (2026-05-30)
 
 
