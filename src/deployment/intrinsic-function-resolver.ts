@@ -1126,20 +1126,6 @@ export class IntrinsicFunctionResolver {
       }
     }
 
-    // S3Tables::Table — the cdkd-compound physical id is
-    // `<bucketArn>|<namespace>|<name>` (NOT a real AWS ARN). The real
-    // table ARN AWS issues at create time is captured into
-    // `attributes.TableARN` by the provider's `create()`, so the flat-key
-    // attribute lookup above hits BEFORE this fallback fires. We can't
-    // derive the ARN from the compound parts — AWS's actual table-ARN
-    // shape is opaque and NOT `<bucketArn>/table/<ns>/<name>` (empirically
-    // rejected). Fall through to physicalId only as a defensive last
-    // resort for state files written before this PR (which lack the
-    // attribute); downstream consumers will surface a clear error.
-    if (resourceType === 'AWS::S3Tables::Table') {
-      return physicalId;
-    }
-
     // EC2 LaunchTemplate — `LatestVersionNumber` / `DefaultVersionNumber`
     // are AWS-derived integers that cdkd does not capture in state.
     // Resolve via `DescribeLaunchTemplates`. Return as a string so
