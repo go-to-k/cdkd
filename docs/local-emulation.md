@@ -14,6 +14,7 @@ directly.
 | `cdkd local run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkd local start-service <target>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | AgentCore container on port 8080 (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / WebSocket `/ws`) |
+| `cdkd local start-alb <targets...>` | Long-running local ALB front-door for ECS / Lambda backing services | shared ECS service emulator engine (shimmed from cdk-local) + per-listener `node:http(s)` front-door with path / host / header / weighted / redirect / fixed-response routing |
 
 ## Requirements
 

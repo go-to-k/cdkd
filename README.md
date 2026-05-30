@@ -242,6 +242,7 @@ maintain, no `cdk synth | sam ...` round-trip.
 | `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
 | `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws`) |
+| `cdkd local start-alb <targets...>` | Long-running local ALB front-door (HTTP + HTTPS listeners, path / host / header / weighted / redirect / fixed-response routing, authenticate-cognito / authenticate-oidc) for ECS / Lambda backing services |
 
 Requires Docker. Pass `--from-state` (cdkd-deployed) or
 `--from-cfn-stack` (cdk-deployed / CFn-managed) to substitute deployed
