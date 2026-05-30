@@ -919,6 +919,13 @@ Outcomes:
   defeat the dev-tool purpose. The warn fires at most once per foreign
   access-key-id per server lifecycle.
 
+Pass `--strict-sigv4` to opt IN to fail-closed mode — every
+unverifiable signature (foreign access-key-id, missing local AWS
+credentials, etc.) is denied with the same 403 the deployed API
+Gateway would return. Use this when you want local parity with the
+deployed signature-enforcement boundary. The default (warn-and-pass)
+matches cdk-local's `cdkl start-api`.
+
 **What is NOT verified locally** (deliberately out of scope):
 
 - IAM resource / action / condition policy evaluation. The local

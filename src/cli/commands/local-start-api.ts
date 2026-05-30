@@ -186,12 +186,13 @@ interface LocalStartApiOptions {
    */
   fromCfnStack?: string | boolean;
   /**
-   * Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically
-   * verified (foreign access-key-id, or no local AWS credentials) to
-   * pass through with a placeholder principalId. Default `false` (fail-
-   * closed). Mirrors the `--allow-unverified-sigv4` CLI flag.
+   * Opt-in: enforce strict AWS_IAM SigV4 verification. When set, requests
+   * whose signature cannot be cryptographically verified (foreign
+   * access-key-id, or no local AWS credentials) are denied. Default
+   * `false` (warn-and-pass, matching cdk-local's `cdkl start-api`).
+   * Mirrors the `--strict-sigv4` CLI flag.
    */
-  allowUnverifiedSigv4?: boolean;
+  strictSigv4?: boolean;
   /**
    * S3 bucket holding cdkd state. Used only when `--from-state` is set.
    * Falls back to `CDKD_STATE_BUCKET` env / `cdk.json` / the default
@@ -762,10 +763,10 @@ async function localStartApiCommand(
       jwksWarnedUrls,
       sigV4CredentialsLoader,
       sigV4WarnedForeignIds,
-      // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed);
-      // cdkd ships fail-closed BY DEFAULT and opts OUT via --allow-unverified-sigv4,
-      // so invert: strict unless the user passed the opt-out flag.
-      sigV4Strict: options.allowUnverifiedSigv4 !== true,
+      // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed).
+      // cdkd follows the same polarity: warn-and-pass by default, opt IN via
+      // `--strict-sigv4`.
+      sigV4Strict: options.strictSigv4 === true,
       // #458: surfaces as the per-route fallback region for HTTP API
       // v2 service integrations. Per-request `RequestParameters.Region`
       // overrides this — matches AWS API Gateway behavior.
@@ -859,10 +860,10 @@ async function localStartApiCommand(
       jwksCache,
       jwksWarnedUrls,
       sigV4WarnedForeignIds,
-      // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed);
-      // cdkd ships fail-closed BY DEFAULT and opts OUT via --allow-unverified-sigv4,
-      // so invert: strict unless the user passed the opt-out flag.
-      sigV4Strict: options.allowUnverifiedSigv4 !== true,
+      // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed).
+      // cdkd follows the same polarity: warn-and-pass by default, opt IN via
+      // `--strict-sigv4`.
+      sigV4Strict: options.strictSigv4 === true,
       preDispatch: async (req, res) => {
         if (!registryRef) return false;
         return handleManagementRequest(req, res, registryRef.registry);
@@ -3144,12 +3145,12 @@ export function createLocalStartApiCommand(): Command {
     )
     .addOption(
       new Option(
-        '--allow-unverified-sigv4',
-        'Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
-          '(foreign access-key-id, OR no local AWS credentials configured) to pass through ' +
-          'with a placeholder principalId. DEFAULT off — fail-closed so unauthenticated bypass ' +
-          'is impossible against `event.requestContext.identity.accessKey`-trusting handler code. ' +
-          'Use only in dev loops where you understand the risk.'
+        '--strict-sigv4',
+        'Opt-in: enforce strict AWS_IAM SigV4 verification. When set, requests whose signature ' +
+          'cannot be cryptographically verified (foreign access-key-id, OR no local AWS credentials ' +
+          'configured) are denied. DEFAULT off — warn-and-pass with a placeholder principalId, ' +
+          "matching cdk-local's `cdkl start-api`. Enable this when you want local parity with the " +
+          "deployed API Gateway's signature enforcement."
       ).default(false)
     )
     .action(withErrorHandling(localStartApiCommand));
