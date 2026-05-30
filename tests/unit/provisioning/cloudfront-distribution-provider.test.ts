@@ -4,30 +4,37 @@ import { NoSuchDistribution } from '@aws-sdk/client-cloudfront';
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
 
+// Hoisted childLogger so individual tests can assert against it (warn
+// behavior is load-bearing for the silent-drop-closure this PR ships —
+// the test must verify the warn fires, not just that no exception
+// propagates). `vi.hoisted` runs before `vi.mock`, which itself runs
+// before the SUT import — so the same object instance the provider
+// constructor sees via `getLogger().child()` is the one the test asserts on.
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     cloudFront: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),
 }));
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({
+    child: () => childLogger,
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
-  return {
-    getLogger: () => ({
-      child: () => childLogger,
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
-  };
-});
+  }),
+}));
 
 import { CloudFrontDistributionProvider } from '../../../src/provisioning/providers/cloudfront-distribution-provider.js';
 
@@ -601,7 +608,7 @@ describe('CloudFrontDistributionProvider', () => {
       // Defensive guard against a hypothetical SDK regression where
       // GetDistribution stops returning ARN. A silent drop here would
       // exactly reintroduce the silent-drop this PR closes — assert
-      // that the warn fires instead.
+      // that the warn fires AND no Tag/Untag send is attempted.
       mockSend.mockResolvedValueOnce({
         ETag: 'E1',
         DistributionConfig: { CallerReference: 'orig', Enabled: true },
@@ -626,6 +633,11 @@ describe('CloudFrontDistributionProvider', () => {
 
       // GetConfig + Update + GetDistribution = 3 (no Tag/Untag, no throw)
       expect(mockSend).toHaveBeenCalledTimes(3);
+      // The warn is the load-bearing user-visible signal — without it
+      // the silent drop would silently reintroduce itself.
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('GetDistribution returned no ARN')
+      );
     });
 
     it('update with NO tag diff and no ARN does NOT warn (no-op skip is silent)', async () => {
@@ -651,6 +663,9 @@ describe('CloudFrontDistributionProvider', () => {
       );
 
       expect(mockSend).toHaveBeenCalledTimes(3);
+      // Guards against an "always warn" refactor: a true no-op must stay
+      // quiet, otherwise routine deploys spam the log with false alarms.
+      expect(childLogger.warn).not.toHaveBeenCalled();
     });
 
     it('update tag-side failure is logged but does NOT propagate (UpdateDistribution succeeded)', async () => {
@@ -686,6 +701,15 @@ describe('CloudFrontDistributionProvider', () => {
       // wasReplaced=false, attributes carry the new domainName etc.
       expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
       expect(result.wasReplaced).toBe(false);
+      // The warn surfaces the unapplied delta with the failure message
+      // so the operator can investigate; this guards against a future
+      // `catch {}` swallow regression.
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('tag diff failed')
+      );
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('AccessDeniedException')
+      );
     });
 
     it('update mixed adds + removes issues Untag then Tag in that order', async () => {
