@@ -1519,6 +1519,7 @@
         "drift-revert",
         "ecs-fargate",
         "local-ecs-service-connect",
+        "local-start-alb",
         "local-start-service"
       ],
       "signals": {
@@ -1531,6 +1532,10 @@
         "local-ecs-service-connect": [
           "l1"
         ],
+        "local-start-alb": [
+          "l1",
+          "literal"
+        ],
         "local-start-service": [
           "l1"
         ]
@@ -1541,6 +1546,7 @@
       "integs": [
         "ecs-fargate",
         "local-ecs-service-connect",
+        "local-start-alb",
         "local-start-service"
       ],
       "signals": {
@@ -1548,6 +1554,10 @@
           "l2"
         ],
         "local-ecs-service-connect": [
+          "l1",
+          "literal"
+        ],
+        "local-start-alb": [
           "l1",
           "literal"
         ],
@@ -1566,6 +1576,7 @@
         "local-run-task-awsvpc",
         "local-run-task-from-state",
         "local-run-task-multi-container",
+        "local-start-alb",
         "local-start-service"
       ],
       "signals": {
@@ -1589,6 +1600,10 @@
         ],
         "local-run-task-multi-container": [
           "l2"
+        ],
+        "local-start-alb": [
+          "l1",
+          "literal"
         ],
         "local-start-service": [
           "l1"
@@ -1681,10 +1696,15 @@
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
       "integs": [
-        "alb"
+        "alb",
+        "local-start-alb"
       ],
       "signals": {
         "alb": [
+          "literal"
+        ],
+        "local-start-alb": [
+          "l1",
           "literal"
         ]
       }
@@ -1695,6 +1715,7 @@
         "alb",
         "alb-advanced",
         "drift-revert-vpc",
+        "local-start-alb",
         "remove-protection"
       ],
       "signals": {
@@ -1708,6 +1729,10 @@
           "l2",
           "literal"
         ],
+        "local-start-alb": [
+          "l1",
+          "literal"
+        ],
         "remove-protection": [
           "l2",
           "literal"
@@ -1717,10 +1742,15 @@
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
       "integs": [
-        "alb"
+        "alb",
+        "local-start-alb"
       ],
       "signals": {
         "alb": [
+          "literal"
+        ],
+        "local-start-alb": [
+          "l1",
           "literal"
         ]
       }
