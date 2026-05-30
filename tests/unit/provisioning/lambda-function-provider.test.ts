@@ -6,6 +6,9 @@ import {
   DeleteFunctionCommand,
   PutFunctionRecursionConfigCommand,
   GetFunctionRecursionConfigCommand,
+  PutFunctionConcurrencyCommand,
+  GetFunctionConcurrencyCommand,
+  DeleteFunctionConcurrencyCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
 import { DescribeNetworkInterfacesCommand } from '@aws-sdk/client-ec2';
@@ -667,6 +670,231 @@ describe('LambdaFunctionProvider', () => {
         'AWS::Lambda::Function'
       );
       expect(observed!).not.toHaveProperty('RecursiveLoop');
+    });
+
+    // ReservedConcurrentExecutions: same post-create control-plane shape as
+    // RecursiveLoop (separate Put/Get/Delete API) but with a meaningful 0
+    // value (zero concurrency = full throttle), an UPDATE-time clear
+    // sentinel (DeleteFunctionConcurrency on prev set + next undefined),
+    // and an emit-when-present readback.
+
+    it('create(): calls PutFunctionConcurrency after CreateFunction when ReservedConcurrentExecutions is set', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-pc',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-pc',
+        })
+        .mockResolvedValueOnce({}); // PutFunctionConcurrency
+
+      await provider.create('PcFn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-pc',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+        ReservedConcurrentExecutions: 50,
+      });
+
+      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+      const putCall = mockLambdaSend.mock.calls.find(
+        (c) => c[0] instanceof PutFunctionConcurrencyCommand
+      );
+      expect(putCall).toBeDefined();
+      expect((putCall![0] as PutFunctionConcurrencyCommand).input).toEqual({
+        FunctionName: 'fn-pc',
+        ReservedConcurrentExecutions: 50,
+      });
+    });
+
+    it('create(): preserves ReservedConcurrentExecutions=0 (zero is meaningful — full throttle)', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-zero',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-zero',
+        })
+        .mockResolvedValueOnce({});
+
+      await provider.create('ZeroFn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-zero',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+        ReservedConcurrentExecutions: 0,
+      });
+
+      const putCall = mockLambdaSend.mock.calls.find(
+        (c) => c[0] instanceof PutFunctionConcurrencyCommand
+      );
+      expect((putCall![0] as PutFunctionConcurrencyCommand).input).toEqual({
+        FunctionName: 'fn-zero',
+        ReservedConcurrentExecutions: 0,
+      });
+    });
+
+    it('create(): omits PutFunctionConcurrency when ReservedConcurrentExecutions is absent', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-no-pc',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-no-pc',
+      });
+
+      await provider.create('NoPcFn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-no-pc',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+      });
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionConcurrencyCommand
+      );
+      expect(putCalls).toHaveLength(0);
+    });
+
+    it('create(): rolls back via DeleteFunction when PutFunctionConcurrency fails (atomicity)', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-pc-fail',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-pc-fail',
+        })
+        .mockRejectedValueOnce(new Error('PutFunctionConcurrency denied'))
+        .mockResolvedValueOnce({}); // DeleteFunction cleanup
+
+      await expect(
+        provider.create('PcFailFn', 'AWS::Lambda::Function', {
+          FunctionName: 'fn-pc-fail',
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Handler: 'index.handler',
+          Runtime: 'nodejs20.x',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          ReservedConcurrentExecutions: 50,
+        })
+      ).rejects.toThrow(ProvisioningError);
+
+      expect(mockLambdaSend).toHaveBeenCalledTimes(3);
+      const calls = mockLambdaSend.mock.calls;
+      expect(calls[0]?.[0]).toBeInstanceOf(CreateFunctionCommand);
+      expect(calls[1]?.[0]).toBeInstanceOf(PutFunctionConcurrencyCommand);
+      expect(calls[2]?.[0]).toBeInstanceOf(DeleteFunctionCommand);
+    });
+
+    it('update(): emits PutFunctionConcurrency when ReservedConcurrentExecutions changes', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // PutFunctionConcurrency
+        .mockResolvedValueOnce({
+          Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+        });
+
+      await provider.update(
+        'PcFn',
+        'fn',
+        'AWS::Lambda::Function',
+        { ReservedConcurrentExecutions: 100 },
+        { ReservedConcurrentExecutions: 50 }
+      );
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionConcurrencyCommand
+      );
+      expect(putCalls).toHaveLength(1);
+      expect((putCalls[0]![0] as PutFunctionConcurrencyCommand).input).toEqual({
+        FunctionName: 'fn',
+        ReservedConcurrentExecutions: 100,
+      });
+    });
+
+    it('update(): removing ReservedConcurrentExecutions (number -> undefined) calls DeleteFunctionConcurrency (clear sentinel)', async () => {
+      // Unlike RecursiveLoop (which has no AWS clear API and just leaves
+      // the last-set value pinned), ReservedConcurrentExecutions DOES
+      // have a clear API. A user dropping the template prop after
+      // previously setting it should actually un-throttle the function.
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // DeleteFunctionConcurrency
+        .mockResolvedValueOnce({
+          Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+        });
+
+      await provider.update(
+        'PcFn',
+        'fn',
+        'AWS::Lambda::Function',
+        {},
+        { ReservedConcurrentExecutions: 50 }
+      );
+
+      const deleteCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof DeleteFunctionConcurrencyCommand
+      );
+      expect(deleteCalls).toHaveLength(1);
+      expect((deleteCalls[0]![0] as DeleteFunctionConcurrencyCommand).input).toEqual({
+        FunctionName: 'fn',
+      });
+    });
+
+    it('update(): unchanged ReservedConcurrentExecutions produces zero Put/Delete calls', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+      });
+
+      await provider.update(
+        'PcFn',
+        'fn',
+        'AWS::Lambda::Function',
+        { ReservedConcurrentExecutions: 50 },
+        { ReservedConcurrentExecutions: 50 }
+      );
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionConcurrencyCommand
+      );
+      const deleteCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof DeleteFunctionConcurrencyCommand
+      );
+      expect(putCalls).toHaveLength(0);
+      expect(deleteCalls).toHaveLength(0);
+    });
+
+    it('readCurrentState(): emits ReservedConcurrentExecutions when GetFunctionConcurrency returns a value', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn',
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          },
+          Tags: {},
+        })
+        .mockResolvedValueOnce({}) // GetFunctionRecursionConfig (undefined)
+        .mockResolvedValueOnce({ ReservedConcurrentExecutions: 50 }); // GetFunctionConcurrency
+
+      const observed = await provider.readCurrentState(
+        'fn',
+        'PcFn',
+        'AWS::Lambda::Function'
+      );
+      expect(observed!['ReservedConcurrentExecutions']).toBe(50);
+    });
+
+    it('readCurrentState(): omits ReservedConcurrentExecutions when GetFunctionConcurrency returns no value (typical un-throttled function)', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn',
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          },
+          Tags: {},
+        })
+        .mockResolvedValueOnce({}) // GetFunctionRecursionConfig (undefined)
+        .mockResolvedValueOnce({}); // GetFunctionConcurrency (no field)
+
+      const observed = await provider.readCurrentState(
+        'fn',
+        'PcFn',
+        'AWS::Lambda::Function'
+      );
+      expect(observed!).not.toHaveProperty('ReservedConcurrentExecutions');
     });
   });
 

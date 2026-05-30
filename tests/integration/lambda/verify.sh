@@ -99,6 +99,19 @@ if [ "${RECURSIVE_LOOP}" != "Allow" ]; then
 fi
 echo "    OK: Lambda RecursiveLoop == 'Allow' on AWS (SDK provider wired via PutFunctionRecursionConfig)"
 
+# --- Assertion: ReservedConcurrentExecutions reached AWS via PutFunctionConcurrency --
+# Same pattern as RecursiveLoop above — separate post-create control-plane
+# API. Fixture sets reservedConcurrentExecutions: 5; assert the AWS-side
+# response carries it via the dedicated `get-function-concurrency` API.
+RESERVED_CC=$(aws lambda get-function-concurrency \
+  --function-name "${FN_NAME}" --region "${REGION}" \
+  --query 'ReservedConcurrentExecutions' --output text 2>/dev/null)
+if [ "${RESERVED_CC}" != "5" ]; then
+  echo "FAIL: Lambda ReservedConcurrentExecutions is '${RESERVED_CC}', expected '5' (PutFunctionConcurrency should have wired it)" >&2
+  exit 1
+fi
+echo "    OK: Lambda ReservedConcurrentExecutions == 5 on AWS (SDK provider wired via PutFunctionConcurrency)"
+
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -119,4 +132,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> lambda test passed (RecursiveLoop backfill verified end-to-end + clean destroy)"
+echo "==> lambda test passed (RecursiveLoop + ReservedConcurrentExecutions backfills verified end-to-end + clean destroy)"

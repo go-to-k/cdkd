@@ -91,6 +91,11 @@ export class LambdaStack extends cdk.Stack {
       applicationLogLevelV2: lambda.ApplicationLogLevel.INFO,
       systemLogLevelV2: lambda.SystemLogLevel.INFO,
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
+      // reservedConcurrentExecutions exercises the #609 backfill — wired
+      // through a separate post-create PutFunctionConcurrency control-plane
+      // API. Setting an explicit non-default value gives unambiguous
+      // readback via `aws lambda get-function-concurrency`.
+      reservedConcurrentExecutions: 5,
     });
 
     // Create Lambda Alias
