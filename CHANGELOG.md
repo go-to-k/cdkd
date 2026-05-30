@@ -1,3 +1,10 @@
+# [0.196.0](https://github.com/go-to-k/cdkd/compare/v0.195.0...v0.196.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill S3Vectors::VectorBucket Tags ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#730](https://github.com/go-to-k/cdkd/issues/730)) ([3509921](https://github.com/go-to-k/cdkd/commit/350992101344db83c1f3ded975d2cfffe93cf566))
+
 # [0.195.0](https://github.com/go-to-k/cdkd/compare/v0.194.0...v0.195.0) (2026-05-30)
 
 
