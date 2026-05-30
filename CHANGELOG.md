@@ -1,3 +1,10 @@
+# [0.192.0](https://github.com/go-to-k/cdkd/compare/v0.191.0...v0.192.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill SecretsManager::Secret Type ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#722](https://github.com/go-to-k/cdkd/issues/722)) ([a409415](https://github.com/go-to-k/cdkd/commit/a4094151448f697da546ef83b879191a2843e488))
+
 # [0.191.0](https://github.com/go-to-k/cdkd/compare/v0.190.0...v0.191.0) (2026-05-30)
 
 
