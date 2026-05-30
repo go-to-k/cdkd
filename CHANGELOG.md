@@ -1,3 +1,10 @@
+## [0.185.1](https://github.com/go-to-k/cdkd/compare/v0.185.0...v0.185.1) (2026-05-30)
+
+
+### Bug Fixes
+
+* **deployment:** derive ECS Service Name from physical id ([#712](https://github.com/go-to-k/cdkd/issues/712)) ([04c51a9](https://github.com/go-to-k/cdkd/commit/04c51a9b19df0b1aa2d03d4b9263df66717794f9))
+
 # [0.185.0](https://github.com/go-to-k/cdkd/compare/v0.184.0...v0.185.0) (2026-05-30)
 
 
