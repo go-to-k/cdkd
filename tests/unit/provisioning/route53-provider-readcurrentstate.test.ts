@@ -146,6 +146,38 @@ describe('Route53Provider.readCurrentState', () => {
       const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
       expect(result?.HostedZoneTags).toEqual([]);
     });
+
+    it('emits HostedZoneFeatures when GetHostedZone returns Features.AcceleratedRecoveryStatus', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZone: {
+            Id: '/hostedzone/Z1',
+            Name: 'example.com.',
+            Features: { AcceleratedRecoveryStatus: 'ENABLED' },
+          },
+        })
+        .mockResolvedValueOnce({ ResourceTagSet: { Tags: [] } })
+        .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
+
+      const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
+      expect(result?.HostedZoneFeatures).toEqual({ AcceleratedRecoveryStatus: 'ENABLED' });
+    });
+
+    it('omits HostedZoneFeatures when GetHostedZone returns no Features (typical zone)', async () => {
+      // Emit-when-present: a zone that never opted into AcceleratedRecovery
+      // returns no Features from GetHostedZone. A placeholder
+      // `{ AcceleratedRecoveryStatus: 'DISABLED' }` would force guaranteed
+      // drift on every clean run for zones older than the 2025 feature launch.
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
+        })
+        .mockResolvedValueOnce({ ResourceTagSet: { Tags: [] } })
+        .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
+
+      const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
+      expect(result).not.toHaveProperty('HostedZoneFeatures');
+    });
   });
 
   describe('AWS::Route53::RecordSet', () => {

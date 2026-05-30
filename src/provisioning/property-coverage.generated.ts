@@ -2031,12 +2031,13 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'HostedZoneConfig',
+        'HostedZoneFeatures',
         'HostedZoneTags',
         'Name',
         'QueryLoggingConfig',
         'VPCs',
       ]),
-      silentDrop: new Map<string, string>([['HostedZoneFeatures', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

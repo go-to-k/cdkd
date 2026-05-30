@@ -483,9 +483,6 @@
     "AWS::RDS::DBProxyEndpoint": [
       "EndpointNetworkType"
     ],
-    "AWS::Route53::HostedZone": [
-      "HostedZoneFeatures"
-    ],
     "AWS::S3::Bucket": [
       "AbacStatus",
       "AccessControl",

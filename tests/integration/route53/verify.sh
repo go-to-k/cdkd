@@ -158,6 +158,30 @@ if [ "${ACTUAL_CIDR_LOCATION}" != "${EXPECTED_CIDR_LOCATION}" ]; then
 fi
 echo "    OK: CidrRoutingConfig reached AWS (CollectionId='${ACTUAL_CIDR_COLLECTION}', LocationName='${ACTUAL_CIDR_LOCATION}') — silent-drop CLOSED by #609"
 
+# --- Assertion: HostedZoneFeatures.AcceleratedRecoveryStatus reached AWS
+# The fixture's `addPropertyOverride('HostedZoneFeatures.AcceleratedRecoveryStatus', 'ENABLED')`
+# is wired through the post-create UpdateHostedZoneFeatures control-plane
+# call. GetHostedZone surfaces it under `HostedZone.Features.AcceleratedRecoveryStatus`.
+# AcceleratedRecovery enabling is an ASYNC AWS-side state transition — the
+# field reports `ENABLING` immediately after UpdateHostedZoneFeatures
+# returns success and only eventually settles to `ENABLED`. Accepting both
+# proves the wire reached AWS and the atomicity guard (DeleteHostedZone on
+# UHF failure) didn't trip; the final-state poll is out of scope (would
+# add ~minutes to integ time for no extra correctness signal — cdkd's
+# job is the wire-up, not waiting for AWS-side eventual consistency).
+ACCEL_RECOVERY=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
+  --query 'HostedZone.Features.AcceleratedRecoveryStatus' --output text 2>/dev/null)
+
+case "${ACCEL_RECOVERY}" in
+  ENABLED|ENABLING) ;;
+  *)
+    echo "FAIL: HostedZone.Features.AcceleratedRecoveryStatus is '${ACCEL_RECOVERY}', expected 'ENABLED' or 'ENABLING' (silent-drop NOT closed)" >&2
+    aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" | jq '.HostedZone'
+    exit 1
+    ;;
+esac
+echo "    OK: HostedZone.Features.AcceleratedRecoveryStatus == '${ACCEL_RECOVERY}' on AWS (silent-drop CLOSED by #609)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -182,4 +206,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> route53 test passed (GeoProximityLocation backfill closed + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + clean destroy)"
