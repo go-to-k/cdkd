@@ -1495,8 +1495,7 @@ export function resolveExecutionRoleArnFromState(
   const lambda = state.resources[logicalId];
   if (!lambda) return undefined;
 
-  const roleRef =
-    lambda.properties?.[roleProperty] ?? lambda.observedProperties?.[roleProperty];
+  const roleRef = lambda.properties?.[roleProperty] ?? lambda.observedProperties?.[roleProperty];
   if (typeof roleRef === 'string' && roleRef.startsWith('arn:')) {
     return roleRef;
   }

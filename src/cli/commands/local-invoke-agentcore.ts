@@ -195,14 +195,14 @@ export function parseTimeoutMs(raw: string): number {
 }
 
 /**
- * `cdkl invoke-agentcore <target>` — run a Bedrock AgentCore Runtime container
+ * `cdkd local invoke-agentcore <target>` — run a Bedrock AgentCore Runtime container
  * locally and invoke it once over the AgentCore HTTP contract. Resolves
  * the `AWS::BedrockAgentCore::Runtime`, pulls / builds its container,
  * starts it on port 8080, waits for `GET /ping`, POSTs the event to
  * `POST /invocations`, prints the response, and tears down. Covers the
  * container artifact and the CodeConfiguration managed-runtime artifact
  * (fromCodeAsset, built from source) on the HTTP + MCP protocols; the agent's
- * calls to real AWS go to real AWS (credentials injected like `cdkl invoke`).
+ * calls to real AWS go to real AWS (credentials injected like `cdkd local invoke`).
  */
 async function localInvokeAgentCoreCommand(
   target: string | undefined,
@@ -278,8 +278,9 @@ async function localInvokeAgentCoreCommand(
 
     const appCmd = resolveApp(options.app);
     if (!appCmd) {
-      throw new Error(
-        `No CDK app specified. Pass --app, set ${getEmbedConfig().envPrefix}_APP, or add "app" to cdk.json.`
+      throw new CdkdError(
+        `No CDK app specified. Pass --app, set ${getEmbedConfig().envPrefix}_APP, or add "app" to cdk.json.`,
+        'LOCAL_INVOKE_AGENTCORE_NO_APP'
       );
     }
 
@@ -406,8 +407,8 @@ async function localInvokeAgentCoreCommand(
 
     const hostPort = await pickFreePort();
     const containerHost = options.containerHost;
-    // Stable `cdkl-`-prefixed name so the orphan sweep (`docker ps --filter
-    // name=cdkl-`) used by `/cleanup` + `/run-integ` can find this container
+    // Stable `cdkd-local-`-prefixed name so the orphan sweep (`docker ps --filter
+    // name=cdkd-local-`) used by `/cleanup` + `/run-integ` can find this container
     // if the process is killed before teardown — unlike a one-shot Lambda
     // invoke, the agent container runs a long-lived HTTP server.
     const containerName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -874,7 +875,7 @@ async function resolveAgentCoreCodeImageFromS3(
   if (typeof s3Source.bucket !== 'string' || s3Source.bucket.length === 0) {
     throw new CdkdError(
       `AgentCore Runtime '${resolved.logicalId}' fromS3 bundle reached the image step with no literal bucket. ` +
-        `This is a cdk-local bug — please report it.`,
+        `This is a cdkd bug — please report it.`,
       'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_UNRESOLVED'
     );
   }
@@ -1386,7 +1387,10 @@ async function assumeAgentCoreExecutionRole(
     );
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(`AssumeRole(${roleArn}) returned no usable credentials.`);
+      throw new CdkdError(
+        `AssumeRole(${roleArn}) returned no usable credentials.`,
+        'LOCAL_INVOKE_AGENTCORE_ASSUMEROLE_NO_CREDS'
+      );
     }
     return {
       accessKeyId: creds.AccessKeyId,
@@ -1400,7 +1404,10 @@ async function assumeAgentCoreExecutionRole(
 
 export async function readEvent(options: LocalInvokeAgentCoreOptions): Promise<unknown> {
   if (options.event && options.eventStdin) {
-    throw new Error('--event and --event-stdin are mutually exclusive.');
+    throw new CdkdError(
+      '--event and --event-stdin are mutually exclusive.',
+      'LOCAL_INVOKE_AGENTCORE_EVENT_FLAG_CONFLICT'
+    );
   }
   if (options.eventStdin) {
     return parseEvent(await readStdin(), '<stdin>');
@@ -1410,8 +1417,9 @@ export async function readEvent(options: LocalInvokeAgentCoreOptions): Promise<u
     try {
       raw = readFileSync(options.event, 'utf-8');
     } catch (err) {
-      throw new Error(
-        `Failed to read --event file '${options.event}': ${err instanceof Error ? err.message : String(err)}`
+      throw new CdkdError(
+        `Failed to read --event file '${options.event}': ${err instanceof Error ? err.message : String(err)}`,
+        'LOCAL_INVOKE_AGENTCORE_EVENT_READ_FAILED'
       );
     }
     return parseEvent(raw, options.event);
@@ -1423,8 +1431,9 @@ function parseEvent(raw: string, source: string): unknown {
   try {
     return JSON.parse(raw);
   } catch (err) {
-    throw new Error(
-      `Failed to parse event payload from ${source} as JSON: ${err instanceof Error ? err.message : String(err)}`
+    throw new CdkdError(
+      `Failed to parse event payload from ${source} as JSON: ${err instanceof Error ? err.message : String(err)}`,
+      'LOCAL_INVOKE_AGENTCORE_EVENT_PARSE_FAILED'
     );
   }
 }
@@ -1464,20 +1473,25 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
   try {
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
-    throw new Error(
-      `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`
+    throw new CdkdError(
+      `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`,
+      'LOCAL_INVOKE_AGENTCORE_ENV_VARS_READ_FAILED'
     );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${err instanceof Error ? err.message : String(err)}`
+    throw new CdkdError(
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${err instanceof Error ? err.message : String(err)}`,
+      'LOCAL_INVOKE_AGENTCORE_ENV_VARS_PARSE_FAILED'
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`--env-vars file '${filePath}' must contain a JSON object at the top level.`);
+    throw new CdkdError(
+      `--env-vars file '${filePath}' must contain a JSON object at the top level.`,
+      'LOCAL_INVOKE_AGENTCORE_ENV_VARS_NOT_OBJECT'
+    );
   }
   return parsed as EnvOverrideFile;
 }

@@ -70,6 +70,17 @@ export interface DockerRunOptions {
    * docker `-p` flag publishes the right port, not the RIE default.
    */
   containerPort?: number;
+  /**
+   * Extra env keys (beyond the always-sensitive AWS credential set) whose
+   * VALUES must be routed through docker's value-from-process-env form
+   * (`-e KEY` rather than `-e KEY=value`) so they never appear on the
+   * `docker run` argv (`ps` / `/proc/<pid>/cmdline` / verbose debug logs).
+   * The AgentCore local-invoke path passes the env keys that resolved to a
+   * decrypted SSM `SecureString` value under `--from-cfn-stack` here so the
+   * decrypted secret never lands on the argv. Always unioned with the
+   * built-in AWS credential set ({@link SENSITIVE_ENV_KEYS}).
+   */
+  sensitiveEnvKeys?: ReadonlySet<string>;
   /** Host to bind to (default `127.0.0.1`). */
   host?: string;
   /**
@@ -246,8 +257,23 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     }
   }
 
+  // Sensitive env keys (decrypted SecureString SSM values from
+  // `--from-cfn-stack` + the always-sensitive AWS credential set) are emitted
+  // as `-e KEY` (no `=value`) so the value is read from the spawn-time
+  // process env rather than going through the `docker run` argv. The
+  // passthrough map is forwarded to execFileAsync's env option below.
+  const sensitiveKeys =
+    opts.sensitiveEnvKeys && opts.sensitiveEnvKeys.size > 0
+      ? new Set<string>([...SENSITIVE_ENV_KEYS, ...opts.sensitiveEnvKeys])
+      : SENSITIVE_ENV_KEYS;
+  const passthroughEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(opts.env)) {
-    args.push('-e', `${k}=${v}`);
+    if (sensitiveKeys.has(k)) {
+      args.push('-e', k);
+      passthroughEnv[k] = v;
+    } else {
+      args.push('-e', `${k}=${v}`);
+    }
   }
 
   // Issue #440 — Lambda EphemeralStorage.Size: emit `--tmpfs
@@ -283,6 +309,11 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), args, {
       maxBuffer: 10 * 1024 * 1024,
+      // Forward the sensitive-key passthrough values via process env so
+      // docker picks them up for the `-e KEY` flags (the values never
+      // touched the argv). Inherit the rest of the parent's env so the
+      // user's local docker config (DOCKER_HOST etc.) keeps working.
+      env: { ...process.env, ...passthroughEnv },
     });
     return stdout.trim();
   } catch (error) {
@@ -391,6 +422,23 @@ export function pickFreePort(): Promise<number> {
  * redacted; non-credential `-e KEY=val` entries pass through unchanged.
  */
 const REDACTED_ENV_KEYS = new Set([
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+]);
+
+/**
+ * Built-in sensitive env keys whose VALUES are always routed through
+ * docker's value-from-process-env form (`-e KEY` rather than
+ * `-e KEY=value`) by {@link runDetached}. Mirrors the redaction-only
+ * {@link REDACTED_ENV_KEYS} set above, but stronger: the value is kept
+ * off the docker `run` argv (and therefore off `ps` / `/proc/<pid>/cmdline`
+ * / verbose debug logs) instead of just being masked at log time. A caller
+ * may extend this set via the `sensitiveEnvKeys` option (used by the
+ * AgentCore local-invoke path to keep decrypted `--from-cfn-stack`
+ * SecureString SSM values off the argv).
+ */
+export const SENSITIVE_ENV_KEYS: ReadonlySet<string> = new Set([
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',

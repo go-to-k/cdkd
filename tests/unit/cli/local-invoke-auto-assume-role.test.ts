@@ -169,4 +169,25 @@ describe('resolveExecutionRoleArnFromState (#442)', () => {
     });
     expect(resolveExecutionRoleArnFromState(state, 'Handler')).toBe(siblingArn);
   });
+
+  // 3rd-arg `roleProperty` extension (PR #717): AWS::BedrockAgentCore::Runtime
+  // uses `RoleArn` instead of `Role`, so the agentcore command passes 'RoleArn'
+  // here. The default-arg is still 'Role' so every existing call site is
+  // backward-compatible.
+  it("accepts a custom roleProperty (the agentcore 'RoleArn' case)", () => {
+    const state = stack({
+      AgentcoreRole: makeRole('MyStack-AgentcoreRole', siblingArn),
+      Agentcore: {
+        physicalId: 'agentcore-runtime',
+        resourceType: 'AWS::BedrockAgentCore::Runtime',
+        properties: { RoleArn: { 'Fn::GetAtt': ['AgentcoreRole', 'Arn'] } },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(resolveExecutionRoleArnFromState(state, 'Agentcore', 'RoleArn')).toBe(siblingArn);
+    // Default-arg 'Role' path with the same state misses the RoleArn property
+    // and returns undefined — confirms the 3rd-arg is actually being used.
+    expect(resolveExecutionRoleArnFromState(state, 'Agentcore')).toBeUndefined();
+  });
 });
