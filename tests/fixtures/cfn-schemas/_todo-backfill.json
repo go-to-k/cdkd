@@ -513,9 +513,6 @@
       "Tags",
       "UnreferencedFileRemoval"
     ],
-    "AWS::S3Vectors::VectorBucket": [
-      "Tags"
-    ],
     "AWS::ServiceDiscovery::Service": [
       "ServiceAttributes"
     ],

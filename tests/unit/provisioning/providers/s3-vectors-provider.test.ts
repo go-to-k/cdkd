@@ -77,6 +77,65 @@ describe('S3VectorsProvider', () => {
         encryptionConfiguration: undefined,
       });
     });
+
+    it('forwards Tags into CreateVectorBucket as the SDK Record<string,string> shape', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateVectorBucketCommand) {
+          return Promise.resolve({
+            vectorBucketArn:
+              'arn:aws:s3vectors:us-east-1:123456789012:vector-bucket/tagged-vector-bucket',
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await provider.create('MyVectorBucket', 'AWS::S3Vectors::VectorBucket', {
+        VectorBucketName: 'tagged-vector-bucket',
+        Tags: [
+          { Key: 'env', Value: 'prod' },
+          { Key: 'team', Value: 'platform' },
+        ],
+      });
+
+      const createCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof CreateVectorBucketCommand
+      );
+      expect(createCall![0].input).toEqual({
+        vectorBucketName: 'tagged-vector-bucket',
+        encryptionConfiguration: undefined,
+        tags: { env: 'prod', team: 'platform' },
+      });
+    });
+
+    it('omits tags from CreateVectorBucket when Tags absent or empty', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateVectorBucketCommand) {
+          return Promise.resolve({
+            vectorBucketArn: 'arn:aws:s3vectors:us-east-1:0:vector-bucket/no-tags',
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      // Absent
+      await provider.create('A', 'AWS::S3Vectors::VectorBucket', {
+        VectorBucketName: 'no-tags',
+      });
+      // Empty array
+      await provider.create('B', 'AWS::S3Vectors::VectorBucket', {
+        VectorBucketName: 'no-tags',
+        Tags: [],
+      });
+
+      const createCalls = mockSend.mock.calls.filter(
+        (call: unknown[]) => call[0] instanceof CreateVectorBucketCommand
+      );
+      expect(createCalls).toHaveLength(2);
+      for (const call of createCalls) {
+        const input = call![0].input as { tags?: unknown };
+        expect(input.tags).toBeUndefined();
+      }
+    });
   });
 
   describe('delete', () => {

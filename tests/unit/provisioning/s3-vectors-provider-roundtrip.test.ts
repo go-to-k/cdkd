@@ -102,12 +102,14 @@ describe('S3VectorsProvider read-update round-trip', () => {
         },
       },
     });
+    mockSend.mockResolvedValueOnce({ tags: {} }); // ListTagsForResource (no tags)
 
     const result = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
 
     expect(result).toEqual({
       VectorBucketName: PHYSICAL_ID,
       EncryptionConfiguration: { SSEType: 'AES256' },
+      Tags: [],
     });
     const enc = (result?.['EncryptionConfiguration'] ?? {}) as Record<string, unknown>;
     expect(enc['KMSKeyArn']).toBeUndefined();
@@ -126,6 +128,7 @@ describe('S3VectorsProvider read-update round-trip', () => {
         },
       },
     });
+    mockSend.mockResolvedValueOnce({ tags: {} }); // ListTagsForResource (no tags)
 
     const result = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
 
@@ -135,6 +138,7 @@ describe('S3VectorsProvider read-update round-trip', () => {
         SSEType: 'aws:kms',
         KMSKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
       },
+      Tags: [],
     });
   });
 });
