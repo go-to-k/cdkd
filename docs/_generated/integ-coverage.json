@@ -2291,11 +2291,16 @@
     {
       "resourceType": "AWS::Lambda::Permission",
       "integs": [
+        "cloudfront-function-url",
         "export",
         "migrate-from-cfn",
         "serverless-api"
       ],
       "signals": {
+        "cloudfront-function-url": [
+          "l1",
+          "literal"
+        ],
         "export": [
           "literal"
         ],
