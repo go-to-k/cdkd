@@ -1126,6 +1126,24 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // S3Tables::Table — the cdkd-compound physical id is
+    // `<bucketArn>|<namespace>|<name>` (NOT a real AWS ARN); the
+    // canonical CFn attribute `TableARN` reshapes that into the real
+    // table ARN (`<bucketArn>/table/<namespace>/<name>`) that AWS
+    // accepts on TagResource / ListTagsForResource / DescribeTable.
+    // Without this branch, `Fn::GetAtt: [Table, TableARN]` would fall
+    // back to the default and return the compound id, which downstream
+    // tag-API calls reject.
+    if (resourceType === 'AWS::S3Tables::Table') {
+      if (attributeName === 'TableARN') {
+        const parts = physicalId.split('|');
+        if (parts.length === 3 && parts[0] && parts[1] && parts[2]) {
+          return `${parts[0]}/table/${parts[1]}/${parts[2]}`;
+        }
+      }
+      return physicalId;
+    }
+
     // EC2 LaunchTemplate — `LatestVersionNumber` / `DefaultVersionNumber`
     // are AWS-derived integers that cdkd does not capture in state.
     // Resolve via `DescribeLaunchTemplates`. Return as a string so

@@ -1609,6 +1609,59 @@ describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381
       expect(result).toBe(arn);
     });
   });
+
+  describe('AWS::S3Tables::Table TableARN attribute (constructAttribute fallback)', () => {
+    const mkContext = (physicalId: string): ResolverContext => {
+      const template: CloudFormationTemplate = {
+        Resources: { Tbl: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+      };
+      return {
+        template,
+        resources: {
+          Tbl: {
+            physicalId,
+            resourceType: 'AWS::S3Tables::Table',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      };
+    };
+
+    it('reshapes cdkd-compound physicalId into the real table ARN', async () => {
+      // cdkd's compound physical id (committed in v0.18.0) joins parts
+      // with `|`; the canonical AWS table ARN uses `/table/...`.
+      const compound = 'arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket|my-ns|my-tbl';
+      const result = await resolver.resolve(
+        { 'Fn::GetAtt': ['Tbl', 'TableARN'] },
+        mkContext(compound)
+      );
+      expect(result).toBe('arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket/table/my-ns/my-tbl');
+    });
+
+    it('falls back to physicalId for unknown attributes on AWS::S3Tables::Table', async () => {
+      const compound = 'arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket|ns|tbl';
+      const result = await resolver.resolve(
+        { 'Fn::GetAtt': ['Tbl', 'NotAnAttribute'] },
+        mkContext(compound)
+      );
+      expect(result).toBe(compound);
+    });
+
+    it('falls back to physicalId when the compound shape is malformed (no reshape)', async () => {
+      // Defensive: a state file from before the compound layout (or a
+      // future provider that changes the encoding) should not crash —
+      // emit the raw physical id and let the downstream consumer error
+      // with the real value.
+      const notCompound = 'arn:aws:s3tables:us-east-1:111111111111:bucket/my-bucket';
+      const result = await resolver.resolve(
+        { 'Fn::GetAtt': ['Tbl', 'TableARN'] },
+        mkContext(notCompound)
+      );
+      expect(result).toBe(notCompound);
+    });
+  });
 });
 
 describe('IntrinsicFunctionResolver - unknown intrinsic detection', () => {
