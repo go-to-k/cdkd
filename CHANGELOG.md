@@ -1,3 +1,10 @@
+# [0.190.0](https://github.com/go-to-k/cdkd/compare/v0.189.0...v0.190.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill Events::EventBus LogConfig ([#721](https://github.com/go-to-k/cdkd/issues/721)) ([5309382](https://github.com/go-to-k/cdkd/commit/5309382e630d8a107453a6307aa97140cdbc730c))
+
 # [0.189.0](https://github.com/go-to-k/cdkd/compare/v0.188.0...v0.189.0) (2026-05-30)
 
 
