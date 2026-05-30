@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  CreateSecretCommand,
   UpdateSecretCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -144,6 +145,69 @@ describe('SecretsManagerSecretProvider read-update round-trip', () => {
         c[0] instanceof RemoveRegionsFromReplicationCommand
     );
     expect(replicaCalls).toHaveLength(0);
+  });
+
+  it('Type is forwarded to CreateSecret when present', async () => {
+    mockSend.mockResolvedValueOnce({
+      ARN: SECRET_ARN,
+    });
+
+    await provider.create('L', 'AWS::SecretsManager::Secret', {
+      Name: 'partner-secret',
+      SecretString: '{"foo":"bar"}',
+      Type: 'urn:partner:example',
+    });
+
+    const createCalls = mockSend.mock.calls.filter((c) => c[0] instanceof CreateSecretCommand);
+    expect(createCalls).toHaveLength(1);
+    const input = createCalls[0]![0].input as { Type?: string };
+    expect(input.Type).toBe('urn:partner:example');
+  });
+
+  it('Type omitted from CreateSecret when absent (ordinary secret)', async () => {
+    mockSend.mockResolvedValueOnce({
+      ARN: SECRET_ARN,
+    });
+
+    await provider.create('L', 'AWS::SecretsManager::Secret', {
+      Name: 'ordinary-secret',
+      SecretString: '{"foo":"bar"}',
+    });
+
+    const createCalls = mockSend.mock.calls.filter((c) => c[0] instanceof CreateSecretCommand);
+    expect(createCalls).toHaveLength(1);
+    const input = createCalls[0]![0].input as { Type?: string };
+    expect(input.Type).toBeUndefined();
+  });
+
+  it('Type is forwarded to UpdateSecret when present', async () => {
+    await provider.update(
+      'L',
+      SECRET_ARN,
+      'AWS::SecretsManager::Secret',
+      { Name: 'partner-secret', Type: 'urn:partner:v2' },
+      { Name: 'partner-secret', Type: 'urn:partner:v1' }
+    );
+
+    const updateCalls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateSecretCommand);
+    expect(updateCalls).toHaveLength(1);
+    const input = updateCalls[0]![0].input as { Type?: string };
+    expect(input.Type).toBe('urn:partner:v2');
+  });
+
+  it('Type omitted from UpdateSecret when absent', async () => {
+    await provider.update(
+      'L',
+      SECRET_ARN,
+      'AWS::SecretsManager::Secret',
+      { Name: 'ordinary-secret' },
+      { Name: 'ordinary-secret' }
+    );
+
+    const updateCalls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateSecretCommand);
+    expect(updateCalls).toHaveLength(1);
+    const input = updateCalls[0]![0].input as { Type?: string };
+    expect(input.Type).toBeUndefined();
   });
 
   it('Description="" reaches UpdateSecret (clear-the-description must not be silently dropped)', async () => {

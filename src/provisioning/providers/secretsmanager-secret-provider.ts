@@ -48,6 +48,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         'KmsKeyId',
         'Tags',
         'ReplicaRegions',
+        'Type',
       ]),
     ],
   ]);
@@ -100,6 +101,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
           KmsKeyId: r['KmsKeyId'] as string | undefined,
         }));
       }
+      if (properties['Type']) createParams.Type = properties['Type'] as string;
 
       const response = await this.smClient.send(new CreateSecretCommand(createParams));
 
@@ -172,6 +174,11 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // serializeRedrivePolicy pattern in sqs-queue-provider.ts.
       if (properties['KmsKeyId'] !== undefined && properties['KmsKeyId'] !== '')
         updateParams.KmsKeyId = properties['KmsKeyId'] as string;
+      // `Type`: emit-when-present (no placeholder in readCurrentState).
+      // Truthy gate matches create() — Type is the partner identifier for
+      // Secrets Manager managed external secrets and is rarely user-set;
+      // passing an empty string would be a no-op on AWS side.
+      if (properties['Type']) updateParams.Type = properties['Type'] as string;
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));
 
@@ -405,6 +412,10 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // Tags from the same DescribeSecret response.
       const tags = normalizeAwsTagsToCfn(resp.Tags);
       result['Tags'] = tags;
+      // `Type`: emit-when-present. AWS returns undefined for the typical
+      // (non-partner-managed) secret; emitting a `''` placeholder would
+      // force a guaranteed drift on every clean run for the common case.
+      if (resp.Type !== undefined) result['Type'] = resp.Type;
       return result;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;

@@ -525,9 +525,6 @@
     "AWS::S3Vectors::VectorBucket": [
       "Tags"
     ],
-    "AWS::SecretsManager::Secret": [
-      "Type"
-    ],
     "AWS::ServiceDiscovery::Service": [
       "ServiceAttributes"
     ],
