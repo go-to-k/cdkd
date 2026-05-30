@@ -261,6 +261,64 @@ describe('ECSProvider', () => {
         expect(c.dependsOn).toBeUndefined();
         expect(c.ulimits).toBeUndefined();
       });
+
+      it('forwards EnableFaultInjection=true onto RegisterTaskDefinition (#609 backfill)', async () => {
+        // #609 backfill: EnableFaultInjection rides directly on
+        // RegisterTaskDefinition (no separate API). The SDK key is
+        // camelCase `enableFaultInjection`.
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/fi-task:1',
+          },
+        });
+
+        await provider.create('FiTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'fi-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          EnableFaultInjection: true,
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.enableFaultInjection).toBe(true);
+      });
+
+      it('omits enableFaultInjection when EnableFaultInjection is absent (omit-when-absent)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/fi-task:1',
+          },
+        });
+
+        await provider.create('FiTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'fi-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.enableFaultInjection).toBeUndefined();
+      });
+
+      it('preserves explicit EnableFaultInjection=false (distinct from omit)', async () => {
+        // Locks in `!== undefined` semantics: a future "skip-when-falsy"
+        // refactor would silently drop explicit `false` without this test.
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/fi-task:1',
+          },
+        });
+
+        await provider.create('FiTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'fi-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          EnableFaultInjection: false,
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.enableFaultInjection).toBe(false);
+      });
     });
 
     describe('update', () => {

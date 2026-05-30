@@ -125,6 +125,7 @@ export class ECSProvider implements ResourceProvider {
         'PidMode',
         'IpcMode',
         'EphemeralStorage',
+        'EnableFaultInjection',
         'Tags',
       ]),
     ],
@@ -534,6 +535,7 @@ export class ECSProvider implements ResourceProvider {
           pidMode: properties['PidMode'] as PidMode | undefined,
           ipcMode: properties['IpcMode'] as IpcMode | undefined,
           ephemeralStorage: properties['EphemeralStorage'] as { sizeInGiB: number } | undefined,
+          enableFaultInjection: properties['EnableFaultInjection'] as boolean | undefined,
         })
       );
 
@@ -1447,6 +1449,7 @@ export class ECSProvider implements ResourceProvider {
         pidMode?: string;
         ipcMode?: string;
         ephemeralStorage?: { sizeInGiB?: number };
+        enableFaultInjection?: boolean;
         containerDefinitions?: ContainerDefinition[];
       };
       tags?: Array<{ key?: string; value?: string }>;
@@ -1479,6 +1482,9 @@ export class ECSProvider implements ResourceProvider {
     if (td.ipcMode !== undefined) result['IpcMode'] = td.ipcMode;
     if (td.ephemeralStorage?.sizeInGiB !== undefined) {
       result['EphemeralStorage'] = { SizeInGiB: td.ephemeralStorage.sizeInGiB };
+    }
+    if (td.enableFaultInjection !== undefined) {
+      result['EnableFaultInjection'] = td.enableFaultInjection;
     }
     result['ContainerDefinitions'] = td.containerDefinitions ?? [];
     const tags = normalizeAwsTagsToCfn(resp.tags);

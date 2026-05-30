@@ -267,7 +267,6 @@
       "VpcLatticeConfigurations"
     ],
     "AWS::ECS::TaskDefinition": [
-      "EnableFaultInjection",
       "InferenceAccelerators"
     ],
     "AWS::EFS::AccessPoint": [
