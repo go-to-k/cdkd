@@ -139,7 +139,7 @@ if [[ "${HTTP_OK}" -ne 1 ]]; then
 fi
 echo "    OK: front-door returned the backing service's banner"
 
-echo "==> Sending SIGTERM to cdkd ($(echo ${CDKD_PID}))"
+echo "==> Sending SIGTERM to cdkd (${CDKD_PID})"
 kill -TERM "${CDKD_PID}"
 
 echo "==> Waiting for cdkd to exit (up to 60s)"
