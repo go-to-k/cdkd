@@ -4,6 +4,8 @@ import {
   UpdateFunctionConfigurationCommand,
   UpdateFunctionCodeCommand,
   DeleteFunctionCommand,
+  PutFunctionRecursionConfigCommand,
+  GetFunctionRecursionConfigCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
 import { DescribeNetworkInterfacesCommand } from '@aws-sdk/client-ec2';
@@ -47,6 +49,7 @@ import {
   LambdaFunctionProvider,
   inlineCodeFileNameForRuntime,
 } from '../../../src/provisioning/providers/lambda-function-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import * as zlib from 'node:zlib';
 
 describe('LambdaFunctionProvider', () => {
@@ -428,6 +431,242 @@ describe('LambdaFunctionProvider', () => {
         ApplicationLogLevel: 'DEBUG',
         SystemLogLevel: 'INFO',
       });
+    });
+
+    // RecursiveLoop is set via a SEPARATE post-create control-plane API
+    // (PutFunctionRecursionConfig), not on CreateFunction. The tests below
+    // exercise the create-path atomicity (delete-on-failure) + the update
+    // diff-gate + the readback emit-when-present.
+    it('create(): calls PutFunctionRecursionConfig after CreateFunction when RecursiveLoop is set', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-rl',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-rl',
+        })
+        .mockResolvedValueOnce({}); // PutFunctionRecursionConfig
+
+      await provider.create('RlFn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-rl',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+        RecursiveLoop: 'Allow',
+      });
+
+      // Exactly 2 SDK calls: CreateFunction + PutFunctionRecursionConfig.
+      // A regression that issued a duplicate Put (or any extra read)
+      // would slip past the .find() check below; the count gate catches it.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+      const calls = mockLambdaSend.mock.calls;
+      expect(calls[0]?.[0]).toBeInstanceOf(CreateFunctionCommand);
+      expect(calls[1]?.[0]).toBeInstanceOf(PutFunctionRecursionConfigCommand);
+      const putInput = (calls[1]?.[0] as PutFunctionRecursionConfigCommand).input;
+      expect(putInput).toEqual({ FunctionName: 'fn-rl', RecursiveLoop: 'Allow' });
+    });
+
+    it('create(): omits PutFunctionRecursionConfig when RecursiveLoop is absent', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-no-rl',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-no-rl',
+      });
+
+      await provider.create('NoRlFn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-no-rl',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+      });
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionRecursionConfigCommand
+      );
+      expect(putCalls).toHaveLength(0);
+    });
+
+    it('create(): rolls back via DeleteFunction when PutFunctionRecursionConfig fails (atomicity)', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-rl-fail',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-rl-fail',
+        })
+        .mockRejectedValueOnce(new Error('PutFunctionRecursionConfig denied'))
+        .mockResolvedValueOnce({}); // DeleteFunction cleanup
+
+      // The throw must be ProvisioningError (the deploy-engine retry
+      // classifier discriminates by class), not a bare Error.
+      await expect(
+        provider.create('RlFailFn', 'AWS::Lambda::Function', {
+          FunctionName: 'fn-rl-fail',
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Handler: 'index.handler',
+          Runtime: 'nodejs20.x',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          RecursiveLoop: 'Allow',
+        })
+      ).rejects.toThrow(ProvisioningError);
+
+      // Exactly 3 SDK calls: CreateFunction + Put (fails) + DeleteFunction cleanup.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(3);
+      const calls = mockLambdaSend.mock.calls;
+      expect(calls[0]?.[0]).toBeInstanceOf(CreateFunctionCommand);
+      expect(calls[1]?.[0]).toBeInstanceOf(PutFunctionRecursionConfigCommand);
+      expect(calls[2]?.[0]).toBeInstanceOf(DeleteFunctionCommand);
+      const deleteInput = (calls[2]?.[0] as DeleteFunctionCommand).input;
+      expect(deleteInput).toEqual({ FunctionName: 'fn-rl-fail' });
+    });
+
+    it('update(): emits PutFunctionRecursionConfig when RecursiveLoop changes', async () => {
+      // RecursiveLoop-only change. Expected SDK sequence:
+      //   1) PutFunctionRecursionConfig
+      //   2) GetFunction (final attribute fetch)
+      // No UpdateFunctionConfiguration call because no field in configFields
+      // changed, only RecursiveLoop (which has its own SDK API).
+      // applyTagDiff computes from in-memory old/new tags and only issues
+      // TagResource / UntagResource calls when there are changes (no
+      // ListTags read).
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // PutFunctionRecursionConfig
+        .mockResolvedValueOnce({
+          Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+        });
+
+      await provider.update(
+        'RlFn',
+        'fn',
+        'AWS::Lambda::Function',
+        { RecursiveLoop: 'Allow' },
+        { RecursiveLoop: 'Terminate' }
+      );
+
+      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionRecursionConfigCommand
+      );
+      expect(putCalls).toHaveLength(1);
+      expect((putCalls[0]![0] as PutFunctionRecursionConfigCommand).input).toEqual({
+        FunctionName: 'fn',
+        RecursiveLoop: 'Allow',
+      });
+    });
+
+    it('update(): fresh-add (undefined -> Allow) on existing function calls PutFunctionRecursionConfig', async () => {
+      // Common real-world trigger path: user adds `recursiveLoop` to their
+      // CDK code for a pre-existing Lambda. prev is absent, new is set.
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // PutFunctionRecursionConfig
+        .mockResolvedValueOnce({
+          Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+        });
+
+      await provider.update(
+        'RlFn',
+        'fn',
+        'AWS::Lambda::Function',
+        { RecursiveLoop: 'Allow' },
+        {} // no RecursiveLoop in prev
+      );
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionRecursionConfigCommand
+      );
+      expect(putCalls).toHaveLength(1);
+      expect((putCalls[0]![0] as PutFunctionRecursionConfigCommand).input).toEqual({
+        FunctionName: 'fn',
+        RecursiveLoop: 'Allow',
+      });
+    });
+
+    it('update(): removing RecursiveLoop (Allow -> undefined) does NOT call PutFunctionRecursionConfig (no AWS reset sentinel)', async () => {
+      // PutFunctionRecursionConfig has no "clear / restore default"
+      // operation — `RecursiveLoop` accepts only `Allow` / `Terminate`,
+      // and absence from the API means "no change". So a template that
+      // drops the prop after previously setting it leaves AWS at the
+      // last-set value. This asymmetry diverges from the provider's
+      // `clearOnUpdateRemoval` pattern but matches the AWS API contract.
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+      });
+
+      await provider.update(
+        'RlFn',
+        'fn',
+        'AWS::Lambda::Function',
+        {}, // no RecursiveLoop in new
+        { RecursiveLoop: 'Allow' }
+      );
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionRecursionConfigCommand
+      );
+      expect(putCalls).toHaveLength(0);
+    });
+
+    it('update(): unchanged RecursiveLoop produces zero PutFunctionRecursionConfig calls', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+        })
+        .mockResolvedValueOnce({ Tags: {} });
+
+      await provider.update(
+        'RlFn',
+        'fn',
+        'AWS::Lambda::Function',
+        { RecursiveLoop: 'Allow' },
+        { RecursiveLoop: 'Allow' }
+      );
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionRecursionConfigCommand
+      );
+      expect(putCalls).toHaveLength(0);
+    });
+
+    it('readCurrentState(): emits RecursiveLoop when GetFunctionRecursionConfig returns a value', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn',
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          },
+          Tags: {},
+        })
+        .mockResolvedValueOnce({ RecursiveLoop: 'Allow' }); // GetFunctionRecursionConfig
+
+      const observed = await provider.readCurrentState(
+        'fn',
+        'RlFn',
+        'AWS::Lambda::Function'
+      );
+      expect(observed!['RecursiveLoop']).toBe('Allow');
+
+      const getRlCall = mockLambdaSend.mock.calls.find(
+        (c) => c[0] instanceof GetFunctionRecursionConfigCommand
+      );
+      expect(getRlCall).toBeDefined();
+    });
+
+    it('readCurrentState(): omits RecursiveLoop when GetFunctionRecursionConfig returns undefined', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn',
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          },
+          Tags: {},
+        })
+        .mockResolvedValueOnce({}); // RecursiveLoop undefined
+
+      const observed = await provider.readCurrentState(
+        'fn',
+        'RlFn',
+        'AWS::Lambda::Function'
+      );
+      expect(observed!).not.toHaveProperty('RecursiveLoop');
     });
   });
 

@@ -69,11 +69,14 @@ export class LambdaStack extends cdk.Stack {
     //
     // deadLetterQueueEnabled auto-creates an SQS DLQ and sets the function's
     // DeadLetterConfig.TargetArn; loggingFormat / applicationLogLevelV2 /
-    // systemLogLevelV2 set the function's LoggingConfig — both are native
-    // config fields backfilled in issue #609, exercised here end-to-end on
-    // the SDK path. (Because DeadLetterConfig + LoggingConfig are now
-    // `handled`, the function stays on the SDK provider instead of
-    // auto-routing via Cloud Control API.)
+    // systemLogLevelV2 set the function's LoggingConfig; recursiveLoop sets
+    // the function's RecursiveLoop — all native config fields backfilled in
+    // issue #609, exercised here end-to-end on the SDK path. (Because
+    // DeadLetterConfig + LoggingConfig + RecursiveLoop are now `handled`,
+    // the function stays on the SDK provider instead of auto-routing via
+    // Cloud Control API.) RecursiveLoop default is `Terminate`; setting
+    // `Allow` gives an unambiguous readback target (verify.sh checks via
+    // the dedicated `aws lambda get-function-recursion-config` API).
     const fn = new lambda.Function(this, 'Handler', {
       runtime: lambda.Runtime.PYTHON_3_12,
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
@@ -87,6 +90,7 @@ export class LambdaStack extends cdk.Stack {
       loggingFormat: lambda.LoggingFormat.JSON,
       applicationLogLevelV2: lambda.ApplicationLogLevel.INFO,
       systemLogLevelV2: lambda.SystemLogLevel.INFO,
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
     });
 
     // Create Lambda Alias

@@ -6,6 +6,8 @@ import {
   UpdateFunctionCodeCommand,
   DeleteFunctionCommand,
   GetFunctionCommand,
+  GetFunctionRecursionConfigCommand,
+  PutFunctionRecursionConfigCommand,
   ListFunctionsCommand,
   ListTagsCommand,
   TagResourceCommand,
@@ -26,6 +28,7 @@ import {
   type ImageConfig,
   type SnapStart,
   type LoggingConfig,
+  type RecursiveLoop,
 } from '@aws-sdk/client-lambda';
 import {
   CDK_PATH_TAG,
@@ -104,6 +107,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'ImageConfig',
         'SnapStart',
         'LoggingConfig',
+        'RecursiveLoop',
       ]),
     ],
   ]);
@@ -225,6 +229,52 @@ export class LambdaFunctionProvider implements ResourceProvider {
       };
 
       const response = await this.lambdaClient.send(new CreateFunctionCommand(createParams));
+
+      // RecursiveLoop is a post-create control-plane prop: AWS sets it via
+      // a SEPARATE `PutFunctionRecursionConfig` API, NOT on `CreateFunction`.
+      // Wire it after a successful function create. If this call fails, the
+      // function exists on AWS without the user-requested config — clean up
+      // by deleting the function (atomicity) so the next deploy retry sees
+      // a fresh slate instead of an orphan that already exists.
+      //
+      // VPC-attached Lambda caveat: the cleanup uses a bare `DeleteFunction`
+      // (not the provider's own `delete()`), so hyperplane ENIs are NOT
+      // pre-detached / awaited. For a VPC-attached function whose Put
+      // fails, the next deploy retry's downstream Subnet/SG creation can
+      // race the asynchronous ENI release (5-30min in practice) until AWS
+      // finishes the detach. The "concurrent update operation" substring
+      // is preserved in the wrapped error message so the outer
+      // `withRetry` classifier still retries cleanly; non-transient Put
+      // failures surface to the user as the named ProvisioningError below.
+      const recursiveLoop = properties['RecursiveLoop'] as RecursiveLoop | undefined;
+      if (recursiveLoop !== undefined) {
+        try {
+          await this.lambdaClient.send(
+            new PutFunctionRecursionConfigCommand({
+              FunctionName: functionName,
+              RecursiveLoop: recursiveLoop,
+            })
+          );
+        } catch (rlError) {
+          this.logger.warn(
+            `PutFunctionRecursionConfig failed for ${logicalId}: ${rlError instanceof Error ? rlError.message : String(rlError)} — deleting partially-created function to maintain atomicity`
+          );
+          try {
+            await this.lambdaClient.send(new DeleteFunctionCommand({ FunctionName: functionName }));
+          } catch (deleteError) {
+            this.logger.error(
+              `Cleanup DeleteFunction failed for ${logicalId} after PutFunctionRecursionConfig failure — function may be orphaned: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+            );
+          }
+          throw new ProvisioningError(
+            `Failed to set RecursiveLoop on Lambda function ${logicalId} (function was deleted to maintain atomicity): ${rlError instanceof Error ? rlError.message : String(rlError)}`,
+            resourceType,
+            logicalId,
+            functionName,
+            rlError instanceof Error ? rlError : undefined
+          );
+        }
+      }
 
       // We deliberately do NOT wait for State=Active here. CreateFunction
       // returns synchronously while the function is still in `Pending`,
@@ -400,6 +450,25 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // downstream resources / a subsequent deploy must not race the
         // in-flight code swap.
         await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
+      }
+
+      // RecursiveLoop is set via a SEPARATE `PutFunctionRecursionConfig`
+      // API (not part of UpdateFunctionConfiguration). On change, issue
+      // the post-update control-plane call. The transient
+      // "concurrent update operation" retry is already covered by
+      // `src/deployment/retryable-errors.ts` (added by PR #711).
+      const newRecursiveLoop = properties['RecursiveLoop'] as RecursiveLoop | undefined;
+      const prevRecursiveLoop = previousProperties['RecursiveLoop'] as RecursiveLoop | undefined;
+      if (newRecursiveLoop !== undefined && newRecursiveLoop !== prevRecursiveLoop) {
+        await this.lambdaClient.send(
+          new PutFunctionRecursionConfigCommand({
+            FunctionName: physicalId,
+            RecursiveLoop: newRecursiveLoop,
+          })
+        );
+        this.logger.debug(
+          `Updated RecursiveLoop for Lambda function ${physicalId} to '${newRecursiveLoop}'`
+        );
       }
 
       // Get updated function info for attributes (also gives us the ARN
@@ -1222,6 +1291,33 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // carries them).
       const tags = normalizeAwsTagsToCfn(resp.Tags);
       result['Tags'] = tags;
+
+      // RecursiveLoop lives on a SEPARATE control-plane API
+      // (GetFunctionRecursionConfig), not on GetFunction. Issue the
+      // extra call and emit-when-present (AWS returns the default
+      // 'Terminate' if the function never had the prop set; the drift
+      // comparator's state-keys-only walk ignores the field unless
+      // state carries it, so the always-emit shape from AWS does not
+      // produce false-positive drift on functions that never used
+      // RecursiveLoop).
+      try {
+        const rlResp = await this.lambdaClient.send(
+          new GetFunctionRecursionConfigCommand({ FunctionName: physicalId })
+        );
+        if (rlResp.RecursiveLoop !== undefined) {
+          result['RecursiveLoop'] = rlResp.RecursiveLoop;
+        }
+      } catch (rlErr) {
+        // Non-fatal: tolerate transient access failures on the
+        // secondary read so the primary read still produces a usable
+        // snapshot. The drift report just omits RecursiveLoop on the
+        // (rare) failure.
+        if (!(rlErr instanceof ResourceNotFoundException)) {
+          this.logger.debug(
+            `GetFunctionRecursionConfig failed for ${physicalId}: ${rlErr instanceof Error ? rlErr.message : String(rlErr)}`
+          );
+        }
+      }
 
       return result;
     } catch (err) {
