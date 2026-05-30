@@ -171,6 +171,13 @@
             "if": "Bash(gh pr create*) or Bash(gh -C * pr create*) or Bash(gh api*pulls*) or Bash(gh -C * api*pulls*)",
             "timeout": 10,
             "statusMessage": "Checking PR title prefix matches user-visible scope..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/state-destroy-force-gate.sh",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking staged verify.sh for state destroy --force..."
           }
         ]
       }
