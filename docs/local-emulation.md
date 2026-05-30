@@ -1408,8 +1408,9 @@ underlying engine owns the container boot + Cloud Map plumbing.
 | Flag | Default | Behavior |
 | --- | --- | --- |
 | `--lb-port <listenerPort=hostPort>` | host port == listener port | Remap the local front-door host port for a specific listener port. Repeatable (`--lb-port 80=8080 --lb-port 443=8443`). Use this on macOS to remap a privileged listener port (< 1024) to a non-privileged host port. |
-| `--tls-cert <path>` | auto-generated | PEM-encoded server certificate for HTTPS front-door listeners. Must be set together with `--tls-key`. Omit both flags to auto-generate a self-signed cert cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`. The deployed Listener Certificates are NOT fetched (ACM private keys are not retrievable). |
-| `--tls-key <path>` | — | PEM-encoded server private key matching `--tls-cert`. Must be set together. |
+| `--tls` | off | Terminate TLS locally for cloud-HTTPS listeners. Default: a cloud-HTTPS listener is served over plain HTTP locally (`X-Forwarded-Proto: https` is preserved so the upstream app still sees the deployed listener protocol). Implied by `--tls-cert` / `--tls-key`. Use this when local-dev cookies need `Secure` / `SameSite=None`, when the upstream app inspects TLS metadata, or for mTLS / SNI testing — otherwise plain HTTP is friendlier (no self-signed cert warnings in curl / browser). |
+| `--tls-cert <path>` | — | PEM-encoded server certificate for HTTPS front-door listeners. Implies `--tls`. Must be set together with `--tls-key`. Pass `--tls` alone (without `--tls-cert` / `--tls-key`) to auto-generate a self-signed cert cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`. The deployed Listener Certificates are NOT fetched (ACM private keys are not retrievable). |
+| `--tls-key <path>` | — | PEM-encoded server private key matching `--tls-cert`. Implies `--tls`. Must be set together. |
 | `--no-verify-auth` | off | Disable local enforcement of `authenticate-cognito` / `authenticate-oidc` actions. Every request is served as if the auth check passed. |
 | `--bearer-token <jwt>` | — | Default Bearer JWT injected as `Authorization: Bearer <jwt>` when the inbound request has none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would (signature + iss + aud + exp). Cookie pass-through (`AWSELBAuthSessionCookie-*`) also works. |
 | `--cluster <name>` | `cdkd-local` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and used as the docker network prefix. Same shape as `local start-service`. |
@@ -1432,9 +1433,13 @@ underlying engine owns the container boot + Cloud Map plumbing.
 The local front-door reads the synthesized template and emulates these
 listener / action shapes:
 
-- **Listener protocols:** HTTP and HTTPS. TLS is terminated locally —
-  pass `--tls-cert` / `--tls-key`, or omit both to auto-generate a
-  self-signed cert. Non-HTTP/HTTPS listeners (TCP / UDP / TLS / NLB) are
+- **Listener protocols:** HTTP and HTTPS. A cloud-HTTPS listener is
+  served over plain HTTP locally by default — `X-Forwarded-Proto: https`
+  is preserved so the upstream app still sees the deployed listener
+  protocol. Pass `--tls` to terminate TLS locally (a self-signed cert is
+  auto-generated and cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`),
+  or `--tls-cert` / `--tls-key` to supply your own cert (each flag
+  implies `--tls`). Non-HTTP/HTTPS listeners (TCP / UDP / TLS / NLB) are
   skipped with a warn.
 - **Rule conditions:** all six ALB fields — `path-pattern`,
   `host-header`, `http-header`, `http-request-method`,
