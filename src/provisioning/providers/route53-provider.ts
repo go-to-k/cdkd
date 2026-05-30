@@ -463,6 +463,13 @@ export class Route53Provider implements ResourceProvider {
         this.logger.debug(`Hosted zone ${physicalId} does not exist, skipping deletion`);
         return;
       }
+      // Preserve actionable ProvisioningError messages thrown by
+      // `ensureAcceleratedRecoveryDisabledForDelete` (e.g. the
+      // operator-recovery prompt on `*_FAILED` / timeout) — re-wrapping
+      // them with the generic "Failed to delete hosted zone" prefix
+      // would bury the actionable text in the `cause` chain. Mirrors
+      // the same guard in `createHostedZone`.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
