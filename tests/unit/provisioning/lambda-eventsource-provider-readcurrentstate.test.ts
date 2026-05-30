@@ -170,4 +170,161 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
     );
     expect(result).toBeUndefined();
   });
+
+  describe('#609 backfill: 7 readback branches', () => {
+    it('emits KmsKeyArn from SDK KMSKeyArn (casing flip back; emit-when-present)', async () => {
+      // SDK returns `KMSKeyArn`; CFn state holds `KmsKeyArn`. The
+      // readback must flip the casing back or drift would surface as
+      // a phantom KmsKeyArn vs KMSKeyArn mismatch on every run.
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+        KMSKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      expect(result?.['KmsKeyArn']).toBe('arn:aws:kms:us-east-1:123:key/abc');
+      // SDK-cased key MUST NOT leak through.
+      expect(result?.['KMSKeyArn']).toBeUndefined();
+    });
+
+    it('omits KmsKeyArn when AWS returns no KMSKeyArn (omit-when-absent; no phantom drift)', async () => {
+      // The typical ESM uses AWS-owned encryption (no customer key);
+      // AWS returns no KMSKeyArn field. An emit-as-empty-string here
+      // would force guaranteed drift on every clean run.
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      expect(result).toBeDefined();
+      expect('KmsKeyArn' in (result ?? {})).toBe(false);
+    });
+
+    it('emits LoggingConfig / MetricsConfig / ProvisionedPollerConfig as-is when present', async () => {
+      const loggingConfig = { Level: 'INFO', LogGroup: 'lg', Destination: { Schema: 'JSON' } };
+      const metricsConfig = { Metrics: ['EventCount'] };
+      const provisionedPollerConfig = { MinimumPollers: 1, MaximumPollers: 5 };
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+        LoggingConfig: loggingConfig,
+        MetricsConfig: metricsConfig,
+        ProvisionedPollerConfig: provisionedPollerConfig,
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      expect(result?.['LoggingConfig']).toEqual(loggingConfig);
+      expect(result?.['MetricsConfig']).toEqual(metricsConfig);
+      expect(result?.['ProvisionedPollerConfig']).toEqual(provisionedPollerConfig);
+    });
+
+    it('emits Queues / Topics as cloned arrays when present', async () => {
+      // The spread `[...resp.Queues]` defends against AWS SDK returning
+      // the same reference twice (would couple cdkd state to the SDK's
+      // response object). A direct === assertion would catch a future
+      // refactor that drops the clone.
+      const queues = ['q-a', 'q-b'];
+      const topics = ['t-a'];
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+        SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b:9092'] } },
+        Queues: queues,
+        Topics: topics,
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      expect(result?.['Queues']).toEqual(['q-a', 'q-b']);
+      expect(result?.['Queues']).not.toBe(queues);
+      expect(result?.['Topics']).toEqual(['t-a']);
+      expect(result?.['Topics']).not.toBe(topics);
+    });
+
+    it('converts StartingPositionTimestamp Date → epoch seconds (matches CFn shape)', async () => {
+      // AWS returns Date; CFn template supplies (and state stores) the
+      // epoch-seconds number per AWS::Lambda::EventSourceMapping schema.
+      // The conversion lets the drift comparator see the same shape on
+      // both sides — without it, every read would surface phantom drift.
+      const epochSeconds = 1717000000;
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceArn: 'arn:aws:kinesis:us-east-1:123:stream/s',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+        StartingPosition: 'AT_TIMESTAMP',
+        StartingPositionTimestamp: new Date(epochSeconds * 1000),
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      expect(result?.['StartingPositionTimestamp']).toBe(epochSeconds);
+    });
+
+    it('omits all 7 new props when AWS returns none of them (clean omit-when-absent)', async () => {
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      const r = result ?? {};
+      for (const k of [
+        'KmsKeyArn',
+        'LoggingConfig',
+        'MetricsConfig',
+        'ProvisionedPollerConfig',
+        'Queues',
+        'Topics',
+        'StartingPositionTimestamp',
+      ]) {
+        expect(k in r).toBe(false);
+      }
+    });
+  });
 });

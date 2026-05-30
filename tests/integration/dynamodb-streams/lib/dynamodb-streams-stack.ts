@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 
@@ -111,14 +113,56 @@ def handler(event, context):
       },
     });
 
+    // KMS key for the EventSourceMapping filter-criteria encryption
+    // (exercises the `KmsKeyArn` property — issue #609 backfill). AWS
+    // only persists the KmsKeyArn on the ESM when there is FilterCriteria
+    // to encrypt — without filter criteria, the key is a no-op and AWS
+    // silently does not surface it on `get-event-source-mapping`. The
+    // FilterCriteria below + the Lambda-service grant make the key both
+    // meaningful and authorized to use.
+    const esmKey = new kms.Key(this, 'EsmFilterKey', {
+      description: 'Encrypts the EventSourceMapping filter criteria (cdkd #609 integ)',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
+    });
+    esmKey.grantEncryptDecrypt(new iam.ServicePrincipal('lambda.amazonaws.com'));
+
     // Add DynamoDB stream as event source for Lambda
     fn.addEventSource(
       new lambdaEventSources.DynamoEventSource(table, {
         startingPosition: lambda.StartingPosition.TRIM_HORIZON,
         batchSize: 10,
         retryAttempts: 3,
+        filters: [
+          // A trivial filter pattern that matches INSERT events. The
+          // shape itself is unimportant — its mere presence forces AWS
+          // to persist KmsKeyArn (which encrypts this very pattern).
+          lambda.FilterCriteria.filter({ eventName: lambda.FilterRule.isEqual('INSERT') }),
+        ],
       })
     );
+
+    // Wire the #609 backfill props onto the synthesized
+    // `AWS::Lambda::EventSourceMapping` resource. The L2
+    // `DynamoEventSource` does not surface `KmsKeyArn` or `MetricsConfig`
+    // directly, so we walk the Lambda function's children, find the
+    // single `CfnEventSourceMapping` L1, and use `addPropertyOverride`.
+    // Both props are kind-agnostic (KmsKeyArn always supported;
+    // MetricsConfig: `EventCount` is the only documented value as of
+    // 2025 and works for every source kind).
+    //
+    // Assert exactly-one-ESM-in-subtree so a future fixture extension
+    // that adds a second ESM fails loudly here instead of silently
+    // overriding the wrong one (whichever findAll() returns first).
+    const esms = fn.node.findAll().filter((c) => c instanceof lambda.CfnEventSourceMapping);
+    if (esms.length !== 1) {
+      throw new Error(
+        `Expected exactly one CfnEventSourceMapping in the StreamProcessor subtree, found ${esms.length}`
+      );
+    }
+    const esmL1 = esms[0] as lambda.CfnEventSourceMapping;
+    esmL1.addPropertyOverride('KmsKeyArn', esmKey.keyArn);
+    esmL1.addPropertyOverride('MetricsConfig', { Metrics: ['EventCount'] });
 
     // Outputs
     new cdk.CfnOutput(this, 'TableName', {
@@ -139,6 +183,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'FunctionName', {
       value: fn.functionName,
       description: 'Stream processor Lambda function name',
+    });
+
+    new cdk.CfnOutput(this, 'EsmFilterKeyArn', {
+      value: esmKey.keyArn,
+      description: 'KMS key ARN used by the EventSourceMapping for filter-criteria encryption',
     });
   }
 }

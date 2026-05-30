@@ -125,6 +125,20 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         'DocumentDBEventSourceConfig',
         'ScalingConfig',
         'Tags',
+        // #609 backfill — 4 mutable (KMSKeyArn / LoggingConfig /
+        // MetricsConfig / ProvisionedPollerConfig ride both Create
+        // and Update) + 3 create-only (Queues / Topics /
+        // StartingPositionTimestamp absent from UpdateInput so
+        // update() ignores them; AWS rejects mutation, CFn replaces
+        // the resource on a template change to these — matched by
+        // cdkd's existing diff layer which schedules a replace).
+        'KmsKeyArn',
+        'LoggingConfig',
+        'MetricsConfig',
+        'ProvisionedPollerConfig',
+        'Queues',
+        'Topics',
+        'StartingPositionTimestamp',
       ]),
     ],
   ]);
@@ -217,6 +231,49 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
         params.Tags = Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]));
       }
+      // #609 backfill — 7 props closed in one slice. The CFn field name
+      // is `KmsKeyArn` (lower-case `ms`); the SDK field is `KMSKeyArn`
+      // (upper-case `MS`) — wire-format casing flip happens here.
+      // Use `!== undefined` for the 4 mutable props to mirror update()'s
+      // gating, so an explicit `''` (the AWS-documented `KMSKeyArn`
+      // clear-back-to-AWS-owned-key sentinel) and explicit empty objects
+      // / arrays all reach AWS. Queues / Topics use truthy because they
+      // are create-only — an empty array at create is a degenerate "no
+      // self-managed targets" case that has no AWS meaning and would
+      // generate a no-op call.
+      if (properties['KmsKeyArn'] !== undefined)
+        params.KMSKeyArn = properties['KmsKeyArn'] as string;
+      if (properties['LoggingConfig'] !== undefined)
+        params.LoggingConfig = properties[
+          'LoggingConfig'
+        ] as import('@aws-sdk/client-lambda').EventSourceMappingLoggingConfig;
+      if (properties['MetricsConfig'] !== undefined)
+        params.MetricsConfig = properties[
+          'MetricsConfig'
+        ] as import('@aws-sdk/client-lambda').EventSourceMappingMetricsConfig;
+      if (properties['ProvisionedPollerConfig'] !== undefined)
+        params.ProvisionedPollerConfig = properties[
+          'ProvisionedPollerConfig'
+        ] as import('@aws-sdk/client-lambda').ProvisionedPollerConfig;
+      // Queues / Topics: self-managed source target lists; create-only
+      // (absent from UpdateEventSourceMappingRequest).
+      if (properties['Queues']) params.Queues = properties['Queues'] as string[];
+      if (properties['Topics']) params.Topics = properties['Topics'] as string[];
+      // StartingPositionTimestamp: SDK expects `Date`; CFn template
+      // supplies a number (epoch seconds, per the AWS::Lambda::EventSourceMapping
+      // schema) or — defensively — an ISO-8601 string. Coerce both.
+      // Also create-only (absent from UpdateEventSourceMappingRequest);
+      // a template change forces a CFn-side replace, which cdkd's diff
+      // layer schedules independently of this provider.
+      if (properties['StartingPositionTimestamp'] !== undefined) {
+        const raw = properties['StartingPositionTimestamp'];
+        params.StartingPositionTimestamp =
+          typeof raw === 'number'
+            ? new Date(raw * 1000)
+            : raw instanceof Date
+              ? raw
+              : new Date(raw as string);
+      }
 
       const response = await this.lambdaClient.send(new CreateEventSourceMappingCommand(params));
 
@@ -307,6 +364,28 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       updateParams.DocumentDBEventSourceConfig = properties[
         'DocumentDBEventSourceConfig'
       ] as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
+    // #609 backfill — the 4 mutable props (Queues / Topics /
+    // StartingPositionTimestamp are create-only and intentionally NOT
+    // forwarded here; AWS would reject the field and a template change
+    // forces a CFn-side replace, scheduled by cdkd's diff layer).
+    // CFn `KmsKeyArn` → SDK `KMSKeyArn` casing flip mirrors create().
+    // Use `!== undefined` so an explicit `''` / `null` reaches AWS as
+    // the documented clear-sentinel (Lambda treats empty KMSKeyArn as
+    // "fall back to AWS-owned key").
+    if (properties['KmsKeyArn'] !== undefined)
+      updateParams.KMSKeyArn = properties['KmsKeyArn'] as string;
+    if (properties['LoggingConfig'] !== undefined)
+      updateParams.LoggingConfig = properties[
+        'LoggingConfig'
+      ] as import('@aws-sdk/client-lambda').EventSourceMappingLoggingConfig;
+    if (properties['MetricsConfig'] !== undefined)
+      updateParams.MetricsConfig = properties[
+        'MetricsConfig'
+      ] as import('@aws-sdk/client-lambda').EventSourceMappingMetricsConfig;
+    if (properties['ProvisionedPollerConfig'] !== undefined)
+      updateParams.ProvisionedPollerConfig = properties[
+        'ProvisionedPollerConfig'
+      ] as import('@aws-sdk/client-lambda').ProvisionedPollerConfig;
 
     const updateResp = await this.lambdaClient.send(
       new UpdateEventSourceMappingCommand(updateParams)
@@ -548,6 +627,30 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       result['DocumentDBEventSourceConfig'] = resp.DocumentDBEventSourceConfig;
     }
     if (resp.ScalingConfig !== undefined) result['ScalingConfig'] = resp.ScalingConfig;
+    // #609 backfill — surface the 7 newly-handled props from the
+    // GetEventSourceMapping response. Emit-when-present (NOT default-
+    // when-absent placeholder): AWS returns these only when set, and a
+    // phantom `KmsKeyArn: ''` / `LoggingConfig: { ... defaults }` on an
+    // untouched ESM would force guaranteed drift on every clean run.
+    // Note casing flip back: SDK `KMSKeyArn` → CFn `KmsKeyArn`.
+    if (resp.KMSKeyArn !== undefined) result['KmsKeyArn'] = resp.KMSKeyArn;
+    if (resp.LoggingConfig !== undefined) result['LoggingConfig'] = resp.LoggingConfig;
+    if (resp.MetricsConfig !== undefined) result['MetricsConfig'] = resp.MetricsConfig;
+    if (resp.ProvisionedPollerConfig !== undefined)
+      result['ProvisionedPollerConfig'] = resp.ProvisionedPollerConfig;
+    if (resp.Queues !== undefined) result['Queues'] = [...resp.Queues];
+    if (resp.Topics !== undefined) result['Topics'] = [...resp.Topics];
+    // StartingPositionTimestamp: AWS SDK v3 types this as Date, but
+    // older SDK shapes / non-AWS endpoints (LocalStack etc.) can return
+    // an ISO-string. Coerce via `new Date(...)` so either reaches the
+    // epoch-seconds conversion safely. cdkd state stores the
+    // epoch-seconds number the user supplied at create; this conversion
+    // back lets the drift comparator see the same shape on both sides.
+    if (resp.StartingPositionTimestamp !== undefined) {
+      const raw = resp.StartingPositionTimestamp;
+      const date = raw instanceof Date ? raw : new Date(raw as string);
+      result['StartingPositionTimestamp'] = Math.floor(date.getTime() / 1000);
+    }
 
     // `Enabled` derives from `State`: AWS exposes the underlying state
     // (Enabled / Disabled / Enabling / Disabling / Updating / Creating /
