@@ -299,6 +299,26 @@ describe('ECSProvider', () => {
         const input = mockSend.mock.calls[0][0].input;
         expect(input.enableFaultInjection).toBeUndefined();
       });
+
+      it('preserves explicit EnableFaultInjection=false (distinct from omit)', async () => {
+        // Locks in `!== undefined` semantics: a future "skip-when-falsy"
+        // refactor would silently drop explicit `false` without this test.
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/fi-task:1',
+          },
+        });
+
+        await provider.create('FiTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'fi-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          EnableFaultInjection: false,
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.enableFaultInjection).toBe(false);
+      });
     });
 
     describe('update', () => {

@@ -183,6 +183,25 @@ describe('ECSProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('EnableFaultInjection');
   });
 
+  it('preserves explicit EnableFaultInjection=false on readback (distinct from omit)', async () => {
+    // Locks in the `!== undefined` guard at the read side: a regression
+    // to `if (td.enableFaultInjection)` would silently drop explicit `false`.
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'fi-false-td',
+        enableFaultInjection: false,
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/fi-false-td:1',
+      'FiFalseTd',
+      'AWS::ECS::TaskDefinition'
+    );
+
+    expect(result?.EnableFaultInjection).toBe(false);
+  });
+
   it('returns undefined when cluster is gone', async () => {
     mockSend.mockResolvedValueOnce({ clusters: [] });
 
