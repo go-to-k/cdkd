@@ -344,9 +344,6 @@
       "RuntimeManagementConfig",
       "TenancyConfig"
     ],
-    "AWS::Lambda::Permission": [
-      "InvokedViaFunctionUrl"
-    ],
     "AWS::Neptune::DBCluster": [
       "AssociatedRoles",
       "AvailabilityZones",

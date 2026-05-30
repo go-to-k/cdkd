@@ -173,6 +173,58 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  it('surfaces InvokedViaFunctionUrl: true when AWS injects the lambda:FunctionUrlAuthType condition (issue #609)', async () => {
+    const policy = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Sid: 'FnUrlPerm',
+          Action: 'lambda:InvokeFunctionUrl',
+          Principal: '*',
+          Condition: {
+            StringEquals: { 'lambda:FunctionUrlAuthType': 'NONE' },
+          },
+        },
+      ],
+    };
+    mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(policy) });
+
+    const result = await provider.readCurrentState(
+      'FnUrlPerm',
+      'PermissionLogical',
+      'AWS::Lambda::Permission',
+      { FunctionName: 'my-function' }
+    );
+
+    expect(result).toMatchObject({
+      Principal: '*',
+      InvokedViaFunctionUrl: true,
+    });
+  });
+
+  it('omits InvokedViaFunctionUrl when the lambda:FunctionUrlAuthType condition is absent', async () => {
+    const policy = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Sid: 'PlainPerm',
+          Action: 'lambda:InvokeFunction',
+          Principal: { Service: 'sns.amazonaws.com' },
+        },
+      ],
+    };
+    mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(policy) });
+
+    const result = await provider.readCurrentState(
+      'PlainPerm',
+      'PermissionLogical',
+      'AWS::Lambda::Permission',
+      { FunctionName: 'my-function' }
+    );
+
+    expect(result).not.toHaveProperty('InvokedViaFunctionUrl');
+  });
+
   it('parses legacy "functionArn|statementId" physicalId format', async () => {
     const policy = {
       Version: '2012-10-17',

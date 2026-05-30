@@ -40,6 +40,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
         'PrincipalOrgID',
         'EventSourceToken',
         'FunctionUrlAuthType',
+        'InvokedViaFunctionUrl',
       ]),
     ],
   ]);
@@ -114,6 +115,8 @@ export class LambdaPermissionProvider implements ResourceProvider {
         addParams.EventSourceToken = properties['EventSourceToken'] as string;
       if (properties['FunctionUrlAuthType'])
         addParams.FunctionUrlAuthType = properties['FunctionUrlAuthType'] as FunctionUrlAuthType;
+      if (properties['InvokedViaFunctionUrl'] !== undefined)
+        addParams.InvokedViaFunctionUrl = properties['InvokedViaFunctionUrl'] as boolean;
 
       await this.lambdaClient.send(new AddPermissionCommand(addParams));
 
@@ -274,6 +277,10 @@ export class LambdaPermissionProvider implements ResourceProvider {
    *   - `Condition.ArnLike.AWS:SourceArn` → `SourceArn`.
    *   - `Condition.StringEquals.AWS:SourceAccount` → `SourceAccount`.
    *   - `Condition.StringEquals.aws:PrincipalOrgID` → `PrincipalOrgID`.
+   *   - `Condition.StringEquals.lambda:FunctionUrlAuthType` →
+   *     `InvokedViaFunctionUrl: true` (AWS encodes the CFn boolean indirectly
+   *     by injecting this condition; the value mirrors `FunctionUrlAuthType`,
+   *     which is already round-tripped through its own key).
    *   - `Condition.ArnLike.AWS:SourceAccount` is left alone — drift on the
    *     condition operator key would be confusing here.
    */
@@ -353,6 +360,13 @@ export class LambdaPermissionProvider implements ResourceProvider {
       const orgId = condition['StringEquals']?.['aws:PrincipalOrgID'];
       if (orgId !== undefined) {
         result['PrincipalOrgID'] = Array.isArray(orgId) ? orgId[0] : orgId;
+      }
+      // AWS encodes `InvokedViaFunctionUrl: true` indirectly by injecting a
+      // `lambda:FunctionUrlAuthType` condition into the statement. Presence
+      // of the key (any value) is the signal — the literal auth-type value
+      // is already round-tripped via the `FunctionUrlAuthType` property.
+      if (condition['StringEquals']?.['lambda:FunctionUrlAuthType'] !== undefined) {
+        result['InvokedViaFunctionUrl'] = true;
       }
     }
 
