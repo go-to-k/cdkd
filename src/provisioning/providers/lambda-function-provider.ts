@@ -6,7 +6,10 @@ import {
   UpdateFunctionCodeCommand,
   DeleteFunctionCommand,
   GetFunctionCommand,
+  DeleteFunctionConcurrencyCommand,
+  GetFunctionConcurrencyCommand,
   GetFunctionRecursionConfigCommand,
+  PutFunctionConcurrencyCommand,
   PutFunctionRecursionConfigCommand,
   ListFunctionsCommand,
   ListTagsCommand,
@@ -108,6 +111,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'SnapStart',
         'LoggingConfig',
         'RecursiveLoop',
+        'ReservedConcurrentExecutions',
       ]),
     ],
   ]);
@@ -272,6 +276,46 @@ export class LambdaFunctionProvider implements ResourceProvider {
             logicalId,
             functionName,
             rlError instanceof Error ? rlError : undefined
+          );
+        }
+      }
+
+      // ReservedConcurrentExecutions: post-create control-plane prop set
+      // via a SEPARATE `PutFunctionConcurrency` API (NOT on CreateFunction).
+      // Same atomicity contract as RecursiveLoop above: on failure delete
+      // the just-created function so the next deploy retry sees a fresh
+      // slate. The VPC ENI caveat applies identically (see the RecursiveLoop
+      // comment for the full detail). A value of 0 is meaningful — it
+      // throttles the function to zero concurrency — so the gate uses
+      // `!== undefined`, NOT a truthy check.
+      const reservedConcurrentExecutions = properties['ReservedConcurrentExecutions'] as
+        | number
+        | undefined;
+      if (reservedConcurrentExecutions !== undefined) {
+        try {
+          await this.lambdaClient.send(
+            new PutFunctionConcurrencyCommand({
+              FunctionName: functionName,
+              ReservedConcurrentExecutions: reservedConcurrentExecutions,
+            })
+          );
+        } catch (pcError) {
+          this.logger.warn(
+            `PutFunctionConcurrency failed for ${logicalId}: ${pcError instanceof Error ? pcError.message : String(pcError)} — deleting partially-created function to maintain atomicity`
+          );
+          try {
+            await this.lambdaClient.send(new DeleteFunctionCommand({ FunctionName: functionName }));
+          } catch (deleteError) {
+            this.logger.error(
+              `Cleanup DeleteFunction failed for ${logicalId} after PutFunctionConcurrency failure — function may be orphaned: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+            );
+          }
+          throw new ProvisioningError(
+            `Failed to set ReservedConcurrentExecutions on Lambda function ${logicalId} (function was deleted to maintain atomicity): ${pcError instanceof Error ? pcError.message : String(pcError)}`,
+            resourceType,
+            logicalId,
+            functionName,
+            pcError instanceof Error ? pcError : undefined
           );
         }
       }
@@ -469,6 +513,43 @@ export class LambdaFunctionProvider implements ResourceProvider {
         this.logger.debug(
           `Updated RecursiveLoop for Lambda function ${physicalId} to '${newRecursiveLoop}'`
         );
+      }
+
+      // ReservedConcurrentExecutions: set via a SEPARATE
+      // `PutFunctionConcurrency` API (or cleared via
+      // `DeleteFunctionConcurrency` — UpdateFunctionConfiguration does NOT
+      // accept this field). On change, issue the matching call. Removal
+      // (`prev: number, next: undefined`) maps to DeleteFunctionConcurrency
+      // so a user dropping the property from their template actually
+      // un-throttles the function instead of silently leaving the old
+      // reserved value pinned. 0 is a meaningful value (zero concurrency
+      // = full throttle), so the gates use `!== undefined` / `!==` strict
+      // compare.
+      const newReservedConcurrentExecutions = properties['ReservedConcurrentExecutions'] as
+        | number
+        | undefined;
+      const prevReservedConcurrentExecutions = previousProperties[
+        'ReservedConcurrentExecutions'
+      ] as number | undefined;
+      if (newReservedConcurrentExecutions !== prevReservedConcurrentExecutions) {
+        if (newReservedConcurrentExecutions === undefined) {
+          await this.lambdaClient.send(
+            new DeleteFunctionConcurrencyCommand({ FunctionName: physicalId })
+          );
+          this.logger.debug(
+            `Cleared ReservedConcurrentExecutions for Lambda function ${physicalId} (template removed the property)`
+          );
+        } else {
+          await this.lambdaClient.send(
+            new PutFunctionConcurrencyCommand({
+              FunctionName: physicalId,
+              ReservedConcurrentExecutions: newReservedConcurrentExecutions,
+            })
+          );
+          this.logger.debug(
+            `Updated ReservedConcurrentExecutions for Lambda function ${physicalId} to ${newReservedConcurrentExecutions}`
+          );
+        }
       }
 
       // Get updated function info for attributes (also gives us the ARN
@@ -1315,6 +1396,27 @@ export class LambdaFunctionProvider implements ResourceProvider {
         if (!(rlErr instanceof ResourceNotFoundException)) {
           this.logger.debug(
             `GetFunctionRecursionConfig failed for ${physicalId}: ${rlErr instanceof Error ? rlErr.message : String(rlErr)}`
+          );
+        }
+      }
+
+      // ReservedConcurrentExecutions: a SEPARATE control-plane read
+      // (GetFunctionConcurrency), emit-when-present. AWS returns an
+      // empty response (no `ReservedConcurrentExecutions` field) for
+      // functions that never set the limit, so a zero / undefined
+      // response correctly maps to omit-from-readback — no phantom
+      // drift on the typical un-throttled function.
+      try {
+        const pcResp = await this.lambdaClient.send(
+          new GetFunctionConcurrencyCommand({ FunctionName: physicalId })
+        );
+        if (pcResp.ReservedConcurrentExecutions !== undefined) {
+          result['ReservedConcurrentExecutions'] = pcResp.ReservedConcurrentExecutions;
+        }
+      } catch (pcErr) {
+        if (!(pcErr instanceof ResourceNotFoundException)) {
+          this.logger.debug(
+            `GetFunctionConcurrency failed for ${physicalId}: ${pcErr instanceof Error ? pcErr.message : String(pcErr)}`
           );
         }
       }

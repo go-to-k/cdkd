@@ -323,7 +323,6 @@
       "DurableConfig",
       "FunctionScalingConfig",
       "PublishToLatestPublished",
-      "ReservedConcurrentExecutions",
       "RuntimeManagementConfig",
       "TenancyConfig"
     ],
