@@ -47,21 +47,28 @@ echo "[verify] step 1a: install + build cdkd"
 cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
   echo "[verify] step 1b: install fixture deps"
-  npm install --silent
+  vp install --prefer-offline
 fi
 
 cleanup() {
-  echo "[verify] cleanup: destroy ${STACK}"
-  ${CLI} destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force \
-    >/dev/null 2>&1 || echo "[verify] destroy failed — manual cleanup required"
+  rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
+    ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
+  fi
+  exit "${rc}"
 }
 trap cleanup EXIT
 
 echo "[verify] step 2: cdkd deploy ${STACK}"
-${CLI} deploy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --verbose
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
-BUCKET=$(${CLI} state show "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --json |
+BUCKET=$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json |
   jq -r '.state.outputs.BucketName')
+if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "null" ]; then
+  echo "FAIL: BucketName output missing from cdkd state (got: '${BUCKET}')"
+  exit 1
+fi
 echo "[verify] deployed bucket: ${BUCKET}"
 
 echo "[verify] step 3: baseline — cdkd local invoke-agentcore WITHOUT --from-state"
@@ -88,5 +95,8 @@ echo "${RESULT_FROMSTATE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {
   echo "FAIL: --from-state — STATIC_VALUE pass-through broken; got: ${RESULT_FROMSTATE}"
   exit 1
 }
+
+echo "[verify] step 5: cdkd destroy --force"
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 echo "[verify] All assertions passed — G2 closed: cdkd local invoke-agentcore --from-state substitutes intrinsic env vars"
