@@ -1,3 +1,10 @@
+# [0.195.0](https://github.com/go-to-k/cdkd/compare/v0.194.0...v0.195.0) (2026-05-30)
+
+
+### Features
+
+* **local:** cdkd local start-alb — Application Load Balancer local emulator ([#725](https://github.com/go-to-k/cdkd/issues/725)) ([73afa4e](https://github.com/go-to-k/cdkd/commit/73afa4e0936ea00b68276a62a250d31ffe7497e7))
+
 # [0.194.0](https://github.com/go-to-k/cdkd/compare/v0.193.0...v0.194.0) (2026-05-30)
 
 
