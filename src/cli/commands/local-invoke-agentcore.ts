@@ -22,11 +22,7 @@ import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider, resolveCfnFallbackRegion } from './local-state-source.js';
 import type { LocalStateProvider, LocalStateRecord } from 'cdk-local';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
-import {
-  getEmbedConfig,
-  setEmbedConfig,
-  type CdkLocalEmbedConfig,
-} from 'cdk-local';
+import { getEmbedConfig } from 'cdk-local';
 import {
   AGENTCORE_A2A_PROTOCOL,
   AGENTCORE_AGUI_PROTOCOL,
@@ -196,14 +192,6 @@ export function parseTimeoutMs(raw: string): number {
     );
   }
   return parsed;
-}
-
-/**
- * Factory options for {@link createLocalInvokeAgentCoreCommand}.
- */
-export interface CreateLocalInvokeAgentCoreCommandOptions {
-  /** Embed-time branding overrides for a host wrapping this factory. */
-  embedConfig?: CdkLocalEmbedConfig;
 }
 
 /**
@@ -1494,10 +1482,13 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
   return parsed as EnvOverrideFile;
 }
 
-export function createLocalInvokeAgentCoreCommand(
-  opts: CreateLocalInvokeAgentCoreCommandOptions = {}
-): Command {
-  setEmbedConfig(opts.embedConfig);
+export function createLocalInvokeAgentCoreCommand(): Command {
+  // cdkd's `createLocalCommand` (in local-invoke.ts) sets `CDKD_EMBED_CONFIG`
+  // once for the whole `cdkd local` command tree, so this factory must NOT
+  // call `setEmbedConfig` itself — doing so would clobber cdkd's branding
+  // back to cdk-local's `cdkl` defaults (the image-name `cdkl-invoke-...`
+  // / `cliName` / etc. visible in error strings come from the shared
+  // process-wide config).
   const cmd = new Command('invoke-agentcore')
     .description(
       'Run a Bedrock AgentCore Runtime container locally and invoke it once over its protocol ' +

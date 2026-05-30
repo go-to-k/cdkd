@@ -61,8 +61,15 @@ export interface DockerRunOptions {
    * image's own CMD is sufficient.
    */
   cmd: string[];
-  /** Host port to bind the RIE port (8080) to. */
+  /** Host port to bind the container port to. */
   hostPort: number;
+  /**
+   * Container port to bind {@link hostPort} to. Defaults to 8080 (the RIE
+   * port the Lambda local-invoke path uses); the AgentCore local-invoke path
+   * passes 8000 (MCP Streamable-HTTP) or 9000 (A2A JSON-RPC) here so the
+   * docker `-p` flag publishes the right port, not the RIE default.
+   */
+  containerPort?: number;
   /** Host to bind to (default `127.0.0.1`). */
   host?: string;
   /**
@@ -218,7 +225,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   }
 
   const host = opts.host ?? '127.0.0.1';
-  args.push('-p', `${host}:${opts.hostPort}:8080`);
+  args.push('-p', `${host}:${opts.hostPort}:${opts.containerPort ?? 8080}`);
   if (opts.debugPort !== undefined) {
     args.push('-p', `${host}:${opts.debugPort}:${opts.debugPort}`);
   }
