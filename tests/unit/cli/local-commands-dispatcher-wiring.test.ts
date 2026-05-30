@@ -1,27 +1,36 @@
 /**
- * Dispatcher-wiring regression test for the four `cdkd local *` commands.
+ * Dispatcher-wiring regression test for the three direct-dispatch
+ * `cdkd local *` commands (`invoke` / `start-api` / `run-task`).
  *
  * Issue #611 test gap: only `cdkd local invoke` is exercised end-to-end
- * by the existing `local-invoke-from-cfn-stack` integ. The other three
- * commands (`local-start-api` / `local-run-task` / `local-start-service`)
- * trust the unit-test dispatcher contract — if any of them forgets to
- * call `createLocalStateProvider` or fails to bubble the
+ * by the existing `local-invoke-from-cfn-stack` integ. The other two
+ * direct-dispatch commands (`local-start-api` / `local-run-task`) trust
+ * the unit-test dispatcher contract — if any of them forgets to call
+ * `createLocalStateProvider` or fails to bubble the
  * `LocalStateSourceError` raised on the mutually-exclusive flag combo,
  * only the integ would catch it, and we only have an integ for one of
- * the four.
+ * the three.
  *
- * This test closes the gap with a pure-source-text scan: each of the
- * four command files must
+ * `cdkd local start-service` + `start-alb` use cdk-local's ECS service
+ * emulator engine; the engine calls `createLocalStateProvider` internally
+ * via `cdkdExtraStateProviders` (registered in `local-state-source.ts`),
+ * so those two commands intentionally do NOT import the dispatcher
+ * directly. Their wiring is covered by the shared `extraStateProviders`
+ * map (verified by typecheck + the engine's bundled mutual-exclusion
+ * test in cdk-local).
+ *
+ * This test closes the gap for the three direct-dispatch commands with
+ * a pure-source-text scan: each of them must
  *   (a) import `createLocalStateProvider` from `./local-state-source.js`,
  *   (b) call `createLocalStateProvider(` somewhere in the body, and
  *   (c) declare `fromCfnStack?: string | boolean` on its options type
  *       (so commander grammar wiring stays in lock-step).
  *
  * Plus a live mutual-exclusion assertion against `createLocalStateProvider`
- * itself — the four commands share this single dispatcher, so verifying
- * the dispatcher's bubble-up surface once (here) covers all four
- * command call sites without needing to mock Synthesizer / Docker /
- * route discovery / etc. for each command's full action.
+ * itself — every command (direct or engine-wired) ultimately surfaces
+ * the dispatcher's `LocalStateSourceError`, so verifying the bubble-up
+ * surface once (here) covers every call site without needing to mock
+ * each command's full action shape.
  */
 
 import { describe, it, expect } from 'vite-plus/test';
@@ -43,7 +52,6 @@ const COMMANDS: LocalCommand[] = [
   { name: 'local-invoke', path: 'src/cli/commands/local-invoke.ts' },
   { name: 'local-start-api', path: 'src/cli/commands/local-start-api.ts' },
   { name: 'local-run-task', path: 'src/cli/commands/local-run-task.ts' },
-  { name: 'local-start-service', path: 'src/cli/commands/local-start-service.ts' },
 ];
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
