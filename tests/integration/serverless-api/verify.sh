@@ -4,8 +4,8 @@
 #
 # Asserts that the ApiGatewayV2 config props wired by the #609 backfill
 # actually reach AWS on deploy:
-#   - AWS::ApiGatewayV2::Api    DisableExecuteApiEndpoint (false) + Version (v1)
-#     via CreateApi.
+#   - AWS::ApiGatewayV2::Api    DisableExecuteApiEndpoint (false) + Version (v1) +
+#     IpAddressType (dualstack) via CreateApi.
 #   - AWS::ApiGatewayV2::Stage  StageVariables ({env: test}) +
 #     DefaultRouteSettings (ThrottlingRateLimit 50 / DetailedMetricsEnabled)
 #     via CreateStage.
@@ -106,10 +106,11 @@ if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
 fi
 echo "    resolved API id: ${API_ID}"
 
-# --- Assertion 1: Api DisableExecuteApiEndpoint + Version reached AWS ------
+# --- Assertion 1: Api DisableExecuteApiEndpoint + Version + IpAddressType reached AWS ------
 API=$(aws apigatewayv2 get-api --api-id "${API_ID}" --region "${REGION}")
 DEAE=$(echo "${API}" | jq -r '.DisableExecuteApiEndpoint')
 API_VERSION=$(echo "${API}" | jq -r '.Version // empty')
+IP_ADDRESS_TYPE=$(echo "${API}" | jq -r '.IpAddressType // empty')
 if [ "${DEAE}" != "false" ]; then
   echo "FAIL: Api DisableExecuteApiEndpoint is '${DEAE}', expected 'false'" >&2
   echo "      raw GetApi: ${API}" >&2
@@ -119,7 +120,12 @@ if [ "${API_VERSION}" != "v1" ]; then
   echo "FAIL: Api Version is '${API_VERSION}', expected 'v1'" >&2
   exit 1
 fi
-echo "    OK: Api DisableExecuteApiEndpoint == false + Version == v1 on AWS (Api backfill CLOSED)"
+if [ "${IP_ADDRESS_TYPE}" != "dualstack" ]; then
+  echo "FAIL: Api IpAddressType is '${IP_ADDRESS_TYPE}', expected 'dualstack'" >&2
+  echo "      raw GetApi: ${API}" >&2
+  exit 1
+fi
+echo "    OK: Api DisableExecuteApiEndpoint == false + Version == v1 + IpAddressType == dualstack on AWS (Api backfill CLOSED)"
 
 # --- Assertion 2: Stage StageVariables + DefaultRouteSettings reached AWS --
 STAGE=$(aws apigatewayv2 get-stage --api-id "${API_ID}" --stage-name "${STAGE_NAME}" \

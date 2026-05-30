@@ -132,6 +132,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'CorsConfiguration',
         'Description',
         'DisableExecuteApiEndpoint',
+        'IpAddressType',
         'Name',
         'ProtocolType',
         'RouteSelectionExpression',
@@ -160,7 +161,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'Schema-validation toggle on CreateApi/UpdateApi that AWS docs scope to WebSocket APIs using AWS::ApiGatewayV2::Model — that resource type is not yet registered in cdkd, so the toggle has no effect to wire.',
         ],
         ['FailOnWarnings', 'OpenAPI-import-only flag; meaningful only on the ImportApi code path.'],
-        ['IpAddressType', 'not yet implemented by cdkd'],
         [
           'RouteKey',
           'Quick-create shortcut: CreateApi inline-creates a default route+integration from RouteKey/Target/CredentialsArn. cdkd models routes/integrations as explicit AWS::ApiGatewayV2::Route/::Integration resources, so this convenience field is not wired.',
