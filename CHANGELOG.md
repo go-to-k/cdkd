@@ -1,3 +1,10 @@
+# [0.201.0](https://github.com/go-to-k/cdkd/compare/v0.200.0...v0.201.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill S3Tables::Table Tags ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#739](https://github.com/go-to-k/cdkd/issues/739)) ([264f55f](https://github.com/go-to-k/cdkd/commit/264f55ff8dbfe2a38d225fef35a5bbc9c43c15f6))
+
 # [0.200.0](https://github.com/go-to-k/cdkd/compare/v0.199.0...v0.200.0) (2026-05-30)
 
 
