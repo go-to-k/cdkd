@@ -53,6 +53,10 @@
       "description": "New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution."
     },
     {
+      "tag": "local-agentcore-from-state",
+      "description": "`cdkd local invoke-agentcore --from-state` end-to-end against a real-AWS deployed AgentCore Runtime — verifies the cdkd-port-specific 3-arg `createLocalStateProvider` shim resolves intrinsic-valued env vars (e.g. `Ref: <S3 bucket>`) against cdkd state after a real `cdkd deploy`."
+    },
+    {
       "tag": "local-agentcore-runtime",
       "description": "`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build."
     },
@@ -496,6 +500,14 @@
       "name": "local-invoke-agentcore",
       "annotated": true,
       "scenarios": [
+        "local-agentcore-runtime"
+      ]
+    },
+    {
+      "name": "local-invoke-agentcore-from-state",
+      "annotated": true,
+      "scenarios": [
+        "local-agentcore-from-state",
         "local-agentcore-runtime"
       ]
     },
@@ -976,10 +988,18 @@
       ]
     },
     {
+      "scenario": "local-agentcore-from-state",
+      "description": "`cdkd local invoke-agentcore --from-state` end-to-end against a real-AWS deployed AgentCore Runtime — verifies the cdkd-port-specific 3-arg `createLocalStateProvider` shim resolves intrinsic-valued env vars (e.g. `Ref: <S3 bucket>`) against cdkd state after a real `cdkd deploy`.",
+      "fixtures": [
+        "local-invoke-agentcore-from-state"
+      ]
+    },
+    {
       "scenario": "local-agentcore-runtime",
       "description": "`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build.",
       "fixtures": [
-        "local-invoke-agentcore"
+        "local-invoke-agentcore",
+        "local-invoke-agentcore-from-state"
       ]
     },
     {

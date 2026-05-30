@@ -2493,6 +2493,7 @@
         "infra-security",
         "intrinsic-functions",
         "kms-encryption",
+        "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
         "log-pipeline",
         "migrate-from-cfn",
@@ -2561,6 +2562,9 @@
         "kms-encryption": [
           "l2",
           "literal"
+        ],
+        "local-invoke-agentcore-from-state": [
+          "l2"
         ],
         "local-invoke-from-state": [
           "l2"

@@ -194,6 +194,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane.',
   'local-agentcore-runtime':
     '`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build.',
+  'local-agentcore-from-state':
+    '`cdkd local invoke-agentcore --from-state` end-to-end against a real-AWS deployed AgentCore Runtime — verifies the cdkd-port-specific 3-arg `createLocalStateProvider` shim resolves intrinsic-valued env vars (e.g. `Ref: <S3 bucket>`) against cdkd state after a real `cdkd deploy`.',
 };
 
 interface ScenarioCoverageReport {

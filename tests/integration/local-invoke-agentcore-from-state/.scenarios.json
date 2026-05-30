@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-agentcore-runtime",
+    "local-agentcore-from-state"
+  ]
+}
