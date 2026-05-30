@@ -55,6 +55,12 @@ export class S3CloudFrontStack extends cdk.Stack {
       comment: 'S3 CloudFront Distribution (cdkd integration test)',
     });
 
+    // Tag the distribution end-to-end so the cdkd `Tags` backfill (#609)
+    // is exercised against real AWS — the property was a silent-drop
+    // until the dedicated SDK Provider wired `CreateDistributionWithTagsCommand`.
+    cdk.Tags.of(distribution).add('cdkd-test-owner', 'integ');
+    cdk.Tags.of(distribution).add('cdkd-test-env', 'us-east-1');
+
     // CloudFront Origin Access Control (OAC) - modern replacement for OAI
     const oac = new cloudfront.CfnOriginAccessControl(this, 'OAC', {
       originAccessControlConfig: {

@@ -371,4 +371,264 @@ describe('CloudFrontDistributionProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('Tags backfill (#609)', () => {
+    it('create with Tags routes through CreateDistributionWithTagsCommand', async () => {
+      // CreateDistributionWithTagsCommand
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          DomainName: 'd111111abcdef8.cloudfront.net',
+        },
+      });
+      // GetDistributionCommand (waitForDistributionStable)
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          DefaultCacheBehavior: {
+            TargetOriginId: 'myS3Origin',
+            ViewerProtocolPolicy: 'redirect-to-https',
+          },
+          Enabled: true,
+        },
+        Tags: [
+          { Key: 'Owner', Value: 'team-x' },
+          { Key: 'Env', Value: 'prod' },
+        ],
+      });
+
+      const createCall = mockSend.mock.calls[0][0];
+      expect(createCall.constructor.name).toBe('CreateDistributionWithTagsCommand');
+      expect(createCall.input.DistributionConfigWithTags.Tags.Items).toEqual([
+        { Key: 'Owner', Value: 'team-x' },
+        { Key: 'Env', Value: 'prod' },
+      ]);
+      expect(
+        createCall.input.DistributionConfigWithTags.DistributionConfig.CallerReference
+      ).toBeDefined();
+    });
+
+    it('create without Tags routes through plain CreateDistributionCommand', async () => {
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          DefaultCacheBehavior: {
+            TargetOriginId: 'myS3Origin',
+            ViewerProtocolPolicy: 'redirect-to-https',
+          },
+          Enabled: true,
+        },
+      });
+
+      const createCall = mockSend.mock.calls[0][0];
+      expect(createCall.constructor.name).toBe('CreateDistributionCommand');
+    });
+
+    it('create with empty Tags array routes through plain CreateDistributionCommand', async () => {
+      // An empty `Tags: []` from CFn is semantically identical to "no tags";
+      // routing through the tags-enabled command class would still hit the
+      // same control plane for no benefit, so we collapse to the simpler call.
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          DefaultCacheBehavior: {
+            TargetOriginId: 'myS3Origin',
+            ViewerProtocolPolicy: 'redirect-to-https',
+          },
+          Enabled: true,
+        },
+        Tags: [],
+      });
+
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateDistributionCommand');
+    });
+
+    it('update adds new tags via TagResource', async () => {
+      const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      }); // GetDistributionConfig
+      mockSend.mockResolvedValueOnce({}); // UpdateDistribution
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net', ARN: arn },
+      }); // GetDistribution
+      mockSend.mockResolvedValueOnce({}); // TagResource
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'NewKey', Value: 'NewVal' }],
+        },
+        {
+          DistributionConfig: { Enabled: true },
+        }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      const tagCall = mockSend.mock.calls[3][0];
+      expect(tagCall.constructor.name).toBe('TagResourceCommand');
+      expect(tagCall.input.Resource).toBe(arn);
+      expect(tagCall.input.Tags.Items).toEqual([{ Key: 'NewKey', Value: 'NewVal' }]);
+    });
+
+    it('update removes dropped tags via UntagResource', async () => {
+      const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({}); // UpdateDistribution
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net', ARN: arn },
+      });
+      mockSend.mockResolvedValueOnce({}); // UntagResource
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [],
+        },
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'Stale', Value: 'v' }],
+        }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      const untagCall = mockSend.mock.calls[3][0];
+      expect(untagCall.constructor.name).toBe('UntagResourceCommand');
+      expect(untagCall.input.Resource).toBe(arn);
+      expect(untagCall.input.TagKeys.Items).toEqual(['Stale']);
+    });
+
+    it('update value-change on same key issues only TagResource (no Untag)', async () => {
+      const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({}); // UpdateDistribution
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net', ARN: arn },
+      });
+      mockSend.mockResolvedValueOnce({}); // TagResource
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'Env', Value: 'prod' }],
+        },
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'Env', Value: 'dev' }],
+        }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(mockSend.mock.calls[3][0].constructor.name).toBe('TagResourceCommand');
+      expect(mockSend.mock.calls[3][0].input.Tags.Items).toEqual([
+        { Key: 'Env', Value: 'prod' },
+      ]);
+    });
+
+    it('update with unchanged tags issues neither Tag nor Untag', async () => {
+      const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net', ARN: arn },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'Env', Value: 'prod' }],
+        },
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'Env', Value: 'prod' }],
+        }
+      );
+
+      // GetConfig + Update + GetDistribution = 3 (no Tag/Untag)
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('update mixed adds + removes issues Untag then Tag in that order', async () => {
+      const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net', ARN: arn },
+      });
+      mockSend.mockResolvedValueOnce({}); // UntagResource
+      mockSend.mockResolvedValueOnce({}); // TagResource
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'Env', Value: 'prod' }],
+        },
+        {
+          DistributionConfig: { Enabled: true },
+          Tags: [{ Key: 'Owner', Value: 'team-x' }],
+        }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(5);
+      expect(mockSend.mock.calls[3][0].constructor.name).toBe('UntagResourceCommand');
+      expect(mockSend.mock.calls[3][0].input.TagKeys.Items).toEqual(['Owner']);
+      expect(mockSend.mock.calls[4][0].constructor.name).toBe('TagResourceCommand');
+      expect(mockSend.mock.calls[4][0].input.Tags.Items).toEqual([{ Key: 'Env', Value: 'prod' }]);
+    });
+  });
 });
