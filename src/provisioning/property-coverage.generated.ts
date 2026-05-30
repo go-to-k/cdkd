@@ -501,8 +501,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::CloudFront::Distribution',
     {
-      handled: new Set<string>(['DistributionConfig']),
-      silentDrop: new Map<string, string>([['Tags', 'not yet implemented by cdkd']]),
+      handled: new Set<string>(['DistributionConfig', 'Tags']),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [
