@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import { LocalInvokeAgentcoreFromStateStack } from '../lib/local-invoke-agentcore-from-state-stack.js';
+import { LocalInvokeAgentcoreFromStateStack } from '../lib/local-invoke-agentcore-from-state-stack.ts';
 
 const app = new cdk.App();
 new LocalInvokeAgentcoreFromStateStack(app, 'CdkdLocalInvokeAgentcoreFromStateFixture', {
