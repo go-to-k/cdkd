@@ -290,6 +290,13 @@ export class Route53Provider implements ResourceProvider {
             `UpdateHostedZoneFeatures failed for ${zoneId} after CreateHostedZone — rolling back the hosted zone to keep deploy retry idempotent`
           );
           try {
+            // Detach query logging config first (applied above as part of
+            // create()). AWS rejects DeleteHostedZone with
+            // HostedZoneNotEmpty when a logging config is still attached,
+            // so a template that sets BOTH `QueryLoggingConfig` and
+            // `HostedZoneFeatures.AcceleratedRecoveryStatus: ENABLED`
+            // would leak the zone if the UHF rollback skipped this step.
+            await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
             await this.getClient().send(new DeleteHostedZoneCommand({ Id: zoneId }));
           } catch (deleteError) {
             this.logger.warn(
@@ -370,23 +377,26 @@ export class Route53Provider implements ResourceProvider {
       await this.syncVPCAssociations(physicalId, properties, logicalId);
 
       // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
-      // control-plane call, gated on diff so a no-op update doesn't toggle
-      // the AWS-side feature state (AWS bills per state transition? no —
-      // it's free, but every API call is still cycles + a CloudTrail event).
-      // Removal of the property from the template (prev set, next absent)
-      // is treated as DISABLED — the CFn-default state when the user
-      // doesn't explicitly request the feature.
-      const prevAccelRecovery = (
-        previousProperties['HostedZoneFeatures'] as Record<string, unknown> | undefined
-      )?.['AcceleratedRecoveryStatus'] as string | undefined;
-      const nextAccelRecovery = (
-        properties['HostedZoneFeatures'] as Record<string, unknown> | undefined
-      )?.['AcceleratedRecoveryStatus'] as string | undefined;
-      if (prevAccelRecovery !== nextAccelRecovery) {
+      // control-plane call, gated on the BOOLEAN-effective diff (i.e.
+      // "is this zone supposed to have AcceleratedRecovery enabled").
+      // Comparing the raw strings would fire an unnecessary AWS call for
+      // `prev: undefined, next: 'DISABLED'` (both map to disabled — AWS
+      // default; no transition needed). Removal of the property is
+      // treated as DISABLED so a user dropping the template field
+      // implicitly turns the feature off on the next deploy.
+      const prevEnabled =
+        ((previousProperties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
+          'AcceleratedRecoveryStatus'
+        ] as string | undefined) === 'ENABLED';
+      const nextEnabled =
+        ((properties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
+          'AcceleratedRecoveryStatus'
+        ] as string | undefined) === 'ENABLED';
+      if (prevEnabled !== nextEnabled) {
         await this.getClient().send(
           new UpdateHostedZoneFeaturesCommand({
             HostedZoneId: physicalId,
-            EnableAcceleratedRecovery: nextAccelRecovery === 'ENABLED',
+            EnableAcceleratedRecovery: nextEnabled,
           })
         );
       }
@@ -513,7 +523,20 @@ export class Route53Provider implements ResourceProvider {
 
     const deadline = Date.now() + timeoutMs;
 
-    // Helper: poll until status reaches one of `targets`, or throw on timeout.
+    // Failed / locked states are operator-recovery only — sentinel set is
+    // shared by both the initial check below and the in-flight `waitFor`
+    // loop (a zone that transitions to `*_FAILED` during the wait must
+    // surface the actionable failure error immediately rather than
+    // racing the 10-min timeout).
+    const TERMINAL_FAILED = new Set<string>([
+      'ENABLE_FAILED',
+      'DISABLE_FAILED',
+      'ENABLING_HOSTED_ZONE_LOCKED',
+      'DISABLING_HOSTED_ZONE_LOCKED',
+    ]);
+
+    // Helper: poll until status reaches one of `targets`, or throw on
+    // timeout / failed-state transition.
     const waitFor = async (
       targets: ReadonlySet<string>,
       label: string
@@ -521,14 +544,27 @@ export class Route53Provider implements ResourceProvider {
       while (Date.now() < deadline) {
         const status = await readStatus();
         if (status === undefined || targets.has(status)) return status;
-        // Short-tick the sleep to stay SIGINT-responsive (capped at 1s
-        // per Promise so a CTRL-C during a poll wait surfaces quickly).
-        const remaining = Math.min(pollIntervalMs, Math.max(0, deadline - Date.now()));
-        const tick = Math.min(remaining, 1000);
-        if (tick > 0) await new Promise<void>((resolve) => setTimeout(resolve, tick));
+        if (TERMINAL_FAILED.has(status)) {
+          throw new ProvisioningError(
+            `Cannot delete hosted zone ${logicalId} (${physicalId}): AcceleratedRecoveryStatus transitioned to '${status}' while waiting for ${label} — operator must resolve before destroy can proceed`,
+            'AWS::Route53::HostedZone',
+            logicalId,
+            physicalId
+          );
+        }
         this.logger.debug(
-          `Polling AcceleratedRecoveryStatus for ${physicalId}: ${status} (waiting for ${label})`
+          `Polling AcceleratedRecoveryStatus for ${physicalId}: ${status} (waiting for ${label}, will re-poll in ~${pollIntervalMs}ms)`
         );
+        // Sleep in 1s slices to stay SIGINT-responsive (CTRL-C surfaces
+        // within a second) while still respecting the configured
+        // `pollIntervalMs` between AWS API hits — break early when the
+        // overall deadline runs out.
+        const sliceEnd = Math.min(Date.now() + pollIntervalMs, deadline);
+        while (Date.now() < sliceEnd) {
+          const tick = Math.min(1000, sliceEnd - Date.now());
+          if (tick <= 0) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, tick));
+        }
       }
       throw new ProvisioningError(
         `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalId} (${physicalId}); re-run \`cdkd state destroy\` or disable manually via \`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery\``,
@@ -542,12 +578,7 @@ export class Route53Provider implements ResourceProvider {
     if (current === undefined || current === 'DISABLED') return;
 
     // Failed / locked states are operator-recovery only.
-    if (
-      current === 'ENABLE_FAILED' ||
-      current === 'DISABLE_FAILED' ||
-      current === 'ENABLING_HOSTED_ZONE_LOCKED' ||
-      current === 'DISABLING_HOSTED_ZONE_LOCKED'
-    ) {
+    if (TERMINAL_FAILED.has(current)) {
       throw new ProvisioningError(
         `Cannot delete hosted zone ${logicalId} (${physicalId}): AcceleratedRecoveryStatus is '${current}' — operator must resolve before destroy can proceed`,
         'AWS::Route53::HostedZone',

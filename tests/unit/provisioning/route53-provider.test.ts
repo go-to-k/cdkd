@@ -135,6 +135,11 @@ describe('Route53Provider', () => {
         });
         // UpdateHostedZoneFeatures fails
         mockSend.mockRejectedValueOnce(new Error('AccessDenied on UpdateHostedZoneFeatures'));
+        // Rollback path also detaches any query logging config first
+        // (HostedZoneNotEmpty would otherwise block DeleteHostedZone when
+        // create() configured QueryLoggingConfig). ListQueryLoggingConfigs
+        // returns empty → no DeleteQueryLoggingConfig fires.
+        mockSend.mockResolvedValueOnce({ QueryLoggingConfigs: [] });
         // DeleteHostedZone (rollback) resolves
         mockSend.mockResolvedValueOnce({});
 
@@ -145,11 +150,13 @@ describe('Route53Provider', () => {
           })
         ).rejects.toThrow(/Failed to enable Accelerated Recovery/);
 
-        // Sequence: CreateHostedZone → UpdateHostedZoneFeatures (fails) → DeleteHostedZone (rollback)
-        expect(mockSend).toHaveBeenCalledTimes(3);
+        // Sequence: CreateHostedZone → UpdateHostedZoneFeatures (fails) →
+        // ListQueryLoggingConfigs (rollback QLC pre-cleanup) → DeleteHostedZone (rollback)
+        expect(mockSend).toHaveBeenCalledTimes(4);
         expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateHostedZoneCommand');
         expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateHostedZoneFeaturesCommand');
-        expect(mockSend.mock.calls[2][0].constructor.name).toBe('DeleteHostedZoneCommand');
+        expect(mockSend.mock.calls[2][0].constructor.name).toBe('ListQueryLoggingConfigsCommand');
+        expect(mockSend.mock.calls[3][0].constructor.name).toBe('DeleteHostedZoneCommand');
       });
 
       it('update: prev=DISABLED → next=ENABLED fires UpdateHostedZoneFeatures', async () => {
