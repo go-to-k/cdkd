@@ -416,6 +416,42 @@ describe('runDetached', () => {
     const opts = lastCall[2] as { env?: Record<string, string> };
     expect(opts.env?.['AWS_SECRET_ACCESS_KEY']).toBe('real-secret');
   });
+
+  // PR #717 added `DockerRunOptions.containerPort` (defaults to 8080 so the
+  // existing RIE Lambda local-invoke path is unchanged; MCP runtimes pass
+  // 8000, A2A runtimes pass 9000). The default + explicit-override paths
+  // are exercised end-to-end by the local-invoke / local-invoke-agentcore
+  // integ tests; these two cases nail the docker `-p` flag shape directly
+  // at the unit layer so a regression that inverts the ternary surfaces
+  // without a Docker run (closes G3 in the PR #717 3-axis review).
+  it('publishes containerPort defaulting to 8080 when omitted (Lambda RIE path)', async () => {
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: {},
+      cmd: [],
+      hostPort: 56789,
+    });
+    const args = lastArgs();
+    const pIdx = args.indexOf('-p');
+    expect(pIdx).toBeGreaterThanOrEqual(0);
+    expect(args[pIdx + 1]).toBe('127.0.0.1:56789:8080');
+  });
+
+  it('publishes hostPort:containerPort when containerPort is explicit (MCP / A2A path)', async () => {
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: {},
+      cmd: [],
+      hostPort: 56789,
+      containerPort: 8000,
+    });
+    const args = lastArgs();
+    const pIdx = args.indexOf('-p');
+    expect(pIdx).toBeGreaterThanOrEqual(0);
+    expect(args[pIdx + 1]).toBe('127.0.0.1:56789:8000');
+  });
 });
 
 // `pullImage` exercises `runDockerStreaming` (default compact log level
