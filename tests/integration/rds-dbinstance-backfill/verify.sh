@@ -38,9 +38,24 @@ DB_INSTANCE_ID=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS DBInstance"
+  # Do NOT silence stderr on `state destroy` — a partial-failure (e.g.
+  # VPC dependency still in 'deleting' from a prior in-flight DBInstance)
+  # silently leaves orphan resources behind otherwise. See PR #735
+  # retrospective. The two stdout-piped calls below ARE allowed to be
+  # silent: the redundant `delete-db-instance` is best-effort (state
+  # destroy already handled it on the happy path), and the `s3 rm`
+  # calls are expected to NotFound after state destroy succeeds.
   set +eu
-  if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    # Pass --state-bucket explicitly so the cdk.json default placeholder
+    # ('your-cdkd-state-bucket') does not poison state destroy with a
+    # bogus bucket name — every other integ fixture's cdk.json carries
+    # the same placeholder, so the env-var passthrough is load-bearing
+    # for any cleanup that needs to find the test's actual state.
+    node "${LOCAL_DIST}" state destroy "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" \
+      --yes
   fi
   if [ -n "${DB_INSTANCE_ID}" ]; then
     aws rds delete-db-instance \
@@ -141,7 +156,10 @@ echo "    OK: Endpoint.Port == ${EXPECTED_PORT} on AWS (Port silent-drop CLOSED 
 # DeletionProtection: explicit false from the template. Pre-#609 this
 # would have defaulted to false too, so it is the weakest signal of the
 # 5 — kept for completeness but not load-bearing.
-ACTUAL_DELETION_PROTECTION=$(echo "${INSTANCE}" | jq -r '.DeletionProtection // "null"')
+# NOTE: use `tostring` instead of `// "null"` because jq's `//` operator
+# treats `false` as a missing value (it's the "alternative-on-null-or-false"
+# operator), so an explicit `false` from AWS would falsely register as `null`.
+ACTUAL_DELETION_PROTECTION=$(echo "${INSTANCE}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
 if [ "${ACTUAL_DELETION_PROTECTION}" != "${EXPECTED_DELETION_PROTECTION}" ]; then
   echo "FAIL: DeletionProtection is '${ACTUAL_DELETION_PROTECTION}', expected '${EXPECTED_DELETION_PROTECTION}'" >&2
   exit 1
@@ -150,7 +168,9 @@ echo "    OK: DeletionProtection == ${EXPECTED_DELETION_PROTECTION} on AWS"
 
 # StorageEncrypted: RDS default is false for db.t3.micro Postgres;
 # the fixture sets true. A silent-drop would leave AWS at false.
-ACTUAL_STORAGE_ENCRYPTED=$(echo "${INSTANCE}" | jq -r '.StorageEncrypted // "null"')
+# Same `false`-vs-null trap as DeletionProtection above — use the
+# explicit-presence check.
+ACTUAL_STORAGE_ENCRYPTED=$(echo "${INSTANCE}" | jq -r 'if has("StorageEncrypted") then .StorageEncrypted | tostring else "null" end')
 if [ "${ACTUAL_STORAGE_ENCRYPTED}" != "${EXPECTED_STORAGE_ENCRYPTED}" ]; then
   echo "FAIL: StorageEncrypted is '${ACTUAL_STORAGE_ENCRYPTED}', expected '${EXPECTED_STORAGE_ENCRYPTED}' (StorageEncrypted silent-drop NOT closed)" >&2
   exit 1
