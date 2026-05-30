@@ -153,8 +153,8 @@ importers:
         specifier: ^2.0.0
         version: 2.244.0(constructs@10.6.0)
       cdk-local:
-        specifier: ^0.59.0
-        version: 0.59.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0)
+        specifier: ^0.61.0
+        version: 0.61.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -2768,8 +2768,8 @@ packages:
   cdk-from-cfn@0.300.0:
     resolution: {integrity: sha512-BtTAthyg3EeBoO0o77A3PMfwID7mvm3R1BvM/avjwfPHbSnt598vv0qGGSZMM0KPM77DB5UtK6/z4VhBto4VJw==}
 
-  cdk-local@0.59.0:
-    resolution: {integrity: sha512-Mc037JfJKO999OL01d1GedJvQZHaloCZleY/HOmGPfKKC50tTLxnGcwtTgkNfX8lpun+UpuvS+udxcm82uAaYQ==}
+  cdk-local@0.61.0:
+    resolution: {integrity: sha512-L94/YcgKtcgnEVzN5Z4OgA4gYwyhndGoW42pbP6oNesT31zYF3txVCZihwnt8Sp1yBxyoPGNPlt29svgl7vCUA==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -6718,7 +6718,7 @@ snapshots:
       '@aws-sdk/xml-builder': 3.972.26
       '@aws/lambda-invoke-store': 0.2.4
       '@smithy/core': 3.24.4
-      '@smithy/signature-v4': 5.4.2
+      '@smithy/signature-v4': 5.4.5
       '@smithy/types': 4.14.2
       bowser: 2.14.1
       tslib: 2.8.1
@@ -7567,7 +7567,7 @@ snapshots:
       '@smithy/core': 3.24.4
       '@smithy/node-config-provider': 4.3.14
       '@smithy/protocol-http': 5.3.14
-      '@smithy/signature-v4': 5.4.2
+      '@smithy/signature-v4': 5.4.5
       '@smithy/smithy-client': 4.12.13
       '@smithy/types': 4.14.2
       '@smithy/util-config-provider': 4.2.2
@@ -7877,7 +7877,7 @@ snapshots:
       '@aws-sdk/middleware-sdk-s3': 3.972.37
       '@aws-sdk/types': 3.973.9
       '@smithy/protocol-http': 5.3.14
-      '@smithy/signature-v4': 5.4.2
+      '@smithy/signature-v4': 5.4.5
       '@smithy/types': 4.14.2
       tslib: 2.8.1
 
@@ -7885,7 +7885,7 @@ snapshots:
     dependencies:
       '@aws-sdk/types': 3.973.9
       '@smithy/core': 3.24.4
-      '@smithy/signature-v4': 5.4.2
+      '@smithy/signature-v4': 5.4.5
       '@smithy/types': 4.14.2
       tslib: 2.8.1
 
@@ -7893,14 +7893,14 @@ snapshots:
     dependencies:
       '@aws-sdk/types': 3.973.9
       '@smithy/core': 3.24.4
-      '@smithy/signature-v4': 5.4.2
+      '@smithy/signature-v4': 5.4.5
       '@smithy/types': 4.14.2
       tslib: 2.8.1
 
   '@aws-sdk/signature-v4-multi-region@3.996.29':
     dependencies:
       '@aws-sdk/types': 3.973.9
-      '@smithy/signature-v4': 5.4.2
+      '@smithy/signature-v4': 5.4.5
       '@smithy/types': 4.14.2
       tslib: 2.8.1
 
@@ -9712,7 +9712,7 @@ snapshots:
 
   cdk-from-cfn@0.300.0: {}
 
-  cdk-local@0.59.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0):
+  cdk-local@0.61.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@53.27.0)(aws-cdk-lib@2.244.0(constructs@10.6.0))(constructs@10.6.0):
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@53.27.0)
       '@aws-cdk/toolkit-lib': 1.26.2(@aws-cdk/cli-plugin-contract@2.182.2)

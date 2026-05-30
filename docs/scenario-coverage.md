@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**36 / 36 canonical scenarios** have at least one integ fixture exercising them. **104 / 117 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**37 / 37 canonical scenarios** have at least one integ fixture exercising them. **105 / 118 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (36 scenarios)
+## Per-scenario coverage (37 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -43,6 +43,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `iam-policy-propagation-retry` | CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race. | [`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/) |
 | `lambda-vpc-subnet-sg-deletion-order` | Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `legacy-bucket-name-fallback` | New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution. | [`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) |
+| `local-agentcore-runtime` | `cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build. | [`local-invoke-agentcore`](../tests/integration/local-invoke-agentcore/) |
 | `local-apigateway-server` | `cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool. | [`local-start-api`](../tests/integration/local-start-api/)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/)<br>[`local-start-api-rest-v1-non-proxy`](../tests/integration/local-start-api-rest-v1-non-proxy/) |
 | `local-ecs-awsvpc` | `cdkd local run-task` ECS TaskDefinition declaring `NetworkMode: awsvpc` — accepted and mapped to a docker bridge network with a startup warn (#461; docker cannot emulate ENI-per-task). | [`local-run-task-awsvpc`](../tests/integration/local-run-task-awsvpc/) |
 | `local-ecs-service` | `cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown. | [`local-ecs-service-connect`](../tests/integration/local-ecs-service-connect/)<br>[`local-start-service`](../tests/integration/local-start-service/) |

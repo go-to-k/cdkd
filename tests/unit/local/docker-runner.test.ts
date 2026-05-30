@@ -390,9 +390,12 @@ describe('runDetached', () => {
     expect(workdirIdx).toBeGreaterThan(tmpfsIdx);
   });
 
-  it('does not write AWS credential values to the spawn args (we do not redact at the wire layer)', async () => {
-    // Sanity: redaction is at the LOG layer only — the actual creds must
-    // still reach docker (otherwise the handler couldn't authenticate).
+  it('keeps AWS credential values off the docker run argv (passthrough form -e KEY)', async () => {
+    // AWS credential keys are in the built-in SENSITIVE_ENV_KEYS set, so
+    // runDetached emits `-e KEY` (no `=value`) rather than `-e KEY=value`
+    // — the actual value is forwarded to docker via the spawn env option
+    // (PR #717's BLOCKER fix). This keeps the decrypted secret off the
+    // `docker run` argv (`ps` / `/proc/<pid>/cmdline` / verbose debug logs).
     await runDetached({
       image: 'my-image:latest',
       mounts: [],
@@ -401,7 +404,17 @@ describe('runDetached', () => {
       hostPort: 9000,
     });
     const args = lastArgs();
-    expect(args).toContain('AWS_SECRET_ACCESS_KEY=real-secret');
+    // Value MUST NOT appear in argv.
+    expect(args).not.toContain('AWS_SECRET_ACCESS_KEY=real-secret');
+    // Passthrough form: `-e AWS_SECRET_ACCESS_KEY` with no `=value`.
+    const passthroughIdx = args.indexOf('AWS_SECRET_ACCESS_KEY');
+    expect(passthroughIdx).toBeGreaterThanOrEqual(0);
+    expect(args[passthroughIdx - 1]).toBe('-e');
+    // Value MUST reach docker via the spawn env so the container authenticates.
+    const calls = childProcessMock.execFile.mock.calls;
+    const lastCall = calls[calls.length - 1] as unknown[];
+    const opts = lastCall[2] as { env?: Record<string, string> };
+    expect(opts.env?.['AWS_SECRET_ACCESS_KEY']).toBe('real-secret');
   });
 });
 

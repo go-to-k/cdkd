@@ -59,7 +59,7 @@ Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [test
 - **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair. See [Rollback behavior](#rollback-behavior).
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
-- **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service`): run Lambdas, API Gateway routes, ECS tasks and long-running ECS services from your CDK code via Docker. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map. Works for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks. See [Local execution](#local-execution).
+- **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `invoke-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, and Bedrock AgentCore Runtimes from your CDK code via Docker. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols. Works for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks. See [Local execution](#local-execution).
 - **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. Deployment fails with a clear error message naming the type + a 1-click issue link.
@@ -241,6 +241,7 @@ maintain, no `cdk synth | sam ...` round-trip.
 | `cdkd local start-api` | Long-running HTTP server for REST v1 / HTTP API / Function URL routes |
 | `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
 | `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
+| `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws`) |
 
 Requires Docker. Pass `--from-state` (cdkd-deployed) or
 `--from-cfn-stack` (cdk-deployed / CFn-managed) to substitute deployed
