@@ -1087,6 +1087,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'ContainerDefinitions',
         'Cpu',
+        'EnableFaultInjection',
         'EphemeralStorage',
         'ExecutionRoleArn',
         'Family',
@@ -1103,7 +1104,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Volumes',
       ]),
       silentDrop: new Map<string, string>([
-        ['EnableFaultInjection', 'not yet implemented by cdkd'],
         [
           'InferenceAccelerators',
           'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',

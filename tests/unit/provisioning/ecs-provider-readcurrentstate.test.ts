@@ -149,6 +149,40 @@ describe('ECSProvider.readCurrentState', () => {
     });
   });
 
+  it('emits EnableFaultInjection when DescribeTaskDefinition returns it (#609 backfill)', async () => {
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'fi-td',
+        enableFaultInjection: true,
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/fi-td:1',
+      'FiTd',
+      'AWS::ECS::TaskDefinition'
+    );
+
+    expect(result?.EnableFaultInjection).toBe(true);
+  });
+
+  it('omits EnableFaultInjection when DescribeTaskDefinition does not return it', async () => {
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'plain-td',
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/plain-td:1',
+      'PlainTd',
+      'AWS::ECS::TaskDefinition'
+    );
+
+    expect(result).toBeDefined();
+    expect(result).not.toHaveProperty('EnableFaultInjection');
+  });
+
   it('returns undefined when cluster is gone', async () => {
     mockSend.mockResolvedValueOnce({ clusters: [] });
 

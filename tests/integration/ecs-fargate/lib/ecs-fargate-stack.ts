@@ -48,6 +48,13 @@ export class EcsFargateStack extends cdk.Stack {
       cpu: 256,
     });
 
+    // Exercise the #609 backfill: EnableFaultInjection rides on
+    // RegisterTaskDefinition. The L2 FargateTaskDefinition does not
+    // expose `enableFaultInjection`, so reach the CfnTaskDefinition via
+    // the L1 escape hatch.
+    const cfnTaskDef = taskDefinition.node.defaultChild as ecs.CfnTaskDefinition;
+    cfnTaskDef.enableFaultInjection = true;
+
     // Add container using a public ECR image (no Docker build needed)
     const container = taskDefinition.addContainer('AppContainer', {
       image: ecs.ContainerImage.fromRegistry(
