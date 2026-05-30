@@ -1,3 +1,10 @@
+# [0.200.0](https://github.com/go-to-k/cdkd/compare/v0.199.0...v0.200.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill RDS::DBInstance 8 props ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#738](https://github.com/go-to-k/cdkd/issues/738)) ([815b979](https://github.com/go-to-k/cdkd/commit/815b97937c2e5ce7a6df37931694e6fae7070c98))
+
 # [0.199.0](https://github.com/go-to-k/cdkd/compare/v0.198.0...v0.199.0) (2026-05-30)
 
 
