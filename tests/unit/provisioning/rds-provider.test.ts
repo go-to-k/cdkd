@@ -575,6 +575,37 @@ describe('RDSProvider', () => {
         expect(modifyCall.input.AllowMajorVersionUpgrade).toBe(true);
       });
 
+      it('does NOT add AllowMajorVersionUpgrade when previous EngineVersion is undefined (first-time set)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            EngineVersion: '15.4',
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            // No EngineVersion previously — first-time set.
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        // EngineVersion still rides (the user's explicit value reaches AWS),
+        // but AllowMajorVersionUpgrade is NOT set: we have no previous version
+        // to compare against, so we cannot infer the user's major-bump intent.
+        // Setting it unconditionally would promote any first-time EngineVersion
+        // set into a "I accept major upgrades" policy declaration the user did
+        // not make.
+        expect(modifyCall.input.EngineVersion).toBe('15.4');
+        expect(modifyCall.input.AllowMajorVersionUpgrade).toBeUndefined();
+      });
+
       it('does NOT add AllowMajorVersionUpgrade for a minor-version bump', async () => {
         // updateDBInstance does 2 sends: ModifyDBInstance + final describe.
         // (No waitForInstanceAvailable polling on the update path.)
