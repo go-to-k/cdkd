@@ -131,6 +131,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'AuthorizerPayloadFormatVersion',
         'AuthorizerResultTtlInSeconds',
         'EnableSimpleResponses',
+        'IdentityValidationExpression',
       ]),
     ],
   ]);
@@ -803,6 +804,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
             | number
             | undefined,
           EnableSimpleResponses: properties['EnableSimpleResponses'] as boolean | undefined,
+          IdentityValidationExpression: properties['IdentityValidationExpression'] as
+            | string
+            | undefined,
         })
       );
 
@@ -1120,15 +1124,18 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['AuthorizerUri'] = resp.AuthorizerUri ?? '';
         result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion ?? '';
 
-        // AuthorizerResultTtlInSeconds / EnableSimpleResponses are valid
-        // only for REQUEST authorizers. Emit-when-present (gate each on
-        // `!== undefined`) so a REQUEST authorizer that never set them
-        // does not grow a phantom-drift key, and a JWT authorizer never
-        // surfaces them at all.
+        // AuthorizerResultTtlInSeconds / EnableSimpleResponses /
+        // IdentityValidationExpression are valid only for REQUEST
+        // authorizers. Emit-when-present (gate each on `!== undefined`)
+        // so a REQUEST authorizer that never set them does not grow a
+        // phantom-drift key, and a JWT authorizer never surfaces them
+        // at all.
         if (resp.AuthorizerResultTtlInSeconds !== undefined)
           result['AuthorizerResultTtlInSeconds'] = resp.AuthorizerResultTtlInSeconds;
         if (resp.EnableSimpleResponses !== undefined)
           result['EnableSimpleResponses'] = resp.EnableSimpleResponses;
+        if (resp.IdentityValidationExpression !== undefined)
+          result['IdentityValidationExpression'] = resp.IdentityValidationExpression;
       }
       return result;
     } catch (err) {
@@ -1721,6 +1728,14 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['EnableSimpleResponses'] !== previousProperties['EnableSimpleResponses']
     ) {
       input.EnableSimpleResponses = properties['EnableSimpleResponses'] as boolean;
+      changed = true;
+    }
+    if (
+      properties['IdentityValidationExpression'] !== undefined &&
+      properties['IdentityValidationExpression'] !==
+        previousProperties['IdentityValidationExpression']
+    ) {
+      input.IdentityValidationExpression = properties['IdentityValidationExpression'] as string;
       changed = true;
     }
 

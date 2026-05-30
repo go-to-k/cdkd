@@ -57,7 +57,8 @@ const API_ID = 'abcd1234';
  *   - Stage:       StageVariables / DefaultRouteSettings
  *   - Integration: TimeoutInMillis / RequestParameters / Description
  *   - Route:       AuthorizationScopes / OperationName
- *   - Authorizer:  AuthorizerResultTtlInSeconds / EnableSimpleResponses
+ *   - Authorizer:  AuthorizerResultTtlInSeconds / EnableSimpleResponses /
+ *                  IdentityValidationExpression
  *
  * Each block covers create-send (field reaches the SDK input), update-send
  * (field rides the diffed UpdateX input), and readCurrentState emit/omit
@@ -715,6 +716,85 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       EnableSimpleResponses: true,
     };
     await provider.update('AuthorizerLogical', 'auth-1', 'AWS::ApiGatewayV2::Authorizer', same, same);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Authorizer create(): IdentityValidationExpression reaches CreateAuthorizer', async () => {
+    mockSend.mockResolvedValueOnce({ AuthorizerId: 'auth-1' });
+
+    await provider.create('AuthorizerLogical', 'AWS::ApiGatewayV2::Authorizer', {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      Name: 'req-auth',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      IdentityValidationExpression: '^Bearer .+$',
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['IdentityValidationExpression']).toBe('^Bearer .+$');
+  });
+
+  it('Authorizer create(): omits IdentityValidationExpression from CreateAuthorizer when absent', async () => {
+    mockSend.mockResolvedValueOnce({ AuthorizerId: 'auth-1' });
+
+    await provider.create('AuthorizerLogical', 'AWS::ApiGatewayV2::Authorizer', {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      Name: 'req-auth',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateAuthorizerCommand);
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['IdentityValidationExpression']).toBeUndefined();
+  });
+
+  it('Authorizer update(): IdentityValidationExpression change emits UpdateAuthorizer with only the diffed field', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthorizerLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        IdentityValidationExpression: '^Bearer [A-Z0-9]+$',
+      },
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        IdentityValidationExpression: '^Bearer .+$',
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      AuthorizerId: 'auth-1',
+      IdentityValidationExpression: '^Bearer [A-Z0-9]+$',
+    });
+  });
+
+  it('Authorizer update(): unchanged IdentityValidationExpression produces zero SDK calls', async () => {
+    const same = {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      IdentityValidationExpression: '^Bearer .+$',
+    };
+    await provider.update(
+      'AuthorizerLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      same,
+      same
+    );
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

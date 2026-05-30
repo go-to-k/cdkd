@@ -41,8 +41,7 @@
       "MethodSettings"
     ],
     "AWS::ApiGatewayV2::Authorizer": [
-      "AuthorizerCredentialsArn",
-      "IdentityValidationExpression"
+      "AuthorizerCredentialsArn"
     ],
     "AWS::ApiGatewayV2::Integration": [
       "ConnectionId",
