@@ -1,3 +1,10 @@
+# [0.199.0](https://github.com/go-to-k/cdkd/compare/v0.198.0...v0.199.0) (2026-05-30)
+
+
+### Features
+
+* **provisioning:** backfill Lambda::EventSourceMapping 7 props ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#735](https://github.com/go-to-k/cdkd/issues/735)) ([8ebe8f7](https://github.com/go-to-k/cdkd/commit/8ebe8f77a041fb7bad4fe5da13438524429341b6))
+
 # [0.198.0](https://github.com/go-to-k/cdkd/compare/v0.197.0...v0.198.0) (2026-05-30)
 
 
