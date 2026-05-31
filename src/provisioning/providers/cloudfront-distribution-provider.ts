@@ -648,9 +648,15 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    * deploy engine sees a failed update() and (a) does NOT write the new
    * properties.Tags into state — the next deploy retries the tag-diff
    * against the still-old state, (b) surfaces the failure to the user
-   * via the standard error path, (c) lets the engine's `withRetry`
-   * classifier pick up transient AWS errors (throttling) and retry
-   * automatically within the same deploy.
+   * via the standard error path. The deploy engine's `withRetry` MAY
+   * pick up some transient AWS errors via the cause-message-pattern
+   * match (`retryable-errors.ts`'s `RETRYABLE_ERROR_MESSAGE_PATTERNS`),
+   * but bare HTTP 429 throttles wrapped by update()'s outer catch reach
+   * the classifier two levels deep and slip past its single-level
+   * `.cause` walk — so the **load-bearing retry guarantee is the
+   * next-deploy retry**, not in-deploy retry. This is acceptable: the
+   * user sees the failure, can react, and the next `cdkd deploy`
+   * re-fires the tag-diff against the still-old state cleanly.
    *
    * Trade-off: a tag-side failure flips an otherwise-successful
    * `UpdateDistribution` into a deploy failure, and the retry will

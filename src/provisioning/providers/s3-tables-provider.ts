@@ -991,11 +991,15 @@ export class S3TablesProvider implements ResourceProvider {
    * vs new state Tags) sees no change → tag-diff never re-fires → AWS
    * tags stay stale forever. Throwing means: (a) state is NOT written,
    * (b) the next deploy retries the tag-diff against the still-old
-   * state, (c) the engine's `withRetry` classifier picks up transient
-   * AWS errors (throttle) and retries within the same deploy. For
-   * the S3Tables Table case `update()` is otherwise a no-op (the
-   * Table itself is immutable), so a tag-side throw cleanly turns
-   * the whole update into a retry without side-effects.
+   * state. The deploy engine's `withRetry` MAY pick up transient AWS
+   * errors via the cause-message-pattern match in `retryable-errors.ts`,
+   * but bare HTTP 429 throttles can slip past the classifier's
+   * single-level `.cause` walk depending on wrapping — so the
+   * **load-bearing retry guarantee is the next-deploy retry**, not
+   * in-deploy retry. For the S3Tables Table case `update()` is
+   * otherwise a no-op (the Table itself is immutable), so a tag-side
+   * throw cleanly turns the whole update into a retry without
+   * side-effects.
    *
    * The malformed-physicalId / GetTable-NotFound branches throw too
    * — both indicate a state-vs-AWS divergence the user needs to see,
@@ -1045,7 +1049,7 @@ export class S3TablesProvider implements ResourceProvider {
     const resourceArn = await this.lookupTableArn(tableBucketARN, namespace, name);
     if (!resourceArn) {
       throw new ProvisioningError(
-        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone or state is out-of-sync. Refusing to silently drop the tag update (run \`cdkd state orphan ${logicalId}\` to clean up if the table was deleted out-of-band).`,
+        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone or state is out-of-sync. Refusing to silently drop the tag update (run 'cdkd state orphan ${logicalId}' to clean up if the table was deleted out-of-band).`,
         resourceType,
         logicalId,
         physicalId
