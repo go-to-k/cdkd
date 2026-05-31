@@ -207,14 +207,20 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
       expect(mockSend.mock.calls[2][0].input.tags).toEqual({ env: 'prod', team: 'platform' });
     });
 
-    it('tag-side AWS failure is best-effort — does NOT throw (deploy progresses)', async () => {
-      // GetTable succeeds, TagResource fails — the whole update() still
-      // resolves (warn-log only, no throw).
+    it('tag-side AWS failure THROWS ProvisioningError (issue #740 — was warn-swallow, now propagates)', async () => {
+      // Pre-#740: warn-swallowed the throttle, let update() resolve, and
+      // the deploy engine recorded the new properties.Tags into state as
+      // if applied. AWS-side tags then stayed stale forever (next deploy
+      // sees no diff → no retry).
+      //
+      // Post-#740: throw a ProvisioningError so state is NOT written and
+      // the next deploy retries the tag-diff against the still-old state.
+      // For the S3Tables Table case update() is otherwise a no-op (Table
+      // itself is immutable), so a tag-side throw cleanly turns the whole
+      // update into a clean retry with no side-effects.
       mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
       mockSend.mockRejectedValueOnce(new Error('throttled'));
 
-      // Must not throw — the deploy engine's outer retry would otherwise
-      // re-issue the no-op update() body unnecessarily.
       await expect(
         provider.update(
           'L',
@@ -223,7 +229,10 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
           { Tags: [{ Key: 'env', Value: 'prod' }] },
           {}
         )
-      ).resolves.toEqual({ physicalId: PHYSICAL_ID, wasReplaced: false });
+      ).rejects.toThrow(/TagResource failed.*throttled/s);
+
+      // GetTable + TagResource attempted; throw fires after TagResource fails.
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
     it('TableBucket / Namespace types stay no-op (tag-diff is Table-only in this PR)', async () => {
