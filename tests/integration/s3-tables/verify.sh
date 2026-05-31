@@ -21,6 +21,11 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 EXPECTED_ENV_TAG="cdkd-integ"
 EXPECTED_TEAM_TAG="platform"
+# #609 backfill (this PR — U / TableBucket Tags) — distinct keys from
+# the Table's `env` / `team` so the assertion confirms each resource's
+# tag-diff fired against the correct ARN.
+EXPECTED_BUCKET_ENV_TAG="cdkd-integ"
+EXPECTED_BUCKET_TEAM_TAG="platform"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
@@ -143,6 +148,58 @@ if [ "${ACTUAL_TEAM}" != "${EXPECTED_TEAM_TAG}" ]; then
   exit 1
 fi
 echo "    OK: team tag == '${EXPECTED_TEAM_TAG}' on AWS"
+
+# --- Assertion: TableBucket Tags reached AWS (#609 — this PR / U) -----
+# TableBucket's physicalId IS the bucket ARN, so the same
+# ListTagsForResource API used for Table works against it directly.
+# Distinct keys (`bucket-env` / `bucket-team`) so a misrouted tag (e.g.
+# the Table's `env` tag accidentally landing on the bucket via a bad
+# ARN derivation) would surface as MISSING, not as a value-equality
+# match against an unrelated resource.
+if [ -z "${TABLE_BUCKET_ARN}" ] || [ "${TABLE_BUCKET_ARN}" = "null" ]; then
+  echo "FAIL: TableBucketArn output is empty/null — cannot run TableBucket tag assertion" >&2
+  exit 1
+fi
+
+set +e
+BUCKET_TAGS_JSON=$(aws s3tables list-tags-for-resource \
+  --region "${REGION}" \
+  --resource-arn "${TABLE_BUCKET_ARN}" \
+  --output json 2>/tmp/s3tables-bucket-tags-err)
+BUCKET_TAGS_RC=$?
+set -e
+if [ "${BUCKET_TAGS_RC}" -ne 0 ] || [ -z "${BUCKET_TAGS_JSON}" ]; then
+  echo "FAIL: ListTagsForResource exited ${BUCKET_TAGS_RC} for ${TABLE_BUCKET_ARN}" >&2
+  echo "stdout: ${BUCKET_TAGS_JSON}" >&2
+  echo "stderr:" >&2
+  cat /tmp/s3tables-bucket-tags-err >&2 || true
+  exit 1
+fi
+
+ACTUAL_BUCKET_ENV=$(echo "${BUCKET_TAGS_JSON}" | jq -r '.tags["bucket-env"] // "MISSING"')
+ACTUAL_BUCKET_TEAM=$(echo "${BUCKET_TAGS_JSON}" | jq -r '.tags["bucket-team"] // "MISSING"')
+
+if [ "${ACTUAL_BUCKET_ENV}" != "${EXPECTED_BUCKET_ENV_TAG}" ]; then
+  echo "FAIL: bucket-env tag is '${ACTUAL_BUCKET_ENV}', expected '${EXPECTED_BUCKET_ENV_TAG}' (TableBucket Tags silent-drop NOT closed)" >&2
+  echo "${BUCKET_TAGS_JSON}" | jq .
+  exit 1
+fi
+echo "    OK: bucket-env tag == '${EXPECTED_BUCKET_ENV_TAG}' on AWS (TableBucket Tags silent-drop CLOSED by #609 / U)"
+
+if [ "${ACTUAL_BUCKET_TEAM}" != "${EXPECTED_BUCKET_TEAM_TAG}" ]; then
+  echo "FAIL: bucket-team tag is '${ACTUAL_BUCKET_TEAM}', expected '${EXPECTED_BUCKET_TEAM_TAG}'" >&2
+  exit 1
+fi
+echo "    OK: bucket-team tag == '${EXPECTED_BUCKET_TEAM_TAG}' on AWS"
+
+# Confirm TableBucket routed via SDK provider too (same routing-flip guard
+# as the Table assertion above).
+BUCKET_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::TableBucket") | .value.provisionedBy] | first // "sdk"')
+if [ "${BUCKET_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AWS::S3Tables::TableBucket routed via '${BUCKET_PROVISIONED_BY}', expected 'sdk' (silent-drop routing flip)" >&2
+  exit 1
+fi
+echo "    OK: AWS::S3Tables::TableBucket routed via SDK provider (provisionedBy=sdk)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

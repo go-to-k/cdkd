@@ -60,23 +60,30 @@ describe('S3TablesProvider read-update round-trip', () => {
   // — any future regression that adds a real update() must explicitly
   // confirm round-trip safety here.
 
-  it('AWS::S3Tables::TableBucket — no-op update fires zero SDK calls on round-trip', async () => {
-    // readCurrentState mock: GetTableBucket
+  it('AWS::S3Tables::TableBucket — no-op update fires zero SDK calls on round-trip (same Tags)', async () => {
+    // readCurrentState mock: GetTableBucket + ListTagsForResource (post-#609
+    // Tags wiring for TableBucket — same pattern as Table case).
     mockSend.mockResolvedValueOnce({
       name: 'my-bucket',
       arn: BUCKET_ARN,
     });
+    mockSend.mockResolvedValueOnce({ tags: {} });
 
     const observed = await provider.readCurrentState(
       BUCKET_ARN,
       'L',
       'AWS::S3Tables::TableBucket'
     );
-    expect(observed).toEqual({ TableBucketName: 'my-bucket' });
+    expect(observed).toEqual({
+      TableBucketName: 'my-bucket',
+      // #609 backfill: empty Tags array (no tags on the live resource).
+      Tags: [],
+    });
 
     vi.clearAllMocks();
 
-    // Round-trip: pass observed as both new and previous.
+    // Round-trip: pass observed as both new and previous → no tag delta
+    // → tag-diff is a no-op (no TagResource / UntagResource calls fire).
     const result = await provider.update(
       'L',
       BUCKET_ARN,
@@ -86,7 +93,7 @@ describe('S3TablesProvider read-update round-trip', () => {
     );
 
     expect(result).toEqual({ physicalId: BUCKET_ARN, wasReplaced: false });
-    // Immutable resource: update() must not call AWS at all.
+    // No tag delta → no SDK calls.
     expect(mockSend).not.toHaveBeenCalled();
   });
 

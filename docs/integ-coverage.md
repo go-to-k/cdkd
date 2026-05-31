@@ -132,7 +132,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::S3Express::DirectoryBucket` | [`s3-directory-bucket`](../tests/integration/s3-directory-bucket/) (l1) |
 | `AWS::S3Tables::Namespace` | [`s3-tables`](../tests/integration/s3-tables/) (l1) |
 | `AWS::S3Tables::Table` | [`s3-tables`](../tests/integration/s3-tables/) (l1,literal) |
-| `AWS::S3Tables::TableBucket` | [`s3-tables`](../tests/integration/s3-tables/) (l1) |
+| `AWS::S3Tables::TableBucket` | [`s3-tables`](../tests/integration/s3-tables/) (l1,literal) |
 | `AWS::S3Vectors::VectorBucket` | [`s3-vectors`](../tests/integration/s3-vectors/) (l1) |
 | `AWS::SNS::Subscription` | [`composite-stack`](../tests/integration/composite-stack/) (literal)<br>[`sns-sqs-event`](../tests/integration/sns-sqs-event/) (literal) |
 | `AWS::SNS::Topic` | [`bench-sdk`](../tests/integration/bench-sdk/) (l2)<br>[`cloudwatch`](../tests/integration/cloudwatch/) (l2)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`drift-revert`](../tests/integration/drift-revert/) (l2)<br>[`event-driven`](../tests/integration/event-driven/) (l2)<br>[`export`](../tests/integration/export/) (l2,literal)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`microservices`](../tests/integration/microservices/) (l2)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (l2)<br>[`monitoring`](../tests/integration/monitoring/) (l2)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2)<br>[`serverless-api`](../tests/integration/serverless-api/) (l2)<br>[`sns-sqs-event`](../tests/integration/sns-sqs-event/) (l2) |

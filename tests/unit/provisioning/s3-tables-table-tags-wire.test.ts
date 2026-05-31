@@ -235,16 +235,12 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
       expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
-    it('TableBucket / Namespace types stay no-op (tag-diff is Table-only in this PR)', async () => {
-      await provider.update(
-        'L',
-        BUCKET_ARN,
-        'AWS::S3Tables::TableBucket',
-        { Tags: [{ Key: 'env', Value: 'prod' }] },
-        {}
-      );
-      expect(mockSend).not.toHaveBeenCalled();
-
+    it('Namespace type stays no-op (Namespaces are not taggable in S3Tables — Table + TableBucket are wired)', async () => {
+      // Pre-U: TableBucket also stayed no-op. Post-U (#609 PR for
+      // S3Tables::TableBucket Tags): TableBucket dispatches tag-diff
+      // via applyTableBucketTagsDiff. Namespace remains no-op because
+      // S3Tables' SDK ListTagsForResource only accepts table-bucket or
+      // table ARNs — Namespaces are not taggable at the AWS level.
       await provider.update(
         'L',
         `${BUCKET_ARN}|ns`,

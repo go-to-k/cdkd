@@ -49,10 +49,16 @@ describe('S3TablesProvider.readCurrentState', () => {
   });
 
   describe('AWS::S3Tables::TableBucket', () => {
-    it('returns TableBucketName from GetTableBucket (happy path)', async () => {
+    it('returns TableBucketName + Tags from GetTableBucket + ListTagsForResource (happy path)', async () => {
       mockSend.mockResolvedValueOnce({
         name: 'my-bucket',
         arn: 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
+      });
+      // #609 backfill — readback now adds a second ListTagsForResource
+      // call (TableBucket physicalId IS the bucket ARN, so no GetTableBucket
+      // → ARN recovery hop needed unlike Table).
+      mockSend.mockResolvedValueOnce({
+        tags: { env: 'cdkd-integ', team: 'platform' },
       });
 
       const result = await provider.readCurrentState(
@@ -62,7 +68,44 @@ describe('S3TablesProvider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetTableBucketCommand);
-      expect(result).toEqual({ TableBucketName: 'my-bucket' });
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
+      expect(result).toEqual({
+        TableBucketName: 'my-bucket',
+        Tags: [
+          { Key: 'env', Value: 'cdkd-integ' },
+          { Key: 'team', Value: 'platform' },
+        ],
+      });
+    });
+
+    it('emits Tags: [] when ListTagsForResource returns no tags', async () => {
+      mockSend.mockResolvedValueOnce({ name: 'my-bucket' });
+      mockSend.mockResolvedValueOnce({ tags: {} });
+
+      const result = await provider.readCurrentState(
+        'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
+        'Logical',
+        'AWS::S3Tables::TableBucket'
+      );
+
+      expect(result).toMatchObject({ Tags: [] });
+    });
+
+    it('emits Tags: [] (best-effort) when ListTagsForResource itself fails', async () => {
+      mockSend.mockResolvedValueOnce({ name: 'my-bucket' });
+      mockSend.mockRejectedValueOnce(new Error('throttled'));
+
+      const result = await provider.readCurrentState(
+        'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
+        'Logical',
+        'AWS::S3Tables::TableBucket'
+      );
+
+      // Best-effort fallback (matches the Table case and S3Vectors /
+      // CloudFront patterns) — drift comparator only descends into
+      // state-side keys, so an empty array doesn't surface noise on a
+      // pre-PR state file that had no Tags entry.
+      expect(result).toMatchObject({ Tags: [] });
     });
 
     it('returns undefined when bucket gone', async () => {
