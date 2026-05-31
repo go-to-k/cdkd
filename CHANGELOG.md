@@ -1,3 +1,10 @@
+## [0.201.1](https://github.com/go-to-k/cdkd/compare/v0.201.0...v0.201.1) (2026-05-31)
+
+
+### Bug Fixes
+
+* **provisioning:** tag-side AWS failures THROW instead of warn-swallow (closes [#740](https://github.com/go-to-k/cdkd/issues/740)) ([#741](https://github.com/go-to-k/cdkd/issues/741)) ([942882c](https://github.com/go-to-k/cdkd/commit/942882c6d7b347f5588f97ea7d0c150df9b2dc97))
+
 # [0.201.0](https://github.com/go-to-k/cdkd/compare/v0.200.0...v0.201.0) (2026-05-30)
 
 
