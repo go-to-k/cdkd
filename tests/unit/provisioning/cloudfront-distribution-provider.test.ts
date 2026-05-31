@@ -604,11 +604,12 @@ describe('CloudFrontDistributionProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(3);
     });
 
-    it('update with tag diff but missing ARN warns and skips (does not throw)', async () => {
+    it('update with tag diff but missing ARN THROWS (issue #740 — refuses to silently drop the tag update)', async () => {
       // Defensive guard against a hypothetical SDK regression where
-      // GetDistribution stops returning ARN. A silent drop here would
-      // exactly reintroduce the silent-drop this PR closes — assert
-      // that the warn fires AND no Tag/Untag send is attempted.
+      // GetDistribution stops returning ARN. Pre-#740 this was a warn-
+      // and-skip (silent tag drop); now we throw so state is not written
+      // and the next deploy retries — surfaces the SDK regression to the
+      // operator instead of silently accruing AWS-side tag drift.
       mockSend.mockResolvedValueOnce({
         ETag: 'E1',
         DistributionConfig: { CallerReference: 'orig', Enabled: true },
@@ -618,26 +619,24 @@ describe('CloudFrontDistributionProvider', () => {
         Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' /* no ARN */ },
       });
 
-      await provider.update(
-        'MyDistribution',
-        'EDFDVBD6EXAMPLE',
-        'AWS::CloudFront::Distribution',
-        {
-          DistributionConfig: { Enabled: true },
-          Tags: [{ Key: 'NewKey', Value: 'NewVal' }],
-        },
-        {
-          DistributionConfig: { Enabled: true },
-        }
-      );
+      await expect(
+        provider.update(
+          'MyDistribution',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          {
+            DistributionConfig: { Enabled: true },
+            Tags: [{ Key: 'NewKey', Value: 'NewVal' }],
+          },
+          {
+            DistributionConfig: { Enabled: true },
+          }
+        )
+      ).rejects.toThrow(/GetDistribution returned no ARN/);
 
-      // GetConfig + Update + GetDistribution = 3 (no Tag/Untag, no throw)
+      // GetConfig + Update + GetDistribution = 3 sends fired before throw.
+      // No Tag/Untag attempted (we throw before reaching the AWS tag call).
       expect(mockSend).toHaveBeenCalledTimes(3);
-      // The warn is the load-bearing user-visible signal — without it
-      // the silent drop would silently reintroduce itself.
-      expect(childLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('GetDistribution returned no ARN')
-      );
     });
 
     it('update with NO tag diff and no ARN does NOT warn (no-op skip is silent)', async () => {
@@ -668,13 +667,18 @@ describe('CloudFrontDistributionProvider', () => {
       expect(childLogger.warn).not.toHaveBeenCalled();
     });
 
-    it('update tag-side failure is logged but does NOT propagate (UpdateDistribution succeeded)', async () => {
-      // The deploy engine treats provider.update() failure as a need to
-      // retry. Since UpdateDistribution already committed before the tag
-      // call, an exception here would force an idempotent retry against
-      // the same etag — noisy but not destructive. The provider chooses
-      // warn-and-continue so the user sees the unapplied tag delta
-      // without rolling the whole deploy step.
+    it('update tag-side failure THROWS (issue #740 — was warn-swallow, now propagates as ProvisioningError)', async () => {
+      // Pre-#740: warn-and-continue let the deploy engine record the new
+      // properties.Tags into state as if applied. AWS-side tags then
+      // stayed stale FOREVER (next deploy sees no diff → no retry).
+      //
+      // Post-#740: throw a ProvisioningError so state is NOT written.
+      // The next deploy compares the still-old state Tags vs new template
+      // Tags → tag-diff re-fires. UpdateDistribution will re-issue against
+      // the now-current config but AWS accepts that as a no-op idempotently.
+      //
+      // The trade-off (extra UpdateDistribution noise on retry) is much
+      // cheaper than silent tag drift.
       const arn = 'arn:aws:cloudfront::123456789012:distribution/EDFDVBD6EXAMPLE';
       mockSend.mockResolvedValueOnce({
         ETag: 'E1',
@@ -686,30 +690,21 @@ describe('CloudFrontDistributionProvider', () => {
       });
       mockSend.mockRejectedValueOnce(new Error('AccessDeniedException: tag policy denies')); // TagResource
 
-      const result = await provider.update(
-        'MyDistribution',
-        'EDFDVBD6EXAMPLE',
-        'AWS::CloudFront::Distribution',
-        {
-          DistributionConfig: { Enabled: true },
-          Tags: [{ Key: 'NewKey', Value: 'NewVal' }],
-        },
-        { DistributionConfig: { Enabled: true } }
-      );
+      await expect(
+        provider.update(
+          'MyDistribution',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          {
+            DistributionConfig: { Enabled: true },
+            Tags: [{ Key: 'NewKey', Value: 'NewVal' }],
+          },
+          { DistributionConfig: { Enabled: true } }
+        )
+      ).rejects.toThrow(/tag diff failed.*AccessDeniedException/s);
 
-      // update() returns normally (no throw) and the result is intact —
-      // wasReplaced=false, attributes carry the new domainName etc.
-      expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
-      expect(result.wasReplaced).toBe(false);
-      // The warn surfaces the unapplied delta with the failure message
-      // so the operator can investigate; this guards against a future
-      // `catch {}` swallow regression.
-      expect(childLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('tag diff failed')
-      );
-      expect(childLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('AccessDeniedException')
-      );
+      // GetConfig + Update + GetDistribution + TagResource = 4 sends attempted.
+      expect(mockSend).toHaveBeenCalledTimes(4);
     });
 
     it('update mixed adds + removes issues Untag then Tag in that order', async () => {

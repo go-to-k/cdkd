@@ -110,7 +110,13 @@ export class S3TablesProvider implements ResourceProvider {
     // (this PR); the TableBucket / Namespace cases stay no-op until
     // their own backfill PRs (U / V).
     if (resourceType === 'AWS::S3Tables::Table') {
-      await this.applyTableTagsDiff(physicalId, previousProperties['Tags'], properties['Tags']);
+      await this.applyTableTagsDiff(
+        logicalId,
+        physicalId,
+        resourceType,
+        previousProperties['Tags'],
+        properties['Tags']
+      );
     } else {
       this.logger.debug(`Update is no-op for ${resourceType} ${logicalId}`);
     }
@@ -979,31 +985,33 @@ export class S3TablesProvider implements ResourceProvider {
    * value-only rewrite on key K isn't accidentally cleared by a stale
    * UntagResource pass (matches the CloudFront / S3Vectors pattern).
    *
-   * Tag ops are best-effort post-step in update(): a tag-side failure
-   * MUST NOT flip the deploy engine into a retry that would re-issue
-   * the no-op `update()` body. Log at warn instead so the user sees
-   * the unapplied delta but the deploy still progresses.
+   * Tag-side failures THROW `ProvisioningError` (issue #740 fix): a
+   * silent swallow would let the deploy engine write the new properties.Tags
+   * to state as if applied, and the next deploy's diff (template Tags
+   * vs new state Tags) sees no change → tag-diff never re-fires → AWS
+   * tags stay stale forever. Throwing means: (a) state is NOT written,
+   * (b) the next deploy retries the tag-diff against the still-old
+   * state. The deploy engine's `withRetry` MAY pick up transient AWS
+   * errors via the cause-message-pattern match in `retryable-errors.ts`,
+   * but bare HTTP 429 throttles can slip past the classifier's
+   * single-level `.cause` walk depending on wrapping — so the
+   * **load-bearing retry guarantee is the next-deploy retry**, not
+   * in-deploy retry. For the S3Tables Table case `update()` is
+   * otherwise a no-op (the Table itself is immutable), so a tag-side
+   * throw cleanly turns the whole update into a retry without
+   * side-effects.
+   *
+   * The malformed-physicalId / GetTable-NotFound branches throw too
+   * — both indicate a state-vs-AWS divergence the user needs to see,
+   * not silently skip past.
    */
   private async applyTableTagsDiff(
+    logicalId: string,
     physicalId: string,
+    resourceType: string,
     previousTags: unknown,
     newTags: unknown
   ): Promise<void> {
-    const parts = physicalId.split('|');
-    if (parts.length < 3) {
-      this.logger.warn(
-        `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' — skipping tag-diff`
-      );
-      return;
-    }
-    const [tableBucketARN, namespace, name] = parts;
-    if (!tableBucketARN || !namespace || !name) {
-      this.logger.warn(
-        `applyTableTagsDiff: cannot derive table ARN from malformed physicalId '${physicalId}' (empty part after split) — skipping tag-diff`
-      );
-      return;
-    }
-
     const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
     const next = this.cfnTagsToSdkMap(newTags) ?? {};
 
@@ -1013,17 +1021,39 @@ export class S3TablesProvider implements ResourceProvider {
       if (prev[k] !== v) upserts[k] = v;
     }
 
+    // No tag delta → no work, no error.
     if (removedKeys.length === 0 && Object.keys(upserts).length === 0) return;
+
+    const parts = physicalId.split('|');
+    if (parts.length < 3) {
+      throw new ProvisioningError(
+        `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' (expected '<bucketArn>|<namespace>|<name>') — refusing to silently drop the tag update`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const [tableBucketARN, namespace, name] = parts;
+    if (!tableBucketARN || !namespace || !name) {
+      throw new ProvisioningError(
+        `applyTableTagsDiff: cannot derive table ARN from malformed physicalId '${physicalId}' (empty part after split) — refusing to silently drop the tag update`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
 
     // Tag APIs need the REAL table ARN (not cdkd's compound physical id
     // and not a guessed derivation from the parts — AWS rejects every
     // form except its own). Look it up via GetTable.
     const resourceArn = await this.lookupTableArn(tableBucketARN, namespace, name);
     if (!resourceArn) {
-      this.logger.warn(
-        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — skipping tag-diff (table gone? state out-of-sync?)`
+      throw new ProvisioningError(
+        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone or state is out-of-sync. Refusing to silently drop the tag update (run 'cdkd state orphan ${logicalId}' to clean up if the table was deleted out-of-band).`,
+        resourceType,
+        logicalId,
+        physicalId
       );
-      return;
     }
 
     if (removedKeys.length > 0) {
@@ -1032,8 +1062,13 @@ export class S3TablesProvider implements ResourceProvider {
           new UntagResourceCommand({ resourceArn, tagKeys: removedKeys })
         );
       } catch (err) {
-        this.logger.warn(
-          `applyTableTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${err instanceof Error ? err.message : String(err)}`
+        const cause = err instanceof Error ? err : undefined;
+        throw new ProvisioningError(
+          `applyTableTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${err instanceof Error ? err.message : String(err)}. State has NOT been updated so the next deploy will retry the tag-diff.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
         );
       }
     }
@@ -1042,8 +1077,13 @@ export class S3TablesProvider implements ResourceProvider {
       try {
         await this.getClient().send(new TagResourceCommand({ resourceArn, tags: upserts }));
       } catch (err) {
-        this.logger.warn(
-          `applyTableTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${err instanceof Error ? err.message : String(err)}`
+        const cause = err instanceof Error ? err : undefined;
+        throw new ProvisioningError(
+          `applyTableTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${err instanceof Error ? err.message : String(err)}. State has NOT been updated so the next deploy will retry the tag-diff.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
         );
       }
     }

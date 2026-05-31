@@ -201,14 +201,22 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // first so a renamed key (e.g. value-only edit on key K) is not
       // accidentally cleared by a stale UntagResource pass.
       //
-      // Tags are best-effort post-step: a tag-side failure must not flip
-      // an otherwise-successful UpdateDistribution into a deploy-engine
-      // failure (the engine would then schedule a retry that re-issues
-      // the already-applied UpdateDistribution against the same etag,
-      // which is idempotent but adds noise to the next deploy). We log a
-      // warn instead so the user sees the unapplied tag delta but the
-      // deploy still progresses.
-      await this.tryApplyTagDiff(arn, previousProperties['Tags'], properties['Tags'], physicalId);
+      // Tag-side failures THROW (issue #740 fix): a swallow leaves state
+      // recording the new Tags as applied while AWS-side tags stay stale
+      // forever (next deploy sees no diff → no retry). The trade-off is
+      // that a TagResource throttle flips the whole update into a deploy
+      // failure; the retry will re-issue UpdateDistribution against the
+      // already-current config (AWS accepts as a no-op) before re-firing
+      // the tag-diff. That secondary noise is much cheaper than the
+      // silent tag drift the pre-#740 swallow caused.
+      await this.applyTagDiff(
+        arn,
+        previousProperties['Tags'],
+        properties['Tags'],
+        physicalId,
+        logicalId,
+        resourceType
+      );
 
       this.logger.debug(`Updated CloudFront Distribution ${physicalId}`);
 
@@ -629,41 +637,60 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   }
 
   /**
-   * Apply a tag diff to a distribution, best-effort.
+   * Apply a tag diff to a distribution.
    *
    * CloudFront has no atomic overlay API for tags — `TagResource` adds /
    * overwrites and `UntagResource` removes. Run the removal first, then
    * the upsert, so a same-key value rewrite (which lands in `upserts`)
    * is not accidentally cleared by a stale Untag.
    *
-   * Errors are logged but not rethrown — `update()` already succeeded
-   * the `UpdateDistribution` call before this is invoked, so propagating
-   * a tag-side error would flip a successful config update into a deploy
-   * failure that triggers an idempotent retry. A `warn` surfaces the
-   * unapplied delta to the operator without breaking the deploy.
+   * Errors are RETHROWN as `ProvisioningError` (issue #740 fix) so the
+   * deploy engine sees a failed update() and (a) does NOT write the new
+   * properties.Tags into state — the next deploy retries the tag-diff
+   * against the still-old state, (b) surfaces the failure to the user
+   * via the standard error path. The deploy engine's `withRetry` MAY
+   * pick up some transient AWS errors via the cause-message-pattern
+   * match (`retryable-errors.ts`'s `RETRYABLE_ERROR_MESSAGE_PATTERNS`),
+   * but bare HTTP 429 throttles wrapped by update()'s outer catch reach
+   * the classifier two levels deep and slip past its single-level
+   * `.cause` walk — so the **load-bearing retry guarantee is the
+   * next-deploy retry**, not in-deploy retry. This is acceptable: the
+   * user sees the failure, can react, and the next `cdkd deploy`
+   * re-fires the tag-diff against the still-old state cleanly.
+   *
+   * Trade-off: a tag-side failure flips an otherwise-successful
+   * `UpdateDistribution` into a deploy failure, and the retry will
+   * re-issue UpdateDistribution against the (now-current) config —
+   * AWS accepts the no-op idempotently. The cost of that secondary
+   * noise is much lower than the cost of silent tag drift the pre-#740
+   * swallow caused.
    *
    * The ARN is unexpectedly absent only on a hypothetical SDK regression
    * (`GetDistribution` returns ARN as a required string in every SDK
    * shape verified so far). When that happens AND a tag delta exists,
-   * log a warn so the silent-drop this PR is closing does not silently
-   * resurface; when no delta exists, return without needing ARN.
+   * THROW so the silent-drop does not silently resurface; when no delta
+   * exists, return without needing ARN.
    */
-  private async tryApplyTagDiff(
+  private async applyTagDiff(
     arn: string | undefined,
     previousTags: unknown,
     newTags: unknown,
-    physicalId: string
+    physicalId: string,
+    logicalId: string,
+    resourceType: string
   ): Promise<void> {
     const { removed, upserts } = this.computeTagDiff(previousTags, newTags);
     if (removed.length === 0 && upserts.length === 0) return;
 
     if (!arn) {
-      this.logger.warn(
+      throw new ProvisioningError(
         `CloudFront Distribution ${physicalId}: GetDistribution returned no ARN; ` +
-          `skipping tag diff (removed=${removed.length}, upserts=${upserts.length}). ` +
-          `Tags on AWS may drift from the template.`
+          `cannot apply tag diff (removed=${removed.length}, upserts=${upserts.length}). ` +
+          `Refusing to silently drop the tag update — retry on next deploy or check SDK version.`,
+        resourceType,
+        logicalId,
+        physicalId
       );
-      return;
     }
 
     try {
@@ -688,10 +715,15 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         );
       }
     } catch (err) {
-      this.logger.warn(
+      const cause = err instanceof Error ? err : undefined;
+      throw new ProvisioningError(
         `CloudFront Distribution ${physicalId}: tag diff failed (removed=${removed.length}, ` +
           `upserts=${upserts.length}): ${err instanceof Error ? err.message : String(err)}. ` +
-          `UpdateDistribution itself succeeded; tags on AWS may drift from the template until the next deploy.`
+          `UpdateDistribution succeeded but TagResource/UntagResource did not — state has NOT been updated so the next deploy will retry the tag-diff.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
       );
     }
   }
