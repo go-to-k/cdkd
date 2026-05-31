@@ -1,0 +1,16 @@
+{
+  "app": "node bin/app.ts",
+  "watch": {
+    "include": [
+      "**"
+    ],
+    "exclude": [
+      "README.md",
+      "**/*.md",
+      "cdk*.json",
+      "**/*.d.ts",
+      "node_modules",
+      "dist"
+    ]
+  }
+}

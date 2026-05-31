@@ -1601,7 +1601,8 @@
         "local-ecs-service-connect",
         "local-start-alb",
         "local-start-alb-from-state",
-        "local-start-service"
+        "local-start-service",
+        "local-start-service-watch-fast"
       ],
       "signals": {
         "drift-revert": [
@@ -1623,6 +1624,9 @@
         ],
         "local-start-service": [
           "l1"
+        ],
+        "local-start-service-watch-fast": [
+          "l1"
         ]
       }
     },
@@ -1633,7 +1637,8 @@
         "local-ecs-service-connect",
         "local-start-alb",
         "local-start-alb-from-state",
-        "local-start-service"
+        "local-start-service",
+        "local-start-service-watch-fast"
       ],
       "signals": {
         "ecs-fargate": [
@@ -1654,6 +1659,10 @@
         "local-start-service": [
           "l1",
           "literal"
+        ],
+        "local-start-service-watch-fast": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1668,7 +1677,8 @@
         "local-run-task-multi-container",
         "local-start-alb",
         "local-start-alb-from-state",
-        "local-start-service"
+        "local-start-service",
+        "local-start-service-watch-fast"
       ],
       "signals": {
         "ecs-fargate": [
@@ -1702,6 +1712,9 @@
         ],
         "local-start-service": [
           "l1"
+        ],
+        "local-start-service-watch-fast": [
+          "l2"
         ]
       }
     },

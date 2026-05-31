@@ -43,6 +43,26 @@ describe('createLocalStartServiceCommand', () => {
     expect(longs).toContain('--stack-region');
   });
 
+  it('inherits the start-service-specific options from addStartServiceSpecificOptions', () => {
+    // `--host-port` and `--watch` ride in via cdk-local's
+    // `addStartServiceSpecificOptions` helper (added in cdk-local 0.69.0
+    // alongside the Phase 4 bind-mount source fast path of issue #214).
+    // cdkd inherits both verbatim through the shim in
+    // `ecs-service-emulator.ts`, so any future option added there lands in
+    // `cdkd local start-service --help` with no manual sync.
+    const longs = cmd.options.map((o) => o.long);
+    expect(longs).toContain('--host-port');
+    expect(longs).toContain('--watch');
+  });
+
+  it('defaults --watch to false (opt-in hot reload)', () => {
+    // `--watch` is intentionally off by default — the default `start-service`
+    // boot is one-shot. The Phase 4 fast path only fires when the user opts
+    // in to `--watch`.
+    const opt = cmd.options.find((o) => o.long === '--watch');
+    expect(opt?.defaultValue).toBe(false);
+  });
+
   it('does NOT declare --detach (services are long-running)', () => {
     const longs = cmd.options.map((o) => o.long);
     expect(longs).not.toContain('--detach');
@@ -183,6 +203,17 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
     // ride through the shared options bag.
     const strategy = serviceStrategy(makeOptions());
     expect(strategy.lbPortOverrides).toEqual({});
+  });
+
+  it('opts into --watch via supportsWatch: true', () => {
+    // The engine's `--watch` block is gated on
+    // `options.watch === true && strategy.supportsWatch === true` — without
+    // this flag `--watch` is silently a no-op for start-service. cdk-local's
+    // own `serviceStrategy` (the bundled `cdkl start-service`) sets it; the
+    // cdkd-local copy must match so Phase 4 of cdk-local#214 (bind-mount
+    // source fast path) fires for `cdkd local start-service --watch`.
+    const strategy = serviceStrategy(makeOptions());
+    expect(strategy.supportsWatch).toBe(true);
   });
 
   it('resolveBoots maps each chosen target to a ServiceBoot with no front-door', () => {

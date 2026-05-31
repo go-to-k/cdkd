@@ -296,18 +296,25 @@ with the AWS-published ECS metadata sidecar.
 ```bash
 cdkd local start-service MyStack/Orders MyStack/Web  # multiple services in one invocation
 cdkd local start-service MyStack/Orders --from-state # OR --from-cfn-stack
+cdkd local start-service MyStack/Web --watch         # hot reload (sub-second on interpreted handlers)
 ```
 
 Long-running ECS Service emulator: `DesiredCount` replicas with
 restart-on-exit, cross-service Service Connect / Cloud Map DNS
 discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
-No local load-balancer in v1.
+No local load-balancer in v1. `--watch` re-synths on every CDK source edit
+and reloads one replica at a time — source-only edits on
+interpreted-language handlers (Node / Python / Ruby / shell) take a
+bind-mount fast path (`docker cp` + `docker restart`; no rebuild);
+Dockerfile / dependency manifest / compiled-language source edits fall
+through to a full rebuild + shadow boot + atomic swap.
 
 ### `local start-alb`
 
 ```bash
 cdkd local start-alb MyStack/MyAlb --lb-port 80=8080 # remap privileged listener port
 cdkd local start-alb MyStack/MyAlb --from-state      # OR --from-cfn-stack
+cdkd local start-alb MyStack/MyAlb --watch           # hot reload (sub-second on interpreted handlers)
 ```
 
 Long-running local ALB front-door: names an `AWS::ElasticLoadBalancingV2::LoadBalancer`,
@@ -316,7 +323,10 @@ HTTP / HTTPS front-door on each listener port that round-robins across
 the running replicas and routes its listener rules across the backing
 services. Forward / redirect / fixed-response actions; ECS or Lambda
 targets; authenticate-cognito / authenticate-oidc via a local Bearer-JWT
-check.
+check. `--watch` reloads one backing-replica at a time across edits —
+interpreted-handler source edits go through the bind-mount fast path
+(no rebuild); Dockerfile / dependency / compiled-source edits fall
+through to a rebuild + atomic front-door pool swap.
 
 See **[docs/local-emulation.md](docs/local-emulation.md)** for the
 full reference — runtimes, target resolution, every flag, integration
