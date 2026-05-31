@@ -39,12 +39,9 @@ HOST_PORT=8087
 
 SERVER_CJS="webapp/server.cjs"
 DOCKERFILE="webapp/Dockerfile"
-SERVER_CJS_BACKUP="$(mktemp)"
-DOCKERFILE_BACKUP="$(mktemp)"
-cp "${SERVER_CJS}" "${SERVER_CJS_BACKUP}"
-cp "${DOCKERFILE}" "${DOCKERFILE_BACKUP}"
-
-LOG_FILE="$(mktemp)"
+SERVER_CJS_BACKUP=""
+DOCKERFILE_BACKUP=""
+LOG_FILE=""
 CDKD_PID=""
 
 term_server() {
@@ -65,11 +62,11 @@ term_server() {
 restore_source() {
   # Put the committed v1 source back so the working tree is unchanged
   # whether the test passed, failed, or was interrupted mid-edit.
-  if [[ -f "${SERVER_CJS_BACKUP}" ]]; then
+  if [[ -n "${SERVER_CJS_BACKUP:-}" && -f "${SERVER_CJS_BACKUP}" ]]; then
     cp "${SERVER_CJS_BACKUP}" "${SERVER_CJS}"
     rm -f "${SERVER_CJS_BACKUP}"
   fi
-  if [[ -f "${DOCKERFILE_BACKUP}" ]]; then
+  if [[ -n "${DOCKERFILE_BACKUP:-}" && -f "${DOCKERFILE_BACKUP}" ]]; then
     cp "${DOCKERFILE_BACKUP}" "${DOCKERFILE}"
     rm -f "${DOCKERFILE_BACKUP}"
   fi
@@ -78,13 +75,31 @@ restore_source() {
 cleanup() {
   term_server
   restore_source
+  # Project convention: integ tests do NOT run in parallel (one /run-integ
+  # invocation at a time). The broad cdkd-local-* sweep is therefore safe
+  # AND robust — if cdkd's own SIGTERM-driven cleanup missed anything
+  # (e.g. process killed before teardown), the sweep catches it. If integ
+  # parallelism is ever introduced, narrow these filters to a per-run
+  # network suffix captured from the boot log.
   docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' \
     | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' \
     | xargs -r docker network rm >/dev/null 2>&1 || true
-  rm -f "${LOG_FILE}"
+  if [[ -n "${LOG_FILE:-}" ]]; then
+    rm -f "${LOG_FILE}"
+  fi
 }
+# Install the trap BEFORE any mktemp/cp so a SIGINT in the pre-boot window
+# still triggers restore_source + cleanup. The trap body is null-safe for
+# the unset-backup case via the [[ -n ... ]] guards in restore_source / cleanup.
 trap cleanup EXIT INT TERM
+
+SERVER_CJS_BACKUP="$(mktemp)"
+DOCKERFILE_BACKUP="$(mktemp)"
+cp "${SERVER_CJS}" "${SERVER_CJS_BACKUP}"
+cp "${DOCKERFILE}" "${DOCKERFILE_BACKUP}"
+
+LOG_FILE="$(mktemp)"
 
 # Pre-test orphan sweep - a failed previous run can leak cdkd-local-* state.
 echo "==> Pre-test orphan sweep"

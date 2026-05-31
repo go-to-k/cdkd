@@ -40,9 +40,13 @@ export interface LocalStartServiceOptions extends EcsServiceEmulatorOptions {
  * `cdkl start-service` strategy — name one or more ECS services and the engine
  * boots their replicas. There is no front-door listener (services are reached
  * directly via their published container ports). Mirrors `albStrategy` in
- * shape, with `frontDoor` omitted and `lbPortOverrides` empty.
+ * shape, with `frontDoor` omitted and `lbPortOverrides` empty. No-arg to match
+ * cdk-local's bundled `serviceStrategy()` signature exactly — start-service
+ * has no per-invocation options that branch the strategy shape (unlike
+ * `albStrategy(options)`, which threads `--lb-port` parses into
+ * `lbPortOverrides`).
  */
-export function serviceStrategy(_options: EcsServiceEmulatorOptions): EmulatorStrategy {
+export function serviceStrategy(): EmulatorStrategy {
   return {
     pickEntries: (stacks) => listTargets(stacks).ecsServices,
     pickerMessage: 'Select one or more ECS services to run',
@@ -122,12 +126,7 @@ export function createLocalStartServiceCommand(): Command {
     )
     .action(
       withErrorHandling(async (targets: string[], options: LocalStartServiceOptions) => {
-        await runEcsServiceEmulator(
-          targets,
-          options,
-          serviceStrategy(options),
-          cdkdExtraStateProviders
-        );
+        await runEcsServiceEmulator(targets, options, serviceStrategy(), cdkdExtraStateProviders);
       })
     );
 

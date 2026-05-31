@@ -4,7 +4,6 @@ import {
   serviceStrategy,
 } from '../../../src/cli/commands/local-start-service.js';
 import { LocalStartServiceError } from '../../../src/utils/error-handler.js';
-import type { EcsServiceEmulatorOptions } from '../../../src/cli/commands/ecs-service-emulator.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 describe('createLocalStartServiceCommand', () => {
@@ -164,23 +163,13 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
   // `serviceStrategy` is the load-bearing logic the engine consumes per CLI
   // invocation — the engine's `runEcsServiceEmulator` calls each field on the
   // returned `EmulatorStrategy` exactly once + this test pins each field's
-  // contract without spinning up the engine.
-
-  function makeOptions(over: Partial<EcsServiceEmulatorOptions> = {}): EcsServiceEmulatorOptions {
-    return {
-      output: 'cdk.out',
-      verbose: false,
-      cluster: 'cdkd-local',
-      containerHost: '127.0.0.1',
-      pull: true,
-      maxTasks: 3,
-      restartPolicy: 'on-failure',
-      ...over,
-    } as EcsServiceEmulatorOptions;
-  }
+  // contract without spinning up the engine. `serviceStrategy()` is a no-arg
+  // factory (matches cdk-local upstream); start-service has no per-invocation
+  // options that branch the strategy shape, unlike `albStrategy(options)`
+  // which threads `--lb-port` parses into `lbPortOverrides`.
 
   it('declares the picker text + noun the engine surfaces in TTY mode', () => {
-    const strategy = serviceStrategy(makeOptions());
+    const strategy = serviceStrategy();
     expect(strategy.pickerMessage).toMatch(/Select.*ECS services/i);
     expect(strategy.pickerNoun).toBe('ECS services');
   });
@@ -189,7 +178,7 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
     // Engine calls strategy.onMissing() when no <target> is supplied in a
     // non-interactive context. The thrown class is cdkd's so the surface
     // matches the rest of cdkd's error handling.
-    const strategy = serviceStrategy(makeOptions());
+    const strategy = serviceStrategy();
     const err = strategy.onMissing();
     expect(err).toBeInstanceOf(LocalStartServiceError);
     // The message embeds `getEmbedConfig().cliName` (= 'cdkd local' under
@@ -201,7 +190,7 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
     // start-service has no front-door / listener layer (unlike start-alb),
     // so the override map MUST be empty even when --lb-port-like options
     // ride through the shared options bag.
-    const strategy = serviceStrategy(makeOptions());
+    const strategy = serviceStrategy();
     expect(strategy.lbPortOverrides).toEqual({});
   });
 
@@ -212,7 +201,7 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
     // own `serviceStrategy` (the bundled `cdkl start-service`) sets it; the
     // cdkd-local copy must match so Phase 4 of cdk-local#214 (bind-mount
     // source fast path) fires for `cdkd local start-service --watch`.
-    const strategy = serviceStrategy(makeOptions());
+    const strategy = serviceStrategy();
     expect(strategy.supportsWatch).toBe(true);
   });
 
@@ -221,7 +210,7 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
     // serviceStrategy.resolveBoots only needs to forward the chosen target
     // strings. The return shape pins the contract: ServiceBoot[] + empty
     // warnings + no frontDoor (start-service has no listeners).
-    const strategy = serviceStrategy(makeOptions());
+    const strategy = serviceStrategy();
     const stacks: StackInfo[] = [];
     const out = strategy.resolveBoots(stacks, ['MyStack:Orders', 'MyStack:Web']);
     expect(out.boots).toEqual([{ target: 'MyStack:Orders' }, { target: 'MyStack:Web' }]);
@@ -234,7 +223,7 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
     // so the Cloud Map registry populates BEFORE consumers' `docker run`
     // reads it. The engine boots sequentially; the strategy MUST NOT
     // re-order chosenTargets.
-    const strategy = serviceStrategy(makeOptions());
+    const strategy = serviceStrategy();
     const out = strategy.resolveBoots(
       [],
       ['Stack:Producer', 'Stack:Middle', 'Stack:Consumer']
@@ -250,7 +239,7 @@ describe('serviceStrategy (engine plumbing for runEcsServiceEmulator)', () => {
     // Edge: an empty target list comes from the TTY picker if the user
     // cancels mid-selection. The engine then surfaces "no runnable target"
     // via its own check; the strategy itself MUST NOT throw.
-    const strategy = serviceStrategy(makeOptions());
+    const strategy = serviceStrategy();
     const out = strategy.resolveBoots([], []);
     expect(out.boots).toEqual([]);
     expect(out.warnings).toEqual([]);
