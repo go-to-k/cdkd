@@ -7,20 +7,23 @@
  * dispatch all live in one upstream implementation. `addCommonEcsServiceOptions`
  * is the shared option-block factory; `addAlbSpecificOptions` is the ALB-only
  * option-block factory (`--lb-port` / `--tls` / `--tls-cert` / `--tls-key` /
- * `--no-verify-auth` / `--bearer-token`); `albStrategy` / `resolveAlbTarget` /
- * `parseLbPortOverrides` are the ALB strategy + target-resolution helpers;
- * `parseMaxTasks` / `parseRestartPolicy` are option parsers;
- * `resolveSharedSidecarCredentials` / `buildEcsImageResolutionContext` are
- * pre-boot helpers; `MAX_TASKS_SUBNET_RANGE_CAP` documents the per-network
- * replica cap. The `Planned*` / `ServiceBoot` / `EmulatorStrategy` /
- * `FrontDoorPlan` types describe the engine's pre-boot plan + strategy hook
- * surface. The implementation lives in cdk-local and cdkd consumes it verbatim
+ * `--no-verify-auth` / `--bearer-token` / `--watch`); `addStartServiceSpecificOptions`
+ * is the start-service-only option-block factory (`--host-port` / `--watch`);
+ * `albStrategy` / `resolveAlbTarget` / `parseLbPortOverrides` are the ALB
+ * strategy + target-resolution helpers; `parseMaxTasks` / `parseRestartPolicy`
+ * are option parsers; `resolveSharedSidecarCredentials` /
+ * `buildEcsImageResolutionContext` are pre-boot helpers;
+ * `MAX_TASKS_SUBNET_RANGE_CAP` documents the per-network replica cap.
+ * The `Planned*` / `ServiceBoot` / `EmulatorStrategy` / `FrontDoorPlan`
+ * types describe the engine's pre-boot plan + strategy hook surface.
+ * The implementation lives in cdk-local and cdkd consumes it verbatim
  * instead of carrying a byte-identical copy. See cdk-local's
  * `src/cli/commands/ecs-service-emulator.ts` + `local-start-alb.ts`.
  */
 export {
   addCommonEcsServiceOptions,
   addAlbSpecificOptions,
+  addStartServiceSpecificOptions,
   albStrategy,
   resolveAlbTarget,
   parseLbPortOverrides,

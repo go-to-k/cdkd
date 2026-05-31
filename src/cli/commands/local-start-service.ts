@@ -3,6 +3,7 @@ import { withErrorHandling, LocalStartServiceError } from '../../utils/error-han
 import { listTargets, getEmbedConfig } from 'cdk-local';
 import {
   addCommonEcsServiceOptions,
+  addStartServiceSpecificOptions,
   runEcsServiceEmulator,
   type EcsServiceEmulatorOptions,
   type EmulatorStrategy,
@@ -57,6 +58,13 @@ export function serviceStrategy(_options: EcsServiceEmulatorOptions): EmulatorSt
       warnings: [],
     }),
     lbPortOverrides: {},
+    // Opt into the shared engine's `--watch` reload pathway (Phase 1-4 of
+    // cdk-local#214 — per-replica rolling deploy + Phase 4 bind-mount
+    // source fast path). Without this flag the engine's
+    // `options.watch === true && strategy.supportsWatch === true` block
+    // is gated off and `--watch` is silently a no-op. Mirrors cdk-local's
+    // own `serviceStrategy` (the bundled `cdkl start-service`).
+    supportsWatch: true,
   };
 }
 
@@ -123,5 +131,6 @@ export function createLocalStartServiceCommand(): Command {
       })
     );
 
+  addStartServiceSpecificOptions(cmd);
   return addCommonEcsServiceOptions(cmd);
 }
