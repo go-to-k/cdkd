@@ -45,7 +45,7 @@ export class S3TablesProvider implements ResourceProvider {
   private logger = getLogger().child('S3TablesProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::S3Tables::TableBucket', new Set(['TableBucketName'])],
+    ['AWS::S3Tables::TableBucket', new Set(['TableBucketName', 'Tags'])],
     ['AWS::S3Tables::Namespace', new Set(['TableBucketARN', 'Namespace'])],
     [
       'AWS::S3Tables::Table',
@@ -106,11 +106,24 @@ export class S3TablesProvider implements ResourceProvider {
     // via the separate TagResource / UntagResource control-plane calls.
     // So `update()` is no longer a blanket no-op: when the only property
     // that changed is `Tags`, dispatch a tag-diff against the underlying
-    // resource ARN. For now only AWS::S3Tables::Table has Tags wired
-    // (this PR); the TableBucket / Namespace cases stay no-op until
-    // their own backfill PRs (U / V).
+    // resource ARN. Table (#609 PR #739) + TableBucket (#609, this PR)
+    // both have Tags wired; the Namespace case stays no-op (Namespaces
+    // are not taggable per the S3Tables SDK — ListTagsForResource only
+    // accepts table-bucket or table ARNs).
     if (resourceType === 'AWS::S3Tables::Table') {
       await this.applyTableTagsDiff(
+        logicalId,
+        physicalId,
+        resourceType,
+        previousProperties['Tags'],
+        properties['Tags']
+      );
+    } else if (resourceType === 'AWS::S3Tables::TableBucket') {
+      // TableBucket's physicalId IS the bucket ARN, so the tag-diff path
+      // can use it directly (no GetTableBucket lookup hop needed — unlike
+      // Table where the compound physicalId requires GetTable to recover
+      // the real ARN).
+      await this.applyTableBucketTagsDiff(
         logicalId,
         physicalId,
         resourceType,
@@ -165,10 +178,17 @@ export class S3TablesProvider implements ResourceProvider {
       );
     }
 
+    // CFn `Tags: [{ Key, Value }]` → SDK `tags: Record<string, string>`.
+    // CreateTableBucketCommand accepts tags atomically (no separate
+    // TagResource call needed); the SDK rejects an empty map with
+    // InvalidRequestException, so omit the field entirely when no tags.
+    const tags = this.cfnTagsToSdkMap(properties['Tags']);
+
     try {
       const result = await this.getClient().send(
         new CreateTableBucketCommand({
           name: tableBucketName,
+          ...(tags !== undefined && { tags }),
         })
       );
 
@@ -593,6 +613,15 @@ export class S3TablesProvider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (bucket.name !== undefined) result['TableBucketName'] = bucket.name;
+    // Tags: best-effort second call. physicalId IS the bucket ARN, so
+    // ListTagsForResource takes it directly (no GetTableBucket → ARN
+    // recovery hop, unlike Table's compound physicalId case). Emit
+    // Tags: [] when AWS returns no tags or when the read itself fails
+    // (matches S3Vectors / CloudFront / S3Tables::Table patterns —
+    // drift comparator only descends into state-side keys, so an empty
+    // array does not surface noise on a pre-PR state file that had no
+    // Tags entry).
+    result['Tags'] = await this.readTagsBestEffort(physicalId);
     return result;
   }
 
@@ -1080,6 +1109,75 @@ export class S3TablesProvider implements ResourceProvider {
         const cause = err instanceof Error ? err : undefined;
         throw new ProvisioningError(
           `applyTableTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${err instanceof Error ? err.message : String(err)}. State has NOT been updated so the next deploy will retry the tag-diff.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        );
+      }
+    }
+  }
+
+  /**
+   * Apply a tag-diff against a TableBucket resource ARN. Mirrors
+   * `applyTableTagsDiff` for the Table case, but simpler: TableBucket's
+   * `physicalId` IS the bucket ARN, so no `GetTableBucket` lookup hop
+   * is needed (the Table version needs `GetTable` to recover the real
+   * ARN from the cdkd-compound `<bucketArn>|<namespace>|<name>` physical id).
+   *
+   * Same throw semantics as `applyTableTagsDiff` (per issue #740 / PR
+   * #741): tag-side failures THROW `ProvisioningError` so state is NOT
+   * written, and the next deploy retries against the still-old state.
+   * `update()` for AWS::S3Tables::TableBucket is otherwise a no-op (the
+   * bucket itself is immutable), so a tag-side throw cleanly turns the
+   * whole update into a clean retry with no side-effects.
+   */
+  private async applyTableBucketTagsDiff(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    previousTags: unknown,
+    newTags: unknown
+  ): Promise<void> {
+    const prev = this.cfnTagsToSdkMap(previousTags) ?? {};
+    const next = this.cfnTagsToSdkMap(newTags) ?? {};
+
+    const removedKeys = Object.keys(prev).filter((k) => !(k in next));
+    const upserts: Record<string, string> = {};
+    for (const [k, v] of Object.entries(next)) {
+      if (prev[k] !== v) upserts[k] = v;
+    }
+
+    // No tag delta → no work, no error.
+    if (removedKeys.length === 0 && Object.keys(upserts).length === 0) return;
+
+    // physicalId IS the bucket ARN — use it directly for tag ops.
+    const resourceArn = physicalId;
+
+    if (removedKeys.length > 0) {
+      try {
+        await this.getClient().send(
+          new UntagResourceCommand({ resourceArn, tagKeys: removedKeys })
+        );
+      } catch (err) {
+        const cause = err instanceof Error ? err : undefined;
+        throw new ProvisioningError(
+          `applyTableBucketTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${err instanceof Error ? err.message : String(err)}. State has NOT been updated so the next deploy will retry the tag-diff.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        );
+      }
+    }
+
+    if (Object.keys(upserts).length > 0) {
+      try {
+        await this.getClient().send(new TagResourceCommand({ resourceArn, tags: upserts }));
+      } catch (err) {
+        const cause = err instanceof Error ? err : undefined;
+        throw new ProvisioningError(
+          `applyTableBucketTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${err instanceof Error ? err.message : String(err)}. State has NOT been updated so the next deploy will retry the tag-diff.`,
           resourceType,
           logicalId,
           physicalId,

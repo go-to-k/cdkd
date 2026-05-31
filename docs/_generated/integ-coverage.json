@@ -2811,7 +2811,8 @@
       ],
       "signals": {
         "s3-tables": [
-          "l1"
+          "l1",
+          "literal"
         ]
       }
     },

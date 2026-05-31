@@ -487,7 +487,6 @@
       "MetricsConfiguration",
       "ReplicationConfiguration",
       "StorageClassConfiguration",
-      "Tags",
       "UnreferencedFileRemoval"
     ],
     "AWS::ServiceDiscovery::Service": [

@@ -10,6 +10,16 @@ export class S3TablesStack extends cdk.Stack {
       tableBucketName: `${this.stackName}-table-bucket`.toLowerCase(),
     });
 
+    // Two tags on the TableBucket — issue #609 Tags backfill (this PR)
+    // wires `Tags` for AWS::S3Tables::TableBucket via the SDK provider's
+    // `create()` (atomic via CreateTableBucketCommand.tags) + `update()`
+    // (tag-diff against the bucket ARN — physicalId IS the ARN, no
+    // GetTableBucket lookup needed) + `readCurrentState()` (best-effort
+    // ListTagsForResource hop) paths. verify.sh asserts both tags reach
+    // AWS via `aws s3tables list-tags-for-resource --resource-arn <bucket-arn>`.
+    cdk.Tags.of(tableBucket).add('bucket-env', 'cdkd-integ');
+    cdk.Tags.of(tableBucket).add('bucket-team', 'platform');
+
     // Namespace + Table inside the bucket. Issue #609 Tags backfill (this
     // PR) wires `Tags` for AWS::S3Tables::Table via the SDK provider's
     // `create()` / `update()` / `readCurrentState()` paths, so the fixture
