@@ -1,3 +1,10 @@
+# [0.203.0](https://github.com/go-to-k/cdkd/compare/v0.202.0...v0.203.0) (2026-05-31)
+
+
+### Features
+
+* **local:** bump cdk-local to 0.69.0 (start-service --watch + Phase 4 fast path) ([#744](https://github.com/go-to-k/cdkd/issues/744)) ([7cafe8c](https://github.com/go-to-k/cdkd/commit/7cafe8cfae9003ec5ef88a37575cc898d77f139c))
+
 # [0.202.0](https://github.com/go-to-k/cdkd/compare/v0.201.1...v0.202.0) (2026-05-31)
 
 
