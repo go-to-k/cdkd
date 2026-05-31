@@ -667,6 +667,11 @@
       ]
     },
     {
+      "name": "local-start-service-watch-fast",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "log-pipeline",
       "annotated": true,
       "scenarios": []
@@ -1213,6 +1218,7 @@
     "iam-managed-policy",
     "local-start-alb",
     "local-start-alb-from-state",
+    "local-start-service-watch-fast",
     "nested-stack",
     "nested-stack-deep",
     "rds-dbinstance-backfill",
