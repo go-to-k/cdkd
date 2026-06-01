@@ -1,3 +1,10 @@
+## [0.207.2](https://github.com/go-to-k/cdkd/compare/v0.207.1...v0.207.2) (2026-06-01)
+
+
+### Bug Fixes
+
+* **destroy:** retry transient EventSourceMapping in-use delete (route destroy-runner through shared classifier) ([#752](https://github.com/go-to-k/cdkd/issues/752)) ([759f630](https://github.com/go-to-k/cdkd/commit/759f630bff4d1e7772c1974e97876b5ca31aefc4))
+
 ## [0.207.1](https://github.com/go-to-k/cdkd/compare/v0.207.0...v0.207.1) (2026-06-01)
 
 
