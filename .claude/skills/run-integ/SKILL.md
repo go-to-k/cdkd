@@ -265,6 +265,34 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     auto-migration must be transparent (no user action required
     on upgrade).
 
+13. **Record the run in the integ ledger (MANDATORY — every run, pass OR fail)**:
+
+    `docs/_generated/integ-last-run.tsv` is a COMMITTED (NOT gitignored), update-type
+    ledger — one row per test — so anyone can see when each integ last ran and whether
+    it passed. This answers "has this been run recently?" / "this hasn't run in months,
+    it's risky to trust" without trawling CI history, and feeds `/pick-integ`. **Write it
+    on EVERY `/run-integ` invocation, pass or fail**, right after the marker steps above
+    (or right after a failure is recorded — never skip it on failure).
+
+    Columns (TAB-separated): `test  last_run_iso  result  duration_s  flow  note`
+    - `result`: `PASS` only when the run finished cleanly (destroy 0 errors AND 0 orphans;
+      verify.sh exited 0) — the SAME bar as the markgate markers. Otherwise `FAIL`.
+    - `last_run_iso`: `date -u +%Y-%m-%dT%H:%M:%SZ` (UTC). `flow`: `verify.sh` or `standard`.
+    - `duration_s`: optional wall-clock seconds. `note`: short reason / finding one-liner.
+
+    Portable update (do NOT use `grep -P` — unavailable on macOS BSD grep; use awk to drop
+    the test's old row, then append the new one):
+    ```bash
+    LEDGER="docs/_generated/integ-last-run.tsv"
+    [ -f "$LEDGER" ] || printf '# integ-last-run ledger (update-type: one row per test). cols: test\tlast_run_iso\tresult\tduration_s\tflow\tnote\n' > "$LEDGER"
+    TEST="<test-name>"; TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    RESULT="PASS"; DUR="<seconds>"; FLOW="verify.sh"; NOTE="rc ok, orph clean"
+    tmp="$(mktemp)"; awk -F'\t' -v t="$TEST" '$1!=t' "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$TEST" "$TS" "$RESULT" "$DUR" "$FLOW" "$NOTE" >> "$LEDGER"
+    ```
+    Commit the ledger update with the branch's changes (it is part of the integ run record;
+    the file is intentionally committed so the last-run history is shared across sessions).
+
 ## Important
 
 - Always use `--region us-east-1` for integration tests

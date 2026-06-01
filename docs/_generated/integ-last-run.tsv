@@ -1,0 +1,36 @@
+# integ-last-run ledger (update-type: one row per test). cols: test  last_run_iso  result  duration_s  flow  note
+bench-cdk-sample	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
+lambda	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
+vpc-nat-gateway	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
+dynamodb-streams	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
+multi-stack-deps	2026-06-01T21:12:13Z	FAIL		standard	F1 cross-stack deploy/destroy --all ordering: consumer raced producer (Fn::ImportValue); orphan cleaned
+cross-stack-references	2026-06-01T21:12:13Z	FAIL		standard	F1 cross-stack deploy --all ordering: consumer before producer (Fn::GetStackOutput)
+import-value-strong-ref	2026-06-01T21:12:13Z	FAIL		verify.sh	F3 STALE TEST: verify.sh expects schema v4 but actual v8; deploy+strong-ref OK (not a bug)
+composite-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
+nested-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
+custom-resource-provider	2026-06-01T21:12:13Z	FAIL		standard	F2 CR framework role 403 lambda:GetFunction (likely IAM statement-drop); investigate
+cc-api-fallback	2026-06-01T21:12:13Z	PASS		verify.sh	rc ok, orph clean
+cc-api-fallback-transitions	2026-06-01T21:12:13Z	PASS	122	verify.sh	rc ok, orph clean
+drift-revert	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
+drift-revert-vpc	2026-06-01T21:12:13Z	PASS	237	verify.sh	rc ok, orph clean
+recreate-via-sdk-provider	2026-06-01T21:12:13Z	PASS	79	verify.sh	rc ok, orph clean
+recreate-via-cc-api	2026-06-01T21:12:13Z	PASS	97	verify.sh	rc ok, orph clean
+recreate-mixed-direction	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
+schema-v7-to-v8-migration	2026-06-01T21:12:13Z	PASS	98	verify.sh	rc ok, orph clean
+dynamodb-globaltable	2026-06-01T21:12:13Z	PASS	159	verify.sh	rc ok, orph clean
+s3-tables	2026-06-01T21:12:13Z	PASS	31	verify.sh	rc ok, orph clean
+iam-managed-policy	2026-06-01T21:12:13Z	PASS	20	standard	rc ok, orph clean
+eventbridge	2026-06-01T21:12:13Z	PASS	67	verify.sh	rc ok, orph clean
+stepfunctions	2026-06-01T21:12:13Z	PASS	31	standard	rc ok, orph clean
+kms-encryption	2026-06-01T21:12:13Z	PASS	19	standard	rc ok, orph clean
+vpc-lambda	2026-06-01T21:12:13Z	PASS	357	standard	rc ok, orph clean
+export	2026-06-01T21:12:13Z	PASS	252	verify.sh	rc ok, orph clean
+migrate-from-cfn	2026-06-01T21:12:13Z	PASS	89	standard	rc ok, orph clean
+nested-stack-deep	2026-06-01T21:12:13Z	PASS	48	verify.sh	rc ok, orph clean
+multi-resource	2026-06-01T21:12:13Z	FAIL	57	standard	F4 destroy: SQS ESM "in use" not retried (transient); re-destroy clean; classifier/order gap
+local-invoke	2026-06-01T21:12:13Z	PASS	20	verify.sh	rc ok, orph clean
+local-start-service	2026-06-01T21:12:13Z	PASS	22	verify.sh	rc ok, orph clean
+apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
+sns-sqs-event	2026-06-01T21:12:13Z	PASS	63	verify.sh	rc ok, orph clean
+ecs-fargate	2026-06-01T21:12:13Z	FAIL	171	verify.sh	F5 ECS Cluster serviceConnectDefaults.namespace silent-drop (deploy/destroy OK)
+cognito	2026-06-01T21:12:13Z	PASS	45	standard	rc ok, orph clean
