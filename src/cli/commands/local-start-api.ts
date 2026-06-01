@@ -323,11 +323,12 @@ async function localStartApiCommand(
   // PR 8b: per-server-lifecycle caches. Constructed once at server
   // startup; persisted across hot reloads (PR 8c) so authorizer
   // verdicts and JWKS keys aren't re-fetched on every reload. The
-  // jwksWarnedUrls Set ensures the pass-through warn fires at most
-  // ONCE per JWKS URL per server lifecycle.
+  // jwksWarnedAt Map (URL -> last-warned epoch ms) drives cdk-local's
+  // per-time-window pass-through warn dedup (cdk-local #252): the warn
+  // re-fires only once the window elapses, instead of once-ever-per-URL.
   const authorizerCache = createAuthorizerCache();
   const jwksCache = createJwksCache();
-  const jwksWarnedUrls = new Set<string>();
+  const jwksWarnedAt = new Map<string, number>();
   // #447: SigV4 verifier state for `AuthorizationType: 'AWS_IAM'` routes.
   // The credentials loader is constructed eagerly but the credential
   // chain itself is only hit on the first IAM-protected request — see
@@ -760,7 +761,7 @@ async function localStartApiCommand(
       port: basePort === 0 ? 0 : nextPort,
       authorizerCache,
       jwksCache,
-      jwksWarnedUrls,
+      jwksWarnedAt,
       sigV4CredentialsLoader,
       sigV4WarnedForeignIds,
       // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed).
@@ -858,7 +859,7 @@ async function localStartApiCommand(
       port: basePort === 0 ? 0 : nextPort,
       authorizerCache,
       jwksCache,
-      jwksWarnedUrls,
+      jwksWarnedAt,
       sigV4WarnedForeignIds,
       // cdk-local's startApiServer takes `sigV4Strict` (opt-in to fail-closed).
       // cdkd follows the same polarity: warn-and-pass by default, opt IN via
