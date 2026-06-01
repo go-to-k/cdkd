@@ -1,3 +1,10 @@
+# [0.207.0](https://github.com/go-to-k/cdkd/compare/v0.206.0...v0.207.0) (2026-06-01)
+
+
+### Features
+
+* **local:** invoke-agentcore --watch (follow cdk-local [#270](https://github.com/go-to-k/cdkd/issues/270)) ([#749](https://github.com/go-to-k/cdkd/issues/749)) ([a479275](https://github.com/go-to-k/cdkd/commit/a4792755d92aa6f95724627299738217678e2b74))
+
 # [0.206.0](https://github.com/go-to-k/cdkd/compare/v0.205.0...v0.206.0) (2026-06-01)
 
 # [0.205.0](https://github.com/go-to-k/cdkd/compare/v0.204.0...v0.205.0) (2026-06-01)
