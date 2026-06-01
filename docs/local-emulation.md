@@ -1520,10 +1520,22 @@ Same shape as `cdkd local invoke`. The container receives the developer's AWS cr
 - `--jwt <bearer-token>` — verified + forwarded when the runtime declares `customJwtAuthorizer`.
 - `--timeout <ms>` — per-request timeout (default 120000 / 120s).
 - `--ws` — bidirectional `/ws` WebSocket mode (HTTP protocol only). Auto-detects a TTY: an interactive terminal enters a multi-turn REPL (each stdin line is sent as a follow-up frame until Ctrl-D / agent close), while piped / redirected / CI stdin stays a wire-faithful one-shot (force one-shot in a TTY with `--ws </dev/null`).
+- `--watch` — re-synth + reload the agent container on CDK source edits (follows [cdk-local#270](https://github.com/go-to-k/cdk-local/pull/270)). See [Hot reload (`--watch`)](#hot-reload---watch-1) below. Off by default. Supported on the HTTP / AGUI protocols; a no-op WARN for MCP / A2A (their single shot runs once and exits).
 - `--sigv4` — sign `/invocations` with SigV4 (for SigV4-protected runtimes).
 - `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` / `--state-prefix` / `--stack-region` — state-source flags.
 - `--assume-role [arn]` / `--no-assume-role` / `--ecr-role-arn <arn>` — role-assumption flags.
 - `--no-pull` / `--no-build` — pull / build skip.
+
+### Hot reload (`--watch`)
+
+When `--watch` is set, cdkd watches the CDK app **source tree** (the synth working directory, where `cdk.json` lives), honoring `cdk.json`'s `watch.include` / `watch.exclude` and excluding `cdk.out` / `node_modules` / `.git`. On a source edit it re-synths and reloads the agent container, mirroring `cdk watch` (follows [cdk-local#270](https://github.com/go-to-k/cdk-local/pull/270)).
+
+A per-firing classifier picks the reload primitive:
+
+- **Soft-reload FAST PATH** — an interpreted-language source edit inside a `CodeConfiguration` (`fromCodeAsset`) source tree (no Dockerfile / dependency-manifest / compiled-source change, asset hash unchanged in a way that matters) takes a `docker cp` of the freshly-synthed source into the running container's WORKDIR + `docker restart`. No `docker build`, no container swap — the container ID + host port are preserved.
+- **Full rebuild** — a Dockerfile / compiled-source / asset-hash-changed / ambiguous edit (or a `fromS3` / non-CDK-asset runtime, or any classifier-context failure) tears down the container (SIGTERM + `docker rm -f`), re-resolves the image (re-running the same image-build pipeline the cold boot runs), and starts a fresh container.
+
+`--watch` applies to BOTH the `--ws` session path AND the default one-shot `POST /invocations` (the reload re-runs the single shot). On `--ws`, the active socket is closed cleanly on each reload firing so the next session reconnects to the rebuilt / soft-reloaded container. For **MCP / A2A** runtimes `--watch` is a no-op WARN and the single shot proceeds (those protocols run once and exit with no reconnect surface). Reloads are chain-serialized (no two reloads run in parallel); a reload-callback failure exits the watch loop cleanly (the previous container may already be torn down, so it does not block on a stale port). `^C` (SIGINT) tears down the container and exits.
 
 ### Implementation notes
 

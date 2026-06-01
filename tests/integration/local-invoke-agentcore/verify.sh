@@ -406,8 +406,17 @@ echo "==> [18/20] EchoAgent --ws with piped stdin stays one-shot (no REPL on non
 LOOP_EVENT_FILE=$(mktemp -t cdkd-ws-loop-event-XXXX.json)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}"' EXIT
 echo '{"loop":true}' > "${LOOP_EVENT_FILE}"
+# The EchoAgent in loop mode keeps the /ws socket open (it is designed for the
+# interactive REPL, where the CLIENT closes on EOF). In one-shot (non-TTY) mode
+# the client sends only the initial frame and then waits for the agent to close
+# the stream -- which a loop-mode agent never does -- so it runs until --timeout.
+# That is the correct one-shot semantic; we just bound the wait to a few seconds
+# and tolerate the resulting non-zero exit (`|| true`) so `set -e` does not abort.
+# The initial ack frame is still written to stdout before the timeout, which is
+# what the assertions below check; the point of the test is that the piped stdin
+# lines are NOT turned into follow-up frames on a non-TTY.
 RESULT_18=$(printf 'line-A\nline-B\n' | \
-  ${CDKD} local invoke-agentcore "${TARGET}" --ws --event "${LOOP_EVENT_FILE}" 2>/dev/null)
+  ${CDKD} local invoke-agentcore "${TARGET}" --ws --event "${LOOP_EVENT_FILE}" --timeout 8000 2>/dev/null || true)
 echo "    response: ${RESULT_18}"
 # Initial frame echo (first frame's loop:true is acknowledged by the agent):
 echo "${RESULT_18}" | grep -q '"echoed":{"loop":true}' || {
@@ -419,5 +428,84 @@ echo "${RESULT_18}" | grep -q 'loop-echo:line-A' && {
   echo "FAIL: piped (non-TTY) --ws must not send stdin lines as follow-up frames, got: ${RESULT_18}"
   exit 1
 }
+# Test 21 — `--watch` (follows cdk-local #270): re-synth + reload the agent
+# container on a CDK source edit. We open a long-lived /ws session against the
+# EchoAgent in loop mode (so the socket stays open), edit the agent source to
+# inject a unique marker into the first-frame reply, and assert that (a) the
+# watcher logs a reload verdict (soft-reload / rebuild) and (b) after the reload
+# the re-opened /ws session surfaces the NEW marker — proving the rebuilt
+# container is what the client reconnected to. The EchoAgent is a Dockerfile
+# container asset, so the classifier picks the full-rebuild path; the soft-
+# reload fast path is covered by the unit tests (an interpreted-language edit
+# inside a CodeConfiguration source tree).
+echo "==> [21/21] EchoAgent --ws --watch reloads on a source edit + reconnects"
+AGENT_SRC="agent/server.js"
+AGENT_SRC_BAK=$(mktemp -t cdkd-agent-src-XXXX.js)
+WATCH_LOG=$(mktemp -t cdkd-watch-log-XXXX.txt)
+WATCH_EVENT=$(mktemp -t cdkd-watch-event-XXXX.json)
+MARKER="reloaded-$(date +%s)"
+# Snapshot the source so we can restore it no matter how the test exits.
+cp "${AGENT_SRC}" "${AGENT_SRC_BAK}"
+cleanup_watch() {
+  # Stop the background watch process (best-effort), restore the source, and
+  # sweep any leftover agent container the kill may have raced past teardown.
+  [[ -n "${WATCH_PID:-}" ]] && kill "${WATCH_PID}" 2>/dev/null || true
+  [[ -n "${WATCH_PID:-}" ]] && wait "${WATCH_PID}" 2>/dev/null || true
+  cp "${AGENT_SRC_BAK}" "${AGENT_SRC}" 2>/dev/null || true
+  docker ps -a --filter name=cdkd-local-agentcore- -q | xargs -r docker rm -f >/dev/null 2>&1 || true
+  rm -f "${AGENT_SRC_BAK}" "${WATCH_LOG}" "${WATCH_EVENT}"
+}
+trap 'cleanup_watch; rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}" "${A2A_EVENT}"' EXIT
+
+echo '{"loop":true}' > "${WATCH_EVENT}"
+# Background the watch session with stdin pinned to /dev/null (non-TTY one-shot
+# WS frame behavior; loop mode keeps the socket open across the reload). All
+# output (stdout + stderr) is captured to the log for the assertions below.
+${CDKD} local invoke-agentcore "${TARGET}" --ws --watch --event "${WATCH_EVENT}" \
+  </dev/null >"${WATCH_LOG}" 2>&1 &
+WATCH_PID=$!
+
+# Wait for the watcher to be armed (it logs the watch root once the file
+# watcher is installed) so the edit below is observed.
+for _ in $(seq 1 60); do
+  grep -q 'Watching .* for source changes' "${WATCH_LOG}" && break
+  sleep 1
+done
+grep -q 'Watching .* for source changes' "${WATCH_LOG}" || {
+  echo "FAIL: --watch never armed the file watcher. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+
+# Edit the agent source: inject the unique marker into the /ws first-frame
+# reply object. This is an interpreted-source edit that changes the runtime
+# response, so the reloaded container surfaces the new marker.
+sed -i.sedbak "s/ws: true,/ws: true, reloaded: '${MARKER}',/" "${AGENT_SRC}"
+rm -f "${AGENT_SRC}.sedbak"
+
+# Wait for the watcher to fire + the reload to complete + the re-opened session
+# to surface the new marker.
+for _ in $(seq 1 90); do
+  grep -q "${MARKER}" "${WATCH_LOG}" && break
+  sleep 1
+done
+
+# (a) a reload verdict was logged.
+grep -Eq 'verdict=(soft-reload|rebuild)' "${WATCH_LOG}" || {
+  echo "FAIL: expected a 'verdict=soft-reload|rebuild' line after the source edit. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+# (b) the re-opened /ws session reflects the NEW source (the injected marker).
+grep -q "${MARKER}" "${WATCH_LOG}" || {
+  echo "FAIL: expected the reloaded agent to surface the new marker '${MARKER}'. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+
+# Stop the watch session + restore the source (also runs on EXIT as a backstop).
+cleanup_watch
+WATCH_PID=""
+
 echo ""
-echo "==> All 20 local-invoke-agentcore tests passed"
+echo "==> All 21 local-invoke-agentcore tests passed"
