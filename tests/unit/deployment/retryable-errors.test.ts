@@ -73,12 +73,25 @@ describe('isRetryableTransientError', () => {
         'The function could not be updated due to a concurrent update operation. Please try again later.',
         'Lambda AddPermission concurrent update',
       ],
+      // Lambda EventSourceMapping transient teardown lock (ResourceInUseException
+      // on DeleteEventSourceMapping). Surfaced by the multi-resource real-AWS
+      // sweep (2026-06-02); cleared on a manual destroy re-run.
+      [
+        'Failed to delete event source mapping abc-123: Cannot delete the event source mapping because it is in use.',
+        'Lambda EventSourceMapping in-use teardown lock',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });
 
     it('does not retry on a generic non-matching message', () => {
       const message = 'InvalidParameterValue: BucketName must be globally unique';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
+
+    it('does not retry on a non-transient EventSourceMapping not-found error', () => {
+      // Guard against over-broadening: NotFound must NOT become retryable.
+      const message = 'Failed to delete event source mapping abc-123: ResourceNotFoundException';
       expect(isRetryableTransientError(new Error(message), message)).toBe(false);
     });
 

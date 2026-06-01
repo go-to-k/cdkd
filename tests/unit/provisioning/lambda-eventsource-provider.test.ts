@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { CreateEventSourceMappingCommand } from '@aws-sdk/client-lambda';
+import {
+  CreateEventSourceMappingCommand,
+  DeleteEventSourceMappingCommand,
+  GetEventSourceMappingCommand,
+} from '@aws-sdk/client-lambda';
+import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -68,6 +73,46 @@ describe('LambdaEventSourceMappingProvider', () => {
 
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delete — transient in-use teardown lock', () => {
+    const UUID = 'abcdef12-3456-7890-abcd-ef1234567890';
+
+    it('wraps the ResourceInUseException "in use" error as a retryable ProvisioningError', async () => {
+      // On destroy, DeleteEventSourceMapping can throw while the ESM is
+      // briefly locked by its own state transition. The provider does not
+      // retry itself — the destroy paths (deploy-engine / destroy-runner)
+      // wrap the call in a retry loop and classify the error. Here we
+      // assert the wrapped message preserves the "because it is in use"
+      // substring so the shared classifier marks it retryable.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetEventSourceMappingCommand) {
+          return Promise.resolve({ UUID, State: 'Enabled' });
+        }
+        if (cmd instanceof DeleteEventSourceMappingCommand) {
+          return Promise.reject(
+            new Error('Cannot delete the event source mapping because it is in use.')
+          );
+        }
+        return Promise.resolve({});
+      });
+
+      let thrown: unknown;
+      try {
+        await provider.delete('L', UUID, 'AWS::Lambda::EventSourceMapping', undefined, {
+          expectedRegion: 'us-east-1',
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      const msg = (thrown as Error).message;
+      expect(msg).toContain('because it is in use');
+      // The wrapped error must classify as retryable so the destroy retry
+      // loop backs off and re-attempts within the same run.
+      expect(isRetryableTransientError(thrown, msg)).toBe(true);
     });
   });
 

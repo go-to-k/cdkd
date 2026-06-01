@@ -12,6 +12,7 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { shouldRetainResource, type StackState } from '../../types/state.js';
 import { withResourceDeadline } from '../../deployment/resource-deadline.js';
+import { isRetryableTransientError } from '../../deployment/retryable-errors.js';
 import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   DEFAULT_RESOURCE_TIMEOUT_MS,
@@ -573,11 +574,19 @@ export async function runDestroyForStack(
                 } catch (retryError) {
                   lastDeleteError = retryError;
                   const msg = retryError instanceof Error ? retryError.message : String(retryError);
+                  // Delegate transient-error classification to the shared
+                  // classifier so this destroy path (`cdkd destroy` /
+                  // `cdkd state destroy`) honors the same retryable patterns
+                  // as the deploy-engine delete loop — including the Lambda
+                  // EventSourceMapping "because it is in use" teardown lock
+                  // surfaced by the multi-resource real-AWS sweep (2026-06-02),
+                  // which the prior inline 4-pattern list silently failed
+                  // fast on. `'Too Many Requests'` (throttle) stays matched
+                  // explicitly: the wrapped ProvisioningError message carries
+                  // the phrasing even when the original 429 `$metadata` is
+                  // lost across the wrap.
                   const isRetryable =
-                    msg.includes('Too Many Requests') ||
-                    msg.includes('has dependencies') ||
-                    msg.includes("can't be deleted since") ||
-                    msg.includes('DependencyViolation');
+                    isRetryableTransientError(retryError, msg) || msg.includes('Too Many Requests');
                   if (!isRetryable || attempt >= maxAttempts) break;
                   const delay = 5000 * Math.pow(2, attempt);
                   logger.debug(
