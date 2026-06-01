@@ -1,3 +1,10 @@
+# [0.204.0](https://github.com/go-to-k/cdkd/compare/v0.203.0...v0.204.0) (2026-06-01)
+
+
+### Features
+
+* **local:** bump cdk-local 0.69.0 -> 0.77.1 ([#746](https://github.com/go-to-k/cdkd/issues/746)) ([df88db3](https://github.com/go-to-k/cdkd/commit/df88db358933160e7b95915c8e327b4c531b1289))
+
 # [0.203.0](https://github.com/go-to-k/cdkd/compare/v0.202.0...v0.203.0) (2026-05-31)
 
 
