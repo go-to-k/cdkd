@@ -1,3 +1,5 @@
+# [0.206.0](https://github.com/go-to-k/cdkd/compare/v0.205.0...v0.206.0) (2026-06-01)
+
 # [0.205.0](https://github.com/go-to-k/cdkd/compare/v0.204.0...v0.205.0) (2026-06-01)
 
 
