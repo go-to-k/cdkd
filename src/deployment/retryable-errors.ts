@@ -61,6 +61,20 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // operation`. The conflicting writer typically finishes within
   // milliseconds, so a retry recovers.
   'concurrent update operation',
+  // Lambda EventSourceMapping: on destroy, DeleteEventSourceMapping can
+  // throw `ResourceInUseException` ("Cannot delete the event source
+  // mapping because it is in use") while the ESM is briefly locked by its
+  // own state transition (it is mid-UPDATE/DELETE, or its target function
+  // is being torn down in the same destroy run). This is a transient
+  // state-lifecycle lock that clears on its own within seconds-to-a-minute
+  // — a manual `cdkd destroy` re-run deletes it cleanly. Match the message
+  // substring so the retry fires on both destroy paths (deploy-engine's
+  // delete loop and destroy-runner's). Confirmed by the multi-resource
+  // real-AWS regression sweep (2026-06-02). Matched by message (not the
+  // bare `ResourceInUseException` name) to stay specific to the "in use"
+  // teardown lock and avoid retrying unrelated create-already-exists
+  // conflicts that share the same exception name.
+  'because it is in use',
 ];
 
 /**
