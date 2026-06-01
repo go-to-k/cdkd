@@ -58,6 +58,10 @@ import {
   type A2aJsonRpcRequest,
 } from '../../local/agentcore-a2a-client.js';
 import { invokeAgentCoreWs, type AgentCoreWsResult } from '../../local/agentcore-ws-client.js';
+import {
+  runAgentCoreWatchLoop,
+  softReloadAgentContainer,
+} from '../../local/invoke-agentcore-watch-loop.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
@@ -179,6 +183,17 @@ interface LocalInvokeAgentCoreOptions {
    * exceed the default — the cloud's AgentCore quota goes well above 120s.
    */
   timeout: number;
+  /**
+   * `--watch` (follows cdk-local #270): re-synth + reload the agent container
+   * on CDK source edits. Supported on the HTTP / AGUI protocols — both the
+   * `--ws` session path AND the default one-shot `POST /invocations` (the
+   * reload re-runs the one shot). An interpreted-language source edit inside a
+   * CodeConfiguration source tree takes a soft-reload FAST PATH (`docker cp` +
+   * `docker restart`); Dockerfile / compiled-source / asset-hash-changed /
+   * ambiguous edits force a full rebuild. For MCP / A2A runtimes `--watch` is a
+   * no-op WARN and the single shot proceeds.
+   */
+  watch?: boolean;
 }
 
 /**
@@ -385,56 +400,41 @@ async function localInvokeAgentCoreCommand(
       authorization = await resolveInboundAuthorization(resolved, options);
     }
 
-    // If the fromS3 bundle's Code.S3.Bucket is an intrinsic (Ref /
-    // Fn::ImportValue / Fn::GetStackOutput), resolve it against --from-cfn-stack
-    // state BEFORE the image step (which needs a literal bucket for the S3
-    // download). Reuses the same substitution machinery env vars use, so
-    // every cross-stack intrinsic the env path supports is supported here too.
-    await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
+    // Issue follows cdk-local #270 — `--watch` is only meaningful on the
+    // long-running HTTP / AGUI paths (the `--ws` session AND the default
+    // one-shot `POST /invocations`, which the reload re-runs). The MCP
+    // `POST /mcp` and A2A `POST /` paths run once and exit with no reconnect
+    // surface, so a watch loop has nothing to drive: log a one-line WARN and
+    // let the single shot proceed.
+    const watchEligible = isAgentCoreWatchEligible(resolved.protocol);
+    const watchActive = options.watch === true && watchEligible;
+    if (options.watch === true && !watchEligible) {
+      logger.warn(
+        `--watch is supported only on the HTTP / AGUI protocols; ` +
+          `ignoring it for this ${resolved.protocol} runtime (its single shot runs once and exits).`
+      );
+    }
 
-    const image = await resolveAgentCoreImage(resolved, options, loadedState);
+    const containerHost = options.containerHost;
 
-    const { env: dockerEnv, sensitiveEnvKeys } = await buildContainerEnv(
+    // Cold boot: resolve the image + env (re-resolving an intrinsic fromS3
+    // bucket first), pick a free port, `docker run`, and start the log stream.
+    // Extracted into `bootAgentCoreContainer` so the `--watch` rebuild callback
+    // can re-run the same sequence against a fresh synth.
+    const boot = await bootAgentCoreContainer({
       resolved,
       options,
       profileCredentials,
       profileCredsFile,
       stateProvider,
       loadedState,
-      imageContext
-    );
-
-    const hostPort = await pickFreePort();
-    const containerHost = options.containerHost;
-    // Stable `cdkd-local-`-prefixed name so the orphan sweep (`docker ps --filter
-    // name=cdkd-local-`) used by `/cleanup` + `/run-integ` can find this container
-    // if the process is killed before teardown — unlike a one-shot Lambda
-    // invoke, the agent container runs a long-lived HTTP server.
-    const containerName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-    const containerPort = isMcp ? MCP_CONTAINER_PORT : isA2a ? A2A_CONTAINER_PORT : undefined;
-    const containerPortLabel = isMcp
-      ? `${MCP_CONTAINER_PORT}${MCP_PATH}`
-      : isA2a
-        ? `${A2A_CONTAINER_PORT}${A2A_PATH}`
-        : '8080';
-    logger.info(
-      `Starting agent container (image=${image}, port=${hostPort} -> ${containerPortLabel})...`
-    );
-    containerId = await runDetached({
-      image,
-      mounts: [],
-      env: dockerEnv,
-      cmd: [],
-      hostPort,
-      host: containerHost,
-      platform: options.platform,
-      name: containerName,
-      ...(containerPort !== undefined && { containerPort }),
-      // Keep decrypted SecureString SSM env values off the `docker run` argv.
-      ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
+      imageContext,
+      isMcp,
+      isA2a,
     });
-
-    stopLogs = streamLogs(containerId);
+    containerId = boot.containerId;
+    const hostPort = boot.hostPort;
+    stopLogs = boot.stopLogs;
 
     sigintHandler = (): void => {
       void cleanup().then(() => process.exit(130));
@@ -470,23 +470,197 @@ async function localInvokeAgentCoreCommand(
       // of the same connection. Piped / redirected stdin (non-TTY) stays the
       // one-shot, wire-faithful shape (force it in a TTY with `--ws </dev/null`).
       const interactive = process.stdin.isTTY === true;
-      await waitForAgentCorePing(containerHost, hostPort);
-      const frameSource = interactive ? readStdinLines() : undefined;
-      logger.info(
-        interactive
-          ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
-          : 'Opening the agent /ws WebSocket and streaming frames...'
-      );
-      const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
-        sessionId,
-        timeoutMs: options.timeout,
-        onMessage: wrapWsOnMessage((text) => process.stdout.write(text), interactive),
-        ...(authorization && { authorization }),
-        ...(frameSource && { frameSource }),
+      if (watchActive) {
+        // `--watch` wraps the /ws dispatch in a reload-driven loop. The socket
+        // is closed cleanly on every reload firing (via the abort signal) and
+        // re-opened against the rebuilt / soft-reloaded container; host-side
+        // teardown is otherwise identical to the non-watch path. The loop only
+        // returns when the agent closes with no pending reload (SIGINT runs the
+        // outer cleanup + process.exit).
+        await runAgentCoreWatchLoop({
+          containerHost,
+          hostPort,
+          options,
+          resolvedTarget,
+          resolved,
+          synthesizer,
+          synthOpts,
+          stacks,
+          invokeOnce: async ({ hostPort: port, abortSignal, firstIteration }) => {
+            const frameSource = interactive ? readStdinLines() : undefined;
+            logger.info(
+              firstIteration
+                ? interactive
+                  ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
+                  : 'Opening the agent /ws WebSocket and streaming frames...'
+                : interactive
+                  ? 'Re-opening the agent /ws WebSocket (interactive) against the rebuilt container...'
+                  : 'Re-opening the agent /ws WebSocket against the rebuilt container...'
+            );
+            const wsResult = await invokeAgentCoreWs(containerHost, port, event, {
+              sessionId,
+              timeoutMs: options.timeout,
+              onMessage: wrapWsOnMessage((text) => process.stdout.write(text), interactive),
+              abortSignal,
+              ...(authorization && { authorization }),
+              ...(frameSource && { frameSource }),
+            });
+            await new Promise((r) => setTimeout(r, 250));
+            emitWsResult(wsResult);
+            return { pendingReload: abortSignal.aborted };
+          },
+          rebuild: async () => {
+            const result = await rebuildAgentCoreContainer({
+              cleanupBefore: async () => {
+                if (stopLogs) {
+                  try {
+                    stopLogs();
+                  } catch {
+                    /* best-effort */
+                  }
+                  stopLogs = undefined;
+                }
+                if (containerId) {
+                  await removeContainer(containerId);
+                  containerId = undefined;
+                }
+              },
+              resolvedTarget,
+              options,
+              synthesizer,
+              synthOpts,
+              profileCredentials,
+              profileCredsFile,
+              stateProvider,
+              isMcp,
+              isA2a,
+            });
+            containerId = result.containerId;
+            stopLogs = result.stopLogs;
+            return {
+              containerId: result.containerId,
+              hostPort: result.hostPort,
+              stacks: result.stacks,
+            };
+          },
+          softReload: async (newSourceDir) => {
+            if (!containerId) {
+              throw new CdkdError(
+                'softReload: no live container to docker cp / docker restart into.',
+                'LOCAL_INVOKE_AGENTCORE_WATCH_NO_CONTAINER'
+              );
+            }
+            await softReloadAgentContainer(containerId, newSourceDir);
+            // Re-synth so the caller has the freshly-resolved stacks for the
+            // next classifier firing's asset-context lookup; env / image
+            // changes are intentionally discarded (soft-reload only swaps source).
+            const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+            return { stacks: newStacks };
+          },
+        });
+      } else {
+        await waitForAgentCorePing(containerHost, hostPort);
+        const frameSource = interactive ? readStdinLines() : undefined;
+        logger.info(
+          interactive
+            ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
+            : 'Opening the agent /ws WebSocket and streaming frames...'
+        );
+        const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
+          sessionId,
+          timeoutMs: options.timeout,
+          onMessage: wrapWsOnMessage((text) => process.stdout.write(text), interactive),
+          ...(authorization && { authorization }),
+          ...(frameSource && { frameSource }),
+        });
+        // Settle so container logs flush before teardown.
+        await new Promise((r) => setTimeout(r, 250));
+        emitWsResult(wsResult);
+      }
+    } else if (watchActive) {
+      // One-shot `POST /invocations` under `--watch`: the reload re-runs the
+      // single shot against the rebuilt / soft-reloaded container. cdk-local
+      // #270 treats single-shot HTTP as a no-op WARN; cdkd extends the loop to
+      // re-invoke so an iterate-and-re-run workflow works without `--ws`.
+      await runAgentCoreWatchLoop({
+        containerHost,
+        hostPort,
+        options,
+        resolvedTarget,
+        resolved,
+        synthesizer,
+        synthOpts,
+        stacks,
+        invokeOnce: async ({ hostPort: port, abortSignal }) => {
+          const additionalHeaders = await buildSigV4HeadersIfRequested(
+            options,
+            resolved,
+            loadedState,
+            containerHost,
+            port,
+            event,
+            sessionId
+          );
+          const result = await invokeAgentCore(containerHost, port, event, {
+            sessionId,
+            timeoutMs: options.timeout,
+            onChunk: (text) => process.stdout.write(text),
+            ...(authorization && { authorization }),
+            ...(additionalHeaders && { additionalHeaders }),
+          });
+          await new Promise((r) => setTimeout(r, 250));
+          emitResult(result);
+          // A one-shot POST is not abortable mid-flight, so a reload firing
+          // during the request is observed AFTER it returns: `abortSignal.aborted`
+          // reports whether the watcher fired, so the loop re-runs the shot.
+          return { pendingReload: abortSignal.aborted };
+        },
+        rebuild: async () => {
+          const result = await rebuildAgentCoreContainer({
+            cleanupBefore: async () => {
+              if (stopLogs) {
+                try {
+                  stopLogs();
+                } catch {
+                  /* best-effort */
+                }
+                stopLogs = undefined;
+              }
+              if (containerId) {
+                await removeContainer(containerId);
+                containerId = undefined;
+              }
+            },
+            resolvedTarget,
+            options,
+            synthesizer,
+            synthOpts,
+            profileCredentials,
+            profileCredsFile,
+            stateProvider,
+            isMcp,
+            isA2a,
+          });
+          containerId = result.containerId;
+          stopLogs = result.stopLogs;
+          return {
+            containerId: result.containerId,
+            hostPort: result.hostPort,
+            stacks: result.stacks,
+          };
+        },
+        softReload: async (newSourceDir) => {
+          if (!containerId) {
+            throw new CdkdError(
+              'softReload: no live container to docker cp / docker restart into.',
+              'LOCAL_INVOKE_AGENTCORE_WATCH_NO_CONTAINER'
+            );
+          }
+          await softReloadAgentContainer(containerId, newSourceDir);
+          const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+          return { stacks: newStacks };
+        },
       });
-      // Settle so container logs flush before teardown.
-      await new Promise((r) => setTimeout(r, 250));
-      emitWsResult(wsResult);
     } else {
       await waitForAgentCorePing(containerHost, hostPort);
 
@@ -523,6 +697,181 @@ async function localInvokeAgentCoreCommand(
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     await cleanup();
   }
+}
+
+/**
+ * `--watch` is supported only on the long-running HTTP / AGUI paths (the
+ * `--ws` session AND the default one-shot `POST /invocations`, which the
+ * reload re-runs). The MCP `POST /mcp` and A2A `POST /` paths run once and
+ * exit with no reconnect surface, so `--watch` is a no-op WARN for them.
+ *
+ * Exported so a unit test can lock the eligibility contract without driving
+ * the full synth + docker pipeline.
+ */
+export function isAgentCoreWatchEligible(protocol: string): boolean {
+  return protocol !== AGENTCORE_MCP_PROTOCOL && protocol !== AGENTCORE_A2A_PROTOCOL;
+}
+
+/**
+ * Cold-boot (and rebuild) the agent container from an already-resolved runtime
+ * descriptor: resolve an intrinsic fromS3 bucket, resolve the image, build the
+ * container env, pick a free port, `docker run`, and start the log stream.
+ *
+ * Extracted from the main command so the `--watch` rebuild callback can re-run
+ * the identical sequence against a fresh synth. The non-watch one-shot / `--ws`
+ * paths and the watch loop both go through this helper, so the container boot
+ * sequence is single-sourced.
+ *
+ * Exported so a unit test can drive the boot shape without the full command.
+ */
+export async function bootAgentCoreContainer(args: {
+  resolved: ResolvedAgentCoreRuntime;
+  options: LocalInvokeAgentCoreOptions;
+  profileCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined;
+  profileCredsFile: ProfileCredentialsFile | undefined;
+  stateProvider: LocalStateProvider | undefined;
+  loadedState: LocalStateRecord | undefined;
+  imageContext: ImageResolutionContext | undefined;
+  isMcp: boolean;
+  isA2a: boolean;
+}): Promise<{ containerId: string; hostPort: number; stopLogs: () => void }> {
+  const logger = getLogger();
+  const {
+    resolved,
+    options,
+    profileCredentials,
+    profileCredsFile,
+    stateProvider,
+    loadedState,
+    imageContext,
+    isMcp,
+    isA2a,
+  } = args;
+
+  // If the fromS3 bundle's Code.S3.Bucket is an intrinsic, resolve it against
+  // --from-cfn-stack state BEFORE the image step (which needs a literal bucket
+  // for the S3 download).
+  await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
+
+  const image = await resolveAgentCoreImage(resolved, options, loadedState);
+
+  const { env: dockerEnv, sensitiveEnvKeys } = await buildContainerEnv(
+    resolved,
+    options,
+    profileCredentials,
+    profileCredsFile,
+    stateProvider,
+    loadedState,
+    imageContext
+  );
+
+  const hostPort = await pickFreePort();
+  const containerHost = options.containerHost;
+  // Stable `cdkd-local-`-prefixed name so the orphan sweep (`docker ps --filter
+  // name=cdkd-local-`) used by `/cleanup` + `/run-integ` can find this container
+  // if the process is killed before teardown — unlike a one-shot Lambda invoke,
+  // the agent container runs a long-lived HTTP server.
+  const containerName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const containerPort = isMcp ? MCP_CONTAINER_PORT : isA2a ? A2A_CONTAINER_PORT : undefined;
+  const containerPortLabel = isMcp
+    ? `${MCP_CONTAINER_PORT}${MCP_PATH}`
+    : isA2a
+      ? `${A2A_CONTAINER_PORT}${A2A_PATH}`
+      : '8080';
+  logger.info(
+    `Starting agent container (image=${image}, port=${hostPort} -> ${containerPortLabel})...`
+  );
+  const containerId = await runDetached({
+    image,
+    mounts: [],
+    env: dockerEnv,
+    cmd: [],
+    hostPort,
+    host: containerHost,
+    platform: options.platform,
+    name: containerName,
+    ...(containerPort !== undefined && { containerPort }),
+    // Keep decrypted SecureString SSM env values off the `docker run` argv.
+    ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
+  });
+
+  // If anything after `runDetached` throws, the container is already up but
+  // the caller has not yet captured its id (on a `--watch` rebuild the loop's
+  // `containerId` was nulled by `cleanupBefore`), so `cleanup()` could not
+  // remove it -> orphan. Tear the just-started container down before
+  // re-throwing so a boot-tail failure never leaks a container.
+  let stopLogs: () => void;
+  try {
+    stopLogs = streamLogs(containerId);
+  } catch (err) {
+    await removeContainer(containerId).catch(() => {});
+    throw err;
+  }
+  return { containerId, hostPort, stopLogs };
+}
+
+/**
+ * Rebuild the agent container for the `--watch` loop: tear down the OLD
+ * container (via the supplied `cleanupBefore`), re-synth the CDK app, re-pick
+ * the candidate stack + re-resolve the runtime (so a new asset hash / env /
+ * image is picked up), then re-run {@link bootAgentCoreContainer}. The inbound
+ * auth (bearer token / OIDC discovery URL) is NOT re-resolved — it is stable
+ * across a CDK source edit, so the caller threads its boot-time `authorization`
+ * back into the next invocation.
+ *
+ * Exported so a unit test can drive the rebuild shape without the full command.
+ */
+export async function rebuildAgentCoreContainer(args: {
+  cleanupBefore: () => Promise<void>;
+  resolvedTarget: string;
+  options: LocalInvokeAgentCoreOptions;
+  synthesizer: Synthesizer;
+  synthOpts: SynthesisOptions;
+  profileCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined;
+  profileCredsFile: ProfileCredentialsFile | undefined;
+  stateProvider: LocalStateProvider | undefined;
+  isMcp: boolean;
+  isA2a: boolean;
+}): Promise<{ containerId: string; hostPort: number; stopLogs: () => void; stacks: StackInfo[] }> {
+  const {
+    cleanupBefore,
+    resolvedTarget,
+    options,
+    synthesizer,
+    synthOpts,
+    profileCredentials,
+    profileCredsFile,
+    stateProvider,
+    isMcp,
+    isA2a,
+  } = args;
+
+  await cleanupBefore();
+
+  const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+  const newCandidate = pickAgentCoreCandidateStack(resolvedTarget, newStacks);
+  const { context: newImageContext, loaded: newLoaded } =
+    stateProvider && newCandidate
+      ? await buildAgentCoreImageContext(newCandidate, stateProvider, options)
+      : { context: undefined, loaded: undefined };
+  const newResolved = resolveAgentCoreTarget(resolvedTarget, newStacks, newImageContext);
+
+  const boot = await bootAgentCoreContainer({
+    resolved: newResolved,
+    options,
+    profileCredentials,
+    profileCredsFile,
+    stateProvider,
+    loadedState: newLoaded,
+    imageContext: newImageContext,
+    isMcp,
+    isA2a,
+  });
+  return { ...boot, stacks: newStacks };
 }
 
 /**
@@ -1588,6 +1937,18 @@ export function createLocalInvokeAgentCoreCommand(): Command {
           'frame to stdout until the agent closes. When stdin is a TTY, auto-enters a REPL — each ' +
           'typed line is sent as a follow-up text frame until Ctrl-D / agent close; pipe from ' +
           '/dev/null to force one-shot in a TTY. Ignored for an MCP runtime.'
+      ).default(false)
+    )
+    .addOption(
+      new Option(
+        '--watch',
+        'Re-synth and reload the agent container on CDK source changes (follows cdk-local #270). ' +
+          'Supported on the HTTP / AGUI protocols, both the --ws session AND the default one-shot ' +
+          'POST /invocations (the reload re-runs the single shot). An interpreted-language source ' +
+          'edit inside a CodeConfiguration source tree takes a soft-reload fast path (docker cp + ' +
+          'docker restart, no rebuild); Dockerfile / compiled-source / asset-hash-changed / ' +
+          'ambiguous edits force a full rebuild. For MCP / A2A runtimes --watch is a no-op WARN and ' +
+          'the single shot proceeds.'
       ).default(false)
     )
     .addOption(
