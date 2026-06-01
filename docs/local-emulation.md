@@ -1496,7 +1496,7 @@ Same shape as `cdkd local invoke`: accepts a CDK display path (`MyStack/MyAgent`
 | `MCP` | Model Context Protocol streamable HTTP | 8000 | Session handshake (`initialize` -> `notifications/initialized`) + one JSON-RPC request: defaults to `tools/list` when `--event` is omitted; otherwise `--event` is the JSON-RPC request body. |
 | `A2A` | Agent-to-Agent JSON-RPC at `POST /` | 9000 | Defaults to `agent/getAgentCard` when `--event` is omitted; otherwise `--event` is the JSON-RPC request body. |
 | `AGUI` | AGUI JSON-RPC streaming | 8800 | Streams the agent's response frames. |
-| `--ws` (HTTP only) | Bidirectional `/ws` WebSocket on the HTTP container | 8080 | First frame = `--event` body. Subsequent frames (`--ws-interactive`) read from stdin (one per line) until EOF or close. |
+| `--ws` (HTTP only) | Bidirectional `/ws` WebSocket on the HTTP container | 8080 | First frame = `--event` body. In a TTY, auto-enters a REPL — each typed stdin line is a follow-up frame until Ctrl-D / close; piped / non-TTY stdin stays one-shot (only the `--event` frame is sent). |
 
 ### Inbound JWT auth (`customJwtAuthorizer`)
 
@@ -1519,7 +1519,7 @@ Same shape as `cdkd local invoke`. The container receives the developer's AWS cr
 - `--session-id <id>` — value of the AgentCore session-id header (auto-generated when omitted).
 - `--jwt <bearer-token>` — verified + forwarded when the runtime declares `customJwtAuthorizer`.
 - `--timeout <ms>` — per-request timeout (default 120000 / 120s).
-- `--ws` / `--ws-interactive` — WebSocket modes (HTTP protocol only).
+- `--ws` — bidirectional `/ws` WebSocket mode (HTTP protocol only). Auto-detects a TTY: an interactive terminal enters a multi-turn REPL (each stdin line is sent as a follow-up frame until Ctrl-D / agent close), while piped / redirected / CI stdin stays a wire-faithful one-shot (force one-shot in a TTY with `--ws </dev/null`).
 - `--sigv4` — sign `/invocations` with SigV4 (for SigV4-protected runtimes).
 - `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` / `--state-prefix` / `--stack-region` — state-source flags.
 - `--assume-role [arn]` / `--no-assume-role` / `--ecr-role-arn <arn>` — role-assumption flags.

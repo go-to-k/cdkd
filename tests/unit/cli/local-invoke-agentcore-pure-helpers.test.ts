@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   parseTimeoutMs,
   platformToArchitecture,
   buildMcpRequest,
   buildA2aRequest,
+  wrapWsOnMessage,
+  WS_REPL_PROMPT,
+  readStdinLines,
 } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 
@@ -154,6 +157,55 @@ describe('buildA2aRequest (`--event` -> A2A JSON-RPC request)', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(CdkdError);
       expect((err as CdkdError).code).toBe('LOCAL_INVOKE_AGENTCORE_A2A_EVENT_INVALID');
+    }
+  });
+});
+
+describe('wrapWsOnMessage (`--ws` auto-TTY REPL output wrapping)', () => {
+  it('passes through unchanged when non-interactive (piped / CI)', () => {
+    const sink = vi.fn();
+    const wrapped = wrapWsOnMessage(sink, false);
+    // Same function identity — no allocation / wrapping when non-interactive.
+    expect(wrapped).toBe(sink);
+    wrapped('frame-1');
+    wrapped('frame-2\n');
+    expect(sink.mock.calls).toEqual([['frame-1'], ['frame-2\n']]);
+  });
+
+  it('appends a newline (when missing) then writes the prompt in interactive mode', () => {
+    const sink = vi.fn();
+    const wrapped = wrapWsOnMessage(sink, true);
+    wrapped('hello');
+    expect(sink.mock.calls).toEqual([['hello\n'], [WS_REPL_PROMPT]]);
+  });
+
+  it('does not double the newline when the frame already ends with one', () => {
+    const sink = vi.fn();
+    const wrapped = wrapWsOnMessage(sink, true);
+    wrapped('hello\n');
+    expect(sink.mock.calls).toEqual([['hello\n'], [WS_REPL_PROMPT]]);
+  });
+
+  it('uses the documented "> " prompt constant', () => {
+    expect(WS_REPL_PROMPT).toBe('> ');
+  });
+});
+
+describe('readStdinLines (interactive REPL frame source)', () => {
+  it('yields non-empty lines and skips strictly-empty lines', async () => {
+    const { Readable } = await import('node:stream');
+    // line-A, empty (skipped), whitespace-only (kept), line-B
+    const fake = Readable.from(['line-A\n', '\n', '   \n', 'line-B\n']);
+    const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+    Object.defineProperty(process, 'stdin', { value: fake, configurable: true });
+    try {
+      const lines: string[] = [];
+      for await (const line of readStdinLines()) {
+        lines.push(line);
+      }
+      expect(lines).toEqual(['line-A', '   ', 'line-B']);
+    } finally {
+      if (original) Object.defineProperty(process, 'stdin', original);
     }
   });
 });
