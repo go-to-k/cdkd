@@ -3,8 +3,6 @@ bench-cdk-sample	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 lambda	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 vpc-nat-gateway	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 dynamodb-streams	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
-multi-stack-deps	2026-06-01T21:12:13Z	FAIL		standard	F1 cross-stack deploy/destroy --all ordering: consumer raced producer (Fn::ImportValue); orphan cleaned
-cross-stack-references	2026-06-01T21:12:13Z	FAIL		standard	F1 cross-stack deploy --all ordering: consumer before producer (Fn::GetStackOutput)
 import-value-strong-ref	2026-06-01T21:12:13Z	FAIL		verify.sh	F3 STALE TEST: verify.sh expects schema v4 but actual v8; deploy+strong-ref OK (not a bug)
 composite-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 nested-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
@@ -34,3 +32,5 @@ apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
 sns-sqs-event	2026-06-01T21:12:13Z	PASS	63	verify.sh	rc ok, orph clean
 ecs-fargate	2026-06-01T21:12:13Z	FAIL	171	verify.sh	F5 ECS Cluster serviceConnectDefaults.namespace silent-drop (deploy/destroy OK)
 cognito	2026-06-01T21:12:13Z	PASS	45	standard	rc ok, orph clean
+multi-stack-deps	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)
+cross-stack-references	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)

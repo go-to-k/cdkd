@@ -32,6 +32,63 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
 import { runDestroyForStack } from './destroy-runner.js';
+import {
+  inferCrossStackStackDeps,
+  type CrossStackScanStack,
+} from '../../analyzer/cross-stack-deps.js';
+
+/**
+ * Topologically order `stackNames` so that every consumer is destroyed BEFORE
+ * its producers. `consumerToProducers` maps consumer → set of producer stack
+ * names (the deploy-direction edges from `inferCrossStackStackDeps`); destroy
+ * is the reverse, so a stack must appear before all of its producers.
+ *
+ * Kahn-style with a deterministic tie-break: among nodes currently free to be
+ * emitted (no remaining unemitted consumer pointing at them), pick the one
+ * earliest in the original `stackNames` order so the output is stable and the
+ * original order is preserved whenever there are no cross-stack edges. A cycle
+ * (should not happen for valid templates) degrades gracefully — any leftover
+ * nodes are appended in original order rather than dropped.
+ */
+export function orderConsumersBeforeProducers(
+  stackNames: string[],
+  consumerToProducers: Map<string, Set<string>>
+): string[] {
+  // Build producer -> consumers (reverse edges). For destroy we emit a node
+  // only once every consumer that imports from it has already been emitted.
+  const pendingConsumers = new Map<string, Set<string>>();
+  for (const name of stackNames) {
+    pendingConsumers.set(name, new Set());
+  }
+  for (const [consumer, producers] of consumerToProducers) {
+    for (const producer of producers) {
+      pendingConsumers.get(producer)?.add(consumer);
+    }
+  }
+
+  const emitted = new Set<string>();
+  const ordered: string[] = [];
+  while (ordered.length < stackNames.length) {
+    // Earliest-in-original-order node whose consumers are all emitted.
+    const next = stackNames.find(
+      (name) =>
+        !emitted.has(name) && [...(pendingConsumers.get(name) ?? [])].every((c) => emitted.has(c))
+    );
+    if (!next) {
+      // Cycle / unresolvable remainder: append the rest in original order.
+      for (const name of stackNames) {
+        if (!emitted.has(name)) {
+          emitted.add(name);
+          ordered.push(name);
+        }
+      }
+      break;
+    }
+    emitted.add(next);
+    ordered.push(next);
+  }
+  return ordered;
+}
 
 /**
  * Destroy command implementation
@@ -151,6 +208,10 @@ async function destroyCommand(
     // before any lock or per-resource delete fires.
     type AppStack = StackLike & { region?: string; terminationProtection?: boolean };
     let appStacks: AppStack[] = [];
+    // Synthesized templates kept for cross-stack ordering inference (see the
+    // reverse-edge sort below). Only populated when synth succeeds; on the
+    // state-only fallback path we have no templates and skip the inference.
+    let synthScanStacks: CrossStackScanStack[] = [];
 
     if (appCmd) {
       try {
@@ -172,6 +233,10 @@ async function destroyCommand(
           ...(s.terminationProtection !== undefined && {
             terminationProtection: s.terminationProtection,
           }),
+        }));
+        synthScanStacks = result.stacks.map((s) => ({
+          stackName: s.stackName,
+          template: s.template,
         }));
       } catch {
         logger.debug('Could not synthesize app, falling back to state-based stack list');
@@ -284,6 +349,25 @@ async function destroyCommand(
       }
       logger.info('No matching stacks found in state');
       return;
+    }
+
+    // Order stacks so that a consumer is destroyed BEFORE its producer.
+    // CDK's manifest dependency graph is unavailable here (state carries no
+    // dependency info and the per-stack loop never used it), but a raw
+    // cross-stack reference — `cdk.Fn.importValue('<exportName>')` or
+    // `Fn::GetStackOutput` — means destroying the producer first would trip
+    // cdkd's `StackHasActiveImportsError` and leave the consumer orphaned.
+    // We infer those consumer → producer edges from the synthesized templates
+    // and topologically sort so each consumer precedes its producers (the
+    // REVERSE of deploy order). Only edges between stacks both in this destroy
+    // set count. When synth was unavailable (state-only fallback) there are no
+    // templates to scan, so `inferred` is empty and the original order stands.
+    if (synthScanStacks.length > 0 && stackNames.length > 1) {
+      const inSet = new Set(stackNames);
+      const inferred = inferCrossStackStackDeps(
+        synthScanStacks.filter((s) => inSet.has(s.stackName))
+      );
+      stackNames = orderConsumersBeforeProducers(stackNames, inferred);
     }
 
     logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
