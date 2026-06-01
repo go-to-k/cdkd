@@ -827,6 +827,15 @@ export interface AssumeRoleOption {
   globalArn?: string;
   /** Per-Lambda override map (`LogicalId` -> ARN). */
   perLambda: Record<string, string>;
+  /**
+   * Issue #256 Option 1 - `--assume-role-auto` means auto-resolve EACH
+   * routed Lambda's own execution role per-Lambda. Mutually exclusive
+   * with `globalArn`; the per-Lambda map still wins for the named
+   * Lambda. Set by normalizeStartApiAssumeRole from the separate
+   * `--assume-role-auto` boolean flag - never set directly by
+   * parseAssumeRoleToken.
+   */
+  bareAutoResolve?: boolean;
 }
 
 const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
@@ -872,6 +881,46 @@ export function parseAssumeRoleToken(
   }
   acc.perLambda[logicalId] = arn;
   return acc;
+}
+
+/**
+ * Compose `--assume-role` (value-form accumulator) and the separate
+ * `--assume-role-auto` boolean flag into the in-process
+ * representation `cdkd local start-api` consumes downstream.
+ *
+ *   - both unset -> `undefined` (pass dev creds through)
+ *   - only `--assume-role-auto` -> `{ perLambda: {}, bareAutoResolve: true }`
+ *     (per-Lambda auto-resolve for every routed Lambda)
+ *   - only `--assume-role` -> the value-form accumulator (global ARN
+ *     and/or per-Lambda map) as-is
+ *   - both -> accumulator with `bareAutoResolve = true` overlaid;
+ *     the per-Lambda map still wins for named Lambdas, auto-resolve
+ *     fills in for every Lambda the map does NOT name
+ *
+ * Enforces the mutual-exclusion guard: `--assume-role-auto` and a
+ * global ARN (`--assume-role <arn>`) both occupy the "default for
+ * every other Lambda" slot, so the combination is ambiguous and
+ * rejected at boot with a clear error. The per-Lambda map IS
+ * compatible with either side.
+ */
+export function normalizeStartApiAssumeRole(
+  raw: AssumeRoleOption | undefined,
+  autoResolve: boolean
+): AssumeRoleOption | undefined {
+  if (raw === undefined) {
+    return autoResolve ? { perLambda: {}, bareAutoResolve: true } : undefined;
+  }
+  if (autoResolve && raw.globalArn) {
+    throw new Error(
+      `--assume-role-auto auto-resolves EACH routed Lambda's own execution role, ` +
+        `but --assume-role ${raw.globalArn} also names a single global default. ` +
+        `These are mutually exclusive on the global slot. Either drop the global ARN ` +
+        `to keep --assume-role-auto for every Lambda, or drop --assume-role-auto to keep the global default. ` +
+        `Per-Lambda overrides (--assume-role <LogicalId>=<arn>) are compatible with either side.`
+    );
+  }
+  if (autoResolve) raw.bareAutoResolve = true;
+  return raw;
 }
 
 /**

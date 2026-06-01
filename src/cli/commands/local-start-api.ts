@@ -10,6 +10,7 @@ import {
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
+  normalizeStartApiAssumeRole,
   stateOptions,
   type AssumeRoleOption,
   warnIfDeprecatedRegion,
@@ -85,6 +86,7 @@ import {
   type ResolvedLambdaLayer,
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
+import { resolveExecutionRoleArnFromState } from './local-invoke.js';
 import { matchStacks } from '../stack-matcher.js';
 import {
   buildCorsConfigByApiId,
@@ -144,6 +146,17 @@ interface LocalStartApiOptions {
   envVars?: string;
   /** D8.2: bare ARN (global) and/or `<LogicalId>=<arn>` (per-Lambda). */
   assumeRole?: AssumeRoleOption;
+  /**
+   * Issue #256 Option 1 - `--assume-role-auto`: auto-resolve EACH
+   * routed Lambda's own execution role per-Lambda (literal ARN /
+   * Fn::GetAtt against the synthesized template / --from-cfn-stack
+   * state). Composed with {@link LocalStartApiOptions.assumeRole} at
+   * boot via {@link normalizeStartApiAssumeRole} (which also enforces
+   * the `--assume-role-auto` vs global-ARN mutual exclusion guard)
+   * before downstream use, so this raw boolean is never read directly
+   * past the handler entry point.
+   */
+  assumeRoleAuto?: boolean;
   /**
    * Issue #448: role to sts:AssumeRole before calling
    * `lambda:GetLayerVersion` for every literal-ARN entry in any
@@ -283,6 +296,22 @@ async function localStartApiCommand(
 
   warnIfDeprecatedRegion(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+
+  // Issue #256 Option 1: compose `--assume-role` (value-form
+  // accumulator) and the separate `--assume-role-auto` boolean flag
+  // into the single `AssumeRoleOption` every downstream resolver
+  // consumes. Also enforces the mutual-exclusion guard (global ARN +
+  // auto-resolve both occupy the "default for every other Lambda"
+  // slot) — throws here at boot, before any synth / docker work.
+  const normalizedAssumeRole = normalizeStartApiAssumeRole(
+    options.assumeRole,
+    options.assumeRoleAuto ?? false
+  );
+  if (normalizedAssumeRole === undefined) {
+    delete options.assumeRole;
+  } else {
+    options.assumeRole = normalizedAssumeRole;
+  }
 
   await ensureDockerAvailable();
 
@@ -1459,6 +1488,87 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
 }
 
 /**
+ * Resolve the effective IAM role ARN to assume for a single routed
+ * Lambda, honoring the four `--assume-role` forms of issue #256
+ * Option 1 (non-breaking step):
+ *
+ *   - per-Lambda override (`<LogicalId>=<arn>`) — wins over every other
+ *     form for the named Lambda.
+ *   - global default (bare ARN) — used when the per-Lambda map misses.
+ *   - bare-auto-resolve (`--assume-role-auto`) — when neither the
+ *     per-Lambda map nor a global default applies, resolves THIS
+ *     Lambda's own `Role` (its `AWS::Lambda::Function`'s `Role`
+ *     property -> role ARN). Resolution sources, in order:
+ *       1. literal-ARN form of `Properties.Role` in the SYNTHESIZED
+ *          template (rare in CDK output but possible);
+ *       2. deployed state (`stateBundle.state.resources`) when
+ *          `--from-state` / `--from-cfn-stack` is active, via the same
+ *          shared helper `cdkd local invoke`'s bare-form uses
+ *          (`resolveExecutionRoleArnFromState`).
+ *   - flag absent / `--no-assume-role-auto` — returns `undefined`
+ *     (per-Lambda map and global default already filtered out by the
+ *     null-check at the top; bare-auto-resolve = false short-circuits
+ *     before the state lookup).
+ *
+ * The shape-level mutual exclusion (bare-auto-resolve + global ARN
+ * together) is caught at boot by `normalizeStartApiAssumeRole`; this
+ * resolver only sees a well-formed `AssumeRoleOption`.
+ *
+ * Bare-auto-resolve misses (no literal-ARN, no state, state did not
+ * carry the role attribute) warn-and-fall-through to the
+ * dev-creds-passed-through branch — same trade-off `cdkd local invoke
+ * --assume-role` makes when bare auto-resolve cannot find an ARN.
+ *
+ * Exported for unit testing.
+ */
+export function resolveStartApiAssumeRoleArn(args: {
+  logicalId: string;
+  assumeRole: AssumeRoleOption | undefined;
+  lambdaResource: TemplateResource;
+  stateBundle: StackStateBundle | undefined;
+}): string | undefined {
+  const { logicalId, assumeRole, lambdaResource, stateBundle } = args;
+  if (!assumeRole) return undefined;
+
+  // Per-Lambda override > global default > bare-auto-resolve.
+  // `effectiveAssumeRoleArn` already handles the first two.
+  const explicit = effectiveAssumeRoleArn(logicalId, assumeRole);
+  if (explicit) return explicit;
+
+  if (!assumeRole.bareAutoResolve) return undefined;
+
+  // Bare-auto-resolve: try the synthesized template's literal-ARN
+  // `Properties.Role` first (most CDK apps render this as an intrinsic,
+  // but explicit-ARN refs DO surface here), then the deployed state.
+  const roleProp = (lambdaResource.Properties ?? {})['Role'];
+  if (typeof roleProp === 'string' && roleProp.startsWith('arn:')) {
+    return roleProp;
+  }
+  if (stateBundle) {
+    const fromState = resolveExecutionRoleArnFromState(stateBundle.state, logicalId);
+    if (fromState) {
+      getLogger().info(
+        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${fromState}`
+      );
+      return fromState;
+    }
+  }
+
+  // Miss: warn-and-fall-through so the user sees why the container is
+  // getting dev creds instead of the deployed function's narrow role.
+  // The same shape `cdkd local invoke --assume-role` produces when state /
+  // template ARN can't recover the role.
+  getLogger().warn(
+    `--assume-role: could not auto-resolve the execution role ARN for '${logicalId}'. ` +
+      `Pair --assume-role-auto with --from-state or --from-cfn-stack ` +
+      `so the deployed Role's ARN can be looked up, OR pin the ARN explicitly with ` +
+      `--assume-role ${logicalId}=<arn>. ` +
+      "Falling back to the developer's shell credentials for this Lambda."
+  );
+  return undefined;
+}
+
+/**
  * Build the per-Lambda container spec — code dir, env vars (template +
  * --env-vars overlay), STS-issued creds when --assume-role names this
  * Lambda, optional --debug-port reservation. Errors out with a clear
@@ -1656,7 +1766,12 @@ async function buildContainerSpec(args: {
     ...envResult.resolved,
   };
 
-  const roleArn = effectiveAssumeRoleArn(logicalId, assumeRole);
+  const roleArn = resolveStartApiAssumeRoleArn({
+    logicalId,
+    assumeRole,
+    lambdaResource: lambda.resource,
+    stateBundle,
+  });
   if (roleArn) {
     const creds = await assumeLambdaExecutionRole(roleArn, stsRegion);
     dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
@@ -3055,8 +3170,20 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--assume-role <arn-or-pair>',
-        "Assume the Lambda's execution role and forward STS-issued temp creds. Bare <arn> = global default; <LogicalId>=<arn> = per-Lambda override (repeatable). Per-Lambda > global > unset (developer creds passed through)."
+        "Assume the Lambda's execution role and forward STS-issued temp creds. Two forms: " +
+          '(1) `--assume-role <arn>` sets a single global default ARN used for every routed Lambda; ' +
+          '(2) `--assume-role <LogicalId>=<arn>` (repeatable) is a per-Lambda override (wins over the global default and over --assume-role-auto for the named Lambda). ' +
+          'Pair with --assume-role-auto to auto-resolve every other Lambda. Precedence: per-Lambda > (--assume-role-auto OR global default) > unset (developer creds passed through).'
       ).argParser((raw, prev: AssumeRoleOption | undefined) => parseAssumeRoleToken(raw, prev))
+    )
+    .addOption(
+      new Option(
+        '--assume-role-auto',
+        "Auto-resolve EACH routed Lambda's own execution role per-Lambda (literal ARN / Fn::GetAtt against template / --from-cfn-stack state). " +
+          "Slower boot — one STS call per Lambda — but the right shape when each Lambda's deployed role differs. " +
+          'Mutually exclusive with `--assume-role <arn>` (global default); errors at boot. ' +
+          'Compatible with `--assume-role <LogicalId>=<arn>` per-Lambda overrides — the map wins for named Lambdas, auto-resolve handles the rest.'
+      ).default(false)
     )
     .addOption(
       new Option(
