@@ -1,3 +1,10 @@
+# [0.205.0](https://github.com/go-to-k/cdkd/compare/v0.204.0...v0.205.0) (2026-06-01)
+
+
+### Features
+
+* **local:** start-api --assume-role-auto (follow cdk-local [#271](https://github.com/go-to-k/cdkd/issues/271)) ([#747](https://github.com/go-to-k/cdkd/issues/747)) ([878578b](https://github.com/go-to-k/cdkd/commit/878578be284684cda488b008e0a5746ccc857f3f))
+
 # [0.204.0](https://github.com/go-to-k/cdkd/compare/v0.203.0...v0.204.0) (2026-06-01)
 
 
