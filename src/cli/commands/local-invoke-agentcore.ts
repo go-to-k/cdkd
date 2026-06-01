@@ -574,7 +574,8 @@ export async function resolveInboundAuthorization(
     },
     header,
     createJwksCache(),
-    { warned: new Set() }
+    // cdk-local #252: per-time-window warn dedup (URL -> last-warned epoch ms).
+    { warnedAt: new Map<string, number>() }
   );
   if (!result.allow) {
     throw new CdkdError(
