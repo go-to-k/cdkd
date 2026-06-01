@@ -29,6 +29,7 @@ import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
+import { inferCrossStackStackDeps } from '../../analyzer/cross-stack-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
@@ -267,6 +268,26 @@ async function deployCommand(
       );
     }
 
+    // Cross-stack ordering edges that CDK's manifest dependency graph
+    // (`stack.dependencyNames`) does NOT capture: a raw
+    // `cdk.Fn.importValue('<exportName>')` or `Fn::GetStackOutput` reference
+    // without an explicit `addDependency` produces no manifest edge, so cdkd
+    // would otherwise deploy the consumer concurrently with (often before)
+    // the producer and fail with `export not found` / `stack not found`.
+    // Inferred from the synthesized templates (the runtime S3 export index is
+    // empty on a fresh multi-stack deploy). Both the auto-include walk below
+    // and the inter-stack DAG-edge building further down use the UNION of
+    // `dependencyNames` + these inferred producers. Computed over ALL stacks
+    // so auto-include can reach a producer not yet in `targetStacks`.
+    const inferredCrossStackDeps = inferCrossStackStackDeps(allStacks);
+    const effectiveStackDeps = (stackName: string, deps: readonly string[]): Set<string> => {
+      const union = new Set<string>(deps);
+      for (const producer of inferredCrossStackDeps.get(stackName) ?? []) {
+        union.add(producer);
+      }
+      return union;
+    };
+
     // Auto-include dependency stacks (CDK CLI compatible behavior)
     // When deploying StackA that depends on StackB, also deploy StackB first.
     // Use -e / --exclusively to skip this and deploy only the requested stacks.
@@ -277,7 +298,7 @@ async function deployCommand(
       const addDependencies = (stackName: string): void => {
         const stack = allStackMap.get(stackName);
         if (!stack) return;
-        for (const depName of stack.dependencyNames) {
+        for (const depName of effectiveStackDeps(stackName, stack.dependencyNames)) {
           if (!targetNames.has(depName)) {
             const depStack = allStackMap.get(depName);
             if (depStack) {
@@ -349,8 +370,12 @@ async function deployCommand(
         }
       }
 
-      // Add inter-stack dependencies
-      for (const depName of stack.dependencyNames) {
+      // Add inter-stack dependencies: the UNION of CDK manifest deps
+      // (`dependencyNames`) and inferred raw cross-stack references, so a
+      // consumer waits for its producer even without an explicit
+      // `addDependency`. Both are guarded by `stackMap.has(...)` so only
+      // edges between stacks in this deploy set are added.
+      for (const depName of effectiveStackDeps(stack.stackName, stack.dependencyNames)) {
         if (stackMap.has(depName)) {
           stackDeps.add(`stack:${depName}`);
         }
