@@ -396,29 +396,27 @@ echo "${RESULT_20}" | grep -q '"type":"RUN_FINISHED"' || {
   exit 1
 }
 
-# Test 18 — `--ws-interactive` REPL mode: the initial --event opens loop mode
-# in the EchoAgent (it stays open + echoes each subsequent text frame), then
-# two stdin lines are sent as follow-up frames. The agent echoes each as
-# `loop-echo:<line>`, and the client closes the WS when stdin EOFs.
-echo "==> [18/20] EchoAgent --ws --ws-interactive sends two stdin lines as follow-up WS frames"
+# Test 18 — `--ws` with piped (non-TTY) stdin = one-shot, wire-faithful mode.
+# `--ws` auto-detects TTY: a real terminal enters a REPL (stdin lines become
+# follow-up frames), but here stdin is piped (`printf | ...`), so it is
+# non-interactive — only the initial --event frame is sent and the agent's ack
+# is the only frame received. The piped lines are NOT sent as follow-up frames
+# (no REPL on a non-TTY), matching the old non-interactive behavior.
+echo "==> [18/20] EchoAgent --ws with piped stdin stays one-shot (no REPL on non-TTY)"
 LOOP_EVENT_FILE=$(mktemp -t cdkd-ws-loop-event-XXXX.json)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}"' EXIT
 echo '{"loop":true}' > "${LOOP_EVENT_FILE}"
 RESULT_18=$(printf 'line-A\nline-B\n' | \
-  ${CDKD} local invoke-agentcore "${TARGET}" --ws --ws-interactive --event "${LOOP_EVENT_FILE}" 2>/dev/null)
+  ${CDKD} local invoke-agentcore "${TARGET}" --ws --event "${LOOP_EVENT_FILE}" 2>/dev/null)
 echo "    response: ${RESULT_18}"
 # Initial frame echo (first frame's loop:true is acknowledged by the agent):
 echo "${RESULT_18}" | grep -q '"echoed":{"loop":true}' || {
   echo "FAIL: expected initial ack of the loop event in the WS response, got: ${RESULT_18}"
   exit 1
 }
-# Both follow-up frames echoed back via loop-echo:<line>:
-echo "${RESULT_18}" | grep -q 'loop-echo:line-A' || {
-  echo "FAIL: expected loop-echo:line-A from the agent, got: ${RESULT_18}"
-  exit 1
-}
-echo "${RESULT_18}" | grep -q 'loop-echo:line-B' || {
-  echo "FAIL: expected loop-echo:line-B from the agent, got: ${RESULT_18}"
+# The piped stdin lines must NOT be sent as follow-up frames on a non-TTY:
+echo "${RESULT_18}" | grep -q 'loop-echo:line-A' && {
+  echo "FAIL: piped (non-TTY) --ws must not send stdin lines as follow-up frames, got: ${RESULT_18}"
   exit 1
 }
 echo ""

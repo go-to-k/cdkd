@@ -115,15 +115,17 @@ interface LocalInvokeAgentCoreOptions {
    * `--ws`: use the HTTP-protocol agent's bidirectional `/ws` WebSocket
    * endpoint (on 8080) instead of `POST /invocations` — send `--event` as the
    * first frame and stream received frames to stdout until the agent closes.
+   *
+   * When stdin is a TTY (interactive terminal), additionally read stdin lines
+   * as follow-up text frames (one frame per line, trailing newline stripped)
+   * until stdin EOFs (Ctrl-D) or the agent closes the connection. This
+   * matches the deployed `/ws` endpoint's bidirectional shape: a TTY user
+   * gets a multi-turn REPL session by default. When stdin is NOT a TTY (piped
+   * / redirected / CI), only the initial `--event` frame is sent and the
+   * client only receives — the standard one-shot script-friendly shape.
+   * Force one-shot in a TTY with `cdkd ... --ws </dev/null`.
    */
   ws?: boolean;
-  /**
-   * `--ws-interactive`: after the initial `--event` frame, read additional
-   * frames from stdin (one frame per line, trailing newline stripped) and
-   * send each as a text frame to the agent until stdin EOFs (Ctrl-D) or the
-   * agent closes the connection. Only meaningful with `--ws`.
-   */
-  wsInteractive?: boolean;
   /** Session id forwarded via the AgentCore session-id header (auto-generated when omitted). */
   sessionId?: string;
   /**
@@ -343,9 +345,6 @@ async function localInvokeAgentCoreCommand(
         `--ws applies only to the HTTP / AGUI protocols; ignoring it for this ${resolved.protocol} runtime.`
       );
     }
-    if (options.wsInteractive && !options.ws) {
-      logger.warn('--ws-interactive is meaningful only with --ws; ignoring.');
-    }
     if (options.sigv4 && (isMcp || isA2a || options.ws)) {
       logger.warn(
         '--sigv4 signs the HTTP /invocations request only; ignoring it for the ' +
@@ -464,21 +463,24 @@ async function localInvokeAgentCoreCommand(
     } else if (options.ws) {
       // Bidirectional `/ws` (same 8080 container as /invocations): send the
       // event as the first frame, stream every received frame to stdout, then
-      // resolve when the agent closes the stream. With `--ws-interactive` we
-      // additionally wire `process.stdin` (line-buffered) as a frame source,
-      // so each typed line becomes a follow-up text frame until EOF / agent
-      // close — a REPL on top of the same connection.
+      // resolve when the agent closes the stream. When stdin is a TTY (real
+      // terminal — `process.stdin.isTTY === true`) we additionally wire
+      // `process.stdin` (line-buffered) as a frame source, so each typed line
+      // becomes a follow-up text frame until EOF / agent close — a REPL on top
+      // of the same connection. Piped / redirected stdin (non-TTY) stays the
+      // one-shot, wire-faithful shape (force it in a TTY with `--ws </dev/null`).
+      const interactive = process.stdin.isTTY === true;
       await waitForAgentCorePing(containerHost, hostPort);
-      const frameSource = options.wsInteractive ? readStdinLines() : undefined;
+      const frameSource = interactive ? readStdinLines() : undefined;
       logger.info(
-        options.wsInteractive
+        interactive
           ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
           : 'Opening the agent /ws WebSocket and streaming frames...'
       );
       const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
         sessionId,
         timeoutMs: options.timeout,
-        onMessage: (text) => process.stdout.write(text),
+        onMessage: wrapWsOnMessage((text) => process.stdout.write(text), interactive),
         ...(authorization && { authorization }),
         ...(frameSource && { frameSource }),
       });
@@ -1461,11 +1463,54 @@ export async function* readStdinLines(): AsyncIterable<string> {
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   try {
     for await (const line of rl) {
+      // Skip strictly-empty lines in interactive mode. Without this, pressing
+      // Enter without typing sends an empty WS text frame; a loop-mode agent
+      // (e.g. the integ fixture's EchoAgent) then replies with a half-line
+      // like `loop-echo:` that visually corrupts the REPL. A whitespace-only
+      // line is NOT skipped — sending spaces can be a deliberate signal for
+      // some agents.
+      if (line.length === 0) continue;
       yield line;
     }
   } finally {
     rl.close();
   }
+}
+
+/**
+ * REPL prompt indicator for the auto-detected TTY mode. Written to stdout (no
+ * trailing newline) after each received agent frame, so the user has a clear
+ * visual signal that the REPL is waiting for input.
+ *
+ * Exported so a unit test can assert the prompt shape.
+ */
+export const WS_REPL_PROMPT = '> ';
+
+/**
+ * Wrap `onMessage` so each agent WS text frame lands on its own line when the
+ * auto-REPL is active AND a `> ` prompt indicator follows. WS frames carry no
+ * trailing `\n` by protocol (each frame is a discrete message); the cloud
+ * `/ws` endpoint behaves the same. That's correct on the wire but visually
+ * run-on in an interactive terminal — the user's next keystroke concatenates
+ * onto the last frame's tail char and they have no signal that the REPL is
+ * waiting for input. In interactive mode we append `\n` (unless already
+ * present) and then write a `> ` prompt, so each agent message is presented as
+ * its own line and the next input prompt is visible.
+ *
+ * Non-interactive (piped / CI) is unchanged — the raw stdout shape is what
+ * scripts rely on, and the WS-protocol-faithful pass-through stays.
+ *
+ * Exported so a unit test can drive the wrapping without the full WS pipeline.
+ */
+export function wrapWsOnMessage(
+  sink: (text: string) => void,
+  interactive: boolean
+): (text: string) => void {
+  if (!interactive) return sink;
+  return (text) => {
+    sink(text.endsWith('\n') ? text : `${text}\n`);
+    sink(WS_REPL_PROMPT);
+  };
 }
 
 export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
@@ -1540,15 +1585,9 @@ export function createLocalInvokeAgentCoreCommand(): Command {
         '--ws',
         "Stream over the HTTP-protocol agent's bidirectional /ws WebSocket endpoint (on 8080) " +
           'instead of POST /invocations: send --event as the first frame and print every received ' +
-          'frame to stdout until the agent closes. Ignored for an MCP runtime.'
-      ).default(false)
-    )
-    .addOption(
-      new Option(
-        '--ws-interactive',
-        'REPL mode for --ws: after the initial --event frame, read additional frames from stdin ' +
-          '(one frame per line, trailing newline stripped) and send each as a text frame until ' +
-          'stdin EOFs (Ctrl-D) or the agent closes. Only meaningful with --ws.'
+          'frame to stdout until the agent closes. When stdin is a TTY, auto-enters a REPL — each ' +
+          'typed line is sent as a follow-up text frame until Ctrl-D / agent close; pipe from ' +
+          '/dev/null to force one-shot in a TTY. Ignored for an MCP runtime.'
       ).default(false)
     )
     .addOption(
