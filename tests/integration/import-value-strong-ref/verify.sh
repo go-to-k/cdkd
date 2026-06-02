@@ -72,8 +72,11 @@ if [[ "${IMPORTS_COUNT}" -lt 1 ]]; then
 fi
 echo "    consumer state.imports[]: ${IMPORTS_COUNT} entries (✓)"
 SCHEMA_V=$(echo "${CONSUMER_STATE}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["version"])')
-if [[ "${SCHEMA_V}" != "4" ]]; then
-  echo "FAIL: consumer state schema version is ${SCHEMA_V}, expected 4"
+# imports[] has been recorded since schema v4; assert version-agnostically (>= 4)
+# so a later schema bump (now at v8) does not re-break this test. The imports[]
+# presence is asserted separately above.
+if [[ "${SCHEMA_V}" -lt 4 ]]; then
+  echo "FAIL: consumer state schema version is ${SCHEMA_V}, expected >= 4 (imports[] supported since v4)"
   exit 1
 fi
 echo "    consumer state schema version: ${SCHEMA_V} (✓)"
@@ -182,8 +185,8 @@ ${CDKD} destroy ${CONSUMER} --region "${AWS_REGION}" --state-bucket "${STATE_BUC
 ${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 CONSUMER_STATE_V4=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - 2>/dev/null)
 V4_VERSION=$(echo "${CONSUMER_STATE_V4}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["version"])')
-if [[ "${V4_VERSION}" != "4" ]]; then
-  echo "FAIL: consumer state version after redeploy is ${V4_VERSION}, expected 4"
+if [[ "${V4_VERSION}" -lt 4 ]]; then
+  echo "FAIL: consumer state version after redeploy is ${V4_VERSION}, expected >= 4"
   exit 1
 fi
 V4_IMPORTS=$(echo "${CONSUMER_STATE_V4}" | python3 -c 'import sys, json; print(len(json.load(sys.stdin).get("imports", [])))')
