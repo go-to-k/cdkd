@@ -1,3 +1,10 @@
+## [0.207.4](https://github.com/go-to-k/cdkd/compare/v0.207.3...v0.207.4) (2026-06-02)
+
+
+### Bug Fixes
+
+* **provisioning:** wait through Route53 accelerated-recovery lock transients on destroy ([#758](https://github.com/go-to-k/cdkd/issues/758)) ([f14babb](https://github.com/go-to-k/cdkd/commit/f14babb633099be5217bfcae846e881cf09e816c))
+
 ## [0.207.3](https://github.com/go-to-k/cdkd/compare/v0.207.2...v0.207.3) (2026-06-02)
 
 
