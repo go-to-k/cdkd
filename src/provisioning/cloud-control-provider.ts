@@ -14,6 +14,11 @@ import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudf
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
 import { getAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import {
+  disableInstanceApiTermination,
+  isTerminationProtectionPropagationError,
+  TERMINATION_PROTECTION_MAX_ATTEMPTS,
+} from './ec2-termination-protection.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
@@ -292,57 +297,90 @@ export class CloudControlProvider implements ResourceProvider {
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );
 
-    try {
-      // Start resource deletion
-      const deleteResponse = await this.cloudControlClient.send(
-        new DeleteResourceCommand({
-          TypeName: resourceType,
-          Identifier: physicalId,
-        })
-      );
+    // `--remove-protection` for an `AWS::EC2::Instance` routed through Cloud
+    // Control (e.g. its template tripped the #614 silent-drop routing): Cloud
+    // Control's DeleteResource has no notion of `DisableApiTermination`, so it
+    // 400s "The instance ... may not be terminated. Modify its
+    // 'disableApiTermination' instance attribute and try again." We flip the
+    // attribute off first, then retry the delete through the modify->delete
+    // propagation window (the modify WRITE lags the delete READ — see
+    // ec2-termination-protection.ts). Gated on removeProtection so a protected
+    // instance destroyed WITHOUT the flag still fails fast.
+    const isProtectedEc2Instance =
+      context?.removeProtection === true && resourceType === 'AWS::EC2::Instance';
+    if (isProtectedEc2Instance) {
+      await disableInstanceApiTermination(getAwsClients().ec2, physicalId, this.logger);
+    }
 
-      if (!deleteResponse.ProgressEvent?.RequestToken) {
-        throw new ProvisioningError(
-          `Failed to delete resource ${logicalId}: No request token received`,
-          resourceType,
-          logicalId,
-          physicalId
+    const maxAttempts = isProtectedEc2Instance ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        // Start resource deletion
+        const deleteResponse = await this.cloudControlClient.send(
+          new DeleteResourceCommand({
+            TypeName: resourceType,
+            Identifier: physicalId,
+          })
         );
-      }
 
-      this.logger.debug(
-        `Delete request submitted for ${logicalId}, token: ${deleteResponse.ProgressEvent.RequestToken}`
-      );
+        if (!deleteResponse.ProgressEvent?.RequestToken) {
+          throw new ProvisioningError(
+            `Failed to delete resource ${logicalId}: No request token received`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
 
-      // Wait for deletion to complete
-      await this.waitForOperation(deleteResponse.ProgressEvent.RequestToken, logicalId, 'DELETE');
-
-      this.logger.debug(`Deleted resource ${logicalId}`);
-    } catch (error) {
-      // Treat "not found" / "does not exist" as idempotent success for DELETE,
-      // but only when the AWS client is operating against the same region the
-      // resource was deployed to. A region mismatch must surface — otherwise a
-      // destroy run with the wrong region would silently strip every resource
-      // from state while leaving the actual AWS resources orphaned.
-      const err = error as { name?: string; message?: string };
-      if (
-        err.name === 'ResourceNotFoundException' ||
-        err.message?.includes('does not exist') ||
-        err.message?.includes('not found') ||
-        err.message?.includes('NotFound')
-      ) {
-        const clientRegion = await this.cloudControlClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
+        this.logger.debug(
+          `Delete request submitted for ${logicalId}, token: ${deleteResponse.ProgressEvent.RequestToken}`
         );
-        this.logger.debug(`Resource ${logicalId} already deleted (not found), treating as success`);
+
+        // Wait for deletion to complete
+        await this.waitForOperation(deleteResponse.ProgressEvent.RequestToken, logicalId, 'DELETE');
+
+        this.logger.debug(`Deleted resource ${logicalId}`);
         return;
+      } catch (error) {
+        // Treat "not found" / "does not exist" as idempotent success for DELETE,
+        // but only when the AWS client is operating against the same region the
+        // resource was deployed to. A region mismatch must surface — otherwise a
+        // destroy run with the wrong region would silently strip every resource
+        // from state while leaving the actual AWS resources orphaned.
+        const err = error as { name?: string; message?: string };
+        if (
+          err.name === 'ResourceNotFoundException' ||
+          err.message?.includes('does not exist') ||
+          err.message?.includes('not found') ||
+          err.message?.includes('NotFound')
+        ) {
+          const clientRegion = await this.cloudControlClient.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+          this.logger.debug(
+            `Resource ${logicalId} already deleted (not found), treating as success`
+          );
+          return;
+        }
+        if (
+          isProtectedEc2Instance &&
+          isTerminationProtectionPropagationError(err.message ?? '') &&
+          attempt < maxAttempts
+        ) {
+          this.logger.debug(
+            `Cloud Control delete of ${logicalId} raced the DisableApiTermination flip-off (attempt ${attempt}/${maxAttempts}); re-flipping and retrying`
+          );
+          await disableInstanceApiTermination(getAwsClients().ec2, physicalId, this.logger);
+          await this.sleep(3000 * attempt);
+          continue;
+        }
+        this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
       }
-      this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
     }
   }
 

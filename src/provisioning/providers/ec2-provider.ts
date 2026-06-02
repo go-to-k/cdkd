@@ -50,7 +50,6 @@ import {
   DeleteNetworkInterfaceCommand,
   DescribeVolumesCommand,
   DescribeInstanceAttributeCommand,
-  ModifyInstanceAttributeCommand,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
@@ -62,6 +61,11 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import {
+  disableInstanceApiTermination,
+  isTerminationProtectionPropagationError,
+  TERMINATION_PROTECTION_MAX_ATTEMPTS,
+} from '../ec2-termination-protection.js';
 import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -2386,64 +2390,73 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
 
+    const removeProtection = context?.removeProtection === true;
+
     // `--remove-protection`: flip DisableApiTermination off before
-    // TerminateInstances. Idempotent — EC2 accepts the call when the
-    // attribute is already false. Non-fatal: log at debug if the
-    // flip-off errors so the actual TerminateInstances still proceeds.
-    if (context?.removeProtection === true) {
-      try {
-        await this.ec2Client.send(
-          new ModifyInstanceAttributeCommand({
-            InstanceId: physicalId,
-            DisableApiTermination: { Value: false },
-          })
-        );
-        this.logger.debug(
-          `Disabled DisableApiTermination on EC2 Instance ${logicalId} before termination`
-        );
-      } catch (flipError) {
-        if (!this.isNotFoundError(flipError)) {
-          this.logger.debug(
-            `Could not disable DisableApiTermination on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
-          );
-        }
-      }
+    // TerminateInstances (shared with the Cloud Control delete path — see
+    // ec2-termination-protection.ts). The modify WRITE lags the terminate READ,
+    // so a terminate immediately after the flip-off 400s "may not be terminated.
+    // Modify its 'disableApiTermination' ..." even though we just cleared it.
+    // cdkd's fast SDK path outruns the propagation window the way it does for
+    // IAM / Route53 elsewhere. This 400 is NOT in the generic retryable set (a
+    // protected instance WITHOUT `--remove-protection` must fail fast so the
+    // user is told to pass the flag), so retry it locally and ONLY when
+    // `--remove-protection` was requested — re-flipping each attempt.
+    if (removeProtection) {
+      await disableInstanceApiTermination(this.ec2Client, physicalId, this.logger);
     }
 
-    try {
-      await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [physicalId] }));
-      this.logger.debug(`Terminate requested for EC2 Instance ${logicalId}, waiting...`);
+    const maxTerminateAttempts = removeProtection ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [physicalId] }));
+        this.logger.debug(`Terminate requested for EC2 Instance ${logicalId}, waiting...`);
 
-      // Wait for instance to reach terminated state so ENIs are released
-      await waitUntilInstanceTerminated(
-        { client: this.ec2Client, maxWaitTime: 300 },
-        { InstanceIds: [physicalId] }
-      );
+        // Wait for instance to reach terminated state so ENIs are released
+        await waitUntilInstanceTerminated(
+          { client: this.ec2Client, maxWaitTime: 300 },
+          { InstanceIds: [physicalId] }
+        );
 
-      this.logger.debug(`EC2 Instance ${logicalId} terminated: ${physicalId}`);
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        const clientRegion = await this.ec2Client.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
+        this.logger.debug(`EC2 Instance ${logicalId} terminated: ${physicalId}`);
+        return;
+      } catch (error) {
+        if (this.isNotFoundError(error)) {
+          const clientRegion = await this.ec2Client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+          this.logger.debug(
+            `EC2 Instance ${physicalId} already terminated (not found), treating as success`
+          );
+          return;
+        }
+        const msg = error instanceof Error ? error.message : String(error);
+        if (
+          removeProtection &&
+          isTerminationProtectionPropagationError(msg) &&
+          attempt < maxTerminateAttempts
+        ) {
+          this.logger.debug(
+            `Terminate of EC2 Instance ${logicalId} raced the DisableApiTermination flip-off (attempt ${attempt}/${maxTerminateAttempts}); re-flipping and retrying`
+          );
+          await disableInstanceApiTermination(this.ec2Client, physicalId, this.logger);
+          await this.sleep(3000 * attempt);
+          continue;
+        }
+        const cause = error instanceof Error ? error : undefined;
+        throw new ProvisioningError(
+          `Failed to terminate EC2 Instance ${logicalId}: ${msg}`,
           resourceType,
           logicalId,
-          physicalId
+          physicalId,
+          cause
         );
-        this.logger.debug(
-          `EC2 Instance ${physicalId} already terminated (not found), treating as success`
-        );
-        return;
       }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to terminate EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
     }
   }
 

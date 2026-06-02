@@ -94,6 +94,6 @@ scheduled-task	2026-06-02T11:37:34Z	PASS	32	standard	sweep: deploy+destroy clean
 state-destroy	2026-06-02T11:37:34Z	PASS	18	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 state-info-command	2026-06-02T11:37:34Z	PASS	15	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 vpc-lookup	2026-06-02T11:37:34Z	PASS	20	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
-schema-v5-to-v6-migration	2026-06-02T11:37:34Z	FAIL	62	verify.sh	NOT a code bug: fixture asserts state.version==6 but current schema is v8 (stale version assertion); deploy wrote v8 correctly. Needs version-pinned binary harness or fixture update to v7->v8.
-schema-v6-to-v7-migration	2026-06-02T11:37:34Z	FAIL	62	verify.sh	NOT a code bug: fixture asserts state.version==7 but current schema is v8 (stale version assertion); deploy wrote v8 correctly.
-remove-protection	2026-06-02T11:37:34Z	FAIL		verify.sh	REAL BUG: destroy --remove-protection does not clear EC2 instance disableApiTermination (clears ASG/ALB/DynamoDB/Cognito); destroy retry re-applies it -> instance un-terminable -> VPC teardown blocked. Manual cleanup done. Fix pending.
+remove-protection	2026-06-02T14:31:31Z	PASS	940	verify.sh	FIXED: EC2 DisableApiTermination now cleared on the CC-API delete path (instance is cc-api-routed) + EPIPE crash in state list fixed; step5 --remove-protection destroyed 21 deleted 0 errors, clean
+schema-v5-to-v6-migration	2026-06-02T14:31:31Z	PASS	175	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 6; v5->v8 transparent auto-migration verified, clean destroy
+schema-v6-to-v7-migration	2026-06-02T14:31:31Z	PASS	180	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 7; v6->v8 transparent auto-migration verified, clean destroy
