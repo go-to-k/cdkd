@@ -54,3 +54,46 @@ s3-directory-bucket	2026-06-02T09:40:41Z	PASS		standard	clean after deleting a P
 wafv2	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (WebACL + APIGW WebACLAssociation via CC-API, slow ~3min assoc), 7 deleted 2 retained 0 errors
 context-test	2026-06-02T09:57:55Z	PASS		standard	FIXED by SSM Tags map handling (was FAIL: properties.Tags.map is not a function); deploy+destroy clean, 2 deleted 0 errors
 infra-security	2026-06-02T09:57:55Z	PASS		standard	FIXED by SSM Tags map handling (was FAIL: same SSM crash); VPC+NAT+IAM+KMS+SSM stack deploy+destroy clean, 31 deleted 0 errors
+alb	2026-06-02T11:37:34Z	PASS	58	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+alb-advanced	2026-06-02T11:37:34Z	PASS	59	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+api-cognito	2026-06-02T11:37:34Z	PASS	49	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+appsync	2026-06-02T11:37:34Z	PASS	27	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+batch	2026-06-02T11:37:34Z	PASS	86	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+bedrock-agentcore	2026-06-02T11:37:34Z	PASS	43	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+bench-ccapi	2026-06-02T11:37:34Z	PASS	82	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+bench-sdk	2026-06-02T11:37:34Z	PASS	25	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+cache-streaming	2026-06-02T11:37:34Z	PASS	467	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+ci-cd	2026-06-02T11:37:34Z	PASS	58	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+cloudfront-function-url	2026-06-02T11:37:34Z	PASS	440	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+cross-region-state-bucket	2026-06-02T11:37:34Z	PASS	16	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+data-analytics	2026-06-02T11:37:34Z	PASS	51	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+data-pipeline	2026-06-02T11:37:34Z	PASS	51	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+diff-intrinsic-target-change	2026-06-02T11:37:34Z	PASS	48	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+docdb-neptune	2026-06-02T11:37:34Z	PASS	1402	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+ec2-instance	2026-06-02T11:37:34Z	PASS	143	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+ec2-vpc	2026-06-02T11:37:34Z	PASS	57	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+efs-lambda	2026-06-02T11:37:34Z	PASS	544	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+efs-standalone	2026-06-02T11:37:34Z	PASS	130	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+export-nested-stack	2026-06-02T11:37:34Z	PASS	333	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+full-stack-demo	2026-06-02T11:37:34Z	PASS	35	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+import-nested-stack	2026-06-02T11:37:34Z	PASS	140	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+legacy-bucket-name-fallback	2026-06-02T11:37:34Z	PASS	17	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+legacy-state-migration	2026-06-02T11:37:34Z	PASS	17	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+log-pipeline	2026-06-02T11:37:34Z	PASS	68	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+macro-expansion	2026-06-02T11:37:34Z	PASS	105	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+microservices	2026-06-02T11:37:34Z	PASS	55	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+migrate-from-bare-cfn	2026-06-02T11:37:34Z	PASS	148	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+migrate-from-bare-cfn-codegen-only	2026-06-02T11:37:34Z	PASS	30	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+multi-region-same-stack	2026-06-02T11:37:34Z	PASS	16	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+orphan-resource	2026-06-02T11:37:34Z	PASS	31	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+rds-aurora	2026-06-02T11:37:34Z	PASS	2100	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+rds-dbinstance-backfill	2026-06-02T11:37:34Z	PASS	499	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+s3-cloudfront	2026-06-02T11:37:34Z	PASS	431	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+s3-vectors	2026-06-02T11:37:34Z	PASS	17	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+scheduled-task	2026-06-02T11:37:34Z	PASS	32	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+state-destroy	2026-06-02T11:37:34Z	PASS	18	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+state-info-command	2026-06-02T11:37:34Z	PASS	15	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+vpc-lookup	2026-06-02T11:37:34Z	PASS	20	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+schema-v5-to-v6-migration	2026-06-02T11:37:34Z	FAIL	62	verify.sh	NOT a code bug: fixture asserts state.version==6 but current schema is v8 (stale version assertion); deploy wrote v8 correctly. Needs version-pinned binary harness or fixture update to v7->v8.
+schema-v6-to-v7-migration	2026-06-02T11:37:34Z	FAIL	62	verify.sh	NOT a code bug: fixture asserts state.version==7 but current schema is v8 (stale version assertion); deploy wrote v8 correctly.
+remove-protection	2026-06-02T11:37:34Z	FAIL		verify.sh	REAL BUG: destroy --remove-protection does not clear EC2 instance disableApiTermination (clears ASG/ALB/DynamoDB/Cognito); destroy retry re-applies it -> instance un-terminable -> VPC teardown blocked. Manual cleanup done. Fix pending.
