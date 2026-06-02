@@ -5,7 +5,6 @@ vpc-nat-gateway	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 dynamodb-streams	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 composite-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 nested-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
-custom-resource-provider	2026-06-01T21:12:13Z	FAIL		standard	F2 CR framework role 403 lambda:GetFunction (likely IAM statement-drop); investigate
 cc-api-fallback	2026-06-01T21:12:13Z	PASS		verify.sh	rc ok, orph clean
 cc-api-fallback-transitions	2026-06-01T21:12:13Z	PASS	122	verify.sh	rc ok, orph clean
 drift-revert	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
@@ -34,3 +33,4 @@ cross-stack-references	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: depl
 multi-resource	2026-06-01T21:45:58Z	PASS		standard	F4 fix verified: single-run clean destroy (ESM in-use now retried)
 import-value-strong-ref	2026-06-02T02:13:34Z	PASS		verify.sh	F3 fixed: version-agnostic schema assertion (>= 4); deploy+strong-ref+destroy clean
 ecs-fargate	2026-06-02T02:28:23Z	PASS		verify.sh	F5 fixed: fixture now sets useForServiceConnect:true so ServiceConnectDefaults is synthesized; ns ARN round-trips via CreateCluster; 18 created/18 deleted 0 errors
+custom-resource-provider	2026-06-02T02:43:55Z	FAIL	207	standard	F2 confirmed: IAM-propagation race (NOT statement-drop). Deployed policy byte-correct; framework onEvent fn created+invoked 0.7s after PutRolePolicy, exec-env cached stale creds, waitUntilFunctionActive 403d lambda:GetFunction ~177s then FAILED CR response. Needs propagation settle/retry fix (design decision: correctness vs deploy speed)
