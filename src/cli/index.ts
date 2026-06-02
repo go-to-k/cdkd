@@ -20,6 +20,7 @@ import { createImportCommand } from './commands/import.js';
 import { createLocalCommand } from './commands/local-invoke.js';
 import { createExportCommand } from './commands/export.js';
 import { createMigrateCommand } from './commands/migrate-command.js';
+import { installPipeCloseHandler } from './pipe-close-handler.js';
 
 const SUBCOMMANDS = new Set([
   'bootstrap',
@@ -62,6 +63,7 @@ function reorderArgs(argv: string[]): string[] {
  * Main CLI program
  */
 async function main(): Promise<void> {
+  installPipeCloseHandler();
   const program = new Command();
 
   program
