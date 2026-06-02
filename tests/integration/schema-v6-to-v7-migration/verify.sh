@@ -149,12 +149,21 @@ CDKD_TEST_SCHEMA_PHASE=v7 node "${LOCAL_DIST}" deploy "${STACK}" \
 
 V7_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 V7_VERSION=$(echo "${V7_STATE}" | jq -r '.version')
-if [ "${V7_VERSION}" != "7" ]; then
-  echo "FAIL: state.version after v7 deploy is ${V7_VERSION}, expected 7" >&2
+# The local binary always writes the CURRENT schema version, which advances
+# over time (v7 -> v8 -> ...). Read it from source rather than hardcoding so
+# this round-trip keeps asserting "a v6 state auto-migrates to whatever the
+# current binary writes" instead of going stale on every schema bump.
+EXPECTED_VERSION=$(grep -oE 'STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = [0-9]+' ../../../src/types/state.ts | grep -oE '[0-9]+$')
+if [ -z "${EXPECTED_VERSION}" ]; then
+  echo "FAIL: could not read STATE_SCHEMA_VERSION_CURRENT from ../../../src/types/state.ts" >&2
+  exit 1
+fi
+if [ "${V7_VERSION}" != "${EXPECTED_VERSION}" ]; then
+  echo "FAIL: state.version after re-deploy is ${V7_VERSION}, expected current schema ${EXPECTED_VERSION} (v6 -> current transparent auto-migration)" >&2
   echo "${V7_STATE}" | jq .
   exit 1
 fi
-echo "    OK: state.version == 7 after v7 deploy (transparent upgrade)"
+echo "    OK: state.version == ${EXPECTED_VERSION} after re-deploy (v6 -> current transparent upgrade)"
 
 # The SSM Parameter has no silent-drop properties, so the v7 writer must
 # land it on the SDK Provider path. After the Phase 3 update the resource

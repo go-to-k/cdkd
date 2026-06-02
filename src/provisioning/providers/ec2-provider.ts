@@ -50,7 +50,6 @@ import {
   DeleteNetworkInterfaceCommand,
   DescribeVolumesCommand,
   DescribeInstanceAttributeCommand,
-  ModifyInstanceAttributeCommand,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
@@ -62,6 +61,11 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import {
+  disableInstanceApiTermination,
+  isTerminationProtectionPropagationError,
+  TERMINATION_PROTECTION_MAX_ATTEMPTS,
+} from '../ec2-termination-protection.js';
 import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -2389,47 +2393,20 @@ export class EC2Provider implements ResourceProvider {
     const removeProtection = context?.removeProtection === true;
 
     // `--remove-protection`: flip DisableApiTermination off before
-    // TerminateInstances. Idempotent — EC2 accepts the call when the
-    // attribute is already false. Non-fatal: log at debug if the
-    // flip-off errors so the actual TerminateInstances still proceeds.
-    const flipOffProtection = async (): Promise<void> => {
-      try {
-        await this.ec2Client.send(
-          new ModifyInstanceAttributeCommand({
-            InstanceId: physicalId,
-            DisableApiTermination: { Value: false },
-          })
-        );
-        this.logger.debug(
-          `Disabled DisableApiTermination on EC2 Instance ${logicalId} before termination`
-        );
-      } catch (flipError) {
-        if (!this.isNotFoundError(flipError)) {
-          this.logger.debug(
-            `Could not disable DisableApiTermination on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
-          );
-        }
-      }
-    };
-
+    // TerminateInstances (shared with the Cloud Control delete path — see
+    // ec2-termination-protection.ts). The modify WRITE lags the terminate READ,
+    // so a terminate immediately after the flip-off 400s "may not be terminated.
+    // Modify its 'disableApiTermination' ..." even though we just cleared it.
+    // cdkd's fast SDK path outruns the propagation window the way it does for
+    // IAM / Route53 elsewhere. This 400 is NOT in the generic retryable set (a
+    // protected instance WITHOUT `--remove-protection` must fail fast so the
+    // user is told to pass the flag), so retry it locally and ONLY when
+    // `--remove-protection` was requested — re-flipping each attempt.
     if (removeProtection) {
-      await flipOffProtection();
+      await disableInstanceApiTermination(this.ec2Client, physicalId, this.logger);
     }
 
-    // TerminateInstances. When `--remove-protection` just flipped
-    // DisableApiTermination off, AWS's `ModifyInstanceAttribute` write can lag
-    // the `TerminateInstances` read, so the terminate 400s with "The instance
-    // ... may not be terminated. Modify its 'disableApiTermination' instance
-    // attribute and try again." even though we just cleared it (the read side
-    // is eventually consistent — observed: a manual modify reports success and
-    // the attribute reads `true` for ~25s, yet a terminate immediately after
-    // succeeds). cdkd's fast SDK path outruns the propagation window the way it
-    // does for IAM / Route53 elsewhere. This specific 400 is NOT in the generic
-    // retryable set (a protected instance WITHOUT `--remove-protection` must
-    // fail fast so the user is told to pass the flag), so retry it locally and
-    // ONLY when `--remove-protection` was requested — re-flipping each attempt
-    // to close the window.
-    const maxTerminateAttempts = removeProtection ? 5 : 1;
+    const maxTerminateAttempts = removeProtection ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
     for (let attempt = 1; ; attempt++) {
       try {
         await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [physicalId] }));
@@ -2459,15 +2436,15 @@ export class EC2Provider implements ResourceProvider {
           return;
         }
         const msg = error instanceof Error ? error.message : String(error);
-        const isProtectionPropagationRace =
+        if (
           removeProtection &&
-          /may not be terminated|disableApiTermination/i.test(msg) &&
-          attempt < maxTerminateAttempts;
-        if (isProtectionPropagationRace) {
+          isTerminationProtectionPropagationError(msg) &&
+          attempt < maxTerminateAttempts
+        ) {
           this.logger.debug(
             `Terminate of EC2 Instance ${logicalId} raced the DisableApiTermination flip-off (attempt ${attempt}/${maxTerminateAttempts}); re-flipping and retrying`
           );
-          await flipOffProtection();
+          await disableInstanceApiTermination(this.ec2Client, physicalId, this.logger);
           await this.sleep(3000 * attempt);
           continue;
         }

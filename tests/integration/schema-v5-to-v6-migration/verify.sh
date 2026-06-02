@@ -138,12 +138,21 @@ CDKD_TEST_SCHEMA_PHASE=v6 node "${LOCAL_DIST}" deploy "${STACK}" \
 
 V6_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 V6_VERSION=$(echo "${V6_STATE}" | jq -r '.version')
-if [ "${V6_VERSION}" != "6" ]; then
-  echo "FAIL: state.version after v6 deploy is ${V6_VERSION}, expected 6" >&2
+# The local binary always writes the CURRENT schema version, which advances
+# over time (v6 -> v7 -> v8 -> ...). Read it from source rather than hardcoding
+# so this round-trip keeps asserting "a v5 state auto-migrates to whatever the
+# current binary writes" instead of going stale on every schema bump.
+EXPECTED_VERSION=$(grep -oE 'STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = [0-9]+' ../../../src/types/state.ts | grep -oE '[0-9]+$')
+if [ -z "${EXPECTED_VERSION}" ]; then
+  echo "FAIL: could not read STATE_SCHEMA_VERSION_CURRENT from ../../../src/types/state.ts" >&2
+  exit 1
+fi
+if [ "${V6_VERSION}" != "${EXPECTED_VERSION}" ]; then
+  echo "FAIL: state.version after re-deploy is ${V6_VERSION}, expected current schema ${EXPECTED_VERSION} (v5 -> current transparent auto-migration)" >&2
   echo "${V6_STATE}" | jq .
   exit 1
 fi
-echo "    OK: state.version == 6 after v6 deploy (transparent upgrade)"
+echo "    OK: state.version == ${EXPECTED_VERSION} after re-deploy (v5 -> current transparent upgrade)"
 
 # Top-level stack — parent-* fields must stay absent from the serialized
 # JSON (JSON.stringify drops undefined values). A spurious `null` or `""`
