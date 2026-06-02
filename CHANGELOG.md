@@ -1,3 +1,10 @@
+## [0.207.3](https://github.com/go-to-k/cdkd/compare/v0.207.2...v0.207.3) (2026-06-02)
+
+
+### Bug Fixes
+
+* **provisioning:** retry custom resources on transient IAM-authorization failures ([#756](https://github.com/go-to-k/cdkd/issues/756)) ([9bf64d5](https://github.com/go-to-k/cdkd/commit/9bf64d507169723e93bed7149901aa96d9156ed1))
+
 ## [0.207.2](https://github.com/go-to-k/cdkd/compare/v0.207.1...v0.207.2) (2026-06-01)
 
 
