@@ -28,9 +28,9 @@ local-invoke	2026-06-01T21:12:13Z	PASS	20	verify.sh	rc ok, orph clean
 local-start-service	2026-06-01T21:12:13Z	PASS	22	verify.sh	rc ok, orph clean
 apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
 sns-sqs-event	2026-06-01T21:12:13Z	PASS	63	verify.sh	rc ok, orph clean
-ecs-fargate	2026-06-01T21:12:13Z	FAIL	171	verify.sh	F5 ECS Cluster serviceConnectDefaults.namespace silent-drop (deploy/destroy OK)
 cognito	2026-06-01T21:12:13Z	PASS	45	standard	rc ok, orph clean
 multi-stack-deps	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)
 cross-stack-references	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)
 multi-resource	2026-06-01T21:45:58Z	PASS		standard	F4 fix verified: single-run clean destroy (ESM in-use now retried)
 import-value-strong-ref	2026-06-02T02:13:34Z	PASS		verify.sh	F3 fixed: version-agnostic schema assertion (>= 4); deploy+strong-ref+destroy clean
+ecs-fargate	2026-06-02T02:28:23Z	PASS		verify.sh	F5 fixed: fixture now sets useForServiceConnect:true so ServiceConnectDefaults is synthesized; ns ARN round-trips via CreateCluster; 18 created/18 deleted 0 errors
