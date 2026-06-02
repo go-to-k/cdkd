@@ -1,6 +1,7 @@
 import {
   LambdaClient,
   InvokeCommand,
+  UpdateFunctionConfigurationCommand,
   waitUntilFunctionActiveV2,
   waitUntilFunctionUpdatedV2,
   type InvocationResponse,
@@ -114,6 +115,23 @@ function parseLambdaPayload(payloadBytes: Uint8Array | undefined): CustomResourc
 }
 
 /**
+ * IAM-authorization-propagation signals in a custom resource FAILED reason that
+ * indicate the backing Lambda's freshly-attached execution-role policy has not
+ * yet taken effect for its assumed-role session (so a recycle + retry will
+ * succeed once IAM settles). Lowercase substrings. Intentionally narrow — these
+ * are the IAM-permission-not-yet-effective phrases only, NOT generic transient
+ * errors (throttling / timeouts), which must not trigger a CR re-invoke.
+ */
+const CR_TRANSIENT_AUTHZ_SIGNALS: readonly string[] = [
+  'not authorized to perform',
+  'no identity-based policy allows',
+  'is not in the state functionactive',
+  'not in the state functionactive',
+  'cannot be assumed',
+  'is unable to assume',
+];
+
+/**
  * Custom Resource Provider
  *
  * Implements Lambda-backed custom resources by invoking the Lambda function
@@ -179,6 +197,29 @@ export class CustomResourceProvider implements ResourceProvider {
   private readonly INITIAL_POLL_INTERVAL_MS = 2_000;
   /** Max poll interval for async polling with exponential backoff (30 seconds) */
   private readonly MAX_POLL_INTERVAL_MS = 30_000;
+
+  /**
+   * How many extra times to re-invoke a custom resource whose handler returned
+   * FAILED with a *transient IAM-authorization* reason (e.g. the CDK Provider
+   * framework's `lambda:GetFunction` / "not in the state functionActive" 403
+   * when the framework role's freshly-attached inline policy has not yet
+   * propagated to the assumed-role session). cdkd's fast SDK path invokes the
+   * backing Lambda ~1s after `PutRolePolicy`, so the first cold-start can cache
+   * stale credentials; CloudFormation never hits this because its deployment
+   * latency gives IAM time to settle. This is the CR-path analogue of the
+   * IAM-propagation retry cdkd's `withRetry` already applies to every other
+   * resource (the CR provider opts out of that outer retry via
+   * `disableOuterRetry` to avoid stranding a pre-signed response URL — so we
+   * retry HERE instead, deriving a fresh response URL + RequestId per attempt
+   * and recycling the backing function's execution environment between tries).
+   * Override via `CDKD_CR_AUTHZ_MAX_RETRIES` (0 disables).
+   */
+  private readonly transientAuthzMaxRetries: number = (() => {
+    const raw = process.env['CDKD_CR_AUTHZ_MAX_RETRIES'];
+    if (raw === undefined || raw === '') return 2;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : 2;
+  })();
 
   constructor(config?: CustomResourceProviderConfig) {
     const awsClients = getAwsClients();
@@ -252,26 +293,19 @@ export class CustomResourceProvider implements ResourceProvider {
     }
 
     try {
-      const invocation = await this.prepareInvocation();
-
-      const request = {
-        RequestType: 'Create',
-        RequestId: invocation.requestId,
-        ResponseURL: invocation.responseURL,
-        ResourceType: resourceType,
-        LogicalResourceId: logicalId,
-        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
-        ResourceProperties: this.stringifyProperties(properties),
-      };
-
-      this.logger.debug(`Sending custom resource create request: ${serviceToken}`);
-
-      const cfnResponse = await this.sendRequest(
+      const cfnResponse = await this.invokeCustomResourceWithRetry(
         serviceToken,
-        request,
-        invocation.responseKey,
         logicalId,
-        'Create'
+        'Create',
+        (invocation) => ({
+          RequestType: 'Create',
+          RequestId: invocation.requestId,
+          ResponseURL: invocation.responseURL,
+          ResourceType: resourceType,
+          LogicalResourceId: logicalId,
+          StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
+          ResourceProperties: this.stringifyProperties(properties),
+        })
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -333,28 +367,21 @@ export class CustomResourceProvider implements ResourceProvider {
     }
 
     try {
-      const invocation = await this.prepareInvocation();
-
-      const request = {
-        RequestType: 'Update',
-        RequestId: invocation.requestId,
-        ResponseURL: invocation.responseURL,
-        ResourceType: resourceType,
-        LogicalResourceId: logicalId,
-        PhysicalResourceId: physicalId,
-        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
-        ResourceProperties: this.stringifyProperties(properties),
-        OldResourceProperties: this.stringifyProperties(previousProperties),
-      };
-
-      this.logger.debug(`Sending custom resource update request: ${serviceToken}`);
-
-      const cfnResponse = await this.sendRequest(
+      const cfnResponse = await this.invokeCustomResourceWithRetry(
         serviceToken,
-        request,
-        invocation.responseKey,
         logicalId,
-        'Update'
+        'Update',
+        (invocation) => ({
+          RequestType: 'Update',
+          RequestId: invocation.requestId,
+          ResponseURL: invocation.responseURL,
+          ResourceType: resourceType,
+          LogicalResourceId: logicalId,
+          PhysicalResourceId: physicalId,
+          StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
+          ResourceProperties: this.stringifyProperties(properties),
+          OldResourceProperties: this.stringifyProperties(previousProperties),
+        })
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -428,27 +455,20 @@ export class CustomResourceProvider implements ResourceProvider {
     }
 
     try {
-      const invocation = await this.prepareInvocation();
-
-      const request = {
-        RequestType: 'Delete',
-        RequestId: invocation.requestId,
-        ResponseURL: invocation.responseURL,
-        ResourceType: resourceType,
-        LogicalResourceId: logicalId,
-        PhysicalResourceId: physicalId,
-        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
-        ResourceProperties: this.stringifyProperties(properties),
-      };
-
-      this.logger.debug(`Sending custom resource delete request: ${serviceToken}`);
-
-      const cfnResponse = await this.sendRequest(
+      const cfnResponse = await this.invokeCustomResourceWithRetry(
         serviceToken,
-        request,
-        invocation.responseKey,
         logicalId,
-        'Delete'
+        'Delete',
+        (invocation) => ({
+          RequestType: 'Delete',
+          RequestId: invocation.requestId,
+          ResponseURL: invocation.responseURL,
+          ResourceType: resourceType,
+          LogicalResourceId: logicalId,
+          PhysicalResourceId: physicalId,
+          StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
+          ResourceProperties: this.stringifyProperties(properties),
+        })
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -471,6 +491,132 @@ export class CustomResourceProvider implements ResourceProvider {
    */
   isSnsServiceToken(serviceToken: string): boolean {
     return serviceToken.startsWith('arn:aws:sns:');
+  }
+
+  /**
+   * Invoke a custom resource, retrying on a *transient IAM-authorization*
+   * FAILED response.
+   *
+   * Why this exists: cdkd's fast SDK path attaches a backing Lambda's
+   * execution-role inline policy and invokes the function ~1s later. If IAM has
+   * not propagated the policy to the assumed-role session by the function's
+   * first cold start, the session caches stale (policy-less) credentials for
+   * the warm container's whole life — so the CDK Provider framework's
+   * `lambda:GetFunction` / initial invoke 403s ("not authorized to perform" /
+   * "not in the state functionActive") and the custom resource FAILS.
+   * CloudFormation never hits this because its deployment latency lets IAM
+   * settle first. This is the CR-path analogue of the IAM-propagation retry
+   * cdkd's `withRetry` already applies to every other resource type — the CR
+   * provider opts out of that outer retry (`disableOuterRetry`) to avoid
+   * stranding a pre-signed response URL at an S3 key nobody polls, so we retry
+   * HERE, deriving a FRESH response URL + RequestId per attempt (via
+   * `prepareInvocation()`) and recycling the backing function's execution
+   * environment between tries so its next cold start re-assumes the role.
+   *
+   * `buildRequest` is called once per attempt with the fresh invocation so the
+   * CFn request body always carries the matching ResponseURL / RequestId.
+   * Returns the final response; the caller decides what a terminal FAILED means
+   * (create/update throw, delete warns-and-continues).
+   */
+  private async invokeCustomResourceWithRetry(
+    serviceToken: string,
+    logicalId: string,
+    operation: string,
+    buildRequest: (invocation: {
+      requestId: string;
+      responseKey: string;
+      responseURL: string;
+    }) => Record<string, unknown>
+  ): Promise<CfnCustomResourceResponse> {
+    for (let attempt = 0; ; attempt++) {
+      const invocation = await this.prepareInvocation();
+      const request = buildRequest(invocation);
+
+      this.logger.debug(
+        `Sending custom resource ${operation.toLowerCase()} request: ${serviceToken}`
+      );
+
+      const cfnResponse = await this.sendRequest(
+        serviceToken,
+        request,
+        invocation.responseKey,
+        logicalId,
+        operation
+      );
+
+      if (
+        cfnResponse.Status === 'FAILED' &&
+        attempt < this.transientAuthzMaxRetries &&
+        this.isTransientAuthzFailure(cfnResponse.Reason)
+      ) {
+        this.logger.warn(
+          `Custom resource ${operation} for ${logicalId} returned a transient IAM-authorization FAILED ` +
+            `(attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ${this.truncateReason(cfnResponse.Reason)}. ` +
+            `Recycling the backing function's execution environment and retrying so its next cold start picks up the propagated policy.`
+        );
+        await this.recycleBackingFunctionExecEnv(serviceToken, logicalId);
+        continue;
+      }
+
+      return cfnResponse;
+    }
+  }
+
+  /**
+   * Classify a custom resource FAILED reason as a transient IAM-authorization
+   * race (worth retrying).
+   *
+   * Deliberately NARROW — only the IAM-permission-not-yet-effective signals,
+   * NOT cdkd's broad transient classifier (`isRetryableTransientError`, which
+   * also matches throttling / generic timeouts). A custom resource that FAILED
+   * for an unrelated reason (user handler bug, a real timeout, a downstream API
+   * error) must NOT be re-invoked — that would mask genuine failures and waste
+   * the framework's ~minutes-long waiter per attempt. These phrases are the
+   * IAM-authz subset of cdkd's `RETRYABLE_ERROR_MESSAGE_PATTERNS`, plus the CDK
+   * Provider framework's `waitUntilFunctionActive` state phrasing.
+   */
+  private isTransientAuthzFailure(reason: string | undefined): boolean {
+    if (!reason) return false;
+    const lower = reason.toLowerCase();
+    return CR_TRANSIENT_AUTHZ_SIGNALS.some((p) => lower.includes(p));
+  }
+
+  /** Truncate a CR FAILED reason for log readability. */
+  private truncateReason(reason: string | undefined, max = 200): string {
+    const r = reason ?? 'Unknown reason';
+    return r.length > max ? `${r.slice(0, max)}...` : r;
+  }
+
+  /**
+   * Force the backing Lambda to drop its warm execution environment(s) so the
+   * next invoke cold-starts and re-assumes the execution role, picking up the
+   * now-propagated inline policy. A plain re-invoke would otherwise reuse the
+   * same warm container that cached the stale credentials. Best-effort: any
+   * failure (e.g. cdkd's own creds lack `lambda:UpdateFunctionConfiguration`)
+   * degrades to a debug log and we still retry the invoke.
+   */
+  private async recycleBackingFunctionExecEnv(
+    serviceToken: string,
+    logicalId: string
+  ): Promise<void> {
+    try {
+      await this.lambdaClient.send(
+        new UpdateFunctionConfigurationCommand({
+          FunctionName: serviceToken,
+          Description: `cdkd: recycled for IAM-propagation retry (${logicalId})`,
+        })
+      );
+      await waitUntilFunctionUpdatedV2(
+        { client: this.lambdaClient, maxWaitTime: 120 },
+        { FunctionName: serviceToken }
+      );
+    } catch (error) {
+      this.logger.debug(
+        `Could not recycle backing function for ${logicalId} (${
+          error instanceof Error ? error.message : String(error)
+        }); retrying invoke without a forced cold start`
+      );
+    }
   }
 
   /**
