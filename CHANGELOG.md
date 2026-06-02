@@ -1,3 +1,10 @@
+## [0.207.6](https://github.com/go-to-k/cdkd/compare/v0.207.5...v0.207.6) (2026-06-02)
+
+
+### Bug Fixes
+
+* remove-protection integ failures (EPIPE crash in state list + EC2 DisableApiTermination on CC-API delete) + refresh stale schema-migration assertions ([#761](https://github.com/go-to-k/cdkd/issues/761)) ([e345ea3](https://github.com/go-to-k/cdkd/commit/e345ea3efdd063a290715dd4f8c128ec0ee79060))
+
 ## [0.207.5](https://github.com/go-to-k/cdkd/compare/v0.207.4...v0.207.5) (2026-06-02)
 
 
