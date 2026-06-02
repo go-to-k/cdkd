@@ -23,8 +23,6 @@ vpc-lambda	2026-06-01T21:12:13Z	PASS	357	standard	rc ok, orph clean
 export	2026-06-01T21:12:13Z	PASS	252	verify.sh	rc ok, orph clean
 migrate-from-cfn	2026-06-01T21:12:13Z	PASS	89	standard	rc ok, orph clean
 nested-stack-deep	2026-06-01T21:12:13Z	PASS	48	verify.sh	rc ok, orph clean
-local-invoke	2026-06-01T21:12:13Z	PASS	20	verify.sh	rc ok, orph clean
-local-start-service	2026-06-01T21:12:13Z	PASS	22	verify.sh	rc ok, orph clean
 apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
 sns-sqs-event	2026-06-01T21:12:13Z	PASS	63	verify.sh	rc ok, orph clean
 cognito	2026-06-01T21:12:13Z	PASS	45	standard	rc ok, orph clean
@@ -97,3 +95,30 @@ vpc-lookup	2026-06-02T11:37:34Z	PASS	20	standard	sweep: deploy+destroy clean, 0 
 remove-protection	2026-06-02T14:31:31Z	PASS	940	verify.sh	FIXED: EC2 DisableApiTermination now cleared on the CC-API delete path (instance is cc-api-routed) + EPIPE crash in state list fixed; step5 --remove-protection destroyed 21 deleted 0 errors, clean
 schema-v5-to-v6-migration	2026-06-02T14:31:31Z	PASS	175	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 6; v5->v8 transparent auto-migration verified, clean destroy
 schema-v6-to-v7-migration	2026-06-02T14:31:31Z	PASS	180	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 7; v6->v8 transparent auto-migration verified, clean destroy
+local-invoke	2026-06-02T15:46:16Z	PASS	20	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-run-task	2026-06-02T15:46:16Z	PASS	14	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-buildkit	2026-06-02T15:46:16Z	PASS	31	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-layers	2026-06-02T15:46:16Z	PASS	13	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-python	2026-06-02T15:46:16Z	PASS	28	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-ruby	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-provided	2026-06-02T15:46:16Z	PASS	35	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-java	2026-06-02T15:46:16Z	PASS	37	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-dotnet	2026-06-02T15:46:16Z	PASS	46	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-run-task-awsvpc	2026-06-02T15:46:16Z	PASS	9	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-run-task-multi-container	2026-06-02T15:46:16Z	PASS	11	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-alb	2026-06-02T15:46:16Z	PASS	20	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-api-container	2026-06-02T15:46:16Z	PASS	11	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-api-rest-v1-non-proxy	2026-06-02T15:46:16Z	PASS	15	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-api-websocket	2026-06-02T15:46:16Z	PASS	102	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-service	2026-06-02T15:46:16Z	PASS	21	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-service-watch-fast	2026-06-02T15:46:16Z	PASS	196	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-ecs-service-connect	2026-06-02T15:46:16Z	PASS	22	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-agentcore	2026-06-02T15:46:16Z	PASS	93	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-from-state	2026-06-02T15:46:16Z	PASS	57	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-run-task-from-state	2026-06-02T15:46:16Z	PASS	98	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-alb-from-state	2026-06-02T15:46:16Z	PASS	89	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-from-cfn-stack	2026-06-02T15:46:16Z	PASS	92	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-api	2026-06-02T15:46:16Z	PASS	19	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-invoke-container	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
