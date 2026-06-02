@@ -78,7 +78,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
       Description: 'a parameter',
       AllowedPattern: '^[a-z]+$',
       Tier: 'Standard',
-      Tags: [],
+      Tags: {},
       Policies: [],
     });
   });
@@ -141,7 +141,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
       Name: '/foo',
       Type: 'String',
       Value: 'bar',
-      Tags: [],
+      Tags: {},
       // Always-emit fallback so console-side ADD on a previously-
       // un-policy'd parameter surfaces as drift even when
       // DescribeParameters errored.
@@ -163,7 +163,9 @@ describe('SSMParameterProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
-    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    // SSM Tags surface as the CFn key->value MAP shape (matching the template
+    // shape cdkd stores in state), not the {Key,Value}[] list other providers use.
+    expect(result?.Tags).toEqual({ Foo: 'Bar' });
   });
 
   it('omits Tags when ListTagsForResource returns no user tags', async () => {
@@ -177,6 +179,6 @@ describe('SSMParameterProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
-    expect(result?.Tags).toEqual([]);
+    expect(result?.Tags).toEqual({});
   });
 });

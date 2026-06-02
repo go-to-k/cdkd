@@ -9,7 +9,6 @@ import {
   RemoveTagsFromResourceCommand,
   ParameterNotFound,
   type ParameterType,
-  type Tag,
 } from '@aws-sdk/client-ssm';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -59,6 +58,38 @@ export class SSMParameterProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.ssmClient = awsClients.ssm;
+  }
+
+  /**
+   * Normalize a CFn `AWS::SSM::Parameter.Tags` value into the SDK `Tag[]`
+   * shape. Unlike most CFn resources (whose `Tags` is a `{Key,Value}[]` list),
+   * `AWS::SSM::Parameter.Tags` is a key->value **map** (`{ "Env": "prod" }`) —
+   * CDK synthesizes the map form, so `properties['Tags'].map(...)` throws
+   * `Tags.map is not a function`. Accept the map (canonical) AND the list
+   * (defensive, in case a hand-authored / escape-hatched template supplies it),
+   * coerce each value to a string (SSM tag values must be strings), and drop
+   * `aws:`-prefixed reserved keys (AWS rejects user attempts to set them).
+   */
+  private cfnTagsToSdkTags(raw: unknown): Array<{ Key: string; Value: string }> {
+    if (raw === undefined || raw === null) return [];
+    // SSM tag values must be strings; coerce primitives and drop objects
+    // (which would otherwise stringify to "[object Object]").
+    const coerce = (v: unknown): string =>
+      typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
+    let entries: Array<[unknown, unknown]>;
+    if (Array.isArray(raw)) {
+      entries = (raw as Array<Record<string, unknown>>).map((t) => [t?.['Key'], t?.['Value']]);
+    } else if (typeof raw === 'object') {
+      entries = Object.entries(raw as Record<string, unknown>);
+    } else {
+      entries = [];
+    }
+    const out: Array<{ Key: string; Value: string }> = [];
+    for (const [key, value] of entries) {
+      if (typeof key !== 'string' || key.length === 0 || key.startsWith('aws:')) continue;
+      out.push({ Key: key, Value: coerce(value) });
+    }
+    return out;
   }
 
   /**
@@ -115,10 +146,12 @@ export class SSMParameterProvider implements ResourceProvider {
       // next redeploy doesn't hit `ParameterAlreadyExists` from an orphan.
       // See Issue #376 for the cross-provider sweep.
       try {
-        // Apply tags if specified
-        if (properties['Tags']) {
-          const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
-          const ssmTags: Tag[] = cfnTags.map((t) => ({ Key: t.Key, Value: t.Value }));
+        // Apply tags if specified. AWS::SSM::Parameter.Tags is a key->value
+        // MAP (not the {Key,Value}[] list most CFn resources use), so the raw
+        // template value cannot be `.map()`-ed directly — normalize via
+        // cfnTagsToSdkTags first (which accepts both the map and the list).
+        const ssmTags = this.cfnTagsToSdkTags(properties['Tags']);
+        if (ssmTags.length > 0) {
           await this.ssmClient.send(
             new AddTagsToResourceCommand({
               ResourceType: 'Parameter',
@@ -216,14 +249,21 @@ export class SSMParameterProvider implements ResourceProvider {
 
       await this.ssmClient.send(new PutParameterCommand(putParams));
 
-      // Update Tags if changed
-      const newTags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-      const oldTags = previousProperties['Tags'] as
-        | Array<{ Key: string; Value: string }>
-        | undefined;
-      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+      // Update Tags if changed. AWS::SSM::Parameter.Tags is a key->value MAP;
+      // normalize both sides to the SDK Tag[] shape before diffing/applying
+      // (the raw map cannot be `.map()`-ed, and a map-vs-list mismatch would
+      // otherwise wrongly look "changed").
+      const newTags = this.cfnTagsToSdkTags(properties['Tags']);
+      const oldTags = this.cfnTagsToSdkTags(previousProperties['Tags']);
+      // Compare key-sorted so a pure key-reorder in the template map (no value
+      // change) is not seen as a change — Tags are an unordered set, matching
+      // the order-insensitive compare the drift-calculator already does.
+      const tagKey = (t: { Key: string; Value: string }): string => t.Key;
+      const sortedJson = (tags: Array<{ Key: string; Value: string }>): string =>
+        JSON.stringify([...tags].sort((a, b) => tagKey(a).localeCompare(tagKey(b))));
+      if (sortedJson(newTags) !== sortedJson(oldTags)) {
         // Remove old tags
-        if (oldTags && oldTags.length > 0) {
+        if (oldTags.length > 0) {
           await this.ssmClient.send(
             new RemoveTagsFromResourceCommand({
               ResourceType: 'Parameter',
@@ -233,13 +273,12 @@ export class SSMParameterProvider implements ResourceProvider {
           );
         }
         // Apply new tags
-        if (newTags && newTags.length > 0) {
-          const ssmTags: Tag[] = newTags.map((t) => ({ Key: t.Key, Value: t.Value }));
+        if (newTags.length > 0) {
           await this.ssmClient.send(
             new AddTagsToResourceCommand({
               ResourceType: 'Parameter',
               ResourceId: physicalId,
-              Tags: ssmTags,
+              Tags: newTags,
             })
           );
         }
@@ -423,8 +462,12 @@ export class SSMParameterProvider implements ResourceProvider {
           ResourceId: physicalId,
         })
       );
-      const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
-      result['Tags'] = tags;
+      // AWS::SSM::Parameter.Tags is a key->value MAP in CFn (cdkd stores the
+      // template's map shape in state), so emit the readback as a map too — an
+      // array shape here would false-positive drift on every clean run for a
+      // tagged parameter (state map vs observed list never compare equal).
+      const tagArr = normalizeAwsTagsToCfn(tagsResp.TagList);
+      result['Tags'] = Object.fromEntries(tagArr.map((t) => [t.Key, t.Value]));
     } catch {
       // Ignore — tag drift is best-effort.
     }

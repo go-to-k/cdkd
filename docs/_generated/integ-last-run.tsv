@@ -52,3 +52,5 @@ monitoring	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (CW dashboar
 serverless-api	2026-06-02T09:40:41Z	PASS		verify.sh	clean (ApiGwV2 Api/Stage/Integration/Route/Authorizer backfill), 14 deleted 0 errors
 s3-directory-bucket	2026-06-02T09:40:41Z	PASS		standard	clean after deleting a PRE-EXISTING orphan directory bucket (not this session); re-run created+deleted clean, 1 deleted 0 errors
 wafv2	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (WebACL + APIGW WebACLAssociation via CC-API, slow ~3min assoc), 7 deleted 2 retained 0 errors
+context-test	2026-06-02T09:57:55Z	PASS		standard	FIXED by SSM Tags map handling (was FAIL: properties.Tags.map is not a function); deploy+destroy clean, 2 deleted 0 errors
+infra-security	2026-06-02T09:57:55Z	PASS		standard	FIXED by SSM Tags map handling (was FAIL: same SSM crash); VPC+NAT+IAM+KMS+SSM stack deploy+destroy clean, 31 deleted 0 errors
