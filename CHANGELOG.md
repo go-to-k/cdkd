@@ -1,3 +1,10 @@
+## [0.207.5](https://github.com/go-to-k/cdkd/compare/v0.207.4...v0.207.5) (2026-06-02)
+
+
+### Bug Fixes
+
+* **provisioning:** handle AWS::SSM::Parameter.Tags map shape (deploy crashed on tags) ([#759](https://github.com/go-to-k/cdkd/issues/759)) ([5b2b9b0](https://github.com/go-to-k/cdkd/commit/5b2b9b0e9061265cf17495b635bf017a22ceb05b))
+
 ## [0.207.4](https://github.com/go-to-k/cdkd/compare/v0.207.3...v0.207.4) (2026-06-02)
 
 
