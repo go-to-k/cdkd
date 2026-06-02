@@ -40,6 +40,14 @@ export class EcsFargateStack extends cdk.Stack {
       clusterName: `cdkd-ecs-fargate-test`,
       defaultCloudMapNamespace: {
         name: 'cdkd-test.local',
+        // `useForServiceConnect: true` is what makes CDK set the CfnCluster's
+        // `ServiceConnectDefaults: { Namespace: <namespaceArn> }`. Without it,
+        // `defaultCloudMapNamespace` only wires the namespace for the Service's
+        // serviceConnectConfiguration and leaves the Cluster property unset —
+        // so the verify.sh ServiceConnectDefaults assertion (added with the
+        // #609 backfill in PR #726) could never pass. This makes the fixture
+        // actually synthesize the property the backfill is meant to exercise.
+        useForServiceConnect: true,
       },
     });
 
