@@ -493,11 +493,19 @@ export class Route53Provider implements ResourceProvider {
    *      DISABLED / undefined / NoSuchHostedZone → return early (nothing
    *      to do, the delete will proceed normally or hit the existing
    *      NoSuchHostedZone short-circuit).
-   *   2. ENABLING / ENABLED → issue `UpdateHostedZoneFeatures(false)` then
-   *      poll `GetHostedZone` until the status settles to DISABLED.
-   *   3. DISABLING → poll without re-issuing the toggle.
-   *   4. *_FAILED / *_HOSTED_ZONE_LOCKED → surface the AWS error to the
-   *      operator (out of scope for cdkd to recover automatically).
+   *   2. ENABLING / ENABLING_HOSTED_ZONE_LOCKED → wait for the enable to
+   *      settle (AWS rejects a disable while enabling is in flight), then
+   *      fall through to the disable below.
+   *   3. ENABLED → issue `UpdateHostedZoneFeatures(false)` then poll
+   *      `GetHostedZone` until the status settles to DISABLED.
+   *   4. DISABLING / DISABLING_HOSTED_ZONE_LOCKED → poll without re-issuing
+   *      the toggle. The `*_HOSTED_ZONE_LOCKED` states are transient
+   *      sub-states of the enable/disable transition (AWS briefly locks the
+   *      zone mid-transition) — they settle to ENABLED / DISABLED on their
+   *      own, so cdkd waits through them rather than treating them as a
+   *      terminal failure.
+   *   5. *_FAILED → surface the AWS error to the operator (out of scope for
+   *      cdkd to recover automatically).
    *
    * Poll budget: env-overridable timeout (default 10 min) + interval
    * (default 15s; tests override via env to keep runs fast). Failure to
@@ -530,17 +538,17 @@ export class Route53Provider implements ResourceProvider {
 
     const deadline = Date.now() + timeoutMs;
 
-    // Failed / locked states are operator-recovery only — sentinel set is
-    // shared by both the initial check below and the in-flight `waitFor`
-    // loop (a zone that transitions to `*_FAILED` during the wait must
-    // surface the actionable failure error immediately rather than
-    // racing the 10-min timeout).
-    const TERMINAL_FAILED = new Set<string>([
-      'ENABLE_FAILED',
-      'DISABLE_FAILED',
-      'ENABLING_HOSTED_ZONE_LOCKED',
-      'DISABLING_HOSTED_ZONE_LOCKED',
-    ]);
+    // Genuinely terminal failure states — operator-recovery only. The
+    // sentinel set is shared by both the initial check below and the
+    // in-flight `waitFor` loop (a zone that transitions to `*_FAILED`
+    // during the wait must surface the actionable failure error
+    // immediately rather than racing the 10-min timeout). NOTE: the
+    // `*_HOSTED_ZONE_LOCKED` states are deliberately NOT here — they are
+    // transient sub-states of an in-flight enable/disable (AWS briefly
+    // locks the zone mid-transition) and settle to ENABLED / DISABLED on
+    // their own, so `waitFor` polls through them like any other in-flight
+    // status instead of failing the destroy.
+    const TERMINAL_FAILED = new Set<string>(['ENABLE_FAILED', 'DISABLE_FAILED']);
 
     // Helper: poll until status reaches one of `targets`, or throw on
     // timeout / failed-state transition.
@@ -597,9 +605,9 @@ export class Route53Provider implements ResourceProvider {
     // Phase 1: if ENABLING, wait for the transition to settle (AWS rejects
     // `UpdateHostedZoneFeatures(false)` while ENABLING is in flight —
     // "Accelerated recovery is already being enabled for this hosted zone").
-    if (current === 'ENABLING') {
+    if (current === 'ENABLING' || current === 'ENABLING_HOSTED_ZONE_LOCKED') {
       this.logger.debug(
-        `Hosted zone ${physicalId} is ENABLING; waiting for it to settle before issuing disable`
+        `Hosted zone ${physicalId} is ${current} (an enabling phase); waiting for it to settle before issuing disable`
       );
       current = await waitFor(new Set(['ENABLED', 'DISABLED']), 'ENABLED or DISABLED');
       if (current === undefined || current === 'DISABLED') return;
@@ -618,9 +626,9 @@ export class Route53Provider implements ResourceProvider {
           EnableAcceleratedRecovery: false,
         })
       );
-    } else if (current === 'DISABLING') {
+    } else if (current === 'DISABLING' || current === 'DISABLING_HOSTED_ZONE_LOCKED') {
       this.logger.debug(
-        `Hosted zone ${physicalId} AcceleratedRecovery is already DISABLING; waiting for settle`
+        `Hosted zone ${physicalId} AcceleratedRecovery is already ${current} (a disabling phase); waiting for settle`
       );
     }
 
