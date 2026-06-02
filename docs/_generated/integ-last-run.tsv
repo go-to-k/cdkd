@@ -34,3 +34,11 @@ multi-resource	2026-06-01T21:45:58Z	PASS		standard	F4 fix verified: single-run c
 import-value-strong-ref	2026-06-02T02:13:34Z	PASS		verify.sh	F3 fixed: version-agnostic schema assertion (>= 4); deploy+strong-ref+destroy clean
 ecs-fargate	2026-06-02T02:28:23Z	PASS		verify.sh	F5 fixed: fixture now sets useForServiceConnect:true so ServiceConnectDefaults is synthesized; ns ARN round-trips via CreateCluster; 18 created/18 deleted 0 errors
 custom-resource-provider	2026-06-02T05:14:51Z	PASS	53	standard	F2 fixed: CR-internal retry+exec-env recycle on transient IAM-authz FAILED. deploy 37s (attempt1 403 -> recycle -> attempt2 ok), destroy 17 deleted 0 errors, 0 orphans
+vpc-lambda-cr-race	2026-06-02T07:34:17Z	PASS		standard	coverage batch: VPC+Lambda+CR; withRetry handled role-assume propagation, deploy ok, 9 deleted 0 errors 0 orphans
+event-driven	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 19 deleted 0 errors 0 orphans
+deletion-policy-retain	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: all retain checks passed, AWS clean
+intrinsic-functions	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 3 deleted 0 errors 0 orphans
+dynamodb-ondemand	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: table gone, 1 deleted 0 errors
+acm-certificate	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: 1 deleted 0 errors 0 orphans
+sqs-cloudwatch	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 7 deleted 1 retained(by-design) 0 errors
+route53	2026-06-02T07:40:05Z	FAIL		verify.sh	NEW FINDING (pre-existing, not this session): destroy 5 deleted but HostedZone delete blocked by accelerated-recovery ENABLING_HOSTED_ZONE_LOCKED transient; provider bails operator-must-resolve instead of waiting through ENABLING. Manual cleanup: disable accelerated recovery -> delete zone
