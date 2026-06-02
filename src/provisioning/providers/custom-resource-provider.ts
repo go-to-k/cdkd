@@ -594,11 +594,21 @@ export class CustomResourceProvider implements ResourceProvider {
    * same warm container that cached the stale credentials. Best-effort: any
    * failure (e.g. cdkd's own creds lack `lambda:UpdateFunctionConfiguration`)
    * degrades to a debug log and we still retry the invoke.
+   *
+   * The no-op `Description` write is the least-intrusive way to invalidate warm
+   * containers. It persists on the backing function, but cdkd never reconciles
+   * the CDK Provider framework's backing Lambda against a template `Description`
+   * (the synthesized template leaves it empty / CDK-default and cdkd's diff only
+   * compares state-recorded properties), so it does not surface as drift on a
+   * later deploy. Only the IAM-propagation retry path (rare) ever sets it.
    */
   private async recycleBackingFunctionExecEnv(
     serviceToken: string,
     logicalId: string
   ): Promise<void> {
+    // SNS-backed custom resources have no Lambda to recycle (the token is a
+    // topic ARN); skip the pointless, guaranteed-to-fail API call.
+    if (this.isSnsServiceToken(serviceToken)) return;
     try {
       await this.lambdaClient.send(
         new UpdateFunctionConfigurationCommand({

@@ -168,6 +168,23 @@ describe('CustomResourceProvider transient-IAM-authz retry', () => {
     expect(updateCount).toBe(2); // recycled before each retry
   });
 
+  it('update() routes through the same retry helper (recycle + retry, then succeed)', async () => {
+    const counts = wireAsyncFlow({ Status: 'FAILED', Reason: AUTHZ_REASON });
+    const provider = makeProvider();
+
+    const result = await provider.update(
+      'AsyncResource',
+      'phys-old',
+      'Custom::AsyncResource',
+      { ServiceToken: SERVICE_TOKEN, Foo: 'new' },
+      { ServiceToken: SERVICE_TOKEN, Foo: 'old' }
+    );
+
+    expect(result.physicalId).toBe('phys-123');
+    expect(counts.invokes()).toBe(2);
+    expect(counts.updates()).toBe(1);
+  });
+
   it('does not retry at all when CDKD_CR_AUTHZ_MAX_RETRIES=0', async () => {
     process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
     const counts = wireAsyncFlow({ Status: 'FAILED', Reason: AUTHZ_REASON });
@@ -196,5 +213,18 @@ describe('isTransientAuthzFailure classification', () => {
     expect(probe.isTransientAuthzFailure('TypeError: cannot read property foo of undefined')).toBe(false);
     expect(probe.isTransientAuthzFailure(undefined)).toBe(false);
     expect(probe.isTransientAuthzFailure('')).toBe(false);
+  });
+
+  // Guard every signal substring (a typo'd new entry would slip through if only
+  // a representative subset were asserted).
+  it.each([
+    'User is not authorized to perform: lambda:GetFunction',
+    'because no identity-based policy allows the action',
+    'Resource is not in the state functionActive',
+    'not in the state functionActive yet',
+    'Role arn:aws:iam::1:role/x cannot be assumed by the service',
+    'Lambda is unable to assume the role provided',
+  ])('matches each IAM-authz signal: %s', (reason) => {
+    expect(probe.isTransientAuthzFailure(reason)).toBe(true);
   });
 });
