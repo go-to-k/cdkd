@@ -384,6 +384,51 @@ describe('Route53Provider', () => {
         }
       });
 
+      it('initial probe already DISABLING_HOSTED_ZONE_LOCKED: waits to DISABLED without re-issuing disable', async () => {
+        // The pre-delete probe can catch the zone already mid-disable AND
+        // briefly locked. cdkd must NOT re-issue UpdateHostedZoneFeatures (a
+        // disable is already in flight) — just wait through the lock transient
+        // to DISABLED, then delete. Exercises the Phase-2 'already disabling'
+        // branch directly from the initial probe (the branch the bug report
+        // says AWS surfaces transiently).
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] = '1';
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] = '5000';
+        try {
+          // 1. ListQueryLoggingConfigs
+          mockSend.mockResolvedValueOnce({ QueryLoggingConfigs: [] });
+          // 2. GetHostedZone (probe) → DISABLING_HOSTED_ZONE_LOCKED (transient)
+          mockSend.mockResolvedValueOnce({
+            HostedZone: {
+              Id: '/hostedzone/Z1234567890',
+              Features: { AcceleratedRecoveryStatus: 'DISABLING_HOSTED_ZONE_LOCKED' },
+            },
+          });
+          // 3. Poll GetHostedZone → DISABLED (settle)
+          mockSend.mockResolvedValueOnce({
+            HostedZone: {
+              Id: '/hostedzone/Z1234567890',
+              Features: { AcceleratedRecoveryStatus: 'DISABLED' },
+            },
+          });
+          // 4. DeleteHostedZone
+          mockSend.mockResolvedValueOnce({});
+
+          await provider.delete('MyZone', 'Z1234567890', 'AWS::Route53::HostedZone');
+
+          expect(mockSend).toHaveBeenCalledTimes(4);
+          // No UpdateHostedZoneFeatures: a disable was already in flight, and a
+          // LOCKED transient must NOT be treated as a terminal failure.
+          const uhfCalls = mockSend.mock.calls.filter(
+            (c) => c[0].constructor.name === 'UpdateHostedZoneFeaturesCommand'
+          );
+          expect(uhfCalls).toHaveLength(0);
+          expect(mockSend.mock.calls[3][0].constructor.name).toBe('DeleteHostedZoneCommand');
+        } finally {
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
+        }
+      });
+
       it('waits through ENABLING_HOSTED_ZONE_LOCKED (transient) before issuing disable', async () => {
         // Probe finds the zone mid-enable and briefly locked. cdkd must wait
         // for the enable to settle (AWS rejects a disable while enabling is in
