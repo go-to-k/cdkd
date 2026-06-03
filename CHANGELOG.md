@@ -1,3 +1,10 @@
+# [0.208.0](https://github.com/go-to-k/cdkd/compare/v0.207.6...v0.208.0) (2026-06-03)
+
+
+### Features
+
+* **local:** inherit start-cloudfront — serve a CloudFront distribution locally ([#764](https://github.com/go-to-k/cdkd/issues/764)) ([36440dd](https://github.com/go-to-k/cdkd/commit/36440dd2f425eb5a32c1f6378433d3a591bb2d11))
+
 ## [0.207.6](https://github.com/go-to-k/cdkd/compare/v0.207.5...v0.207.6) (2026-06-02)
 
 
