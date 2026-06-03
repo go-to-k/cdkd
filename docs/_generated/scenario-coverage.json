@@ -660,6 +660,11 @@
       ]
     },
     {
+      "name": "local-start-cloudfront",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-service",
       "annotated": true,
       "scenarios": [
@@ -1218,6 +1223,7 @@
     "iam-managed-policy",
     "local-start-alb",
     "local-start-alb-from-state",
+    "local-start-cloudfront",
     "local-start-service-watch-fast",
     "nested-stack",
     "nested-stack-deep",
