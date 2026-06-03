@@ -59,7 +59,7 @@ Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [test
 - **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair. See [Rollback behavior](#rollback-behavior).
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
-- **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `invoke-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, and Bedrock AgentCore Runtimes from your CDK code via Docker. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols. Works for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks. See [Local execution](#local-execution).
+- **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, CloudFront distributions, and Bedrock AgentCore Runtimes from your CDK code. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols. The Docker-backed commands work for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks; `start-cloudfront` serves the viewer-request -> S3 origin -> viewer-response pipeline in-process (no Docker, no state binding). See [Local execution](#local-execution).
 - **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. Deployment fails with a clear error message naming the type + a 1-click issue link.
@@ -243,12 +243,15 @@ maintain, no `cdk synth | sam ...` round-trip.
 | `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws`) |
 | `cdkd local start-alb <targets...>` | Long-running local ALB front-door (HTTP + HTTPS listeners, path / host / header / weighted / redirect / fixed-response routing, authenticate-cognito / authenticate-oidc) for ECS / Lambda backing services |
+| `cdkd local start-cloudfront [target]` | Long-running local CloudFront distribution — viewer-request -> S3 origin -> viewer-response pipeline, CloudFront Functions run in-process (no Docker) |
 
-Requires Docker. Pass `--from-state` (cdkd-deployed) or
-`--from-cfn-stack` (cdk-deployed / CFn-managed) to substitute deployed
-physical IDs into intrinsic-valued env vars / secrets / image URIs;
-without either, intrinsic values are dropped with a per-key warning
-(matches `sam local *`). The two flags are mutually exclusive.
+The Docker-backed commands above require Docker. Pass `--from-state`
+(cdkd-deployed) or `--from-cfn-stack` (cdk-deployed / CFn-managed) to
+substitute deployed physical IDs into intrinsic-valued env vars /
+secrets / image URIs; without either, intrinsic values are dropped with
+a per-key warning (matches `sam local *`). The two flags are mutually
+exclusive. `start-cloudfront` is the exception: it serves entirely
+in-process (no Docker) and makes no AWS call, so it takes neither flag.
 
 ### `local invoke`
 
@@ -327,6 +330,28 @@ check. `--watch` reloads one backing-replica at a time across edits —
 interpreted-handler source edits go through the bind-mount fast path
 (no rebuild); Dockerfile / dependency / compiled-source edits fall
 through to a rebuild + atomic front-door pool swap.
+
+### `local start-cloudfront`
+
+```bash
+cdkd local start-cloudfront                          # interactive picker
+cdkd local start-cloudfront MyStack/MyDistribution   # name the distribution
+cdkd local start-cloudfront MyStack/MyDistribution --watch   # re-synth + swap on edit
+cdkd local start-cloudfront MyStack/MyDistribution --tls      # real HTTPS termination
+```
+
+Serves a CloudFront distribution's **viewer-request -> S3 origin ->
+viewer-response** pipeline locally so a routing-function change is
+verifiable in seconds instead of a deploy round-trip. The distribution's
+`AWS::CloudFront::Function`s (URL rewrites, trailing-slash normalization,
+SPA fallback, header tweaks) run in-process in a `node:vm` sandbox; the
+S3 origin content is the `BucketDeployment` source asset resolved out of
+the cloud assembly, served with `DefaultRootObject` and
+`CustomErrorResponses`. Path patterns route across the default + ordered
+cache behaviors. Pure-local: no Docker, no AWS call — `--watch` is just
+re-synth + an in-memory routing-model swap. S3 origins only (custom /
+Lambda@Edge origins are warn-and-skip); `--origin <id>=<dir>` points an
+origin at a local directory when `BucketDeployment` resolution can't.
 
 See **[docs/local-emulation.md](docs/local-emulation.md)** for the
 full reference — runtimes, target resolution, every flag, integration

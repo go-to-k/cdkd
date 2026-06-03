@@ -1695,12 +1695,16 @@ Exit codes:
   published. Re-run to retry the failed stacks. Per-stack outcomes are
   listed in the run summary.
 
-## `local *` (run AWS workloads locally via Docker)
+## `local *` (run AWS workloads locally)
 
 The `cdkd local` command family runs AWS workloads on the developer's
-machine via Docker — Lambda functions, API Gateway routes, ECS tasks,
-and ECS Services — without an AWS deploy. The full reference for all
-`cdkd local *` subcommands (`local invoke` / `local start-api` /
-`local run-task` / `local start-service`) lives in
+machine — Lambda functions, API Gateway routes, ECS tasks, ECS
+Services, ALB front-doors, CloudFront distributions, and Bedrock
+AgentCore Runtimes — without an AWS deploy. Most commands run the
+workload in Docker; `local start-cloudfront` serves entirely in-process
+(no Docker). The full reference for all `cdkd local *` subcommands
+(`local invoke` / `local start-api` / `local run-task` /
+`local start-service` / `local start-alb` / `local start-cloudfront` /
+`local invoke-agentcore`) lives in
 **[docs/local-emulation.md](local-emulation.md)**.
 

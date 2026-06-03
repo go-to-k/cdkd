@@ -491,6 +491,7 @@
       "integs": [
         "bench-cdk-sample",
         "cloudfront-function-url",
+        "local-start-cloudfront",
         "s3-cloudfront"
       ],
       "signals": {
@@ -498,6 +499,9 @@
           "l2"
         ],
         "cloudfront-function-url": [
+          "l2"
+        ],
+        "local-start-cloudfront": [
           "l2"
         ],
         "s3-cloudfront": [
@@ -2668,6 +2672,7 @@
         "kms-encryption",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
+        "local-start-cloudfront",
         "log-pipeline",
         "migrate-from-cfn",
         "multi-resource",
@@ -2740,6 +2745,9 @@
           "l2"
         ],
         "local-invoke-from-state": [
+          "l2"
+        ],
+        "local-start-cloudfront": [
           "l2"
         ],
         "log-pipeline": [
