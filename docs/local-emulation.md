@@ -15,16 +15,19 @@ directly.
 | `cdkd local start-service <target>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | AgentCore container on port 8080 (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / WebSocket `/ws`) |
 | `cdkd local start-alb <targets...>` | Long-running local ALB front-door for ECS / Lambda backing services | shared ECS service emulator engine (shimmed from cdk-local) + per-listener `node:http(s)` front-door with path / host / header / weighted / redirect / fixed-response routing |
+| `cdkd local start-cloudfront [target]` | Long-running local CloudFront distribution (viewer-request -> S3 origin -> viewer-response) | in-process `node:http(s)` server (shimmed from cdk-local) — CloudFront Functions in a `node:vm` sandbox + S3 origin served from the `BucketDeployment` source asset; no Docker |
 
 ## Requirements
 
-All `cdkd local *` commands require Docker on the developer's machine.
+Most `cdkd local *` commands require Docker on the developer's machine.
 The first run pulls the relevant base image (~600MB for the
 language-specific Lambda images, ~50MB for `provided.*`, plus the ECS
 metadata sidecar for `run-task`). Subsequent runs reuse the cached
 image; pass `--no-pull` to skip the `docker pull` round-trip
 altogether (per-command `--no-pull` semantics may differ — see each
-section below).
+section below). The one exception is `local start-cloudfront`, which
+serves entirely in-process (CloudFront Functions in a `node:vm`
+sandbox, S3 origin from local files) and needs no Docker at all.
 
 ## Common flags
 
@@ -1479,6 +1482,60 @@ Double-`^C` bypasses cleanup and exits 130 immediately so users have an
 escape hatch when docker hangs. The front-door servers always rebind
 the requested host port on restart — there is no in-process state
 across `^C`.
+
+## `local start-cloudfront` (run a CloudFront distribution locally)
+
+`cdkd local start-cloudfront [target]` serves a CloudFront
+distribution's **viewer-request -> S3 origin -> viewer-response**
+pipeline locally so a routing-function change is verifiable in seconds
+instead of a deploy round-trip. Models cdk-local's
+`cdkl start-cloudfront`, inherited into cdkd's command tree as a thin
+pass-through to `cdk-local`'s command factory. Unlike the other
+`cdkd local *` commands this is **pure-local** — no Docker, no AWS call
+— so it carries neither `--from-state` nor `--from-cfn-stack`.
+
+### `local start-cloudfront` target resolution
+
+Names one `AWS::CloudFront::Distribution` by its CDK display path
+(`MyStack/MyDistribution`). Omit the target in a TTY for an interactive
+picker over every distribution in the synthesized app. A single
+distribution is served per invocation.
+
+### `local start-cloudfront` what runs locally
+
+- **CloudFront Functions** (`cloudfront-js-1.0` / `2.0`) — the inline
+  rewrite JS associated as `viewer-request` / `viewer-response` runs
+  in-process in a `node:vm` sandbox (async 2.0 handlers awaited). A
+  viewer-request function that returns a `statusCode` short-circuits with
+  a generated response (redirect / fixed body); otherwise the rewritten
+  request continues to the origin, then the viewer-response function runs
+  over the origin response.
+- **S3 origin content** — resolved out of the cloud assembly: the
+  origin's bucket -> its `BucketDeployment` custom resource ->
+  `SourceObjectKeys` -> the staged asset directory. Served with
+  `DefaultRootObject` (root only — sub-paths are NOT auto-indexed,
+  matching CloudFront) and `CustomErrorResponses` (the SPA fallback).
+- **Routing** — path patterns route across the `DefaultCacheBehavior` +
+  ordered `CacheBehaviors[]` (CloudFront `*` / `?` glob matching).
+
+### `local start-cloudfront` options
+
+- `--port <n>` — listener port (default `0` = collision-bumped).
+- `--host <ip>` — bind IP (default `127.0.0.1`).
+- `--tls` / `--tls-cert <p>` / `--tls-key <p>` — terminate real HTTPS
+  (user-supplied PEM pair or an auto-generated self-signed cert).
+- `--origin <id>=<dir>` — point an origin at a local directory when
+  `BucketDeployment` resolution can't (content uploaded out of band,
+  non-CDK bucket). Repeatable.
+- `--watch` — re-synth + atomically swap the in-memory routing model
+  under the live socket on every CDK source edit (no Docker, so a reload
+  is just re-synth + re-resolve).
+
+### `local start-cloudfront` scope
+
+S3 origins only. A custom (non-S3) origin, a `LambdaFunctionAssociations`
+Lambda@Edge association, the KeyValueStore, and the 2.0 `cf.fetch`
+origin API are warn-and-skip (custom / unresolved origins return 502).
 
 ## `local invoke-agentcore` (run Bedrock AgentCore Runtime locally)
 

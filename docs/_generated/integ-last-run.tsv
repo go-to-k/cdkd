@@ -95,7 +95,6 @@ vpc-lookup	2026-06-02T11:37:34Z	PASS	20	standard	sweep: deploy+destroy clean, 0 
 remove-protection	2026-06-02T14:31:31Z	PASS	940	verify.sh	FIXED: EC2 DisableApiTermination now cleared on the CC-API delete path (instance is cc-api-routed) + EPIPE crash in state list fixed; step5 --remove-protection destroyed 21 deleted 0 errors, clean
 schema-v5-to-v6-migration	2026-06-02T14:31:31Z	PASS	175	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 6; v5->v8 transparent auto-migration verified, clean destroy
 schema-v6-to-v7-migration	2026-06-02T14:31:31Z	PASS	180	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 7; v6->v8 transparent auto-migration verified, clean destroy
-local-invoke	2026-06-02T15:46:16Z	PASS	20	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-run-task	2026-06-02T15:46:16Z	PASS	14	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-buildkit	2026-06-02T15:46:16Z	PASS	31	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-layers	2026-06-02T15:46:16Z	PASS	13	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
@@ -122,3 +121,5 @@ local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	
 local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-start-api	2026-06-02T15:46:16Z	PASS	19	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-container	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-cloudfront	2026-06-03T17:02:40Z	PASS		verify.sh	pure-local; root+header, /foo rewrite, SPA fallback, --watch reload, port freed
+local-invoke	2026-06-03T17:03:49Z	PASS		verify.sh	dep-bump validation; 5/5 invoke scenarios green
