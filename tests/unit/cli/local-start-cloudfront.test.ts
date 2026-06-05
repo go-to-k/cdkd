@@ -9,12 +9,13 @@ import { createLocalStartCloudFrontCommand } from '../../../src/cli/commands/loc
 // tests; cdkd inherits them via the factory. As of cdk-local#380 the command
 // also serves Lambda Function URL origins (RIE) + deployed-S3 origins, so it
 // inherits cdk-local's `--from-cfn-stack` / `--stack-region` / `--assume-role`
-// state-source flags. The contract THIS test pins is the cdkd-side asymmetry vs
-// the agentcore / alb / service wrappers: because cdk-local's start-cloudfront
-// factory accepts only `embedConfig` (no `extraStateProviders` seam), the
-// command does NOT carry cdkd's S3-backed `--from-state` / `--state-bucket` /
-// `--state-prefix` — it stays exempt from issue #766 until cdk-local exposes
-// `extraStateProviders` on this factory. End-to-end behavior is exercised by the
+// state-source flags. As of cdk-local 0.128.0 (cdk-local#426 / #436) the
+// factory accepts the `extraStateProviders` seam, so cdkd now threads its
+// S3-backed `--from-state` factory in and layers `--from-state` /
+// `--state-bucket` / `--state-prefix` on top (issue #766) — the same wiring as
+// the agentcore / alb / service wrappers. The contract THIS test pins is that
+// wiring: the cdkd state-source flags are present + defaulted, alongside the
+// inherited CFn ones. End-to-end behavior is exercised by the
 // `local-start-cloudfront` integ fixture.
 
 describe('createLocalStartCloudFrontCommand', () => {
@@ -58,14 +59,19 @@ describe('createLocalStartCloudFrontCommand', () => {
     expect(longs).toContain('--assume-role');
   });
 
-  it("does NOT carry cdkd's S3-backed state-source options (exempt from #766)", () => {
-    // cdk-local's start-cloudfront factory accepts only `embedConfig` (no
-    // `extraStateProviders` seam), so cdkd cannot thread its S3-backed
-    // --from-state here yet. Stays exempt until cdk-local exposes the seam.
+  it("declares cdkd's S3-backed state-source options (#766, via cdk-local#426 seam)", () => {
+    // cdk-local 0.128.0's start-cloudfront factory accepts `extraStateProviders`,
+    // so cdkd threads its --from-state factory in and layers these three flags
+    // on top — mirroring start-agentcore / start-alb / start-service.
     const longs = cmd.options.map((o) => o.long);
-    expect(longs).not.toContain('--from-state');
-    expect(longs).not.toContain('--state-bucket');
-    expect(longs).not.toContain('--state-prefix');
+    expect(longs).toContain('--from-state');
+    expect(longs).toContain('--state-bucket');
+    expect(longs).toContain('--state-prefix');
+  });
+
+  it('defaults --from-state to false and --state-prefix to "cdkd"', () => {
+    expect(cmd.options.find((o) => o.long === '--from-state')?.defaultValue).toBe(false);
+    expect(cmd.options.find((o) => o.long === '--state-prefix')?.defaultValue).toBe('cdkd');
   });
 
   it('defaults --port to "0" and --host to "127.0.0.1"', () => {

@@ -1497,19 +1497,19 @@ verifiable in seconds instead of a deploy round-trip. Models cdk-local's
 pass-through to `cdk-local`'s command factory. A CloudFront-Functions +
 S3-origin-only distribution is pure-local (no Docker); a distribution
 with a Lambda Function URL origin runs that origin's backing Lambda via
-the RIE container (Docker required). It inherits cdk-local's
-`--from-cfn-stack` / `--stack-region` / `--assume-role` to bind a
-Function URL origin's backing Lambda + a deployed-S3 origin's bucket
-name to a deployed CloudFormation stack.
+the RIE container (Docker required). It binds a Function URL origin's
+backing Lambda + a deployed-S3 origin's bucket name to deployed state via
+cdkd's S3-backed `--from-state` (after a prior `cdkd deploy`) OR
+cdk-local's inherited `--from-cfn-stack` / `--stack-region` /
+`--assume-role` (CloudFormation-deployed stacks). The two state sources
+are mutually exclusive.
 
-> **`--from-state` exemption (issue #766).** Unlike the `start-agentcore`
-> / `start-alb` / `start-service` wrappers, `start-cloudfront` does NOT
-> carry cdkd's S3-backed `--from-state` source: cdk-local's
-> `createLocalStartCloudFrontCommand` factory accepts only `embedConfig`,
-> not the `extraStateProviders` seam cdkd threads its `--from-state`
-> factory through. `start-cloudfront` stays exempt until cdk-local exposes
-> `extraStateProviders` on its start-cloudfront factory; until then
-> `--from-cfn-stack` is the only deployed-state source on this command.
+As of cdk-local 0.128.0 (cdk-local#426) the start-cloudfront factory
+accepts the `extraStateProviders` seam, so cdkd threads its `--from-state`
+factory in and layers `--from-state` / `--state-bucket` / `--state-prefix`
+on top — the same wiring as `start-agentcore` / `start-alb` /
+`start-service` (issue #766; `start-cloudfront` was `--from-state`-exempt
+before the seam landed).
 
 ### `local start-cloudfront` target resolution
 
@@ -1556,11 +1556,13 @@ distribution is served per invocation.
   (only meaningful under `--from-cfn-stack`).
 - `--no-pull` — skip `docker pull` for a Lambda Function URL origin's
   base image (no-op for a Function-URL-free distribution).
+- `--from-state` / `--state-bucket <bucket>` / `--state-prefix <prefix>`
+  — bind a Function URL origin's backing Lambda + a deployed-S3 origin's
+  bucket name to cdkd's S3 state (after a prior `cdkd deploy`). Mutually
+  exclusive with `--from-cfn-stack`. `--state-prefix` defaults to `cdkd`.
 - `--from-cfn-stack [name]` / `--stack-region <region>` /
-  `--assume-role [arn]` — bind a Function URL origin's backing Lambda +
-  a deployed-S3 origin's bucket name to a deployed CloudFormation stack
-  (see the `--from-state` exemption note above — cdkd's S3-backed
-  `--from-state` is intentionally absent here).
+  `--assume-role [arn]` — the CloudFormation-deployed-stack counterpart of
+  `--from-state` (for apps deployed via the upstream CDK CLI).
 - `--watch` — re-synth + atomically swap the in-memory routing model
   under the live socket on every CDK source edit.
 
@@ -1657,18 +1659,18 @@ over the discovered AgentCore Runtimes.
 
 ### `local start-agentcore` state-source flags
 
-`start-agentcore` is one of the factory pass-throughs that DOES bind
-deployed state (issue #766): cdk-local's start-agentcore factory accepts
-the `extraStateProviders` seam, so cdkd threads its S3-backed
+`start-agentcore` is one of the factory pass-throughs that bind deployed
+state via the `extraStateProviders` seam (issue #766): cdk-local's
+start-agentcore factory accepts it, so cdkd threads its S3-backed
 `--from-state` factory in and layers the cdkd-specific `--from-state` /
 `--state-bucket` / `--state-prefix` flags on top of cdk-local's inherited
 `--from-cfn-stack` / `--stack-region`. Use `--from-state` (after a prior
 `cdkd deploy`) or `--from-cfn-stack [name]` (for a stack deployed via the
 upstream CDK CLI) to substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` /
 `Fn::ImportValue` / `Fn::GetStackOutput` intrinsics in the runtime
-container image + environment variables. Mutually exclusive. (Contrast
-`start-cloudfront`, whose factory lacks the seam and so stays exempt — see
-that command's `--from-state` exemption note above.)
+container image + environment variables. Mutually exclusive. (`start-alb`,
+`start-service`, and — as of cdk-local 0.128.0 — `start-cloudfront` thread
+`--from-state` the same way.)
 
 ### `local start-agentcore` options
 

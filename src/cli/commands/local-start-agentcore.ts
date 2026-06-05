@@ -25,14 +25,17 @@ import { cdkdExtraStateProviders } from './local-state-source.js';
  * `--stack-region`) live in cdk-local's `addStartAgentCoreSpecificOptions` and
  * are auto-inherited.
  *
- * UNLIKE `start-cloudfront`, this command DOES bind deployed state: cdk-local's
- * factory accepts an `extraStateProviders` option (the same seam the
- * heavy-wrapper `cdkd local *` commands use), so cdkd threads its S3-backed
- * `--from-state` factory in via `cdkdExtraStateProviders` and layers the
- * cdkd-specific `--from-state` / `--state-bucket` / `--state-prefix` flags on
- * top of cdk-local's inherited `--from-cfn-stack` / `--stack-region` (issue
- * #766). The factory's internal `createLocalStateProvider` call picks cdkd's
- * `fromState` factory transparently when `--from-state` is passed.
+ * Like `start-cloudfront` / `start-alb` / `start-service`, this command binds
+ * deployed state through cdk-local's `extraStateProviders` seam: the factory
+ * accepts an `extraStateProviders` option (the same seam those commands use), so
+ * cdkd threads its S3-backed `--from-state` factory in via
+ * `cdkdExtraStateProviders` and layers the cdkd-specific `--from-state` /
+ * `--state-bucket` / `--state-prefix` flags on top of cdk-local's inherited
+ * `--from-cfn-stack` / `--stack-region` (issue #766; the `start-agentcore`
+ * factory carried the seam from the start, the `start-cloudfront` factory gained
+ * it in cdk-local 0.128.0). The factory's internal `createLocalStateProvider`
+ * call picks cdkd's `fromState` factory transparently when `--from-state` is
+ * passed.
  *
  * The active cdkd embed config is re-handed to the factory so branding stays
  * cdkd: cdk-local's factory calls `setEmbedConfig(opts.embedConfig)`, and
