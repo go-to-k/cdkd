@@ -1,3 +1,10 @@
+# [0.209.0](https://github.com/go-to-k/cdkd/compare/v0.208.0...v0.209.0) (2026-06-05)
+
+
+### Features
+
+* **local:** add start-agentcore + thread --from-state into the factory pass-throughs ([#765](https://github.com/go-to-k/cdkd/issues/765), [#766](https://github.com/go-to-k/cdkd/issues/766)) ([#767](https://github.com/go-to-k/cdkd/issues/767)) ([d5c85cb](https://github.com/go-to-k/cdkd/commit/d5c85cb3709cc9079620608957d0621b63821b9c))
+
 # [0.208.0](https://github.com/go-to-k/cdkd/compare/v0.207.6...v0.208.0) (2026-06-03)
 
 
