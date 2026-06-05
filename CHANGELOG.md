@@ -1,3 +1,10 @@
+# [0.210.0](https://github.com/go-to-k/cdkd/compare/v0.209.1...v0.210.0) (2026-06-05)
+
+
+### Features
+
+* **local:** thread --from-state into start-cloudfront (closes [#766](https://github.com/go-to-k/cdkd/issues/766)) ([#771](https://github.com/go-to-k/cdkd/issues/771)) ([5b7b89f](https://github.com/go-to-k/cdkd/commit/5b7b89f49e38f1222dce725b9515269e74d1f13d))
+
 ## [0.209.1](https://github.com/go-to-k/cdkd/compare/v0.209.0...v0.209.1) (2026-06-05)
 
 
