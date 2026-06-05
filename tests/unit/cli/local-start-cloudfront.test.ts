@@ -2,16 +2,20 @@ import { describe, expect, it } from 'vite-plus/test';
 import { createLocalStartCloudFrontCommand } from '../../../src/cli/commands/local-start-cloudfront.js';
 
 // Unit coverage for the cdkd `local start-cloudfront` wrapper. start-cloudfront
-// is a THIN pass-through to cdk-local's factory: it is pure-local (no Docker,
-// no AWS call) and adds NO cdkd-specific options. The serve behavior + the
-// cloudfront-specific option block (`--port` / `--host` / `--origin` / `--tls`
-// / `--tls-cert` / `--tls-key` / `--watch`) live in cdk-local and are covered
-// by cdk-local's own tests; cdkd inherits them via the factory. The contract
-// THIS test pins is the cdkd-side asymmetry vs the api / alb / service
-// wrappers: because there is no deployed state to bind, the command must carry
-// NEITHER the cdkd state-source options (`--from-state` / `--state-bucket` /
-// `--state-prefix`) NOR cdk-local's `--from-cfn-stack` / `--assume-role`.
-// End-to-end behavior is exercised by the `local-start-cloudfront` integ fixture.
+// is a THIN pass-through to cdk-local's factory: the serve behavior + the
+// cloudfront-specific option block (`--port` / `--host` / `--origin` /
+// `--kvs-file` / `--cache-origin` / `--no-pull` / `--tls` / `--tls-cert` /
+// `--tls-key` / `--watch`) live in cdk-local and are covered by cdk-local's own
+// tests; cdkd inherits them via the factory. As of cdk-local#380 the command
+// also serves Lambda Function URL origins (RIE) + deployed-S3 origins, so it
+// inherits cdk-local's `--from-cfn-stack` / `--stack-region` / `--assume-role`
+// state-source flags. The contract THIS test pins is the cdkd-side asymmetry vs
+// the agentcore / alb / service wrappers: because cdk-local's start-cloudfront
+// factory accepts only `embedConfig` (no `extraStateProviders` seam), the
+// command does NOT carry cdkd's S3-backed `--from-state` / `--state-bucket` /
+// `--state-prefix` — it stays exempt from issue #766 until cdk-local exposes
+// `extraStateProviders` on this factory. End-to-end behavior is exercised by the
+// `local-start-cloudfront` integ fixture.
 
 describe('createLocalStartCloudFrontCommand', () => {
   // `cmd.parse([...])` runs the registered `.action(handler)` body. The
@@ -37,23 +41,31 @@ describe('createLocalStartCloudFrontCommand', () => {
     expect(longs).toContain('--port');
     expect(longs).toContain('--host');
     expect(longs).toContain('--origin');
+    expect(longs).toContain('--kvs-file');
     expect(longs).toContain('--tls');
     expect(longs).toContain('--tls-cert');
     expect(longs).toContain('--tls-key');
     expect(longs).toContain('--watch');
   });
 
-  it('does NOT carry the cdkd state-source options (no state to bind)', () => {
+  it("inherits cdk-local's CFn state-source flags (Function URL + deployed-S3 origins, #380)", () => {
+    // start-cloudfront now serves Lambda Function URL origins (RIE) and
+    // deployed-S3 origins, so cdk-local's factory carries --from-cfn-stack /
+    // --stack-region / --assume-role to bind them to deployed CloudFormation state.
+    const longs = cmd.options.map((o) => o.long);
+    expect(longs).toContain('--from-cfn-stack');
+    expect(longs).toContain('--stack-region');
+    expect(longs).toContain('--assume-role');
+  });
+
+  it("does NOT carry cdkd's S3-backed state-source options (exempt from #766)", () => {
+    // cdk-local's start-cloudfront factory accepts only `embedConfig` (no
+    // `extraStateProviders` seam), so cdkd cannot thread its S3-backed
+    // --from-state here yet. Stays exempt until cdk-local exposes the seam.
     const longs = cmd.options.map((o) => o.long);
     expect(longs).not.toContain('--from-state');
     expect(longs).not.toContain('--state-bucket');
     expect(longs).not.toContain('--state-prefix');
-  });
-
-  it('does NOT carry --from-cfn-stack / --assume-role (start-cloudfront makes no AWS call)', () => {
-    const longs = cmd.options.map((o) => o.long);
-    expect(longs).not.toContain('--from-cfn-stack');
-    expect(longs).not.toContain('--assume-role');
   });
 
   it('defaults --port to "0" and --host to "127.0.0.1"', () => {

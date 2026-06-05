@@ -64,6 +64,7 @@ import { createLocalStartApiCommand, resolveProfileCredentials } from './local-s
 import { createLocalRunTaskCommand } from './local-run-task.js';
 import { createLocalStartServiceCommand } from './local-start-service.js';
 import { createLocalInvokeAgentCoreCommand } from './local-invoke-agentcore.js';
+import { createLocalStartAgentCoreCommand } from './local-start-agentcore.js';
 import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
 import { setEmbedConfig } from 'cdk-local';
@@ -1654,6 +1655,7 @@ export function createLocalCommand(): Command {
   local.addCommand(createLocalRunTaskCommand());
   local.addCommand(createLocalStartServiceCommand());
   local.addCommand(createLocalInvokeAgentCoreCommand());
+  local.addCommand(createLocalStartAgentCoreCommand());
   local.addCommand(createLocalStartAlbCommand());
   local.addCommand(createLocalStartCloudFrontCommand());
   return local;

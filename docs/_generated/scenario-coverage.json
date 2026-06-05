@@ -621,6 +621,11 @@
       ]
     },
     {
+      "name": "local-start-agentcore",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-alb",
       "annotated": false,
       "scenarios": []
@@ -1221,6 +1226,7 @@
     "dynamodb-ondemand",
     "export-nested-stack",
     "iam-managed-policy",
+    "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",
     "local-start-cloudfront",
