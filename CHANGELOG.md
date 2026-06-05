@@ -1,3 +1,10 @@
+## [0.210.1](https://github.com/go-to-k/cdkd/compare/v0.210.0...v0.210.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **local:** pin ZIP Lambda --platform to declared Architectures ([#768](https://github.com/go-to-k/cdkd/issues/768)) ([#772](https://github.com/go-to-k/cdkd/issues/772)) ([e634c19](https://github.com/go-to-k/cdkd/commit/e634c1985489015726abf650c8a40324a845e517))
+
 # [0.210.0](https://github.com/go-to-k/cdkd/compare/v0.209.1...v0.210.0) (2026-06-05)
 
 
