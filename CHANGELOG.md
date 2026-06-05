@@ -1,3 +1,10 @@
+## [0.209.1](https://github.com/go-to-k/cdkd/compare/v0.209.0...v0.209.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **deps:** bump cdk-local to ^0.126.6 for aws-cdk-lib 2.258.0 (schema v54) in factory pass-through local commands ([#770](https://github.com/go-to-k/cdkd/issues/770)) ([e462059](https://github.com/go-to-k/cdkd/commit/e462059b099508850cee474e9f4c0ea289bc9a16))
+
 # [0.209.0](https://github.com/go-to-k/cdkd/compare/v0.208.0...v0.209.0) (2026-06-05)
 
 
