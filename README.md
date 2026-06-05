@@ -251,10 +251,11 @@ The Docker-backed commands above require Docker. Pass `--from-state`
 substitute deployed physical IDs into intrinsic-valued env vars /
 secrets / image URIs; without either, intrinsic values are dropped with
 a per-key warning (matches `sam local *`). The two flags are mutually
-exclusive. `start-cloudfront` is the partial exception: a
-CloudFront-Functions + S3-origin distribution serves entirely in-process
-(no Docker), and it carries cdk-local's `--from-cfn-stack` but not cdkd's
-`--from-state` (its factory lacks the state-provider seam — issue #766).
+exclusive. `start-cloudfront` carries both `--from-state` and
+`--from-cfn-stack` too (since cdk-local 0.128.0 / issue #766); a
+CloudFront-Functions + S3-origin distribution still serves entirely
+in-process (no Docker), while a Lambda Function URL origin runs via the
+RIE container.
 
 ### `local invoke`
 
