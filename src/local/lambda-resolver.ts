@@ -15,9 +15,10 @@ import { stringifyValue } from '../utils/stringify.js';
  * Node.js / Python ZIP-packaged Lambdas; `kind === 'image'` for container
  * Lambdas (`Code.ImageUri`). The two variants have meaningfully different
  * fields — `runtime` / `handler` / `codePath` are zip-only, while
- * `dockerSource` / `imageConfig` / `architecture` are image-only — so the
- * compiler can enforce exhaustive handling at the consumer (the
- * `local-invoke.ts` CLI command branch).
+ * `dockerSource` / `imageConfig` are image-only (`architecture` is on
+ * BOTH variants since issue #768) — so the compiler can enforce
+ * exhaustive handling at the consumer (the `local-invoke.ts` CLI command
+ * branch).
  *
  * Orthogonal future fields (e.g. PR 6 layers) live on the base interface
  * so they apply to both variants without each adding a copy.
@@ -166,6 +167,17 @@ export interface ResolvedZipLambda extends ResolvedLambdaBase {
    * writes this into a temp dir at the path implied by `handler`.
    */
   inlineCode?: string;
+  /**
+   * `Architectures: [x86_64]` (default) or `[arm64]`. Threaded through to
+   * `--platform linux/amd64` / `linux/arm64` on the ZIP container's
+   * `docker run` (issue #768). Without this, a `provided.*` custom-runtime
+   * `bootstrap` compiled for the other arch fails with
+   * `fork/exec /var/runtime/bootstrap: exec format error` /
+   * `Runtime.InvalidEntrypoint` when the host arch differs from the
+   * function's declared arch — matching the IMAGE path, which already
+   * pins `--platform` per `Architectures`.
+   */
+  architecture: 'x86_64' | 'arm64';
 }
 
 export interface ResolvedImageLambda extends ResolvedLambdaBase {
@@ -447,6 +459,8 @@ function extractLambdaProperties(
   // invoke time.
   const layers = resolveLambdaLayers(stack, logicalId, props);
 
+  const architecture = extractArchitecture(props, logicalId);
+
   return {
     kind: 'zip',
     stack,
@@ -456,6 +470,7 @@ function extractLambdaProperties(
     handler,
     memoryMb,
     timeoutSec,
+    architecture,
     codePath,
     layers,
     ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
@@ -611,6 +626,31 @@ function extractImageUri(
 }
 
 /**
+ * Parse `Properties.Architectures` into the single arch cdkd threads to
+ * `--platform`. CFn types it as an array, but CDK / Lambda allow exactly
+ * one entry; default `x86_64` matches the AWS-side default when the
+ * property is absent. Shared by BOTH the ZIP and IMAGE variants (issue
+ * #768) so the ZIP container run pins `--platform` the same way the IMAGE
+ * path always has.
+ */
+function extractArchitecture(
+  props: Record<string, unknown>,
+  logicalId: string
+): 'x86_64' | 'arm64' {
+  const arches = props['Architectures'];
+  if (Array.isArray(arches) && arches.length > 0) {
+    const first: unknown = arches[0];
+    if (first === 'arm64') return 'arm64';
+    if (first === 'x86_64') return 'x86_64';
+    throw new LocalInvokeResolutionError(
+      `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
+        'cdkd local invoke supports x86_64 and arm64.'
+    );
+  }
+  return 'x86_64';
+}
+
+/**
  * Build the IMAGE-variant `ResolvedLambda` from a Lambda template entry
  * with `Code.ImageUri`. `ImageConfig` and `Architectures` are both
  * optional in CFn — the defaults match the AWS-side defaults.
@@ -644,21 +684,7 @@ function extractImageLambdaProperties(args: {
     imageConfig.workingDirectory = rawImageConfig['WorkingDirectory'];
   }
 
-  // Architectures is an array (CFn). CDK never sets more than one entry.
-  // Default x86_64 matches AWS.
-  const arches = props['Architectures'];
-  let architecture: 'x86_64' | 'arm64' = 'x86_64';
-  if (Array.isArray(arches) && arches.length > 0) {
-    const first: unknown = arches[0];
-    if (first === 'arm64') architecture = 'arm64';
-    else if (first === 'x86_64') architecture = 'x86_64';
-    else {
-      throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
-          'cdkd local invoke supports x86_64 and arm64.'
-      );
-    }
-  }
+  const architecture = extractArchitecture(props, logicalId);
 
   // PR 6 (#232): container Lambdas reject `Layers` at deploy time on
   // the AWS side — layers are baked into the image at build time, not

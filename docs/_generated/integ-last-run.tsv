@@ -100,7 +100,6 @@ local-invoke-buildkit	2026-06-02T15:46:16Z	PASS	31	verify.sh	local integ serial 
 local-invoke-layers	2026-06-02T15:46:16Z	PASS	13	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-python	2026-06-02T15:46:16Z	PASS	28	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-ruby	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-invoke-provided	2026-06-02T15:46:16Z	PASS	35	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-java	2026-06-02T15:46:16Z	PASS	37	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-dotnet	2026-06-02T15:46:16Z	PASS	46	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-run-task-awsvpc	2026-06-02T15:46:16Z	PASS	9	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
@@ -119,8 +118,9 @@ local-start-alb-from-state	2026-06-02T15:46:16Z	PASS	89	verify.sh	local integ se
 local-invoke-from-cfn-stack	2026-06-02T15:46:16Z	PASS	92	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-start-api	2026-06-02T15:46:16Z	PASS	19	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-container	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke	2026-06-03T17:03:49Z	PASS		verify.sh	dep-bump validation; 5/5 invoke scenarios green
 local-start-agentcore	2026-06-05T06:23:37Z	PASS		verify.sh	schema-v54 verify: fixture floats to aws-cdk-lib 2.258.0, cdk-local 0.126.6 toolkit-lib 1.28.0 reads it, /ws bridge clean, Docker 0 leaks
 local-start-cloudfront	2026-06-05T06:57:59Z	PASS		verify.sh	--from-state wiring verify: cdk-local 0.128.0, S3 pipeline + rewrite + SPA + --watch, pure-local, rc 0
+local-invoke-provided	2026-06-05T07:36:40Z	PASS		verify.sh	#768 cross-arch invoke path; 4/4; docker clean
+local-start-api	2026-06-05T07:36:40Z	PASS		verify.sh	#768 warm container-pool platform threading + watch reload; docker clean

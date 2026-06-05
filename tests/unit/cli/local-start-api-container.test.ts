@@ -205,6 +205,39 @@ describe('resolveLambdaByLogicalId — IMAGE branch (issue #453)', () => {
     if (resolved.kind !== 'zip') throw new Error('TS narrowing');
     expect(resolved.runtime).toBe('nodejs20.x');
     expect(resolved.handler).toBe('index.handler');
+    // Issue #768: ZIP Lambdas carry architecture too (defaults to x86_64).
+    expect(resolved.architecture).toBe('x86_64');
+  });
+
+  it('captures Architectures: [arm64] on a ZIP Lambda (issue #768)', () => {
+    const armZipResource: TemplateResource = {
+      Type: 'AWS::Lambda::Function',
+      Properties: {
+        Runtime: 'provided.al2023',
+        Handler: 'bootstrap',
+        Architectures: ['arm64'],
+        Code: { ZipFile: 'bootstrap' },
+      },
+    };
+    const resolved = resolveLambdaByLogicalId('Fn', [makeStack({ Fn: armZipResource })]);
+    expect(resolved.kind).toBe('zip');
+    if (resolved.kind !== 'zip') throw new Error('TS narrowing');
+    expect(resolved.architecture).toBe('arm64');
+  });
+
+  it('rejects an unsupported Architectures value on a ZIP Lambda (issue #768)', () => {
+    const badZipResource: TemplateResource = {
+      Type: 'AWS::Lambda::Function',
+      Properties: {
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Architectures: ['mips64'],
+        Code: { ZipFile: 'exports.handler=()=>({});' },
+      },
+    };
+    expect(() => resolveLambdaByLogicalId('Fn', [makeStack({ Fn: badZipResource })])).toThrow(
+      /unsupported Architectures/
+    );
   });
 
   it('still rejects when neither Runtime nor Code.ImageUri is set', () => {

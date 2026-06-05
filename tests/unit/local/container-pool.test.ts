@@ -49,6 +49,7 @@ function makeSpec(logicalId: string): ContainerSpec {
     kind: 'zip',
     lambda,
     codeDir: '/tmp/code',
+    platform: 'linux/arm64',
     env: {},
     containerHost: '127.0.0.1',
   };
@@ -72,6 +73,19 @@ describe('container-pool — basic acquire / release', () => {
     expect(runDetached).toHaveBeenCalledTimes(1); // reused
     expect(h2.containerId).toBe(h1.containerId);
     pool.release(h2);
+    await pool.dispose();
+  });
+
+  // Issue #768: the ZIP container must be launched with the spec's
+  // `--platform` so a `provided.*` cross-arch `bootstrap` runs under
+  // emulation instead of failing with `exec format error`. Before the
+  // fix the ZIP `runDetached` call omitted `platform` entirely.
+  it('threads the ZIP spec platform into docker run (issue #768)', async () => {
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const h = await pool.acquire('Fn');
+    expect(runDetached).toHaveBeenCalledWith(expect.objectContaining({ platform: 'linux/arm64' }));
+    pool.release(h);
     await pool.dispose();
   });
 

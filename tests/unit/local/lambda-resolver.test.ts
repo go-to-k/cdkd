@@ -412,6 +412,69 @@ describe('resolveLambdaTarget', () => {
     );
   });
 
+  // Issue #768 — ZIP Lambdas carry Architectures too (threaded to
+  // `--platform` on the container run, like the IMAGE path).
+  it('captures Architectures: [arm64] on a ZIP Lambda', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        ArmZip: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'provided.al2023',
+            Handler: 'bootstrap',
+            Architectures: ['arm64'],
+          },
+          Metadata: { 'aws:asset:path': 'asset.armzip' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:ArmZip', [stack]);
+    expect(result.kind).toBe('zip');
+    if (result.kind !== 'zip') return;
+    expect(result.architecture).toBe('arm64');
+  });
+
+  it('defaults a ZIP Lambda Architectures to x86_64 when omitted', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        DefaultZip: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler' },
+          Metadata: { 'aws:asset:path': 'asset.defaultzip' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:DefaultZip', [stack]);
+    expect(result.kind).toBe('zip');
+    if (result.kind !== 'zip') return;
+    expect(result.architecture).toBe('x86_64');
+  });
+
+  it('rejects an unsupported Architectures value on a ZIP Lambda', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        BadZip: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Architectures: ['mips64'],
+          },
+          Metadata: { 'aws:asset:path': 'asset.badzip' },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:BadZip', [stack])).toThrow(
+      /unsupported Architectures/
+    );
+  });
+
   it('emits an empty imageConfig when ImageConfig is absent', () => {
     const stack = buildStack(
       'MyStack',
