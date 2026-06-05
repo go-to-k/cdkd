@@ -11,13 +11,16 @@
  * only the integ would catch it, and we only have an integ for one of
  * the three.
  *
- * `cdkd local start-service` + `start-alb` use cdk-local's ECS service
- * emulator engine; the engine calls `createLocalStateProvider` internally
- * via `cdkdExtraStateProviders` (registered in `local-state-source.ts`),
- * so those two commands intentionally do NOT import the dispatcher
- * directly. Their wiring is covered by the shared `extraStateProviders`
- * map (verified by typecheck + the engine's bundled mutual-exclusion
- * test in cdk-local).
+ * `cdkd local start-service` + `start-alb` + `start-agentcore` wrap
+ * cdk-local factories that call `createLocalStateProvider` internally
+ * via `cdkdExtraStateProviders` (registered in `local-state-source.ts`) —
+ * the ECS service emulator engine for the first two, the start-agentcore
+ * factory's `extraStateProviders` option for the third — so those three
+ * commands intentionally do NOT import the dispatcher directly. Their
+ * wiring is covered by the shared `extraStateProviders` map (verified by
+ * typecheck + the factories' bundled mutual-exclusion tests in cdk-local).
+ * `start-cloudfront` is a pure factory pass-through whose factory does NOT
+ * accept `extraStateProviders`, so it carries no cdkd `--from-state`.
  *
  * This test closes the gap for the three direct-dispatch commands with
  * a pure-source-text scan: each of them must

@@ -14,8 +14,9 @@ directly.
 | `cdkd local run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkd local start-service <target>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | AgentCore container on port 8080 (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / WebSocket `/ws`) |
+| `cdkd local start-agentcore [target]` | Long-running serve of a Bedrock AgentCore Runtime's bidirectional `/ws` WebSocket endpoint | AgentCore container on port 8080 (shimmed from cdk-local) + host `node:http` WebSocket bridge that injects the session-id / Authorization upgrade headers a header-less client (browser) cannot set; HTTP / AGUI protocols only |
 | `cdkd local start-alb <targets...>` | Long-running local ALB front-door for ECS / Lambda backing services | shared ECS service emulator engine (shimmed from cdk-local) + per-listener `node:http(s)` front-door with path / host / header / weighted / redirect / fixed-response routing |
-| `cdkd local start-cloudfront [target]` | Long-running local CloudFront distribution (viewer-request -> S3 origin -> viewer-response) | in-process `node:http(s)` server (shimmed from cdk-local) — CloudFront Functions in a `node:vm` sandbox + S3 origin served from the `BucketDeployment` source asset; no Docker |
+| `cdkd local start-cloudfront [target]` | Long-running local CloudFront distribution (viewer-request -> S3 / Lambda Function URL origin -> viewer-response) | in-process `node:http(s)` server (shimmed from cdk-local) — CloudFront Functions in a `node:vm` sandbox + S3 origin served from the `BucketDeployment` source asset; Lambda Function URL origins run locally via the RIE container (Docker) |
 
 ## Requirements
 
@@ -25,9 +26,12 @@ language-specific Lambda images, ~50MB for `provided.*`, plus the ECS
 metadata sidecar for `run-task`). Subsequent runs reuse the cached
 image; pass `--no-pull` to skip the `docker pull` round-trip
 altogether (per-command `--no-pull` semantics may differ — see each
-section below). The one exception is `local start-cloudfront`, which
-serves entirely in-process (CloudFront Functions in a `node:vm`
-sandbox, S3 origin from local files) and needs no Docker at all.
+section below). The exception is `local start-cloudfront` for a
+CloudFront-Functions + S3-origin-only distribution, which serves
+entirely in-process (CloudFront Functions in a `node:vm` sandbox, S3
+origin from local files) and needs no Docker — but a distribution with
+a Lambda Function URL origin runs that origin's backing Lambda locally
+via the RIE container, so Docker is required in that case.
 
 ## Common flags
 
@@ -1486,13 +1490,26 @@ across `^C`.
 ## `local start-cloudfront` (run a CloudFront distribution locally)
 
 `cdkd local start-cloudfront [target]` serves a CloudFront
-distribution's **viewer-request -> S3 origin -> viewer-response**
-pipeline locally so a routing-function change is verifiable in seconds
-instead of a deploy round-trip. Models cdk-local's
+distribution's **viewer-request -> S3 / Lambda Function URL origin ->
+viewer-response** pipeline locally so a routing-function change is
+verifiable in seconds instead of a deploy round-trip. Models cdk-local's
 `cdkl start-cloudfront`, inherited into cdkd's command tree as a thin
-pass-through to `cdk-local`'s command factory. Unlike the other
-`cdkd local *` commands this is **pure-local** — no Docker, no AWS call
-— so it carries neither `--from-state` nor `--from-cfn-stack`.
+pass-through to `cdk-local`'s command factory. A CloudFront-Functions +
+S3-origin-only distribution is pure-local (no Docker); a distribution
+with a Lambda Function URL origin runs that origin's backing Lambda via
+the RIE container (Docker required). It inherits cdk-local's
+`--from-cfn-stack` / `--stack-region` / `--assume-role` to bind a
+Function URL origin's backing Lambda + a deployed-S3 origin's bucket
+name to a deployed CloudFormation stack.
+
+> **`--from-state` exemption (issue #766).** Unlike the `start-agentcore`
+> / `start-alb` / `start-service` wrappers, `start-cloudfront` does NOT
+> carry cdkd's S3-backed `--from-state` source: cdk-local's
+> `createLocalStartCloudFrontCommand` factory accepts only `embedConfig`,
+> not the `extraStateProviders` seam cdkd threads its `--from-state`
+> factory through. `start-cloudfront` stays exempt until cdk-local exposes
+> `extraStateProviders` on its start-cloudfront factory; until then
+> `--from-cfn-stack` is the only deployed-state source on this command.
 
 ### `local start-cloudfront` target resolution
 
@@ -1512,9 +1529,14 @@ distribution is served per invocation.
   over the origin response.
 - **S3 origin content** — resolved out of the cloud assembly: the
   origin's bucket -> its `BucketDeployment` custom resource ->
-  `SourceObjectKeys` -> the staged asset directory. Served with
-  `DefaultRootObject` (root only — sub-paths are NOT auto-indexed,
-  matching CloudFront) and `CustomErrorResponses` (the SPA fallback).
+  `SourceObjectKeys` -> the staged asset directory (or, under
+  `--from-cfn-stack`, the deployed bucket served from real S3 on demand).
+  Served with `DefaultRootObject` (root only — sub-paths are NOT
+  auto-indexed, matching CloudFront) and `CustomErrorResponses` (the SPA
+  fallback).
+- **Lambda Function URL origins** — the origin's backing Lambda is run
+  locally via the RIE container (the same path as `local invoke`), so a
+  distribution that fronts a Function URL is served end-to-end.
 - **Routing** — path patterns route across the `DefaultCacheBehavior` +
   ordered `CacheBehaviors[]` (CloudFront `*` / `?` glob matching).
 
@@ -1527,15 +1549,27 @@ distribution is served per invocation.
 - `--origin <id>=<dir>` — point an origin at a local directory when
   `BucketDeployment` resolution can't (content uploaded out of band,
   non-CDK bucket). Repeatable.
+- `--kvs-file <id>=<file>` — supply a CloudFront KeyValueStore's contents
+  from a local JSON file (the AWS-free alternative to `--from-cfn-stack`,
+  which reads the deployed store on demand). Repeatable.
+- `--cache-origin` — keep fetched deployed-S3 origin objects in memory
+  (only meaningful under `--from-cfn-stack`).
+- `--no-pull` — skip `docker pull` for a Lambda Function URL origin's
+  base image (no-op for a Function-URL-free distribution).
+- `--from-cfn-stack [name]` / `--stack-region <region>` /
+  `--assume-role [arn]` — bind a Function URL origin's backing Lambda +
+  a deployed-S3 origin's bucket name to a deployed CloudFormation stack
+  (see the `--from-state` exemption note above — cdkd's S3-backed
+  `--from-state` is intentionally absent here).
 - `--watch` — re-synth + atomically swap the in-memory routing model
-  under the live socket on every CDK source edit (no Docker, so a reload
-  is just re-synth + re-resolve).
+  under the live socket on every CDK source edit.
 
 ### `local start-cloudfront` scope
 
-S3 origins only. A custom (non-S3) origin, a `LambdaFunctionAssociations`
-Lambda@Edge association, the KeyValueStore, and the 2.0 `cf.fetch`
-origin API are warn-and-skip (custom / unresolved origins return 502).
+S3 origins + Lambda Function URL origins. A custom (non-S3, non-Function-URL)
+origin, a `LambdaFunctionAssociations` Lambda@Edge association, and the
+2.0 `cf.fetch` origin API are warn-and-skip (custom / unresolved origins
+return 502).
 
 ## `local invoke-agentcore` (run Bedrock AgentCore Runtime locally)
 
@@ -1597,3 +1631,74 @@ A per-firing classifier picks the reload primitive:
 ### Implementation notes
 
 cdkd consumes cdk-local's AgentCore implementation verbatim via shim files (`src/local/agentcore-*.ts`). The actual runtime resolver, code-image builder, S3 bundle downloader, protocol clients (HTTP / MCP / A2A / WebSocket), and SigV4 signer all live in cdk-local (`@cdk-local/internal`); cdkd's command file ports the CLI surface + state-source integration only, mirroring the established pattern from `cdkd local invoke` / `start-api` / `run-task` / `start-service`.
+
+## `local start-agentcore` (serve a Bedrock AgentCore Runtime `/ws` locally)
+
+`cdkd local start-agentcore [target]` is the long-running **serve**
+counterpart of the single-shot `local invoke-agentcore`. It boots the
+AgentCore Runtime container (same image / env / credential resolution as
+`invoke-agentcore`) and fronts its bidirectional `/ws` WebSocket endpoint
+with a host WebSocket bridge that injects the AgentCore session-id (and,
+under a `customJwtAuthorizer`, the `Authorization` header) on the
+container upgrade — so a **header-less client** (e.g. a browser
+`WebSocket`, which cannot set custom upgrade headers) can hold an
+interactive multi-frame session. Runs until `^C`. HTTP / AGUI protocols
+only (MCP / A2A runtimes have no `/ws`). Models cdk-local's
+`cdkl start-agentcore` ([cdk-local#420](https://github.com/go-to-k/cdk-local/pull/420)),
+inherited into cdkd's command tree as a thin pass-through to cdk-local's
+command factory. Requires Docker.
+
+### `local start-agentcore` target resolution
+
+Same shape as `local invoke-agentcore`: a CDK display path
+(`MyStack/MyAgent`) or stack-qualified logical ID. Single-stack apps may
+omit the stack prefix. Omit the target in a TTY for an interactive picker
+over the discovered AgentCore Runtimes.
+
+### `local start-agentcore` state-source flags
+
+`start-agentcore` is one of the factory pass-throughs that DOES bind
+deployed state (issue #766): cdk-local's start-agentcore factory accepts
+the `extraStateProviders` seam, so cdkd threads its S3-backed
+`--from-state` factory in and layers the cdkd-specific `--from-state` /
+`--state-bucket` / `--state-prefix` flags on top of cdk-local's inherited
+`--from-cfn-stack` / `--stack-region`. Use `--from-state` (after a prior
+`cdkd deploy`) or `--from-cfn-stack [name]` (for a stack deployed via the
+upstream CDK CLI) to substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` /
+`Fn::ImportValue` / `Fn::GetStackOutput` intrinsics in the runtime
+container image + environment variables. Mutually exclusive. (Contrast
+`start-cloudfront`, whose factory lacks the seam and so stays exempt — see
+that command's `--from-state` exemption note above.)
+
+### `local start-agentcore` options
+
+- `--port <n>` — bridge-server bind port the client connects to (default
+  `0` = OS-assigned). The ready banner prints the chosen
+  `ws://<host>:<port>/ws`.
+- `--host <ip>` — bridge-server bind host (default `127.0.0.1`).
+- `--session-id <id>` — pin one AgentCore session-id for every connection
+  (default: a fresh UUID per connection, so each client is its own
+  session).
+- `--bearer-token <jwt>` — Bearer JWT presented under a
+  `customJwtAuthorizer` (verified before any Docker work).
+- `--no-verify-auth` — skip the inbound JWT verification.
+- `--env-vars <file>` — SAM-shape env-var overrides.
+- `--platform <linux/amd64|linux/arm64>` — defaults to `linux/arm64`
+  (AgentCore's required arch).
+- `--container-host <host>` — host to bind the container ports to.
+- `--timeout <ms>` — per-frame request timeout.
+- `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` /
+  `--state-prefix` / `--stack-region` — state-source flags (above).
+- `--assume-role [arn]` / `--ecr-role-arn <arn>` — role-assumption +
+  cross-account ECR image-pull flags.
+- `--no-pull` / `--no-build` — pull / build skip.
+
+### `local start-agentcore` lifecycle
+
+The container is started once and fronted by the host bridge; each client
+connection opens its own container `/ws` upgrade with the session-id (and
+optional `Authorization`) injected. `^C` (SIGTERM / SIGINT) tears the
+container down and exits — no `cdkd-local-agentcore-*` container is left
+behind. The studio `agentcore-ws` serve kind (cdk-local) spawns this
+command, but cdkd does not embed cdk-local's `studio` command, so that
+surface is not exposed by the cdkd CLI.

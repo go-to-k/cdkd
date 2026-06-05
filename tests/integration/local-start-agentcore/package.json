@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-local-start-agentcore",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkd local start-agentcore (/ws bridge serve)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "~2.257.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -123,3 +123,4 @@ local-start-api	2026-06-02T15:46:16Z	PASS	19	verify.sh	local integ serial sweep:
 local-invoke-container	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-start-cloudfront	2026-06-03T17:02:40Z	PASS		verify.sh	pure-local; root+header, /foo rewrite, SPA fallback, --watch reload, port freed
 local-invoke	2026-06-03T17:03:49Z	PASS		verify.sh	dep-bump validation; 5/5 invoke scenarios green
+local-start-agentcore	2026-06-05T05:33:17Z	PASS		verify.sh	local: /ws bridge serve, session-id injected + frame round-trip, Docker clean (0 containers/networks), rc 0

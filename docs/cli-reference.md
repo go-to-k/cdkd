@@ -1701,10 +1701,12 @@ The `cdkd local` command family runs AWS workloads on the developer's
 machine — Lambda functions, API Gateway routes, ECS tasks, ECS
 Services, ALB front-doors, CloudFront distributions, and Bedrock
 AgentCore Runtimes — without an AWS deploy. Most commands run the
-workload in Docker; `local start-cloudfront` serves entirely in-process
-(no Docker). The full reference for all `cdkd local *` subcommands
-(`local invoke` / `local start-api` / `local run-task` /
-`local start-service` / `local start-alb` / `local start-cloudfront` /
-`local invoke-agentcore`) lives in
+workload in Docker; `local start-cloudfront` serves a
+CloudFront-Functions + S3-origin distribution in-process (no Docker),
+falling back to Docker/RIE only for a Lambda Function URL origin. The
+full reference for all `cdkd local *` subcommands (`local invoke` /
+`local start-api` / `local run-task` / `local start-service` /
+`local start-alb` / `local start-cloudfront` / `local invoke-agentcore` /
+`local start-agentcore`) lives in
 **[docs/local-emulation.md](local-emulation.md)**.
 
