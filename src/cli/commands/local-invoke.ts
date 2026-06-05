@@ -724,7 +724,8 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
  *
  * For ZIP Lambdas: `image` is a public Lambda base image, `mounts` carries
  * one entry that bind-mounts the local code at /var/task, `cmd` is
- * `[handler]`. `platform` / `entryPoint` / `workingDir` are unset.
+ * `[handler]`. `platform` is set per `Architectures` (issue #768);
+ * `entryPoint` / `workingDir` are unset.
  *
  * For IMAGE Lambdas (PR 5): `image` is either a locally-built tag (asset
  * manifest hit) or the deployed ECR URI (fallback). `mounts` is empty (the
@@ -814,7 +815,7 @@ async function resolveImagePlan(
  * (Code.ZipFile) Lambdas materialize to a tmpdir using the
  * runtime-appropriate file extension before bind-mounting.
  */
-async function resolveZipImagePlan(
+export async function resolveZipImagePlan(
   lambda: ResolvedZipLambda,
   options: LocalInvokeOptions
 ): Promise<ImagePlan> {
@@ -861,6 +862,12 @@ async function resolveZipImagePlan(
     mounts: [{ hostPath: codeDir, containerPath: containerCodePath, readOnly: true }],
     extraMounts: layerPlan.mount ? [layerPlan.mount] : [],
     cmd: [lambda.handler],
+    // Issue #768: pin `--platform` to the function's declared arch on the
+    // ZIP container run too (the IMAGE path always has). Without it a
+    // `provided.*` `bootstrap` compiled for the other arch fails with
+    // `exec format error` / `Runtime.InvalidEntrypoint` on an
+    // arch-mismatched host; with it Docker emulates the declared arch.
+    platform: architectureToPlatform(lambda.architecture),
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),
     ...(layerPlan.tmpDir !== undefined && { layersTmpDir: layerPlan.tmpDir }),
     ...(layerPlan.extraTmpDirs.length > 0 && { layerArnTmpDirs: layerPlan.extraTmpDirs }),

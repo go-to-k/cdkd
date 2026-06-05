@@ -298,6 +298,10 @@ function specSignature(spec: ContainerSpec): string {
       env: spec.env,
       handler: spec.lambda.handler,
       runtime: spec.lambda.runtime,
+      // Issue #768: a `--watch` edit that flips the function's
+      // `Architectures` changes the `docker run --platform`, so it must
+      // tear the warm pool down (mirrors the IMAGE arm's `platform`).
+      platform: spec.platform,
       containerHost: spec.containerHost,
       debugPort: spec.debugPort ?? null,
       tmpfs: spec.tmpfs ?? null,

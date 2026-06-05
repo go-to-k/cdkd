@@ -89,6 +89,15 @@ a compiled artifact (`package.Class::method` for Java's JVM class;
 `Assembly::Namespace.Class::Method` for .NET's CLR assembly; an
 arbitrary `bootstrap` binary for `provided.*`).
 
+A ZIP Lambda's `Architectures: [x86_64]` (default) / `[arm64]` is pinned to
+`--platform linux/amd64` / `linux/arm64` on the container's `docker run`
+(matching the container-image path). On an arch-mismatched host Docker
+emulates the function's declared arch, so a `provided.*` `bootstrap`
+compiled for the other architecture runs instead of failing with
+`fork/exec /var/runtime/bootstrap: exec format error` /
+`Runtime.InvalidEntrypoint`. The same pinning applies to `cdkd local
+start-api`'s warm-container pool.
+
 **Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported in addition to ZIP Lambdas. cdkd reads the
 function's local `Dockerfile` from `cdk.out` (via the asset manifest

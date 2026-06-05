@@ -1696,6 +1696,13 @@ async function buildContainerSpec(args: {
     // tmpdirs are tracked in `layerTmpDirs` alongside multi-layer merge
     // dirs so the same shutdown path cleans every one.
     optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn);
+
+    // Issue #768: pin `--platform` to the function's declared arch on the
+    // ZIP container run too (the IMAGE branch below always has). Without
+    // it a `provided.*` `bootstrap` compiled for the other arch fails with
+    // `exec format error` / `Runtime.InvalidEntrypoint` on an
+    // arch-mismatched host; with it Docker emulates the declared arch.
+    platform = architectureToPlatform(lambda.architecture);
   } else {
     // IMAGE branch (closes #453): build locally from cdk.out asset
     // manifest, OR pull from ECR when no matching asset is found.
@@ -1850,6 +1857,10 @@ async function buildContainerSpec(args: {
       kind: 'zip',
       lambda,
       codeDir: codeDir!,
+      // Issue #768: the ZIP branch sets `platform` from the function's
+      // declared arch above; carry it onto the spec so the warm-container
+      // pool's `docker run` pins `--platform` (the IMAGE spec already does).
+      platform: platform!,
       env: dockerEnv,
       containerHost,
       ...(optDir !== undefined && { optDir }),
@@ -2083,6 +2094,15 @@ interface ResolvedStartApiZipLambda extends ResolvedStartApiLambdaBase {
   handler: string;
   codePath: string | null;
   inlineCode?: string;
+  /**
+   * `Architectures: [x86_64]` (default) or `[arm64]`. Threaded through to
+   * `--platform linux/amd64` / `linux/arm64` on the ZIP container's
+   * `docker run` (issue #768) so a `provided.*` `bootstrap` compiled for
+   * the other arch doesn't fail with `exec format error` /
+   * `Runtime.InvalidEntrypoint` on an arch-mismatched host — matching the
+   * IMAGE path, which already pins `--platform`.
+   */
+  architecture: 'x86_64' | 'arm64';
 }
 
 export interface ResolvedStartApiImageLambda extends ResolvedStartApiLambdaBase {
@@ -2171,6 +2191,7 @@ export function resolveLambdaByLogicalId(
     // the box.
     const layers = resolveLambdaLayers(stack, logicalId, props);
     const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
+    const architecture = extractStartApiArchitecture(props, logicalId);
     return {
       kind: 'zip',
       stack,
@@ -2182,6 +2203,7 @@ export function resolveLambdaByLogicalId(
       timeoutSec,
       codePath,
       layers,
+      architecture,
       ...(inlineCode !== undefined && { inlineCode }),
       ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     };
@@ -2281,6 +2303,30 @@ function extractImageUri(
 }
 
 /**
+ * Parse `Properties.Architectures` into the single arch cdkd threads to
+ * `--platform`. Defaults to `x86_64` (the AWS default) when absent; CDK
+ * only ever sets one entry. Shared by BOTH the ZIP and IMAGE start-api
+ * resolvers (issue #768) so the ZIP container run pins `--platform` the
+ * same way the IMAGE path always has.
+ */
+function extractStartApiArchitecture(
+  props: Record<string, unknown>,
+  logicalId: string
+): 'x86_64' | 'arm64' {
+  const arches = props['Architectures'];
+  if (Array.isArray(arches) && arches.length > 0) {
+    const first: unknown = arches[0];
+    if (first === 'arm64') return 'arm64';
+    if (first === 'x86_64') return 'x86_64';
+    throw new Error(
+      `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
+        'cdkd local start-api supports x86_64 and arm64.'
+    );
+  }
+  return 'x86_64';
+}
+
+/**
  * Build the IMAGE-variant `ResolvedStartApiLambda` from a Lambda
  * template entry with `Code.ImageUri`. Mirrors
  * `lambda-resolver.ts:extractImageLambdaProperties` but trimmed to the
@@ -2313,20 +2359,7 @@ function resolveImageLambda(args: {
     imageConfig.workingDirectory = rawImageConfig['WorkingDirectory'];
   }
 
-  // Architectures defaults to x86_64. CDK only ever sets one entry.
-  const arches = props['Architectures'];
-  let architecture: 'x86_64' | 'arm64' = 'x86_64';
-  if (Array.isArray(arches) && arches.length > 0) {
-    const first: unknown = arches[0];
-    if (first === 'arm64') architecture = 'arm64';
-    else if (first === 'x86_64') architecture = 'x86_64';
-    else {
-      throw new Error(
-        `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
-          'cdkd local start-api supports x86_64 and arm64.'
-      );
-    }
-  }
+  const architecture = extractStartApiArchitecture(props, logicalId);
 
   // Issue #440 — EphemeralStorage.Size applies to container Lambdas
   // too; AWS accepts it on `lambda.DockerImageFunction`. Parse via the

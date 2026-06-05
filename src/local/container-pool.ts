@@ -152,6 +152,15 @@ export interface ZipContainerSpec extends ContainerSpecBase {
    */
   codeDir: string;
   /**
+   * `docker run --platform <linux/amd64|linux/arm64>` translated from the
+   * ZIP Lambda's `Architectures` array (issue #768). Threaded through to
+   * the ZIP container's `docker run` so a `provided.*` `bootstrap`
+   * compiled for the other arch doesn't fail with `exec format error` /
+   * `Runtime.InvalidEntrypoint` on an arch-mismatched host — matching the
+   * IMAGE spec, which already carries `platform`.
+   */
+  platform: string;
+  /**
    * Pre-resolved bind-mount source for `/opt` (PR 6 of #224, issue
    * #232 — Lambda Layers). Resolved ONCE at server boot — for a
    * single-layer function this is the layer's asset dir; for multi-
@@ -371,6 +380,10 @@ export function createContainerPool(
         hostPort,
         host: spec.containerHost,
         name,
+        // Issue #768: pin the ZIP container to the function's declared arch
+        // so a `provided.*` cross-arch `bootstrap` runs under emulation
+        // instead of failing with `exec format error`.
+        platform: spec.platform,
         ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
         ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
         ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
