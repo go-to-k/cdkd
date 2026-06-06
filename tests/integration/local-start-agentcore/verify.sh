@@ -162,6 +162,9 @@ if [ -z "${AWS_ACCESS_KEY_ID:-}" ] && command -v aws >/dev/null 2>&1; then
   [ -n "${CREDS_ENV}" ] && eval "${CREDS_ENV}"
 fi
 if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+  # In CI we expect creds to be present, so a silent skip there would quietly
+  # drop --sigv4 coverage; fail loudly. Locally (no CI), skip is fine.
+  [ -n "${CI:-}" ] && fail "no AWS credentials available to exercise --sigv4 signing (CI is set, expected creds)"
   echo "[verify]   SKIP step 8/9: no AWS credentials available to exercise --sigv4 signing"
 else
   boot_server --sigv4
