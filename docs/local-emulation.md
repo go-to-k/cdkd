@@ -14,7 +14,7 @@ directly.
 | `cdkd local run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkd local start-service <target>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 | `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | AgentCore container on port 8080 (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / WebSocket `/ws`) |
-| `cdkd local start-agentcore [target]` | Long-running serve of a Bedrock AgentCore Runtime's bidirectional `/ws` WebSocket endpoint | AgentCore container on port 8080 (shimmed from cdk-local) + host `node:http` WebSocket bridge that injects the session-id / Authorization upgrade headers a header-less client (browser) cannot set; HTTP / AGUI protocols only |
+| `cdkd local start-agentcore [target]` | Long-running serve of a Bedrock AgentCore Runtime against a warm container (all four protocols) | AgentCore container on port 8080 (shimmed from cdk-local), booted once + kept warm. HTTP / AGUI: host `node:http` server proxies `POST /invocations` + `GET /ping` and fronts the bidirectional `/ws` endpoint (injects the session-id / Authorization a header-less browser client cannot set), both on one port. MCP serves `POST /mcp`; A2A serves `POST /` (no `/ws`) |
 | `cdkd local start-alb <targets...>` | Long-running local ALB front-door for ECS / Lambda backing services | shared ECS service emulator engine (shimmed from cdk-local) + per-listener `node:http(s)` front-door with path / host / header / weighted / redirect / fixed-response routing |
 | `cdkd local start-cloudfront [target]` | Long-running local CloudFront distribution (viewer-request -> S3 / Lambda Function URL origin -> viewer-response) | in-process `node:http(s)` server (shimmed from cdk-local) — CloudFront Functions in a `node:vm` sandbox + S3 origin served from the `BucketDeployment` source asset; Lambda Function URL origins run locally via the RIE container (Docker) |
 
@@ -1586,6 +1586,8 @@ return 502).
 
 `cdkd local invoke-agentcore <target>` runs one Bedrock AgentCore Runtime container locally and invokes it once over the AgentCore protocol declared by the target. Supports the container artifact (`fromContainerAsset` / `fromEcr`) and the `CodeConfiguration` managed-runtime artifact (`fromCodeAsset`, built from source) on the HTTP, MCP, A2A, and AGUI protocols, plus a bidirectional `--ws` mode for streaming. Models cdk-local's `cdkl invoke-agentcore`, ported into cdkd's command tree as a shim over `cdk-local/internal`.
 
+> **`CodeConfiguration` builds run the bundle as-is (no dependency install).** The `fromCodeAsset` / `fromS3` source build matches the AWS managed runtime: it does **not** `pip install` (`requirements.txt` / `pyproject.toml`) or `npm install` your dependencies — the deployed runtime resolves deps vendored into the bundle at deploy time (e.g. arm64 wheels via `uv pip install --target`). So a bundle that declares a dependency manifest **without vendored deps** now fails locally with `ModuleNotFoundError` the same way it fails deployed (instead of passing locally only because of a local install), and cdkd emits a warning with the vendoring recipe. Vendor your deps into the bundle — which a successful deploy already requires. Container artifacts (`fromContainerAsset` / `fromEcr`) are unaffected. Inherited from cdk-local (follows [cdk-local#455](https://github.com/go-to-k/cdk-local/issues/455) / cdk-local#456); applies to `start-agentcore` too (same `buildAgentCoreCodeImage` build).
+
 ### Target resolution
 
 Same shape as `cdkd local invoke`: accepts a CDK display path (`MyStack/MyAgent`) or stack-qualified logical ID (`MyStack:MyAgentRuntime1234`). Single-stack apps may omit the stack prefix. When the target is omitted in an interactive terminal, an interactive picker prompts from the discovered list (no TTY -> command's required-arg error).
@@ -1643,21 +1645,35 @@ A per-firing classifier picks the reload primitive:
 
 cdkd consumes cdk-local's AgentCore implementation verbatim via shim files (`src/local/agentcore-*.ts`). The actual runtime resolver, code-image builder, S3 bundle downloader, protocol clients (HTTP / MCP / A2A / WebSocket), and SigV4 signer all live in cdk-local (`@cdk-local/internal`); cdkd's command file ports the CLI surface + state-source integration only, mirroring the established pattern from `cdkd local invoke` / `start-api` / `run-task` / `start-service`.
 
-## `local start-agentcore` (serve a Bedrock AgentCore Runtime `/ws` locally)
+## `local start-agentcore` (serve a Bedrock AgentCore Runtime locally)
 
 `cdkd local start-agentcore [target]` is the long-running **serve**
 counterpart of the single-shot `local invoke-agentcore`. It boots the
-AgentCore Runtime container (same image / env / credential resolution as
-`invoke-agentcore`) and fronts its bidirectional `/ws` WebSocket endpoint
-with a host WebSocket bridge that injects the AgentCore session-id (and,
-under a `customJwtAuthorizer`, the `Authorization` header) on the
-container upgrade — so a **header-less client** (e.g. a browser
-`WebSocket`, which cannot set custom upgrade headers) can hold an
-interactive multi-frame session. Runs until `^C`. HTTP / AGUI protocols
-only (MCP / A2A runtimes have no `/ws`). Models cdk-local's
-`cdkl start-agentcore` ([cdk-local#420](https://github.com/go-to-k/cdk-local/pull/420)),
-inherited into cdkd's command tree as a thin pass-through to cdk-local's
-command factory. Requires Docker.
+AgentCore Runtime container **once** (same image / env / credential
+resolution as `invoke-agentcore`) and keeps it **warm**, serving the
+runtime's native protocol contract so a client can hit it repeatedly:
+
+- **HTTP / AGUI** runtimes serve `POST /invocations` + `GET /ping`
+  (proxied to the warm container, with the session-id / boot-resolved
+  `Authorization` injected and the request/response — including an SSE
+  stream — piped through) **and** the bidirectional `/ws` WebSocket
+  endpoint behind a host bridge that injects the AgentCore session-id
+  (and, under a `customJwtAuthorizer`, the `Authorization` header) on the
+  container upgrade — so a **header-less client** (e.g. a browser
+  `WebSocket`, which cannot set custom upgrade headers) can hold an
+  interactive multi-frame session. Both share the **same host port**; the
+  ready banner prints both an `HTTP contract served on http://...` line
+  and the `Server listening on ws://...` line.
+- **MCP** runtimes serve `POST /mcp`; **A2A** runtimes serve `POST /`
+  (these have no `/ws` bridge, and print a `Server listening on http://...`
+  ready line plus a `<PROTOCOL> contract served on http://...` line).
+
+Runs until `^C`. Models cdk-local's `cdkl start-agentcore`
+([cdk-local#420](https://github.com/go-to-k/cdk-local/pull/420); the warm
+HTTP serve + all four protocols + per-request inbound JWT + `--sigv4` +
+`--watch` follow [cdk-local#454](https://github.com/go-to-k/cdk-local/issues/454)
+slices 1/2/4a/4b), inherited into cdkd's command tree as a thin
+pass-through to cdk-local's command factory. Requires Docker.
 
 ### `local start-agentcore` target resolution
 
@@ -1683,33 +1699,59 @@ container image + environment variables. Mutually exclusive. (`start-alb`,
 
 ### `local start-agentcore` options
 
-- `--port <n>` — bridge-server bind port the client connects to (default
-  `0` = OS-assigned). The ready banner prints the chosen
-  `ws://<host>:<port>/ws`.
-- `--host <ip>` — bridge-server bind host (default `127.0.0.1`).
-- `--session-id <id>` — pin one AgentCore session-id for every connection
-  (default: a fresh UUID per connection, so each client is its own
-  session).
+- `--port <n>` — serve bind port the client connects to (default
+  `0` = OS-assigned). The HTTP contract and the `/ws` bridge share this
+  one port; the ready banner prints the chosen
+  `http://<host>:<port>` + `ws://<host>:<port>/ws`.
+- `--host <ip>` — serve bind host (default `127.0.0.1`).
+- `--session-id <id>` — pin one AgentCore session-id for every forwarded
+  request / `/ws` connection (default: a fresh UUID each, so each is its
+  own session).
 - `--bearer-token <jwt>` — Bearer JWT presented under a
-  `customJwtAuthorizer` (verified before any Docker work).
-- `--no-verify-auth` — skip the inbound JWT verification.
+  `customJwtAuthorizer` (verified against the runtime's OIDC discovery URL
+  before the container starts, then forwarded on every request and the
+  container `/ws` upgrade). Now the **default-when-missing** fallback — the
+  inbound JWT gate is per request, not boot-time (see below).
+- `--no-verify-auth` — skip the inbound JWT verification (a `--bearer-token`,
+  if given, is still forwarded).
+- `--sigv4` — sign each forwarded request with AWS SigV4 (service
+  `bedrock-agentcore`) when the runtime declares **no** `customJwtAuthorizer`,
+  so the warm container sees the same `Authorization` / `X-Amz-*` headers
+  the cloud receives. Mutually exclusive with `--bearer-token`; ignored
+  (with a warning) when a `customJwtAuthorizer` is declared.
+- `--watch` — re-synth + reload the warm container in place on a CDK
+  source change, keeping the host serve up (only the container rotates; a
+  per-firing classifier picks rebuild vs soft-reload, the same machinery
+  as `invoke-agentcore --ws --watch`). Off by default.
 - `--env-vars <file>` — SAM-shape env-var overrides.
 - `--platform <linux/amd64|linux/arm64>` — defaults to `linux/arm64`
   (AgentCore's required arch).
 - `--container-host <host>` — host to bind the container ports to.
-- `--timeout <ms>` — per-frame request timeout.
+- `--timeout <ms>` — per-request timeout.
 - `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` /
   `--state-prefix` / `--stack-region` — state-source flags (above).
 - `--assume-role [arn]` / `--ecr-role-arn <arn>` — role-assumption +
   cross-account ECR image-pull flags.
 - `--no-pull` / `--no-build` — pull / build skip.
 
+### `local start-agentcore` inbound auth (`customJwtAuthorizer`)
+
+When the runtime declares an inbound `customJwtAuthorizer`, the warm serve
+verifies each contract request's `Authorization` **per request** (matching
+the cloud): `401` when the header is missing, `403` when the token is
+invalid, forwarded on a pass. `GET /ping` is unauthenticated. The
+container boots without requiring a token up front; `--bearer-token` is the
+default token used when a request arrives without its own `Authorization`.
+For a SigV4-protected runtime (no `customJwtAuthorizer`) use `--sigv4`
+instead to sign each forwarded request.
+
 ### `local start-agentcore` lifecycle
 
-The container is started once and fronted by the host bridge; each client
-connection opens its own container `/ws` upgrade with the session-id (and
-optional `Authorization`) injected. `^C` (SIGTERM / SIGINT) tears the
-container down and exits — no `cdkd-local-agentcore-*` container is left
-behind. The studio `agentcore-ws` serve kind (cdk-local) spawns this
-command, but cdkd does not embed cdk-local's `studio` command, so that
-surface is not exposed by the cdkd CLI.
+The container is started once and kept warm; HTTP / AGUI contract requests
+are proxied to it and each `/ws` client opens its own container upgrade
+with the session-id (and optional `Authorization`) injected. `^C`
+(SIGTERM / SIGINT) tears the container down and exits — no
+`cdkd-local-agentcore-*` container is left behind. The studio
+`agentcore-ws` serve kind (cdk-local) spawns this command, but cdkd does
+not embed cdk-local's `studio` command, so that surface is not exposed by
+the cdkd CLI.
