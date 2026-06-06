@@ -43,6 +43,11 @@ describe('createLocalStartAgentCoreCommand', () => {
     expect(longs).toContain('--session-id');
     expect(longs).toContain('--bearer-token');
     expect(longs).toContain('--no-verify-auth');
+    // --sigv4 (per-request inbound SigV4 signing, #777) + --watch (warm-container
+    // reload, #778) auto-inherit via cdk-local's addStartAgentCoreSpecificOptions;
+    // assert them so a future bump that drops either flag is caught here.
+    expect(longs).toContain('--sigv4');
+    expect(longs).toContain('--watch');
     expect(longs).toContain('--env-vars');
     expect(longs).toContain('--timeout');
     expect(longs).toContain('--assume-role');

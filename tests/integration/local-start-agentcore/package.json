@@ -2,7 +2,7 @@
   "name": "cdkd-integ-local-start-agentcore",
   "version": "1.0.0",
   "private": true,
-  "description": "Integration test fixture for cdkd local start-agentcore (/ws bridge serve)",
+  "description": "Integration test fixture for cdkd local start-agentcore (warm HTTP contract + /ws bridge serve)",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

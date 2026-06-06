@@ -7,23 +7,36 @@ import { cdkdExtraStateProviders } from './local-state-source.js';
 
 /**
  * `cdkd local start-agentcore <target>` — long-running serve for a Bedrock
- * AgentCore Runtime's bidirectional `/ws` WebSocket endpoint. Boots the
- * `AWS::BedrockAgentCore::Runtime` container (same image / env / credential
- * resolution as `invoke-agentcore`) and fronts its `/ws` endpoint with a host
- * WebSocket bridge that injects the AgentCore session-id (and `Authorization`
- * under a `customJwtAuthorizer`) on the container upgrade, so a header-less
- * client (e.g. a browser) can hold an interactive multi-frame session. HTTP /
- * AGUI protocols only. The serve counterpart of the single-shot
- * `cdkd local invoke-agentcore`. Inherited from cdk-local
- * (go-to-k/cdk-local#420).
+ * AgentCore Runtime against a WARM container. Boots the
+ * `AWS::BedrockAgentCore::Runtime` container ONCE (same image / env / credential
+ * resolution as `invoke-agentcore`) and keeps it warm, serving the runtime's
+ * native protocol contract so a client can hit it repeatedly:
+ *
+ * - **HTTP / AGUI** runtimes serve `POST /invocations` + `GET /ping` proxied to
+ *   the warm container (session-id / boot-resolved `Authorization` injected,
+ *   request/response — incl. SSE — streamed) AND the bidirectional `/ws`
+ *   endpoint behind a host WebSocket bridge (injects the AgentCore session-id,
+ *   and `Authorization` under a `customJwtAuthorizer`, so a header-less client
+ *   such as a browser can hold an interactive multi-frame session), both on the
+ *   SAME host port.
+ * - **MCP** runtimes serve `POST /mcp`; **A2A** runtimes serve `POST /` (no
+ *   `/ws` bridge).
+ *
+ * The serve counterpart of the single-shot `cdkd local invoke-agentcore`.
+ * Inherited from cdk-local (go-to-k/cdk-local#420; warm HTTP serve + all four
+ * protocols + per-request inbound JWT + `--sigv4` + `--watch` from #454 slices
+ * 1/2/4a/4b, cdk-local#458/#459/#461/#462).
  *
  * Like `start-cloudfront`, this is a THIN pass-through to cdk-local's factory —
  * the serve behavior and the `start-agentcore`-only option block (`--port` /
  * `--host` / `--session-id` / `--bearer-token` / `--no-verify-auth` /
- * `--env-vars` / `--platform` / `--no-pull` / `--no-build` / `--container-host`
- * / `--timeout` / `--assume-role` / `--ecr-role-arn` / `--from-cfn-stack` /
- * `--stack-region`) live in cdk-local's `addStartAgentCoreSpecificOptions` and
- * are auto-inherited.
+ * `--sigv4` / `--watch` / `--env-vars` / `--platform` / `--no-pull` /
+ * `--no-build` / `--container-host` / `--timeout` / `--assume-role` /
+ * `--ecr-role-arn` / `--from-cfn-stack` / `--stack-region`) live in cdk-local's
+ * `addStartAgentCoreSpecificOptions` and are auto-inherited. Under a
+ * `customJwtAuthorizer` the inbound JWT is now verified PER REQUEST on the warm
+ * serve (401 missing / 403 invalid / forwarded on pass; `GET /ping` is
+ * unauthenticated), with `--bearer-token` as the default-when-missing fallback.
  *
  * Like `start-cloudfront` / `start-alb` / `start-service`, this command binds
  * deployed state through cdk-local's `extraStateProviders` seam: the factory
