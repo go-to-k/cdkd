@@ -1,3 +1,10 @@
+# [0.211.0](https://github.com/go-to-k/cdkd/compare/v0.210.1...v0.211.0) (2026-06-06)
+
+
+### Features
+
+* **local:** start-agentcore warm serve + CodeConfiguration no-install via cdk-local 0.139.0 ([#774](https://github.com/go-to-k/cdkd/issues/774)-[#778](https://github.com/go-to-k/cdkd/issues/778)) ([#779](https://github.com/go-to-k/cdkd/issues/779)) ([60e1e7f](https://github.com/go-to-k/cdkd/commit/60e1e7f5232016cd9b8fbe4e9cb4b59e229dd622))
+
 ## [0.210.1](https://github.com/go-to-k/cdkd/compare/v0.210.0...v0.210.1) (2026-06-05)
 
 
