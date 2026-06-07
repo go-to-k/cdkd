@@ -120,7 +120,7 @@ local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	
 local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-container	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke	2026-06-03T17:03:49Z	PASS		verify.sh	dep-bump validation; 5/5 invoke scenarios green
-local-start-cloudfront	2026-06-05T06:57:59Z	PASS		verify.sh	--from-state wiring verify: cdk-local 0.128.0, S3 pipeline + rewrite + SPA + --watch, pure-local, rc 0
 local-invoke-provided	2026-06-05T07:36:40Z	PASS		verify.sh	#768 cross-arch invoke path; 4/4; docker clean
 local-start-api	2026-06-05T07:36:40Z	PASS		verify.sh	#768 warm container-pool platform threading + watch reload; docker clean
 local-start-agentcore	2026-06-06T17:03:21Z	PASS	13	verify.sh	cdk-local 0.139.0 warm HTTP serve (#775) + --sigv4 (#777) + CI-fail-loud nit; Docker 0 leaks
+local-start-cloudfront	2026-06-07T17:03:27Z	PASS	4	verify.sh	0.142.0 bump; cache-origin WARN follow; rc ok, no docker/aws orphans
