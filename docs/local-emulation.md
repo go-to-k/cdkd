@@ -1558,9 +1558,15 @@ distribution is served per invocation.
 - `--origin <id>=<dir>` — point an origin at a local directory when
   `BucketDeployment` resolution can't (content uploaded out of band,
   non-CDK bucket). Repeatable.
-- `--kvs-file <id>=<file>` — supply a CloudFront KeyValueStore's contents
+- `--kvs-file <key>=<file>` — supply a CloudFront KeyValueStore's contents
   from a local JSON file (the AWS-free alternative to `--from-cfn-stack`,
-  which reads the deployed store on demand). Repeatable.
+  which reads the deployed store on demand). `<key>` is a KeyValueStore
+  handle — its `AWS::CloudFront::KeyValueStore` resource logical id, its
+  construct path (`MyStack/RoutesKvs`), or its bare construct id
+  (`RoutesKvs`) — so you no longer have to synth + grep for the
+  hash-suffixed logical id. An unrecognized key (or an ambiguous bare id)
+  fails fast with an error listing the distribution's KeyValueStore
+  candidates. Repeatable.
 - `--cache-origin` — keep fetched deployed-S3 origin objects in memory
   (only meaningful under `--from-cfn-stack`).
 - `--no-pull` — skip `docker pull` for a Lambda Function URL origin's
