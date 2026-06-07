@@ -1,3 +1,10 @@
+# [0.213.0](https://github.com/go-to-k/cdkd/compare/v0.212.0...v0.213.0) (2026-06-07)
+
+
+### Features
+
+* **local:** start-cloudfront WARNs on --cache-origin without --from-cfn-stack via cdk-local 0.142.0 ([#783](https://github.com/go-to-k/cdkd/issues/783)) ([fe24a4b](https://github.com/go-to-k/cdkd/commit/fe24a4bc5c859cdd037fbbdf9419f494dca5c202))
+
 # [0.212.0](https://github.com/go-to-k/cdkd/compare/v0.211.0...v0.212.0) (2026-06-07)
 
 
