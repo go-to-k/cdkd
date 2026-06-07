@@ -1568,7 +1568,10 @@ distribution is served per invocation.
   fails fast with an error listing the distribution's KeyValueStore
   candidates. Repeatable.
 - `--cache-origin` — keep fetched deployed-S3 origin objects in memory
-  (only meaningful under `--from-cfn-stack`).
+  (only meaningful under `--from-cfn-stack`). Setting it without
+  `--from-cfn-stack` is a no-op and now logs a boot-time WARN saying so
+  (a local BucketDeployment / `--origin <id>=<dir>` origin serves from
+  disk and is never cached).
 - `--no-pull` — skip `docker pull` for a Lambda Function URL origin's
   base image (no-op for a Function-URL-free distribution).
 - `--from-state` / `--state-bucket <bucket>` / `--state-prefix <prefix>`
