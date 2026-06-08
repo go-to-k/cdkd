@@ -47,6 +47,7 @@ import {
   runDetached,
   streamLogs,
 } from '../../local/docker-runner.js';
+import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
 import { pullEcrImage, parseEcrUri } from '../../local/ecr-puller.js';
 import { invokeRie, waitForRieReady } from '../../local/rie-client.js';
@@ -663,11 +664,20 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           },
         ]
       : imagePlan.extraMounts;
+    // Let the Lambda container reach a server on the host (an
+    // `AWS_ENDPOINT_URL_*` local endpoint / tunneled VPC resource) via
+    // `host.docker.internal`. Docker Desktop resolves the name natively;
+    // Linux native dockerd needs the explicit `--add-host` (>= 20.10).
+    // Resolved once; degrades to no mapping on an old / unavailable daemon
+    // (never throws). cdk-local #483 gives its own `invoke` this; cdkd's
+    // invoke is its own command path, so it adopts the same helper here.
+    const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
     containerId = await runDetached({
       image: imagePlan.image,
       mounts: imagePlan.mounts,
       extraMounts: extraMountsWithProfile,
       env: dockerEnv,
+      ...(hostGatewayExtraHosts.length > 0 && { extraHosts: hostGatewayExtraHosts }),
       cmd: imagePlan.cmd,
       hostPort,
       host: containerHost,

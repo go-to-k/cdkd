@@ -441,6 +441,18 @@ The same cap applies to `cdkd local start-api`'s warm container pool
 — each cold-started container for a Lambda with `EphemeralStorage`
 gets the same sized `/tmp`.
 
+### Reaching a server on the host (`host.docker.internal`)
+
+The Lambda container can reach a server bound on the host loopback — an
+`AWS_ENDPOINT_URL_*` local endpoint (e.g. a local DynamoDB / S3 mock), or a
+tunneled VPC resource — via the `host.docker.internal` hostname. Docker
+Desktop (macOS / Windows) resolves it natively; on Linux native dockerd cdkd
+injects the `--add-host host.docker.internal:host-gateway` mapping
+automatically (Docker 20.10+). On an older / unavailable daemon the mapping is
+silently skipped (never an error). The same applies to `cdkd local run-task`
+container runs, and — inherited from cdk-local's ECS service emulator engine —
+to `cdkd local start-service` / `cdkd local start-alb`.
+
 ### `local invoke` exit codes
 
 - `0` — RIE answered, regardless of whether the handler returned a

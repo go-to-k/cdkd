@@ -125,6 +125,18 @@ export interface RunEcsTaskOptions {
    */
   addHostFlags?: ReadonlyArray<string>;
   /**
+   * `host.docker.internal` extra-host mapping(s) to add so this container
+   * can reach a server bound on the host (e.g. an `AWS_ENDPOINT_URL_*`
+   * local endpoint, or a tunneled VPC resource). Resolved ONCE at command
+   * boot via `resolveHostGatewayExtraHosts()` (in `local-run-task.ts`) and
+   * threaded down here — merged into the verbatim `--add-host` flag list
+   * alongside {@link addHostFlags}. Empty / undefined → no mapping (Docker
+   * Desktop resolves `host.docker.internal` natively; Linux native dockerd
+   * needs this since 20.10). Distinct from {@link addHostFlags}, which
+   * carries the Cloud Map peer-discovery entries. Mirrors cdk-local #483.
+   */
+  hostGatewayExtraHosts?: ReadonlyArray<{ host: string; ip: string }>;
+  /**
    * Pre-existing docker network + sidecar to reuse instead of letting
    * the runner create a fresh per-task one. Originally used by
    * `cdkd local start-service`'s per-replica boot loop to share ONE
@@ -282,6 +294,26 @@ export async function cleanupEcsRun(
 }
 
 /**
+ * Merge the Cloud Map peer-discovery `--add-host` flag pairs
+ * ({@link RunEcsTaskOptions.addHostFlags}) with the boot-resolved
+ * `host.docker.internal` host-gateway mapping(s)
+ * ({@link RunEcsTaskOptions.hostGatewayExtraHosts}) into one verbatim
+ * `['--add-host', 'name:ip', ...]` list for `docker run`. The host-gateway
+ * entry uses a distinct name, so its position relative to the peer entries is
+ * irrelevant (docker's resolver matches by name). Pure — exported for the
+ * site-level merge test. Mirrors cdk-local #483.
+ */
+export function mergeHostGatewayAddHostFlags(
+  addHostFlags: ReadonlyArray<string> | undefined,
+  hostGatewayExtraHosts: ReadonlyArray<{ host: string; ip: string }> | undefined
+): string[] {
+  return [
+    ...(addHostFlags ?? []),
+    ...(hostGatewayExtraHosts ?? []).flatMap((h) => ['--add-host', `${h.host}:${h.ip}`]),
+  ];
+}
+
+/**
  * Top-level entry point. Mutates `state` as it makes progress so the
  * caller's `cleanup(state)` can roll back partial side effects on any
  * thrown error.
@@ -354,6 +386,17 @@ export async function runEcsTask(
   // pin v1 to per-task semantics).
   const volumeByName = await realizeDockerVolumes(task.volumes, state);
 
+  // Merge the Cloud Map peer-discovery `--add-host` flags with the
+  // boot-resolved `host.docker.internal:host-gateway` mapping so every
+  // container can also reach a server on the host (an `AWS_ENDPOINT_URL_*`
+  // local endpoint / tunneled VPC resource). Both are verbatim
+  // `['--add-host', 'name:ip', ...]` pairs; the host-gateway entry uses a
+  // distinct name so its order vs the peer entries is irrelevant.
+  const mergedAddHostFlags = mergeHostGatewayAddHostFlags(
+    options.addHostFlags,
+    options.hostGatewayExtraHosts
+  );
+
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
   const dockerCmds = new Map<string, string[]>();
@@ -380,9 +423,7 @@ export async function runEcsTask(
         region: options.region,
         sidecarIp: state.network.sidecarIp,
         ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
-        ...(options.addHostFlags && options.addHostFlags.length > 0
-          ? { addHostFlags: options.addHostFlags }
-          : {}),
+        ...(mergedAddHostFlags.length > 0 ? { addHostFlags: mergedAddHostFlags } : {}),
         ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
           ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
           : {}),

@@ -15,6 +15,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
   writeProfileCredentialsFile,
@@ -337,6 +338,13 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
         profileName: profileCredsFile.profileName,
       };
     }
+    // Let task containers reach a server on the host (an `AWS_ENDPOINT_URL_*`
+    // local endpoint / tunneled VPC resource) via `host.docker.internal`.
+    // Resolved once at boot; merged into the runner's `--add-host` flag list
+    // alongside any Cloud Map peer-discovery entries. Degrades to no mapping
+    // on an old / unavailable daemon (never throws). Mirrors cdk-local #483.
+    const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
+    if (hostGatewayExtraHosts.length > 0) runOpts.hostGatewayExtraHosts = hostGatewayExtraHosts;
 
     const result = await runEcsTask(task, runOpts, state);
 
