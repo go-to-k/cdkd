@@ -5,6 +5,7 @@ import {
   cleanupEcsRun,
   createEcsRunState,
   EcsTaskRunnerError,
+  mergeHostGatewayAddHostFlags,
   topoSort,
 } from '../../../src/local/ecs-task-runner.js';
 import type {
@@ -329,6 +330,36 @@ describe('buildDockerRunArgs', () => {
     // Trailing args order: image, then '-c', then CMD 'echo hi'
     const imgIdx = args.indexOf('nginx');
     expect(args.slice(imgIdx)).toEqual(['nginx', '-c', 'echo hi']);
+  });
+});
+
+describe('mergeHostGatewayAddHostFlags (issue #784 / cdk-local #483)', () => {
+  const gw = { host: 'host.docker.internal', ip: 'host-gateway' };
+
+  it('returns empty when neither source is provided', () => {
+    expect(mergeHostGatewayAddHostFlags(undefined, undefined)).toEqual([]);
+  });
+
+  it('emits only the host-gateway --add-host pair when no Cloud Map flags', () => {
+    expect(mergeHostGatewayAddHostFlags(undefined, [gw])).toEqual([
+      '--add-host',
+      'host.docker.internal:host-gateway',
+    ]);
+  });
+
+  it('passes the Cloud Map peer flags through unchanged when no host-gateway mapping', () => {
+    const peer = ['--add-host', 'svc.ns:169.254.170.5'];
+    expect(mergeHostGatewayAddHostFlags(peer, undefined)).toEqual(peer);
+    expect(mergeHostGatewayAddHostFlags(peer, [])).toEqual(peer);
+  });
+
+  it('appends the host-gateway pair after the Cloud Map peer flags', () => {
+    const peer = ['--add-host', 'svc.ns:169.254.170.5', '--add-host', 'api.ns:169.254.170.6'];
+    expect(mergeHostGatewayAddHostFlags(peer, [gw])).toEqual([
+      ...peer,
+      '--add-host',
+      'host.docker.internal:host-gateway',
+    ]);
   });
 });
 
