@@ -340,9 +340,34 @@ describe('CognitoUserPoolProvider', () => {
           EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
         });
 
+        // With a factor present, MfaConfiguration must NOT ride on
+        // CreateUserPool (AWS rejects ON/OPTIONAL there before the factor is
+        // enabled — "SMS configuration ... required when MFA is
+        // required/optional"); SetUserPoolMfaConfig owns it instead.
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateUserPoolCommand');
+        expect(createCall.input.MfaConfiguration).toBeUndefined();
+
         const mfaCall = mockSend.mock.calls[1][0];
         expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mfaCall.input.MfaConfiguration).toBe('ON');
+      });
+
+      it('forwards MfaConfiguration to CreateUserPool when NO MFA factor is present (no SetUserPoolMfaConfig)', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mfa' },
+        }); // CreateUserPool only
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: 'OFF',
+        });
+
+        // No factor → no SetUserPoolMfaConfig call; MfaConfiguration rides on
+        // CreateUserPool as before.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateUserPoolCommand');
+        expect(createCall.input.MfaConfiguration).toBe('OFF');
       });
 
       it('does NOT call SetUserPoolMfaConfig when no MFA props are present', async () => {

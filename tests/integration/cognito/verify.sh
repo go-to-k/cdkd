@@ -4,10 +4,8 @@
 # Asserts that the BackfillUserPool (an L1 CfnUserPool) lands the issue #609
 # backfill properties on AWS after `cdkd deploy`:
 #   - UserPoolTier                  -> DescribeUserPool.UserPool.UserPoolTier
-#   - EnabledMfas (SOFTWARE_TOKEN_MFA + EMAIL_OTP)
+#   - EnabledMfas (SOFTWARE_TOKEN_MFA)
 #                                   -> GetUserPoolMfaConfig (per-factor blocks)
-#   - EmailAuthenticationMessage/Subject
-#                                   -> GetUserPoolMfaConfig.EmailMfaConfiguration
 #   - WebAuthnRelyingPartyID/UserVerification
 #                                   -> GetUserPoolMfaConfig.WebAuthnConfiguration
 # Then asserts the destroy path removes the pools and the state file.
@@ -126,21 +124,11 @@ if [ "${SOFTWARE_ENABLED}" != "true" ]; then
 fi
 echo "    OK: SOFTWARE_TOKEN_MFA enabled"
 
-# EMAIL_OTP factor present (EmailMfaConfiguration block exists) +
-# message/subject customization landed.
-EMAIL_MSG=$(echo "${MFA}" \
-  | jq -r 'if (.EmailMfaConfiguration|has("Message")) then .EmailMfaConfiguration.Message else "null" end')
-EMAIL_SUBJ=$(echo "${MFA}" \
-  | jq -r 'if (.EmailMfaConfiguration|has("Subject")) then .EmailMfaConfiguration.Subject else "null" end')
-if [ "${EMAIL_MSG}" != "Your cdkd sign-in code is {####}" ]; then
-  echo "FAIL: EmailMfaConfiguration.Message is '${EMAIL_MSG}', expected the templated message (EMAIL_OTP / EmailAuthenticationMessage not wired)" >&2
-  exit 1
-fi
-if [ "${EMAIL_SUBJ}" != "cdkd sign-in code" ]; then
-  echo "FAIL: EmailMfaConfiguration.Subject is '${EMAIL_SUBJ}', expected 'cdkd sign-in code' (EmailAuthenticationSubject not wired)" >&2
-  exit 1
-fi
-echo "    OK: EMAIL_OTP + EmailAuthenticationMessage/Subject landed"
+# NOTE: EMAIL_OTP + EmailAuthenticationMessage/Subject are NOT asserted here —
+# AWS rejects EmailMfaConfiguration unless the pool uses a real SES sender
+# (EmailSendingAccount=DEVELOPER + verified identity), which a portable
+# automated integ cannot provision. Those props stay unit-test-only; the
+# provider wiring is correct and exercised by the unit suite.
 
 # WebAuthn config.
 WA_RP=$(echo "${MFA}" \
@@ -177,4 +165,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> cognito test passed (UserPoolTier / EnabledMfas / EmailAuthentication* / WebAuthn* backfill closed + clean destroy)"
+echo "==> cognito test passed (UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP unit-only) closed + clean destroy)"

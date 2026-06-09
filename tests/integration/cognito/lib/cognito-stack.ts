@@ -52,23 +52,30 @@ export class CognitoStack extends cdk.Stack {
     //
     // Properties exercised:
     // - UserPoolTier         (CreateUserPool direct)
-    // - EnabledMfas          (SetUserPoolMfaConfig: SOFTWARE_TOKEN_MFA + EMAIL_OTP)
-    // - EmailAuthenticationMessage / EmailAuthenticationSubject
-    //                        (SetUserPoolMfaConfig.EmailMfaConfiguration)
+    // - EnabledMfas          (SetUserPoolMfaConfig: SOFTWARE_TOKEN_MFA)
     // - WebAuthnRelyingPartyID / WebAuthnUserVerification
     //                        (SetUserPoolMfaConfig.WebAuthnConfiguration)
     //
-    // EMAIL_OTP, the email-OTP message/subject template, and WebAuthn passkeys
-    // all require the ESSENTIALS tier (or higher), so UserPoolTier must be set
-    // for the SetUserPoolMfaConfig call to succeed. MfaConfiguration must be
-    // ON/OPTIONAL for EnabledMfas to be accepted.
+    // WebAuthn passkeys + EnabledMfas require the ESSENTIALS tier (or higher),
+    // so UserPoolTier must be set. MfaConfiguration must be ON/OPTIONAL for the
+    // SetUserPoolMfaConfig factor enablement to be accepted. cdkd issues
+    // CreateUserPool WITHOUT MfaConfiguration here (AWS would reject ON/OPTIONAL
+    // before a factor is enabled) and SetUserPoolMfaConfig sets it + the factor
+    // together — the order CloudFormation/CDK use.
+    //
+    // NOTE: EMAIL_OTP + EmailAuthenticationMessage/Subject are intentionally
+    // NOT exercised here. AWS rejects EmailMfaConfiguration unless the pool's
+    // EmailConfiguration uses a real SES sender (EmailSendingAccount=DEVELOPER
+    // with a verified SES identity) — the default COGNITO_DEFAULT sender is
+    // refused. Verifying an SES identity is an async / manual prerequisite a
+    // portable automated integ cannot set up, so EMAIL_OTP / EmailAuthentication*
+    // stay unit-test-only (the provider wiring is correct + exercised by the
+    // unit suite; a real-AWS assertion would need an SES-configured account).
     const backfillPool = new cognito.CfnUserPool(this, 'BackfillUserPool', {
       userPoolName: `cdkd-test-backfill-${cdk.Aws.ACCOUNT_ID}`,
       userPoolTier: 'ESSENTIALS',
       mfaConfiguration: 'OPTIONAL',
-      enabledMfas: ['SOFTWARE_TOKEN_MFA', 'EMAIL_OTP'],
-      emailAuthenticationMessage: 'Your cdkd sign-in code is {####}',
-      emailAuthenticationSubject: 'cdkd sign-in code',
+      enabledMfas: ['SOFTWARE_TOKEN_MFA'],
       webAuthnRelyingPartyId: 'auth.cdkd.example.com',
       webAuthnUserVerification: 'preferred',
     });

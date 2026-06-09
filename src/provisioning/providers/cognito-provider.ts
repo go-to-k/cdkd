@@ -115,6 +115,32 @@ const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
  * omitted it (factors are meaningless under OFF, and OPTIONAL enables them
  * without forcing MFA on every user).
  */
+/**
+ * True when any MFA-config-API-routed property is present, i.e. a
+ * `SetUserPoolMfaConfig` call will run post-create. When true, `create()` must
+ * NOT forward `MfaConfiguration` to `CreateUserPool`: AWS rejects
+ * `CreateUserPool` with `MfaConfiguration: ON/OPTIONAL` unless the pool already
+ * has SMS configured (+ phone_number auto-verification) OR software-token MFA
+ * enabled — but software-token / email-OTP MFA can only be enabled via the
+ * post-create `SetUserPoolMfaConfig` call, not on `CreateUserPool`. So the
+ * correct sequence is: `CreateUserPool` WITHOUT `MfaConfiguration` (defaults
+ * OFF) -> `SetUserPoolMfaConfig` sets `MfaConfiguration` + the factor blocks
+ * together (the factor satisfies the MFA requirement, no SMS needed). This
+ * mirrors how CloudFormation/CDK sequence the two calls.
+ */
+function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
+  const enabledMfas = Array.isArray(properties['EnabledMfas'])
+    ? (properties['EnabledMfas'] as string[])
+    : undefined;
+  return (
+    (enabledMfas !== undefined && enabledMfas.length > 0) ||
+    !!(properties['EmailAuthenticationMessage'] as string | undefined) ||
+    !!(properties['EmailAuthenticationSubject'] as string | undefined) ||
+    !!(properties['WebAuthnRelyingPartyID'] as string | undefined) ||
+    !!(properties['WebAuthnUserVerification'] as string | undefined)
+  );
+}
+
 function buildMfaConfigRequest(
   physicalId: string,
   properties: Record<string, unknown>
@@ -140,13 +166,7 @@ function buildMfaConfigRequest(
   const webAuthnUserVerification =
     (properties['WebAuthnUserVerification'] as UserVerificationType | undefined) || undefined;
 
-  const hasMfaProps =
-    (enabledMfas && enabledMfas.length > 0) ||
-    emailMessage !== undefined ||
-    emailSubject !== undefined ||
-    webAuthnRpId !== undefined ||
-    webAuthnUserVerification !== undefined;
-  if (!hasMfaProps) return undefined;
+  if (!hasMfaConfigProps(properties)) return undefined;
 
   const request: SetUserPoolMfaConfigCommandInput = { UserPoolId: physicalId };
 
@@ -318,7 +338,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       if (properties['LambdaConfig']) {
         createParams.LambdaConfig = properties['LambdaConfig'] as LambdaConfigType;
       }
-      if (properties['MfaConfiguration']) {
+      // Only forward MfaConfiguration to CreateUserPool when NO MFA factor is
+      // applied post-create. When factors are present, SetUserPoolMfaConfig
+      // owns MfaConfiguration (and enables the factor in the same call) —
+      // setting ON/OPTIONAL on CreateUserPool here would be rejected by AWS
+      // ("SMS configuration and Auto verification for phone_number are required
+      // when MFA is required/optional") because the factor is not yet enabled.
+      if (properties['MfaConfiguration'] && !hasMfaConfigProps(properties)) {
         createParams.MfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType;
       }
       if (properties['UserPoolTags']) {
