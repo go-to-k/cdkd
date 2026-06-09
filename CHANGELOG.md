@@ -1,3 +1,10 @@
+# [0.216.0](https://github.com/go-to-k/cdkd/compare/v0.215.0...v0.216.0) (2026-06-09)
+
+
+### Features
+
+* **providers:** backfill Cognito::UserPool 6 silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#791](https://github.com/go-to-k/cdkd/issues/791)) ([64b1ccb](https://github.com/go-to-k/cdkd/commit/64b1ccb19201ff51a3a908b15d68193417023ca1))
+
 # [0.215.0](https://github.com/go-to-k/cdkd/compare/v0.214.0...v0.215.0) (2026-06-09)
 
 
