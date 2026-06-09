@@ -779,11 +779,6 @@
       "scenarios": []
     },
     {
-      "name": "rds-security-backfill",
-      "annotated": false,
-      "scenarios": []
-    },
-    {
       "name": "recreate-mixed-direction",
       "annotated": false,
       "scenarios": []
@@ -1239,7 +1234,6 @@
     "nested-stack",
     "nested-stack-deep",
     "rds-dbinstance-backfill",
-    "rds-security-backfill",
     "recreate-mixed-direction",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",

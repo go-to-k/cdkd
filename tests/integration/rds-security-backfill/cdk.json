@@ -1,8 +1,0 @@
-{
-  "app": "node bin/app.ts",
-  "context": {
-    "cdkd": {
-      "stateBucket": "your-cdkd-state-bucket"
-    }
-  }
-}
