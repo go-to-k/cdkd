@@ -2376,12 +2376,14 @@ export class EC2Provider implements ResourceProvider {
     // Most EC2 Instance property changes require replacement.
     // Immutable properties (ImageId, SubnetId, KeyName) are handled by
     // the deployment engine's replacement detection.
-    // Tags plus the five security-focused backfill props (#609) —
-    // DisableApiTermination / EbsOptimized / Monitoring / MetadataOptions /
-    // CreditSpecification — are all mutable in-place, so they are diffed
+    // Tags plus four of the five security-focused backfill props (#609) —
+    // DisableApiTermination / Monitoring / MetadataOptions /
+    // CreditSpecification — are mutable in-place, so they are diffed
     // against previousProperties and modified here. The diff guard keeps the
     // `cdkd drift --revert` no-op round-trip (`update(state, state)`) free of
-    // any mutating SDK call.
+    // any mutating SDK call. The fifth, EbsOptimized, can only be changed on a
+    // STOPPED instance, so an EbsOptimized change is routed to replacement via
+    // the ReplacementRulesRegistry rather than modified here.
     this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
 
     try {
@@ -2424,15 +2426,17 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * Apply in-place modifications for the five mutable security-focused
+   * Apply in-place modifications for four of the five security-focused
    * backfill props (#609). Each is diffed against `previousProperties` so a
    * no-drift round-trip (`update(state, state)`) issues zero mutating calls
-   * (the `cdkd drift --revert` invariant). All five map to a distinct EC2
+   * (the `cdkd drift --revert` invariant). Each maps to a distinct EC2
    * modify API:
-   *   - DisableApiTermination / EbsOptimized -> ModifyInstanceAttribute
-   *   - Monitoring                            -> MonitorInstances / UnmonitorInstances
-   *   - MetadataOptions                       -> ModifyInstanceMetadataOptions
-   *   - CreditSpecification                   -> ModifyInstanceCreditSpecification
+   *   - DisableApiTermination -> ModifyInstanceAttribute
+   *   - Monitoring            -> MonitorInstances / UnmonitorInstances
+   *   - MetadataOptions       -> ModifyInstanceMetadataOptions
+   *   - CreditSpecification   -> ModifyInstanceCreditSpecification
+   * EbsOptimized is NOT here: it can only be changed on a STOPPED instance, so
+   * an EbsOptimized change is routed to replacement (see ReplacementRules).
    */
   private async updateInstanceSecurityProps(
     physicalId: string,
@@ -2454,17 +2458,12 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
-    // EbsOptimized — ModifyInstanceAttribute.
-    const newEbsOptimized = this.coerceBool(properties['EbsOptimized']);
-    const oldEbsOptimized = this.coerceBool(previousProperties['EbsOptimized']);
-    if (newEbsOptimized !== undefined && newEbsOptimized !== oldEbsOptimized) {
-      await this.ec2Client.send(
-        new ModifyInstanceAttributeCommand({
-          InstanceId: physicalId,
-          EbsOptimized: { Value: newEbsOptimized },
-        })
-      );
-    }
+    // EbsOptimized is intentionally NOT modified here: AWS only accepts
+    // `ModifyInstanceAttribute { EbsOptimized }` against a STOPPED instance
+    // (a running instance returns IncorrectInstanceState), and cdkd does not
+    // stop/start instances. An EbsOptimized change is therefore routed to
+    // replacement via the ReplacementRulesRegistry (AWS::EC2::Instance), where
+    // the create path sets it correctly on the new instance.
 
     // Monitoring — MonitorInstances (enable) / UnmonitorInstances (disable).
     const newMonitoring = this.coerceBool(properties['Monitoring']);

@@ -214,7 +214,11 @@ describe('EC2Provider updateInstance security props (#609)', () => {
     });
   });
 
-  it('issues ModifyInstanceAttribute for an EbsOptimized flip', async () => {
+  it('does NOT issue ModifyInstanceAttribute for an EbsOptimized flip (routed to replacement)', async () => {
+    // EbsOptimized can only be changed on a STOPPED instance; cdkd routes the
+    // change to replacement via the ReplacementRulesRegistry instead of an
+    // in-place ModifyInstanceAttribute (which would 'IncorrectInstanceState'
+    // on a running instance). So update() must NOT touch EbsOptimized.
     await provider.update(
       'Web',
       'i-1',
@@ -223,9 +227,12 @@ describe('EC2Provider updateInstance security props (#609)', () => {
       { ImageId: 'ami-1', EbsOptimized: false }
     );
     const cmds = mutatingCommands();
-    expect(cmds).toHaveLength(1);
-    expect(cmds[0]).toBeInstanceOf(ModifyInstanceAttributeCommand);
-    expect(cmds[0].input).toEqual({ InstanceId: 'i-1', EbsOptimized: { Value: true } });
+    const ebsModify = cmds.filter(
+      (c) =>
+        c instanceof ModifyInstanceAttributeCommand &&
+        (c.input as { EbsOptimized?: unknown }).EbsOptimized !== undefined
+    );
+    expect(ebsModify).toHaveLength(0);
   });
 
   it('issues MonitorInstances when Monitoring flips on, UnmonitorInstances when off', async () => {
@@ -293,5 +300,25 @@ describe('EC2Provider updateInstance security props (#609)', () => {
     await provider.update('Web', 'i-1', 'AWS::EC2::Instance', state, state);
     // Only the read-only DescribeInstances refresh is allowed.
     expect(mutatingCommands()).toHaveLength(0);
+  });
+});
+
+describe('AWS::EC2::Instance replacement rules (#609)', () => {
+  it('routes EbsOptimized to replacement but keeps the other 4 security props in-place', async () => {
+    const { ReplacementRulesRegistry } = await import(
+      '../../../src/analyzer/replacement-rules.js'
+    );
+    const registry = new ReplacementRulesRegistry();
+    expect(registry.requiresReplacement('AWS::EC2::Instance', 'EbsOptimized', false, true)).toBe(
+      true
+    );
+    for (const prop of [
+      'DisableApiTermination',
+      'Monitoring',
+      'MetadataOptions',
+      'CreditSpecification',
+    ]) {
+      expect(registry.requiresReplacement('AWS::EC2::Instance', prop, undefined, {})).toBe(false);
+    }
   });
 });

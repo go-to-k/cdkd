@@ -254,6 +254,17 @@ export class ReplacementRulesRegistry {
       replacementProperties: new Set(['DBProxyName', 'TargetGroupName']),
     });
 
+    // EC2 Instance — EbsOptimized can only be changed on a STOPPED instance
+    // (a running instance returns IncorrectInstanceState), and cdkd does not
+    // stop/start instances, so an EbsOptimized change is routed to replacement
+    // (the create path sets it on the new instance). The other four #609
+    // security-backfill props (DisableApiTermination / Monitoring /
+    // MetadataOptions / CreditSpecification) ARE mutable in-place on a running
+    // instance and are handled by EC2Provider.updateInstanceSecurityProps.
+    this.rules.set('AWS::EC2::Instance', {
+      replacementProperties: new Set(['EbsOptimized']),
+    });
+
     // ECS Task Definition
     this.rules.set('AWS::ECS::TaskDefinition', {
       replacementProperties: new Set([
