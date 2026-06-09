@@ -216,6 +216,104 @@ describe('RDSProvider', () => {
           })
         ).rejects.toThrow('Failed to create DBCluster MyCluster');
       });
+
+      // ─── #609 security-cluster backfill — 6 props ───────────────
+      it('forwards all 6 #609 security props to CreateDBCluster (MasterUserSecret→MasterUserSecretKmsKeyId flip; MonitoringInterval string→number)', async () => {
+        mockSend.mockResolvedValueOnce({
+          DBCluster: { DBClusterIdentifier: 'my-cluster' },
+        });
+        mockSend.mockResolvedValueOnce({ DBClusters: [{ Status: 'available' }] });
+        mockSend.mockResolvedValueOnce({ DBClusters: [{}] });
+
+        await provider.create('MyCluster', 'AWS::RDS::DBCluster', {
+          DBClusterIdentifier: 'my-cluster',
+          Engine: 'aurora-postgresql',
+          ManageMasterUserPassword: true,
+          MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/abcd' },
+          MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+          // CFn-string-typed numeric (CDK emits "60", not 60).
+          MonitoringInterval: '60',
+          EnableIAMDatabaseAuthentication: true,
+          PubliclyAccessible: false,
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateDBClusterCommand');
+        expect(createCall.input.ManageMasterUserPassword).toBe(true);
+        // CFn `MasterUserSecret { KmsKeyId }` → SDK scalar `MasterUserSecretKmsKeyId`.
+        expect(createCall.input.MasterUserSecretKmsKeyId).toBe(
+          'arn:aws:kms:us-east-1:123:key/abcd'
+        );
+        // The object form must NOT leak onto the request shape.
+        expect(createCall.input.MasterUserSecret).toBeUndefined();
+        expect(createCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/emaccess');
+        // String "60" coerced to number 60 at the wire boundary.
+        expect(createCall.input.MonitoringInterval).toBe(60);
+        expect(createCall.input.EnableIAMDatabaseAuthentication).toBe(true);
+        // PubliclyAccessible explicit false reaches AWS (not dropped by a truthy gate).
+        expect(createCall.input.PubliclyAccessible).toBe(false);
+      });
+
+      it('forwards EnableIAMDatabaseAuthentication=false explicitly (not dropped by a truthy gate)', async () => {
+        mockSend.mockResolvedValueOnce({
+          DBCluster: { DBClusterIdentifier: 'my-cluster' },
+        });
+        mockSend.mockResolvedValueOnce({ DBClusters: [{ Status: 'available' }] });
+        mockSend.mockResolvedValueOnce({ DBClusters: [{}] });
+
+        await provider.create('MyCluster', 'AWS::RDS::DBCluster', {
+          DBClusterIdentifier: 'my-cluster',
+          Engine: 'aurora-postgresql',
+          EnableIAMDatabaseAuthentication: false,
+          ManageMasterUserPassword: false,
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.input.EnableIAMDatabaseAuthentication).toBe(false);
+        expect(createCall.input.ManageMasterUserPassword).toBe(false);
+      });
+    });
+
+    describe('update', () => {
+      it('forwards 5 mutable #609 security props to ModifyDBCluster (MasterUserSecret→MasterUserSecretKmsKeyId flip; MonitoringInterval string→number; PubliclyAccessible NOT forwarded — create-only)', async () => {
+        // updateDBCluster does 2 sends: ModifyDBCluster + final describe.
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBClusters: [{}] });
+
+        await provider.update(
+          'MyCluster',
+          'my-cluster',
+          'AWS::RDS::DBCluster',
+          {
+            Engine: 'aurora-postgresql',
+            ManageMasterUserPassword: true,
+            MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/new' },
+            MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+            MonitoringInterval: '30',
+            EnableIAMDatabaseAuthentication: true,
+            // PubliclyAccessible is create-only for DBCluster (absent from
+            // ModifyDBClusterMessage); must NOT appear in the modify input.
+            PubliclyAccessible: true,
+          },
+          {
+            Engine: 'aurora-postgresql',
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.constructor.name).toBe('ModifyDBClusterCommand');
+        expect(modifyCall.input.ApplyImmediately).toBe(true);
+        expect(modifyCall.input.ManageMasterUserPassword).toBe(true);
+        expect(modifyCall.input.MasterUserSecretKmsKeyId).toBe(
+          'arn:aws:kms:us-east-1:123:key/new'
+        );
+        expect(modifyCall.input.MasterUserSecret).toBeUndefined();
+        expect(modifyCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/emaccess');
+        expect(modifyCall.input.MonitoringInterval).toBe(30);
+        expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(true);
+        // Create-only — never rides ModifyDBCluster.
+        expect(modifyCall.input.PubliclyAccessible).toBeUndefined();
+      });
     });
 
     describe('delete', () => {
@@ -442,6 +540,62 @@ describe('RDSProvider', () => {
         expect(createCall.input.DeletionProtection).toBe(false);
         expect(createCall.input.StorageEncrypted).toBe(false);
       });
+
+      // ─── #609 security-cluster backfill — 6 props ───────────────
+      it('forwards all 6 #609 security props to CreateDBInstance (KmsKeyId; MasterUserSecret→MasterUserSecretKmsKeyId flip; MonitoringInterval string→number)', async () => {
+        mockSend.mockResolvedValueOnce({
+          DBInstance: { DBInstanceIdentifier: 'my-instance' },
+        });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'available' }] });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.create('MyInstance', 'AWS::RDS::DBInstance', {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          KmsKeyId: 'arn:aws:kms:us-east-1:123:key/storage',
+          MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/secret' },
+          ManageMasterUserPassword: true,
+          MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+          // CFn-string-typed numeric (CDK emits "60", not 60).
+          MonitoringInterval: '60',
+          EnableIAMDatabaseAuthentication: true,
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateDBInstanceCommand');
+        expect(createCall.input.KmsKeyId).toBe('arn:aws:kms:us-east-1:123:key/storage');
+        // CFn `MasterUserSecret { KmsKeyId }` → SDK scalar `MasterUserSecretKmsKeyId`.
+        expect(createCall.input.MasterUserSecretKmsKeyId).toBe(
+          'arn:aws:kms:us-east-1:123:key/secret'
+        );
+        expect(createCall.input.MasterUserSecret).toBeUndefined();
+        expect(createCall.input.ManageMasterUserPassword).toBe(true);
+        expect(createCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/emaccess');
+        // String "60" coerced to number 60.
+        expect(createCall.input.MonitoringInterval).toBe(60);
+        expect(createCall.input.EnableIAMDatabaseAuthentication).toBe(true);
+      });
+
+      it('forwards EnableIAMDatabaseAuthentication=false explicitly (not dropped by a truthy gate)', async () => {
+        mockSend.mockResolvedValueOnce({
+          DBInstance: { DBInstanceIdentifier: 'my-instance' },
+        });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'available' }] });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.create('MyInstance', 'AWS::RDS::DBInstance', {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          EnableIAMDatabaseAuthentication: false,
+          ManageMasterUserPassword: false,
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.input.EnableIAMDatabaseAuthentication).toBe(false);
+        expect(createCall.input.ManageMasterUserPassword).toBe(false);
+      });
     });
 
     describe('update', () => {
@@ -493,6 +647,46 @@ describe('RDSProvider', () => {
         // StorageEncrypted is create-only and MUST NOT ride ModifyDBInstance —
         // AWS rejects it and the diff layer schedules a replace separately.
         expect(modifyCall.input.StorageEncrypted).toBeUndefined();
+      });
+
+      it('forwards 5 mutable #609 security props to ModifyDBInstance (KmsKeyId create-only → NOT forwarded; MasterUserSecret flip; MonitoringInterval string→number)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/new' },
+            ManageMasterUserPassword: true,
+            MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+            MonitoringInterval: '30',
+            EnableIAMDatabaseAuthentication: true,
+            // KmsKeyId is storage-encryption (create-only / immutable); must NOT
+            // ride ModifyDBInstance even if present in newProperties.
+            KmsKeyId: 'arn:aws:kms:us-east-1:123:key/storage',
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.constructor.name).toBe('ModifyDBInstanceCommand');
+        expect(modifyCall.input.MasterUserSecretKmsKeyId).toBe(
+          'arn:aws:kms:us-east-1:123:key/new'
+        );
+        expect(modifyCall.input.MasterUserSecret).toBeUndefined();
+        expect(modifyCall.input.ManageMasterUserPassword).toBe(true);
+        expect(modifyCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/emaccess');
+        expect(modifyCall.input.MonitoringInterval).toBe(30);
+        expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(true);
+        // Storage KMS key is create-only — never rides ModifyDBInstance.
+        expect(modifyCall.input.KmsKeyId).toBeUndefined();
       });
 
       it('forwards AllocatedStorage scale-up to ModifyDBInstance (coerced to number)', async () => {

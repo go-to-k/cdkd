@@ -739,6 +739,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -797,6 +798,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-security-backfill": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -831,6 +835,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -886,6 +891,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -945,6 +953,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1001,6 +1010,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1037,6 +1049,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1095,6 +1108,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-security-backfill": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -1126,6 +1142,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race"
@@ -1174,6 +1191,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-security-backfill": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -1216,6 +1236,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1272,6 +1293,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1319,6 +1343,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1375,6 +1400,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1411,6 +1439,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1468,6 +1497,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -1504,6 +1536,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-security-backfill",
         "remove-protection",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1560,6 +1593,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ],
         "remove-protection": [
@@ -2012,6 +2048,7 @@
         "multi-resource",
         "multi-stack-deps",
         "nested-stack",
+        "rds-security-backfill",
         "recreate-mixed-direction",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
@@ -2094,6 +2131,9 @@
           "l2"
         ],
         "nested-stack": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ],
         "recreate-mixed-direction": [
@@ -2582,11 +2622,16 @@
     {
       "resourceType": "AWS::RDS::DBCluster",
       "integs": [
-        "rds-aurora"
+        "rds-aurora",
+        "rds-security-backfill"
       ],
       "signals": {
         "rds-aurora": [
           "l2"
+        ],
+        "rds-security-backfill": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -2594,7 +2639,8 @@
       "resourceType": "AWS::RDS::DBInstance",
       "integs": [
         "rds-aurora",
-        "rds-dbinstance-backfill"
+        "rds-dbinstance-backfill",
+        "rds-security-backfill"
       ],
       "signals": {
         "rds-aurora": [
@@ -2602,6 +2648,10 @@
         ],
         "rds-dbinstance-backfill": [
           "l1"
+        ],
+        "rds-security-backfill": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -2620,13 +2670,17 @@
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
         "rds-aurora",
-        "rds-dbinstance-backfill"
+        "rds-dbinstance-backfill",
+        "rds-security-backfill"
       ],
       "signals": {
         "rds-aurora": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-security-backfill": [
           "l2"
         ]
       }

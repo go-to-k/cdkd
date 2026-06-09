@@ -217,6 +217,113 @@ describe('RDSProvider.readCurrentState', () => {
     });
   });
 
+  // ─── #609 security-cluster backfill readbacks ─────────────────────
+  it('surfaces #609 security DBInstance props (KmsKeyId / Monitoring / IAM-auth / MasterUserSecret) in CFn shape', async () => {
+    mockSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceClass: 'db.t3.micro',
+          Engine: 'postgres',
+          KmsKeyId: 'arn:aws:kms:us-east-1:123:key/storage',
+          MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+          MonitoringInterval: 60,
+          // AWS Describe field name → CFn `EnableIAMDatabaseAuthentication`.
+          IAMDatabaseAuthenticationEnabled: true,
+          // Read-side object carries SecretArn / SecretStatus; only KmsKeyId
+          // round-trips into the CFn-shape state.
+          MasterUserSecret: {
+            SecretArn: 'arn:aws:secretsmanager:us-east-1:123:secret:abc',
+            SecretStatus: 'active',
+            KmsKeyId: 'arn:aws:kms:us-east-1:123:key/secret',
+          },
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-instance',
+      'InstanceLogical',
+      'AWS::RDS::DBInstance'
+    );
+
+    expect(result).toEqual({
+      DBInstanceIdentifier: 'my-instance',
+      DBInstanceClass: 'db.t3.micro',
+      Engine: 'postgres',
+      KmsKeyId: 'arn:aws:kms:us-east-1:123:key/storage',
+      MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+      MonitoringInterval: 60,
+      EnableIAMDatabaseAuthentication: true,
+      // Only KmsKeyId — SecretArn / SecretStatus are AWS-managed read-only
+      // fields cdkd never sets, so they are NOT round-tripped (would be
+      // phantom drift on every read).
+      MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/secret' },
+    });
+    // ManageMasterUserPassword is not a Describe field — never read back.
+    expect(result).not.toHaveProperty('ManageMasterUserPassword');
+  });
+
+  it('surfaces #609 security DBCluster props (Monitoring / IAM-auth / PubliclyAccessible / MasterUserSecret) in CFn shape', async () => {
+    mockSend.mockResolvedValueOnce({
+      DBClusters: [
+        {
+          DBClusterIdentifier: 'my-cluster',
+          Engine: 'aurora-postgresql',
+          MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+          MonitoringInterval: 30,
+          IAMDatabaseAuthenticationEnabled: true,
+          PubliclyAccessible: false,
+          MasterUserSecret: {
+            SecretArn: 'arn:aws:secretsmanager:us-east-1:123:secret:abc',
+            KmsKeyId: 'arn:aws:kms:us-east-1:123:key/secret',
+          },
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-cluster',
+      'ClusterLogical',
+      'AWS::RDS::DBCluster'
+    );
+
+    expect(result).toMatchObject({
+      DBClusterIdentifier: 'my-cluster',
+      Engine: 'aurora-postgresql',
+      MonitoringRoleArn: 'arn:aws:iam::123:role/emaccess',
+      MonitoringInterval: 30,
+      EnableIAMDatabaseAuthentication: true,
+      PubliclyAccessible: false,
+      MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/secret' },
+    });
+    expect(result).not.toHaveProperty('ManageMasterUserPassword');
+  });
+
+  it('omits #609 security props when AWS does not return them (no phantom drift)', async () => {
+    mockSend.mockResolvedValueOnce({
+      DBClusters: [
+        {
+          DBClusterIdentifier: 'my-cluster',
+          Engine: 'aurora-postgresql',
+          // No Monitoring / IAM-auth / PubliclyAccessible / MasterUserSecret.
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-cluster',
+      'ClusterLogical',
+      'AWS::RDS::DBCluster'
+    );
+
+    expect(result).not.toHaveProperty('MonitoringRoleArn');
+    expect(result).not.toHaveProperty('MonitoringInterval');
+    expect(result).not.toHaveProperty('EnableIAMDatabaseAuthentication');
+    expect(result).not.toHaveProperty('PubliclyAccessible');
+    expect(result).not.toHaveProperty('MasterUserSecret');
+  });
+
   it('returns CFn-shaped DBSubnetGroup fields from DescribeDBSubnetGroups', async () => {
     mockSend.mockResolvedValueOnce({
       DBSubnetGroups: [

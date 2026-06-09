@@ -73,6 +73,26 @@ export class RDSProvider implements ResourceProvider {
         'DeletionProtection',
         'ServerlessV2ScalingConfiguration',
         'Tags',
+        // #609 security-cluster backfill (managed master-password secret +
+        // Enhanced Monitoring + IAM database auth + publicly-accessible).
+        // 5 of the 6 ride CreateDBCluster AND ModifyDBCluster (mutable). Wire-
+        // format flips: CFn `MasterUserSecret` (an object whose only create-
+        // relevant member is `{ KmsKeyId }`) → SDK scalar
+        // `MasterUserSecretKmsKeyId` (the create/modify shapes take the key id
+        // directly — the SDK `MasterUserSecret` *type* is the read-side Describe
+        // shape). `MonitoringInterval` arrives as a numeric STRING ("60"); coerce
+        // via Number() at the wire boundary. `ManageMasterUserPassword` is
+        // mutually exclusive with `MasterUserPassword` (AWS validates).
+        // `PubliclyAccessible` IS a valid CreateDBClusterMessage field (Multi-AZ
+        // DB clusters) but is ABSENT from ModifyDBClusterMessage — wired create-
+        // only here (a template change replaces the cluster), distinct from
+        // DBInstance's same-named mutable prop.
+        'ManageMasterUserPassword',
+        'MasterUserSecret',
+        'MonitoringRoleArn',
+        'MonitoringInterval',
+        'EnableIAMDatabaseAuthentication',
+        'PubliclyAccessible',
       ]),
     ],
     [
@@ -104,6 +124,20 @@ export class RDSProvider implements ResourceProvider {
         'Port',
         'StorageEncrypted',
         'VPCSecurityGroups',
+        // #609 security-cluster backfill (sibling of the DBCluster set).
+        // `KmsKeyId` is the storage-encryption key (pairs with the already-
+        // handled StorageEncrypted) — create-only + immutable, so it is NOT
+        // forwarded on update. The other 5 mirror DBCluster: `MasterUserSecret`
+        // → SDK `MasterUserSecretKmsKeyId`, `ManageMasterUserPassword` (bool),
+        // `MonitoringRoleArn` / `MonitoringInterval` (Number-coerced),
+        // `EnableIAMDatabaseAuthentication` (bool) — all ride CreateDBInstance
+        // AND ModifyDBInstance (mutable).
+        'KmsKeyId',
+        'MasterUserSecret',
+        'ManageMasterUserPassword',
+        'MonitoringRoleArn',
+        'MonitoringInterval',
+        'EnableIAMDatabaseAuthentication',
       ]),
     ],
   ]);
@@ -402,6 +436,11 @@ export class RDSProvider implements ResourceProvider {
         | { MinCapacity?: number; MaxCapacity?: number }
         | undefined;
 
+      // #609 — CFn `MasterUserSecret` is `{ KmsKeyId }`; only the key id is a
+      // create input (`MasterUserSecretKmsKeyId`). The object may also carry
+      // read-only `SecretArn` / `SecretStatus` (ignored on the write side).
+      const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
+
       const response = await this.getClient().send(
         new CreateDBClusterCommand({
           DBClusterIdentifier: dbClusterIdentifier,
@@ -420,6 +459,29 @@ export class RDSProvider implements ResourceProvider {
               ? Number(properties['BackupRetentionPeriod'])
               : undefined,
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+          // #609 security-cluster backfill. `!== undefined` for the booleans so
+          // an explicit `false` opt-out reaches AWS rather than being dropped by
+          // a truthy gate. `MonitoringInterval` is CFn-string-typed → Number().
+          ...(properties['ManageMasterUserPassword'] !== undefined && {
+            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+          }),
+          ...(masterUserSecret?.KmsKeyId !== undefined && {
+            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+          }),
+          ...(properties['MonitoringRoleArn'] !== undefined && {
+            MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+          }),
+          ...(properties['MonitoringInterval'] !== undefined && {
+            MonitoringInterval: Number(properties['MonitoringInterval']),
+          }),
+          ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
+            EnableIAMDatabaseAuthentication: properties[
+              'EnableIAMDatabaseAuthentication'
+            ] as boolean,
+          }),
+          ...(properties['PubliclyAccessible'] !== undefined && {
+            PubliclyAccessible: properties['PubliclyAccessible'] as boolean,
+          }),
           ...(serverlessV2Config && {
             ServerlessV2ScalingConfiguration: {
               MinCapacity: serverlessV2Config.MinCapacity,
@@ -555,6 +617,10 @@ export class RDSProvider implements ResourceProvider {
       const vpcSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
       const sendVpcSgIds = vpcSgIds !== undefined && vpcSgIds.length > 0;
 
+      // #609 — `MasterUserSecret` `{ KmsKeyId }` maps to the scalar modify
+      // field `MasterUserSecretKmsKeyId` (same flip as create()).
+      const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
+
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -567,6 +633,24 @@ export class RDSProvider implements ResourceProvider {
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+          // #609 security-cluster backfill — all mutable via ModifyDBCluster.
+          ...(properties['ManageMasterUserPassword'] !== undefined && {
+            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+          }),
+          ...(masterUserSecret?.KmsKeyId !== undefined && {
+            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+          }),
+          ...(properties['MonitoringRoleArn'] !== undefined && {
+            MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+          }),
+          ...(properties['MonitoringInterval'] !== undefined && {
+            MonitoringInterval: Number(properties['MonitoringInterval']),
+          }),
+          ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
+            EnableIAMDatabaseAuthentication: properties[
+              'EnableIAMDatabaseAuthentication'
+            ] as boolean,
+          }),
           ...(hasServerlessV2 && {
             ServerlessV2ScalingConfiguration: {
               MinCapacity: serverlessV2Config.MinCapacity,
@@ -697,6 +781,10 @@ export class RDSProvider implements ResourceProvider {
     try {
       const tags = this.buildTags(properties);
 
+      // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
+      // `MasterUserSecretKmsKeyId` (same flip as the DBCluster path).
+      const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
+
       const response = await this.getClient().send(
         new CreateDBInstanceCommand({
           DBInstanceIdentifier: dbInstanceIdentifier,
@@ -744,6 +832,31 @@ export class RDSProvider implements ResourceProvider {
           // CFn `VPCSecurityGroups` → SDK `VpcSecurityGroupIds` (casing + name flip).
           ...(properties['VPCSecurityGroups'] !== undefined && {
             VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
+          }),
+          // #609 security-cluster backfill. `KmsKeyId` is the storage-encryption
+          // key (pairs with the already-handled StorageEncrypted) — create-only
+          // + immutable, so NOT forwarded on update. `MonitoringInterval` is
+          // CFn-string-typed → Number(). `!== undefined` on the booleans so an
+          // explicit `false` reaches AWS.
+          ...(properties['KmsKeyId'] !== undefined && {
+            KmsKeyId: properties['KmsKeyId'] as string,
+          }),
+          ...(masterUserSecret?.KmsKeyId !== undefined && {
+            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+          }),
+          ...(properties['ManageMasterUserPassword'] !== undefined && {
+            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+          }),
+          ...(properties['MonitoringRoleArn'] !== undefined && {
+            MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+          }),
+          ...(properties['MonitoringInterval'] !== undefined && {
+            MonitoringInterval: Number(properties['MonitoringInterval']),
+          }),
+          ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
+            EnableIAMDatabaseAuthentication: properties[
+              'EnableIAMDatabaseAuthentication'
+            ] as boolean,
           }),
           ...(tags.length > 0 && { Tags: tags }),
         })
@@ -814,6 +927,9 @@ export class RDSProvider implements ResourceProvider {
         newEngineVersion !== prevEngineVersion &&
         prevEngineVersion !== undefined &&
         newEngineVersion.split('.')[0] !== prevEngineVersion.split('.')[0];
+      // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
+      // `MasterUserSecretKmsKeyId` (same flip as create()).
+      const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
       await this.getClient().send(
         new ModifyDBInstanceCommand({
           DBInstanceIdentifier: physicalId,
@@ -841,6 +957,28 @@ export class RDSProvider implements ResourceProvider {
           }),
           ...(properties['VPCSecurityGroups'] !== undefined && {
             VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
+          }),
+          // #609 security-cluster backfill — 5 mutable via ModifyDBInstance.
+          // `KmsKeyId` is intentionally NOT forwarded here (storage-encryption
+          // key is immutable post-create; a template change replaces the
+          // instance, which cdkd's diff layer schedules independently — same
+          // treatment as StorageEncrypted / MasterUsername above).
+          ...(masterUserSecret?.KmsKeyId !== undefined && {
+            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+          }),
+          ...(properties['ManageMasterUserPassword'] !== undefined && {
+            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+          }),
+          ...(properties['MonitoringRoleArn'] !== undefined && {
+            MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+          }),
+          ...(properties['MonitoringInterval'] !== undefined && {
+            MonitoringInterval: Number(properties['MonitoringInterval']),
+          }),
+          ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
+            EnableIAMDatabaseAuthentication: properties[
+              'EnableIAMDatabaseAuthentication'
+            ] as boolean,
           }),
         })
       );
@@ -1264,6 +1402,29 @@ export class RDSProvider implements ResourceProvider {
       .map((sg) => sg.VpcSecurityGroupId)
       .filter((id): id is string => !!id);
     if (sgIds.length > 0) result['VPCSecurityGroups'] = sgIds;
+    // #609 security-cluster backfill readbacks.
+    if (inst.KmsKeyId !== undefined) result['KmsKeyId'] = inst.KmsKeyId;
+    if (inst.MonitoringRoleArn !== undefined) {
+      result['MonitoringRoleArn'] = inst.MonitoringRoleArn;
+    }
+    if (inst.MonitoringInterval !== undefined) {
+      result['MonitoringInterval'] = inst.MonitoringInterval;
+    }
+    // AWS Describe surfaces this as `IAMDatabaseAuthenticationEnabled`; CFn /
+    // cdkd state names it `EnableIAMDatabaseAuthentication`.
+    if (inst.IAMDatabaseAuthenticationEnabled !== undefined) {
+      result['EnableIAMDatabaseAuthentication'] = inst.IAMDatabaseAuthenticationEnabled;
+    }
+    // `MasterUserSecret` round-trips as `{ KmsKeyId }` (the only create-shape
+    // member). Emit only when AWS reports a KmsKeyId so a non-managed-secret
+    // instance (state has no such key) does not get a false-positive drift.
+    // `ManageMasterUserPassword` itself is NOT a Describe field — its
+    // create-time value is reflected only by the presence of MasterUserSecret,
+    // so it is intentionally not read back (would be a phantom drift on every
+    // read, like MasterUserPassword).
+    if (inst.MasterUserSecret?.KmsKeyId !== undefined) {
+      result['MasterUserSecret'] = { KmsKeyId: inst.MasterUserSecret.KmsKeyId };
+    }
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }
@@ -1302,6 +1463,28 @@ export class RDSProvider implements ResourceProvider {
     }
     if (cluster.DeletionProtection !== undefined) {
       result['DeletionProtection'] = cluster.DeletionProtection;
+    }
+    // #609 security-cluster backfill readbacks.
+    if (cluster.MonitoringRoleArn !== undefined) {
+      result['MonitoringRoleArn'] = cluster.MonitoringRoleArn;
+    }
+    if (cluster.MonitoringInterval !== undefined) {
+      result['MonitoringInterval'] = cluster.MonitoringInterval;
+    }
+    // AWS Describe surfaces this as `IAMDatabaseAuthenticationEnabled`; CFn /
+    // cdkd state names it `EnableIAMDatabaseAuthentication`.
+    if (cluster.IAMDatabaseAuthenticationEnabled !== undefined) {
+      result['EnableIAMDatabaseAuthentication'] = cluster.IAMDatabaseAuthenticationEnabled;
+    }
+    if (cluster.PubliclyAccessible !== undefined) {
+      result['PubliclyAccessible'] = cluster.PubliclyAccessible;
+    }
+    // `MasterUserSecret` round-trips as `{ KmsKeyId }`. Emit only when AWS
+    // reports a KmsKeyId. `ManageMasterUserPassword` is not a Describe field
+    // (its create-time value is reflected only by MasterUserSecret presence),
+    // so it is intentionally not read back — like MasterUserPassword.
+    if (cluster.MasterUserSecret?.KmsKeyId !== undefined) {
+      result['MasterUserSecret'] = { KmsKeyId: cluster.MasterUserSecret.KmsKeyId };
     }
     // Class 1 — ServerlessV2ScalingConfiguration is only valid for Aurora
     // Serverless v2 clusters. Emit only when AWS actually returns one or
