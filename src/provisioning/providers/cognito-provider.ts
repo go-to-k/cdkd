@@ -106,9 +106,14 @@ const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
  *   `EmailMfaConfiguration` message/subject (email-OTP template)
  * - `WebAuthnRelyingPartyID`/`WebAuthnUserVerification` -> `WebAuthnConfiguration`
  *
- * `MfaConfiguration` (ON/OFF/OPTIONAL) is intentionally NOT set here — it rides
- * on CreateUserPool/UpdateUserPool directly (existing handled property) and AWS
- * keeps the two in sync; setting it in both places risks a redundant write.
+ * `MfaConfiguration` (ON/OFF/OPTIONAL) MUST be threaded into this request:
+ * `SetUserPoolMfaConfig` is a full-replace of the pool's MFA state, and an
+ * omitted `MfaConfiguration` defaults to OFF on the wire — which resets the
+ * pool to MFA-disabled and makes AWS reject (or silently drop) the per-factor
+ * sub-blocks we are trying to enable. Use the template's `MfaConfiguration`
+ * when present; default to `OPTIONAL` when factors are present but the template
+ * omitted it (factors are meaningless under OFF, and OPTIONAL enables them
+ * without forcing MFA on every user).
  */
 function buildMfaConfigRequest(
   physicalId: string,
@@ -144,6 +149,13 @@ function buildMfaConfigRequest(
   if (!hasMfaProps) return undefined;
 
   const request: SetUserPoolMfaConfigCommandInput = { UserPoolId: physicalId };
+
+  // SetUserPoolMfaConfig is a full-replace: an omitted MfaConfiguration resets
+  // the pool to OFF, which would disable the very factors we are enabling.
+  // Thread the template value; default to OPTIONAL when factors are present.
+  const mfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType | undefined;
+  request.MfaConfiguration = mfaConfiguration ?? 'OPTIONAL';
+
   const factors = new Set(enabledMfas ?? []);
 
   if (factors.has(MFA_FACTOR_SOFTWARE_TOKEN)) {
@@ -845,6 +857,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       const mfa = await this.getClient().send(
         new GetUserPoolMfaConfigCommand({ UserPoolId: physicalId })
       );
+      // Reconstructed in a fixed canonical order (SMS -> SOFTWARE_TOKEN ->
+      // EMAIL_OTP). A template that lists EnabledMfas in a different order can
+      // surface a spurious array-order drift; the canonical order is documented
+      // so authors can match it. (A future order-insensitive array compare in
+      // drift-calculator would remove the caveat entirely.)
       const enabledMfas: string[] = [];
       if (mfa.SmsMfaConfiguration) enabledMfas.push(MFA_FACTOR_SMS);
       if (mfa.SoftwareTokenMfaConfiguration?.Enabled) enabledMfas.push(MFA_FACTOR_SOFTWARE_TOKEN);

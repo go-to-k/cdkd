@@ -103,6 +103,19 @@ echo "    OK: UserPoolTier == ESSENTIALS"
 MFA=$(aws cognito-idp get-user-pool-mfa-config \
   --user-pool-id "${POOL_ID}" --region "${REGION}" --output json 2>/dev/null || echo "{}")
 
+# MfaConfiguration MUST be ON/OPTIONAL (not OFF). SetUserPoolMfaConfig is a
+# full-replace: if cdkd omitted MfaConfiguration the pool would reset to OFF and
+# the per-factor sub-blocks below would be silently dropped. This is the
+# load-bearing assertion guarding the #609-review blocker fix.
+MFA_CONFIG=$(echo "${MFA}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${MFA_CONFIG}" != "OPTIONAL" ] && [ "${MFA_CONFIG}" != "ON" ]; then
+  echo "FAIL: MfaConfiguration is '${MFA_CONFIG}', expected ON or OPTIONAL (pool reset to OFF would drop the factors)" >&2
+  echo "${MFA}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: MfaConfiguration == ${MFA_CONFIG}"
+
 # SOFTWARE_TOKEN_MFA factor enabled.
 SOFTWARE_ENABLED=$(echo "${MFA}" \
   | jq -r 'if (.SoftwareTokenMfaConfiguration|has("Enabled")) then .SoftwareTokenMfaConfiguration.Enabled|tostring else "null" end')

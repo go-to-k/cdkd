@@ -318,11 +318,31 @@ describe('CognitoUserPoolProvider', () => {
         const mfaCall = mockSend.mock.calls[1][0];
         expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mfaCall.input.UserPoolId).toBe('us-east-1_abc123');
+        // SetUserPoolMfaConfig is a full-replace: MfaConfiguration MUST be set
+        // (an omitted value resets the pool to OFF and drops the factors below).
+        // Defaults to OPTIONAL when the template omits it but enables factors.
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
         expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
         expect(mfaCall.input.SmsMfaConfiguration).toEqual({
           SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::1:role/sms' },
         });
         expect(mfaCall.input.EmailMfaConfiguration).toBeDefined();
+      });
+
+      it("threads the template's MfaConfiguration into SetUserPoolMfaConfig (not reset to OFF)", async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mfa' },
+        }); // CreateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: 'ON',
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('ON');
       });
 
       it('does NOT call SetUserPoolMfaConfig when no MFA props are present', async () => {
