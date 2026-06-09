@@ -1,3 +1,10 @@
+# [0.215.0](https://github.com/go-to-k/cdkd/compare/v0.214.0...v0.215.0) (2026-06-09)
+
+
+### Features
+
+* **providers:** backfill EFS::FileSystem 6 silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#790](https://github.com/go-to-k/cdkd/issues/790)) ([67a9920](https://github.com/go-to-k/cdkd/commit/67a992015c30223a26b8c4be91c70c18e8d67fd9))
+
 # [0.214.0](https://github.com/go-to-k/cdkd/compare/v0.213.0...v0.214.0) (2026-06-08)
 
 
