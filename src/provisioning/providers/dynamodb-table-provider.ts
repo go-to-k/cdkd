@@ -4,16 +4,26 @@ import {
   DeleteTableCommand,
   DescribeTableCommand,
   DescribeContinuousBackupsCommand,
+  DescribeContributorInsightsCommand,
+  DescribeKinesisStreamingDestinationCommand,
   DescribeTimeToLiveCommand,
+  DisableKinesisStreamingDestinationCommand,
+  EnableKinesisStreamingDestinationCommand,
+  GetResourcePolicyCommand,
   ListTablesCommand,
   ListTagsOfResourceCommand,
+  PutResourcePolicyCommand,
+  DeleteResourcePolicyCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  UpdateContributorInsightsCommand,
   UpdateTableCommand,
   UpdateContinuousBackupsCommand,
   type PointInTimeRecoverySpecification,
   UpdateTimeToLiveCommand,
   ResourceNotFoundException,
+  type ContributorInsightsAction,
+  type ContributorInsightsMode,
   type CreateTableCommandInput,
   type KeySchemaElement,
   type AttributeDefinition,
@@ -74,6 +84,21 @@ export class DynamoDBTableProvider implements ResourceProvider {
         'TableClass',
         'PointInTimeRecoverySpecification',
         'TimeToLiveSpecification',
+        'ResourcePolicy',
+        'KinesisStreamSpecification',
+        'ContributorInsightsSpecification',
+      ]),
+    ],
+  ]);
+
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::DynamoDB::Table',
+      new Map<string, string>([
+        [
+          'ImportSourceSpecification',
+          'S3 import uses the separate ImportTable API (not CreateTable) and is create-only with no readback; deferred to a dedicated import-from-S3 PR',
+        ],
       ]),
     ],
   ]);
@@ -207,6 +232,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
           | 'STANDARD_INFREQUENT_ACCESS';
       }
 
+      // ResourcePolicy — rides directly on CreateTable. The CFn shape is
+      // `{ PolicyDocument: <JSON object> }`, but the SDK CreateTable input
+      // takes a JSON STRING in its `ResourcePolicy` field, so serialize the
+      // document. (update() uses the separate PutResourcePolicy /
+      // DeleteResourcePolicy APIs — those are post-create only.)
+      const createResourcePolicyDoc = this.extractResourcePolicyDocument(
+        properties['ResourcePolicy']
+      );
+      if (createResourcePolicyDoc !== undefined) {
+        createParams.ResourcePolicy = createResourcePolicyDoc;
+      }
+
       await this.dynamoDBClient.send(new CreateTableCommand(createParams));
       tableCreated = true;
 
@@ -225,6 +262,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
         properties['PointInTimeRecoverySpecification']
       );
       await this.applyTimeToLive(tableName, properties['TimeToLiveSpecification']);
+
+      // KinesisStreamSpecification and ContributorInsightsSpecification are
+      // also post-ACTIVE control-plane calls (separate
+      // EnableKinesisStreamingDestination / UpdateContributorInsights APIs,
+      // NOT fields on CreateTable), so they run after the ACTIVE wait too.
+      await this.applyKinesisStreamingDestination(
+        tableName,
+        properties['KinesisStreamSpecification']
+      );
+      await this.applyContributorInsights(
+        tableName,
+        properties['ContributorInsightsSpecification']
+      );
 
       this.logger.debug(`Successfully created DynamoDB table ${logicalId}: ${tableName}`);
 
@@ -375,6 +425,49 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId,
           properties['TimeToLiveSpecification'],
           previousProperties['TimeToLiveSpecification']
+        );
+      }
+
+      // ResourcePolicy — separate PutResourcePolicy / DeleteResourcePolicy
+      // APIs (the CreateTable `ResourcePolicy` field is create-only). Fire
+      // only when the value changed; a removal deletes the policy. Needs the
+      // table ARN, which the DescribeTable above gave us.
+      if (
+        table?.TableArn &&
+        JSON.stringify(properties['ResourcePolicy']) !==
+          JSON.stringify(previousProperties['ResourcePolicy'])
+      ) {
+        await this.applyResourcePolicy(
+          table.TableArn,
+          properties['ResourcePolicy'],
+          previousProperties['ResourcePolicy']
+        );
+      }
+
+      // KinesisStreamSpecification — separate Enable/Disable/Update
+      // KinesisStreamingDestination APIs. Fire only when the value changed; a
+      // removal disables streaming to the previous stream ARN.
+      if (
+        JSON.stringify(properties['KinesisStreamSpecification']) !==
+        JSON.stringify(previousProperties['KinesisStreamSpecification'])
+      ) {
+        await this.applyKinesisStreamingDestination(
+          physicalId,
+          properties['KinesisStreamSpecification'],
+          previousProperties['KinesisStreamSpecification']
+        );
+      }
+
+      // ContributorInsightsSpecification — separate UpdateContributorInsights
+      // API. Fire only when the value changed; a removal disables insights.
+      if (
+        JSON.stringify(properties['ContributorInsightsSpecification']) !==
+        JSON.stringify(previousProperties['ContributorInsightsSpecification'])
+      ) {
+        await this.applyContributorInsights(
+          physicalId,
+          properties['ContributorInsightsSpecification'],
+          previousProperties['ContributorInsightsSpecification']
         );
       }
 
@@ -665,6 +758,183 @@ export class DynamoDBTableProvider implements ResourceProvider {
         `Disabled TimeToLive (AttributeName=${prevAttributeName}) on DynamoDB table ${tableName}`
       );
     }
+  }
+
+  /**
+   * Extract the resource-policy document from the CFn `ResourcePolicy`
+   * property and serialize it to the JSON string the DynamoDB APIs expect.
+   *
+   * CFn shape is `{ PolicyDocument: <JSON object | string> }`. Both
+   * `CreateTable.ResourcePolicy` and `PutResourcePolicy.Policy` take a JSON
+   * STRING, so a document already supplied as a string is passed through
+   * verbatim (CDK can emit either an object or, post-intrinsic-resolution, a
+   * string). Returns `undefined` when there is no policy document to apply.
+   */
+  private extractResourcePolicyDocument(spec: unknown): string | undefined {
+    if (spec === undefined || spec === null) return undefined;
+    const s = spec as Record<string, unknown>;
+    const doc = s['PolicyDocument'];
+    if (doc === undefined || doc === null) return undefined;
+    return typeof doc === 'string' ? doc : JSON.stringify(doc);
+  }
+
+  /**
+   * Apply the table's `ResourcePolicy` via the separate `PutResourcePolicy` /
+   * `DeleteResourcePolicy` APIs (used by `update()` — `create()` rides the
+   * policy on CreateTable directly). On removal — when the template drops the
+   * block but it was present before — the existing policy is deleted.
+   */
+  private async applyResourcePolicy(
+    tableArn: string,
+    spec: unknown,
+    previousSpec?: unknown
+  ): Promise<void> {
+    const policyDoc = this.extractResourcePolicyDocument(spec);
+    if (policyDoc !== undefined) {
+      await this.dynamoDBClient.send(
+        new PutResourcePolicyCommand({ ResourceArn: tableArn, Policy: policyDoc })
+      );
+      this.logger.debug(`Put ResourcePolicy on DynamoDB table ${tableArn}`);
+      return;
+    }
+
+    // Removed from the template: delete the existing policy. NotFound is
+    // idempotent success (no policy to remove).
+    if (previousSpec !== undefined && previousSpec !== null) {
+      try {
+        await this.dynamoDBClient.send(new DeleteResourcePolicyCommand({ ResourceArn: tableArn }));
+        this.logger.debug(`Deleted ResourcePolicy on DynamoDB table ${tableArn}`);
+      } catch (error) {
+        if (!(error instanceof ResourceNotFoundException)) throw error;
+      }
+    }
+  }
+
+  /**
+   * Apply the table's `KinesisStreamSpecification` via the separate
+   * Enable/Disable/Update `KinesisStreamingDestination` APIs (NOT a field on
+   * CreateTable). CFn shape is
+   * `{ StreamArn: string, ApproximateCreationDateTimePrecision?: 'MICROSECOND' | 'MILLISECOND' }`.
+   *
+   * Called from both `create()` (after the table is ACTIVE) and `update()`
+   * (only when the value changed). On `update()`-side removal — template drops
+   * the block but it was present before — streaming is disabled to the PREVIOUS
+   * stream ARN. A same-ARN change of only the precision is a deliberate no-op
+   * (re-enabling against an already-enabled stream errors), matching the
+   * pre-existing WarmThroughput "no clean remap" stance; precision changes flow
+   * through on the create / first-enable path.
+   */
+  private async applyKinesisStreamingDestination(
+    tableName: string,
+    spec: unknown,
+    previousSpec?: unknown
+  ): Promise<void> {
+    const newArn = this.extractKinesisStreamArn(spec);
+    const prevArn = this.extractKinesisStreamArn(previousSpec);
+
+    // No change in target stream ARN: nothing to do (enable is not idempotent
+    // against an already-enabled destination).
+    if (newArn === prevArn) return;
+
+    // Disable streaming to the previous stream when it changed or was removed.
+    if (prevArn) {
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new DisableKinesisStreamingDestinationCommand({
+              TableName: tableName,
+              StreamArn: prevArn,
+            })
+          ),
+        `disable Kinesis streaming on ${tableName}`
+      );
+      this.logger.debug(
+        `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
+      );
+    }
+
+    // Enable streaming to the new stream when present.
+    if (newArn) {
+      const s = spec as Record<string, unknown>;
+      const precision = s['ApproximateCreationDateTimePrecision'] as string | undefined;
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new EnableKinesisStreamingDestinationCommand({
+              TableName: tableName,
+              StreamArn: newArn,
+              ...(precision
+                ? {
+                    EnableKinesisStreamingConfiguration: {
+                      ApproximateCreationDateTimePrecision: precision as
+                        | 'MICROSECOND'
+                        | 'MILLISECOND',
+                    },
+                  }
+                : {}),
+            })
+          ),
+        `enable Kinesis streaming on ${tableName}`
+      );
+      this.logger.debug(
+        `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
+      );
+    }
+  }
+
+  private extractKinesisStreamArn(spec: unknown): string | undefined {
+    if (spec === undefined || spec === null) return undefined;
+    const arn = (spec as Record<string, unknown>)['StreamArn'];
+    return typeof arn === 'string' ? arn : undefined;
+  }
+
+  /**
+   * Apply the table's `ContributorInsightsSpecification` via the separate
+   * `UpdateContributorInsights` API (NOT a field on CreateTable). CFn shape is
+   * `{ Enabled: boolean, Mode?: 'ACCESSED_AND_THROTTLED_KEYS' | 'THROTTLED_KEYS' }`.
+   *
+   * Called from both `create()` (after the table is ACTIVE) and `update()`
+   * (only when the value changed). On `update()`-side removal — template drops
+   * the block but it was present before — insights is disabled.
+   */
+  private async applyContributorInsights(
+    tableName: string,
+    spec: unknown,
+    previousSpec?: unknown
+  ): Promise<void> {
+    let action: ContributorInsightsAction | undefined;
+    let mode: ContributorInsightsMode | undefined;
+    if (spec !== undefined && spec !== null) {
+      const s = spec as Record<string, unknown>;
+      const enabled = Boolean(s['Enabled']);
+      action = enabled ? 'ENABLE' : 'DISABLE';
+      // Mode only applies while enabling; AWS rejects it alongside DISABLE.
+      if (enabled && s['Mode'] !== undefined) {
+        mode = s['Mode'] as ContributorInsightsMode;
+      }
+    } else if (previousSpec !== undefined && previousSpec !== null) {
+      // Removed from the template: disable.
+      action = 'DISABLE';
+    }
+
+    if (action === undefined) return;
+
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.dynamoDBClient.send(
+          new UpdateContributorInsightsCommand({
+            TableName: tableName,
+            ContributorInsightsAction: action,
+            ...(mode ? { ContributorInsightsMode: mode } : {}),
+          })
+        ),
+      `set ContributorInsights on ${tableName}`
+    );
+    this.logger.debug(
+      `Set ContributorInsightsAction=${action}${
+        mode !== undefined ? ` Mode=${mode}` : ''
+      } on DynamoDB table ${tableName}`
+    );
   }
 
   /**
@@ -979,6 +1249,86 @@ export class DynamoDBTableProvider implements ResourceProvider {
       } catch (err) {
         this.logger.debug(
           `Could not read TimeToLive for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      // ResourcePolicy — separate GetResourcePolicy call. Emit-when-present:
+      // only surface the key when AWS reports an attached policy, and re-shape
+      // the returned JSON string back into CFn's `{ PolicyDocument: <object> }`
+      // form so it is drift-comparable against the templated value. A table
+      // with no policy returns ResourceNotFoundException / PolicyNotFound —
+      // omit the key rather than fail the whole drift read.
+      if (table.TableArn) {
+        try {
+          const rpResp = await this.dynamoDBClient.send(
+            new GetResourcePolicyCommand({ ResourceArn: table.TableArn })
+          );
+          if (rpResp.Policy) {
+            let doc: unknown = rpResp.Policy;
+            try {
+              doc = JSON.parse(rpResp.Policy);
+            } catch {
+              // Leave as the raw string if AWS returned a non-JSON body.
+            }
+            result['ResourcePolicy'] = { PolicyDocument: doc };
+          }
+        } catch (err) {
+          if (!(err instanceof ResourceNotFoundException)) {
+            this.logger.debug(
+              `Could not read ResourcePolicy for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      }
+
+      // KinesisStreamSpecification — separate DescribeKinesisStreamingDestination
+      // call. Emit-when-present: only surface the key when AWS reports an ACTIVE
+      // or ENABLING destination (DISABLED entries linger in the list, so a
+      // status filter avoids a stale placeholder). Surface only the user-set
+      // fields (StreamArn + precision) so the drift comparator can match the
+      // templated value.
+      try {
+        const kResp = await this.dynamoDBClient.send(
+          new DescribeKinesisStreamingDestinationCommand({ TableName: physicalId })
+        );
+        const active = (kResp.KinesisDataStreamDestinations ?? []).find(
+          (d) => d.DestinationStatus === 'ACTIVE' || d.DestinationStatus === 'ENABLING'
+        );
+        if (active?.StreamArn) {
+          const kspec: Record<string, unknown> = { StreamArn: active.StreamArn };
+          if (active.ApproximateCreationDateTimePrecision !== undefined) {
+            kspec['ApproximateCreationDateTimePrecision'] =
+              active.ApproximateCreationDateTimePrecision;
+          }
+          result['KinesisStreamSpecification'] = kspec;
+        }
+      } catch (err) {
+        this.logger.debug(
+          `Could not read KinesisStreamingDestination for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      // ContributorInsightsSpecification — separate DescribeContributorInsights
+      // call. Emit-when-present: only surface the key when AWS reports a
+      // terminal ENABLED / DISABLED status (ENABLING / DISABLING are transient
+      // and omitted so drift doesn't fire on a momentary state). Surface
+      // `Mode` only while ENABLED so a disabled table doesn't grow a CFn-invalid
+      // placeholder.
+      try {
+        const ciResp = await this.dynamoDBClient.send(
+          new DescribeContributorInsightsCommand({ TableName: physicalId })
+        );
+        const status = ciResp.ContributorInsightsStatus;
+        if (status === 'ENABLED' || status === 'DISABLED') {
+          const cspec: Record<string, unknown> = { Enabled: status === 'ENABLED' };
+          if (status === 'ENABLED' && ciResp.ContributorInsightsMode !== undefined) {
+            cspec['Mode'] = ciResp.ContributorInsightsMode;
+          }
+          result['ContributorInsightsSpecification'] = cspec;
+        }
+      } catch (err) {
+        this.logger.debug(
+          `Could not read ContributorInsights for ${physicalId}: ${err instanceof Error ? err.message : String(err)}`
         );
       }
 

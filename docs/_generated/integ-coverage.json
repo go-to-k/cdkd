@@ -647,6 +647,7 @@
         "data-pipeline",
         "dynamodb-ondemand",
         "dynamodb-streams",
+        "dynamodb-table-policy",
         "full-stack-demo",
         "lambda",
         "local-invoke-from-cfn-stack",
@@ -674,6 +675,9 @@
           "l2"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "dynamodb-table-policy": [
           "l2"
         ],
         "full-stack-demo": [
@@ -2183,10 +2187,14 @@
       "resourceType": "AWS::Kinesis::Stream",
       "integs": [
         "cache-streaming",
+        "dynamodb-table-policy",
         "log-pipeline"
       ],
       "signals": {
         "cache-streaming": [
+          "l2"
+        ],
+        "dynamodb-table-policy": [
           "l2"
         ],
         "log-pipeline": [
