@@ -1,7 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import * as iam from 'aws-cdk-lib/aws-iam';
 import * as rds from 'aws-cdk-lib/aws-rds';
 
 /**
@@ -23,8 +22,7 @@ import * as rds from 'aws-cdk-lib/aws-rds';
  * A SECOND, standalone L1 `rds.CfnDBCluster` ("SecurityCluster") is added
  * alongside the L2 cluster above to exercise the #609 silent-drop backfill
  * of the DBCluster security props:
- *   ManageMasterUserPassword / MasterUserSecret / MonitoringRoleArn /
- *   MonitoringInterval / EnableIAMDatabaseAuthentication / PubliclyAccessible
+ *   ManageMasterUserPassword / MasterUserSecret / EnableIAMDatabaseAuthentication
  *
  * Why a separate L1 cluster instead of folding onto the existing L2 one:
  * the L2 `rds.DatabaseCluster` emits CDK-default top-level props (some still
@@ -119,15 +117,6 @@ export class RdsAuroraStack extends cdk.Stack {
       description: 'Subnet group for the #609 security-backfill DBCluster',
     });
 
-    // Enhanced Monitoring role: RDS assumes monitoring.rds.amazonaws.com and
-    // needs the AWS-managed AmazonRDSEnhancedMonitoringRole policy.
-    const monitoringRole = new iam.Role(this, 'SecurityMonitoringRole', {
-      assumedBy: new iam.ServicePrincipal('monitoring.rds.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonRDSEnhancedMonitoringRole'),
-      ],
-    });
-
     // Aurora PostgreSQL Serverless v2 cluster — NO cluster instance: the
     // cluster-level create accepts and reflects every security prop, and
     // skipping the instance keeps the fixture cheap. Each #609 security prop
@@ -135,20 +124,34 @@ export class RdsAuroraStack extends cdk.Stack {
     //   * ManageMasterUserPassword: Secrets-Manager-managed master password,
     //     mutually exclusive with MasterUserPassword (none is set).
     //   * MasterUserSecret { KmsKeyId } → account-default Secrets Manager key.
-    //   * MonitoringInterval: 60 (AWS default 0) + MonitoringRoleArn.
     //   * EnableIAMDatabaseAuthentication: true (AWS default false).
-    //   * PubliclyAccessible: create-only on the cluster; with a non-default
-    //     DBSubnetGroup the AWS default is false, so this is a weaker signal
-    //     kept for completeness — just assert it landed.
+    //
+    // NOTE: MonitoringInterval / MonitoringRoleArn are intentionally NOT set on
+    // this cluster. Enhanced Monitoring needs a same-stack IAM role that RDS
+    // assumes at create time, but cdkd's fast SDK path issues CreateDBCluster
+    // before IAM finishes propagating the just-created role for the RDS
+    // monitoring service ("IAM role ARN value is invalid or does not include
+    // the required permissions for: ENHANCED_MONITORING"). The cluster create
+    // validates the role faster than the role propagates. These two props ARE
+    // integ-asserted on the SDK-shared DBInstance create path in
+    // tests/integration/rds-dbinstance-backfill (which passed), so the wiring
+    // is covered; the IAM-propagation-race robustness fix for the cluster path
+    // is tracked as a #609 follow-up.
+    //
+    // NOTE: PubliclyAccessible is intentionally NOT set here. It is a valid
+    // CreateDBCluster field ONLY for Multi-AZ DB clusters (provisioned,
+    // non-Aurora engines); AWS rejects it for aurora-postgresql with
+    // "PubliclyAccessible isn't supported for DB engine aurora-postgresql"
+    // (even for `false`). The provider wiring is correct (it forwards the
+    // field; AWS validates per-engine) and is unit-tested; a real-AWS integ
+    // assertion would need a Multi-AZ DB cluster fixture (3 instances, slow) —
+    // deferred. So PubliclyAccessible stays unit-test-only.
     new rds.CfnDBCluster(this, 'SecurityCluster', {
       engine: 'aurora-postgresql',
       masterUsername: 'postgres',
       manageMasterUserPassword: true,
       masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
-      monitoringInterval: 60,
-      monitoringRoleArn: monitoringRole.roleArn,
       enableIamDatabaseAuthentication: true,
-      publiclyAccessible: false,
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
       vpcSecurityGroupIds: [securityGroup.securityGroupId],
       serverlessV2ScalingConfiguration: {

@@ -2012,7 +2012,6 @@
         "multi-resource",
         "multi-stack-deps",
         "nested-stack",
-        "rds-aurora",
         "rds-dbinstance-backfill",
         "recreate-mixed-direction",
         "recreate-via-cc-api",
@@ -2096,9 +2095,6 @@
           "l2"
         ],
         "nested-stack": [
-          "l2"
-        ],
-        "rds-aurora": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
