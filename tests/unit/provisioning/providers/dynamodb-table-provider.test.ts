@@ -183,6 +183,24 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(commandSent(PutResourcePolicyCommand)).toBe(false);
       expect(commandSent(DeleteResourcePolicyCommand)).toBe(false);
     });
+
+    it('throws (does not silently skip) when a ResourcePolicy change is detected but DescribeTable returns no TableArn', async () => {
+      const doc = { Version: '2012-10-17', Statement: [{ Effect: 'Allow' }] };
+      // DescribeTable response missing TableArn (transient/partial response).
+      mockSend.mockResolvedValueOnce({ Table: {} });
+
+      await expect(
+        provider.update(
+          'MyTable',
+          'MyTable',
+          'AWS::DynamoDB::Table',
+          { ...baseCreateProps, ResourcePolicy: { PolicyDocument: doc } },
+          { ...baseCreateProps }
+        )
+      ).rejects.toThrow(/no TableArn/);
+
+      expect(commandSent(PutResourcePolicyCommand)).toBe(false);
+    });
   });
 
   describe('KinesisStreamSpecification', () => {

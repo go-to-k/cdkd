@@ -431,12 +431,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // ResourcePolicy — separate PutResourcePolicy / DeleteResourcePolicy
       // APIs (the CreateTable `ResourcePolicy` field is create-only). Fire
       // only when the value changed; a removal deletes the policy. Needs the
-      // table ARN, which the DescribeTable above gave us.
+      // table ARN, which the DescribeTable above gave us. Fail loud when a
+      // change is detected but the ARN is missing (transient/partial
+      // DescribeTable response) — a silent skip would write the new policy
+      // into state as if applied, so the next deploy sees no diff and the
+      // policy stays permanently stale (the throw-not-swallow rule).
       if (
-        table?.TableArn &&
         JSON.stringify(properties['ResourcePolicy']) !==
-          JSON.stringify(previousProperties['ResourcePolicy'])
+        JSON.stringify(previousProperties['ResourcePolicy'])
       ) {
+        if (!table?.TableArn) {
+          throw new ProvisioningError(
+            `Cannot apply ResourcePolicy change for DynamoDB table ${logicalId}: DescribeTable returned no TableArn`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
         await this.applyResourcePolicy(
           table.TableArn,
           properties['ResourcePolicy'],
@@ -791,8 +802,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): Promise<void> {
     const policyDoc = this.extractResourcePolicyDocument(spec);
     if (policyDoc !== undefined) {
-      await this.dynamoDBClient.send(
-        new PutResourcePolicyCommand({ ResourceArn: tableArn, Policy: policyDoc })
+      // Wrapped in the transient-control-plane retry like the Kinesis /
+      // ContributorInsights post-ACTIVE ops: update() runs PITR -> TTL ->
+      // ResourcePolicy, and a preceding UpdateContinuousBackups leaves the
+      // table settling, so a back-to-back PutResourcePolicy can hit
+      // ResourceInUseException / "being updated".
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new PutResourcePolicyCommand({ ResourceArn: tableArn, Policy: policyDoc })
+          ),
+        `put ResourcePolicy on ${tableArn}`
       );
       this.logger.debug(`Put ResourcePolicy on DynamoDB table ${tableArn}`);
       return;
@@ -802,7 +822,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // idempotent success (no policy to remove).
     if (previousSpec !== undefined && previousSpec !== null) {
       try {
-        await this.dynamoDBClient.send(new DeleteResourcePolicyCommand({ ResourceArn: tableArn }));
+        await this.retryOnTransientControlPlane(
+          () =>
+            this.dynamoDBClient.send(new DeleteResourcePolicyCommand({ ResourceArn: tableArn })),
+          `delete ResourcePolicy on ${tableArn}`
+        );
         this.logger.debug(`Deleted ResourcePolicy on DynamoDB table ${tableArn}`);
       } catch (error) {
         if (!(error instanceof ResourceNotFoundException)) throw error;
@@ -833,8 +857,29 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const prevArn = this.extractKinesisStreamArn(previousSpec);
 
     // No change in target stream ARN: nothing to do (enable is not idempotent
-    // against an already-enabled destination).
-    if (newArn === prevArn) return;
+    // against an already-enabled destination). A same-ARN change of ONLY the
+    // precision is a deliberate no-op — but warn so the user knows the
+    // precision edit did not reach AWS (UpdateKinesisStreamingDestination
+    // could carry it, but re-enabling against an already-enabled stream
+    // errors; deferred to a dedicated precision-update path).
+    if (newArn === prevArn) {
+      if (
+        newArn &&
+        JSON.stringify((spec as Record<string, unknown> | undefined)?.[
+          'ApproximateCreationDateTimePrecision'
+        ]) !==
+          JSON.stringify(
+            (previousSpec as Record<string, unknown> | undefined)?.[
+              'ApproximateCreationDateTimePrecision'
+            ]
+          )
+      ) {
+        this.logger.warn(
+          `Kinesis streaming ApproximateCreationDateTimePrecision change on ${tableName} was not applied (same stream ARN; precision-only updates are not yet supported)`
+        );
+      }
+      return;
+    }
 
     // Disable streaming to the previous stream when it changed or was removed.
     if (prevArn) {
