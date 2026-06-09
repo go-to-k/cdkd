@@ -838,6 +838,79 @@ describe('EC2Provider.readCurrentState', () => {
       const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
       expect(result?.['DisableApiTermination']).toBeUndefined();
     });
+
+    it('surfaces EbsOptimized when DescribeInstances reports it (#609)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Reservations: [
+          {
+            Instances: [{ InstanceId: 'i-1', State: { Name: 'running' }, EbsOptimized: true }],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['EbsOptimized']).toBe(true);
+    });
+
+    it('reverse-maps MetadataOptions to the CFn input shape, excluding AWS-managed State (#609)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Reservations: [
+          {
+            Instances: [
+              {
+                InstanceId: 'i-1',
+                State: { Name: 'running' },
+                MetadataOptions: {
+                  State: 'applied', // AWS-managed lifecycle — must NOT surface
+                  HttpTokens: 'required',
+                  HttpEndpoint: 'enabled',
+                  HttpPutResponseHopLimit: 2,
+                  HttpProtocolIpv6: 'disabled',
+                  InstanceMetadataTags: 'enabled',
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['MetadataOptions']).toEqual({
+        HttpTokens: 'required',
+        HttpEndpoint: 'enabled',
+        HttpPutResponseHopLimit: 2,
+        HttpProtocolIpv6: 'disabled',
+        InstanceMetadataTags: 'enabled',
+      });
+    });
+
+    it('surfaces CreditSpecification as { CPUCredits } via DescribeInstanceCreditSpecifications (#609)', async () => {
+      // 1: DescribeInstances. 2: DescribeInstanceAttribute (disableApiTermination,
+      // rejected -> omitted). 3: DescribeInstanceCreditSpecifications.
+      mockSend
+        .mockResolvedValueOnce({
+          Reservations: [{ Instances: [{ InstanceId: 'i-1', State: { Name: 'running' } }] }],
+        })
+        .mockRejectedValueOnce(new Error('skip disableApiTermination'))
+        .mockResolvedValueOnce({
+          InstanceCreditSpecifications: [{ InstanceId: 'i-1', CpuCredits: 'unlimited' }],
+        });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['CreditSpecification']).toEqual({ CPUCredits: 'unlimited' });
+    });
+
+    it('omits CreditSpecification when the API fails (non-burstable family, best-effort) (#609)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Reservations: [{ Instances: [{ InstanceId: 'i-1', State: { Name: 'running' } }] }],
+        })
+        .mockRejectedValueOnce(new Error('skip disableApiTermination'))
+        .mockRejectedValueOnce(new Error('not a burstable instance'));
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['CreditSpecification']).toBeUndefined();
+    });
   });
 
   describe('AWS::EC2::NetworkAcl', () => {

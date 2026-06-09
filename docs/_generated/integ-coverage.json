@@ -711,7 +711,7 @@
       ],
       "signals": {
         "ec2-instance": [
-          "l2"
+          "l1"
         ],
         "remove-protection": [
           "l2",
