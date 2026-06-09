@@ -1,3 +1,10 @@
+# [0.218.0](https://github.com/go-to-k/cdkd/compare/v0.217.0...v0.218.0) (2026-06-09)
+
+
+### Features
+
+* **providers:** backfill EC2::Instance security properties (DisableApiTermination/MetadataOptions/Monitoring/EbsOptimized/CreditSpecification) ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#793](https://github.com/go-to-k/cdkd/issues/793)) ([b81516d](https://github.com/go-to-k/cdkd/commit/b81516d49b5720577136d07cd4879fc0c7f62ae1))
+
 # [0.217.0](https://github.com/go-to-k/cdkd/compare/v0.216.0...v0.217.0) (2026-06-09)
 
 
