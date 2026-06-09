@@ -14,11 +14,19 @@ import {
   DescribeLifecycleConfigurationCommand,
   DescribeBackupPolicyCommand,
   DescribeMountTargetSecurityGroupsCommand,
+  DescribeFileSystemPolicyCommand,
+  PutLifecycleConfigurationCommand,
+  PutBackupPolicyCommand,
+  PutFileSystemPolicyCommand,
+  UpdateFileSystemProtectionCommand,
   FileSystemNotFound,
   MountTargetNotFound,
   AccessPointNotFound,
   type PerformanceMode,
   type ThroughputMode,
+  type LifecyclePolicy,
+  type Status,
+  type ReplicationOverwriteProtection,
 } from '@aws-sdk/client-efs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -58,6 +66,12 @@ export class EFSProvider implements ResourceProvider {
         'PerformanceMode',
         'ThroughputMode',
         'ProvisionedThroughputInMibps',
+        'AvailabilityZoneName',
+        'LifecyclePolicies',
+        'BackupPolicy',
+        'FileSystemPolicy',
+        'BypassPolicyLockoutSafetyCheck',
+        'FileSystemProtection',
       ]),
     ],
     ['AWS::EFS::MountTarget', new Set(['FileSystemId', 'SubnetId', 'SecurityGroups'])],
@@ -68,6 +82,15 @@ export class EFSProvider implements ResourceProvider {
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::EFS::FileSystem',
+      new Map<string, string>([
+        [
+          'ReplicationConfiguration',
+          'Cross-region EFS replication (CreateReplicationConfiguration) provisions a separate destination file system in another region with its own lifecycle, KMS key, and availability-zone placement; replicating + then tearing down the destination on destroy is a multi-resource, cross-region orchestration that is out of scope for the single-resource SDK provider. Tracked as a follow-up to issue #609.',
+        ],
+      ]),
+    ],
     [
       'AWS::EFS::AccessPoint',
       new Map<string, string>([
@@ -168,9 +191,14 @@ export class EFSProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     // Defensive guard: any non-mutable diff means the replacement-detection
     // layer should have routed this through DELETE+CREATE — if we reach
-    // here with an Encrypted / KmsKeyId / PerformanceMode change, refuse
-    // to silently apply a partial update.
-    const immutableKeys = ['Encrypted', 'KmsKeyId', 'PerformanceMode'] as const;
+    // here with an Encrypted / KmsKeyId / PerformanceMode / AvailabilityZoneName
+    // change, refuse to silently apply a partial update.
+    const immutableKeys = [
+      'Encrypted',
+      'KmsKeyId',
+      'PerformanceMode',
+      'AvailabilityZoneName',
+    ] as const;
     for (const key of immutableKeys) {
       const next = properties[key];
       const prev = previousProperties[key];
@@ -196,7 +224,23 @@ export class EFSProvider implements ResourceProvider {
       newThroughputMode !== undefined && newThroughputMode !== oldThroughputMode;
     const provisionedChanged = newProvisioned !== undefined && newProvisioned !== oldProvisioned;
 
-    if (!throughputModeChanged && !provisionedChanged) {
+    // Separate post-create control-plane properties — each compares deep so a
+    // changed nested value (or a removal) fires its own Put*/Update* call.
+    const changed = (key: string): boolean =>
+      JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
+    const lifecycleChanged = changed('LifecyclePolicies');
+    const backupChanged = changed('BackupPolicy');
+    const policyChanged = changed('FileSystemPolicy') || changed('BypassPolicyLockoutSafetyCheck');
+    const protectionChanged = changed('FileSystemProtection');
+
+    if (
+      !throughputModeChanged &&
+      !provisionedChanged &&
+      !lifecycleChanged &&
+      !backupChanged &&
+      !policyChanged &&
+      !protectionChanged
+    ) {
       // No mutable diff — nothing to do (silent success, matching the
       // wider provider convention). Drift comparator wouldn't have
       // surfaced this resource if there was no diff to start with.
@@ -207,18 +251,45 @@ export class EFSProvider implements ResourceProvider {
     this.logger.debug(`Updating EFS FileSystem ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new UpdateFileSystemCommand({
-          FileSystemId: physicalId,
-          ...(throughputModeChanged && { ThroughputMode: newThroughputMode }),
-          ...(provisionedChanged && { ProvisionedThroughputInMibps: newProvisioned }),
-        })
-      );
+      if (throughputModeChanged || provisionedChanged) {
+        await this.getClient().send(
+          new UpdateFileSystemCommand({
+            FileSystemId: physicalId,
+            ...(throughputModeChanged && { ThroughputMode: newThroughputMode }),
+            ...(provisionedChanged && { ProvisionedThroughputInMibps: newProvisioned }),
+          })
+        );
 
-      // EFS UpdateFileSystem is async; wait until the FileSystem state
-      // returns to `available` so the comparator's next read sees the
-      // final values rather than `updating`.
-      await this.waitForFileSystemAvailable(physicalId, logicalId, resourceType);
+        // EFS UpdateFileSystem is async; wait until the FileSystem state
+        // returns to `available` so the comparator's next read sees the
+        // final values rather than `updating`.
+        await this.waitForFileSystemAvailable(physicalId, logicalId, resourceType);
+      }
+
+      // Post-create control-plane diffs — separate Put*/Update* APIs. Each is
+      // applied only when its value changed (a removal clears LifecyclePolicies;
+      // BackupPolicy / FileSystemPolicy / FileSystemProtection have no clean
+      // "drop" mapping in CFn, so a pure removal is a deliberate no-op).
+      if (lifecycleChanged) {
+        await this.applyLifecyclePolicies(
+          physicalId,
+          properties['LifecyclePolicies'],
+          previousProperties['LifecyclePolicies']
+        );
+      }
+      if (backupChanged) {
+        await this.applyBackupPolicy(physicalId, properties['BackupPolicy']);
+      }
+      if (policyChanged) {
+        await this.applyFileSystemPolicy(
+          physicalId,
+          properties['FileSystemPolicy'],
+          properties['BypassPolicyLockoutSafetyCheck']
+        );
+      }
+      if (protectionChanged) {
+        await this.applyFileSystemProtection(physicalId, properties['FileSystemProtection']);
+      }
 
       this.logger.debug(`Successfully updated EFS FileSystem ${logicalId}`);
 
@@ -314,6 +385,11 @@ export class EFSProvider implements ResourceProvider {
 
     const tags = properties['FileSystemTags'] as Array<{ Key: string; Value: string }> | undefined;
 
+    // Track creation so a post-ACTIVE control-plane failure (LifecyclePolicies
+    // / BackupPolicy / FileSystemPolicy / FileSystemProtection) best-effort
+    // rolls back the just-created file system rather than orphaning it.
+    let fileSystemId: string | undefined;
+
     try {
       const response = await this.getClient().send(
         new CreateFileSystemCommand({
@@ -325,15 +401,34 @@ export class EFSProvider implements ResourceProvider {
           ProvisionedThroughputInMibps: properties['ProvisionedThroughputInMibps'] as
             | number
             | undefined,
+          // AvailabilityZoneName — One Zone EFS. Rides on CreateFileSystem and
+          // is immutable (create-only); a change later is routed through
+          // DELETE+CREATE by the replacement-detection layer.
+          AvailabilityZoneName: properties['AvailabilityZoneName'] as string | undefined,
           Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
         })
       );
 
-      const fileSystemId = response.FileSystemId!;
+      fileSystemId = response.FileSystemId!;
       const arn = response.FileSystemArn!;
 
       // Wait for FileSystem to become available
       await this.waitForFileSystemAvailable(fileSystemId, logicalId, resourceType);
+
+      // LifecyclePolicies / BackupPolicy / FileSystemPolicy /
+      // FileSystemProtection do NOT ride on CreateFileSystem — each is a
+      // separate post-ACTIVE control-plane call. AWS rejects them against a
+      // still-creating file system, which is why they run after the wait
+      // above. Each is wrapped in transient-control-plane retry because
+      // back-to-back EFS control-plane ops can collide.
+      await this.applyLifecyclePolicies(fileSystemId, properties['LifecyclePolicies']);
+      await this.applyBackupPolicy(fileSystemId, properties['BackupPolicy']);
+      await this.applyFileSystemPolicy(
+        fileSystemId,
+        properties['FileSystemPolicy'],
+        properties['BypassPolicyLockoutSafetyCheck']
+      );
+      await this.applyFileSystemProtection(fileSystemId, properties['FileSystemProtection']);
 
       this.logger.debug(`Successfully created EFS FileSystem ${logicalId}: ${fileSystemId}`);
 
@@ -345,6 +440,24 @@ export class EFSProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Atomicity: if CreateFileSystem succeeded but a post-ACTIVE step failed,
+      // the file system exists but create() is about to throw without
+      // returning its physicalId — the deploy engine can't roll it back, so
+      // best-effort delete it here to avoid an orphan + a "CreationToken
+      // already in use" failure on the next deploy attempt.
+      if (fileSystemId !== undefined) {
+        try {
+          await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
+          this.logger.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: ${
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+            }`
+          );
+        }
+      }
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create EFS FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -353,6 +466,157 @@ export class EFSProvider implements ResourceProvider {
         undefined,
         cause
       );
+    }
+  }
+
+  // ─── Post-ACTIVE control-plane helpers ─────────────────────────────
+  //
+  // LifecyclePolicies / BackupPolicy / FileSystemPolicy / FileSystemProtection
+  // are NOT settable on CreateFileSystem — each has its own EFS API
+  // (PutLifecycleConfiguration / PutBackupPolicy / PutFileSystemPolicy /
+  // UpdateFileSystemProtection). Called from both create() (after ACTIVE) and
+  // update() (only when the value changed). Each is idempotent and wrapped in
+  // retryOnTransientControlPlane because back-to-back EFS control-plane ops can
+  // collide with an IncorrectFileSystemLifeCycleState / "in progress" error.
+
+  /**
+   * Apply `LifecyclePolicies` via `PutLifecycleConfiguration`. CFn shape is an
+   * array of `{ TransitionToIA?, TransitionToPrimaryStorageClass?,
+   * TransitionToArchive? }`. An empty / dropped array clears all lifecycle
+   * policies (PutLifecycleConfiguration with `LifecyclePolicies: []`).
+   */
+  private async applyLifecyclePolicies(
+    fileSystemId: string,
+    spec: unknown,
+    previousSpec?: unknown
+  ): Promise<void> {
+    if (spec === undefined) {
+      // Removal (new absent, previous present): clear all policies.
+      if (previousSpec === undefined) return;
+    }
+    const policies = (spec as LifecyclePolicy[] | undefined) ?? [];
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(
+          new PutLifecycleConfigurationCommand({
+            FileSystemId: fileSystemId,
+            LifecyclePolicies: policies,
+          })
+        ),
+      `set LifecyclePolicies on ${fileSystemId}`
+    );
+    this.logger.debug(
+      `Set ${policies.length} LifecyclePolicy entry(ies) on EFS FileSystem ${fileSystemId}`
+    );
+  }
+
+  /**
+   * Apply `BackupPolicy` via `PutBackupPolicy`. CFn shape is
+   * `{ Status: 'ENABLED' | 'DISABLED' }`.
+   */
+  private async applyBackupPolicy(fileSystemId: string, spec: unknown): Promise<void> {
+    if (spec === undefined || spec === null) return;
+    const status = (spec as { Status?: string }).Status;
+    if (status === undefined) return;
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(
+          new PutBackupPolicyCommand({
+            FileSystemId: fileSystemId,
+            BackupPolicy: { Status: status as Status },
+          })
+        ),
+      `set BackupPolicy on ${fileSystemId}`
+    );
+    this.logger.debug(`Set BackupPolicy Status=${status} on EFS FileSystem ${fileSystemId}`);
+  }
+
+  /**
+   * Apply `FileSystemPolicy` via `PutFileSystemPolicy`. The CFn `FileSystemPolicy`
+   * property is a JSON policy *object* but the SDK's `Policy` field is a JSON
+   * *string*, so an object value is `JSON.stringify`'d. `BypassPolicyLockoutSafetyCheck`
+   * is a field ON `PutFileSystemPolicy` (not a standalone resource property), so
+   * the two wire together.
+   */
+  private async applyFileSystemPolicy(
+    fileSystemId: string,
+    policy: unknown,
+    bypass: unknown
+  ): Promise<void> {
+    if (policy === undefined || policy === null) return;
+    const policyString = typeof policy === 'string' ? policy : JSON.stringify(policy);
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(
+          new PutFileSystemPolicyCommand({
+            FileSystemId: fileSystemId,
+            Policy: policyString,
+            BypassPolicyLockoutSafetyCheck: bypass === undefined ? undefined : Boolean(bypass),
+          })
+        ),
+      `set FileSystemPolicy on ${fileSystemId}`
+    );
+    this.logger.debug(`Set FileSystemPolicy on EFS FileSystem ${fileSystemId}`);
+  }
+
+  /**
+   * Apply `FileSystemProtection` via `UpdateFileSystemProtection`. CFn shape is
+   * `{ ReplicationOverwriteProtection: 'ENABLED' | 'DISABLED' | 'REPLICATING' }`.
+   */
+  private async applyFileSystemProtection(fileSystemId: string, spec: unknown): Promise<void> {
+    if (spec === undefined || spec === null) return;
+    const protection = (spec as { ReplicationOverwriteProtection?: string })
+      .ReplicationOverwriteProtection;
+    if (protection === undefined) return;
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(
+          new UpdateFileSystemProtectionCommand({
+            FileSystemId: fileSystemId,
+            ReplicationOverwriteProtection: protection as ReplicationOverwriteProtection,
+          })
+        ),
+      `set FileSystemProtection on ${fileSystemId}`
+    );
+    this.logger.debug(
+      `Set ReplicationOverwriteProtection=${protection} on EFS FileSystem ${fileSystemId}`
+    );
+  }
+
+  /**
+   * Retry an EFS control-plane call on the transient "settling" errors AWS
+   * returns when two file-system-modifying operations land back-to-back (e.g.
+   * a `PutLifecycleConfiguration` immediately followed by a `PutBackupPolicy`).
+   * `IncorrectFileSystemLifeCycleState` / `ThrottlingException` /
+   * `ConflictException` and the message-pattern set below are the same class.
+   * Backoff: ~2s,4s,8s,16s,30s,30s... bounded to ~2min total.
+   */
+  private async retryOnTransientControlPlane<T>(
+    op: () => Promise<T>,
+    label: string,
+    maxAttempts = 8
+  ): Promise<T> {
+    let delayMs = 2000;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await op();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const name = error instanceof Error ? error.name : '';
+        const transient =
+          /in progress|please retry|incorrect file system life ?cycle state|being (updated|modified)|try again/i.test(
+            msg
+          ) ||
+          name === 'IncorrectFileSystemLifeCycleState' ||
+          name === 'ConflictException' ||
+          name === 'ThrottlingException';
+        if (!transient || attempt >= maxAttempts) throw error;
+        this.logger.debug(
+          `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs = Math.min(delayMs * 2, 30000);
+      }
     }
   }
 
@@ -738,10 +1002,11 @@ export class EFSProvider implements ResourceProvider {
    *
    * Dispatch per resource type:
    *  - `FileSystem` → `DescribeFileSystems` filtered by id (PerformanceMode,
-   *    ThroughputMode, Encrypted, KmsKeyId, ProvisionedThroughputInMibps),
-   *    plus optional `DescribeLifecycleConfiguration` and
-   *    `DescribeBackupPolicy` enrichment. Each enrichment call is wrapped
-   *    in its own try/catch so a "not configured" error on either omits
+   *    ThroughputMode, Encrypted, KmsKeyId, ProvisionedThroughputInMibps,
+   *    AvailabilityZoneName, FileSystemProtection), plus optional
+   *    `DescribeLifecycleConfiguration`, `DescribeBackupPolicy`, and
+   *    `DescribeFileSystemPolicy` enrichment. Each enrichment call is wrapped
+   *    in its own try/catch so a "not configured" error on any of them omits
    *    the corresponding key without failing the whole snapshot.
    *  - `AccessPoint` → `DescribeAccessPoints` filtered by id (PosixUser,
    *    RootDirectory).
@@ -796,6 +1061,16 @@ export class EFSProvider implements ResourceProvider {
     if (fs.ProvisionedThroughputInMibps !== undefined) {
       result['ProvisionedThroughputInMibps'] = fs.ProvisionedThroughputInMibps;
     }
+    // AvailabilityZoneName (One Zone EFS) and FileSystemProtection ride on the
+    // same DescribeFileSystems response.
+    if (fs.AvailabilityZoneName !== undefined) {
+      result['AvailabilityZoneName'] = fs.AvailabilityZoneName;
+    }
+    if (fs.FileSystemProtection?.ReplicationOverwriteProtection !== undefined) {
+      result['FileSystemProtection'] = {
+        ReplicationOverwriteProtection: fs.FileSystemProtection.ReplicationOverwriteProtection,
+      };
+    }
 
     // LifecyclePolicies — separate call, "not configured" omits the key.
     try {
@@ -832,6 +1107,27 @@ export class EFSProvider implements ResourceProvider {
       );
       if (resp.BackupPolicy?.Status !== undefined) {
         result['BackupPolicy'] = { Status: resp.BackupPolicy.Status };
+      }
+    } catch (err) {
+      if (err instanceof FileSystemNotFound) return undefined;
+      // PolicyNotFound or similar — omit the key.
+    }
+
+    // FileSystemPolicy — separate DescribeFileSystemPolicy call. AWS returns
+    // the policy as a JSON string; the CFn property is a policy object, so
+    // parse it back so the drift comparator compares object-to-object.
+    // "PolicyNotFound" (no policy attached) omits the key.
+    try {
+      const resp = await this.getClient().send(
+        new DescribeFileSystemPolicyCommand({ FileSystemId: physicalId })
+      );
+      if (resp.Policy !== undefined) {
+        try {
+          result['FileSystemPolicy'] = JSON.parse(resp.Policy);
+        } catch {
+          // Non-JSON policy string (should not happen) — surface verbatim.
+          result['FileSystemPolicy'] = resp.Policy;
+        }
       }
     } catch (err) {
       if (err instanceof FileSystemNotFound) return undefined;
