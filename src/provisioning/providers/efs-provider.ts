@@ -1078,15 +1078,24 @@ export class EFSProvider implements ResourceProvider {
         new DescribeLifecycleConfigurationCommand({ FileSystemId: physicalId })
       );
       const policies = resp.LifecyclePolicies ?? [];
-      result['LifecyclePolicies'] = policies.map((p) => {
-        const out: Record<string, unknown> = {};
-        if (p.TransitionToIA !== undefined) out['TransitionToIA'] = p.TransitionToIA;
-        if (p.TransitionToPrimaryStorageClass !== undefined) {
-          out['TransitionToPrimaryStorageClass'] = p.TransitionToPrimaryStorageClass;
-        }
-        if (p.TransitionToArchive !== undefined) out['TransitionToArchive'] = p.TransitionToArchive;
-        return out;
-      });
+      // Emit-when-present: only surface the key when AWS actually reports
+      // lifecycle policies. An always-emitted `[]` placeholder would diverge
+      // from every other backfilled prop's emit-when-present invariant and is
+      // a latent footgun for a future drift --revert that diffs the other
+      // direction (AWS snapshot -> template).
+      if (policies.length > 0) {
+        result['LifecyclePolicies'] = policies.map((p) => {
+          const out: Record<string, unknown> = {};
+          if (p.TransitionToIA !== undefined) out['TransitionToIA'] = p.TransitionToIA;
+          if (p.TransitionToPrimaryStorageClass !== undefined) {
+            out['TransitionToPrimaryStorageClass'] = p.TransitionToPrimaryStorageClass;
+          }
+          if (p.TransitionToArchive !== undefined) {
+            out['TransitionToArchive'] = p.TransitionToArchive;
+          }
+          return out;
+        });
+      }
     } catch (err) {
       // "Not configured" is service-specific; FileSystemNotFound on this call
       // means the FS itself is gone (already covered above), so re-throw.
