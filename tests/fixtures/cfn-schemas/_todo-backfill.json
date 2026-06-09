@@ -122,15 +122,6 @@
       "Triggers",
       "Visibility"
     ],
-    "AWS::Cognito::UserPool": [
-      "EmailAuthenticationMessage",
-      "EmailAuthenticationSubject",
-      "EnabledMfas",
-      "UserPoolTier",
-      "WebAuthnFactorConfiguration",
-      "WebAuthnRelyingPartyID",
-      "WebAuthnUserVerification"
-    ],
     "AWS::DocDB::DBCluster": [
       "AvailabilityZones",
       "CopyTagsToSnapshot",
@@ -506,17 +497,17 @@
       "DefaultCooldown": "SDK input field name; CFn schema names the same field 'Cooldown'. Provider currently maps the SDK name through handledProperties; investigate whether to rename or split the safety-net check (follow-up of #391)."
     },
     "AWS::BedrockAgentCore::Runtime": {
-      "ClientToken": "SDK-only idempotency token; never appears on a CFn template. Listing it in handledProperties was defensive but unnecessary — leave tolerated until a separate cleanup PR."
+      "ClientToken": "SDK-only idempotency token; never appears on a CFn template. Listing it in handledProperties was defensive but unnecessary \u2014 leave tolerated until a separate cleanup PR."
     },
     "AWS::DynamoDB::GlobalTable": {
       "TableClass": "CFn schema exposes this only nested under Replicas[].TableClass; provider's top-level handledProperties entry predates the schema layout. Investigate per-replica drift handling separately.",
-      "DeletionProtectionEnabled": "Same shape as TableClass — CFn nests this under Replicas[]; provider declares it at top level. Follow-up cleanup."
+      "DeletionProtectionEnabled": "Same shape as TableClass \u2014 CFn nests this under Replicas[]; provider declares it at top level. Follow-up cleanup."
     },
     "AWS::EC2::NetworkAclEntry": {
       "IcmpTypeCode": "SDK input field name; CFn schema renamed to 'Icmp'. Provider keeps the SDK name to match its create() input; rename the safety-net entry separately."
     },
     "AWS::ECS::Service": {
-      "PlacementStrategy": "Likely typo for 'PlacementStrategies' (CFn schema name is plural). Real bug — fix in a follow-up PR after verifying no template-side fallout."
+      "PlacementStrategy": "Likely typo for 'PlacementStrategies' (CFn schema name is plural). Real bug \u2014 fix in a follow-up PR after verifying no template-side fallout."
     },
     "AWS::ElastiCache::SubnetGroup": {
       "CacheSubnetGroupDescription": "SDK input field name; CFn schema names the same field 'Description'. Investigate whether to rename in a follow-up."
@@ -528,14 +519,14 @@
       "SourceControlDetails": "Schema snapshot (2026-05) does not include this property. Verify in a follow-up."
     },
     "AWS::IAM::ManagedPolicy": {
-      "Tags": "CFn user-guide doc + AWS SDK (CreatePolicyCommand) accept Tags, but cloudformation:DescribeType (CFn registry schema) does NOT surface it for AWS::IAM::ManagedPolicy as of the 2026-05 snapshot. Provider wires Tags through CreatePolicy / Tag / Untag — registry schema lag, not a real bug."
+      "Tags": "CFn user-guide doc + AWS SDK (CreatePolicyCommand) accept Tags, but cloudformation:DescribeType (CFn registry schema) does NOT surface it for AWS::IAM::ManagedPolicy as of the 2026-05 snapshot. Provider wires Tags through CreatePolicy / Tag / Untag \u2014 registry schema lag, not a real bug."
     },
     "AWS::Neptune::DBInstance": {
-      "DeletionProtection": "CFn schema has DeletionProtection only on DBCluster, not DBInstance. Likely a copy-paste from the cluster handler — verify before removing."
+      "DeletionProtection": "CFn schema has DeletionProtection only on DBCluster, not DBInstance. Likely a copy-paste from the cluster handler \u2014 verify before removing."
     },
     "AWS::S3Tables::Table": {
-      "Name": "Likely typo for 'TableName' (CFn schema name). Real bug — fix in a follow-up PR.",
-      "Format": "Likely typo for 'OpenTableFormat' (CFn schema name). Real bug — fix in a follow-up PR."
+      "Name": "Likely typo for 'TableName' (CFn schema name). Real bug \u2014 fix in a follow-up PR.",
+      "Format": "Likely typo for 'OpenTableFormat' (CFn schema name). Real bug \u2014 fix in a follow-up PR."
     }
   }
 }

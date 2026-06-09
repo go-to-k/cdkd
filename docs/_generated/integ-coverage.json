@@ -575,6 +575,7 @@
           "l2"
         ],
         "cognito": [
+          "l1",
           "l2",
           "literal"
         ],

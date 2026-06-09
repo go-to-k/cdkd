@@ -6,6 +6,8 @@ import {
   DescribeUserPoolCommand,
   ListUserPoolsCommand,
   ListTagsForResourceCommand,
+  SetUserPoolMfaConfigCommand,
+  GetUserPoolMfaConfigCommand,
   ResourceNotFoundException,
   type VerifiedAttributeType,
   type UsernameAttributeType,
@@ -24,8 +26,11 @@ import {
   type UsernameConfigurationType,
   type DeviceConfigurationType,
   type UserPoolAddOnsType,
+  type UserPoolTierType,
+  type UserVerificationType,
   type CreateUserPoolCommandInput,
   type UpdateUserPoolCommandInput,
+  type SetUserPoolMfaConfigCommandInput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -72,6 +77,113 @@ function isEmptyObjectPlaceholder(value: unknown): boolean {
 }
 
 /**
+ * The CFn `EnabledMfas` factor names AND their MFA-config-API meaning.
+ *
+ * `EnabledMfas` is a CFn-level `Array of String`, but Cognito has no
+ * `EnabledMfas` field on `CreateUserPool` / `UpdateUserPool`. The factors are
+ * activated via the separate `SetUserPoolMfaConfig` control-plane API, one
+ * sub-block per factor:
+ *
+ * - `SMS_MFA`            -> `SmsMfaConfiguration` (needs the pool's
+ *                           `SmsConfiguration` SNS-caller ARN to be set too)
+ * - `SOFTWARE_TOKEN_MFA` -> `SoftwareTokenMfaConfiguration.Enabled = true`
+ * - `EMAIL_OTP`          -> `EmailMfaConfiguration` (carries the email-OTP
+ *                           message/subject template — i.e. CFn's
+ *                           `EmailAuthenticationMessage` / `Subject`)
+ */
+const MFA_FACTOR_SMS = 'SMS_MFA';
+const MFA_FACTOR_SOFTWARE_TOKEN = 'SOFTWARE_TOKEN_MFA';
+const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
+
+/**
+ * Build the `SetUserPoolMfaConfig` request from the CFn-level MFA properties,
+ * or return `undefined` when none of the MFA-config-API-routed properties are
+ * present (so the caller skips the extra control-plane call entirely).
+ *
+ * The properties that route through `SetUserPoolMfaConfig` (NOT CreateUserPool):
+ * - `EnabledMfas`               -> per-factor sub-blocks (see constants above)
+ * - `EmailAuthenticationMessage`/`EmailAuthenticationSubject` -> the
+ *   `EmailMfaConfiguration` message/subject (email-OTP template)
+ * - `WebAuthnRelyingPartyID`/`WebAuthnUserVerification` -> `WebAuthnConfiguration`
+ *
+ * `MfaConfiguration` (ON/OFF/OPTIONAL) is intentionally NOT set here — it rides
+ * on CreateUserPool/UpdateUserPool directly (existing handled property) and AWS
+ * keeps the two in sync; setting it in both places risks a redundant write.
+ */
+function buildMfaConfigRequest(
+  physicalId: string,
+  properties: Record<string, unknown>
+): SetUserPoolMfaConfigCommandInput | undefined {
+  const enabledMfas = Array.isArray(properties['EnabledMfas'])
+    ? (properties['EnabledMfas'] as string[])
+    : undefined;
+  // Truthy (non-empty) gating — NOT `!== undefined` — because
+  // `readCurrentState` ALWAYS emits these as empty-string / empty-array
+  // placeholders (so a console-side ADD surfaces as drift). A `!== undefined`
+  // gate would issue a wasteful SetUserPoolMfaConfig with an empty
+  // EmailMfaConfiguration on every no-drift deploy of a pool that never used
+  // MFA — which AWS may also reject (email-OTP needs the Essentials tier). The
+  // trade-off vs. EmailVerificationMessage's `!== undefined` gate: clearing an
+  // email-OTP template back to "" via drift-revert is not supported here, but
+  // a no-op deploy staying a true no-op is the more important property for the
+  // post-create control-plane API.
+  const emailMessage =
+    (properties['EmailAuthenticationMessage'] as string | undefined) || undefined;
+  const emailSubject =
+    (properties['EmailAuthenticationSubject'] as string | undefined) || undefined;
+  const webAuthnRpId = (properties['WebAuthnRelyingPartyID'] as string | undefined) || undefined;
+  const webAuthnUserVerification =
+    (properties['WebAuthnUserVerification'] as UserVerificationType | undefined) || undefined;
+
+  const hasMfaProps =
+    (enabledMfas && enabledMfas.length > 0) ||
+    emailMessage !== undefined ||
+    emailSubject !== undefined ||
+    webAuthnRpId !== undefined ||
+    webAuthnUserVerification !== undefined;
+  if (!hasMfaProps) return undefined;
+
+  const request: SetUserPoolMfaConfigCommandInput = { UserPoolId: physicalId };
+  const factors = new Set(enabledMfas ?? []);
+
+  if (factors.has(MFA_FACTOR_SOFTWARE_TOKEN)) {
+    request.SoftwareTokenMfaConfiguration = { Enabled: true };
+  }
+  if (factors.has(MFA_FACTOR_SMS)) {
+    // SMS MFA needs the pool's SNS-caller config; reuse the UserPool's own
+    // SmsConfiguration property (the same SNS-caller ARN the pool was created
+    // with). AWS rejects SMS MFA enablement without it.
+    request.SmsMfaConfiguration = {
+      ...(properties['SmsConfiguration']
+        ? { SmsConfiguration: properties['SmsConfiguration'] as SmsConfigurationType }
+        : {}),
+    };
+  }
+  // The email-OTP factor and the email message/subject share one sub-block.
+  // Emit it when EMAIL_OTP is enabled OR a custom message/subject is supplied
+  // (the message/subject customization implies email-OTP usage).
+  if (
+    factors.has(MFA_FACTOR_EMAIL_OTP) ||
+    emailMessage !== undefined ||
+    emailSubject !== undefined
+  ) {
+    request.EmailMfaConfiguration = {
+      ...(emailMessage !== undefined ? { Message: emailMessage } : {}),
+      ...(emailSubject !== undefined ? { Subject: emailSubject } : {}),
+    };
+  }
+  if (webAuthnRpId !== undefined || webAuthnUserVerification !== undefined) {
+    request.WebAuthnConfiguration = {
+      ...(webAuthnRpId !== undefined ? { RelyingPartyId: webAuthnRpId } : {}),
+      ...(webAuthnUserVerification !== undefined
+        ? { UserVerification: webAuthnUserVerification }
+        : {}),
+    };
+  }
+  return request;
+}
+
+/**
  * AWS Cognito User Pool Provider
  *
  * Implements resource provisioning for AWS::Cognito::UserPool using the Cognito SDK.
@@ -111,6 +223,26 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         'EmailVerificationSubject',
         'SmsAuthenticationMessage',
         'SmsVerificationMessage',
+        'UserPoolTier',
+        // Routed through the SetUserPoolMfaConfig control-plane API
+        // (NOT CreateUserPool/UpdateUserPool) — see buildMfaConfigRequest.
+        'EnabledMfas',
+        'EmailAuthenticationMessage',
+        'EmailAuthenticationSubject',
+        'WebAuthnRelyingPartyID',
+        'WebAuthnUserVerification',
+      ]),
+    ],
+  ]);
+
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::Cognito::UserPool',
+      new Map<string, string>([
+        [
+          'WebAuthnFactorConfiguration',
+          'No SDK wire path: @aws-sdk/client-cognito-identity-provider has no field accepting SINGLE_FACTOR | MULTI_FACTOR_WITH_USER_VERIFICATION (not on CreateUserPool/UpdateUserPool, nor SetUserPoolMfaConfig.WebAuthnConfiguration which only carries RelyingPartyId/UserVerification); CC-API-registry-only property',
+        ],
       ]),
     ],
   ]);
@@ -137,6 +269,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     const poolName =
       (properties['UserPoolName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 128 });
+
+    // Tracks whether CreateUserPool succeeded this call, so the catch can roll
+    // back a pool whose post-create MFA-config step (SetUserPoolMfaConfig)
+    // failed — otherwise create() throws before returning the physicalId, the
+    // deploy engine never learns the pool exists, and it orphans (mirrors the
+    // DynamoDBTableProvider PITR/TTL post-create atomicity pattern).
+    let createdUserPoolId: string | undefined;
 
     try {
       const createParams: CreateUserPoolCommandInput = {
@@ -234,6 +373,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       if (properties['SmsVerificationMessage']) {
         createParams.SmsVerificationMessage = properties['SmsVerificationMessage'] as string;
       }
+      if (properties['UserPoolTier']) {
+        createParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
+      }
 
       const response = await this.getClient().send(new CreateUserPoolCommand(createParams));
 
@@ -243,10 +385,17 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
 
       const userPoolId = userPool.Id;
+      createdUserPoolId = userPoolId;
       const userPoolArn = userPool.Arn;
       const region = await this.getClient().config.region();
       const providerName = `cognito-idp.${region}.amazonaws.com/${userPoolId}`;
       const providerUrl = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+
+      // EnabledMfas / Email-OTP message+subject / WebAuthn config do NOT ride
+      // on CreateUserPool — they go through the SetUserPoolMfaConfig
+      // post-create control-plane API. Skip the extra call when none of them
+      // are present.
+      await this.applyMfaConfig(userPoolId, properties);
 
       this.logger.debug(`Successfully created Cognito User Pool ${logicalId}: ${userPoolId}`);
 
@@ -260,6 +409,21 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Atomicity: if CreateUserPool succeeded but the post-create
+      // SetUserPoolMfaConfig step failed, the pool exists but create() is
+      // about to throw without returning its physicalId — the deploy engine
+      // can't roll it back, so best-effort delete it here to avoid an orphan
+      // pool + a name-collision on the next deploy attempt.
+      if (createdUserPoolId) {
+        try {
+          await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: createdUserPoolId }));
+          this.logger.debug(`Rolled back partially-created Cognito User Pool ${createdUserPoolId}`);
+        } catch (rollbackError) {
+          this.logger.warn(
+            `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+          );
+        }
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create Cognito User Pool ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -268,6 +432,55 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         poolName,
         cause
       );
+    }
+  }
+
+  /**
+   * Apply the MFA-config-API-routed properties (EnabledMfas / email-OTP
+   * message+subject / WebAuthn) via SetUserPoolMfaConfig. No-op when none are
+   * present. Wrapped in a transient-error retry because back-to-back
+   * control-plane writes on a freshly-created pool can briefly conflict
+   * (mirrors DynamoDBTableProvider.retryOnTransientControlPlane).
+   */
+  private async applyMfaConfig(
+    physicalId: string,
+    properties: Record<string, unknown>
+  ): Promise<void> {
+    const request = buildMfaConfigRequest(physicalId, properties);
+    if (!request) return;
+    await this.retryOnTransientControlPlane(
+      () => this.getClient().send(new SetUserPoolMfaConfigCommand(request)),
+      `SetUserPoolMfaConfig(${physicalId})`
+    );
+  }
+
+  /**
+   * Retry a Cognito control-plane call on transient "settling" errors. A
+   * SetUserPoolMfaConfig issued immediately after CreateUserPool (or another
+   * control-plane write) can briefly hit `ConcurrentModificationException` /
+   * "please retry". Backoff 1s -> 2s -> 4s, default 3 attempts.
+   */
+  private async retryOnTransientControlPlane<T>(
+    fn: () => Promise<T>,
+    label: string,
+    maxAttempts = 3
+  ): Promise<T> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const name = error instanceof Error ? error.name : '';
+        const transient =
+          name === 'ConcurrentModificationException' ||
+          /concurrent modification|please retry|try again|in progress/i.test(msg);
+        if (!transient || attempt >= maxAttempts) throw error;
+        const delayMs = Math.min(1000 * 2 ** (attempt - 1), 4000);
+        this.logger.debug(
+          `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
 
@@ -381,8 +594,16 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       if (properties['SmsVerificationMessage'] !== undefined) {
         updateParams.SmsVerificationMessage = properties['SmsVerificationMessage'] as string;
       }
+      if (properties['UserPoolTier']) {
+        updateParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
+      }
 
       await this.getClient().send(new UpdateUserPoolCommand(updateParams));
+
+      // EnabledMfas / email-OTP message+subject / WebAuthn config are NOT on
+      // UpdateUserPool — apply them via SetUserPoolMfaConfig after the main
+      // update (no-op when none are present).
+      await this.applyMfaConfig(physicalId, properties);
 
       this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
 
@@ -609,6 +830,35 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
     }
     result['UserPoolTags'] = userTags;
+    // UserPoolTier rides on DescribeUserPool; defaults to ESSENTIALS per AWS.
+    result['UserPoolTier'] = pool.UserPoolTier ?? 'ESSENTIALS';
+
+    // EnabledMfas / email-OTP message+subject / WebAuthn config live on the
+    // separate GetUserPoolMfaConfig API, not DescribeUserPool. Fetch them and
+    // reconstruct the CFn-shape properties. A pool with no MFA factors and no
+    // WebAuthn config returns empty/absent sub-blocks; emit the keys so a
+    // console-side ADD surfaces as drift, mirroring the always-emit policy
+    // above. Tolerate a failure on this secondary call (e.g. a permission gap
+    // on the MFA API) by skipping the MFA-derived keys rather than failing the
+    // whole drift read.
+    try {
+      const mfa = await this.getClient().send(
+        new GetUserPoolMfaConfigCommand({ UserPoolId: physicalId })
+      );
+      const enabledMfas: string[] = [];
+      if (mfa.SmsMfaConfiguration) enabledMfas.push(MFA_FACTOR_SMS);
+      if (mfa.SoftwareTokenMfaConfiguration?.Enabled) enabledMfas.push(MFA_FACTOR_SOFTWARE_TOKEN);
+      if (mfa.EmailMfaConfiguration) enabledMfas.push(MFA_FACTOR_EMAIL_OTP);
+      result['EnabledMfas'] = enabledMfas;
+      result['EmailAuthenticationMessage'] = mfa.EmailMfaConfiguration?.Message ?? '';
+      result['EmailAuthenticationSubject'] = mfa.EmailMfaConfiguration?.Subject ?? '';
+      result['WebAuthnRelyingPartyID'] = mfa.WebAuthnConfiguration?.RelyingPartyId ?? '';
+      result['WebAuthnUserVerification'] = mfa.WebAuthnConfiguration?.UserVerification ?? '';
+    } catch (mfaErr) {
+      this.logger.debug(
+        `GetUserPoolMfaConfig failed for ${physicalId}, skipping MFA-derived drift keys: ${mfaErr instanceof Error ? mfaErr.message : String(mfaErr)}`
+      );
+    }
     return result;
   }
 
