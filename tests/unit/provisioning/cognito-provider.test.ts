@@ -257,4 +257,222 @@ describe('CognitoUserPoolProvider', () => {
       ).rejects.toThrow('Failed to delete Cognito User Pool MyUserPool');
     });
   });
+
+  // Issue #609 backfill: UserPoolTier (CreateUserPool/UpdateUserPool direct)
+  // + EnabledMfas / EmailAuthenticationMessage+Subject / WebAuthn* (routed
+  // through the SetUserPoolMfaConfig post-create control-plane API).
+  describe('backfill properties (#609)', () => {
+    describe('UserPoolTier', () => {
+      it('rides on CreateUserPool', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:tier' },
+        });
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          UserPoolTier: 'PLUS',
+        });
+
+        // Only CreateUserPool — no MFA props, so no SetUserPoolMfaConfig.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateUserPoolCommand');
+        expect(createCall.input.UserPoolTier).toBe('PLUS');
+      });
+
+      it('rides on UpdateUserPool', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:tier' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { UserPoolTier: 'ESSENTIALS' },
+          {}
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateUserPoolCommand');
+        expect(updateCall.input.UserPoolTier).toBe('ESSENTIALS');
+      });
+    });
+
+    describe('EnabledMfas via SetUserPoolMfaConfig', () => {
+      it('maps each factor to its MFA-config sub-block on create', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mfa' },
+        }); // CreateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SMS_MFA', 'SOFTWARE_TOKEN_MFA', 'EMAIL_OTP'],
+          SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::1:role/sms' },
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        // EnabledMfas must NOT be forwarded on CreateUserPool (no such field).
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateUserPoolCommand');
+        expect(createCall.input.EnabledMfas).toBeUndefined();
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.UserPoolId).toBe('us-east-1_abc123');
+        // SetUserPoolMfaConfig is a full-replace: MfaConfiguration MUST be set
+        // (an omitted value resets the pool to OFF and drops the factors below).
+        // Defaults to OPTIONAL when the template omits it but enables factors.
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
+        expect(mfaCall.input.SmsMfaConfiguration).toEqual({
+          SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::1:role/sms' },
+        });
+        expect(mfaCall.input.EmailMfaConfiguration).toBeDefined();
+      });
+
+      it("threads the template's MfaConfiguration into SetUserPoolMfaConfig (not reset to OFF)", async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mfa' },
+        }); // CreateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: 'ON',
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        });
+
+        // With a factor present, MfaConfiguration must NOT ride on
+        // CreateUserPool (AWS rejects ON/OPTIONAL there before the factor is
+        // enabled — "SMS configuration ... required when MFA is
+        // required/optional"); SetUserPoolMfaConfig owns it instead.
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateUserPoolCommand');
+        expect(createCall.input.MfaConfiguration).toBeUndefined();
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('ON');
+      });
+
+      it('forwards MfaConfiguration to CreateUserPool when NO MFA factor is present (no SetUserPoolMfaConfig)', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mfa' },
+        }); // CreateUserPool only
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: 'OFF',
+        });
+
+        // No factor → no SetUserPoolMfaConfig call; MfaConfiguration rides on
+        // CreateUserPool as before.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateUserPoolCommand');
+        expect(createCall.input.MfaConfiguration).toBe('OFF');
+      });
+
+      it('does NOT call SetUserPoolMfaConfig when no MFA props are present', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:none' },
+        });
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          UserPoolName: 'plain-pool',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateUserPoolCommand');
+      });
+
+      it('applies EnabledMfas via SetUserPoolMfaConfig on update', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:upd' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
+          {}
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(3);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
+        expect(mockSend.mock.calls[2][0].constructor.name).toBe('DescribeUserPoolCommand');
+      });
+    });
+
+    describe('EmailAuthenticationMessage / Subject', () => {
+      it('map to EmailMfaConfiguration.Message/Subject on create', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:email' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EmailAuthenticationMessage: 'Your code is {####}',
+          EmailAuthenticationSubject: 'Sign-in code',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.EmailMfaConfiguration).toEqual({
+          Message: 'Your code is {####}',
+          Subject: 'Sign-in code',
+        });
+      });
+    });
+
+    describe('WebAuthn config', () => {
+      it('maps WebAuthnRelyingPartyID/UserVerification to WebAuthnConfiguration', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:wa' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          WebAuthnRelyingPartyID: 'auth.example.com',
+          WebAuthnUserVerification: 'preferred',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.WebAuthnConfiguration).toEqual({
+          RelyingPartyId: 'auth.example.com',
+          UserVerification: 'preferred',
+        });
+      });
+    });
+
+    describe('post-create atomicity', () => {
+      it('rolls back the pool (DeleteUserPool) when SetUserPoolMfaConfig fails', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:rollback' },
+        }); // CreateUserPool
+        mockSend.mockRejectedValueOnce(new Error('mfa boom')); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // DeleteUserPool rollback
+
+        await expect(
+          provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+          })
+        ).rejects.toThrow('Failed to create Cognito User Pool MyUserPool');
+
+        expect(mockSend).toHaveBeenCalledTimes(3);
+        const rollbackCall = mockSend.mock.calls[2][0];
+        expect(rollbackCall.constructor.name).toBe('DeleteUserPoolCommand');
+        expect(rollbackCall.input.UserPoolId).toBe('us-east-1_abc123');
+      });
+    });
+
+    describe('unhandledByDesign', () => {
+      it('declares WebAuthnFactorConfiguration as unhandled (no SDK wire path)', () => {
+        const map = provider.unhandledByDesign.get('AWS::Cognito::UserPool');
+        expect(map?.has('WebAuthnFactorConfiguration')).toBe(true);
+      });
+    });
+  });
 });

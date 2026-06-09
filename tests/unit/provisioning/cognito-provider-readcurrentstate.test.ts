@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   DescribeUserPoolCommand,
+  GetUserPoolMfaConfigCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-cognito-identity-provider';
 
@@ -62,6 +63,8 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
         EstimatedNumberOfUsers: 0,
       },
     });
+    // GetUserPoolMfaConfig (second call): empty MFA config.
+    mockSend.mockResolvedValueOnce({});
 
     const result = await provider.readCurrentState(
       'us-east-1_abcd',
@@ -70,6 +73,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeUserPoolCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetUserPoolMfaConfigCommand);
     expect(result).toEqual({
       UserPoolName: 'my-pool',
       AutoVerifiedAttributes: ['email'],
@@ -93,7 +97,62 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       SmsAuthenticationMessage: '',
       SmsVerificationMessage: '',
       UserPoolTags: {},
+      // #609 backfill keys (UserPoolTier from Describe; MFA keys from
+      // GetUserPoolMfaConfig — empty config above so defaults emit).
+      UserPoolTier: 'ESSENTIALS',
+      EnabledMfas: [],
+      EmailAuthenticationMessage: '',
+      EmailAuthenticationSubject: '',
+      WebAuthnRelyingPartyID: '',
+      WebAuthnUserVerification: '',
     });
+  });
+
+  it('reconstructs EnabledMfas + email/WebAuthn keys from GetUserPoolMfaConfig', async () => {
+    mockSend.mockResolvedValueOnce({
+      UserPool: {
+        Id: 'us-east-1_abcd',
+        Name: 'my-pool',
+        UserPoolTier: 'PLUS',
+      },
+    });
+    mockSend.mockResolvedValueOnce({
+      SmsMfaConfiguration: { SmsConfiguration: { SnsCallerArn: 'arn:sms' } },
+      SoftwareTokenMfaConfiguration: { Enabled: true },
+      EmailMfaConfiguration: { Message: 'code {####}', Subject: 'Your code' },
+      WebAuthnConfiguration: { RelyingPartyId: 'auth.example.com', UserVerification: 'required' },
+    });
+
+    const result = (await provider.readCurrentState(
+      'us-east-1_abcd',
+      'PoolLogical',
+      'AWS::Cognito::UserPool'
+    )) as Record<string, unknown>;
+
+    expect(result['UserPoolTier']).toBe('PLUS');
+    expect(result['EnabledMfas']).toEqual(['SMS_MFA', 'SOFTWARE_TOKEN_MFA', 'EMAIL_OTP']);
+    expect(result['EmailAuthenticationMessage']).toBe('code {####}');
+    expect(result['EmailAuthenticationSubject']).toBe('Your code');
+    expect(result['WebAuthnRelyingPartyID']).toBe('auth.example.com');
+    expect(result['WebAuthnUserVerification']).toBe('required');
+  });
+
+  it('skips MFA-derived keys (still returns Describe fields) when GetUserPoolMfaConfig fails', async () => {
+    mockSend.mockResolvedValueOnce({
+      UserPool: { Id: 'us-east-1_abcd', Name: 'my-pool', UserPoolTier: 'LITE' },
+    });
+    mockSend.mockRejectedValueOnce(new Error('AccessDenied on MFA API'));
+
+    const result = (await provider.readCurrentState(
+      'us-east-1_abcd',
+      'PoolLogical',
+      'AWS::Cognito::UserPool'
+    )) as Record<string, unknown>;
+
+    expect(result['UserPoolTier']).toBe('LITE');
+    expect(result['UserPoolName']).toBe('my-pool');
+    expect('EnabledMfas' in result).toBe(false);
+    expect('WebAuthnRelyingPartyID' in result).toBe(false);
   });
 
   it('returns undefined when pool is gone', async () => {
@@ -176,6 +235,8 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
         // Every other field deliberately undefined.
       },
     });
+    // GetUserPoolMfaConfig — empty (no MFA factors / WebAuthn configured).
+    mockSend.mockResolvedValueOnce({});
 
     const result = await provider.readCurrentState(
       'us-east-1_x',
@@ -191,9 +252,12 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
         'AutoVerifiedAttributes',
         'DeletionProtection',
         'DeviceConfiguration',
+        'EmailAuthenticationMessage',
+        'EmailAuthenticationSubject',
         'EmailConfiguration',
         'EmailVerificationMessage',
         'EmailVerificationSubject',
+        'EnabledMfas',
         'LambdaConfig',
         'MfaConfiguration',
         'Policies',
@@ -204,9 +268,12 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
         'UserPoolAddOns',
         'UserPoolName',
         'UserPoolTags',
+        'UserPoolTier',
         'UsernameAttributes',
         'UsernameConfiguration',
         'VerificationMessageTemplate',
+        'WebAuthnRelyingPartyID',
+        'WebAuthnUserVerification',
       ].sort()
     );
     expect(result?.UserPoolName).toBe('p');

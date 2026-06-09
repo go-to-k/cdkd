@@ -177,7 +177,8 @@ describe('CognitoUserPoolProvider read-update round-trip', () => {
     }); // DescribeUserPool
 
     // Mirrors the "AWS minimum response" key set asserted in
-    // cognito-provider-readcurrentstate.test.ts.
+    // cognito-provider-readcurrentstate.test.ts (incl. the #609 backfill keys
+    // emitted as empty placeholders).
     const observed = {
       UserPoolName: 'p',
       AutoVerifiedAttributes: [],
@@ -201,11 +202,25 @@ describe('CognitoUserPoolProvider read-update round-trip', () => {
       SmsAuthenticationMessage: '',
       SmsVerificationMessage: '',
       UserPoolTags: {},
+      UserPoolTier: 'ESSENTIALS',
+      EnabledMfas: [],
+      EmailAuthenticationMessage: '',
+      EmailAuthenticationSubject: '',
+      WebAuthnRelyingPartyID: '',
+      WebAuthnUserVerification: '',
     };
 
     await expect(
       provider.update('L', PHYS_ID, 'AWS::Cognito::UserPool', observed, observed)
     ).resolves.toBeDefined();
+
+    // The empty MFA placeholders must NOT trigger a SetUserPoolMfaConfig on a
+    // no-drift round-trip (truthy gate in buildMfaConfigRequest). Only
+    // UpdateUserPool + DescribeUserPool should have been issued.
+    const mfaCall = mockSend.mock.calls.find(
+      (c) => c[0].constructor.name === 'SetUserPoolMfaConfigCommand'
+    );
+    expect(mfaCall).toBeUndefined();
 
     const updateCall = mockSend.mock.calls.find(
       (c) => c[0] instanceof UpdateUserPoolCommand

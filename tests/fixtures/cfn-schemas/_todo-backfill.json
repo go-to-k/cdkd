@@ -122,15 +122,6 @@
       "Triggers",
       "Visibility"
     ],
-    "AWS::Cognito::UserPool": [
-      "EmailAuthenticationMessage",
-      "EmailAuthenticationSubject",
-      "EnabledMfas",
-      "UserPoolTier",
-      "WebAuthnFactorConfiguration",
-      "WebAuthnRelyingPartyID",
-      "WebAuthnUserVerification"
-    ],
     "AWS::DocDB::DBCluster": [
       "AvailabilityZones",
       "CopyTagsToSnapshot",
