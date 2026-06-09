@@ -35,7 +35,6 @@ vpc-lambda-cr-race	2026-06-02T07:34:17Z	PASS		standard	coverage batch: VPC+Lambd
 event-driven	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 19 deleted 0 errors 0 orphans
 deletion-policy-retain	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: all retain checks passed, AWS clean
 intrinsic-functions	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 3 deleted 0 errors 0 orphans
-dynamodb-ondemand	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: table gone, 1 deleted 0 errors
 acm-certificate	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: 1 deleted 0 errors 0 orphans
 sqs-cloudwatch	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 7 deleted 1 retained(by-design) 0 errors
 route53	2026-06-02T09:40:41Z	PASS		verify.sh	FIXED: destroy now waits through *_HOSTED_ZONE_LOCKED transients (PR this session); deploy enables accel-recovery, destroy disables+waits+deletes clean, 6 deleted 0 errors
@@ -124,3 +123,4 @@ local-invoke	2026-06-08T16:20:50Z	PASS	28	verify.sh	0.147.0; 5/5 host-gateway ad
 local-run-task	2026-06-08T16:20:50Z	PASS	14	verify.sh	0.147.0; host-gateway adopted; rc ok, no orphans
 efs-standalone	2026-06-09T16:34:55Z	PASS	134	verify.sh	#609 EFS backfill: 4 control-plane props asserted, destroy 0 err 0 orphan
 cognito	2026-06-09T16:50:23Z	PASS	54	verify.sh	#609 UserPoolTier/SOFTWARE_TOKEN_MFA/WebAuthn asserted; EMAIL_OTP unit-only (SES); destroy 0 err
+dynamodb-ondemand	2026-06-09T17:02:56Z	PASS	70	verify.sh	#609: ResourcePolicy/Kinesis/ContributorInsights asserted; destroy 0 err 0 orphan
