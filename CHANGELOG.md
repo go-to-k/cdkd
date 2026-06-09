@@ -1,3 +1,10 @@
+# [0.217.0](https://github.com/go-to-k/cdkd/compare/v0.216.0...v0.217.0) (2026-06-09)
+
+
+### Features
+
+* **providers:** backfill DynamoDB::Table ResourcePolicy / KinesisStreamSpecification / ContributorInsightsSpecification ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#792](https://github.com/go-to-k/cdkd/issues/792)) ([7378deb](https://github.com/go-to-k/cdkd/commit/7378deb14e2a721ced53de37e12884a1e9389029))
+
 # [0.216.0](https://github.com/go-to-k/cdkd/compare/v0.215.0...v0.216.0) (2026-06-09)
 
 
