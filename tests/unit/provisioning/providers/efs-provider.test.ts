@@ -2,11 +2,20 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateFileSystemCommand,
   DeleteFileSystemCommand,
+  UpdateFileSystemCommand,
   CreateMountTargetCommand,
   DeleteMountTargetCommand,
   DescribeMountTargetsCommand,
+  DescribeFileSystemsCommand,
+  DescribeLifecycleConfigurationCommand,
+  DescribeBackupPolicyCommand,
+  DescribeFileSystemPolicyCommand,
   CreateAccessPointCommand,
   DeleteAccessPointCommand,
+  PutLifecycleConfigurationCommand,
+  PutBackupPolicyCommand,
+  PutFileSystemPolicyCommand,
+  UpdateFileSystemProtectionCommand,
   FileSystemNotFound,
   MountTargetNotFound,
   AccessPointNotFound,
@@ -117,6 +126,303 @@ describe('EFSProvider', () => {
           { Key: 'Name', Value: 'my-fs' },
           { Key: 'Env', Value: 'test' },
         ]);
+      });
+    });
+
+    // ─── #609 backfill: post-create control-plane properties ───────────
+    describe('backfilled properties (#609)', () => {
+      // Helper: mock CreateFileSystem (call 0) + the wait DescribeFileSystems
+      // (call 1) so any subsequent Put*/Update* call lands at call index 2+.
+      const mockCreateAndWait = (fsId: string): void => {
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof CreateFileSystemCommand) {
+            return Promise.resolve({
+              FileSystemId: fsId,
+              FileSystemArn: `arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/${fsId}`,
+            });
+          }
+          if (cmd instanceof DescribeFileSystemsCommand) {
+            return Promise.resolve({ FileSystems: [{ LifeCycleState: 'available' }] });
+          }
+          return Promise.resolve({});
+        });
+      };
+
+      it('should ride AvailabilityZoneName on CreateFileSystem (One Zone)', async () => {
+        mockCreateAndWait('fs-onezone');
+
+        await provider.create('OneZoneFS', 'AWS::EFS::FileSystem', {
+          AvailabilityZoneName: 'us-east-1a',
+        });
+
+        const createCmd = mockSend.mock.calls[0][0];
+        expect(createCmd).toBeInstanceOf(CreateFileSystemCommand);
+        expect(createCmd.input.AvailabilityZoneName).toBe('us-east-1a');
+      });
+
+      it('should apply LifecyclePolicies via PutLifecycleConfiguration after ACTIVE', async () => {
+        mockCreateAndWait('fs-lifecycle');
+
+        await provider.create('LifecycleFS', 'AWS::EFS::FileSystem', {
+          LifecyclePolicies: [{ TransitionToIA: 'AFTER_30_DAYS' }],
+        });
+
+        const putCmd = mockSend.mock.calls.find(
+          (c) => c[0] instanceof PutLifecycleConfigurationCommand
+        )?.[0];
+        expect(putCmd).toBeDefined();
+        expect(putCmd.input.FileSystemId).toBe('fs-lifecycle');
+        expect(putCmd.input.LifecyclePolicies).toEqual([{ TransitionToIA: 'AFTER_30_DAYS' }]);
+      });
+
+      it('should apply BackupPolicy via PutBackupPolicy after ACTIVE', async () => {
+        mockCreateAndWait('fs-backup');
+
+        await provider.create('BackupFS', 'AWS::EFS::FileSystem', {
+          BackupPolicy: { Status: 'ENABLED' },
+        });
+
+        const putCmd = mockSend.mock.calls.find((c) => c[0] instanceof PutBackupPolicyCommand)?.[0];
+        expect(putCmd).toBeDefined();
+        expect(putCmd.input.FileSystemId).toBe('fs-backup');
+        expect(putCmd.input.BackupPolicy).toEqual({ Status: 'ENABLED' });
+      });
+
+      it('should JSON.stringify FileSystemPolicy object and pass BypassPolicyLockoutSafetyCheck', async () => {
+        mockCreateAndWait('fs-policy');
+
+        const policyDoc = {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { AWS: '*' },
+              Action: 'elasticfilesystem:ClientMount',
+              Resource: '*',
+            },
+          ],
+        };
+        await provider.create('PolicyFS', 'AWS::EFS::FileSystem', {
+          FileSystemPolicy: policyDoc,
+          BypassPolicyLockoutSafetyCheck: true,
+        });
+
+        const putCmd = mockSend.mock.calls.find(
+          (c) => c[0] instanceof PutFileSystemPolicyCommand
+        )?.[0];
+        expect(putCmd).toBeDefined();
+        expect(putCmd.input.FileSystemId).toBe('fs-policy');
+        // SDK Policy field is a JSON string, not the object.
+        expect(typeof putCmd.input.Policy).toBe('string');
+        expect(JSON.parse(putCmd.input.Policy)).toEqual(policyDoc);
+        expect(putCmd.input.BypassPolicyLockoutSafetyCheck).toBe(true);
+      });
+
+      it('should apply FileSystemProtection via UpdateFileSystemProtection after ACTIVE', async () => {
+        mockCreateAndWait('fs-protect');
+
+        await provider.create('ProtectFS', 'AWS::EFS::FileSystem', {
+          FileSystemProtection: { ReplicationOverwriteProtection: 'ENABLED' },
+        });
+
+        const updCmd = mockSend.mock.calls.find(
+          (c) => c[0] instanceof UpdateFileSystemProtectionCommand
+        )?.[0];
+        expect(updCmd).toBeDefined();
+        expect(updCmd.input.FileSystemId).toBe('fs-protect');
+        expect(updCmd.input.ReplicationOverwriteProtection).toBe('ENABLED');
+      });
+
+      it('should retry a transient control-plane error on PutBackupPolicy', async () => {
+        let backupAttempts = 0;
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof CreateFileSystemCommand) {
+            return Promise.resolve({
+              FileSystemId: 'fs-retry',
+              FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-retry',
+            });
+          }
+          if (cmd instanceof DescribeFileSystemsCommand) {
+            return Promise.resolve({ FileSystems: [{ LifeCycleState: 'available' }] });
+          }
+          if (cmd instanceof PutBackupPolicyCommand) {
+            backupAttempts += 1;
+            if (backupAttempts === 1) {
+              const err = new Error('The backup policy update is in progress. Please retry later.');
+              return Promise.reject(err);
+            }
+            return Promise.resolve({});
+          }
+          return Promise.resolve({});
+        });
+
+        await provider.create('RetryFS', 'AWS::EFS::FileSystem', {
+          BackupPolicy: { Status: 'ENABLED' },
+        });
+
+        // First attempt failed transiently; the helper retried (delay is real,
+        // ~2s — keep the test fast by NOT relying on fake timers; one retry is
+        // bounded and the suite tolerates the short wait).
+        expect(backupAttempts).toBe(2);
+      }, 15000);
+
+      it('should best-effort delete the file system when a post-ACTIVE step fails (atomicity)', async () => {
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof CreateFileSystemCommand) {
+            return Promise.resolve({
+              FileSystemId: 'fs-rollback',
+              FileSystemArn:
+                'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-rollback',
+            });
+          }
+          if (cmd instanceof DescribeFileSystemsCommand) {
+            return Promise.resolve({ FileSystems: [{ LifeCycleState: 'available' }] });
+          }
+          if (cmd instanceof PutLifecycleConfigurationCommand) {
+            // Non-transient hard failure → no retry, propagate.
+            return Promise.reject(new Error('AccessDenied: not authorized'));
+          }
+          return Promise.resolve({});
+        });
+
+        await expect(
+          provider.create('RollbackFS', 'AWS::EFS::FileSystem', {
+            LifecyclePolicies: [{ TransitionToIA: 'AFTER_7_DAYS' }],
+          })
+        ).rejects.toThrow();
+
+        const deleteCmd = mockSend.mock.calls.find(
+          (c) => c[0] instanceof DeleteFileSystemCommand
+        )?.[0];
+        expect(deleteCmd).toBeDefined();
+        expect(deleteCmd.input.FileSystemId).toBe('fs-rollback');
+      });
+    });
+
+    describe('update', () => {
+      it('should apply BackupPolicy diff via PutBackupPolicy', async () => {
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof DescribeFileSystemsCommand) {
+            return Promise.resolve({ FileSystems: [{ LifeCycleState: 'available' }] });
+          }
+          return Promise.resolve({});
+        });
+
+        await provider.update(
+          'BackupFS',
+          'fs-upd-backup',
+          'AWS::EFS::FileSystem',
+          { BackupPolicy: { Status: 'ENABLED' } },
+          { BackupPolicy: { Status: 'DISABLED' } }
+        );
+
+        const putCmd = mockSend.mock.calls.find((c) => c[0] instanceof PutBackupPolicyCommand)?.[0];
+        expect(putCmd).toBeDefined();
+        expect(putCmd.input.BackupPolicy).toEqual({ Status: 'ENABLED' });
+        // No UpdateFileSystem (throughput) call should be issued.
+        expect(
+          mockSend.mock.calls.some((c) => c[0] instanceof UpdateFileSystemCommand)
+        ).toBe(false);
+      });
+
+      it('should clear LifecyclePolicies on removal (empty array put)', async () => {
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof DescribeFileSystemsCommand) {
+            return Promise.resolve({ FileSystems: [{ LifeCycleState: 'available' }] });
+          }
+          return Promise.resolve({});
+        });
+
+        await provider.update(
+          'LifecycleFS',
+          'fs-upd-lifecycle',
+          'AWS::EFS::FileSystem',
+          {},
+          { LifecyclePolicies: [{ TransitionToIA: 'AFTER_30_DAYS' }] }
+        );
+
+        const putCmd = mockSend.mock.calls.find(
+          (c) => c[0] instanceof PutLifecycleConfigurationCommand
+        )?.[0];
+        expect(putCmd).toBeDefined();
+        expect(putCmd.input.LifecyclePolicies).toEqual([]);
+      });
+
+      it('should no-op when no mutable diff', async () => {
+        mockSend.mockImplementation(() => Promise.resolve({}));
+
+        const result = await provider.update(
+          'NoChangeFS',
+          'fs-nochange',
+          'AWS::EFS::FileSystem',
+          { BackupPolicy: { Status: 'ENABLED' } },
+          { BackupPolicy: { Status: 'ENABLED' } }
+        );
+
+        expect(result).toEqual({ physicalId: 'fs-nochange', wasReplaced: false });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('readCurrentState', () => {
+      it('should surface AvailabilityZoneName, FileSystemProtection, and FileSystemPolicy', async () => {
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof DescribeFileSystemsCommand) {
+            return Promise.resolve({
+              FileSystems: [
+                {
+                  PerformanceMode: 'generalPurpose',
+                  AvailabilityZoneName: 'us-east-1a',
+                  FileSystemProtection: { ReplicationOverwriteProtection: 'ENABLED' },
+                  Tags: [],
+                },
+              ],
+            });
+          }
+          if (cmd instanceof DescribeLifecycleConfigurationCommand) {
+            return Promise.resolve({ LifecyclePolicies: [{ TransitionToIA: 'AFTER_30_DAYS' }] });
+          }
+          if (cmd instanceof DescribeBackupPolicyCommand) {
+            return Promise.resolve({ BackupPolicy: { Status: 'ENABLED' } });
+          }
+          if (cmd instanceof DescribeFileSystemPolicyCommand) {
+            return Promise.resolve({
+              Policy: JSON.stringify({ Version: '2012-10-17', Statement: [] }),
+            });
+          }
+          return Promise.resolve({});
+        });
+
+        const state = await provider.readCurrentState('fs-read', 'ReadFS', 'AWS::EFS::FileSystem');
+
+        expect(state).toBeDefined();
+        expect(state!['AvailabilityZoneName']).toBe('us-east-1a');
+        expect(state!['FileSystemProtection']).toEqual({
+          ReplicationOverwriteProtection: 'ENABLED',
+        });
+        expect(state!['LifecyclePolicies']).toEqual([{ TransitionToIA: 'AFTER_30_DAYS' }]);
+        expect(state!['BackupPolicy']).toEqual({ Status: 'ENABLED' });
+        // FileSystemPolicy parsed back from JSON string to object.
+        expect(state!['FileSystemPolicy']).toEqual({ Version: '2012-10-17', Statement: [] });
+      });
+
+      it('should omit FileSystemPolicy when no policy is attached (PolicyNotFound)', async () => {
+        mockSend.mockImplementation((cmd: unknown) => {
+          if (cmd instanceof DescribeFileSystemsCommand) {
+            return Promise.resolve({ FileSystems: [{ PerformanceMode: 'generalPurpose', Tags: [] }] });
+          }
+          if (cmd instanceof DescribeFileSystemPolicyCommand) {
+            const err = new Error('Policy not found');
+            (err as { name: string }).name = 'PolicyNotFound';
+            return Promise.reject(err);
+          }
+          return Promise.resolve({});
+        });
+
+        const state = await provider.readCurrentState('fs-nopol', 'NoPolFS', 'AWS::EFS::FileSystem');
+
+        expect(state).toBeDefined();
+        expect(state!['FileSystemPolicy']).toBeUndefined();
       });
     });
 

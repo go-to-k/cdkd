@@ -71,7 +71,6 @@ docdb-neptune	2026-06-02T11:37:34Z	PASS	1402	verify.sh	sweep: deploy+destroy cle
 ec2-instance	2026-06-02T11:37:34Z	PASS	143	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 ec2-vpc	2026-06-02T11:37:34Z	PASS	57	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 efs-lambda	2026-06-02T11:37:34Z	PASS	544	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
-efs-standalone	2026-06-02T11:37:34Z	PASS	130	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 export-nested-stack	2026-06-02T11:37:34Z	PASS	333	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 full-stack-demo	2026-06-02T11:37:34Z	PASS	35	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 import-nested-stack	2026-06-02T11:37:34Z	PASS	140	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -124,3 +123,4 @@ local-start-agentcore	2026-06-06T17:03:21Z	PASS	13	verify.sh	cdk-local 0.139.0 w
 local-start-cloudfront	2026-06-07T17:03:27Z	PASS	4	verify.sh	0.142.0 bump; cache-origin WARN follow; rc ok, no docker/aws orphans
 local-invoke	2026-06-08T16:20:50Z	PASS	28	verify.sh	0.147.0; 5/5 host-gateway adopted; rc ok, no orphans
 local-run-task	2026-06-08T16:20:50Z	PASS	14	verify.sh	0.147.0; host-gateway adopted; rc ok, no orphans
+efs-standalone	2026-06-09T16:34:55Z	PASS	134	verify.sh	#609 EFS backfill: 4 control-plane props asserted, destroy 0 err 0 orphan
