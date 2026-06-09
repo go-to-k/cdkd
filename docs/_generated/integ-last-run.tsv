@@ -66,7 +66,6 @@ data-analytics	2026-06-02T11:37:34Z	PASS	51	verify.sh	sweep: deploy+destroy clea
 data-pipeline	2026-06-02T11:37:34Z	PASS	51	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 diff-intrinsic-target-change	2026-06-02T11:37:34Z	PASS	48	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 docdb-neptune	2026-06-02T11:37:34Z	PASS	1402	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
-ec2-instance	2026-06-02T11:37:34Z	PASS	143	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 ec2-vpc	2026-06-02T11:37:34Z	PASS	57	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 efs-lambda	2026-06-02T11:37:34Z	PASS	544	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 export-nested-stack	2026-06-02T11:37:34Z	PASS	333	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -124,3 +123,4 @@ local-run-task	2026-06-08T16:20:50Z	PASS	14	verify.sh	0.147.0; host-gateway adop
 efs-standalone	2026-06-09T16:34:55Z	PASS	134	verify.sh	#609 EFS backfill: 4 control-plane props asserted, destroy 0 err 0 orphan
 cognito	2026-06-09T16:50:23Z	PASS	54	verify.sh	#609 UserPoolTier/SOFTWARE_TOKEN_MFA/WebAuthn asserted; EMAIL_OTP unit-only (SES); destroy 0 err
 dynamodb-ondemand	2026-06-09T17:02:56Z	PASS	70	verify.sh	#609: ResourcePolicy/Kinesis/ContributorInsights asserted; destroy 0 err 0 orphan
+ec2-instance	2026-06-09T17:10:25Z	PASS	105	verify.sh	#609 security slice: DisableApiTermination/MetadataOptions/Monitoring/EbsOptimized/CreditSpecification asserted; destroy 0 err
