@@ -360,11 +360,6 @@
       "scenarios": []
     },
     {
-      "name": "dynamodb-table-policy",
-      "annotated": true,
-      "scenarios": []
-    },
-    {
       "name": "ec2-instance",
       "annotated": true,
       "scenarios": []

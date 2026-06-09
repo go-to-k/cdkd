@@ -865,9 +865,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (newArn === prevArn) {
       if (
         newArn &&
-        JSON.stringify((spec as Record<string, unknown> | undefined)?.[
-          'ApproximateCreationDateTimePrecision'
-        ]) !==
+        JSON.stringify(
+          (spec as Record<string, unknown> | undefined)?.['ApproximateCreationDateTimePrecision']
+        ) !==
           JSON.stringify(
             (previousSpec as Record<string, unknown> | undefined)?.[
               'ApproximateCreationDateTimePrecision'
