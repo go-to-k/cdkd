@@ -1,16 +1,32 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd RDS::DBInstance 6-property backfill integ test
-# (issue #609).
+# verify.sh — cdkd RDS::DBInstance backfill integ test (issue #609).
 #
 # Asserts that a standalone (non-cluster) RDS Postgres DBInstance whose
-# template sets the 6 sibling-of-DBCluster properties has each one reach
-# AWS after `cdkd deploy` — each was a silent-drop before #609. The 5
-# AWS-readable ones (DeletionProtection / EngineVersion / Port /
-# StorageEncrypted / VPCSecurityGroups) are asserted via DescribeDBInstances;
-# MasterUserPassword is not AWS-readable (RDS never returns it), so we
-# assert the paired MasterUsername reached AWS as a credibility proxy
-# that the create payload was accepted. Also asserts the destroy path
-# cleans up.
+# template sets the #609 sibling-of-DBCluster properties has each one reach
+# AWS after `cdkd deploy` — each was a silent-drop before #609.
+#
+# Original (#738) properties (AWS-readable):
+#   DeletionProtection / EngineVersion / Port / StorageEncrypted /
+#   VPCSecurityGroups / MasterUsername — asserted via DescribeDBInstances.
+#
+# Folded-in security properties (this fixture absorbed the former standalone
+# `rds-security-backfill` fixture per the "do not proliferate per-property
+# integ fixtures" directive):
+#   KmsKeyId / MasterUserSecret / ManageMasterUserPassword /
+#   MonitoringRoleArn / MonitoringInterval / EnableIAMDatabaseAuthentication
+#   — also asserted via DescribeDBInstances.
+#
+# The credentials shape changed when folding in the security props: the
+# managed-master-password (ManageMasterUserPassword) is mutually exclusive
+# with a literal MasterUserPassword, so this fixture sets NO password and
+# proves the managed credential rode via the populated MasterUserSecret
+# read-back (a credibility proxy that the explicit-managed-credential create
+# payload was accepted).
+#
+# The DBInstance is also asserted to carry `provisionedBy=sdk` in cdkd state
+# — a routing guard proving none of the set props flipped the resource to
+# the Cloud Control path (which would make the SDK-provider verification
+# meaningless). Also asserts the destroy path cleans up.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -29,6 +45,8 @@ EXPECTED_PORT=5433
 EXPECTED_DELETION_PROTECTION="false"
 EXPECTED_STORAGE_ENCRYPTED="true"
 EXPECTED_MASTER_USERNAME="postgres"
+EXPECTED_MONITORING_INTERVAL=60
+EXPECTED_IAM_AUTH="true"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
@@ -121,7 +139,18 @@ if [ -z "${EXPECTED_SG}" ] || [ "${EXPECTED_SG}" = "null" ]; then
 fi
 echo "    expected VPC security group: ${EXPECTED_SG}"
 
-# --- Assertion: 5 AWS-readable props reached AWS ----------------------
+# --- Routing guard: the DBInstance must be SDK-provisioned ------------
+# If any set prop were still a silent-drop, #614 routing would flip the
+# resource to the Cloud Control path (provisionedBy=cc-api) and the
+# SDK-provider assertions below would prove nothing.
+INST_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.provisionedBy] | first // "sdk"')
+if [ "${INST_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: DBInstance routed via '${INST_PROVISIONED_BY}', expected 'sdk' (a set prop is still a silent-drop → CC-API routing)" >&2
+  exit 1
+fi
+echo "    OK: DBInstance provisionedBy=sdk (no silent-drop CC-API flip)"
+
+# --- Assertion: AWS-readable props reached AWS ------------------------
 # DescribeDBInstances returns every prop the create payload accepted;
 # verifying each one proves the silent-drop is closed by the #609 backfill.
 INSTANCE=$(aws rds describe-db-instances \
@@ -155,7 +184,7 @@ echo "    OK: Endpoint.Port == ${EXPECTED_PORT} on AWS (Port silent-drop CLOSED 
 
 # DeletionProtection: explicit false from the template. Pre-#609 this
 # would have defaulted to false too, so it is the weakest signal of the
-# 5 — kept for completeness but not load-bearing.
+# asserted props — kept for completeness but not load-bearing.
 # NOTE: use `tostring` instead of `// "null"` because jq's `//` operator
 # treats `false` as a missing value (it's the "alternative-on-null-or-false"
 # operator), so an explicit `false` from AWS would falsely register as `null`.
@@ -187,19 +216,64 @@ if [ "${ACTUAL_SGS}" != "${EXPECTED_SG}" ]; then
 fi
 echo "    OK: VpcSecurityGroups == [${EXPECTED_SG}] on AWS (VPCSecurityGroups silent-drop CLOSED by #609)"
 
-# MasterUserPassword: AWS does not return it. Assert MasterUsername
-# (paired create-time prop) reached AWS as a credibility proxy that
-# the create payload was accepted with the explicit-credentials shape.
-# Without the backfill, MasterUserPassword would be silent-dropped and
-# the create call would fail outright with "MasterUserPassword required"
-# — so reaching `available` AT ALL implicitly proves the password rode.
+# MasterUsername: AWS-required paired create-time prop, returned as-is.
 ACTUAL_MASTER_USERNAME=$(echo "${INSTANCE}" | jq -r '.MasterUsername // "null"')
 if [ "${ACTUAL_MASTER_USERNAME}" != "${EXPECTED_MASTER_USERNAME}" ]; then
   echo "FAIL: MasterUsername is '${ACTUAL_MASTER_USERNAME}', expected '${EXPECTED_MASTER_USERNAME}'" >&2
   exit 1
 fi
 echo "    OK: MasterUsername == ${EXPECTED_MASTER_USERNAME} on AWS"
-echo "    OK: MasterUserPassword (not AWS-readable) implicitly verified — create reached 'available' (MasterUserPassword silent-drop CLOSED by #609)"
+
+# --- Assertions: folded-in #609 security props reached AWS ------------
+# MonitoringInterval: Enhanced Monitoring interval in seconds (fixture sets
+# 60; AWS default is 0). A silent-drop would leave AWS at 0.
+ACTUAL_INTERVAL=$(echo "${INSTANCE}" | jq -r '.MonitoringInterval // "null"')
+if [ "${ACTUAL_INTERVAL}" != "${EXPECTED_MONITORING_INTERVAL}" ]; then
+  echo "FAIL: MonitoringInterval is '${ACTUAL_INTERVAL}', expected '${EXPECTED_MONITORING_INTERVAL}' (MonitoringInterval silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: MonitoringInterval == ${EXPECTED_MONITORING_INTERVAL} on AWS (silent-drop CLOSED by #609)"
+
+# MonitoringRoleArn: present and non-empty proves the role ARN rode the create.
+ACTUAL_MON_ROLE=$(echo "${INSTANCE}" | jq -r '.MonitoringRoleArn // "null"')
+if [ "${ACTUAL_MON_ROLE}" = "null" ] || [ -z "${ACTUAL_MON_ROLE}" ]; then
+  echo "FAIL: MonitoringRoleArn is empty (MonitoringRoleArn silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: MonitoringRoleArn == ${ACTUAL_MON_ROLE} on AWS (silent-drop CLOSED by #609)"
+
+# EnableIAMDatabaseAuthentication: AWS surfaces it as
+# IAMDatabaseAuthenticationEnabled. Same false-vs-null trap as above —
+# use the explicit-presence check (jq `//` treats false as missing).
+ACTUAL_IAM_AUTH=$(echo "${INSTANCE}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
+if [ "${ACTUAL_IAM_AUTH}" != "${EXPECTED_IAM_AUTH}" ]; then
+  echo "FAIL: IAMDatabaseAuthenticationEnabled is '${ACTUAL_IAM_AUTH}', expected '${EXPECTED_IAM_AUTH}' (EnableIAMDatabaseAuthentication silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: EnableIAMDatabaseAuthentication == ${EXPECTED_IAM_AUTH} on AWS (silent-drop CLOSED by #609)"
+
+# KmsKeyId: storage-encryption key. With StorageEncrypted=true + the
+# aws/rds alias, AWS resolves and returns a key ARN. Non-empty proves the
+# create payload carried KmsKeyId.
+ACTUAL_KMS=$(echo "${INSTANCE}" | jq -r '.KmsKeyId // "null"')
+if [ "${ACTUAL_KMS}" = "null" ] || [ -z "${ACTUAL_KMS}" ]; then
+  echo "FAIL: KmsKeyId is empty (KmsKeyId / StorageEncrypted silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: KmsKeyId == ${ACTUAL_KMS} on AWS (silent-drop CLOSED by #609)"
+
+# ManageMasterUserPassword + MasterUserSecret: a managed master password is
+# reflected by a populated MasterUserSecret (with SecretArn + KmsKeyId).
+# Without ManageMasterUserPassword the create would have failed outright
+# (no MasterUserPassword was supplied — they are mutually exclusive), so a
+# populated secret proves both props rode.
+ACTUAL_SECRET=$(echo "${INSTANCE}" | jq -r '.MasterUserSecret.SecretArn // "null"')
+if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
+  echo "FAIL: MasterUserSecret.SecretArn is empty (ManageMasterUserPassword / MasterUserSecret silent-drop NOT closed)" >&2
+  echo "${INSTANCE}" | jq '.MasterUserSecret'
+  exit 1
+fi
+echo "    OK: MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
@@ -231,4 +305,4 @@ else
 fi
 
 echo ""
-echo "=== PASS: RDS::DBInstance #609 6-prop backfill integ ==="
+echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) ==="

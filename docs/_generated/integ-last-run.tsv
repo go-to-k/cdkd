@@ -80,8 +80,6 @@ migrate-from-bare-cfn	2026-06-02T11:37:34Z	PASS	148	verify.sh	sweep: deploy+dest
 migrate-from-bare-cfn-codegen-only	2026-06-02T11:37:34Z	PASS	30	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 multi-region-same-stack	2026-06-02T11:37:34Z	PASS	16	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 orphan-resource	2026-06-02T11:37:34Z	PASS	31	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
-rds-aurora	2026-06-02T11:37:34Z	PASS	2100	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
-rds-dbinstance-backfill	2026-06-02T11:37:34Z	PASS	499	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 s3-cloudfront	2026-06-02T11:37:34Z	PASS	431	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 s3-vectors	2026-06-02T11:37:34Z	PASS	17	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 scheduled-task	2026-06-02T11:37:34Z	PASS	32	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -124,3 +122,5 @@ efs-standalone	2026-06-09T16:34:55Z	PASS	134	verify.sh	#609 EFS backfill: 4 cont
 cognito	2026-06-09T16:50:23Z	PASS	54	verify.sh	#609 UserPoolTier/SOFTWARE_TOKEN_MFA/WebAuthn asserted; EMAIL_OTP unit-only (SES); destroy 0 err
 dynamodb-ondemand	2026-06-09T17:02:56Z	PASS	70	verify.sh	#609: ResourcePolicy/Kinesis/ContributorInsights asserted; destroy 0 err 0 orphan
 ec2-instance	2026-06-09T17:10:25Z	PASS	105	verify.sh	#609 security slice: DisableApiTermination/MetadataOptions/Monitoring/EbsOptimized/CreditSpecification asserted; destroy 0 err
+rds-dbinstance-backfill	2026-06-09T18:23:15Z	PASS	561	verify.sh	#609 DBInstance security props (MonitoringRoleArn/Interval/IAMauth/KmsKeyId/MasterUserSecret) asserted; destroy 0 err
+rds-aurora	2026-06-09T18:23:15Z	PASS	2475	verify.sh	#609 DBCluster security (ManageMasterUserPassword/MasterUserSecret/IAMauth) asserted; Monitoring+PubliclyAccessible deferred (IAM race / Aurora-incompat); destroy 22/0 err

@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# verify.sh — cdkd RDS Aurora integ test (issue #609 DBCluster security backfill).
+#
+# The rds-aurora fixture deploys an Aurora Serverless v2 L2 cluster + writer
+# instance + DBProxy / DBProxyEndpoint family AND a standalone L1
+# `rds.CfnDBCluster` ("SecurityCluster") added for the #609 DBCluster
+# silent-drop security backfill (this fixture absorbed the DBCluster half of
+# the former standalone `rds-security-backfill` fixture per the "do not
+# proliferate per-property integ fixtures" directive).
+#
+# This script asserts that the SecurityCluster's #609 security props each
+# reach AWS after `cdkd deploy` — each was a silent-drop before #609:
+#   ManageMasterUserPassword / MasterUserSecret / EnableIAMDatabaseAuthentication
+#   — asserted via DescribeDBClusters.
+#
+# The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
+# state — a routing guard proving none of the set props flipped the resource
+# to the Cloud Control path (which would make the SDK-provider verification
+# meaningless). Also asserts the destroy path cleans up the whole stack.
+#
+# Required env vars:
+#   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
+#   AWS_REGION   — defaults to us-east-1
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+STACK="RdsAuroraStack"
+REGION="${AWS_REGION:-us-east-1}"
+STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+
+EXPECTED_IAM_AUTH="true"
+
+LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+
+# Auto-generated physical name; resolved from cdkd state after deploy.
+DB_CLUSTER_ID=""
+
+cleanup() {
+  echo "==> Cleanup: dropping any leftover state + AWS RDS resources"
+  # Do NOT silence stderr on `state destroy` — a partial-failure (e.g. a VPC
+  # dependency still 'deleting' from an in-flight DBCluster) silently leaves
+  # orphan resources otherwise. See PR #735 retrospective. The stdout-piped
+  # calls below ARE allowed to be silent: the redundant delete is best-effort
+  # (state destroy already handled it on the happy path) and the `s3 rm`
+  # calls are expected to NotFound after state destroy succeeds.
+  set +eu
+  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" \
+      --yes
+  fi
+  if [ -n "${DB_CLUSTER_ID}" ]; then
+    aws rds delete-db-cluster \
+      --db-cluster-identifier "${DB_CLUSTER_ID}" \
+      --region "${REGION}" \
+      --skip-final-snapshot >/dev/null 2>&1 || true
+  fi
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  fi
+  set -eu
+}
+
+trap cleanup EXIT
+
+if [ -z "${STATE_BUCKET:-}" ]; then
+  echo "FAIL: STATE_BUCKET env var is required" >&2
+  exit 1
+fi
+
+if [ ! -f "${LOCAL_DIST}" ]; then
+  echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2
+  exit 1
+fi
+
+echo "==> Installing fixture deps"
+if [ ! -d node_modules ]; then
+  npm install
+fi
+
+echo "==> Pre-run cleanup"
+cleanup
+
+# --- Phase 1: deploy --------------------------------------------------
+echo "==> Phase 1: deploy with the local binary"
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE}" ]; then
+  echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
+  exit 1
+fi
+
+# Resolve the security cluster's auto-generated identifier from cdkd state.
+# The fixture's only L1 CfnDBCluster is the SecurityCluster; the L2
+# DatabaseCluster also produces an AWS::RDS::DBCluster, so select by logical
+# id stem ('SecurityCluster') to disambiguate.
+DB_CLUSTER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.physicalId] | first // ""')
+if [ -z "${DB_CLUSTER_ID}" ] || [ "${DB_CLUSTER_ID}" = "null" ]; then
+  echo "FAIL: could not resolve the SecurityCluster DBCluster identifier from state" >&2
+  echo "${STATE}" | jq '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster") | {key, physicalId: .value.physicalId}]'
+  exit 1
+fi
+echo "    resolved SecurityCluster identifier: ${DB_CLUSTER_ID}"
+
+# --- Routing guard: the SecurityCluster must be SDK-provisioned -------
+# If any set prop were still a silent-drop, #614 routing would flip the
+# resource to the Cloud Control path (provisionedBy=cc-api) and the
+# SDK-provider assertions below would prove nothing.
+CLUSTER_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.provisionedBy] | first // "sdk"')
+if [ "${CLUSTER_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: SecurityCluster routed via '${CLUSTER_PROVISIONED_BY}', expected 'sdk' (a set prop is still a silent-drop → CC-API routing)" >&2
+  exit 1
+fi
+echo "    OK: SecurityCluster provisionedBy=sdk (no silent-drop CC-API flip)"
+
+# --- Assertions: DBCluster security props reached AWS -----------------
+CLUSTER=$(aws rds describe-db-clusters \
+  --db-cluster-identifier "${DB_CLUSTER_ID}" \
+  --region "${REGION}" \
+  --query 'DBClusters[0]' --output json 2>/dev/null)
+if [ -z "${CLUSTER}" ] || [ "${CLUSTER}" = "null" ]; then
+  echo "FAIL: DescribeDBClusters returned empty for ${DB_CLUSTER_ID}" >&2
+  exit 1
+fi
+
+# NOTE: MonitoringInterval / MonitoringRoleArn are NOT asserted on the cluster
+# here — Enhanced Monitoring on a same-stack role races IAM propagation on
+# cdkd's fast SDK create path for the cluster ("IAM role ARN value is invalid
+# ... for: ENHANCED_MONITORING"). Both are integ-asserted on the SDK-shared
+# DBInstance create path in tests/integration/rds-dbinstance-backfill; the
+# cluster IAM-propagation-race robustness fix is a #609 follow-up. See the
+# fixture comment for the full rationale.
+
+# EnableIAMDatabaseAuthentication: AWS surfaces it as
+# IAMDatabaseAuthenticationEnabled. Use the explicit-presence check —
+# jq's `//` treats `false` as missing (alternative-on-null-or-false).
+ACTUAL_IAM=$(echo "${CLUSTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
+if [ "${ACTUAL_IAM}" != "${EXPECTED_IAM_AUTH}" ]; then
+  echo "FAIL: DBCluster IAMDatabaseAuthenticationEnabled is '${ACTUAL_IAM}', expected '${EXPECTED_IAM_AUTH}' (silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: DBCluster EnableIAMDatabaseAuthentication == ${EXPECTED_IAM_AUTH} (silent-drop CLOSED by #609)"
+
+# NOTE: PubliclyAccessible is NOT asserted — AWS rejects it for aurora-postgresql
+# ("PubliclyAccessible isn't supported for DB engine aurora-postgresql"); it is
+# valid only for Multi-AZ DB clusters (non-Aurora). The provider wiring is
+# correct + unit-tested; a real-AWS assertion would need a Multi-AZ DB cluster
+# fixture (deferred). See the fixture comment for the full rationale.
+
+# ManageMasterUserPassword + MasterUserSecret: a managed master password is
+# reflected by a populated MasterUserSecret (with SecretArn + KmsKeyId).
+# Without ManageMasterUserPassword the create would have failed outright
+# (no MasterUserPassword was supplied — they are mutually exclusive), so a
+# populated secret proves both props rode.
+ACTUAL_SECRET=$(echo "${CLUSTER}" | jq -r '.MasterUserSecret.SecretArn // "null"')
+if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
+  echo "FAIL: DBCluster MasterUserSecret.SecretArn is empty (ManageMasterUserPassword / MasterUserSecret silent-drop NOT closed)" >&2
+  echo "${CLUSTER}" | jq '.MasterUserSecret'
+  exit 1
+fi
+echo "    OK: DBCluster MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
+
+# --- Phase 2: destroy -------------------------------------------------
+echo "==> Phase 2: destroy"
+node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
+
+# RDS Delete* is async: resources linger in 'deleting' for a few minutes
+# before describe returns *NotFoundFault. cdkd's delete path waits for the
+# terminal NotFound, but the post-delete S3 state cleanup is the verifiable
+# signal here.
+if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
+  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
+  exit 1
+fi
+echo "    OK: state file is gone"
+
+# Spot-check the security cluster is gone or in 'deleting'.
+CLUSTER_STATUS=$(aws rds describe-db-clusters \
+  --db-cluster-identifier "${DB_CLUSTER_ID}" \
+  --region "${REGION}" \
+  --query 'DBClusters[0].Status' --output text 2>/dev/null || echo "gone")
+if [ "${CLUSTER_STATUS}" = "gone" ] || [ "${CLUSTER_STATUS}" = "deleting" ]; then
+  echo "    OK: SecurityCluster is gone or deleting (status: ${CLUSTER_STATUS})"
+else
+  echo "FAIL: SecurityCluster still in unexpected state after destroy: ${CLUSTER_STATUS}" >&2
+  exit 1
+fi
+
+echo ""
+echo "=== PASS: RDS Aurora integ + #609 DBCluster security backfill ==="
