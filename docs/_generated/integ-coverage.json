@@ -2183,10 +2183,14 @@
       "resourceType": "AWS::Kinesis::Stream",
       "integs": [
         "cache-streaming",
+        "dynamodb-ondemand",
         "log-pipeline"
       ],
       "signals": {
         "cache-streaming": [
+          "l2"
+        ],
+        "dynamodb-ondemand": [
           "l2"
         ],
         "log-pipeline": [

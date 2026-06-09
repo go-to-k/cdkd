@@ -152,12 +152,6 @@
       "ReadProvisionedThroughputSettings",
       "WarmThroughput"
     ],
-    "AWS::DynamoDB::Table": [
-      "ContributorInsightsSpecification",
-      "ImportSourceSpecification",
-      "KinesisStreamSpecification",
-      "ResourcePolicy"
-    ],
     "AWS::EC2::Instance": [
       "AdditionalInfo",
       "Affinity",

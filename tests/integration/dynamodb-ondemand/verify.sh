@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd DynamoDB OnDemandThroughput backfill integ test
-# (issue #609).
+# verify.sh — cdkd DynamoDB::Table #609 backfill integ test.
 #
-# Asserts that a PAY_PER_REQUEST DynamoDB table whose template sets
-# on-demand capacity caps (`OnDemandThroughput.MaxReadRequestUnits` /
-# `MaxWriteRequestUnits`) has those caps reach AWS after `cdkd deploy` —
-# the property was a silent-drop before the #609 backfill. Also asserts
-# the destroy path cleans up.
+# Asserts that a single PAY_PER_REQUEST DynamoDB table whose template sets
+# every #609 backfill property has all of them reach AWS after `cdkd deploy`
+# (each was a silent-drop before the #609 backfill):
+#
+#   - OnDemandThroughput.MaxReadRequestUnits / MaxWriteRequestUnits
+#     (via describe-table Table.OnDemandThroughput)
+#   - ResourcePolicy (via get-resource-policy)
+#   - KinesisStreamSpecification (via describe-kinesis-streaming-destination)
+#   - ContributorInsightsSpecification (via describe-contributor-insights)
+#
+# Also asserts the table routes via the SDK provider (provisionedBy=sdk) so a
+# silent-drop routing flip is caught, and that the destroy path cleans up the
+# table, the Kinesis stream, and the cdkd state file.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -20,13 +27,15 @@ STACK="CdkdDynamodbOndemandExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TABLE_NAME="cdkd-ondemand-test-table"
+STREAM_NAME="cdkd-ondemand-test-stream"
 EXPECTED_READ=10
 EXPECTED_WRITE=5
+EXPECTED_CI_MODE="ACCESSED_AND_THROTTLED_KEYS"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
 cleanup() {
-  echo "==> Cleanup: dropping any leftover state + AWS table"
+  echo "==> Cleanup: dropping any leftover state + AWS resources"
   # `set +u` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
@@ -35,6 +44,7 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -75,16 +85,34 @@ if [ -z "${STATE}" ]; then
   exit 1
 fi
 
-# --- Assertion: OnDemandThroughput caps reached AWS -------------------
-# DescribeTable returns Table.OnDemandThroughput only on PAY_PER_REQUEST
-# tables that set caps. Seeing the templated values proves the
-# silent-drop is closed by the #609 backfill.
-ODT=$(aws dynamodb describe-table \
-  --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.OnDemandThroughput' --output json 2>/dev/null)
+# --- Routing guard: table routed via the SDK provider -----------------
+# Every top-level Table property the fixture sets is in the provider's
+# handledProperties, so the resource MUST route via the SDK path (not the
+# CC-API #614 silent-drop fallback). If provisionedBy flipped (e.g. an
+# unhandled silent-drop sneaked in), the backfill closure being tested IS
+# on the wrong code path.
+PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DynamoDB::Table") | .value.provisionedBy] | first // "sdk"')
+if [ "${PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AWS::DynamoDB::Table routed via '${PROVISIONED_BY}', expected 'sdk' (silent-drop routing flip — backfill is on the wrong path)" >&2
+  exit 1
+fi
+echo "    OK: AWS::DynamoDB::Table routed via SDK provider (provisionedBy=sdk)"
 
-ACTUAL_READ=$(echo "${ODT}" | jq -r '.MaxReadRequestUnits // "null"')
-ACTUAL_WRITE=$(echo "${ODT}" | jq -r '.MaxWriteRequestUnits // "null"')
+TABLE=$(aws dynamodb describe-table \
+  --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table' --output json 2>/dev/null)
+TABLE_ARN=$(echo "${TABLE}" | jq -r '.TableArn')
+EXPECTED_STREAM_ARN=$(aws kinesis describe-stream \
+  --stream-name "${STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescription.StreamARN' --output text 2>/dev/null)
+
+# --- Assertion 1: OnDemandThroughput caps reached AWS -----------------
+# DescribeTable returns Table.OnDemandThroughput only on PAY_PER_REQUEST
+# tables that set caps. Seeing the templated values proves the silent-drop
+# is closed by the #609 backfill.
+ODT=$(echo "${TABLE}" | jq -r '.OnDemandThroughput')
+ACTUAL_READ=$(echo "${ODT}" | jq -r 'if has("MaxReadRequestUnits") then .MaxReadRequestUnits | tostring else "null" end')
+ACTUAL_WRITE=$(echo "${ODT}" | jq -r 'if has("MaxWriteRequestUnits") then .MaxWriteRequestUnits | tostring else "null" end')
 
 if [ "${ACTUAL_READ}" != "${EXPECTED_READ}" ]; then
   echo "FAIL: Table.OnDemandThroughput.MaxReadRequestUnits is '${ACTUAL_READ}', expected '${EXPECTED_READ}' (silent-drop NOT closed)" >&2
@@ -99,6 +127,67 @@ if [ "${ACTUAL_WRITE}" != "${EXPECTED_WRITE}" ]; then
   exit 1
 fi
 echo "    OK: Table.OnDemandThroughput.MaxWriteRequestUnits == ${EXPECTED_WRITE} on AWS (silent-drop CLOSED by #609)"
+
+# --- Assertion 2: ResourcePolicy reached AWS --------------------------
+# GetResourcePolicy returns the attached policy document as a JSON string.
+# Seeing a non-empty policy with our dynamodb:GetItem action proves the
+# silent-drop is closed.
+POLICY=$(aws dynamodb get-resource-policy \
+  --resource-arn "${TABLE_ARN}" --region "${REGION}" \
+  --query 'Policy' --output text 2>/dev/null || echo "")
+if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
+  echo "FAIL: no ResourcePolicy attached to ${TABLE_NAME} (silent-drop NOT closed)" >&2
+  exit 1
+fi
+HAS_GETITEM=$(echo "${POLICY}" | jq -r '
+  [.Statement[]?.Action] | flatten | map(select(. == "dynamodb:GetItem")) | length > 0
+')
+if [ "${HAS_GETITEM}" != "true" ]; then
+  echo "FAIL: ResourcePolicy does not contain the templated dynamodb:GetItem action" >&2
+  echo "${POLICY}" | jq .
+  exit 1
+fi
+echo "    OK: ResourcePolicy with dynamodb:GetItem reached AWS (silent-drop CLOSED by #609)"
+
+# --- Assertion 3: KinesisStreamSpecification reached AWS --------------
+# DescribeKinesisStreamingDestination lists the active destination(s).
+KDS=$(aws dynamodb describe-kinesis-streaming-destination \
+  --table-name "${TABLE_NAME}" --region "${REGION}" --output json 2>/dev/null)
+ACTUAL_STREAM_ARN=$(echo "${KDS}" | jq -r '
+  [.KinesisDataStreamDestinations[]? | select(.DestinationStatus == "ACTIVE" or .DestinationStatus == "ENABLING")][0]
+  | if has("StreamArn") then .StreamArn else "null" end
+')
+if [ "${ACTUAL_STREAM_ARN}" = "null" ] || [ -z "${ACTUAL_STREAM_ARN}" ]; then
+  echo "FAIL: no ACTIVE/ENABLING Kinesis streaming destination on ${TABLE_NAME} (silent-drop NOT closed)" >&2
+  echo "${KDS}" | jq .
+  exit 1
+fi
+if [ "${ACTUAL_STREAM_ARN}" != "${EXPECTED_STREAM_ARN}" ]; then
+  echo "FAIL: Kinesis destination StreamArn is '${ACTUAL_STREAM_ARN}', expected '${EXPECTED_STREAM_ARN}'" >&2
+  exit 1
+fi
+echo "    OK: KinesisStreamSpecification.StreamArn reached AWS (silent-drop CLOSED by #609)"
+
+# --- Assertion 4: ContributorInsightsSpecification reached AWS --------
+# DescribeContributorInsights returns the status + mode. ENABLING is a
+# valid transient terminal-bound state shortly after deploy.
+CI=$(aws dynamodb describe-contributor-insights \
+  --table-name "${TABLE_NAME}" --region "${REGION}" --output json 2>/dev/null)
+CI_STATUS=$(echo "${CI}" | jq -r 'if has("ContributorInsightsStatus") then .ContributorInsightsStatus else "null" end')
+if [ "${CI_STATUS}" != "ENABLED" ] && [ "${CI_STATUS}" != "ENABLING" ]; then
+  echo "FAIL: ContributorInsightsStatus is '${CI_STATUS}', expected ENABLED/ENABLING (silent-drop NOT closed)" >&2
+  echo "${CI}" | jq .
+  exit 1
+fi
+echo "    OK: ContributorInsightsSpecification.Enabled reached AWS (status=${CI_STATUS}, silent-drop CLOSED by #609)"
+
+CI_MODE=$(echo "${CI}" | jq -r 'if has("ContributorInsightsMode") then .ContributorInsightsMode else "null" end')
+if [ "${CI_MODE}" != "${EXPECTED_CI_MODE}" ]; then
+  echo "FAIL: ContributorInsightsMode is '${CI_MODE}', expected '${EXPECTED_CI_MODE}'" >&2
+  echo "${CI}" | jq .
+  exit 1
+fi
+echo "    OK: ContributorInsightsSpecification.Mode == ${EXPECTED_CI_MODE} on AWS"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
@@ -124,6 +213,21 @@ if [ -z "${TABLE_GONE}" ]; then
 fi
 echo "    OK: DynamoDB table is gone"
 
+# Kinesis DeleteStream is async too.
+STREAM_GONE=""
+for _ in $(seq 1 24); do
+  if ! aws kinesis describe-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+    STREAM_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${STREAM_GONE}" ]; then
+  echo "FAIL: Kinesis stream ${STREAM_NAME} still exists ~2min after destroy" >&2
+  exit 1
+fi
+echo "    OK: Kinesis stream is gone"
+
 if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
   echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
   exit 1
@@ -131,4 +235,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ondemand test passed (OnDemandThroughput backfill closed + clean destroy)"
+echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + clean destroy)"
