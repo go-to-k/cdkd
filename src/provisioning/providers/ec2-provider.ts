@@ -37,6 +37,12 @@ import {
   RunInstancesCommand,
   TerminateInstancesCommand,
   DescribeInstancesCommand,
+  ModifyInstanceAttributeCommand,
+  ModifyInstanceMetadataOptionsCommand,
+  ModifyInstanceCreditSpecificationCommand,
+  DescribeInstanceCreditSpecificationsCommand,
+  MonitorInstancesCommand,
+  UnmonitorInstancesCommand,
   waitUntilInstanceRunning,
   waitUntilInstanceTerminated,
   ModifySubnetAttributeCommand,
@@ -56,6 +62,12 @@ import {
   type BlockDeviceMapping,
   type IpPermission,
   type Volume,
+  type InstanceMetadataOptionsRequest,
+  type CreditSpecificationRequest,
+  type HttpTokensState,
+  type InstanceMetadataEndpointState,
+  type InstanceMetadataProtocolState,
+  type InstanceMetadataTagsState,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -174,6 +186,13 @@ export class EC2Provider implements ResourceProvider {
         'UserData',
         'BlockDeviceMappings',
         'Tags',
+        // Security-focused backfill (#609): wired into create() + update() +
+        // readCurrentState(). All five are mutable in-place (no replacement).
+        'DisableApiTermination',
+        'MetadataOptions',
+        'Monitoring',
+        'EbsOptimized',
+        'CreditSpecification',
       ]),
     ],
     ['AWS::EC2::NetworkAcl', new Set(['VpcId', 'Tags'])],
@@ -2245,6 +2264,21 @@ export class EC2Provider implements ResourceProvider {
               }
             : undefined,
           BlockDeviceMappings: this.buildBlockDeviceMappings(properties),
+          // Security-focused backfill (#609). These all ride on RunInstances
+          // input so they take effect at launch (no post-create modify needed):
+          //  - DisableApiTermination: termination protection (security: a
+          //    silent-drop made the user think the instance was protected
+          //    when it wasn't).
+          //  - MetadataOptions: IMDSv2 enforcement (HttpTokens=required)
+          //    mitigates SSRF credential theft.
+          //  - Monitoring.Enabled: detailed CloudWatch monitoring.
+          //  - EbsOptimized: dedicated EBS throughput.
+          //  - CreditSpecification.CpuCredits: T-family burstable mode.
+          DisableApiTermination: this.coerceBool(properties['DisableApiTermination']),
+          EbsOptimized: this.coerceBool(properties['EbsOptimized']),
+          Monitoring: this.buildRunInstancesMonitoring(properties),
+          MetadataOptions: this.buildMetadataOptions(properties),
+          CreditSpecification: this.buildCreditSpecification(properties),
         })
       );
 
@@ -2342,7 +2376,12 @@ export class EC2Provider implements ResourceProvider {
     // Most EC2 Instance property changes require replacement.
     // Immutable properties (ImageId, SubnetId, KeyName) are handled by
     // the deployment engine's replacement detection.
-    // For simplicity, tags-only updates are supported here.
+    // Tags plus the five security-focused backfill props (#609) —
+    // DisableApiTermination / EbsOptimized / Monitoring / MetadataOptions /
+    // CreditSpecification — are all mutable in-place, so they are diffed
+    // against previousProperties and modified here. The diff guard keeps the
+    // `cdkd drift --revert` no-op round-trip (`update(state, state)`) free of
+    // any mutating SDK call.
     this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
 
     try {
@@ -2351,6 +2390,8 @@ export class EC2Provider implements ResourceProvider {
         previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
         properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
+
+      await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
 
       // Refresh attributes
       const describeResponse = await this.ec2Client.send(
@@ -2380,6 +2421,104 @@ export class EC2Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Apply in-place modifications for the five mutable security-focused
+   * backfill props (#609). Each is diffed against `previousProperties` so a
+   * no-drift round-trip (`update(state, state)`) issues zero mutating calls
+   * (the `cdkd drift --revert` invariant). All five map to a distinct EC2
+   * modify API:
+   *   - DisableApiTermination / EbsOptimized -> ModifyInstanceAttribute
+   *   - Monitoring                            -> MonitorInstances / UnmonitorInstances
+   *   - MetadataOptions                       -> ModifyInstanceMetadataOptions
+   *   - CreditSpecification                   -> ModifyInstanceCreditSpecification
+   */
+  private async updateInstanceSecurityProps(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<void> {
+    // DisableApiTermination — ModifyInstanceAttribute.
+    const newDisableApiTermination = this.coerceBool(properties['DisableApiTermination']);
+    const oldDisableApiTermination = this.coerceBool(previousProperties['DisableApiTermination']);
+    if (
+      newDisableApiTermination !== undefined &&
+      newDisableApiTermination !== oldDisableApiTermination
+    ) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          DisableApiTermination: { Value: newDisableApiTermination },
+        })
+      );
+    }
+
+    // EbsOptimized — ModifyInstanceAttribute.
+    const newEbsOptimized = this.coerceBool(properties['EbsOptimized']);
+    const oldEbsOptimized = this.coerceBool(previousProperties['EbsOptimized']);
+    if (newEbsOptimized !== undefined && newEbsOptimized !== oldEbsOptimized) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          EbsOptimized: { Value: newEbsOptimized },
+        })
+      );
+    }
+
+    // Monitoring — MonitorInstances (enable) / UnmonitorInstances (disable).
+    const newMonitoring = this.coerceBool(properties['Monitoring']);
+    const oldMonitoring = this.coerceBool(previousProperties['Monitoring']);
+    if (newMonitoring !== undefined && newMonitoring !== oldMonitoring) {
+      if (newMonitoring) {
+        await this.ec2Client.send(new MonitorInstancesCommand({ InstanceIds: [physicalId] }));
+      } else {
+        await this.ec2Client.send(new UnmonitorInstancesCommand({ InstanceIds: [physicalId] }));
+      }
+    }
+
+    // MetadataOptions — ModifyInstanceMetadataOptions. Diff the built request
+    // shape (post-coercion) so a string/number round-trip is not flagged as a
+    // change.
+    const newMetadata = this.buildMetadataOptions(properties);
+    const oldMetadata = this.buildMetadataOptions(previousProperties);
+    if (newMetadata !== undefined && !this.shallowEqual(newMetadata, oldMetadata)) {
+      await this.ec2Client.send(
+        new ModifyInstanceMetadataOptionsCommand({
+          InstanceId: physicalId,
+          ...newMetadata,
+        })
+      );
+    }
+
+    // CreditSpecification — ModifyInstanceCreditSpecification.
+    const newCpuCredits = this.readCpuCredits(properties['CreditSpecification']);
+    const oldCpuCredits = this.readCpuCredits(previousProperties['CreditSpecification']);
+    if (newCpuCredits !== undefined && newCpuCredits !== oldCpuCredits) {
+      await this.ec2Client.send(
+        new ModifyInstanceCreditSpecificationCommand({
+          InstanceCreditSpecifications: [{ InstanceId: physicalId, CpuCredits: newCpuCredits }],
+        })
+      );
+    }
+  }
+
+  /**
+   * Shallow value-equality for the small flat MetadataOptions request shape.
+   * Treats `undefined` and an absent object as equal so the no-drift
+   * round-trip produces zero modify calls.
+   */
+  private shallowEqual(
+    a: InstanceMetadataOptionsRequest,
+    b: InstanceMetadataOptionsRequest | undefined
+  ): boolean {
+    if (b === undefined) return false;
+    const ra = a as Record<string, unknown>;
+    const rb = b as Record<string, unknown>;
+    const keysA = Object.keys(ra);
+    const keysB = Object.keys(rb);
+    if (keysA.length !== keysB.length) return false;
+    return keysA.every((k) => ra[k] === rb[k]);
   }
 
   private async deleteInstance(
@@ -2507,6 +2646,98 @@ export class EC2Provider implements ResourceProvider {
       }
       return result;
     });
+  }
+
+  /**
+   * Coerce a CFn boolean-ish value (`true` | `false` | `"true"` | `"false"`)
+   * into a real boolean, or `undefined` when the property is absent. CFn
+   * templates can carry either the JSON boolean or its string form depending
+   * on how the value was produced (a literal vs an intrinsic-resolved value),
+   * so the wire boundary must normalize both. Returns `undefined` for absent
+   * props so the field is omitted from the SDK input (AWS keeps its default)
+   * rather than being forced to `false`.
+   */
+  private coerceBool(value: unknown): boolean | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === 'boolean') return value;
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return undefined;
+  }
+
+  /**
+   * Build the RunInstances `Monitoring` shape from the CFn `Monitoring`
+   * boolean. AWS expects `{ Enabled: boolean }`; CFn carries a flat boolean.
+   * Returns `undefined` when the prop is absent so the field is omitted.
+   */
+  private buildRunInstancesMonitoring(
+    properties: Record<string, unknown>
+  ): { Enabled: boolean } | undefined {
+    const enabled = this.coerceBool(properties['Monitoring']);
+    if (enabled === undefined) return undefined;
+    return { Enabled: enabled };
+  }
+
+  /**
+   * Build the RunInstances `MetadataOptions` shape from the CFn
+   * `MetadataOptions` object. CFn and the SDK share field names
+   * (HttpTokens / HttpEndpoint / HttpPutResponseHopLimit / HttpProtocolIpv6 /
+   * InstanceMetadataTags). `HttpPutResponseHopLimit` is numeric — CFn may
+   * carry it as a string, so coerce at the wire boundary. Only emits keys the
+   * template actually set so AWS keeps its defaults for the rest.
+   */
+  private buildMetadataOptions(
+    properties: Record<string, unknown>
+  ): InstanceMetadataOptionsRequest | undefined {
+    const opts = properties['MetadataOptions'] as Record<string, unknown> | undefined;
+    if (!opts || typeof opts !== 'object') return undefined;
+
+    const result: InstanceMetadataOptionsRequest = {};
+    if (opts['HttpTokens'] !== undefined) {
+      result.HttpTokens = opts['HttpTokens'] as HttpTokensState;
+    }
+    if (opts['HttpEndpoint'] !== undefined) {
+      result.HttpEndpoint = opts['HttpEndpoint'] as InstanceMetadataEndpointState;
+    }
+    if (opts['HttpProtocolIpv6'] !== undefined) {
+      result.HttpProtocolIpv6 = opts['HttpProtocolIpv6'] as InstanceMetadataProtocolState;
+    }
+    if (opts['InstanceMetadataTags'] !== undefined) {
+      result.InstanceMetadataTags = opts['InstanceMetadataTags'] as InstanceMetadataTagsState;
+    }
+    const hopLimit = opts['HttpPutResponseHopLimit'];
+    if (hopLimit !== undefined && hopLimit !== null) {
+      result.HttpPutResponseHopLimit = Number(hopLimit);
+    }
+    // Omit the whole block if the template set MetadataOptions: {} with no
+    // recognized keys — there is nothing to send to AWS.
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  /**
+   * Build the RunInstances `CreditSpecification` shape from the CFn
+   * `CreditSpecification` object. CFn uses `CPUCredits` (capital CPU, the
+   * canonical CDK `CfnInstance` emission); accept the SDK-style `CpuCredits`
+   * too for hand-authored templates. Returns `undefined` when absent / empty.
+   */
+  private buildCreditSpecification(
+    properties: Record<string, unknown>
+  ): CreditSpecificationRequest | undefined {
+    const cpuCredits = this.readCpuCredits(properties['CreditSpecification']);
+    if (cpuCredits === undefined) return undefined;
+    return { CpuCredits: cpuCredits };
+  }
+
+  /**
+   * Extract the CpuCredits string from a CFn `CreditSpecification` object,
+   * tolerating both the canonical `CPUCredits` key and the SDK-style
+   * `CpuCredits` key. Shared by create() and update().
+   */
+  private readCpuCredits(spec: unknown): string | undefined {
+    if (!spec || typeof spec !== 'object') return undefined;
+    const obj = spec as Record<string, unknown>;
+    const raw = obj['CPUCredits'] ?? obj['CpuCredits'];
+    return typeof raw === 'string' ? raw : undefined;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
@@ -3650,6 +3881,34 @@ export class EC2Provider implements ResourceProvider {
     const monitoringState = instance.Monitoring?.State;
     result['Monitoring'] = monitoringState === 'enabled' || monitoringState === 'pending';
 
+    // EbsOptimized (#609): boolean returned directly by DescribeInstances.
+    // Emit-when-present so a console-side toggle is detectable without firing
+    // spurious drift on instances where AWS omits the field.
+    if (instance.EbsOptimized !== undefined) {
+      result['EbsOptimized'] = instance.EbsOptimized;
+    }
+
+    // MetadataOptions (#609): DescribeInstances returns the resolved IMDS
+    // config under instance.MetadataOptions. Reverse-map to the CFn input
+    // shape (same field names). Only the four CFn-settable string keys plus
+    // the numeric hop limit are surfaced — `State` (provisioning lifecycle)
+    // is AWS-managed and not a CFn input, so it is excluded to avoid
+    // false-positive drift. Emit-when-present.
+    const md = instance.MetadataOptions;
+    if (md !== undefined) {
+      const out: Record<string, unknown> = {};
+      if (md.HttpTokens !== undefined) out['HttpTokens'] = md.HttpTokens;
+      if (md.HttpPutResponseHopLimit !== undefined) {
+        out['HttpPutResponseHopLimit'] = md.HttpPutResponseHopLimit;
+      }
+      if (md.HttpEndpoint !== undefined) out['HttpEndpoint'] = md.HttpEndpoint;
+      if (md.HttpProtocolIpv6 !== undefined) out['HttpProtocolIpv6'] = md.HttpProtocolIpv6;
+      if (md.InstanceMetadataTags !== undefined) {
+        out['InstanceMetadataTags'] = md.InstanceMetadataTags;
+      }
+      if (Object.keys(out).length > 0) result['MetadataOptions'] = out;
+    }
+
     // Tenancy: lives under Placement.Tenancy.
     if (instance.Placement?.Tenancy !== undefined) {
       result['Tenancy'] = instance.Placement.Tenancy;
@@ -3746,6 +4005,29 @@ export class EC2Provider implements ResourceProvider {
     } catch (err) {
       this.logger.debug(
         `DescribeInstanceAttribute(disableApiTermination, ${physicalId}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+
+    // CreditSpecification (#609): not returned by DescribeInstances; needs a
+    // separate DescribeInstanceCreditSpecifications call. Best-effort — only
+    // T-family burstable instances have a credit spec, and AWS errors for
+    // non-burstable families, so a failure / absent value falls back to
+    // omitting the key (the state-keys-only drift walk skips it silently).
+    // Reverse-map to the CFn input shape ({ CPUCredits } — the canonical CDK
+    // emission) so drift compares like-for-like against templated state.
+    try {
+      const creditResp = await this.ec2Client.send(
+        new DescribeInstanceCreditSpecificationsCommand({ InstanceIds: [physicalId] })
+      );
+      const cpuCredits = creditResp.InstanceCreditSpecifications?.[0]?.CpuCredits;
+      if (cpuCredits !== undefined) {
+        result['CreditSpecification'] = { CPUCredits: cpuCredits };
+      }
+    } catch (err) {
+      this.logger.debug(
+        `DescribeInstanceCreditSpecifications(${physicalId}) failed: ${
           err instanceof Error ? err.message : String(err)
         }`
       );
