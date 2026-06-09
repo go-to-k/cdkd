@@ -1,3 +1,10 @@
+# [0.219.0](https://github.com/go-to-k/cdkd/compare/v0.218.0...v0.219.0) (2026-06-09)
+
+
+### Features
+
+* **providers:** backfill RDS DBCluster/DBInstance security properties (managed-secret + monitoring + IAM-auth) ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#795](https://github.com/go-to-k/cdkd/issues/795)) ([4c3f0d3](https://github.com/go-to-k/cdkd/commit/4c3f0d3750eb0d1a5f56f7d732b7c4f2423f0330))
+
 # [0.218.0](https://github.com/go-to-k/cdkd/compare/v0.217.0...v0.218.0) (2026-06-09)
 
 
