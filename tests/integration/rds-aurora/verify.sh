@@ -10,8 +10,9 @@
 #
 # This script asserts that the SecurityCluster's #609 security props each
 # reach AWS after `cdkd deploy` — each was a silent-drop before #609:
-#   ManageMasterUserPassword / MasterUserSecret / EnableIAMDatabaseAuthentication
-#   — asserted via DescribeDBClusters.
+#   ManageMasterUserPassword / MasterUserSecret / MonitoringRoleArn /
+#   MonitoringInterval / EnableIAMDatabaseAuthentication
+#   — asserted via DescribeDBClusters (MonitoringRoleArn deploy also proves the #794 IAM-race retry).
 #
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
@@ -30,6 +31,7 @@ STACK="RdsAuroraStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
+EXPECTED_MONITORING_INTERVAL=60
 EXPECTED_IAM_AUTH="true"
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
@@ -131,13 +133,25 @@ if [ -z "${CLUSTER}" ] || [ "${CLUSTER}" = "null" ]; then
   exit 1
 fi
 
-# NOTE: MonitoringInterval / MonitoringRoleArn are NOT asserted on the cluster
-# here — Enhanced Monitoring on a same-stack role races IAM propagation on
-# cdkd's fast SDK create path for the cluster ("IAM role ARN value is invalid
-# ... for: ENHANCED_MONITORING"). Both are integ-asserted on the SDK-shared
-# DBInstance create path in tests/integration/rds-dbinstance-backfill; the
-# cluster IAM-propagation-race robustness fix is a #609 follow-up. See the
-# fixture comment for the full rationale.
+# MonitoringInterval: Enhanced Monitoring interval in seconds (fixture sets 60;
+# AWS default is 0). A silent-drop would leave AWS at 0. This deploying cleanly
+# is also the real-AWS proof of the #794 retry fix (the same-stack monitoring
+# role races IAM propagation on the cluster create; the deploy engine now
+# retries on the ENHANCED_MONITORING signal until it propagates).
+ACTUAL_INTERVAL=$(echo "${CLUSTER}" | jq -r '.MonitoringInterval // "null"')
+if [ "${ACTUAL_INTERVAL}" != "${EXPECTED_MONITORING_INTERVAL}" ]; then
+  echo "FAIL: DBCluster MonitoringInterval is '${ACTUAL_INTERVAL}', expected '${EXPECTED_MONITORING_INTERVAL}' (silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: DBCluster MonitoringInterval == ${EXPECTED_MONITORING_INTERVAL} (silent-drop CLOSED by #609; #794 retry survived the IAM race)"
+
+# MonitoringRoleArn: present and non-empty proves the role ARN rode the create.
+ACTUAL_ROLE=$(echo "${CLUSTER}" | jq -r '.MonitoringRoleArn // "null"')
+if [ "${ACTUAL_ROLE}" = "null" ] || [ -z "${ACTUAL_ROLE}" ]; then
+  echo "FAIL: DBCluster MonitoringRoleArn is empty (MonitoringRoleArn silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: DBCluster MonitoringRoleArn == ${ACTUAL_ROLE} (silent-drop CLOSED by #609)"
 
 # EnableIAMDatabaseAuthentication: AWS surfaces it as
 # IAMDatabaseAuthenticationEnabled. Use the explicit-presence check —

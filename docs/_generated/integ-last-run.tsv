@@ -1,5 +1,4 @@
 # integ-last-run ledger (update-type: one row per test). cols: test  last_run_iso  result  duration_s  flow  note
-bench-cdk-sample	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 lambda	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 vpc-nat-gateway	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 dynamodb-streams	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
@@ -86,7 +85,6 @@ scheduled-task	2026-06-02T11:37:34Z	PASS	32	standard	sweep: deploy+destroy clean
 state-destroy	2026-06-02T11:37:34Z	PASS	18	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 state-info-command	2026-06-02T11:37:34Z	PASS	15	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 vpc-lookup	2026-06-02T11:37:34Z	PASS	20	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
-remove-protection	2026-06-02T14:31:31Z	PASS	940	verify.sh	FIXED: EC2 DisableApiTermination now cleared on the CC-API delete path (instance is cc-api-routed) + EPIPE crash in state list fixed; step5 --remove-protection destroyed 21 deleted 0 errors, clean
 schema-v5-to-v6-migration	2026-06-02T14:31:31Z	PASS	175	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 6; v5->v8 transparent auto-migration verified, clean destroy
 schema-v6-to-v7-migration	2026-06-02T14:31:31Z	PASS	180	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 7; v6->v8 transparent auto-migration verified, clean destroy
 local-invoke-buildkit	2026-06-02T15:46:16Z	PASS	31	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
@@ -123,4 +121,6 @@ cognito	2026-06-09T16:50:23Z	PASS	54	verify.sh	#609 UserPoolTier/SOFTWARE_TOKEN_
 dynamodb-ondemand	2026-06-09T17:02:56Z	PASS	70	verify.sh	#609: ResourcePolicy/Kinesis/ContributorInsights asserted; destroy 0 err 0 orphan
 ec2-instance	2026-06-09T17:10:25Z	PASS	105	verify.sh	#609 security slice: DisableApiTermination/MetadataOptions/Monitoring/EbsOptimized/CreditSpecification asserted; destroy 0 err
 rds-dbinstance-backfill	2026-06-09T18:23:15Z	PASS	561	verify.sh	#609 DBInstance security props (MonitoringRoleArn/Interval/IAMauth/KmsKeyId/MasterUserSecret) asserted; destroy 0 err
-rds-aurora	2026-06-09T18:23:15Z	PASS	2475	verify.sh	#609 DBCluster security (ManageMasterUserPassword/MasterUserSecret/IAMauth) asserted; Monitoring+PubliclyAccessible deferred (IAM race / Aurora-incompat); destroy 22/0 err
+rds-aurora	2026-06-10T01:31:45Z	PASS	3000	verify.sh	#794 verify: MonitoringRoleArn cluster create survived IAM-race via retry; +#609 cluster props; destroy 23/0 err
+bench-cdk-sample	2026-06-10T01:42:03Z	PASS	480	standard	regression net post #609 batch (replacement-rules.ts shared change): 37 deleted/2 RETAIN logGroups/0 err; clean
+remove-protection	2026-06-10T02:09:43Z	PASS	1100	verify.sh	regression post #609 EC2: standalone protected instance SDK-deleted clean (no regression); orphan ASG-launched LT-protected instance found+cleaned (pre-existing flaky gap, not state-managed)
