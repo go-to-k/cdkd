@@ -80,6 +80,13 @@ describe('isRetryableTransientError', () => {
         'Failed to delete event source mapping abc-123: Cannot delete the event source mapping because it is in use.',
         'Lambda EventSourceMapping in-use teardown lock',
       ],
+      // RDS Enhanced Monitoring same-stack role IAM-propagation race (#794):
+      // CreateDBCluster/CreateDBInstance issued before the just-created
+      // monitoring role propagates for the RDS monitoring service to assume.
+      [
+        'IAM role ARN value is invalid or does not include the required permissions for: ENHANCED_MONITORING',
+        'RDS Enhanced Monitoring role IAM propagation',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });

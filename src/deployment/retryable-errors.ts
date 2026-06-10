@@ -35,6 +35,17 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   'Schema is currently being altered',
   // IAM principal not yet propagated to S3 bucket policy
   'Invalid principal in policy',
+  // RDS Enhanced Monitoring: CreateDBInstance / CreateDBCluster references a
+  // same-stack monitoring IAM role, but cdkd's fast SDK path issues the create
+  // before IAM finishes propagating the just-created role for the RDS
+  // monitoring service to assume. AWS rejects with "IAM role ARN value is
+  // invalid or does not include the required permissions for:
+  // ENHANCED_MONITORING". Anchored on ENHANCED_MONITORING so a genuine,
+  // permanent monitoring-role misconfiguration only burns the bounded retries
+  // before surfacing — it won't false-positive other features' permission
+  // errors. CloudFormation tolerates this via deployment latency; cdkd retries.
+  // See issue #794.
+  'required permissions for: ENHANCED_MONITORING',
   // S3 bucket creation/deletion still in progress
   'conflicting conditional operation',
   // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate

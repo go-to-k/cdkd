@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as rds from 'aws-cdk-lib/aws-rds';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 /**
  * RDS Aurora Serverless v2 example stack
@@ -117,6 +118,15 @@ export class RdsAuroraStack extends cdk.Stack {
       description: 'Subnet group for the #609 security-backfill DBCluster',
     });
 
+    // Enhanced Monitoring role: RDS assumes monitoring.rds.amazonaws.com and
+    // needs the AWS-managed AmazonRDSEnhancedMonitoringRole policy.
+    const monitoringRole = new iam.Role(this, 'SecurityMonitoringRole', {
+      assumedBy: new iam.ServicePrincipal('monitoring.rds.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonRDSEnhancedMonitoringRole'),
+      ],
+    });
+
     // Aurora PostgreSQL Serverless v2 cluster — NO cluster instance: the
     // cluster-level create accepts and reflects every security prop, and
     // skipping the instance keeps the fixture cheap. Each #609 security prop
@@ -125,18 +135,15 @@ export class RdsAuroraStack extends cdk.Stack {
     //     mutually exclusive with MasterUserPassword (none is set).
     //   * MasterUserSecret { KmsKeyId } → account-default Secrets Manager key.
     //   * EnableIAMDatabaseAuthentication: true (AWS default false).
+    //   * MonitoringInterval: 60 (AWS default 0) + MonitoringRoleArn.
     //
-    // NOTE: MonitoringInterval / MonitoringRoleArn are intentionally NOT set on
-    // this cluster. Enhanced Monitoring needs a same-stack IAM role that RDS
-    // assumes at create time, but cdkd's fast SDK path issues CreateDBCluster
-    // before IAM finishes propagating the just-created role for the RDS
-    // monitoring service ("IAM role ARN value is invalid or does not include
-    // the required permissions for: ENHANCED_MONITORING"). The cluster create
-    // validates the role faster than the role propagates. These two props ARE
-    // integ-asserted on the SDK-shared DBInstance create path in
-    // tests/integration/rds-dbinstance-backfill (which passed), so the wiring
-    // is covered; the IAM-propagation-race robustness fix for the cluster path
-    // is tracked as a #609 follow-up.
+    // MonitoringRoleArn references a same-stack IAM role. cdkd's fast SDK path
+    // issues CreateDBCluster before IAM finishes propagating that just-created
+    // role for the RDS monitoring service ("IAM role ARN value is invalid or
+    // does not include the required permissions for: ENHANCED_MONITORING").
+    // Issue #794 makes the deploy engine retry CreateDBCluster on that signal
+    // (the new retryable-errors pattern), so the cluster create recovers once
+    // IAM propagates — this fixture is the real-AWS proof of that fix.
     //
     // NOTE: PubliclyAccessible is intentionally NOT set here. It is a valid
     // CreateDBCluster field ONLY for Multi-AZ DB clusters (provisioned,
@@ -152,6 +159,8 @@ export class RdsAuroraStack extends cdk.Stack {
       manageMasterUserPassword: true,
       masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
       enableIamDatabaseAuthentication: true,
+      monitoringInterval: 60,
+      monitoringRoleArn: monitoringRole.roleArn,
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
       vpcSecurityGroupIds: [securityGroup.securityGroupId],
       serverlessV2ScalingConfiguration: {
