@@ -1,3 +1,10 @@
+## [0.219.2](https://github.com/go-to-k/cdkd/compare/v0.219.1...v0.219.2) (2026-06-10)
+
+
+### Bug Fixes
+
+* **provisioning:** ASG --remove-protection clears EC2 termination protection on launched instances ([#796](https://github.com/go-to-k/cdkd/issues/796)) ([#799](https://github.com/go-to-k/cdkd/issues/799)) ([7f71922](https://github.com/go-to-k/cdkd/commit/7f719220ad589aa9dac9e84dddbf987f597b9019))
+
 ## [0.219.1](https://github.com/go-to-k/cdkd/compare/v0.219.0...v0.219.1) (2026-06-10)
 
 
