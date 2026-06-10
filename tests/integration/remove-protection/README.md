@@ -26,7 +26,7 @@ of scope — see "Why no RDS" below):
 | `AWS::Cognito::UserPool` | `DeletionProtection: 'ACTIVE'` (BREAKING — was silently bypassed pre-#205) |
 | `AWS::EC2::Instance` | `DisableApiTermination: true` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` (ALB) | `LoadBalancerAttributes.deletion_protection.enabled = true` |
-| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection: 'prevent-all-deletion'` (new SDK provider — never deployed via cdkd before #205) |
+| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection: 'prevent-all-deletion'` (new SDK provider — never deployed via cdkd before #205). Launches one `t3.nano` whose launch template sets `DisableApiTermination: true`, so the bypass must also flip EC2-level termination protection off on the launched instance before `ForceDelete` (regression target for #796). verify.sh captures the instance id post-deploy and asserts it terminates post-destroy. |
 
 Stack-level `terminationProtection` is intentionally **not** exercised
 here — its bypass path is unit-tested end-to-end in

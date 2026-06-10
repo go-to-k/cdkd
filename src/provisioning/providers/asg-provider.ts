@@ -25,9 +25,11 @@ import {
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
 } from '@aws-sdk/client-auto-scaling';
+import { EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { disableInstanceApiTermination } from '../ec2-termination-protection.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
@@ -88,6 +90,7 @@ import type {
  */
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
+  private ec2Client?: EC2Client;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ASGProvider');
 
@@ -155,6 +158,13 @@ export class ASGProvider implements ResourceProvider {
       );
     }
     return this.asgClient;
+  }
+
+  private getEc2Client(): EC2Client {
+    if (!this.ec2Client) {
+      this.ec2Client = new EC2Client(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.ec2Client;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -507,6 +517,15 @@ export class ASGProvider implements ResourceProvider {
           `Could not disable DeletionProtection on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
         );
       }
+
+      // ASG-level DeletionProtection + ForceDelete only governs the GROUP and
+      // its scale-in protection. If the group's launch template sets
+      // EC2-level termination protection (DisableApiTermination), the
+      // ForceDelete below still cannot terminate those instances and they
+      // ORPHAN after the group is gone (issue #796). Enumerate the group's
+      // current instances and flip each one's DisableApiTermination off first,
+      // mirroring the EC2Provider `--remove-protection` path.
+      await this.removeInstanceTerminationProtection(physicalId, logicalId);
     }
 
     try {
@@ -856,6 +875,44 @@ export class ASGProvider implements ResourceProvider {
       })
     );
     return response.AutoScalingGroups?.[0];
+  }
+
+  /**
+   * Flip EC2-level termination protection (`DisableApiTermination`) off on
+   * every instance currently launched by the group, so the subsequent
+   * `DeleteAutoScalingGroup(ForceDelete: true)` can actually terminate them
+   * instead of orphaning the protected instances (issue #796). Best-effort:
+   * a Describe failure or a per-instance flip failure is logged at debug and
+   * does not block the delete (the modify WRITE lags the terminate READ, so
+   * the shared helper swallows propagation errors the same way the EC2 path
+   * does — the orphan, if any, surfaces as a leftover instance the caller
+   * can clean up rather than a hard delete failure).
+   */
+  private async removeInstanceTerminationProtection(
+    groupName: string,
+    logicalId: string
+  ): Promise<void> {
+    let instanceIds: string[];
+    try {
+      const group = await this.describeGroup(groupName);
+      instanceIds = (group?.Instances ?? [])
+        .map((i) => i.InstanceId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    } catch (describeError) {
+      this.logger.debug(
+        `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeError instanceof Error ? describeError.message : String(describeError)}`
+      );
+      return;
+    }
+
+    if (instanceIds.length === 0) return;
+
+    this.logger.debug(
+      `Disabling EC2 termination protection on ${instanceIds.length} instance(s) of AutoScalingGroup ${logicalId} before force delete`
+    );
+    for (const instanceId of instanceIds) {
+      await disableInstanceApiTermination(this.getEc2Client(), instanceId, this.logger);
+    }
   }
 
   private async fetchArn(groupName: string): Promise<string | undefined> {
