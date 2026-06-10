@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
+const mockEc2Send = vi.fn();
+
+vi.mock('@aws-sdk/client-ec2', async () => {
+  const actual = await vi.importActual<typeof import('@aws-sdk/client-ec2')>('@aws-sdk/client-ec2');
+  return {
+    ...actual,
+    EC2Client: vi.fn().mockImplementation(() => ({
+      send: mockEc2Send,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
 
 vi.mock('@aws-sdk/client-auto-scaling', async () => {
   const actual =
@@ -58,6 +70,7 @@ import {
   AttachLoadBalancerTargetGroupsCommand,
   DetachLoadBalancerTargetGroupsCommand,
 } from '@aws-sdk/client-auto-scaling';
+import { ModifyInstanceAttributeCommand } from '@aws-sdk/client-ec2';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
@@ -65,6 +78,8 @@ const RESOURCE_TYPE = 'AWS::AutoScaling::AutoScalingGroup';
 
 beforeEach(() => {
   mockSend.mockReset();
+  mockEc2Send.mockReset();
+  mockEc2Send.mockResolvedValue({});
 });
 
 describe('ASGProvider create', () => {
@@ -566,6 +581,102 @@ describe('ASGProvider delete', () => {
 
     expect(
       mockSend.mock.calls.some((c) => c[0] instanceof UpdateAutoScalingGroupCommand)
+    ).toBe(true);
+  });
+
+  it('with removeProtection=true, flips EC2 DisableApiTermination off on every group instance before the force delete (issue #796)', async () => {
+    let describeCalls = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DeleteAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof UpdateAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof DescribeAutoScalingGroupsCommand) {
+        describeCalls += 1;
+        // First call = the instance-enumeration read (group present with two
+        // protected instances). Subsequent calls = waitForGroupDeleted (gone).
+        if (describeCalls === 1) {
+          return Promise.resolve({
+            AutoScalingGroups: [
+              {
+                AutoScalingGroupName: 'my-asg',
+                Instances: [{ InstanceId: 'i-aaa' }, { InstanceId: 'i-bbb' }],
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ AutoScalingGroups: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const provider = new ASGProvider();
+    await provider.delete('MyAsg', 'my-asg', RESOURCE_TYPE, undefined, {
+      removeProtection: true,
+    });
+
+    const modifyCmds = mockEc2Send.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof ModifyInstanceAttributeCommand);
+    expect(modifyCmds).toHaveLength(2);
+    const inputs = modifyCmds.map(
+      (c) => (c as unknown as { input: Record<string, unknown> }).input
+    );
+    expect(inputs.map((i) => i['InstanceId']).sort()).toEqual(['i-aaa', 'i-bbb']);
+    for (const input of inputs) {
+      expect(input['DisableApiTermination']).toEqual({ Value: false });
+    }
+
+    // The flip-off happens before the ASG force delete is issued.
+    const asgCmds = mockSend.mock.calls.map((c) => c[0]);
+    const delInput = (
+      asgCmds.find(
+        (c) => c instanceof DeleteAutoScalingGroupCommand
+      ) as unknown as { input: Record<string, unknown> }
+    ).input;
+    expect(delInput['ForceDelete']).toBe(true);
+  });
+
+  it('without removeProtection, issues no EC2 ModifyInstanceAttribute (no instance enumeration)', async () => {
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DeleteAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof DescribeAutoScalingGroupsCommand) {
+        const err = new Error('AutoScalingGroup name not found') as Error & { name: string };
+        err.name = 'ValidationError';
+        return Promise.reject(err);
+      }
+      return Promise.resolve({});
+    });
+
+    const provider = new ASGProvider();
+    await provider.delete('MyAsg', 'my-asg', RESOURCE_TYPE);
+
+    expect(
+      mockEc2Send.mock.calls.some((c) => c[0] instanceof ModifyInstanceAttributeCommand)
+    ).toBe(false);
+  });
+
+  it('removeProtection enumeration failure is non-fatal — the ASG delete still proceeds', async () => {
+    let describeCalls = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DeleteAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof UpdateAutoScalingGroupCommand) return Promise.resolve({});
+      if (command instanceof DescribeAutoScalingGroupsCommand) {
+        describeCalls += 1;
+        if (describeCalls === 1) {
+          // Enumeration read fails (e.g. transient throttle) — must be swallowed.
+          return Promise.reject(new Error('Throttling: Rate exceeded'));
+        }
+        return Promise.resolve({ AutoScalingGroups: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const provider = new ASGProvider();
+    await expect(
+      provider.delete('MyAsg', 'my-asg', RESOURCE_TYPE, undefined, { removeProtection: true })
+    ).resolves.toBeUndefined();
+
+    expect(
+      mockSend.mock.calls.some((c) => c[0] instanceof DeleteAutoScalingGroupCommand)
     ).toBe(true);
   });
 

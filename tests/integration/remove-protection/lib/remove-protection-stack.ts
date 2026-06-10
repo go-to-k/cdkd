@@ -28,9 +28,12 @@ import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
  *                                deletion_protection.enabled=true
  *  - AWS::AutoScaling::AutoScalingGroup
  *                              — DeletionProtection: 'prevent-all-deletion'
- *                                (DesiredCapacity: 0 — no instances, so
- *                                ForceDelete=true on the bypass path
- *                                does not need to terminate instances.)
+ *                                (DesiredCapacity: 1, launch template sets
+ *                                DisableApiTermination: true — so the bypass
+ *                                path must flip EC2-level termination
+ *                                protection off on the launched instance
+ *                                before ForceDelete=true can terminate it.
+ *                                Regression target for issue #796.)
  *
  * The L2 AutoScalingGroup synthesizes a launch-config-attached
  * AWS::IAM::InstanceProfile under the hood (covers that orphan
@@ -135,12 +138,16 @@ export class RemoveProtectionStack extends cdk.Stack {
 
     // ── AWS::AutoScaling::AutoScalingGroup with DeletionProtection ───
     // L2 AutoScalingGroup in aws-cdk-lib v2.169 does NOT yet expose
-    // the `DeletionProtection` property — set via L1
-    // addPropertyOverride. DesiredCapacity: 0 keeps the group empty
-    // so ForceDelete=true on the bypass path has nothing to terminate.
+    // the `DeletionProtection` property — set via L1 addPropertyOverride.
     //
-    // The L2 requires a UserData; provide an empty one. Health check
-    // type=EC2 is the default; we leave it unset.
+    // The group launches ONE instance (DesiredCapacity: 1) whose launch
+    // template sets `DisableApiTermination: true` (issue #796). ASG-level
+    // DeletionProtection + ForceDelete only governs the group + its
+    // scale-in protection; the EC2-level termination protection on the
+    // launched instance would otherwise survive `ForceDelete=true` and
+    // ORPHAN after the group is gone. `--remove-protection` MUST enumerate
+    // the group's instances and flip each one's DisableApiTermination off
+    // before the force delete — this fixture is the end-to-end proof.
     const launchTemplate = new ec2.LaunchTemplate(this, 'ProtectedAsgLt', {
       instanceType: ec2.InstanceType.of(
         ec2.InstanceClass.T3,
@@ -148,14 +155,16 @@ export class RemoveProtectionStack extends cdk.Stack {
       ),
       machineImage: ec2.MachineImage.latestAmazonLinux2023(),
       securityGroup: sg,
+      // EC2-level termination protection on every instance the group launches.
+      disableApiTermination: true,
     });
     const asg = new autoscaling.AutoScalingGroup(this, 'ProtectedAsg', {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       launchTemplate,
-      minCapacity: 0,
+      minCapacity: 1,
       maxCapacity: 1,
-      desiredCapacity: 0,
+      desiredCapacity: 1,
     });
     const cfnAsg = asg.node.defaultChild as autoscaling.CfnAutoScalingGroup;
     cfnAsg.addPropertyOverride('DeletionProtection', 'prevent-all-deletion');

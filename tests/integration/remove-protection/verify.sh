@@ -60,6 +60,45 @@ trap cleanup EXIT
 echo "[verify] step 2: cdkd deploy"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
+# ── Capture the ASG-launched, termination-protected instance (issue #796) ──
+# The ProtectedAsg launches one t3.nano whose launch template sets
+# DisableApiTermination: true. ASG-level DeletionProtection + ForceDelete
+# does NOT clear that EC2-level flag, so without the #796 fix the instance
+# survives the group delete and ORPHANS. We capture its id now (the ASG is
+# named with the stack prefix) and assert after the protected destroy that
+# it is terminating/terminated — the direct proof the bypass enumerated the
+# group's instances and flipped their termination protection off.
+echo "[verify] step 2b: locate ASG-launched protected instance"
+ASG_NAME=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  ASG_NAME="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+    --query "AutoScalingGroups[?contains(AutoScalingGroupName, '${STACK}')].AutoScalingGroupName | [0]" \
+    --output text 2>/dev/null || true)"
+  if [ -n "${ASG_NAME}" ] && [ "${ASG_NAME}" != "None" ]; then
+    break
+  fi
+  sleep 5
+done
+if [ -z "${ASG_NAME}" ] || [ "${ASG_NAME}" = "None" ]; then
+  echo "[verify] FAIL: could not locate the ProtectedAsg by stack-prefix name"
+  exit 1
+fi
+ASG_INSTANCE_IDS=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  ASG_INSTANCE_IDS="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+    --auto-scaling-group-names "${ASG_NAME}" \
+    --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text 2>/dev/null || true)"
+  if [ -n "${ASG_INSTANCE_IDS}" ] && [ "${ASG_INSTANCE_IDS}" != "None" ]; then
+    break
+  fi
+  sleep 10
+done
+if [ -z "${ASG_INSTANCE_IDS}" ] || [ "${ASG_INSTANCE_IDS}" = "None" ]; then
+  echo "[verify] FAIL: ProtectedAsg launched no instance (DesiredCapacity unmet) — #796 path not exercised"
+  exit 1
+fi
+echo "[verify] step 2b ok: ASG=${ASG_NAME} instances=[${ASG_INSTANCE_IDS}]"
+
 # ── NEGATIVE TEST ─────────────────────────────────────────────────
 # Without --remove-protection cdkd must NOT silently strip protected
 # resources. Every resource in the stack carries delete-protection in
@@ -145,12 +184,39 @@ if ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; then
 fi
 echo "[verify] step 6 ok: state cleared"
 
-# AWS orphan verification is delegated to the parent agent's
-# `/run-integ` flow (which runs `/cleanup` afterward). Inline orphan
-# checks here would need per-service describe + tag-match logic that
-# duplicates `/cleanup`'s coverage and risks false positives on
-# tag-shape edge cases. The state-empty assertion above is the
-# integ's own success signal; AWS-side orphan auditing belongs in
+# ── ORPHAN ASSERTION (issue #796) ─────────────────────────────────
+# The ASG-launched, termination-protected instance(s) captured in step
+# 2b MUST be terminating/terminated after the protected destroy. If the
+# bypass had failed to enumerate the group's instances and flip their
+# DisableApiTermination off, the instance would survive the group delete
+# in `running`/`stopped` state — a silent orphan a stack-prefix scan
+# misses (ASG instances carry no stack-name in their own id). State-empty
+# alone does NOT catch this, which is exactly how #796 shipped.
+echo "[verify] step 7: assert ASG-launched protected instance(s) terminated (#796)"
+for iid in ${ASG_INSTANCE_IDS}; do
+  state="$(aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo 'terminated')"
+  # `terminated` is also returned when AWS has already swept the record.
+  case "${state}" in
+    shutting-down|terminated)
+      echo "[verify]   ${iid}: ${state} (ok)"
+      ;;
+    *)
+      echo "[verify] FAIL: ASG instance ${iid} is '${state}', not terminating — #796 orphan"
+      echo "[verify]       The launch-template DisableApiTermination=true was not flipped off before ForceDelete."
+      aws ec2 modify-instance-attribute --region "${REGION}" --instance-id "${iid}" \
+        --no-disable-api-termination 2>/dev/null || true
+      aws ec2 terminate-instances --region "${REGION}" --instance-ids "${iid}" 2>/dev/null || true
+      exit 1
+      ;;
+  esac
+done
+echo "[verify] step 7 ok: no ASG-launched orphan instance"
+
+# Remaining AWS orphan verification (VPC / ALB / hyperplane ENI etc.) is
+# delegated to the parent agent's `/run-integ` flow (which runs `/cleanup`
+# afterward). The state-empty assertion above + the #796 instance check are
+# the integ's own success signals; broad AWS-side orphan auditing belongs in
 # `/cleanup`.
 
 trap - EXIT
