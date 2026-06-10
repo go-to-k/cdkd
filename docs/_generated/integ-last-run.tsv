@@ -1,5 +1,4 @@
 # integ-last-run ledger (update-type: one row per test). cols: test  last_run_iso  result  duration_s  flow  note
-lambda	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 vpc-nat-gateway	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 dynamodb-streams	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 composite-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
@@ -16,26 +15,19 @@ dynamodb-globaltable	2026-06-01T21:12:13Z	PASS	159	verify.sh	rc ok, orph clean
 s3-tables	2026-06-01T21:12:13Z	PASS	31	verify.sh	rc ok, orph clean
 iam-managed-policy	2026-06-01T21:12:13Z	PASS	20	standard	rc ok, orph clean
 eventbridge	2026-06-01T21:12:13Z	PASS	67	verify.sh	rc ok, orph clean
-stepfunctions	2026-06-01T21:12:13Z	PASS	31	standard	rc ok, orph clean
-kms-encryption	2026-06-01T21:12:13Z	PASS	19	standard	rc ok, orph clean
-vpc-lambda	2026-06-01T21:12:13Z	PASS	357	standard	rc ok, orph clean
 export	2026-06-01T21:12:13Z	PASS	252	verify.sh	rc ok, orph clean
 migrate-from-cfn	2026-06-01T21:12:13Z	PASS	89	standard	rc ok, orph clean
 nested-stack-deep	2026-06-01T21:12:13Z	PASS	48	verify.sh	rc ok, orph clean
 apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
-sns-sqs-event	2026-06-01T21:12:13Z	PASS	63	verify.sh	rc ok, orph clean
 multi-stack-deps	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)
-cross-stack-references	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)
 import-value-strong-ref	2026-06-02T02:13:34Z	PASS		verify.sh	F3 fixed: version-agnostic schema assertion (>= 4); deploy+strong-ref+destroy clean
 ecs-fargate	2026-06-02T02:28:23Z	PASS		verify.sh	F5 fixed: fixture now sets useForServiceConnect:true so ServiceConnectDefaults is synthesized; ns ARN round-trips via CreateCluster; 18 created/18 deleted 0 errors
-custom-resource-provider	2026-06-02T05:14:51Z	PASS	53	standard	F2 fixed: CR-internal retry+exec-env recycle on transient IAM-authz FAILED. deploy 37s (attempt1 403 -> recycle -> attempt2 ok), destroy 17 deleted 0 errors, 0 orphans
 vpc-lambda-cr-race	2026-06-02T07:34:17Z	PASS		standard	coverage batch: VPC+Lambda+CR; withRetry handled role-assume propagation, deploy ok, 9 deleted 0 errors 0 orphans
 event-driven	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 19 deleted 0 errors 0 orphans
 deletion-policy-retain	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: all retain checks passed, AWS clean
 intrinsic-functions	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 3 deleted 0 errors 0 orphans
 acm-certificate	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: 1 deleted 0 errors 0 orphans
 sqs-cloudwatch	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 7 deleted 1 retained(by-design) 0 errors
-route53	2026-06-02T09:40:41Z	PASS		verify.sh	FIXED: destroy now waits through *_HOSTED_ZONE_LOCKED transients (PR this session); deploy enables accel-recovery, destroy disables+waits+deletes clean, 6 deleted 0 errors
 basic	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (S3+SSM Document), 2 deleted 0 errors
 conditions	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (Fn::If gated S3 buckets), 2 deleted 0 errors
 parameters	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (CFn Parameters -> S3), 1 deleted 0 errors
@@ -124,3 +116,11 @@ rds-aurora	2026-06-10T01:31:45Z	PASS	3000	verify.sh	#794 verify: MonitoringRoleA
 bench-cdk-sample	2026-06-10T01:42:03Z	PASS	480	standard	regression net post #609 batch (replacement-rules.ts shared change): 37 deleted/2 RETAIN logGroups/0 err; clean
 multi-resource	2026-06-10T03:34:10Z	PASS		standard	regression check post-#796; 17 created/17 deleted 0 errors 0 orphans
 remove-protection	2026-06-10T05:14:24Z	PASS		verify.sh	#798 re-verify delegated ASG target; instance terminated 0 orphans
+lambda	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 9 deleted 0 errors
+stepfunctions	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 5 deleted 0 errors (SM DELETING self-resolved)
+route53	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 6 deleted 0 errors
+custom-resource-provider	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 17 deleted 0 errors
+cross-stack-references	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 2 stacks 0 errors
+kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 errors
+sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
+vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
