@@ -297,6 +297,32 @@ export class CloudControlProvider implements ResourceProvider {
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );
 
+    // `--remove-protection` for an `AWS::AutoScaling::AutoScalingGroup` routed
+    // through Cloud Control (its template set a silent-drop property such as
+    // `AvailabilityZoneIds`, so the #614 routing rule sent the whole resource
+    // via Cloud Control instead of the SDK ASGProvider). Cloud Control's
+    // DeleteResource cannot ForceDelete the group, clear its
+    // `DeletionProtection`, or terminate the EC2-level termination-protected
+    // instances the group launched — so a bare CC delete of a protected ASG
+    // fails (or leaves the group + instances behind). Delegate to the SDK
+    // ASGProvider, which owns the full protected force-delete sequence (group
+    // `DeletionProtection` flip -> per-instance `DisableApiTermination` flip ->
+    // `DeleteAutoScalingGroup(ForceDelete: true)` -> wait-gone). This keeps a
+    // single source of truth for protected-ASG deletion shared across both
+    // routing paths (issue #798; the SDK path is issue #796). `context` carries
+    // `expectedRegion`, so the delegated provider's region check is preserved.
+    if (
+      context?.removeProtection === true &&
+      resourceType === 'AWS::AutoScaling::AutoScalingGroup'
+    ) {
+      this.logger.debug(
+        `Delegating protected AutoScalingGroup ${logicalId} delete to the SDK ASGProvider (Cloud Control cannot force-delete a protected ASG)`
+      );
+      const { ASGProvider } = await import('./providers/asg-provider.js');
+      await new ASGProvider().delete(logicalId, physicalId, resourceType, _properties, context);
+      return;
+    }
+
     // `--remove-protection` for an `AWS::EC2::Instance` routed through Cloud
     // Control (e.g. its template tripped the #614 silent-drop routing): Cloud
     // Control's DeleteResource has no notion of `DisableApiTermination`, so it

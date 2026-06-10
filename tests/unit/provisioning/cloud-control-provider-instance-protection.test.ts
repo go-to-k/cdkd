@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockCloudControlSend = vi.fn();
 const mockEc2Send = vi.fn();
+// #798: a protected ASG routed via Cloud Control delegates to the SDK
+// ASGProvider. Mock it so we can assert the delegation without a real
+// AutoScaling client.
+const mockAsgDelete = vi.fn();
+vi.mock('../../../src/provisioning/providers/asg-provider.js', () => ({
+  ASGProvider: vi.fn().mockImplementation(() => ({ delete: mockAsgDelete })),
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -126,6 +133,67 @@ describe('CloudControlProvider delete: --remove-protection on a CC-API-routed EC
     ).rejects.toBeInstanceOf(ProvisioningError);
 
     expect(ec2CallCount('ModifyInstanceAttributeCommand')).toBe(0);
+    expect(ccCallCount('DeleteResourceCommand')).toBe(1);
+  });
+});
+
+describe('CloudControlProvider delete: --remove-protection on a CC-API-routed AutoScalingGroup (#798)', () => {
+  let provider: CloudControlProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockEc2Send.mockResolvedValue({});
+    mockAsgDelete.mockResolvedValue(undefined);
+    provider = new CloudControlProvider();
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = vi.fn(() =>
+      Promise.resolve()
+    );
+  });
+
+  it('delegates a protected ASG delete to the SDK ASGProvider and issues NO CC DeleteResource', async () => {
+    wireCloudControl(0); // would SUCCEED if a CC delete were issued — it must NOT be
+
+    await provider.delete(
+      'MyAsg',
+      'my-asg',
+      'AWS::AutoScaling::AutoScalingGroup',
+      { AvailabilityZoneIds: ['use1-az1'] },
+      { removeProtection: true, expectedRegion: 'us-east-1' }
+    );
+
+    // Delegated to the SDK provider with the SAME args (context preserved so
+    // the delegated region check still works).
+    expect(mockAsgDelete).toHaveBeenCalledTimes(1);
+    expect(mockAsgDelete).toHaveBeenCalledWith(
+      'MyAsg',
+      'my-asg',
+      'AWS::AutoScaling::AutoScalingGroup',
+      { AvailabilityZoneIds: ['use1-az1'] },
+      { removeProtection: true, expectedRegion: 'us-east-1' }
+    );
+    // Cloud Control's DeleteResource is bypassed entirely (it cannot ForceDelete).
+    expect(ccCallCount('DeleteResourceCommand')).toBe(0);
+  });
+
+  it('a protected-ASG delegation failure propagates (the SDK provider owns the error)', async () => {
+    mockAsgDelete.mockRejectedValueOnce(new ProvisioningError('boom', 'AWS::AutoScaling::AutoScalingGroup', 'MyAsg', 'my-asg'));
+
+    await expect(
+      provider.delete('MyAsg', 'my-asg', 'AWS::AutoScaling::AutoScalingGroup', undefined, {
+        removeProtection: true,
+      })
+    ).rejects.toBeInstanceOf(ProvisioningError);
+    expect(ccCallCount('DeleteResourceCommand')).toBe(0);
+  });
+
+  it('WITHOUT --remove-protection an ASG deletes via the normal CC DeleteResource path (no delegation)', async () => {
+    wireCloudControl(0);
+
+    await provider.delete('MyAsg', 'my-asg', 'AWS::AutoScaling::AutoScalingGroup', undefined, {
+      removeProtection: false,
+    });
+
+    expect(mockAsgDelete).not.toHaveBeenCalled();
     expect(ccCallCount('DeleteResourceCommand')).toBe(1);
   });
 });
