@@ -1,3 +1,10 @@
+## [0.219.3](https://github.com/go-to-k/cdkd/compare/v0.219.2...v0.219.3) (2026-06-10)
+
+
+### Bug Fixes
+
+* **provisioning:** delegate protected ASG delete from Cloud Control to the SDK ASGProvider ([#798](https://github.com/go-to-k/cdkd/issues/798)) ([#800](https://github.com/go-to-k/cdkd/issues/800)) ([d3a8047](https://github.com/go-to-k/cdkd/commit/d3a804769dbd67e6e6c0f5345b2daacbca36216c))
+
 ## [0.219.2](https://github.com/go-to-k/cdkd/compare/v0.219.1...v0.219.2) (2026-06-10)
 
 
