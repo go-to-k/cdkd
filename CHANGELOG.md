@@ -1,3 +1,10 @@
+## [0.219.1](https://github.com/go-to-k/cdkd/compare/v0.219.0...v0.219.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* **deployment:** retry RDS create on Enhanced-Monitoring IAM-role propagation race ([#794](https://github.com/go-to-k/cdkd/issues/794)) ([#797](https://github.com/go-to-k/cdkd/issues/797)) ([6d649b6](https://github.com/go-to-k/cdkd/commit/6d649b6ad259e9fc9effc54d7ad0f221d1e3a083))
+
 # [0.219.0](https://github.com/go-to-k/cdkd/compare/v0.218.0...v0.219.0) (2026-06-09)
 
 
