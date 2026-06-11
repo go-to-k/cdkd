@@ -186,4 +186,66 @@ describe('calculateResourceDrift', () => {
       ]);
     });
   });
+
+  describe('order normalization (tags + id arrays)', () => {
+    it('reports NO drift when only tag order differs between baseline and AWS', () => {
+      // AWS does not guarantee tag ordering across reads; a reorder must
+      // not surface as phantom drift.
+      const state = {
+        Tags: [
+          { Key: 'env', Value: 'prod' },
+          { Key: 'team', Value: 'core' },
+        ],
+      };
+      const aws = {
+        Tags: [
+          { Key: 'team', Value: 'core' },
+          { Key: 'env', Value: 'prod' },
+        ],
+      };
+      expect(calculateResourceDrift(state, aws)).toEqual([]);
+    });
+
+    it('reports NO drift when only SubnetIds order differs', () => {
+      const state = { SubnetIds: ['subnet-0aaa111bbb', 'subnet-0ccc222ddd'] };
+      const aws = { SubnetIds: ['subnet-0ccc222ddd', 'subnet-0aaa111bbb'] };
+      expect(calculateResourceDrift(state, aws)).toEqual([]);
+    });
+
+    it('reports NO drift when an id array order differs nested under VpcConfig', () => {
+      const state = {
+        VpcConfig: { SubnetIds: ['subnet-0aaa111bbb', 'subnet-0ccc222ddd'] },
+      };
+      const aws = {
+        VpcConfig: { SubnetIds: ['subnet-0ccc222ddd', 'subnet-0aaa111bbb'] },
+      };
+      expect(calculateResourceDrift(state, aws)).toEqual([]);
+    });
+
+    it('STILL reports drift when a tag VALUE actually changes (order norm must not hide real drift)', () => {
+      const state = {
+        Tags: [
+          { Key: 'env', Value: 'prod' },
+          { Key: 'team', Value: 'core' },
+        ],
+      };
+      const aws = {
+        Tags: [
+          { Key: 'team', Value: 'core' },
+          { Key: 'env', Value: 'staging' },
+        ],
+      };
+      const drifts = calculateResourceDrift(state, aws);
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]?.path).toBe('Tags');
+    });
+
+    it('STILL reports drift when a subnet id actually changes (order norm must not hide real drift)', () => {
+      const state = { SubnetIds: ['subnet-0aaa111bbb', 'subnet-0ccc222ddd'] };
+      const aws = { SubnetIds: ['subnet-0ccc222ddd', 'subnet-0eee333fff'] };
+      const drifts = calculateResourceDrift(state, aws);
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]?.path).toBe('SubnetIds');
+    });
+  });
 });
