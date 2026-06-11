@@ -1,3 +1,10 @@
+## [0.219.4](https://github.com/go-to-k/cdkd/compare/v0.219.3...v0.219.4) (2026-06-11)
+
+
+### Bug Fixes
+
+* **drift:** canonicalize tag lists and resource-id/ARN arrays before drift comparison ([#802](https://github.com/go-to-k/cdkd/issues/802)) ([c396268](https://github.com/go-to-k/cdkd/commit/c3962680bd1cc196d889793249c850d74c6bb2ad))
+
 ## [0.219.3](https://github.com/go-to-k/cdkd/compare/v0.219.2...v0.219.3) (2026-06-10)
 
 
