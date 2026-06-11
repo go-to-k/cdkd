@@ -24,6 +24,8 @@
  *     output).
  */
 
+import { canonicalizeIdArraysDeep, canonicalizeTagListsDeep } from './drift-normalize.js';
+
 /**
  * A single property-level drift between state and AWS-current.
  *
@@ -77,6 +79,19 @@ export function calculateResourceDrift(
   const drifts: PropertyDrift[] = [];
   const ignore = options?.ignorePaths ?? [];
   const union = options?.unionWalkObjects ?? false;
+  // Canonicalize tag lists and AWS resource-id/ARN arrays on BOTH sides before
+  // any comparison. AWS does not guarantee element ordering across reads, so a
+  // reorder between the deploy-time observedProperties snapshot and a later
+  // drift read would otherwise surface as phantom drift (the deepEqual walk
+  // below compares arrays positionally). See drift-normalize.ts.
+  stateProperties = canonicalizeIdArraysDeep(canonicalizeTagListsDeep(stateProperties)) as Record<
+    string,
+    unknown
+  >;
+  awsProperties = canonicalizeIdArraysDeep(canonicalizeTagListsDeep(awsProperties)) as Record<
+    string,
+    unknown
+  >;
   // Top-level walk is intentionally state-keys-only even with union mode:
   // the top-level shape is fully described by what `provider.create()`
   // takes, and AWS surfaces a long tail of read-only top-level fields
