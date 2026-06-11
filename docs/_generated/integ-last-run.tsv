@@ -6,7 +6,6 @@ nested-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 cc-api-fallback	2026-06-01T21:12:13Z	PASS		verify.sh	rc ok, orph clean
 cc-api-fallback-transitions	2026-06-01T21:12:13Z	PASS	122	verify.sh	rc ok, orph clean
 drift-revert	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
-drift-revert-vpc	2026-06-01T21:12:13Z	PASS	237	verify.sh	rc ok, orph clean
 recreate-via-sdk-provider	2026-06-01T21:12:13Z	PASS	79	verify.sh	rc ok, orph clean
 recreate-via-cc-api	2026-06-01T21:12:13Z	PASS	97	verify.sh	rc ok, orph clean
 recreate-mixed-direction	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
@@ -124,3 +123,4 @@ cross-stack-references	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 2 st
 kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 errors
 sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
 vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
+drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 21 deleted 0 err 0 orphan
