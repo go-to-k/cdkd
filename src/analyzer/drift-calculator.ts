@@ -84,9 +84,10 @@ export function calculateResourceDrift(
   // reorder between the deploy-time observedProperties snapshot and a later
   // drift read would otherwise surface as phantom drift (the deepEqual walk
   // below compares arrays positionally). See drift-normalize.ts.
-  stateProperties = canonicalizeIdArraysDeep(
-    canonicalizeTagListsDeep(stateProperties)
-  ) as Record<string, unknown>;
+  stateProperties = canonicalizeIdArraysDeep(canonicalizeTagListsDeep(stateProperties)) as Record<
+    string,
+    unknown
+  >;
   awsProperties = canonicalizeIdArraysDeep(canonicalizeTagListsDeep(awsProperties)) as Record<
     string,
     unknown
