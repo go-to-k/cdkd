@@ -87,6 +87,14 @@ describe('isRetryableTransientError', () => {
         'IAM role ARN value is invalid or does not include the required permissions for: ENHANCED_MONITORING',
         'RDS Enhanced Monitoring role IAM propagation',
       ],
+      // ECS CapacityProvider same-stack infrastructure-role IAM-propagation
+      // race (#805): Cloud Control CreateResource issued before the
+      // just-created infrastructure role propagates for ECS to assume; the
+      // handler surfaces it as a terminal InvalidRequest.
+      [
+        'Invalid request provided: CreateCapacityProvider error: Caught ServiceAccessDeniedException for ECSInfrastructureRole[arn:aws:iam::123456789012:role/RunnerStack-InfraRole] (Service: Ecs, Status Code: 400, Request ID: 00000000-0000-0000-0000-000000000000) (SDK Attempt Count: 1)',
+        'ECS CapacityProvider infrastructure-role IAM propagation',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });
@@ -99,6 +107,15 @@ describe('isRetryableTransientError', () => {
     it('does not retry on a non-transient EventSourceMapping not-found error', () => {
       // Guard against over-broadening: NotFound must NOT become retryable.
       const message = 'Failed to delete event source mapping abc-123: ResourceNotFoundException';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
+
+    it('does not retry on a plain AccessDeniedException without the CC handler wording', () => {
+      // Guard against over-broadening: a permanent permission error that lacks
+      // the Cloud Control handler's "Caught ServiceAccessDeniedException"
+      // anchor must NOT become retryable.
+      const message =
+        'AccessDeniedException: User: arn:aws:iam::123456789012:user/dev is missing permission ecs:CreateCapacityProvider';
       expect(isRetryableTransientError(new Error(message), message)).toBe(false);
     });
 
