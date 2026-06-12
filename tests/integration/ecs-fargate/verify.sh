@@ -5,7 +5,9 @@
 # Asserts that an ECS Fargate TaskDefinition whose template sets
 # `EnableFaultInjection: true` has the flag reach AWS after `cdkd deploy`
 # — the property was a silent-drop before the #609 backfill. Also
-# asserts the destroy path cleans up.
+# asserts `Volumes[].ConfiguredAtLaunch` reaches the registered task
+# definition and that the paired Service carries the managed EBS volume
+# configuration (issue #806), and that the destroy path cleans up.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -95,6 +97,32 @@ if [ "${ACTUAL}" != "true" ]; then
 fi
 echo "    OK: taskDefinition.enableFaultInjection == true on AWS (silent-drop CLOSED by #609)"
 
+# --- Assertion: Volumes[].ConfiguredAtLaunch reached AWS (issue #806) --
+# The fixture's ServiceManagedVolume synthesizes
+# `Volumes: [{ Name: 'ebs-data', ConfiguredAtLaunch: true }]` on the task
+# definition. Before the #806 fix, convertVolumes silently dropped
+# ConfiguredAtLaunch, so the registered revision had no configuredAtLaunch
+# volume and the paired Service create failed with "Volume configuration
+# provided but no matching configuredAtLaunch volume found in task
+# definition". jq note: booleans must be probed via has() — `.X // "null"`
+# maps an explicit `false` to "null" (the // operator treats false as
+# absent).
+TD_VOLUMES=$(aws ecs describe-task-definition \
+  --task-definition "${TD_ARN}" --region "${REGION}" \
+  --query 'taskDefinition.volumes' --output json 2>/dev/null)
+
+CONFIGURED_AT_LAUNCH=$(echo "${TD_VOLUMES}" | jq -r \
+  '[.[]? | select(.name == "ebs-data")
+    | if has("configuredAtLaunch") then .configuredAtLaunch | tostring else "null" end]
+   | first // "missing"')
+
+if [ "${CONFIGURED_AT_LAUNCH}" != "true" ]; then
+  echo "FAIL: task-definition volume 'ebs-data' configuredAtLaunch is '${CONFIGURED_AT_LAUNCH}', expected 'true' (#806 silent-drop NOT closed)" >&2
+  echo "${TD_VOLUMES}" | jq .
+  exit 1
+fi
+echo "    OK: taskDefinition.volumes['ebs-data'].configuredAtLaunch == true on AWS (#806 silent-drop CLOSED)"
+
 # --- Assertion: ScalableTarget reached AWS ----------------------------
 # The fixture's `service.autoScaleTaskCount({...})` synthesizes an
 # `AWS::ApplicationAutoScaling::ScalableTarget` whose `ResourceId` is
@@ -126,6 +154,30 @@ if [ "${SCALABLE_TARGET_RID}" != "${RESOURCE_ID}" ]; then
   exit 1
 fi
 echo "    OK: ScalableTarget registered for ${RESOURCE_ID} (Fn::GetAtt(Service, 'Name') round-trip CLOSED)"
+
+# --- Assertion: Service carries the managed EBS volume config (#806) ---
+# `service.addVolume(ebsVolume)` synthesizes
+# `AWS::ECS::Service.VolumeConfigurations` referencing the
+# ConfiguredAtLaunch volume above. DescribeServices surfaces it on the
+# deployment (deployments[].volumeConfigurations[].name) — seeing the
+# 'ebs-data' entry proves the Service create accepted the pairing that
+# issue #806 broke. The Service itself routes via Cloud Control (the
+# template sets ServiceConnectConfiguration + VolumeConfigurations, both
+# cdkd silent-drops on the SDK Service provider, which flips the resource
+# to the CC-API path per the #614 routing rule), but the matching
+# configuredAtLaunch volume MUST come from the SDK-registered task
+# definition — exactly the cross-resource wiring the fix restores.
+SERVICE_VOLUME_NAME=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --output json 2>/dev/null | jq -r \
+  '[.services[0].deployments[]?.volumeConfigurations[]? | .name] | first // "missing"')
+
+if [ "${SERVICE_VOLUME_NAME}" != "ebs-data" ]; then
+  echo "FAIL: service deployment volumeConfigurations name is '${SERVICE_VOLUME_NAME}', expected 'ebs-data' (#806 Service/TaskDefinition volume pairing BROKEN)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" --output json | jq '.services[0].deployments'
+  exit 1
+fi
+echo "    OK: service deployment carries volumeConfigurations['ebs-data'] (#806 pairing VERIFIED)"
 
 # --- Assertion: Cluster ServiceConnectDefaults reached AWS ------------
 # The fixture's `new ecs.Cluster({ defaultCloudMapNamespace: { ... } })`
@@ -166,4 +218,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-fargate test passed (EnableFaultInjection backfill closed + clean destroy)"
+echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + clean destroy)"

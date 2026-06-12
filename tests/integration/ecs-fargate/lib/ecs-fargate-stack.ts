@@ -91,6 +91,30 @@ export class EcsFargateStack extends cdk.Stack {
       ],
     });
 
+    // Exercise the #806 fix: Volumes[].ConfiguredAtLaunch must reach
+    // RegisterTaskDefinition, otherwise a same-stack Service carrying
+    // VolumeConfigurations (managed EBS volume) fails to create with
+    // "Volume configuration provided but no matching configuredAtLaunch
+    // volume found in task definition". ServiceManagedVolume auto-creates
+    // the EBS infrastructure role (managed policy
+    // AmazonECSInfrastructureRolePolicyForVolumes). With desiredCount: 0
+    // no task ever launches, so no EBS volume is actually created — the
+    // assertion is purely on the registered task definition + service
+    // volume configuration wiring.
+    const ebsVolume = new ecs.ServiceManagedVolume(this, 'EbsVolume', {
+      name: 'ebs-data',
+      managedEBSVolume: {
+        size: cdk.Size.gibibytes(1),
+        volumeType: ec2.EbsDeviceVolumeType.GP3,
+        fileSystemType: ecs.FileSystemType.XFS,
+      },
+    });
+    ebsVolume.mountIn(container, {
+      containerPath: '/ebs-data',
+      readOnly: false,
+    });
+    taskDefinition.addVolume(ebsVolume);
+
     // Create Fargate Service with desiredCount: 0 and Service Connect
     // This tests resource creation without actually running containers
     const service = new ecs.FargateService(this, 'Service', {
@@ -117,6 +141,11 @@ export class EcsFargateStack extends cdk.Stack {
     if (cluster.defaultCloudMapNamespace) {
       service.node.addDependency(cluster.defaultCloudMapNamespace);
     }
+    // Attach the managed EBS volume configuration to the Service
+    // (synthesizes AWS::ECS::Service.VolumeConfigurations referencing the
+    // ConfiguredAtLaunch task-definition volume above — the pairing that
+    // issue #806 broke).
+    service.addVolume(ebsVolume);
 
     // Application Auto Scaling on the Fargate Service. The synthesized
     // AWS::ApplicationAutoScaling::ScalableTarget consumes
