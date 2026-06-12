@@ -598,6 +598,7 @@ Main permissions required by cdkd:
         "dynamodb:*",
         "sqs:*",
         "cloudcontrol:*",
+        "cloudformation:DescribeType",
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"
@@ -607,6 +608,17 @@ Main permissions required by cdkd:
 ```
 
 **Note**: In production, follow the principle of least privilege and grant only necessary permissions.
+
+**Note on `cloudformation:DescribeType`**: cdkd uses it to resolve each
+resource type's `writeOnlyProperties` from the CloudFormation registry so
+that Cloud Control API updates re-include write-only properties in every
+patch document (Cloud Control's read-modify-write update would otherwise
+drop them — e.g. `AWS::ECS::Service.VolumeConfigurations`). If the
+permission is missing, cdkd logs a warning and gracefully falls back to a
+minimal patch (the pre-existing behavior), so deploys still work — but
+write-only properties may be dropped on update for affected resource
+types. `cdkd export` also uses `cloudformation:DescribeType` to resolve
+primary identifiers (with a hardcoded fallback table).
 
 **2. CloudFormation PassRole permission**
 

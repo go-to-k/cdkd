@@ -22,6 +22,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
+import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { assertRegionMatch, type DeleteContext } from './region-check.js';
 import { isNonProvisionable } from './unsupported-types.js';
 import type {
@@ -211,7 +212,7 @@ export class CloudControlProvider implements ResourceProvider {
       );
 
       // Generate JSON Patch document
-      const patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);
+      let patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);
 
       if (patch.length === 0) {
         // No changes detected
@@ -220,6 +221,40 @@ export class CloudControlProvider implements ResourceProvider {
           physicalId,
           wasReplaced: false,
         };
+      }
+
+      // Issue #809: Cloud Control applies the patch read-modify-write, and
+      // the type's read handler cannot return write-only properties — so any
+      // write-only property absent from the patch document silently vanishes
+      // from the desired state on every UPDATE (e.g. AWS::ECS::Service loses
+      // VolumeConfigurations and the update hard-fails). Mirror
+      // terraform-provider-awscc: strip every write-only property from the
+      // PREVIOUS side so the patch generator naturally emits `add` ops for
+      // all write-only properties present in the desired properties. Only
+      // write-only properties are force-included — blanket-upserting ALL
+      // desired properties would risk false replacement signals on
+      // createOnlyProperties whose read-back form differs from the stored
+      // form. The DescribeType lookup is cached per type and degrades to the
+      // minimal patch (with a warning) when the API is unavailable.
+      const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
+      if (writeOnlyProperties.size > 0) {
+        const previousWithoutWriteOnly = { ...cleanPreviousProperties };
+        for (const propertyName of writeOnlyProperties) {
+          delete previousWithoutWriteOnly[propertyName];
+        }
+        patch = this.patchGenerator.generatePatch(previousWithoutWriteOnly, cleanProperties);
+        if (patch.length === 0) {
+          // The only "changes" were write-only properties REMOVED from the
+          // desired properties — Cloud Control cannot remove what its read
+          // handler never returns, so there is nothing to send.
+          this.logger.debug(
+            `Only removed write-only properties detected for ${logicalId}, skipping update`
+          );
+          return {
+            physicalId,
+            wasReplaced: false,
+          };
+        }
       }
 
       this.logger.debug(

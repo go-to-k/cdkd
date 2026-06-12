@@ -64,7 +64,7 @@ top-level features rather than table rows.
 | Conditions | ✅ | With logical operators |
 | Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state |
 | Cross-region references | ✅ (same-account) | Via `Fn::GetStackOutput` + S3 state. Cross-account `RoleArn` not yet implemented. |
-| JSON Patch updates | ✅ | RFC 6902, minimal patches |
+| JSON Patch updates | ✅ | RFC 6902, minimal patches; write-only properties re-included per registry schema (`cloudformation:DescribeType`, graceful fallback) |
 | Resource replacement detection | ✅ | 10+ resource types |
 | Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
 | DELETE idempotency | ✅ | Not-found errors treated as success |

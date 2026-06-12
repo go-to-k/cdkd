@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockCloudControlSend = vi.fn();
 const mockCloudControlConfigRegion = vi.fn();
+const mockCloudFormationSend = vi.fn();
+const mockLoggerWarn = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -11,6 +13,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
       // ResourceNotFoundException as idempotent delete success.
       config: { region: mockCloudControlConfigRegion },
     },
+    // DescribeType for write-only property resolution (issue #809).
+    cloudFormation: { send: mockCloudFormationSend },
     dynamoDB: { send: vi.fn() },
     apiGateway: { send: vi.fn() },
     cloudFront: { send: vi.fn() },
@@ -28,7 +32,9 @@ vi.mock('../../../src/utils/logger.js', () => ({
     const child = {
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      // Shared spy so tests can assert on warnings (e.g. the DescribeType
+      // fallback warning in write-only-properties.ts).
+      warn: mockLoggerWarn,
       error: vi.fn(),
       child: vi.fn(() => child),
     };
@@ -43,6 +49,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
+import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 
 describe('CloudControlProvider delete region verification', () => {
   let provider: CloudControlProvider;
@@ -263,5 +270,261 @@ describe('CloudControlProvider readCurrentState (drift detection)', () => {
     await expect(
       provider.readCurrentState('b', 'MyBucket', 'AWS::S3::Bucket')
     ).rejects.toThrow(/throttled/);
+  });
+});
+
+describe('CloudControlProvider update: write-only property re-inclusion (issue #809)', () => {
+  let provider: CloudControlProvider;
+
+  const ECS_SERVICE_SCHEMA = JSON.stringify({
+    writeOnlyProperties: [
+      '/properties/ServiceConnectConfiguration',
+      '/properties/VolumeConfigurations',
+      '/properties/ForceNewDeployment',
+    ],
+  });
+
+  const VOLUME_CONFIGURATIONS = [
+    { Name: 'data', ManagedEBSVolume: { SizeInGiB: 20, RoleArn: 'arn:aws:iam::123:role/ebs' } },
+  ];
+
+  // Wires the cloudControl mock so UpdateResource returns a token and the
+  // matching GetResourceRequestStatus reports SUCCESS.
+  function wireUpdateSuccess(): void {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({
+          ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: 'svc-1' },
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  function sentPatch(): Array<{ op: string; path: string; value?: unknown }> {
+    const call = mockCloudControlSend.mock.calls.find(
+      (c) => c[0]?.constructor?.name === 'UpdateResourceCommand'
+    );
+    expect(call).toBeDefined();
+    return JSON.parse(
+      (call![0] as { input: { PatchDocument: string } }).input.PatchDocument
+    ) as Array<{ op: string; path: string; value?: unknown }>;
+  }
+
+  const updateResourceCallCount = (): number =>
+    mockCloudControlSend.mock.calls.filter(
+      (c) => c[0]?.constructor?.name === 'UpdateResourceCommand'
+    ).length;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    provider = new CloudControlProvider();
+  });
+
+  it('re-includes unchanged write-only properties as add ops in the patch document', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({ Schema: ECS_SERVICE_SCHEMA });
+
+    await provider.update(
+      'MyService',
+      'svc-1',
+      'AWS::ECS::Service',
+      // Desired: only TaskDefinition changed; VolumeConfigurations unchanged.
+      { TaskDefinition: 'arn:task:2', VolumeConfigurations: VOLUME_CONFIGURATIONS },
+      { TaskDefinition: 'arn:task:1', VolumeConfigurations: VOLUME_CONFIGURATIONS }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'replace', path: '/TaskDefinition', value: 'arn:task:2' });
+    // The unchanged write-only property rides along as an add op — without it
+    // Cloud Control's read-modify-write update would drop it from the desired
+    // state (the read handler cannot return write-only properties).
+    expect(patch).toContainEqual({
+      op: 'add',
+      path: '/VolumeConfigurations',
+      value: VOLUME_CONFIGURATIONS,
+    });
+    expect(patch).toHaveLength(2);
+
+    // DescribeType was consulted for the resource type.
+    const describeTypeCall = mockCloudFormationSend.mock.calls[0]![0] as {
+      input: { Type: string; TypeName: string };
+    };
+    expect(describeTypeCall.input).toEqual({ Type: 'RESOURCE', TypeName: 'AWS::ECS::Service' });
+  });
+
+  it('does not duplicate a write-only property that already changed in the diff', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({ Schema: ECS_SERVICE_SCHEMA });
+
+    const newVolumes = [{ Name: 'data', ManagedEBSVolume: { SizeInGiB: 50 } }];
+    await provider.update(
+      'MyService',
+      'svc-1',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:1', VolumeConfigurations: newVolumes },
+      { TaskDefinition: 'arn:task:1', VolumeConfigurations: VOLUME_CONFIGURATIONS }
+    );
+
+    const patch = sentPatch();
+    const volumeOps = patch.filter((p) => p.path === '/VolumeConfigurations');
+    expect(volumeOps).toHaveLength(1);
+    expect(volumeOps[0]).toEqual({ op: 'add', path: '/VolumeConfigurations', value: newVolumes });
+  });
+
+  it('strips only the top-level containing property for nested write-only paths', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        writeOnlyProperties: ['/properties/Configuration/Secret'],
+      }),
+    });
+
+    const configuration = { Secret: 's3cret', Mode: 'standard' };
+    await provider.update(
+      'MyResource',
+      'res-1',
+      'AWS::Some::Type',
+      { Name: 'new', Configuration: configuration },
+      { Name: 'old', Configuration: configuration }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'replace', path: '/Name', value: 'new' });
+    // The whole containing top-level property is re-added.
+    expect(patch).toContainEqual({ op: 'add', path: '/Configuration', value: configuration });
+    expect(patch).toHaveLength(2);
+  });
+
+  it('keeps the minimal patch for types without write-only properties', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({ primaryIdentifier: ['/properties/Id'] }),
+    });
+
+    await provider.update(
+      'MyResource',
+      'res-1',
+      'AWS::Some::Type',
+      { Name: 'new', Description: 'same' },
+      { Name: 'old', Description: 'same' }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/Name', value: 'new' }]);
+  });
+
+  it('falls back to the minimal patch with a warning when DescribeType fails', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockRejectedValue(
+      Object.assign(new Error('User is not authorized to perform cloudformation:DescribeType'), {
+        name: 'AccessDeniedException',
+      })
+    );
+
+    await provider.update(
+      'MyService',
+      'svc-1',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:2', VolumeConfigurations: VOLUME_CONFIGURATIONS },
+      { TaskDefinition: 'arn:task:1', VolumeConfigurations: VOLUME_CONFIGURATIONS }
+    );
+
+    // No regression for callers without the new IAM permission: the update
+    // still goes out with the pre-#809 minimal patch.
+    expect(sentPatch()).toEqual([
+      { op: 'replace', path: '/TaskDefinition', value: 'arn:task:2' },
+    ]);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('cloudformation:DescribeType')
+    );
+  });
+
+  it('caches the DescribeType result per resource type across updates', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({ Schema: ECS_SERVICE_SCHEMA });
+
+    await provider.update(
+      'ServiceA',
+      'svc-a',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:2' },
+      { TaskDefinition: 'arn:task:1' }
+    );
+    await provider.update(
+      'ServiceB',
+      'svc-b',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:9' },
+      { TaskDefinition: 'arn:task:8' }
+    );
+
+    expect(updateResourceCallCount()).toBe(2);
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('also caches DescribeType failures (warns once, no per-update retry storm)', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockRejectedValue(new Error('Rate exceeded'));
+
+    await provider.update(
+      'ServiceA',
+      'svc-a',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:2' },
+      { TaskDefinition: 'arn:task:1' }
+    );
+    await provider.update(
+      'ServiceB',
+      'svc-b',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:9' },
+      { TaskDefinition: 'arn:task:8' }
+    );
+
+    expect(updateResourceCallCount()).toBe(2);
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it('still skips the update entirely when nothing changed (no DescribeType call)', async () => {
+    const properties = {
+      TaskDefinition: 'arn:task:1',
+      VolumeConfigurations: VOLUME_CONFIGURATIONS,
+    };
+
+    const result = await provider.update(
+      'MyService',
+      'svc-1',
+      'AWS::ECS::Service',
+      properties,
+      properties
+    );
+
+    expect(result).toEqual({ physicalId: 'svc-1', wasReplaced: false });
+    expect(mockCloudControlSend).not.toHaveBeenCalled();
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+  });
+
+  it('skips the update when the only diff is a write-only property removal', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: ECS_SERVICE_SCHEMA });
+
+    // Desired no longer carries VolumeConfigurations; nothing else changed.
+    // Cloud Control cannot remove what its read handler never returns, and a
+    // `remove` op against a path absent from the current model would fail.
+    const result = await provider.update(
+      'MyService',
+      'svc-1',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:1' },
+      { TaskDefinition: 'arn:task:1', VolumeConfigurations: VOLUME_CONFIGURATIONS }
+    );
+
+    expect(result).toEqual({ physicalId: 'svc-1', wasReplaced: false });
+    expect(updateResourceCallCount()).toBe(0);
   });
 });
