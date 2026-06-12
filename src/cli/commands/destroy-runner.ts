@@ -10,7 +10,7 @@ import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { IMPLICIT_DELETE_DEPENDENCIES } from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
-import { shouldRetainResource, type StackState } from '../../types/state.js';
+import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
 import { withResourceDeadline } from '../../deployment/resource-deadline.js';
 import { isRetryableTransientError } from '../../deployment/retryable-errors.js';
 import {
@@ -258,8 +258,16 @@ export function countProtectedResources(state: StackState): number {
  * - Switches `process.env.AWS_REGION` for the duration of the destroy when
  *   the stack's recorded region differs from `baseRegion`. Restored in the
  *   `finally` block.
+ * - Persists state incrementally during the delete loop (issue #804):
+ *   each successfully deleted resource is removed from the state object
+ *   and the trimmed state is written back to S3, mirroring deploy's
+ *   `saveStateAfterResource`. An interrupted destroy therefore leaves a
+ *   state file listing only resources that still exist, so a re-run does
+ *   not replay deletes against already-deleted resources. Persist
+ *   failures are logged and never fail the destroy.
  * - On full success, deletes the state file. On any failure, the state
- *   file is preserved so the user can retry.
+ *   file is preserved (trimmed to the remaining resources) so the user
+ *   can retry.
  */
 export async function runDestroyForStack(
   stackName: string,
@@ -417,6 +425,41 @@ export async function runDestroyForStack(
       throw new StackHasActiveImportsError(stackName, regionForState, consumers);
     }
   }
+
+  // Incremental state persistence (issue #804) — the destroy-side mirror of
+  // deploy's `saveStateAfterResource`. Successfully deleted resources are
+  // removed from this working copy as they complete, and the trimmed state
+  // is persisted to S3 after each removal (writes are serialized through
+  // `saveChain` and happen under the stack lock we already hold). An
+  // interrupted or partially-failed destroy then leaves a state file that
+  // only lists resources that still exist, so a re-run never replays a
+  // delete against an already-deleted resource — the Custom Resource case
+  // stalled 10 minutes per CR on replay before this. Retained resources
+  // (`DeletionPolicy: Retain`) are intentionally NOT removed here: their
+  // record is only dropped by the wholesale state-file delete at the end of
+  // a clean destroy, matching the pre-#804 partial-failure behavior.
+  // Persist failures are non-fatal (warn-and-continue) — the final write
+  // below (deleteState on success / preserve-write on failure) remains
+  // authoritative, and any stale snapshot is a superset of what still
+  // exists, which a re-run resolves via the idempotent "not found" path.
+  const remainingResources: Record<string, ResourceState> = { ...state.resources };
+  let saveChain: Promise<void> = Promise.resolve();
+  const persistStateAfterDelete = (logicalId: string): void => {
+    saveChain = saveChain.then(async () => {
+      try {
+        await ctx.stateBackend.saveState(stackName, regionForState, {
+          ...state,
+          resources: { ...remainingResources },
+          lastModified: Date.now(),
+        });
+        logger.debug(`State persisted after deleting ${logicalId}`);
+      } catch (error) {
+        logger.warn(
+          `Failed to persist state after deleting ${logicalId} (continuing): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    });
+  };
 
   // Live progress renderer (multi-line in-flight display at bottom of TTY).
   // Self-disables on non-TTY and when CDKD_NO_LIVE=1 is set.
@@ -627,6 +670,8 @@ export async function runDestroyForStack(
           renderer.removeTask(logicalId);
           logger.info(`  ${formatResourceLine('deleted', logicalId, resource.resourceType)}`);
           result.deletedCount++;
+          delete remainingResources[logicalId];
+          persistStateAfterDelete(logicalId);
         } catch (error) {
           renderer.removeTask(logicalId);
           const msg = error instanceof Error ? error.message : String(error);
@@ -640,6 +685,8 @@ export async function runDestroyForStack(
           ) {
             logger.debug(`  ${logicalId} already deleted, removing from state`);
             result.deletedCount++;
+            delete remainingResources[logicalId];
+            persistStateAfterDelete(logicalId);
           } else if (error instanceof ResourceTimeoutError) {
             // Surface the actionable timeout message wrapped as a
             // ProvisioningError (parity with deploy's failure path) and
@@ -665,6 +712,11 @@ export async function runDestroyForStack(
       await Promise.all(deletePromises);
     }
 
+    // Flush pending incremental persists BEFORE the final state decision so
+    // a chained write can never land after deleteState and re-create the
+    // state file. The chain never rejects (each link catches internally).
+    await saveChain;
+
     if (result.errorCount === 0) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
@@ -676,6 +728,24 @@ export async function runDestroyForStack(
         await ctx.exportIndexStore.removeStack(stackName, regionForState);
       }
     } else {
+      // Final authoritative write of the remaining state (not-yet-deleted +
+      // failed + retained resources). The incremental persists above are
+      // best-effort, so re-write once here to cover the case where some of
+      // them failed. Failure here is also non-fatal: the state file in S3
+      // is then at worst a superset of what still exists, which a re-run
+      // resolves via the idempotent "not found" path.
+      try {
+        await ctx.stateBackend.saveState(stackName, regionForState, {
+          ...state,
+          resources: { ...remainingResources },
+          lastModified: Date.now(),
+        });
+      } catch (error) {
+        logger.warn(
+          `Failed to persist remaining state after partial destroy: ${error instanceof Error ? error.message : String(error)}. ` +
+            `The state file may still list already-deleted resources; a re-run resolves them idempotently.`
+        );
+      }
       logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
     }
 
@@ -699,6 +769,12 @@ export async function runDestroyForStack(
     // Stop live renderer before releasing the lock so any pending in-flight
     // task lines are cleared cleanly.
     renderer.stop();
+
+    // Drain any still-pending incremental persists before releasing the
+    // lock — on the happy path this resolved already (awaited above), but a
+    // throw between scheduling and the flush must not let a state write
+    // land after the lock is gone. Never rejects (links catch internally).
+    await saveChain;
 
     logger.debug('Releasing lock...');
     await ctx.lockManager.releaseLock(stackName, regionForState);

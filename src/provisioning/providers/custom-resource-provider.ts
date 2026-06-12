@@ -1,6 +1,7 @@
 import {
   LambdaClient,
   InvokeCommand,
+  GetFunctionCommand,
   UpdateFunctionConfigurationCommand,
   waitUntilFunctionActiveV2,
   waitUntilFunctionUpdatedV2,
@@ -454,6 +455,25 @@ export class CustomResourceProvider implements ResourceProvider {
       );
     }
 
+    // Fail-fast for re-run idempotency (issue #804): after an interrupted /
+    // partially-failed destroy, the preserved state can still list a Custom
+    // Resource whose backing Lambda was ALSO deleted in the first run. The
+    // delete handler can never run again in that case — but without this
+    // pre-check, `waitForBackingLambdaReady`'s SDK waiters classify
+    // `ResourceNotFoundException` as RETRY (no error acceptor) and poll
+    // GetFunction for the full 10-minute `maxWaitTime` before the lenient
+    // catch below swallows the timeout. One GetFunction up front turns that
+    // stall into the same instant warn-and-continue every other provider's
+    // "not found" path gets. Delete-only: create / update against a missing
+    // function must keep failing loudly through the normal invoke path.
+    if (!this.isSnsServiceToken(serviceToken) && (await this.isBackingLambdaGone(serviceToken))) {
+      this.logger.warn(
+        `Backing Lambda for custom resource ${logicalId} no longer exists (${serviceToken}); ` +
+          `treating the custom resource as already deleted`
+      );
+      return;
+    }
+
     try {
       const cfnResponse = await this.invokeCustomResourceWithRetry(
         serviceToken,
@@ -491,6 +511,32 @@ export class CustomResourceProvider implements ResourceProvider {
    */
   isSnsServiceToken(serviceToken: string): boolean {
     return serviceToken.startsWith('arn:aws:sns:');
+  }
+
+  /**
+   * Single GetFunction probe used by the delete path's fail-fast pre-check
+   * (issue #804). Returns true ONLY on a definitive
+   * `ResourceNotFoundException` — the one signal that proves the backing
+   * Lambda is gone and the delete handler can never run. Any other failure
+   * (throttle, IAM denial, network) is inconclusive: fall through to the
+   * normal invoke path, which has its own error handling and the lenient
+   * delete catch.
+   */
+  private async isBackingLambdaGone(serviceToken: string): Promise<boolean> {
+    try {
+      await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: serviceToken }));
+      return false;
+    } catch (error) {
+      if ((error as { name?: string }).name === 'ResourceNotFoundException') {
+        return true;
+      }
+      this.logger.debug(
+        `GetFunction pre-check for ${serviceToken} failed inconclusively (${
+          error instanceof Error ? error.message : String(error)
+        }); proceeding with the normal delete invoke`
+      );
+      return false;
+    }
   }
 
   /**

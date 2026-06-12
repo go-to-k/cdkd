@@ -766,11 +766,13 @@ async destroy(stackName: string) {
     }
 
     const state = currentStateData.state;
+    const remainingResources = { ...state.resources };
 
     // 3. Determine deletion order from dependencies (reverse topological sort)
     const deletionOrder = computeDeletionOrder(state.resources);
 
     // 4. Delete resources (reverse of dependencies)
+    let errorCount = 0;
     for (const logicalId of deletionOrder) {
       const resource = state.resources[logicalId];
 
@@ -780,14 +782,35 @@ async destroy(stackName: string) {
           .delete(logicalId, resource.physicalId, resource.resourceType);
 
         logger.info(`Deleted resource: ${logicalId}`);
+
+        // 4b. Incremental state persistence (issue #804): remove the
+        // deleted resource and write the trimmed state back to S3 so an
+        // interrupted destroy leaves a state file that only lists
+        // resources that still exist. Persist failures are logged and
+        // never fail the destroy — the final write below is authoritative.
+        delete remainingResources[logicalId];
+        await s3StateBackend.saveState(stackName, region, {
+          ...state,
+          resources: remainingResources,
+        });
       } catch (error) {
         logger.error(`Failed to delete ${logicalId}:`, error);
+        errorCount++;
         // Continue even on deletion failure (best effort)
       }
     }
 
-    // 5. Delete state file
-    await s3StateBackend.deleteState(stackName);
+    // 5. Full success: delete the state file. Partial failure: persist
+    // the remaining state (failed + not-yet-deleted + retained resources)
+    // so the user can re-run without replaying completed deletes.
+    if (errorCount === 0) {
+      await s3StateBackend.deleteState(stackName);
+    } else {
+      await s3StateBackend.saveState(stackName, region, {
+        ...state,
+        resources: remainingResources,
+      });
+    }
 
     // 6. Release lock
     await lockManager.releaseLock(stackName);
@@ -798,6 +821,23 @@ async destroy(stackName: string) {
   }
 }
 ```
+
+**Incremental state persistence during destroy** (issue
+[#804](https://github.com/go-to-k/cdkd/issues/804)): the destroy path
+mirrors deploy's per-resource state saves. Each successfully deleted
+resource (including resources found already deleted on a re-run) is removed
+from the state object and the trimmed state is written back to S3
+immediately, serialized under the stack lock the destroy already holds. An
+interrupted (Ctrl-C) or partially-failed destroy therefore preserves a state
+file that only lists resources that still exist — a re-run does not replay
+deletes against already-deleted resources (which previously caused, for
+example, a 10-minute stall per Custom Resource whose backing Lambda had
+already been deleted). Resources retained via `DeletionPolicy: Retain` stay
+in every intermediate snapshot; their record is only dropped by the
+wholesale state-file delete at the end of a fully successful destroy. A
+failed incremental write is logged and never fails the destroy — the final
+write (state-file delete on success, preserve-write on failure) remains
+authoritative.
 
 ### Computing Deletion Order
 
