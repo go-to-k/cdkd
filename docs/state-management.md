@@ -146,7 +146,15 @@ HEAD — has a body and avoids the AWS SDK v3 region-redirect parsing
 glitch on empty-body 301 HEAD responses) and rebuilds its state-bucket
 S3 client to that region before any state operation.
 
-This is intentionally scoped to the state-bucket S3 client only.
+Both S3 consumers of the state bucket do this: the state backend
+(`state.json` reads/writes, since PR #60) and the lock manager
+(`lock.json` acquire/release, since issue #803 — before that fix, state
+operations succeeded against a cross-region bucket but every lock
+acquisition failed with S3's 301 PermanentRedirect). The bucket-region
+lookup is cached per bucket name for the process lifetime, so the two
+consumers share a single `GetBucketLocation` call.
+
+This is intentionally scoped to the state-bucket S3 clients only.
 Provisioning clients (Cloud Control API, Lambda, IAM, etc.) continue to
 use the stack's `env.region` so resources are still created in the
 region the CDK app declares.
@@ -499,6 +507,14 @@ interface LockInfo {
 ### Optimistic Lock Implementation
 
 Lightweight lock system using S3 Conditional Writes.
+
+Like the state backend, the lock manager resolves the state bucket's
+actual region via `GetBucketLocation` before its first S3 operation and
+rebuilds its S3 client when the bucket lives in a different region from
+the CLI's base region (issue #803), so locking works against a
+cross-region state bucket too. The per-bucket region lookup is cached, so
+this adds no extra API call when the state backend already resolved the
+same bucket.
 
 #### Lock Acquisition (Acquire)
 

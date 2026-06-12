@@ -16,6 +16,18 @@ vi.mock('@aws-sdk/client-s3', async () => {
   };
 });
 
+// Mock the region resolver so tests don't issue real GetBucketLocation calls.
+// Each test case overrides the implementation as needed.
+vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/utils/aws-region-resolver.js')>(
+    '../../../src/utils/aws-region-resolver.js'
+  );
+  return {
+    ...actual,
+    resolveBucketRegion: vi.fn(),
+  };
+});
+
 // Mock logger to suppress output during tests
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -32,17 +44,44 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+/**
+ * Build a fake S3Client whose `.config.region()` returns the given region.
+ * Mirrors the shape LockManager reads in `ensureClientForBucket`.
+ * `config.credentials()` resolves a static identity so the probe-credentials
+ * read in `ensureClientForBucket` exercises the happy path.
+ */
+function makeFakeClient(region: string): {
+  send: ReturnType<typeof vi.fn>;
+  config: {
+    region: () => Promise<string>;
+    credentials: () => Promise<{ accessKeyId: string; secretAccessKey: string }>;
+  };
+} {
+  return {
+    send: vi.fn(),
+    config: {
+      region: () => Promise.resolve(region),
+      credentials: () =>
+        Promise.resolve({ accessKeyId: 'AKIAFAKE', secretAccessKey: 'fake-secret' }),
+    },
+  };
+}
+
 describe('LockManager', () => {
-  let s3Client: { send: ReturnType<typeof vi.fn> };
+  let s3Client: ReturnType<typeof makeFakeClient>;
   let lockManager: LockManager;
   const config: StateBackendConfig = {
     bucket: 'test-bucket',
     prefix: 'stacks',
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    s3Client = { send: vi.fn() };
+    // Default: bucket is already in the same region as the client, so
+    // ensureClientForBucket() does not rebuild the client.
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+    s3Client = makeFakeClient('us-east-1');
     lockManager = new LockManager(s3Client as unknown as S3Client, config);
   });
 
@@ -487,5 +526,123 @@ describe('LockManager', () => {
       expect(lockBody).toHaveProperty('timestamp');
       expect(lockBody).toHaveProperty('expiresAt');
     });
+  });
+});
+
+describe('LockManager.ensureClientForBucket — region rebuild (issue #803)', () => {
+  const config: StateBackendConfig = {
+    bucket: 'cross-region-bucket',
+    prefix: 'cdkd',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('acquires the lock through a region-corrected client when the bucket region differs (pre-fix: 301 PermanentRedirect)', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    // Bucket lives in us-west-2, the supplied client was created for us-east-1.
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-west-2');
+
+    const initialClient = makeFakeClient('us-east-1');
+    // Pre-fix behavior: a PutObject against the wrong regional endpoint fails
+    // with S3's 301 PermanentRedirect. If the LockManager still used the
+    // original client, acquireLock would throw a LockError.
+    initialClient.send.mockRejectedValue(
+      new S3ServiceException({
+        name: 'PermanentRedirect',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 301 },
+        message:
+          'The bucket you are attempting to access must be addressed using the specified endpoint.',
+      })
+    );
+
+    // The rebuilt (us-west-2) client succeeds.
+    const rebuiltSend = vi.fn().mockResolvedValue({});
+    vi.mocked(S3Client).mockImplementation(() => ({ send: rebuiltSend }) as unknown as S3Client);
+
+    const lockManager = new LockManager(initialClient as unknown as S3Client, config);
+    const acquired = await lockManager.acquireLock('test-stack', 'ap-northeast-1');
+
+    expect(acquired).toBe(true);
+    // A replacement client was constructed for the bucket's actual region.
+    expect(vi.mocked(S3Client)).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-west-2' })
+    );
+    // The PutObject went through the rebuilt client, not the original one.
+    expect(rebuiltSend).toHaveBeenCalledTimes(1);
+    expect(initialClient.send).not.toHaveBeenCalled();
+    const putCall = rebuiltSend.mock.calls[0][0];
+    expect(putCall.input.Bucket).toBe('cross-region-bucket');
+    expect(putCall.input.Key).toBe('cdkd/test-stack/ap-northeast-1/lock.json');
+    expect(putCall.input.IfNoneMatch).toBe('*');
+  });
+
+  it('does not rebuild the client when the resolved region matches', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+
+    const initialClient = makeFakeClient('us-east-1');
+    initialClient.send.mockResolvedValue({});
+
+    // Reset the constructor call counter so we can assert on rebuilds only.
+    vi.mocked(S3Client).mockClear();
+
+    const lockManager = new LockManager(initialClient as unknown as S3Client, config);
+    const acquired = await lockManager.acquireLock('test-stack', 'us-east-1');
+
+    expect(acquired).toBe(true);
+    // No replacement client was constructed; the original client was used.
+    expect(vi.mocked(S3Client)).not.toHaveBeenCalled();
+    expect(initialClient.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('only resolves the bucket region once across multiple lock operations', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+
+    const initialClient = makeFakeClient('us-east-1');
+    initialClient.send.mockResolvedValue({
+      Body: {
+        transformToString: () =>
+          Promise.resolve(
+            JSON.stringify({
+              owner: 'a@b:1',
+              timestamp: Date.now(),
+              expiresAt: Date.now() + 60_000,
+            })
+          ),
+      },
+    });
+
+    const lockManager = new LockManager(initialClient as unknown as S3Client, config);
+
+    await lockManager.acquireLock('test-stack', 'us-east-1');
+    await lockManager.getLockInfo('test-stack', 'us-east-1');
+    await lockManager.releaseLock('test-stack', 'us-east-1');
+
+    // resolveBucketRegion should have been called exactly once even though
+    // three lock operations ran (no repeated GetBucketLocation).
+    expect(vi.mocked(resolveBucketRegion)).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the original client credentials and region fallback to the resolver', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+
+    const initialClient = makeFakeClient('us-east-1');
+    initialClient.send.mockResolvedValue({});
+
+    const lockManager = new LockManager(initialClient as unknown as S3Client, config);
+    await lockManager.acquireLock('test-stack', 'us-east-1');
+
+    expect(vi.mocked(resolveBucketRegion)).toHaveBeenCalledWith(
+      'cross-region-bucket',
+      expect.objectContaining({
+        fallbackRegion: 'us-east-1',
+        credentials: expect.objectContaining({ accessKeyId: 'AKIAFAKE' }),
+      })
+    );
   });
 });

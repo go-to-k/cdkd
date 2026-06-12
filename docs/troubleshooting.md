@@ -226,7 +226,14 @@ Caused by: UnknownError
 ```
 
 …or similar AWS SDK v3 surface-level `UnknownError` on any S3 operation
-against the state bucket.
+against the state bucket. The lock-path variant of the same root cause
+surfaced as a 301 PermanentRedirect instead:
+
+```
+LockError: Failed to acquire lock for stack 'MyStack' (ap-northeast-1):
+The bucket you are attempting to access must be addressed using the
+specified endpoint. Please send all future requests to this endpoint.
+```
 
 #### Cause
 
@@ -238,11 +245,14 @@ cleanly — the protocol parser falls through and produces a synthetic
 
 #### Solution
 
-cdkd resolves this automatically (PR #60, shipped v0.10.0): the state
-backend looks up the bucket region via `GetBucketLocation` (a
-GET request, not a HEAD — avoids the SDK glitch) and rebuilds its S3
-client to that region before any state operation. If you still see this
-error, please file a bug with the full stack trace.
+cdkd resolves this automatically: the state backend (PR #60, shipped
+v0.10.0) and the lock manager (issue #803 — between PR #60 and that fix,
+state operations succeeded against a cross-region bucket but lock
+acquisition failed with the PermanentRedirect error above) look up the
+bucket region via `GetBucketLocation` (a GET request, not a HEAD —
+avoids the SDK glitch) and rebuild their S3 clients to that region
+before any state or lock operation. If you still see either error,
+please file a bug with the full stack trace.
 
 You no longer need to set the region to match the bucket region. As of
 PR #63 (v0.12.0), `--region` is reserved for `cdkd bootstrap` (where it
