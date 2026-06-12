@@ -508,3 +508,292 @@ describe('DiffCalculator - DeletionPolicy / UpdateReplacePolicy attribute diff (
     ]);
   });
 });
+
+describe('DiffCalculator - replacement propagation to dependents (issue #807)', () => {
+  // Mirrors the deploy engine's diff-time resolution: intrinsics resolve
+  // against CURRENT state, so a Ref / Fn::GetAtt to a to-be-replaced
+  // resource yields the OLD physical value and the dependent compares
+  // equal (NO_CHANGE) without the propagation walk.
+  const makeResolver =
+    (state: StackState) =>
+    async (value: unknown): Promise<unknown> => {
+      const resolve = async (v: unknown): Promise<unknown> => {
+        if (v === null || typeof v !== 'object') return v;
+        if (Array.isArray(v)) return Promise.all(v.map((item) => resolve(item)));
+        const obj = v as Record<string, unknown>;
+        if ('Ref' in obj && Object.keys(obj).length === 1) {
+          const id = obj['Ref'] as string;
+          const res = state.resources[id];
+          if (!res) throw new Error(`Ref ${id} not found`);
+          return res.physicalId;
+        }
+        if ('Fn::GetAtt' in obj && Object.keys(obj).length === 1) {
+          const [id, attr] = obj['Fn::GetAtt'] as [string, string];
+          const res = state.resources[id];
+          const attrValue = res?.attributes?.[attr];
+          if (attrValue === undefined) throw new Error(`GetAtt ${id}.${attr} not found`);
+          return attrValue;
+        }
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(obj)) out[k] = await resolve(val);
+        return out;
+      };
+      return resolve(value);
+    };
+
+  it('promotes a NO_CHANGE dependent referencing a to-be-replaced resource via Ref; unrelated NO_CHANGE stays', async () => {
+    const state = baseState();
+    state.resources['TaskDef'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+      resourceType: 'AWS::ECS::TaskDefinition',
+      properties: { Family: 'app', ContainerDefinitions: [{ Name: 'app', Image: 'img:1' }] },
+      attributes: {},
+    };
+    state.resources['Service'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+      resourceType: 'AWS::ECS::Service',
+      properties: {
+        TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+        DesiredCount: 1,
+      },
+      attributes: {},
+    };
+    state.resources['Unrelated'] = {
+      physicalId: 'log-group',
+      resourceType: 'AWS::Logs::LogGroup',
+      properties: { LogGroupName: 'log-group' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        TaskDef: {
+          Type: 'AWS::ECS::TaskDefinition',
+          // ContainerDefinitions change -> requiresReplacement (immutable)
+          Properties: {
+            Family: 'app',
+            ContainerDefinitions: [{ Name: 'app', Image: 'img:2' }],
+          },
+        },
+        Service: {
+          Type: 'AWS::ECS::Service',
+          Properties: { TaskDefinition: { Ref: 'TaskDef' }, DesiredCount: 1 },
+        },
+        Unrelated: {
+          Type: 'AWS::Logs::LogGroup',
+          Properties: { LogGroupName: 'log-group' },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const taskDef = changes.get('TaskDef');
+    expect(taskDef?.changeType).toBe('UPDATE');
+    expect(taskDef?.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(true);
+
+    // Without the propagation walk, the Service resolves the Ref against
+    // current state (old revision ARN) and would stay NO_CHANGE.
+    const service = changes.get('Service');
+    expect(service?.changeType).toBe('UPDATE');
+    expect(service?.propertyChanges?.map((pc) => pc.path)).toContain('TaskDefinition');
+    // ECS::Service has no replacement rule for TaskDefinition -> in-place.
+    expect(service?.propertyChanges?.every((pc) => !pc.requiresReplacement)).toBe(true);
+
+    expect(changes.get('Unrelated')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('promotes a NO_CHANGE dependent referencing a to-be-replaced resource via Fn::GetAtt', async () => {
+    const state = baseState();
+    state.resources['Queue'] = {
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123/old-queue',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'old-queue' },
+      attributes: { Arn: 'arn:aws:sqs:us-east-1:123:old-queue' },
+    };
+    state.resources['Param'] = {
+      physicalId: 'param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'param', Value: 'arn:aws:sqs:us-east-1:123:old-queue' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Queue: {
+          Type: 'AWS::SQS::Queue',
+          // QueueName change -> requiresReplacement
+          Properties: { QueueName: 'new-queue' },
+        },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'param', Value: { 'Fn::GetAtt': ['Queue', 'Arn'] } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Queue')?.changeType).toBe('UPDATE');
+    const param = changes.get('Param');
+    expect(param?.changeType).toBe('UPDATE');
+    expect(param?.propertyChanges?.map((pc) => pc.path)).toContain('Value');
+  });
+
+  it('promotes transitively: A replaced -> B promoted and itself replacement-triggering -> C promoted', async () => {
+    const state = baseState();
+    state.resources['Queue'] = {
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123/old-queue',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'old-queue' },
+      attributes: { Arn: 'arn:aws:sqs:us-east-1:123:old-queue' },
+    };
+    state.resources['TaskDef'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+      resourceType: 'AWS::ECS::TaskDefinition',
+      properties: {
+        Family: 'app',
+        ContainerDefinitions: [
+          {
+            Name: 'app',
+            Environment: [{ Name: 'QUEUE_ARN', Value: 'arn:aws:sqs:us-east-1:123:old-queue' }],
+          },
+        ],
+      },
+      attributes: {},
+    };
+    state.resources['Service'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+      resourceType: 'AWS::ECS::Service',
+      properties: { TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Queue: {
+          Type: 'AWS::SQS::Queue',
+          // A: QueueName change -> replacement (new physical queue + ARN)
+          Properties: { QueueName: 'new-queue' },
+        },
+        TaskDef: {
+          Type: 'AWS::ECS::TaskDefinition',
+          // B: unchanged on its own; ContainerDefinitions references A.
+          // ContainerDefinitions is immutable for TaskDefinition -> B is
+          // itself replacement-triggering once promoted.
+          Properties: {
+            Family: 'app',
+            ContainerDefinitions: [
+              {
+                Name: 'app',
+                Environment: [{ Name: 'QUEUE_ARN', Value: { 'Fn::GetAtt': ['Queue', 'Arn'] } }],
+              },
+            ],
+          },
+        },
+        Service: {
+          Type: 'AWS::ECS::Service',
+          // C: unchanged on its own; references B.
+          Properties: { TaskDefinition: { Ref: 'TaskDef' } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Queue')?.changeType).toBe('UPDATE');
+
+    const taskDef = changes.get('TaskDef');
+    expect(taskDef?.changeType).toBe('UPDATE');
+    const tdChange = taskDef?.propertyChanges?.find((pc) => pc.path === 'ContainerDefinitions');
+    expect(tdChange?.requiresReplacement).toBe(true);
+
+    const service = changes.get('Service');
+    expect(service?.changeType).toBe('UPDATE');
+    expect(service?.propertyChanges?.map((pc) => pc.path)).toContain('TaskDefinition');
+  });
+
+  it('keeps a dependent that already had its own property change as UPDATE and appends the reference change once', async () => {
+    const state = baseState();
+    state.resources['TaskDef'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+      resourceType: 'AWS::ECS::TaskDefinition',
+      properties: { Family: 'app', Cpu: '256' },
+      attributes: {},
+    };
+    state.resources['Service'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+      resourceType: 'AWS::ECS::Service',
+      properties: {
+        TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+        DesiredCount: 1,
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        TaskDef: {
+          Type: 'AWS::ECS::TaskDefinition',
+          // Cpu change -> requiresReplacement
+          Properties: { Family: 'app', Cpu: '512' },
+        },
+        Service: {
+          Type: 'AWS::ECS::Service',
+          // Own change (DesiredCount) AND a reference to the replaced TaskDef
+          Properties: { TaskDefinition: { Ref: 'TaskDef' }, DesiredCount: 2 },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const service = changes.get('Service');
+    expect(service?.changeType).toBe('UPDATE');
+    const paths = service?.propertyChanges?.map((pc) => pc.path) ?? [];
+    expect(paths).toContain('DesiredCount');
+    expect(paths).toContain('TaskDefinition');
+    // No duplicate entries for the same path
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+
+  it('does not promote dependents of an in-place (non-replacement) update', async () => {
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'my-fn', Description: 'old' },
+      attributes: { Arn: 'arn:aws:lambda:us-east-1:123:function:my-fn' },
+    };
+    state.resources['Param'] = {
+      physicalId: 'param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'param', Value: 'arn:aws:lambda:us-east-1:123:function:my-fn' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          // Description is updateable in-place -> no replacement, same ARN
+          Properties: { FunctionName: 'my-fn', Description: 'new' },
+        },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'param', Value: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Fn')?.changeType).toBe('UPDATE');
+    expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
+  });
+});
