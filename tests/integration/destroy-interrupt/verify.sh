@@ -124,6 +124,15 @@ echo "    OK: deploy created state file"
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 FN_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId] | first')
 VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first')
+# The CR handler's execution role + the Lambda SecurityGroup are auto-named,
+# so capture their concrete physical ids from the deployed state NOW. The SG
+# is implicitly covered by the VPC-gone assert (a lingering SG keeps an ENI
+# which keeps the VPC alive), but we assert it EXPLICITLY too — and the IAM
+# role is NOT VPC-bound, so it could orphan independently of the VPC. A
+# state-empty check alone would miss an orphaned role that carries no stack
+# name. We assert each exact id is NOT-FOUND post-destroy.
+ROLE_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::Role") | .value.physicalId] | first')
+SG_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup") | .value.physicalId] | first')
 # SSM parameters are CDK/cdkd auto-named (no explicit Name), so capture
 # their concrete physical ids from the deployed state NOW — a name-prefix
 # scan after destroy is unreliable (the auto-name need not contain the
@@ -131,6 +140,8 @@ VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.res
 PARAM_NAMES=$(echo "${STATE}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::SSM::Parameter") | .value.physicalId')
 echo "    resolved backing Lambda: ${FN_NAME}"
 echo "    resolved VPC: ${VPC_ID}"
+echo "    resolved IAM role: ${ROLE_NAME}"
+echo "    resolved SecurityGroup: ${SG_ID}"
 echo "    resolved SSM parameters:"
 echo "${PARAM_NAMES}" | sed 's/^/      - /'
 
@@ -370,6 +381,31 @@ if [ -n "${VPC_ID}" ] && [ "${VPC_ID}" != "null" ]; then
     exit 1
   fi
   echo "    OK: no leftover ENIs for the VPC"
+fi
+
+# SecurityGroup gone (explicit). The VPC-gone assert already implies this —
+# a lingering SG would keep an ENI which would keep the VPC alive — but we
+# assert the exact group id directly so a misattributed orphan is caught even
+# if the VPC delete path ever changes. describe-security-groups exits
+# non-zero (InvalidGroup.NotFound) once the SG is deleted.
+if [ -n "${SG_ID}" ] && [ "${SG_ID}" != "null" ]; then
+  if aws ec2 describe-security-groups --group-ids "${SG_ID}" --region "${REGION}" >/dev/null 2>&1; then
+    echo "FAIL: SecurityGroup ${SG_ID} still exists after destroy" >&2
+    exit 1
+  fi
+  echo "    OK: SecurityGroup is gone"
+fi
+
+# IAM role gone (explicit). The role is NOT VPC-bound, so the VPC-gone assert
+# does NOT cover it — it could orphan independently while state.json is empty
+# (the "state-empty misses a no-stack-name orphan" class). get-role exits
+# non-zero (NoSuchEntity) once the role is deleted.
+if [ -n "${ROLE_NAME}" ] && [ "${ROLE_NAME}" != "null" ]; then
+  if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
+    echo "FAIL: IAM role ${ROLE_NAME} still exists after destroy" >&2
+    exit 1
+  fi
+  echo "    OK: IAM role is gone"
 fi
 
 # SSM parameters: assert each exact physical id captured from the
