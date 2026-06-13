@@ -128,6 +128,56 @@ if [ "${CONFIGURED_AT_LAUNCH}" != "true" ]; then
 fi
 echo "    OK: taskDefinition.volumes['ebs-data'].configuredAtLaunch == true on AWS (#806 silent-drop CLOSED)"
 
+# --- Assertion: Volumes[].EFSVolumeConfiguration reached AWS (issue #815) ---
+# The fixture's `taskDefinition.addVolume({ name: 'efs-data',
+# efsVolumeConfiguration: {...} })` synthesizes
+# `Volumes: [{ Name: 'efs-data', EFSVolumeConfiguration: {
+#   FilesystemId, RootDirectory, TransitEncryption,
+#   AuthorizationConfig: { AccessPointId, IAM } } }]` (PascalCase). Before
+# #815, convertVolumes cast EFSVolumeConfiguration through raw, so its
+# nested keys reached the SDK still PascalCase. RegisterTaskDefinition then
+# either rejected the unknown keys or dropped them, so the registered
+# revision had no (or a malformed) efsVolumeConfiguration. Seeing the
+# camelCase fields on AWS proves convertVolumes runs the EFS sub-block
+# through the PascalCase->camelCase converter. jq note: probe nested keys
+# via `// "missing"` (these are strings, never booleans, so the
+# false-becomes-null trap does not apply here).
+EFS_VOL=$(echo "${TD_VOLUMES}" | jq -c \
+  '[.[]? | select(.name == "efs-data")] | first // "missing"')
+
+if [ "${EFS_VOL}" = "missing" ] || [ "${EFS_VOL}" = "null" ]; then
+  echo "FAIL: task-definition volume 'efs-data' not present on AWS (#815 EFS volume silent-drop NOT closed)" >&2
+  echo "${TD_VOLUMES}" | jq .
+  exit 1
+fi
+
+EFS_FS_ID=$(echo "${EFS_VOL}" | jq -r '.efsVolumeConfiguration.fileSystemId // "missing"')
+EFS_TRANSIT=$(echo "${EFS_VOL}" | jq -r '.efsVolumeConfiguration.transitEncryption // "missing"')
+EFS_AP_ID=$(echo "${EFS_VOL}" | jq -r '.efsVolumeConfiguration.authorizationConfig.accessPointId // "missing"')
+EFS_IAM=$(echo "${EFS_VOL}" | jq -r '.efsVolumeConfiguration.authorizationConfig.iam // "missing"')
+
+if [ "${EFS_TRANSIT}" != "ENABLED" ]; then
+  echo "FAIL: efs-data efsVolumeConfiguration.transitEncryption is '${EFS_TRANSIT}', expected 'ENABLED' (#815 PascalCase->camelCase conversion BROKEN)" >&2
+  echo "${EFS_VOL}" | jq .
+  exit 1
+fi
+if [ "${EFS_IAM}" != "ENABLED" ]; then
+  echo "FAIL: efs-data efsVolumeConfiguration.authorizationConfig.iam is '${EFS_IAM}', expected 'ENABLED' (#815 AuthorizationConfig.IAM->iam conversion BROKEN)" >&2
+  echo "${EFS_VOL}" | jq .
+  exit 1
+fi
+if [ "${EFS_FS_ID}" = "missing" ] || [ -z "${EFS_FS_ID}" ]; then
+  echo "FAIL: efs-data efsVolumeConfiguration.fileSystemId missing on AWS (#815 FilesystemId->fileSystemId conversion BROKEN)" >&2
+  echo "${EFS_VOL}" | jq .
+  exit 1
+fi
+if [ "${EFS_AP_ID}" = "missing" ] || [ -z "${EFS_AP_ID}" ]; then
+  echo "FAIL: efs-data efsVolumeConfiguration.authorizationConfig.accessPointId missing on AWS (#815 AccessPointId->accessPointId conversion BROKEN)" >&2
+  echo "${EFS_VOL}" | jq .
+  exit 1
+fi
+echo "    OK: taskDefinition.volumes['efs-data'].efsVolumeConfiguration reached AWS with camelCase fields (#815 PascalCase->camelCase CLOSED)"
+
 # --- Assertion: ScalableTarget reached AWS ----------------------------
 # The fixture's `service.autoScaleTaskCount({...})` synthesizes an
 # `AWS::ApplicationAutoScaling::ScalableTarget` whose `ResourceId` is
