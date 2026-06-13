@@ -161,6 +161,10 @@
       "description": "NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy)."
     },
     {
+      "tag": "nested-stack-deep-deploy-cascade",
+      "description": "Recursive `cdk.NestedStack` deploy + destroy at depth >= 3 (root → child → grandchild → great-grandchild): per-level `<parent>~<logicalId>` v6 state-key derivation with populated `parentStack` / `parentLogicalId`, bidirectional cross-level refs (bottom-up `Fn::GetAtt` outputs AND top-down `Parameters` forwarding), `state list --tree` hierarchy rendering, and the full reverse-DAG destroy cascade that removes every level's resources + state files."
+    },
+    {
       "tag": "nested-stack-migrate-from-cfn",
       "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A."
     },
@@ -868,6 +872,13 @@
       "scenarios": []
     },
     {
+      "name": "nested-stack-3level",
+      "annotated": true,
+      "scenarios": [
+        "nested-stack-deep-deploy-cascade"
+      ]
+    },
+    {
       "name": "nested-stack-deep",
       "annotated": false,
       "scenarios": []
@@ -1379,6 +1390,13 @@
       "fixtures": [
         "bench-cdk-sample",
         "vpc-nat-gateway"
+      ]
+    },
+    {
+      "scenario": "nested-stack-deep-deploy-cascade",
+      "description": "Recursive `cdk.NestedStack` deploy + destroy at depth >= 3 (root → child → grandchild → great-grandchild): per-level `<parent>~<logicalId>` v6 state-key derivation with populated `parentStack` / `parentLogicalId`, bidirectional cross-level refs (bottom-up `Fn::GetAtt` outputs AND top-down `Parameters` forwarding), `state list --tree` hierarchy rendering, and the full reverse-DAG destroy cascade that removes every level's resources + state files.",
+      "fixtures": [
+        "nested-stack-3level"
       ]
     },
     {
