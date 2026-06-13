@@ -162,6 +162,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).',
   'deployment-events':
     'Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets).',
+  's3-asset-deploy':
+    'File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy.',
 
   // ---- Multi-resource / broad-regression set ----
   'cross-cutting-deploy-destroy':

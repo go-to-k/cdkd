@@ -1,0 +1,9 @@
+{
+  "name": "cdkd-s3-asset-deploy",
+  "description": "Generic s3_assets.Asset uploaded by cdkd during deploy and read back by the Lambda at runtime.",
+  "settings": {
+    "featureFlag": true,
+    "retries": 3,
+    "timeoutSeconds": 30
+  }
+}

@@ -2301,6 +2301,7 @@
         "recreate-mixed-direction",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
+        "s3-asset-deploy",
         "scheduled-task",
         "serverless-api",
         "sns-sqs-event",
@@ -2457,6 +2458,9 @@
         ],
         "recreate-via-sdk-provider": [
           "l1"
+        ],
+        "s3-asset-deploy": [
+          "l2"
         ],
         "scheduled-task": [
           "l2"

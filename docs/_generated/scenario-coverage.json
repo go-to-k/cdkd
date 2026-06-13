@@ -145,6 +145,10 @@
       "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types."
     },
     {
+      "tag": "s3-asset-deploy",
+      "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy."
+    },
+    {
       "tag": "state-bucket-region-resolve",
       "description": "State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region."
     },
@@ -826,6 +830,13 @@
       "scenarios": []
     },
     {
+      "name": "s3-asset-deploy",
+      "annotated": true,
+      "scenarios": [
+        "s3-asset-deploy"
+      ]
+    },
+    {
       "name": "s3-cloudfront",
       "annotated": true,
       "scenarios": [
@@ -1225,6 +1236,13 @@
       "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types.",
       "fixtures": [
         "remove-protection"
+      ]
+    },
+    {
+      "scenario": "s3-asset-deploy",
+      "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy.",
+      "fixtures": [
+        "s3-asset-deploy"
       ]
     },
     {

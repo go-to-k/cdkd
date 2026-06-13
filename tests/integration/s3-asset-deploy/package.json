@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-s3-asset-deploy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkd S3 file/zip asset publishing during deploy",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.172.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
