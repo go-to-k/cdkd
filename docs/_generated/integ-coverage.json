@@ -2413,6 +2413,7 @@
         "microservices",
         "migrate-from-cfn",
         "monitoring",
+        "multi-asset",
         "multi-resource",
         "multi-stack-deps",
         "orphan-resource",
@@ -2564,6 +2565,9 @@
           "l2"
         ],
         "monitoring": [
+          "l2"
+        ],
+        "multi-asset": [
           "l2"
         ],
         "multi-resource": [

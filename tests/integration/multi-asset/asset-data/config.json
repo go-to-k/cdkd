@@ -1,0 +1,9 @@
+{
+  "name": "cdkd-multi-asset-config",
+  "description": "Generic s3_assets.Asset uploaded by cdkd during deploy and read back by the ALPHA Lambda at runtime.",
+  "settings": {
+    "featureFlag": true,
+    "retries": 3,
+    "timeoutSeconds": 30
+  }
+}

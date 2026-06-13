@@ -188,6 +188,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // ---- Asset-publishing patterns ----
   'docker-image-asset-ecr-publish':
     "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy.",
+  'multi-asset':
+    "Asset-publishing layer under concurrency: MANY assets of TWO kinds publish in ONE `cdkd deploy` — 1 Docker image asset (`DockerAssetPublisher` -> ECR build+push, ARM_64-pinned) + 3 distinct multi-file directory assets (three distinct `FileAssetPublisher` S3 uploads, one per zip Lambda) + 1 generic `s3_assets.Asset` (a 4th S3 upload read back at runtime via cdkd-resolved bucket/key env). Exercises FileAssetPublisher + DockerAssetPublisher concurrency, ECR + S3 in one run, and asset-ref intrinsics. Each Lambda returns a DISTINCT marker so a cross-wired asset (wrong Code ref) fails the test — proving each distinct asset uploaded AND was wired to the correct Lambda. Clean destroy: all 4 Lambdas + OUR pushed ECR image (by tag) gone; the shared bootstrap container-assets repo + asset bucket objects persist by design.",
 
   // ---- Local-execution patterns ----
   'local-lambda-rie-zip':

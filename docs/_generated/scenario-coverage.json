@@ -129,6 +129,10 @@
       "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack)."
     },
     {
+      "tag": "multi-asset",
+      "description": "Asset-publishing layer under concurrency: MANY assets of TWO kinds publish in ONE `cdkd deploy` — 1 Docker image asset (`DockerAssetPublisher` -> ECR build+push, ARM_64-pinned) + 3 distinct multi-file directory assets (three distinct `FileAssetPublisher` S3 uploads, one per zip Lambda) + 1 generic `s3_assets.Asset` (a 4th S3 upload read back at runtime via cdkd-resolved bucket/key env). Exercises FileAssetPublisher + DockerAssetPublisher concurrency, ECR + S3 in one run, and asset-ref intrinsics. Each Lambda returns a DISTINCT marker so a cross-wired asset (wrong Code ref) fails the test — proving each distinct asset uploaded AND was wired to the correct Lambda. Clean destroy: all 4 Lambdas + OUR pushed ECR image (by tag) gone; the shared bootstrap container-assets repo + asset bucket objects persist by design."
+    },
+    {
       "tag": "multi-region-state-key",
       "description": "Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout)."
     },
@@ -790,6 +794,13 @@
       "scenarios": []
     },
     {
+      "name": "multi-asset",
+      "annotated": true,
+      "scenarios": [
+        "multi-asset"
+      ]
+    },
+    {
       "name": "multi-region-same-stack",
       "annotated": true,
       "scenarios": [
@@ -1254,6 +1265,13 @@
       "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).",
       "fixtures": [
         "migrate-from-cfn"
+      ]
+    },
+    {
+      "scenario": "multi-asset",
+      "description": "Asset-publishing layer under concurrency: MANY assets of TWO kinds publish in ONE `cdkd deploy` — 1 Docker image asset (`DockerAssetPublisher` -> ECR build+push, ARM_64-pinned) + 3 distinct multi-file directory assets (three distinct `FileAssetPublisher` S3 uploads, one per zip Lambda) + 1 generic `s3_assets.Asset` (a 4th S3 upload read back at runtime via cdkd-resolved bucket/key env). Exercises FileAssetPublisher + DockerAssetPublisher concurrency, ECR + S3 in one run, and asset-ref intrinsics. Each Lambda returns a DISTINCT marker so a cross-wired asset (wrong Code ref) fails the test — proving each distinct asset uploaded AND was wired to the correct Lambda. Clean destroy: all 4 Lambdas + OUR pushed ECR image (by tag) gone; the shared bootstrap container-assets repo + asset bucket objects persist by design.",
+      "fixtures": [
+        "multi-asset"
       ]
     },
     {
