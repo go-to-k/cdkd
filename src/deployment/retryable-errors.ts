@@ -35,6 +35,27 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   'Schema is currently being altered',
   // IAM principal not yet propagated to S3 bucket policy
   'Invalid principal in policy',
+  // SNS TopicPolicy: SetTopicAttributes validates every principal ARN in the
+  // policy document. When the document names a same-stack, just-created IAM
+  // role as `Principal.AWS`, cdkd's fast SDK path issues the policy PUT before
+  // IAM finishes propagating the new role, and SNS rejects it with
+  // "Invalid parameter: Policy Error: PrincipalNotFound". Anchored on the
+  // SNS-specific "Policy Error: PrincipalNotFound" wording so a genuinely
+  // malformed/non-existent principal (a typo'd ARN, a deleted role) only burns
+  // the bounded retries before surfacing — it won't false-positive other
+  // errors. CloudFormation tolerates this via deployment latency; cdkd retries.
+  // See issue #839.
+  'Policy Error: PrincipalNotFound',
+  // SQS QueuePolicy: SetQueueAttributes validates the same fresh-principal
+  // document as the SNS case above, but SQS surfaces the propagation race with
+  // the less specific "Invalid value for the parameter Policy." (the SQS
+  // QueuePolicy in the iam-propagation-stress fixture is byte-for-byte the same
+  // shape as the SNS TopicPolicy that fails with PrincipalNotFound, so the SQS
+  // rejection is the SAME just-created-role propagation race, not a malformed
+  // document). Anchored on the full SQS phrase so an unrelated SQS parameter
+  // validation error does not get caught — a permanently malformed policy still
+  // fails after the bounded retries. See issue #839.
+  'Invalid value for the parameter Policy',
   // RDS Enhanced Monitoring: CreateDBInstance / CreateDBCluster references a
   // same-stack monitoring IAM role, but cdkd's fast SDK path issues the create
   // before IAM finishes propagating the just-created role for the RDS

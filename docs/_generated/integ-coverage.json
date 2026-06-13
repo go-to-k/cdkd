@@ -2063,10 +2063,14 @@
       "resourceType": "AWS::Events::Rule",
       "integs": [
         "eventbridge",
+        "iam-propagation-stress",
         "scheduled-task"
       ],
       "signals": {
         "eventbridge": [
+          "l2"
+        ],
+        "iam-propagation-stress": [
           "l2"
         ],
         "scheduled-task": [
@@ -2139,11 +2143,15 @@
       "resourceType": "AWS::IAM::Policy",
       "integs": [
         "export",
+        "iam-propagation-stress",
         "migrate-from-cfn"
       ],
       "signals": {
         "export": [
           "l2",
+          "literal"
+        ],
+        "iam-propagation-stress": [
           "literal"
         ],
         "migrate-from-cfn": [
@@ -2165,6 +2173,7 @@
         "eventbridge",
         "export",
         "iam-managed-policy",
+        "iam-propagation-stress",
         "infra-security",
         "intrinsic-functions",
         "local-invoke-dotnet",
@@ -2223,6 +2232,9 @@
           "literal"
         ],
         "iam-managed-policy": [
+          "l2"
+        ],
+        "iam-propagation-stress": [
           "l2"
         ],
         "infra-security": [
@@ -2431,6 +2443,7 @@
         "eventbridge",
         "export",
         "full-stack-demo",
+        "iam-propagation-stress",
         "lambda",
         "lambda-versioning",
         "local-invoke",
@@ -2531,6 +2544,9 @@
           "literal"
         ],
         "full-stack-demo": [
+          "l2"
+        ],
+        "iam-propagation-stress": [
           "l2"
         ],
         "lambda": [
@@ -3104,6 +3120,7 @@
         "event-driven",
         "export",
         "full-stack-demo",
+        "iam-propagation-stress",
         "microservices",
         "migrate-from-cfn",
         "monitoring",
@@ -3141,6 +3158,9 @@
         "full-stack-demo": [
           "l2"
         ],
+        "iam-propagation-stress": [
+          "l2"
+        ],
         "microservices": [
           "l2"
         ],
@@ -3164,10 +3184,14 @@
     {
       "resourceType": "AWS::SNS::TopicPolicy",
       "integs": [
+        "iam-propagation-stress",
         "migrate-from-cfn",
         "sns-sqs-event"
       ],
       "signals": {
+        "iam-propagation-stress": [
+          "literal"
+        ],
         "migrate-from-cfn": [
           "literal"
         ],
@@ -3188,6 +3212,7 @@
         "event-driven",
         "eventbridge",
         "full-stack-demo",
+        "iam-propagation-stress",
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
@@ -3223,6 +3248,9 @@
         "full-stack-demo": [
           "l2"
         ],
+        "iam-propagation-stress": [
+          "l2"
+        ],
         "microservices": [
           "l2"
         ],
@@ -3243,9 +3271,13 @@
     {
       "resourceType": "AWS::SQS::QueuePolicy",
       "integs": [
+        "iam-propagation-stress",
         "migrate-from-cfn"
       ],
       "signals": {
+        "iam-propagation-stress": [
+          "literal"
+        ],
         "migrate-from-cfn": [
           "literal"
         ]
@@ -3419,9 +3451,13 @@
     {
       "resourceType": "AWS::StepFunctions::StateMachine",
       "integs": [
+        "iam-propagation-stress",
         "stepfunctions"
       ],
       "signals": {
+        "iam-propagation-stress": [
+          "l2"
+        ],
         "stepfunctions": [
           "l2"
         ]

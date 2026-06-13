@@ -95,6 +95,22 @@ describe('isRetryableTransientError', () => {
         'Invalid request provided: CreateCapacityProvider error: Caught ServiceAccessDeniedException for ECSInfrastructureRole[arn:aws:iam::123456789012:role/RunnerStack-InfraRole] (Service: Ecs, Status Code: 400, Request ID: 00000000-0000-0000-0000-000000000000) (SDK Attempt Count: 1)',
         'ECS CapacityProvider infrastructure-role IAM propagation',
       ],
+      // SNS TopicPolicy fresh-principal IAM-propagation race (#839):
+      // SetTopicAttributes rejects a policy naming a just-created role as
+      // Principal.AWS before IAM propagates it. Exact wire message wrapped in
+      // SNSTopicPolicyProvider.create's thrown shape.
+      [
+        'Failed to create SNS topic policy StressTopicPolicy: Invalid parameter: Policy Error: PrincipalNotFound',
+        'SNS TopicPolicy fresh-principal IAM propagation',
+      ],
+      // SQS QueuePolicy fresh-principal IAM-propagation race (#839): same
+      // fresh-principal document as the SNS case, but SQS surfaces the race as
+      // the less specific "Invalid value for the parameter Policy." Exact wire
+      // message wrapped in SQSQueuePolicyProvider.create's thrown shape.
+      [
+        'Failed to create SQS queue policy StressQueuePolicy: Invalid value for the parameter Policy.',
+        'SQS QueuePolicy fresh-principal IAM propagation',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });
@@ -121,6 +137,41 @@ describe('isRetryableTransientError', () => {
 
     it('does not retry on a syntactically wrong CloudFormation template error', () => {
       const message = 'Template format error: Unresolved resource dependencies';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
+
+    it('does not retry on a permanently malformed resource policy without the #839 race anchor', () => {
+      // Guard against over-broadening the #839 SNS/SQS patterns: a genuinely
+      // malformed policy document (e.g. a JSON / structural validation error
+      // that is NOT the fresh-principal propagation race) must NOT become
+      // retryable just because it mentions a policy.
+      const message =
+        'Failed to create SNS topic policy MyTopicPolicy: Invalid parameter: Policy statement action out of service scope!';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
+
+    it('retries a structurally-malformed SQS QueuePolicy carrying the #839 Policy-parameter phrase (accepted bounded-retry-then-surface tradeoff)', () => {
+      // The #839 SQS pattern `Invalid value for the parameter Policy` is
+      // intentionally BROAD: AWS emits that EXACT phrase for ANY malformed SQS
+      // QueuePolicy, not just the fresh-principal IAM-propagation race. We
+      // accept that a permanently-malformed QueuePolicy (e.g. a structurally
+      // broken statement) is ALSO classified retryable here — it only burns the
+      // bounded retries before surfacing the same error. This test PINS that
+      // accepted tradeoff so a future narrowing of the pattern is a deliberate,
+      // reviewed change rather than an accident. See issue #839.
+      const message =
+        'Failed to create SQS queue policy MyQueuePolicy: Invalid value for the parameter Policy.';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(true);
+    });
+
+    it('does not retry an SQS error that lacks the #839 Policy-parameter phrase', () => {
+      // Guard the SQS boundary the other way: the broad `Invalid value for the
+      // parameter Policy` substring must NOT over-broaden into other SQS
+      // SetQueueAttributes validation errors. A generic attribute-validation
+      // failure that does not contain the Policy-parameter phrase stays
+      // non-retryable so a permanent misconfiguration fails fast.
+      const message =
+        'InvalidAttributeValue: Unknown attribute Foo for SetQueueAttributes';
       expect(isRetryableTransientError(new Error(message), message)).toBe(false);
     });
   });

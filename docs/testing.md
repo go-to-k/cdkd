@@ -208,6 +208,31 @@ cd "${CDKD_PATH}/tests/integration/stepfunctions"
 vp install
 ```
 
+#### IAM Propagation Stress Example (race detector)
+
+```bash
+cd "${CDKD_PATH}/tests/integration/iam-propagation-stress"
+vp install
+```
+
+**Tested behavior** — a race detector for IAM-propagation bugs on cdkd's fast
+SDK path. cdkd creates an IAM role and has a service assume it within ~1s,
+before IAM finishes propagating; CloudFormation tolerates this via deployment
+latency, cdkd does not. The race is handled narrowly today (RDS #794, ECS
+CapacityProvider #805, Custom Resource #756) but many consumers are
+unprotected:
+
+- Four brand-new IAM roles, each consumed IMMEDIATELY by a DIFFERENT service
+  in ONE deploy: Lambda exec role -> `CreateFunction`; SFN role ->
+  `CreateStateMachine`; EventBridge target role -> `PutTargets`; fresh
+  principal -> `AWS::SQS::QueuePolicy` + `AWS::SNS::TopicPolicy`.
+- **The pass condition is: deploy SUCCEEDS.** A failure is a real cdkd finding
+  (an unprotected consumer racing IAM propagation); `verify.sh` prints which
+  resource failed + the error for triage, then still cleans up.
+- On success it asserts each role consumer works (invoke the Lambda, run an
+  SFN execution to `SUCCEEDED`, confirm the rule's SFN target + role, confirm
+  the queue/topic resource policies), then destroys clean.
+
 #### EC2 VPC Example
 
 ```bash
