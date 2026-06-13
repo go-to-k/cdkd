@@ -432,6 +432,14 @@ CDKD_TEST_FAIL=true node ../../../../dist/cli.js deploy CdkdBasicExample \
 
 Use this to sanity-check the dispatcher's rollback path against AWS without writing a separate failing CDK app each time.
 
+For the richer, multi-resource rollback regression net (VPC + Subnets +
+SecurityGroup + IAM Role + Lambda-in-VPC + SSM Parameter, with a
+self-contained env-gated failing SQS Queue), see
+`tests/integration/rollback-failure-injection/` (scenario tag
+`rollback-failure-injection`). It asserts the completed siblings are rolled
+back with no orphan VPC/SG/ENI/Role/Lambda/SSM and that the #808 events
+captured `RESOURCE_FAILED` + `ROLLBACK_*` + `RUN_FINISHED result=FAILED`.
+
 ### Drift revert E2E (`tests/integration/drift-revert/`)
 
 End-to-end real-AWS test for `cdkd drift` + `cdkd drift --revert`.

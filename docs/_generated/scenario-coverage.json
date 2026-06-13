@@ -157,6 +157,10 @@
       "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types."
     },
     {
+      "tag": "rollback-failure-injection",
+      "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED."
+    },
+    {
       "tag": "s3-asset-deploy",
       "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy."
     },
@@ -861,6 +865,13 @@
       ]
     },
     {
+      "name": "rollback-failure-injection",
+      "annotated": true,
+      "scenarios": [
+        "rollback-failure-injection"
+      ]
+    },
+    {
       "name": "route53",
       "annotated": true,
       "scenarios": []
@@ -1295,6 +1306,13 @@
       "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types.",
       "fixtures": [
         "remove-protection"
+      ]
+    },
+    {
+      "scenario": "rollback-failure-injection",
+      "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.",
+      "fixtures": [
+        "rollback-failure-injection"
       ]
     },
     {
