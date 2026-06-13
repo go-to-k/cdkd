@@ -1,3 +1,10 @@
+## [0.221.2](https://github.com/go-to-k/cdkd/compare/v0.221.1...v0.221.2) (2026-06-13)
+
+
+### Bug Fixes
+
+* **provisioning:** enrich AWS::RDS::DBInstance Endpoint attributes on the Cloud Control path ([#844](https://github.com/go-to-k/cdkd/issues/844)) ([bc4e44d](https://github.com/go-to-k/cdkd/commit/bc4e44de372c0e8e3226976acac630bdcb3224d7))
+
 ## [0.221.1](https://github.com/go-to-k/cdkd/compare/v0.221.0...v0.221.1) (2026-06-13)
 
 
