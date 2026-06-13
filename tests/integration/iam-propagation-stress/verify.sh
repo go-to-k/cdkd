@@ -154,7 +154,14 @@ fi
 # --- Resolve physical ids from state (CDK auto-names everything) ----------
 FN_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | select(.key | startswith("WorkerFn")) | .value.physicalId] | first')
 SM_ARN=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::StepFunctions::StateMachine") | .value.physicalId] | first')
-RULE_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Events::Rule") | .value.physicalId] | first')
+RULE_PHYSICAL_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Events::Rule") | .value.physicalId] | first')
+# cdkd's EventBridgeRuleProvider stores the rule ARN as the physical id
+# (arn:<p>:events:<r>:<acct>:rule/<RuleName> on the default bus, or
+# arn:...:rule/<BusName>/<RuleName> on a custom bus). `aws events
+# list-targets-by-rule --rule` / `describe-rule --name` both want the bare
+# rule NAME, not the ARN, so strip everything up to and including the LAST
+# `/`. A bare name (no `/`) passes through unchanged.
+RULE_NAME="${RULE_PHYSICAL_ID##*/}"
 QUEUE_URL=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::SQS::Queue") | .value.physicalId] | first')
 TOPIC_ARN=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::SNS::Topic") | .value.physicalId] | first')
 
