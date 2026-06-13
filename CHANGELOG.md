@@ -1,3 +1,10 @@
+# [0.220.0](https://github.com/go-to-k/cdkd/compare/v0.219.9...v0.220.0) (2026-06-13)
+
+
+### Features
+
+* **deployment:** persist structured deployment events to S3 + cdkd events command ([#820](https://github.com/go-to-k/cdkd/issues/820)) ([de90566](https://github.com/go-to-k/cdkd/commit/de90566586c3fc81169ee0387b296b5175c7e78d))
+
 ## [0.219.9](https://github.com/go-to-k/cdkd/compare/v0.219.8...v0.219.9) (2026-06-13)
 
 
