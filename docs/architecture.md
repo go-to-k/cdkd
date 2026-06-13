@@ -505,6 +505,17 @@ interface ResourceProvider {
 generatePatch(oldProps: any, newProps: any): JSONPatchOperation[]
 ```
 
+Write-only properties (per the type's registry schema `writeOnlyProperties`,
+resolved via `cloudformation:DescribeType` and cached per type) are stripped
+from the previous-properties side before patch generation, so the patch
+always carries `add` ops for write-only properties present in the desired
+properties. Cloud Control applies patches read-modify-write and read handlers
+cannot return write-only properties, so any write-only property absent from
+the patch would be dropped from the desired state on every UPDATE (issue #809;
+e.g. `AWS::ECS::Service.VolumeConfigurations`). If `DescribeType` is
+unavailable (missing permission, throttling), cdkd warns and falls back to
+the minimal patch.
+
 **Limitations**:
 
 - Some resources not supported by Cloud Control API
