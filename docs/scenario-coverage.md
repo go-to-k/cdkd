@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**46 / 46 canonical scenarios** have at least one integ fixture exercising them. **113 / 132 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**47 / 47 canonical scenarios** have at least one integ fixture exercising them. **114 / 133 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (46 scenarios)
+## Per-scenario coverage (47 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -62,6 +62,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `local-websocket-api` | `cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane. | [`local-start-api-websocket`](../tests/integration/local-start-api-websocket/) |
 | `migrate-from-bare-cfn` | `cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire. | [`migrate-from-bare-cfn`](../tests/integration/migrate-from-bare-cfn/) |
 | `migrate-from-cfn-handover` | CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack). | [`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
+| `multi-asset` | Asset-publishing layer under concurrency: MANY assets of TWO kinds publish in ONE `cdkd deploy` — 1 Docker image asset (`DockerAssetPublisher` -> ECR build+push, ARM_64-pinned) + 3 distinct multi-file directory assets (three distinct `FileAssetPublisher` S3 uploads, one per zip Lambda) + 1 generic `s3_assets.Asset` (a 4th S3 upload read back at runtime via cdkd-resolved bucket/key env). Exercises FileAssetPublisher + DockerAssetPublisher concurrency, ECR + S3 in one run, and asset-ref intrinsics. Each Lambda returns a DISTINCT marker so a cross-wired asset (wrong Code ref) fails the test — proving each distinct asset uploaded AND was wired to the correct Lambda. Clean destroy: all 4 Lambdas + OUR pushed ECR image (by tag) gone; the shared bootstrap container-assets repo + asset bucket objects persist by design. | [`multi-asset`](../tests/integration/multi-asset/) |
 | `multi-region-state-key` | Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout). | [`multi-region-same-stack`](../tests/integration/multi-region-same-stack/) |
 | `multi-stack-getstackoutput` | Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export). | [`composite-stack`](../tests/integration/composite-stack/)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/)<br>[`multi-stack-deps`](../tests/integration/multi-stack-deps/) |
 | `multi-stack-importvalue-strong-ref` | Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]). | [`import-value-strong-ref`](../tests/integration/import-value-strong-ref/) |

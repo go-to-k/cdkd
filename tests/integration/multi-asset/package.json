@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-multi-asset",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkd multi-asset publishing (1 Docker/ECR image + 3 distinct S3 zip assets + 1 generic S3 asset in one deploy)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
