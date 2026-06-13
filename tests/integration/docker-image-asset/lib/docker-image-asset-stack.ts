@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,8 +31,30 @@ export class DockerImageAssetStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // PIN the build platform AND the Lambda architecture to ARM_64, and keep
+    // them MATCHING. This is load-bearing, not cosmetic:
+    //
+    //   - A default `DockerImageFunction` synthesizes NO `source.platform` in
+    //     the asset manifest and NO `Architectures` on the Lambda template (so
+    //     the function defaults to x86_64). cdkd honors `source.platform` when
+    //     the manifest carries it, but when it is ABSENT cdkd builds the image
+    //     for the HOST architecture. On an arm64 host (Apple Silicon) that
+    //     produces an arm64 image pushed to an x86_64 Lambda, which fails at
+    //     invoke with `Runtime.InvalidEntrypoint: ProcessSpawnFailed` — the
+    //     exact cross-arch trap CDK CLI users hit on Mac.
+    //   - Pinning `platform: LINUX_ARM64` makes CDK emit `source.platform:
+    //     "linux/arm64"` so cdkd builds the correct arch regardless of host,
+    //     and `architecture: ARM_64` emits `Architectures: ["arm64"]` so the
+    //     pushed image arch matches the Lambda runtime arch. ARM_64 (over
+    //     AMD64) avoids buildx/qemu cross-emulation on this arm64 dev/CI host.
+    //
+    // The `public.ecr.aws/lambda/nodejs:20` base image is multi-arch, so it
+    // resolves to the arm64 variant cleanly.
     const fn = new lambda.DockerImageFunction(this, 'DockerHandler', {
-      code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../docker')),
+      code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../docker'), {
+        platform: ecr_assets.Platform.LINUX_ARM64,
+      }),
+      architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
       environment: {

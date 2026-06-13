@@ -10,12 +10,15 @@
 #   1. deploy CdkdDockerImageAssetExample  -> cdkd builds the local Dockerfile
 #      and pushes the image to the CDK-managed asset ECR repo, then creates a
 #      Lambda function with PackageType=Image pointing at that ECR image.
-#   2. assert: the ECR repo exists + contains >=1 image; the Lambda exists
-#      with PackageType=Image and a Code.ImageUri pointing at that repo+digest.
+#   2. assert: the ECR repo exists + OUR pushed image (identified by its
+#      content-addressed asset-hash TAG, parsed from the Lambda Code.ImageUri)
+#      is present. We do NOT count images in the shared bootstrap repo (it
+#      already holds thousands from other deploys — not a meaningful signal).
 #   3. invoke the Lambda and assert the expected payload (proves the pushed
-#      image actually runs).
-#   4. destroy -> assert clean (0 errors): Lambda gone, the pushed image is
-#      gone from ECR (cdkd's ECR provider force-deletes), state file gone.
+#      image actually runs; arch is pinned ARM_64 to match the build platform).
+#   4. destroy -> assert clean (0 errors): Lambda gone, OUR pushed image (by
+#      tag) is gone from ECR, state file gone. The SHARED bootstrap repo itself
+#      is expected to persist (cdkd does not own it) and is NOT a failure.
 #
 # BSD/macOS-portable. Captures real rc + prints an explicit `[verify] PASS`.
 #
@@ -40,9 +43,12 @@ LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 # Resolved after deploy (used by cleanup's direct ECR sweep on the failure
 # path). The CDK-managed container-assets repo for the default bootstrap
 # qualifier hnb659fds; the image tag is the asset hash. We capture both the
-# repo name and the pushed image digest after deploy.
+# repo name and the pushed image TAG after deploy. We assert OUR image by tag
+# (the content-addressed asset hash) rather than digest: the Lambda's
+# `Code.ImageUri` is the TAG form (`...:{assetHash}`), not the `@sha256:...`
+# digest form, so the tag is what reliably identifies the image WE pushed.
 ECR_REPO=""
-IMAGE_DIGEST=""
+IMAGE_TAG=""
 
 cleanup() {
   rc=$?
@@ -64,11 +70,11 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
   fi
   # Direct ECR sweep in case destroy itself is what broke: delete only the
-  # image WE pushed (by digest) from the shared CDK asset repo, so we never
+  # image WE pushed (by tag) from the shared CDK asset repo, so we never
   # touch other deployments' images. ECR repos with images linger + cost.
-  if [ -n "${ECR_REPO}" ] && [ -n "${IMAGE_DIGEST}" ]; then
+  if [ -n "${ECR_REPO}" ] && [ -n "${IMAGE_TAG}" ]; then
     aws ecr batch-delete-image --repository-name "${ECR_REPO}" \
-      --image-ids "imageDigest=${IMAGE_DIGEST}" --region "${REGION}" >/dev/null 2>&1 || true
+      --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   set -eu
   exit "${rc}"
@@ -148,15 +154,30 @@ if [ -z "${IMAGE_URI}" ] || [ "${IMAGE_URI}" = "None" ]; then
 fi
 echo "    OK: Lambda Code.ImageUri == ${IMAGE_URI}"
 
-# ImageUri form: {account}.dkr.ecr.{region}.amazonaws.com/{repo}@sha256:{digest}
-# (CDK pushes by tag, but Lambda resolves + stores the URI by digest).
+# ImageUri form: {account}.dkr.ecr.{region}.amazonaws.com/{repo}:{tag}
+# CDK + cdkd push by TAG (the content-addressed asset hash). Lambda stores the
+# URI in the SAME tag form it was given, so the tag (the part after the final
+# `:`) is what identifies OUR pushed image. (It can in principle be a digest
+# `@sha256:...` form too; handle both, but the tag form is what we observe.)
+#   - repo: everything between the first `/` and the `:` / `@` separator.
+#   - tag:  the `:tag` segment when present (and not a digest).
 ECR_REPO=$(echo "${IMAGE_URI}" | sed -E 's#^[^/]+/##; s#[@:].*$##')
-IMAGE_DIGEST=$(echo "${IMAGE_URI}" | sed -nE 's#.*@(sha256:[0-9a-f]+)$#\1#p')
+# Extract the `:tag` only (skip the `@sha256:...` digest form): take the part
+# after the LAST `:` but only if the URI has no `@` digest separator.
+if echo "${IMAGE_URI}" | grep -q '@'; then
+  IMAGE_TAG=""
+else
+  IMAGE_TAG="${IMAGE_URI##*:}"
+fi
 if [ -z "${ECR_REPO}" ]; then
   echo "FAIL: could not parse ECR repo name from ImageUri '${IMAGE_URI}'" >&2
   exit 1
 fi
-echo "    parsed ECR repo: ${ECR_REPO}  digest: ${IMAGE_DIGEST:-<none>}"
+if [ -z "${IMAGE_TAG}" ]; then
+  echo "FAIL: could not parse an image TAG from ImageUri '${IMAGE_URI}' (expected the {repo}:{assetHash} form)" >&2
+  exit 1
+fi
+echo "    parsed ECR repo: ${ECR_REPO}  tag: ${IMAGE_TAG}"
 
 # --- Assertion: the ECR repo exists ----------------------------------------
 if ! aws ecr describe-repositories --repository-names "${ECR_REPO}" --region "${REGION}" >/dev/null 2>&1; then
@@ -165,24 +186,20 @@ if ! aws ecr describe-repositories --repository-names "${ECR_REPO}" --region "${
 fi
 echo "    OK: ECR repository '${ECR_REPO}' exists"
 
-# --- Assertion: the repo contains >=1 image (cdkd built + pushed it) --------
-IMAGE_COUNT=$(aws ecr list-images --repository-name "${ECR_REPO}" --region "${REGION}" \
-  --query 'length(imageIds)' --output text 2>/dev/null)
-if [ -z "${IMAGE_COUNT}" ] || [ "${IMAGE_COUNT}" = "None" ] || [ "${IMAGE_COUNT}" -lt 1 ]; then
-  echo "FAIL: ECR repo '${ECR_REPO}' has ${IMAGE_COUNT:-0} images, expected >=1 (cdkd should have pushed one)" >&2
+# --- Assertion: OUR pushed image (by tag) is present in the repo ------------
+# NOTE: we deliberately do NOT assert a ">=1 image" count against the SHARED
+# bootstrap repo `cdk-hnb659fds-container-assets-*`. That repo already holds
+# thousands of images from every other CDK deploy on this account, so a count
+# check is meaningless as a signal (and the large/odd-shaped count tripped an
+# `integer expected` bash error). The meaningful proof is that OUR exact image
+# — identified by the content-addressed asset-hash tag parsed above — was
+# pushed by cdkd's deploy-time build.
+if ! aws ecr describe-images --repository-name "${ECR_REPO}" \
+    --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: the pushed image (tag ${IMAGE_TAG}) is not present in ECR repo '${ECR_REPO}' (cdkd should have built + pushed it)" >&2
   exit 1
 fi
-echo "    OK: ECR repo '${ECR_REPO}' contains ${IMAGE_COUNT} image(s) (cdkd built + pushed the Docker image asset)"
-
-# --- Assertion: OUR pushed image (by digest) is present in the repo ---------
-if [ -n "${IMAGE_DIGEST}" ]; then
-  if ! aws ecr describe-images --repository-name "${ECR_REPO}" \
-      --image-ids "imageDigest=${IMAGE_DIGEST}" --region "${REGION}" >/dev/null 2>&1; then
-    echo "FAIL: the pushed image (digest ${IMAGE_DIGEST}) is not present in ECR repo '${ECR_REPO}'" >&2
-    exit 1
-  fi
-  echo "    OK: the pushed image (digest ${IMAGE_DIGEST}) is present in ECR"
-fi
+echo "    OK: the pushed image (tag ${IMAGE_TAG}) is present in ECR (cdkd built + pushed the Docker image asset)"
 
 # --- Assertion: invoking the Lambda runs the pushed image -------------------
 echo "==> Phase 1b: invoke the Lambda (proves the pushed image actually runs)"
@@ -223,26 +240,26 @@ echo "    OK: Lambda function is gone"
 
 # The Docker image asset is pushed into the SHARED CDK-managed container-assets
 # repo. cdkd does not own/delete that bootstrap-managed repo (other stacks may
-# share it), so the assertion is that OUR pushed image (by digest) is gone, not
-# that the repo itself is removed. cdkd's ECR provider force-deletes repos it
-# owns when they contain images; the shared asset repo's image lifecycle is the
-# concern here.
-if [ -n "${IMAGE_DIGEST}" ]; then
+# share it) — so we deliberately do NOT fail on the shared repo persisting.
+# The assertion is that OUR pushed image (by tag) is gone. CDK's asset images
+# are not auto-pruned on stack delete; if cdkd left it behind we sweep just our
+# tag, then assert 0 orphans for our image.
+if [ -n "${IMAGE_TAG}" ]; then
   if aws ecr describe-images --repository-name "${ECR_REPO}" \
-      --image-ids "imageDigest=${IMAGE_DIGEST}" --region "${REGION}" >/dev/null 2>&1; then
-    echo "==> destroy left the pushed image behind; sweeping it (asset images are not auto-pruned)"
+      --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1; then
+    echo "==> destroy left the pushed image behind; sweeping it (shared-repo asset images are not auto-pruned)"
     aws ecr batch-delete-image --repository-name "${ECR_REPO}" \
-      --image-ids "imageDigest=${IMAGE_DIGEST}" --region "${REGION}" >/dev/null 2>&1 || true
+      --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
-  # Re-check: after the sweep, the image must be gone (0 orphans).
+  # Re-check: after the sweep, OUR image must be gone (0 orphans for our tag).
   if aws ecr describe-images --repository-name "${ECR_REPO}" \
-      --image-ids "imageDigest=${IMAGE_DIGEST}" --region "${REGION}" >/dev/null 2>&1; then
-    echo "FAIL: pushed ECR image (digest ${IMAGE_DIGEST}) still present after destroy + sweep" >&2
+      --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1; then
+    echo "FAIL: pushed ECR image (tag ${IMAGE_TAG}) still present after destroy + sweep" >&2
     exit 1
   fi
-  echo "    OK: pushed ECR image (digest ${IMAGE_DIGEST}) is gone (0 ECR orphans)"
+  echo "    OK: pushed ECR image (tag ${IMAGE_TAG}) is gone (0 ECR orphans)"
   # Clear so the EXIT-trap sweep does not run again.
-  IMAGE_DIGEST=""
+  IMAGE_TAG=""
 fi
 
 if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
