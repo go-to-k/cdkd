@@ -339,7 +339,7 @@ describe('cdkd publish-assets', () => {
 
       const { stderr, error } = await runCmd(['--region', 'us-east-1']);
       expect(error).toBeUndefined();
-      expect(stderr).toMatch(/--region is deprecated for this command and has no effect/);
+      expect(stderr).toMatch(/--region is deprecated and will be removed in a future release/);
     });
   });
 });

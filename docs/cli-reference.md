@@ -904,7 +904,8 @@ time — the same auto-fallback the deploy engine applies (#614). DELETE
 lines are not annotated; deletes route via the recorded `provisionedBy`
 on each resource's state, not via template inspection.
 
-Like every non-bootstrap command, `--region` is deprecated and ignored.
+Like every non-bootstrap command, `--region` is deprecated (prefer
+`AWS_REGION` / your AWS profile) but still honored if passed.
 Stack selection (`<stacks...>` / `--all` / wildcards / display paths)
 follows the same rules as `cdkd deploy` / `cdkd destroy`.
 
@@ -994,7 +995,8 @@ Flags:
   (`--accept`) or pushing changes back to AWS (`--revert`).
 - `--state-bucket`, `--state-prefix`, `--profile`, `--verbose`,
   `--role-arn`, `--region` — same as on every other state-driven
-  command. `--region` is deprecated and ignored (PR 5).
+  command. `--region` is deprecated (prefer `AWS_REGION` / your AWS
+  profile) but still honored if passed (PR 5).
 
 Exit codes:
 

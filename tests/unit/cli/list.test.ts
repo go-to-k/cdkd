@@ -303,7 +303,7 @@ describe('cdkd list', () => {
     // Command still runs to completion.
     expect(stdout).toBe('StackA\n');
     // Warning is on stderr, mentions --region and points users at AWS_REGION.
-    expect(stderr).toMatch(/--region is deprecated for this command and has no effect/);
+    expect(stderr).toMatch(/--region is deprecated and will be removed in a future release/);
     expect(stderr).toMatch(/AWS_REGION/);
   });
 

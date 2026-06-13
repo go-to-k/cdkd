@@ -313,7 +313,7 @@ describe('cdkd state list', () => {
     ]);
     // Command still completes successfully (PR 1 added region suffix to default output).
     expect(stdout).toBe('StackA (us-east-1)\n');
-    expect(stderr).toMatch(/--region is deprecated for this command and has no effect/);
+    expect(stderr).toMatch(/--region is deprecated and will be removed in a future release/);
     expect(stderr).toMatch(/AWS_REGION/);
   });
 
