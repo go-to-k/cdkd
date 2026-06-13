@@ -28,10 +28,7 @@ export const IMPLICIT_DELETE_DEPENDENCIES: Record<string, readonly string[]> = {
   // same NAT-before-IGW ordering. (The EIP itself does not need a type-based
   // rule: the NAT Ref's the EIP via `AllocationId`, so the reversed delete
   // traversal already deletes the NAT before the EIP is released.)
-  'AWS::EC2::InternetGateway': [
-    'AWS::EC2::VPCGatewayAttachment',
-    'AWS::EC2::NatGateway',
-  ],
+  'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment', 'AWS::EC2::NatGateway'],
 
   // VPCGatewayAttachment (the IGW<->VPC attachment) must be detached AFTER the
   // NAT Gateway is gone — same `mapped public address(es)` rejection as the IGW
