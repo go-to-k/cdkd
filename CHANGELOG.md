@@ -1,3 +1,10 @@
+## [0.219.5](https://github.com/go-to-k/cdkd/compare/v0.219.4...v0.219.5) (2026-06-13)
+
+
+### Bug Fixes
+
+* **deployment:** retry ECS CapacityProvider create on infrastructure-role IAM propagation race ([#810](https://github.com/go-to-k/cdkd/issues/810)) ([cf5ef69](https://github.com/go-to-k/cdkd/commit/cf5ef693be7b8603c3e2f4928860b8c314e1a81e))
+
 ## [0.219.4](https://github.com/go-to-k/cdkd/compare/v0.219.3...v0.219.4) (2026-06-11)
 
 
