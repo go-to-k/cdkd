@@ -8,7 +8,11 @@ import {
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
-import { DescribeDBClustersCommand, RDSClient } from '@aws-sdk/client-rds';
+import {
+  DescribeDBClustersCommand,
+  DescribeDBInstancesCommand,
+  RDSClient,
+} from '@aws-sdk/client-rds';
 import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
@@ -643,6 +647,53 @@ export class CloudControlProvider implements ResourceProvider {
           // The resolver's nested-path walk is the second line of defence.
           this.logger.debug(
             `Failed to enrich RDS DBCluster ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        break;
+
+      case 'AWS::RDS::DBInstance':
+        // Sibling of the DBCluster branch above: a DBInstance whose template
+        // sets a silent-drop top-level property (BackupRetentionPeriod /
+        // CopyTagsToSnapshot / MultiAZ / PubliclyAccessible / StorageType /
+        // etc. — see the `AWS::RDS::DBInstance` silentDrop set in
+        // property-coverage.generated.ts) is routed entirely through CC API
+        // by the #614 silent-drop routing rule, which bypasses
+        // RDSProvider.create — so the flat-key `Endpoint.Address` /
+        // `Endpoint.Port` attributes the SDK provider would have populated
+        // never get set, and `Fn::GetAtt(<DBInstance>, 'Endpoint.Address')`
+        // falls through the resolver's constructAttribute branch to
+        // `physicalId` (the DB identifier, not the endpoint hostname).
+        // SHAPE DIFFERENCE vs the DBCluster case: DescribeDBInstances returns
+        // `Endpoint` as a NESTED object `{ Address, Port, HostedZoneId }`
+        // (NOT a flat string like DBCluster's `Endpoint`). Flatten it into
+        // the SDK provider's flat-key attribute shape so consumers resolve.
+        // Best-effort: a failed Describe (e.g. permissions gap) leaves the
+        // CC-API attribute shape unchanged and must not fail the deploy.
+        try {
+          // The RDSClient inherits the cdkd-resolved region via env / profile,
+          // same as the DBCluster / DynamoDB / API Gateway branches.
+          const rdsClient = new RDSClient({});
+          const describeResponse = await rdsClient.send(
+            new DescribeDBInstancesCommand({ DBInstanceIdentifier: physicalId })
+          );
+          const inst = describeResponse.DBInstances?.[0];
+          if (inst) {
+            if (inst.Endpoint?.Address) enriched['Endpoint.Address'] = inst.Endpoint.Address;
+            if (inst.Endpoint?.Port !== undefined) {
+              enriched['Endpoint.Port'] = String(inst.Endpoint.Port);
+            }
+            if (inst.Endpoint?.HostedZoneId) {
+              enriched['Endpoint.HostedZoneId'] = inst.Endpoint.HostedZoneId;
+            }
+            if (inst.DBInstanceArn) enriched['Arn'] = inst.DBInstanceArn;
+            this.logger.debug(
+              `Enriched RDS DBInstance ${physicalId} with Endpoint/Port/Arn from DescribeDBInstances`
+            );
+          }
+        } catch (error) {
+          // Best-effort: a failed Describe shouldn't fail the deploy.
+          this.logger.debug(
+            `Failed to enrich RDS DBInstance ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
           );
         }
         break;

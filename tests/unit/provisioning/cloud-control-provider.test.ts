@@ -4,6 +4,17 @@ const mockCloudControlSend = vi.fn();
 const mockCloudControlConfigRegion = vi.fn();
 const mockCloudFormationSend = vi.fn();
 const mockLoggerWarn = vi.fn();
+// `new RDSClient({})` is constructed directly inside CloudControlProvider's
+// enrichResourceAttributes RDS branches, so it is NOT routed through the
+// mocked getAwsClients() factory. Mock the @aws-sdk/client-rds module so the
+// constructed client's send() is controllable per-test.
+const mockRdsSend = vi.fn();
+
+vi.mock('@aws-sdk/client-rds', () => ({
+  RDSClient: vi.fn(() => ({ send: mockRdsSend })),
+  DescribeDBClustersCommand: vi.fn((input: unknown) => ({ __type: 'DescribeDBClusters', input })),
+  DescribeDBInstancesCommand: vi.fn((input: unknown) => ({ __type: 'DescribeDBInstances', input })),
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -593,5 +604,66 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
 
     expect(result).toEqual({ physicalId: 'svc-1', wasReplaced: false });
     expect(updateResourceCallCount()).toBe(0);
+  });
+});
+
+describe('CloudControlProvider RDS DBInstance attribute enrichment (CC-API routing)', () => {
+  let provider: CloudControlProvider;
+
+  // enrichResourceAttributes is private; exercise it directly. It is the
+  // method `create()` calls after a CC-API create, and the only behavior
+  // under test here is the DBInstance Endpoint/Port/Arn overlay.
+  const enrich = (physicalId: string, attributes: Record<string, unknown>) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes('AWS::RDS::DBInstance', physicalId, attributes);
+
+  beforeEach(() => {
+    mockRdsSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('overlays flat-key Endpoint.Address / Endpoint.Port (string) / Endpoint.HostedZoneId / Arn from the nested DescribeDBInstances Endpoint object', async () => {
+    mockRdsSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          Endpoint: {
+            Address: 'mydb.xxxx.us-east-1.rds.amazonaws.com',
+            Port: 5432,
+            HostedZoneId: 'Z123',
+          },
+          DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:mydb',
+        },
+      ],
+    });
+
+    const enriched = await enrich('mydb', {});
+
+    expect(enriched['Endpoint.Address']).toBe('mydb.xxxx.us-east-1.rds.amazonaws.com');
+    // Port must be coerced to the STRING shape the SDK provider writes, so
+    // Fn::GetAtt(<DBInstance>, 'Endpoint.Port') consumers (security-group
+    // ingress rules) receive a string like the DBCluster path.
+    expect(enriched['Endpoint.Port']).toBe('5432');
+    expect(enriched['Endpoint.HostedZoneId']).toBe('Z123');
+    expect(enriched['Arn']).toBe('arn:aws:rds:us-east-1:123456789012:db:mydb');
+  });
+
+  it('is best-effort: a failed DescribeDBInstances does not throw and leaves attributes unchanged', async () => {
+    mockRdsSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const original = { ExistingAttr: 'keep-me' };
+    const enriched = await enrich('mydb', original);
+
+    expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
+    expect(enriched['Endpoint.Address']).toBeUndefined();
+    expect(enriched['Endpoint.Port']).toBeUndefined();
   });
 });

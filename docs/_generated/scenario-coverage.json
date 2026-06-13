@@ -161,6 +161,10 @@
       "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family."
     },
     {
+      "tag": "rds-full-stack",
+      "description": "Realistic single-instance RDS deployment: L2 `rds.DatabaseInstance` (db.t3.micro, single-AZ, isolated subnets, no NAT) with an EXPLICIT DBSubnetGroup + DBParameterGroup + SecurityGroup + CDK-managed Secrets Manager credentials, plus an SSM Parameter consuming the DBInstance COMPUTED endpoint via `Fn::GetAtt(<DBInstance>, Endpoint.Address)`. Stresses event-driven DAG ordering (sub-groups before the instance), slow-create propagation (~5-10 min instance create), and intrinsic resolution of a computed attribute only known post-create (the SSM value must equal the live endpoint)."
+    },
+    {
       "tag": "remove-protection-bypass",
       "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types."
     },
@@ -869,6 +873,13 @@
       "scenarios": []
     },
     {
+      "name": "rds-full-stack",
+      "annotated": true,
+      "scenarios": [
+        "rds-full-stack"
+      ]
+    },
+    {
       "name": "recreate-mixed-direction",
       "annotated": false,
       "scenarios": []
@@ -1346,6 +1357,13 @@
       "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family.",
       "fixtures": [
         "rds-aurora"
+      ]
+    },
+    {
+      "scenario": "rds-full-stack",
+      "description": "Realistic single-instance RDS deployment: L2 `rds.DatabaseInstance` (db.t3.micro, single-AZ, isolated subnets, no NAT) with an EXPLICIT DBSubnetGroup + DBParameterGroup + SecurityGroup + CDK-managed Secrets Manager credentials, plus an SSM Parameter consuming the DBInstance COMPUTED endpoint via `Fn::GetAtt(<DBInstance>, Endpoint.Address)`. Stresses event-driven DAG ordering (sub-groups before the instance), slow-create propagation (~5-10 min instance create), and intrinsic resolution of a computed attribute only known post-create (the SSM value must equal the live endpoint).",
+      "fixtures": [
+        "rds-full-stack"
       ]
     },
     {
