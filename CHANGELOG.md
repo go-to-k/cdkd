@@ -1,3 +1,10 @@
+## [0.221.3](https://github.com/go-to-k/cdkd/compare/v0.221.2...v0.221.3) (2026-06-13)
+
+
+### Bug Fixes
+
+* **deployment:** Fn::Join over list-returning intrinsics + AWS::NotificationARNs in Fn::Sub ([#838](https://github.com/go-to-k/cdkd/issues/838)) ([#847](https://github.com/go-to-k/cdkd/issues/847)) ([78d239a](https://github.com/go-to-k/cdkd/commit/78d239a0a185e4034aa15ab5e6cf4ff32128316c))
+
 ## [0.221.2](https://github.com/go-to-k/cdkd/compare/v0.221.1...v0.221.2) (2026-06-13)
 
 
