@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**48 / 48 canonical scenarios** have at least one integ fixture exercising them. **115 / 134 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**49 / 49 canonical scenarios** have at least one integ fixture exercising them. **116 / 135 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (48 scenarios)
+## Per-scenario coverage (49 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -45,6 +45,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `exports-index-region-resolve` | Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819). | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
 | `globaltable-cross-region-replica` | DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
+| `iam-fresh-role-immediate-assume` | Race detector: SEVERAL brand-new IAM roles each consumed within ~1s by a DIFFERENT service in ONE deploy (Lambda exec role -> CreateFunction; SFN role -> CreateStateMachine; EventBridge target role -> PutTargets; fresh principal -> SQS QueuePolicy + SNS TopicPolicy). Deploy SUCCESS is the pass condition — a failure is an unprotected consumer racing IAM propagation (the narrow #794/#805/#756 fixes cover only a few consumers). | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) |
 | `iam-policy-propagation-retry` | CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race. | [`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/) |
 | `lambda-vpc-subnet-sg-deletion-order` | Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `legacy-bucket-name-fallback` | New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution. | [`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) |

@@ -103,6 +103,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race.',
   'sg-circular-dependency':
     'Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation.',
+  'iam-fresh-role-immediate-assume':
+    'Race detector: SEVERAL brand-new IAM roles each consumed within ~1s by a DIFFERENT service in ONE deploy (Lambda exec role -> CreateFunction; SFN role -> CreateStateMachine; EventBridge target role -> PutTargets; fresh principal -> SQS QueuePolicy + SNS TopicPolicy). Deploy SUCCESS is the pass condition — a failure is an unprotected consumer racing IAM propagation (the narrow #794/#805/#756 fixes cover only a few consumers).',
   'cdk-defensive-vpc-deps-relax':
     'CDK-defensive route DependsOn relaxation for VPC Lambda parallelization.',
 

@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "iam-fresh-role-immediate-assume"
+  ]
+}
