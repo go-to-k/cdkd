@@ -69,6 +69,10 @@
       "description": "CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race."
     },
     {
+      "tag": "intrinsics-torture",
+      "description": "Stress-test of cdkd's hand-rolled intrinsic-function resolver (`src/deployment/intrinsic-function-resolver.ts`), which resolves EVERY intrinsic itself instead of deferring to CloudFormation. Each harder intrinsic computes an `AWS::SSM::Parameter` Value read back + asserted against an independently-computed expected value: `Fn::Cidr` (carve a /16 into eight /24s), `Fn::FindInMap` (Mappings region/env lookup), `Fn::GetAZs` + `Fn::Select`, `Fn::Base64`, nested `Fn::Split` + `Fn::Select` + `Fn::Join`, deeply-nested two-arg `Fn::Sub` (literal-map var via `Fn::Join` + `${AWS::Region}` + `${Resource.Arn}` GetAtt), and ALL pseudo-parameters (AccountId / Region / Partition / StackName / URLSuffix / NotificationARNs). Goes beyond the `intrinsic-functions` fixture (which covers only Ref / GetAtt / Join / Sub)."
+    },
+    {
       "tag": "lambda-vpc-subnet-sg-deletion-order",
       "description": "Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation."
     },
@@ -533,6 +537,13 @@
       "name": "intrinsic-functions",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "intrinsics-torture",
+      "annotated": true,
+      "scenarios": [
+        "intrinsics-torture"
+      ]
     },
     {
       "name": "kms-encryption",
@@ -1172,6 +1183,13 @@
       "fixtures": [
         "lambda",
         "microservices"
+      ]
+    },
+    {
+      "scenario": "intrinsics-torture",
+      "description": "Stress-test of cdkd's hand-rolled intrinsic-function resolver (`src/deployment/intrinsic-function-resolver.ts`), which resolves EVERY intrinsic itself instead of deferring to CloudFormation. Each harder intrinsic computes an `AWS::SSM::Parameter` Value read back + asserted against an independently-computed expected value: `Fn::Cidr` (carve a /16 into eight /24s), `Fn::FindInMap` (Mappings region/env lookup), `Fn::GetAZs` + `Fn::Select`, `Fn::Base64`, nested `Fn::Split` + `Fn::Select` + `Fn::Join`, deeply-nested two-arg `Fn::Sub` (literal-map var via `Fn::Join` + `${AWS::Region}` + `${Resource.Arn}` GetAtt), and ALL pseudo-parameters (AccountId / Region / Partition / StackName / URLSuffix / NotificationARNs). Goes beyond the `intrinsic-functions` fixture (which covers only Ref / GetAtt / Join / Sub).",
+      "fixtures": [
+        "intrinsics-torture"
       ]
     },
     {

@@ -1424,6 +1424,46 @@ describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
   });
 });
 
+describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', () => {
+  // cdkd has no stack-notification-ARN concept, so AWS::NotificationARNs is
+  // always an empty list — which CloudFormation resolves to an empty string
+  // in an Fn::Sub / Ref string context. Before the fix it resolved to
+  // `undefined`, which left the literal `${AWS::NotificationARNs}` placeholder
+  // in an Fn::Sub body (the pseudo branch was skipped on `undefined`).
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  const context: ResolverContext = {
+    template: { Resources: {} },
+    resources: {},
+  };
+
+  it('substitutes ${AWS::NotificationARNs} to an empty string in Fn::Sub', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': '${AWS::NotificationARNs}' },
+      context
+    );
+    expect(result).toBe('');
+  });
+
+  it('substitutes ${AWS::NotificationARNs} embedded in a surrounding Fn::Sub string', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': 'notif=${AWS::NotificationARNs};done' },
+      context
+    );
+    expect(result).toBe('notif=;done');
+  });
+
+  it('resolves a bare Ref: AWS::NotificationARNs to an empty string', async () => {
+    const result = await resolver.resolve({ Ref: 'AWS::NotificationARNs' }, context);
+    expect(result).toBe('');
+  });
+});
+
 describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381)', () => {
   let resolver: IntrinsicFunctionResolver;
 
@@ -1744,5 +1784,107 @@ describe('IntrinsicFunctionResolver - unknown intrinsic detection', () => {
     expect(await resolver.resolve({ 'Fn::Base64': 'hi' }, ctx)).toBe(
       Buffer.from('hi').toString('base64')
     );
+  });
+});
+
+describe('IntrinsicFunctionResolver - Fn::Join over a list-returning intrinsic', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+  });
+
+  it('should resolve Fn::Join whose second arg is Fn::Cidr (single list-returning intrinsic)', async () => {
+    const context: ResolverContext = {
+      resources: {},
+      template: {} as CloudFormationTemplate,
+    };
+
+    // Fn::Cidr('10.0.0.0/16', 4, 8) -> 4 /24 blocks, joined by ','.
+    const result = await resolver.resolve(
+      { 'Fn::Join': [',', { 'Fn::Cidr': ['10.0.0.0/16', 4, 8] }] },
+      context
+    );
+
+    expect(result).toBe('10.0.0.0/24,10.0.1.0/24,10.0.2.0/24,10.0.3.0/24');
+  });
+
+  it('should resolve Fn::Join whose second arg is Fn::Split', async () => {
+    const context: ResolverContext = {
+      resources: {},
+      template: {} as CloudFormationTemplate,
+    };
+
+    // Fn::Split(',', 'a,b,c') -> ['a','b','c'], re-joined with '|'.
+    const result = await resolver.resolve(
+      { 'Fn::Join': ['|', { 'Fn::Split': [',', 'a,b,c'] }] },
+      context
+    );
+
+    expect(result).toBe('a|b|c');
+  });
+
+  it('should resolve Fn::Join whose second arg is Fn::GetAZs', async () => {
+    mockEc2Send.mockResolvedValueOnce({
+      AvailabilityZones: [
+        { ZoneName: 'us-east-1a', State: 'available' },
+        { ZoneName: 'us-east-1b', State: 'available' },
+        { ZoneName: 'us-east-1c', State: 'available' },
+      ],
+    });
+
+    const context: ResolverContext = {
+      resources: {},
+      template: { Resources: {} },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': [',', { 'Fn::GetAZs': '' }] },
+      context
+    );
+
+    expect(result).toBe('us-east-1a,us-east-1b,us-east-1c');
+  });
+
+  it('should resolve Fn::Join whose second arg is a Ref to a CommaDelimitedList parameter', async () => {
+    const context: ResolverContext = {
+      resources: {},
+      template: {} as CloudFormationTemplate,
+      // A CommaDelimitedList parameter resolves to a real array value.
+      parameters: { SubnetIds: ['subnet-aaa', 'subnet-bbb', 'subnet-ccc'] },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': [',', { Ref: 'SubnetIds' }] },
+      context
+    );
+
+    expect(result).toBe('subnet-aaa,subnet-bbb,subnet-ccc');
+  });
+
+  it('should still resolve Fn::Join whose second arg is a literal array (regression)', async () => {
+    const context: ResolverContext = {
+      resources: {},
+      template: {} as CloudFormationTemplate,
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': ['-', ['a', 'b', 'c']] },
+      context
+    );
+
+    expect(result).toBe('a-b-c');
+  });
+
+  it('should throw a clear error when the second arg resolves to a non-list', async () => {
+    const context: ResolverContext = {
+      resources: {},
+      template: {} as CloudFormationTemplate,
+      parameters: { NotAList: 'just-a-string' },
+    };
+
+    await expect(
+      resolver.resolve({ 'Fn::Join': [',', { Ref: 'NotAList' }] }, context)
+    ).rejects.toThrow(/Fn::Join's second argument must be a list/);
   });
 });

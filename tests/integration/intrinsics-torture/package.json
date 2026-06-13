@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-intrinsics-torture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd integ designed to surface intrinsic-function-resolution bugs",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

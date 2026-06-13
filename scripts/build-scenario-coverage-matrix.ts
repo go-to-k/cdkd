@@ -179,6 +179,10 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'cross-cutting-deploy-destroy':
     'Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate.',
 
+  // ---- Intrinsic-function resolution patterns ----
+  'intrinsics-torture':
+    "Stress-test of cdkd's hand-rolled intrinsic-function resolver (`src/deployment/intrinsic-function-resolver.ts`), which resolves EVERY intrinsic itself instead of deferring to CloudFormation. Each harder intrinsic computes an `AWS::SSM::Parameter` Value read back + asserted against an independently-computed expected value: `Fn::Cidr` (carve a /16 into eight /24s), `Fn::FindInMap` (Mappings region/env lookup), `Fn::GetAZs` + `Fn::Select`, `Fn::Base64`, nested `Fn::Split` + `Fn::Select` + `Fn::Join`, deeply-nested two-arg `Fn::Sub` (literal-map var via `Fn::Join` + `${AWS::Region}` + `${Resource.Arn}` GetAtt), and ALL pseudo-parameters (AccountId / Region / Partition / StackName / URLSuffix / NotificationARNs). Goes beyond the `intrinsic-functions` fixture (which covers only Ref / GetAtt / Join / Sub).",
+
   // ---- Type-family-specific tricky patterns ----
   'globaltable-cross-region-replica':
     'DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call).',
