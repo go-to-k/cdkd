@@ -1,3 +1,10 @@
+## [0.220.4](https://github.com/go-to-k/cdkd/compare/v0.220.3...v0.220.4) (2026-06-13)
+
+
+### Bug Fixes
+
+* **state:** resolve state bucket region in exports index store ([#824](https://github.com/go-to-k/cdkd/issues/824)) ([663f6bd](https://github.com/go-to-k/cdkd/commit/663f6bd99332172fb5a6052dafb05cb8fe6fd185))
+
 ## [0.220.3](https://github.com/go-to-k/cdkd/compare/v0.220.2...v0.220.3) (2026-06-13)
 
 
