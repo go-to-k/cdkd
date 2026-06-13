@@ -20,7 +20,6 @@ nested-stack-deep	2026-06-01T21:12:13Z	PASS	48	verify.sh	rc ok, orph clean
 apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
 multi-stack-deps	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)
 import-value-strong-ref	2026-06-02T02:13:34Z	PASS		verify.sh	F3 fixed: version-agnostic schema assertion (>= 4); deploy+strong-ref+destroy clean
-ecs-fargate	2026-06-02T02:28:23Z	PASS		verify.sh	F5 fixed: fixture now sets useForServiceConnect:true so ServiceConnectDefaults is synthesized; ns ARN round-trips via CreateCluster; 18 created/18 deleted 0 errors
 vpc-lambda-cr-race	2026-06-02T07:34:17Z	PASS		standard	coverage batch: VPC+Lambda+CR; withRetry handled role-assume propagation, deploy ok, 9 deleted 0 errors 0 orphans
 event-driven	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 19 deleted 0 errors 0 orphans
 deletion-policy-retain	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: all retain checks passed, AWS clean
@@ -124,3 +123,4 @@ kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 
 sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
 vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
 drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 21 deleted 0 err 0 orphan
+ecs-fargate	2026-06-13T03:25:23Z	PASS		verify.sh	ConfiguredAtLaunch+ManagedEBS pairing, clean destroy

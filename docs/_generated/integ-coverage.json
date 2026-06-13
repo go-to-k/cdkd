@@ -1647,7 +1647,8 @@
       ],
       "signals": {
         "ecs-fargate": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "l1",

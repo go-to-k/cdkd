@@ -1186,7 +1186,30 @@ export class ECSProvider implements ResourceProvider {
       name: v['Name'] as string,
       host: v['Host'] as { sourcePath?: string } | undefined,
       efsVolumeConfiguration: v['EFSVolumeConfiguration'] as EFSVolumeConfiguration | undefined,
+      // ConfiguredAtLaunch marks the volume as attach-at-launch so a
+      // same-stack AWS::ECS::Service can carry a matching
+      // VolumeConfigurations entry (managed EBS volume). Dropping it made
+      // the Service create fail with "Volume configuration provided but no
+      // matching configuredAtLaunch volume found in task definition"
+      // (issue #806).
+      configuredAtLaunch: this.coerceBool(v['ConfiguredAtLaunch']),
     }));
+  }
+
+  /**
+   * Coerce a CFn boolean property to a real boolean at the wire boundary.
+   * CFn templates can carry booleans as the strings "true" / "false"
+   * (e.g. via Fn::Sub / parameter plumbing), so the SDK input must
+   * normalize both. Returns `undefined` for absent props so the field is
+   * omitted from the SDK input (AWS keeps its default) rather than being
+   * forced to `false`.
+   */
+  private coerceBool(value: unknown): boolean | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === 'boolean') return value;
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return undefined;
   }
 
   /**

@@ -355,6 +355,103 @@ describe('ECSProvider', () => {
         const input = mockSend.mock.calls[0][0].input;
         expect(input.enableFaultInjection).toBe(false);
       });
+
+      it('forwards Volumes[].ConfiguredAtLaunch onto RegisterTaskDefinition (issue #806)', async () => {
+        // Regression guard for issue #806: ConfiguredAtLaunch was silently
+        // dropped by convertVolumes, so a same-stack ECS Service with
+        // VolumeConfigurations (managed EBS volume) failed to create with
+        // "Volume configuration provided but no matching configuredAtLaunch
+        // volume found in task definition".
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/ebs-task:1',
+          },
+        });
+
+        await provider.create('EbsTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'ebs-task',
+          ContainerDefinitions: [
+            {
+              Name: 'web',
+              Image: 'nginx:latest',
+              MountPoints: [{ SourceVolume: 'docker-data', ContainerPath: '/data' }],
+            },
+          ],
+          Volumes: [{ Name: 'docker-data', ConfiguredAtLaunch: true }],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes).toEqual([
+          {
+            name: 'docker-data',
+            host: undefined,
+            efsVolumeConfiguration: undefined,
+            configuredAtLaunch: true,
+          },
+        ]);
+      });
+
+      it('coerces stringly-typed ConfiguredAtLaunch ("true"/"false") to real booleans', async () => {
+        // CFn booleans can arrive as the strings "true" / "false" (e.g. via
+        // Fn::Sub / parameter plumbing); the wire boundary must normalize.
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/ebs-task:1',
+          },
+        });
+
+        await provider.create('EbsTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'ebs-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            { Name: 'vol-a', ConfiguredAtLaunch: 'true' },
+            { Name: 'vol-b', ConfiguredAtLaunch: 'false' },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].configuredAtLaunch).toBe(true);
+        expect(input.volumes[1].configuredAtLaunch).toBe(false);
+      });
+
+      it('omits configuredAtLaunch when ConfiguredAtLaunch is absent (omit-when-absent)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/efs-task:1',
+          },
+        });
+
+        await provider.create('EfsTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'efs-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [{ Name: 'plain-vol', Host: { sourcePath: '/var/data' } }],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].configuredAtLaunch).toBeUndefined();
+        expect(input.volumes[0].host).toEqual({ sourcePath: '/var/data' });
+      });
+
+      it('preserves explicit ConfiguredAtLaunch=false (distinct from omit)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/ebs-task:1',
+          },
+        });
+
+        await provider.create('EbsTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'ebs-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [{ Name: 'vol-a', ConfiguredAtLaunch: false }],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].configuredAtLaunch).toBe(false);
+      });
     });
 
     describe('update', () => {
