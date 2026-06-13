@@ -1,3 +1,10 @@
+## [0.221.4](https://github.com/go-to-k/cdkd/compare/v0.221.3...v0.221.4) (2026-06-13)
+
+
+### Bug Fixes
+
+* **deployment:** resolve composite conditions + prune Condition-gated resources on update ([#840](https://github.com/go-to-k/cdkd/issues/840)) ([#846](https://github.com/go-to-k/cdkd/issues/846)) ([5aa7ca4](https://github.com/go-to-k/cdkd/commit/5aa7ca420f2a71de256e286d4bb81b478f40f000))
+
 ## [0.221.3](https://github.com/go-to-k/cdkd/compare/v0.221.2...v0.221.3) (2026-06-13)
 
 
