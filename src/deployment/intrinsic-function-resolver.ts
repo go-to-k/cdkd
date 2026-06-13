@@ -151,6 +151,20 @@ export interface ResolverContext {
    * schema bump alongside a `sourceAccountId` field).
    */
   recordedOutputReads?: StateOutputReadEntry[];
+  /**
+   * Internal hook used while evaluating the template `Conditions` section.
+   * A CFn Condition can reference ANOTHER named condition via
+   * `{Condition: OtherName}` inside `Fn::And` / `Fn::Or` / `Fn::Not`
+   * (issue #840). When set, the `{Condition: X}` case in `resolveValue`
+   * delegates to this resolver, which lazily evaluates condition `X`
+   * (recursing into its own `{Condition: ...}` references) and memoizes
+   * the result so declaration order in the `Conditions` block does not
+   * matter and cycles are rejected. Not set when resolving normal
+   * resource properties — a `{Condition: X}` reference outside the
+   * `Conditions` section is invalid CFn and falls through to the
+   * already-evaluated `conditions` map (or the not-found path).
+   */
+  conditionResolver?: (conditionName: string) => Promise<boolean>;
 }
 
 /**
@@ -392,17 +406,63 @@ export class IntrinsicFunctionResolver {
       return conditions;
     }
 
-    // Evaluate each condition
-    for (const [name, definition] of Object.entries(templateConditions)) {
+    // A CFn Condition can reference ANOTHER named condition via
+    // `{Condition: OtherName}` inside `Fn::And` / `Fn::Or` / `Fn::Not`
+    // (issue #840). Evaluation must therefore be DEPENDENCY-ORDERED, not
+    // declaration-ordered: a composite condition referencing `IsPremium`
+    // must see `IsPremium`'s evaluated boolean, regardless of which is
+    // declared first. We evaluate lazily/recursively with memoization
+    // (the `conditions` map doubles as the memo cache) and an in-progress
+    // set as a cycle guard. `{Condition: X}` references inside the
+    // definitions resolve through `evaluateByName` via the
+    // `conditionResolver` hook threaded onto the context.
+    const inProgress = new Set<string>();
+
+    const evaluateByName = async (name: string): Promise<boolean> => {
+      if (name in conditions) {
+        return conditions[name]!;
+      }
+      if (inProgress.has(name)) {
+        throw new Error(`Circular condition reference detected involving condition "${name}"`);
+      }
+      const definition = (templateConditions as Record<string, unknown>)[name];
+      if (definition === undefined) {
+        // A `{Condition: X}` reference to an undeclared condition. Match the
+        // Fn::If not-found behavior: warn and treat as false.
+        this.logger.warn(`Condition ${name} not found in template, assuming false`);
+        conditions[name] = false;
+        return false;
+      }
+
+      inProgress.add(name);
       try {
-        const result = await this.resolveValue(definition, context);
-        conditions[name] = Boolean(result);
-        this.logger.debug(`Evaluated condition ${name} = ${conditions[name]}`);
+        // Resolve the definition with the condition-reference hook active so
+        // nested `{Condition: Y}` references recurse through evaluateByName.
+        const result = await this.resolveValue(definition, {
+          ...context,
+          conditionResolver: evaluateByName,
+        });
+        const value = Boolean(result);
+        conditions[name] = value;
+        this.logger.debug(`Evaluated condition ${name} = ${value}`);
+        return value;
+      } finally {
+        inProgress.delete(name);
+      }
+    };
+
+    // Drive evaluation of every declared condition. Failures (including a
+    // detected cycle) downgrade that condition to false rather than aborting
+    // the whole deploy, matching the prior per-condition error tolerance.
+    for (const name of Object.keys(templateConditions)) {
+      try {
+        await evaluateByName(name);
       } catch (error) {
         this.logger.warn(
           `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`
         );
         conditions[name] = false;
+        inProgress.delete(name);
       }
     }
 
@@ -463,6 +523,30 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::Equals' in obj) {
       return await this.resolveEquals(obj['Fn::Equals'] as [unknown, unknown], context);
+    }
+
+    // `{Condition: <name>}` — a named-condition reference. Valid only inside
+    // another condition's definition (`Fn::And` / `Fn::Or` / `Fn::Not`),
+    // where it resolves to the referenced condition's evaluated boolean
+    // (issue #840). This form is ONLY reachable during `evaluateConditions`,
+    // which is the sole code path that threads a `conditionResolver` hook onto
+    // the context — so gate the branch on `context.conditionResolver` being
+    // present. Outside that context (a normal resource / output property), a
+    // single-key `{Condition: "<string>"}` object is a plain property literally
+    // named `Condition`, NOT an intrinsic, and must fall through to be resolved
+    // as an ordinary object — otherwise it would be silently coerced to a
+    // boolean (and to `false`, since neither the resolver hook nor the
+    // already-evaluated `conditions` map is available there), corrupting the
+    // property. The single-key + `typeof string` guards remain as defense in
+    // depth so even inside `evaluateConditions` a composite-condition object
+    // carrying sibling keys is never misread as the reference form.
+    if (
+      context.conditionResolver &&
+      'Condition' in obj &&
+      Object.keys(obj).length === 1 &&
+      typeof obj['Condition'] === 'string'
+    ) {
+      return await this.resolveConditionReference(obj['Condition'], context);
     }
 
     if ('Fn::And' in obj) {
@@ -1408,6 +1492,33 @@ export class IntrinsicFunctionResolver {
     );
 
     return result;
+  }
+
+  /**
+   * Resolve a `{Condition: <name>}` named-condition reference (issue #840).
+   *
+   * Inside `Fn::And` / `Fn::Or` / `Fn::Not` a CFn Condition may reference
+   * another named condition. When the resolver is mid-`evaluateConditions`
+   * the `conditionResolver` hook is present and lazily evaluates the
+   * referenced condition (recursing + memoizing + cycle-guarding) so the
+   * result is order-independent. Outside that context (which is invalid CFn
+   * but handled defensively) we fall back to the already-evaluated
+   * `conditions` map, matching `Fn::If`'s warn-and-assume-false behavior.
+   */
+  private async resolveConditionReference(
+    conditionName: string,
+    context: ResolverContext
+  ): Promise<boolean> {
+    if (context.conditionResolver) {
+      return await context.conditionResolver(conditionName);
+    }
+
+    if (context.conditions && conditionName in context.conditions) {
+      return context.conditions[conditionName]!;
+    }
+
+    this.logger.warn(`Condition ${conditionName} not found in context, assuming false`);
+    return false;
   }
 
   /**

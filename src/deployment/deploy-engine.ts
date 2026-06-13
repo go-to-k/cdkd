@@ -329,6 +329,7 @@ export class DeployEngine {
   private lockManager: LockManager;
   private dagBuilder: DagBuilder;
   private diffCalculator: DiffCalculator;
+  private templateParser = new TemplateParser();
   private providerRegistry: ProviderRegistry;
   private options: DeployEngineOptions;
   /**
@@ -710,10 +711,26 @@ export class DeployEngine {
         `Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
       );
 
+      // 2.7. Prune resources whose `Condition:` key evaluated false (issue
+      // #840). CFn does not strip condition-gated resources at synth time —
+      // they sit in `Resources` with a `Condition:` key regardless of value,
+      // and the deploy engine excludes them when the condition is false. From
+      // here on the whole pipeline (type/property validation, DAG, diff,
+      // provisioning) operates on this CFn-effective resource set, so a
+      // condition-false resource that exists in prior state but is now absent
+      // from the effective template flows through the diff's existing
+      // "in state but not in desired -> DELETE" path (CFn removes it the same
+      // way), and a condition-false resource is never created in the first
+      // place.
+      const effectiveTemplate = this.templateParser.filterResourcesByCondition(
+        template,
+        conditions
+      );
+
       // 3. Validate resource types (before deployment starts)
       // Skip metadata resources as they don't actually deploy
       const resourceTypes = new Set(
-        Object.values(template.Resources || {})
+        Object.values(effectiveTemplate.Resources || {})
           .map((r) => r.Type)
           .filter((type) => type !== 'AWS::CDK::Metadata')
       );
@@ -729,7 +746,7 @@ export class DeployEngine {
       // PR #608 fail-fast was reversed by #614 to a default-on
       // auto-route. Skips AWS::CDK::Metadata (filtered by the same
       // predicate as the type set).
-      const resourcesForPropertyCheck = Object.entries(template.Resources || {})
+      const resourcesForPropertyCheck = Object.entries(effectiveTemplate.Resources || {})
         .filter(([, r]) => r.Type !== 'AWS::CDK::Metadata')
         .map(([logicalId, r]) => ({
           logicalId,
@@ -744,7 +761,7 @@ export class DeployEngine {
       this.logger.debug(`All resource properties validated`);
 
       // 4. Build dependency graph
-      const dag = this.dagBuilder.buildGraph(template);
+      const dag = this.dagBuilder.buildGraph(effectiveTemplate);
       const executionLevels = this.dagBuilder.getExecutionLevels(dag);
       this.logger.debug(`Dependency graph: ${executionLevels.length} execution levels`);
 
@@ -754,7 +771,7 @@ export class DeployEngine {
       // the already-resolved values stored in state.
       const diffResolverContext = this.buildResolverContext(
         {
-          template,
+          template: effectiveTemplate,
           resources: currentState.resources,
           parameters: parameterValues,
           conditions,
@@ -764,7 +781,7 @@ export class DeployEngine {
       const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
       const changes = await this.diffCalculator.calculateDiff(
         currentState,
-        template,
+        effectiveTemplate,
         diffResolveFn
       );
       const hasChanges = this.diffCalculator.hasChanges(changes);
@@ -857,7 +874,7 @@ export class DeployEngine {
 
       // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
       const { state: newState, actualCounts } = await this.executeDeployment(
-        template,
+        effectiveTemplate,
         currentState,
         changes,
         dag,

@@ -17,6 +17,10 @@
       "description": "CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly)."
     },
     {
+      "tag": "conditions-and-if",
+      "description": "CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property."
+    },
+    {
       "tag": "cross-cutting-deploy-destroy",
       "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate."
     },
@@ -326,6 +330,13 @@
       "name": "conditions",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "conditions-and-if",
+      "annotated": true,
+      "scenarios": [
+        "conditions-and-if"
+      ]
     },
     {
       "name": "context-test",
@@ -1080,6 +1091,13 @@
       "description": "CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly).",
       "fixtures": [
         "s3-cloudfront"
+      ]
+    },
+    {
+      "scenario": "conditions-and-if",
+      "description": "CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property.",
+      "fixtures": [
+        "conditions-and-if"
       ]
     },
     {

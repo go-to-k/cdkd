@@ -3158,6 +3158,7 @@
         "bench-sdk",
         "cloudwatch",
         "composite-stack",
+        "conditions-and-if",
         "deployment-events",
         "drift-revert",
         "drift-revert-arrays",
@@ -3183,6 +3184,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "conditions-and-if": [
+          "l1"
         ],
         "deployment-events": [
           "l2"
@@ -3340,6 +3344,7 @@
       "integs": [
         "bench-sdk",
         "composite-stack",
+        "conditions-and-if",
         "context-test",
         "cross-region-state-bucket",
         "cross-stack-references",
@@ -3373,6 +3378,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "conditions-and-if": [
+          "l1"
         ],
         "context-test": [
           "l2"
