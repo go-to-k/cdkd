@@ -2,9 +2,7 @@
 dynamodb-streams	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 composite-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 nested-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
-cc-api-fallback	2026-06-01T21:12:13Z	PASS		verify.sh	rc ok, orph clean
 cc-api-fallback-transitions	2026-06-01T21:12:13Z	PASS	122	verify.sh	rc ok, orph clean
-drift-revert	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
 recreate-via-sdk-provider	2026-06-01T21:12:13Z	PASS	79	verify.sh	rc ok, orph clean
 recreate-via-cc-api	2026-06-01T21:12:13Z	PASS	97	verify.sh	rc ok, orph clean
 recreate-mixed-direction	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
@@ -13,11 +11,9 @@ dynamodb-globaltable	2026-06-01T21:12:13Z	PASS	159	verify.sh	rc ok, orph clean
 s3-tables	2026-06-01T21:12:13Z	PASS	31	verify.sh	rc ok, orph clean
 iam-managed-policy	2026-06-01T21:12:13Z	PASS	20	standard	rc ok, orph clean
 eventbridge	2026-06-01T21:12:13Z	PASS	67	verify.sh	rc ok, orph clean
-export	2026-06-01T21:12:13Z	PASS	252	verify.sh	rc ok, orph clean
 migrate-from-cfn	2026-06-01T21:12:13Z	PASS	89	standard	rc ok, orph clean
 nested-stack-deep	2026-06-01T21:12:13Z	PASS	48	verify.sh	rc ok, orph clean
 apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
-multi-stack-deps	2026-06-01T21:31:46Z	PASS		standard	F1 fix verified: deploy/destroy --all clean (cross-stack ordering)
 import-value-strong-ref	2026-06-02T02:13:34Z	PASS		verify.sh	F3 fixed: version-agnostic schema assertion (>= 4); deploy+strong-ref+destroy clean
 vpc-lambda-cr-race	2026-06-02T07:34:17Z	PASS		standard	coverage batch: VPC+Lambda+CR; withRetry handled role-assume propagation, deploy ok, 9 deleted 0 errors 0 orphans
 event-driven	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 19 deleted 0 errors 0 orphans
@@ -108,19 +104,24 @@ dynamodb-ondemand	2026-06-09T17:02:56Z	PASS	70	verify.sh	#609: ResourcePolicy/Ki
 ec2-instance	2026-06-09T17:10:25Z	PASS	105	verify.sh	#609 security slice: DisableApiTermination/MetadataOptions/Monitoring/EbsOptimized/CreditSpecification asserted; destroy 0 err
 rds-dbinstance-backfill	2026-06-09T18:23:15Z	PASS	561	verify.sh	#609 DBInstance security props (MonitoringRoleArn/Interval/IAMauth/KmsKeyId/MasterUserSecret) asserted; destroy 0 err
 rds-aurora	2026-06-10T01:31:45Z	PASS	3000	verify.sh	#794 verify: MonitoringRoleArn cluster create survived IAM-race via retry; +#609 cluster props; destroy 23/0 err
-bench-cdk-sample	2026-06-10T01:42:03Z	PASS	480	standard	regression net post #609 batch (replacement-rules.ts shared change): 37 deleted/2 RETAIN logGroups/0 err; clean
-multi-resource	2026-06-10T03:34:10Z	PASS		standard	regression check post-#796; 17 created/17 deleted 0 errors 0 orphans
-remove-protection	2026-06-10T05:14:24Z	PASS		verify.sh	#798 re-verify delegated ASG target; instance terminated 0 orphans
 stepfunctions	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 5 deleted 0 errors (SM DELETING self-resolved)
 route53	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 6 deleted 0 errors
-custom-resource-provider	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 17 deleted 0 errors
-cross-stack-references	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 2 stacks 0 errors
 kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 errors
 sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
 vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
-drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 21 deleted 0 err 0 orphan
 microservices	2026-06-13T06:25:57Z	PASS	34	standard	#816 SIGINT handler; normal destroy unaffected; 19 deleted 0 err 0 orphan
 lambda	2026-06-13T04:41:51Z	PASS	76	verify.sh	#808 broad integ + cdkd events live-tested (deploy+destroy runs persisted); 9 deleted 0 err
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfiguration camelCase reached AWS; 23 deleted 0 err
 cross-region-state-bucket	2026-06-13T07:10:46Z	PASS	34	verify.sh	#827 shared bucket-region helper; behavior preserved; 1 deleted 0 err, temp bucket cleaned
+bench-cdk-sample	2026-06-13T09:16:21Z	PASS	529	standard	regression sweep; 0 err 0 orphan
+multi-resource	2026-06-13T09:16:21Z	PASS	75	standard	regression sweep; 0 err 0 orphan
+multi-stack-deps	2026-06-13T09:16:21Z	PASS	63	standard	regression sweep 3-stack; 0 err 0 orphan
+drift-revert	2026-06-13T09:16:21Z	PASS	89	verify.sh	regression sweep; 0 err 0 orphan
+drift-revert-vpc	2026-06-13T09:16:21Z	PASS	228	verify.sh	regression sweep; 0 err 0 orphan
+remove-protection	2026-06-13T09:16:21Z	PASS	1267	verify.sh	regression sweep; 0 err 0 orphan
+export	2026-06-13T09:16:21Z	PASS	248	verify.sh	regression sweep; 0 err 0 orphan
+cross-stack-references	2026-06-13T09:16:21Z	PASS	26	standard	regression sweep 2-stack; 0 err 0 orphan
+cc-api-fallback	2026-06-13T09:16:21Z	PASS	57	verify.sh	regression sweep; 0 err 0 orphan
+custom-resource-provider	2026-06-13T09:16:21Z	PASS	290	standard	regression sweep; 0 err 0 orphan
+deployment-events	2026-06-13T09:16:21Z	PASS	34	verify.sh	#808 events sidecar + cdkd events + no-secrets + survives-destroy; 2 deleted 0 err
