@@ -981,3 +981,45 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(changes.get('QueueB')?.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(true);
   });
 });
+
+describe('DiffCalculator - condition-excluded resource (issue #840)', () => {
+  // The deploy engine prunes condition-false resources from the template
+  // (`TemplateParser.filterResourcesByCondition`) BEFORE calling the diff, so
+  // a resource that was created under a now-false condition reaches the diff
+  // as "present in state, absent from the desired template". This asserts the
+  // existing DELETE path fires for that shape — the load-bearing behavior the
+  // #840 fix relies on (CFn removes a resource whose Condition flips to false).
+  it('marks a resource present in state but absent from the (pruned) template as DELETE', async () => {
+    const state = baseState();
+    state.resources['AlwaysParam'] = {
+      physicalId: 'TestStack-always',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Value: 'always' },
+      attributes: {},
+    };
+    // Created in a prior deploy under a then-true condition.
+    state.resources['PremiumOnlyParam'] = {
+      physicalId: 'TestStack-premium-only',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Value: 'premium-only' },
+      attributes: {},
+    };
+
+    // The effective template the deploy engine passes after pruning the
+    // condition-false `PremiumOnlyParam`.
+    const prunedTemplate: CloudFormationTemplate = {
+      Resources: {
+        AlwaysParam: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Value: 'always' },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, prunedTemplate);
+
+    expect(changes.get('PremiumOnlyParam')?.changeType).toBe('DELETE');
+    expect(changes.get('AlwaysParam')?.changeType).toBe('NO_CHANGE');
+  });
+});

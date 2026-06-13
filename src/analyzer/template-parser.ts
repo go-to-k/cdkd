@@ -334,4 +334,52 @@ export class TemplateParser {
   countResources(template: CloudFormationTemplate): number {
     return Object.keys(template.Resources).length;
   }
+
+  /**
+   * Produce a copy of the template with every resource whose `Condition:`
+   * key resolves to `false` removed from `Resources` (issue #840).
+   *
+   * CloudFormation does not strip condition-gated resources at synth time —
+   * CDK emits `PremiumOnlyParam` into `Resources` with a `Condition: IsPremium`
+   * key REGARDLESS of the parameter value, and the deploy engine (CFn, or in
+   * cdkd's case cdkd itself) is responsible for excluding the resource when
+   * its condition evaluates false. cdkd evaluates the `Conditions` section
+   * (for `Fn::If` resolution) but, before this helper, never consulted the
+   * resource-level `Condition:` key — so a condition-false resource was:
+   *   - CREATED anyway on first deploy (it sat in the desired set), and
+   *   - never DELETED when its condition flipped true -> false on a redeploy
+   *     (it stayed in the desired set, diffing as NO_CHANGE).
+   *
+   * By pruning condition-false resources here, the rest of the pipeline
+   * (type/property validation, DAG build, diff) sees the CFn-effective
+   * resource set: a now-condition-false resource that exists in prior state
+   * but is absent from the pruned template falls through the diff's existing
+   * "in state but not in desired template -> DELETE" path, exactly as CFn
+   * removes it. A resource whose `Condition` key names an unknown condition,
+   * or whose condition evaluated `true`, is kept.
+   *
+   * The returned template shares every untouched object reference with the
+   * input (only `Resources` is rebuilt) — callers must treat it as read-only,
+   * which the deploy pipeline already does.
+   *
+   * @param template The synthesized template (raw, with all condition-gated
+   *                 resources still present).
+   * @param conditions The evaluated `Conditions` map (name -> boolean) from
+   *                 `IntrinsicFunctionResolver.evaluateConditions`.
+   */
+  filterResourcesByCondition(
+    template: CloudFormationTemplate,
+    conditions: Record<string, boolean>
+  ): CloudFormationTemplate {
+    const filteredResources: Record<string, TemplateResource> = {};
+    for (const [logicalId, resource] of Object.entries(template.Resources)) {
+      const conditionName = resource.Condition;
+      if (conditionName !== undefined && conditions[conditionName] === false) {
+        this.logger.debug(`Excluding resource ${logicalId} — condition ${conditionName} is false`);
+        continue;
+      }
+      filteredResources[logicalId] = resource;
+    }
+    return { ...template, Resources: filteredResources };
+  }
 }

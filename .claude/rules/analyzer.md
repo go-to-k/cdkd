@@ -20,6 +20,10 @@ paths:
 2. Implement recursive resolution
 3. Write tests (`tests/unit/analyzer/intrinsic-resolver.test.ts`)
 
+## Resource-level `Condition:` exclusion (issue #840)
+
+`TemplateParser.filterResourcesByCondition(template, conditions)` returns a copy of the template with every resource whose `Condition:` key resolved to `false` removed from `Resources`. CloudFormation does NOT strip condition-gated resources at synth time — CDK emits them into `Resources` carrying a `Condition:` key regardless of the condition's value — so the deploy engine calls this prune step right after `IntrinsicFunctionResolver.evaluateConditions`, and every downstream consumer (type/property validation, DAG build, diff, provisioning) operates on the CFn-effective resource set. A condition-false resource is therefore never created, and one present in prior state but condition-excluded from the effective template flows through the diff's existing "present in state, absent from desired -> DELETE" path (mirroring CFn removal). A resource whose `Condition:` names an unevaluated/unknown condition is kept (absent-from-map is not `=== false`).
+
 ## Dependency Analysis
 
 - Implemented in `DagBuilder` class (`src/analyzer/dag-builder.ts`)
