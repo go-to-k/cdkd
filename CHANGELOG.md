@@ -1,3 +1,10 @@
+## [0.219.6](https://github.com/go-to-k/cdkd/compare/v0.219.5...v0.219.6) (2026-06-13)
+
+
+### Bug Fixes
+
+* **provisioning:** forward Volumes[].ConfiguredAtLaunch to RegisterTaskDefinition ([#811](https://github.com/go-to-k/cdkd/issues/811)) ([cbe18eb](https://github.com/go-to-k/cdkd/commit/cbe18ebaea78677acce3fbd029a0568e366b288a))
+
 ## [0.219.5](https://github.com/go-to-k/cdkd/compare/v0.219.4...v0.219.5) (2026-06-13)
 
 
