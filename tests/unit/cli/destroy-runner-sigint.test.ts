@@ -242,12 +242,16 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     expect(Object.keys(lastSave).sort()).toEqual(['A', 'B', 'C']);
   });
 
-  it('a second SIGINT force-quits via process.exit(130)', async () => {
+  it('a second SIGINT force-quits via process.exit(130), prints the recovery command, and attempts a best-effort lock release', async () => {
     const state = makeState({ A: res() });
     const exitSpy = vi
       .spyOn(process, 'exit')
       .mockImplementation(((() => undefined) as unknown) as typeof process.exit);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(((() => true) as unknown) as typeof process.stderr.write);
 
+    mockReleaseLock.mockResolvedValue(undefined);
     mockProviderDelete.mockImplementation(() => {
       // First Ctrl-C → draining; second Ctrl-C → force-quit.
       capturedSigintHandlers[0]!();
@@ -258,7 +262,19 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     await runDestroyForStack('TestStack', state, makeCtx());
 
     expect(exitSpy).toHaveBeenCalledWith(130);
+
+    // BLOCKER fix (issue #816): the force-quit bypasses the `finally`, so it
+    // MUST print the exact recovery command (interpolating the real stack
+    // name) before exiting so a stranded lock is recoverable deterministically.
+    const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    expect(stderrText).toContain('Force-quit: stack lock may not be released');
+    expect(stderrText).toContain('cdkd force-unlock TestStack');
+
+    // ... and fire a best-effort (un-awaited) release first.
+    expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', REGION);
+
     exitSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 
   it('the SIGINT listener is removed after a normal (uninterrupted) completion', async () => {

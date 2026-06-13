@@ -554,7 +554,20 @@ export async function runDestroyForStack(
   const sigintHandler = (): void => {
     if (draining) {
       // Second Ctrl-C: force-quit without waiting for the in-flight delete.
-      process.stderr.write('\nForce exit\n');
+      // The synchronous `process.exit(130)` bypasses the `finally` below,
+      // so the stack lock is NOT released through the normal path (issue
+      // #816). Fire a best-effort, un-awaited release first — it MAY land
+      // before the process dies on a fast network — but always print the
+      // exact recovery command so the user can recover deterministically if
+      // it does not (a force-quit leaving a stranded lock would otherwise
+      // re-introduce the 30m-TTL wait this issue fixes, just on this path).
+      void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
+        /* best-effort: the recovery line below is the real guarantee */
+      });
+      process.stderr.write(
+        `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
+          `cdkd force-unlock ${stackName}\n`
+      );
       process.exit(130);
     }
     draining = true;
@@ -567,6 +580,16 @@ export async function runDestroyForStack(
       );
     });
   };
+  // Each nested-stack level recurses into `runDestroyForStack` and registers
+  // its own SIGINT listener, and each in-flight provider that installs its own
+  // SIGINT handler (CustomResource / CloudFront / ACM / Route53) adds one more.
+  // Deep nesting + high `--concurrency` can legitimately exceed Node's default
+  // 10-listener cap and emit a scary MaxListenersExceededWarning that is NOT a
+  // leak (every listener is removed in its own `finally`). Raise the ceiling
+  // with generous headroom for real fan-out while still leaving the warning
+  // active above it so an ACTUAL listener leak is not masked. `Math.max` keeps
+  // this safe under recursion (never lowers an already-raised limit).
+  process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
   process.on('SIGINT', sigintHandler);
 
   try {

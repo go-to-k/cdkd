@@ -1297,10 +1297,15 @@ async function stateDestroyCommand(
         );
         totalErrors += result.errorCount;
         if (result.interrupted) interrupted = true;
-        // A graceful interrupt (issue #816) stops the per-stack loop too: do
-        // not start destroying further stacks once the user has asked to stop.
+        // Graceful interrupt (issue #816): stop iterating this stack's regions.
         if (interrupted) break;
       }
+
+      // Graceful interrupt (issue #816): stop the outer multi-stack loop too —
+      // do not start destroying further stacks once the user has asked to
+      // stop. Explicit guard mirroring destroy.ts's stack-loop break (the
+      // inner `break` above only exits the per-region loop).
+      if (interrupted) break;
     }
 
     if (totalErrors > 0) {
