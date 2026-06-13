@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**43 / 43 canonical scenarios** have at least one integ fixture exercising them. **110 / 129 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**44 / 44 canonical scenarios** have at least one integ fixture exercising them. **111 / 130 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (43 scenarios)
+## Per-scenario coverage (44 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -39,7 +39,8 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) |
 | `deployment-events` | Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets). | [`deployment-events`](../tests/integration/deployment-events/) |
 | `docker-image-asset-ecr-publish` | cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy. | [`docker-image-asset`](../tests/integration/docker-image-asset/) |
-| `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
+| `drift-revert-array-canonicalization` | cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift. | [`drift-revert-arrays`](../tests/integration/drift-revert-arrays/) |
+| `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-arrays`](../tests/integration/drift-revert-arrays/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `exports-index-region-resolve` | Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819). | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
 | `globaltable-cross-region-replica` | DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
