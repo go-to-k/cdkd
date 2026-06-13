@@ -1,3 +1,10 @@
+# [0.221.0](https://github.com/go-to-k/cdkd/compare/v0.220.5...v0.221.0) (2026-06-13)
+
+
+### Features
+
+* **destroy:** graceful SIGINT handling — release lock + preserve state on interrupt ([#826](https://github.com/go-to-k/cdkd/issues/826)) ([06d1c8b](https://github.com/go-to-k/cdkd/commit/06d1c8b1feb87f0c03933abb4ab38fa40c5ec511))
+
 ## [0.220.5](https://github.com/go-to-k/cdkd/compare/v0.220.4...v0.220.5) (2026-06-13)
 
 
