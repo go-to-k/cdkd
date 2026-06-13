@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "drift-revert-roundtrip",
+    "drift-revert-array-canonicalization"
+  ]
+}

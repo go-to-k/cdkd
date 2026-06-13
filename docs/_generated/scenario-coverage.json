@@ -33,6 +33,10 @@
       "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets)."
     },
     {
+      "tag": "drift-revert-array-canonicalization",
+      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift."
+    },
+    {
       "tag": "drift-revert-roundtrip",
       "description": "cdkd drift detection + `--revert` round-trip via each provider.update()."
     },
@@ -356,6 +360,14 @@
       "name": "drift-revert",
       "annotated": true,
       "scenarios": [
+        "drift-revert-roundtrip"
+      ]
+    },
+    {
+      "name": "drift-revert-arrays",
+      "annotated": true,
+      "scenarios": [
+        "drift-revert-array-canonicalization",
         "drift-revert-roundtrip"
       ]
     },
@@ -1017,10 +1029,18 @@
       ]
     },
     {
+      "scenario": "drift-revert-array-canonicalization",
+      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift.",
+      "fixtures": [
+        "drift-revert-arrays"
+      ]
+    },
+    {
       "scenario": "drift-revert-roundtrip",
       "description": "cdkd drift detection + `--revert` round-trip via each provider.update().",
       "fixtures": [
         "drift-revert",
+        "drift-revert-arrays",
         "drift-revert-vpc"
       ]
     },
