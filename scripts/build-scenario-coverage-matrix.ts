@@ -136,7 +136,7 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'multi-region-state-key':
     'Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout).',
   'state-bucket-region-resolve':
-    'State-bucket S3 client auto-detects bucket region via `GetBucketLocation` regardless of caller-profile region.',
+    'State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region.',
   'state-schema-migration':
     'Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.',
   'legacy-bucket-name-fallback':

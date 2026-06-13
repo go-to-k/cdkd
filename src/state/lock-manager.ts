@@ -10,6 +10,7 @@ import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { LockError } from '../utils/error-handler.js';
+import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
 import { hostname } from 'os';
 
 /**
@@ -28,18 +29,97 @@ export interface LockManagerOptions {
  *
  * Locks have a TTL (time-to-live). Expired locks are automatically cleaned up
  * during acquisition attempts.
+ *
+ * Like `S3StateBackend`, the lock manager tolerates a state bucket that
+ * lives in a different AWS region from the CLI's base region: before the
+ * first S3 operation it resolves the bucket's actual region via
+ * `GetBucketLocation` and, if it differs from the supplied client's region,
+ * builds a private replacement client for that region (issue #803 — without
+ * this, every lock acquisition against a cross-region bucket failed with
+ * S3's 301 PermanentRedirect while state reads/writes succeeded).
  */
 export class LockManager {
   private logger = getLogger().child('LockManager');
   private s3Client: S3Client;
   private config: StateBackendConfig;
   private readonly ttlMs: number;
+  private clientResolved = false;
+  private resolveInFlight: Promise<void> | null = null;
 
   constructor(s3Client: S3Client, config: StateBackendConfig, options?: LockManagerOptions) {
     this.s3Client = s3Client;
     this.config = config;
     const ttlMinutes = options?.ttlMinutes ?? 30;
     this.ttlMs = ttlMinutes * 60 * 1000;
+  }
+
+  /**
+   * Resolve the state bucket's actual region and, if it differs from the
+   * supplied client's configured region, replace the client reference with
+   * a new S3Client pointed at the bucket's region.
+   *
+   * Mirrors `S3StateBackend.ensureClientForBucket()` (PR #60) with two
+   * deliberate differences:
+   *
+   * - The replacement client reuses the original client's resolved
+   *   credentials provider, so `--profile` / static credentials carry over
+   *   without the 8 LockManager call sites having to thread client options.
+   * - The original client is NOT destroyed. It is the shared `AwsClients.s3`
+   *   instance that other components (state backend, exports index) still
+   *   hold a reference to.
+   *
+   * `resolveBucketRegion` caches per bucket name for the process lifetime,
+   * so when the state backend has already resolved the same bucket this
+   * incurs no additional `GetBucketLocation` call.
+   */
+  private async ensureClientForBucket(): Promise<void> {
+    if (this.clientResolved) return;
+    if (this.resolveInFlight) return this.resolveInFlight;
+
+    this.resolveInFlight = (async (): Promise<void> => {
+      try {
+        const currentRegion = await this.s3Client.config.region();
+        const fallbackRegion = typeof currentRegion === 'string' ? currentRegion : undefined;
+
+        // Authenticate the GetBucketLocation probe the same way the caller's
+        // client does (honors --profile / static credentials). Best-effort:
+        // a failure here just downgrades the probe to the default chain, and
+        // resolveBucketRegion itself never throws.
+        let probeCredentials:
+          | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+          | undefined;
+        try {
+          probeCredentials = await this.s3Client.config.credentials();
+        } catch {
+          probeCredentials = undefined;
+        }
+
+        const bucketRegion = await resolveBucketRegion(this.config.bucket, {
+          ...(probeCredentials && { credentials: probeCredentials }),
+          ...(fallbackRegion && { fallbackRegion }),
+        });
+
+        if (bucketRegion !== currentRegion) {
+          this.logger.debug(
+            `State bucket '${this.config.bucket}' is in '${bucketRegion}' (lock client was '${currentRegion}'); building a region-corrected S3 client for lock operations.`
+          );
+          this.s3Client = new S3Client({
+            region: bucketRegion,
+            credentials: this.s3Client.config.credentials,
+            // Suppress "Are you using a Stream of unknown length" warning,
+            // matching the suppression in AwsClients.
+            logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+          });
+          // NOTE: the previous client is intentionally not destroyed here —
+          // it is shared with other components via AwsClients.s3.
+        }
+        this.clientResolved = true;
+      } finally {
+        this.resolveInFlight = null;
+      }
+    })();
+
+    return this.resolveInFlight;
   }
 
   /**
@@ -112,6 +192,8 @@ export class LockManager {
     owner?: string,
     operation?: string
   ): Promise<boolean> {
+    await this.ensureClientForBucket();
+
     const key = this.getLockKey(stackName, region);
     const lockOwner = owner || this.getDefaultOwner();
     const now = Date.now();
@@ -207,6 +289,8 @@ export class LockManager {
    * file (e.g. for state-listing tools that don't yet know the region).
    */
   async getLockInfo(stackName: string, region: string | undefined): Promise<LockInfo | null> {
+    await this.ensureClientForBucket();
+
     const key = this.getLockKey(stackName, region);
 
     try {
@@ -263,6 +347,8 @@ export class LockManager {
    * Release a lock for a stack
    */
   async releaseLock(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
+
     const key = this.getLockKey(stackName, region);
 
     try {
@@ -317,6 +403,8 @@ export class LockManager {
    * Internal method to delete the lock file from S3
    */
   private async deleteLock(stackName: string, region: string | undefined): Promise<void> {
+    await this.ensureClientForBucket();
+
     const key = this.getLockKey(stackName, region);
 
     await this.s3Client.send(

@@ -12,11 +12,42 @@ synthetic `UnknownError` — the SDK's region-redirect middleware does not
 recover cleanly from the empty-body 301 HEAD response S3 returns when the
 client's region does not match the bucket's region.
 
-After PR 3, the state backend resolves the bucket region via
+After PR #60, the state backend resolves the bucket region via
 `GetBucketLocation` (a GET, not a HEAD — has a body and is not subject to
 the SDK glitch) and rebuilds its S3 client for the bucket's actual region
 before issuing any state operation. Provisioning clients are unaffected
 and continue to use `env.region`.
+
+Issue #803 extended the same region resolution to the `LockManager`:
+PR #60 only fixed the state backend, so state reads/writes succeeded
+against a cross-region bucket while every lock acquisition still failed
+with S3's 301 PermanentRedirect ("must be addressed using the specified
+endpoint"). `LockManager` now resolves the bucket's actual region before
+its first S3 operation and rebuilds its own client when it differs.
+
+## Automated run (`verify.sh`)
+
+`verify.sh` sets up the cross-region precondition itself — no pre-existing
+bucket needed:
+
+1. Creates a **temporary, uniquely-named** state bucket in `us-west-2`
+   (`BUCKET_REGION` override supported; auto-flips to `us-east-1` if the
+   base region already is `us-west-2`).
+2. Runs `cdkd deploy` / `cdkd state ls` / `cdkd destroy` with `AWS_REGION`
+   pointed at `us-east-1` (the base region) while the state bucket lives in
+   `us-west-2`. Pre-#803 the deploy failed at lock acquisition.
+3. Asserts after deploy: `state.json` exists in the bucket AND `lock.json`
+   was released (the lock path round-tripped cross-region), and the
+   fixture's SSM parameter exists in the base region.
+4. Asserts after destroy: state and the SSM parameter are gone.
+5. Deletes the temporary bucket at the end — including on failure, via an
+   EXIT trap that also attempts `cdkd destroy` / direct SSM cleanup first.
+
+```bash
+bash tests/integration/cross-region-state-bucket/verify.sh
+```
+
+Run it via `/run-integ cross-region-state-bucket` like any other fixture.
 
 ## Manual run
 
@@ -39,13 +70,13 @@ AWS_REGION=us-east-1 cdkd destroy  --state-bucket cdkd-state-test-cross-region
 aws s3 rb s3://cdkd-state-test-cross-region --region us-west-2 --force
 ```
 
-Expected: every command runs to completion. Pre-PR-3 the `state ls` /
-`deploy` commands would surface `UnknownError` and abort.
+Expected: every command runs to completion. Pre-PR-#60 the `state ls` /
+`deploy` commands would surface `UnknownError` and abort; pre-#803 the
+`deploy` / `destroy` commands failed at lock acquisition with a 301
+PermanentRedirect even after the state backend fix.
 
 ## What this fixture does NOT cover
 
 - The provisioning clients (CC API, Lambda, IAM, etc.) are still pointed
-  at `env.region`. This test only exercises the state-bucket S3 client's
-  region resolution.
-- `/run-integ` does not invoke this fixture by default — it requires a
-  pre-existing bucket in a non-default region and is therefore manual.
+  at `env.region`. This test only exercises the state-bucket S3 clients'
+  (state backend + lock manager) region resolution.

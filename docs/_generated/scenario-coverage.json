@@ -138,7 +138,7 @@
     },
     {
       "tag": "state-bucket-region-resolve",
-      "description": "State-bucket S3 client auto-detects bucket region via `GetBucketLocation` regardless of caller-profile region."
+      "description": "State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region."
     },
     {
       "tag": "state-schema-migration",
@@ -1188,7 +1188,7 @@
     },
     {
       "scenario": "state-bucket-region-resolve",
-      "description": "State-bucket S3 client auto-detects bucket region via `GetBucketLocation` regardless of caller-profile region.",
+      "description": "State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region.",
       "fixtures": [
         "cross-region-state-bucket"
       ]
