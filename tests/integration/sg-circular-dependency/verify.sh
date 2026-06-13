@@ -128,9 +128,11 @@ cleanup
 #              AWS::EC2::SecurityGroupIngress resources (NOT inline ingress).
 echo "==> Phase 0: synth and confirm standalone SecurityGroupIngress resources"
 SYNTH_DIR="$(mktemp -d)"
+# NOTE: `cdkd synth` only synthesizes the CDK app to a template — it does NOT
+# read or write state, so it does NOT accept --state-bucket / --region (passing
+# --state-bucket fails with `error: unknown option '--state-bucket'`). Only
+# --output (+ the stack selector) are valid here.
 node "${LOCAL_DIST}" synth "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" \
   --output "${SYNTH_DIR}" >/dev/null
 
 TEMPLATE_FILE="${SYNTH_DIR}/${STACK}.template.json"
