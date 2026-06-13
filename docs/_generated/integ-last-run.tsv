@@ -124,8 +124,9 @@ export	2026-06-13T09:16:21Z	PASS	248	verify.sh	regression sweep; 0 err 0 orphan
 cross-stack-references	2026-06-13T09:16:21Z	PASS	26	standard	regression sweep 2-stack; 0 err 0 orphan
 cc-api-fallback	2026-06-13T09:16:21Z	PASS	57	verify.sh	regression sweep; 0 err 0 orphan
 custom-resource-provider	2026-06-13T09:16:21Z	PASS	290	standard	regression sweep; 0 err 0 orphan
-deployment-events	2026-06-13T09:16:21Z	PASS	34	verify.sh	#808 events sidecar + cdkd events + no-secrets + survives-destroy; 2 deleted 0 err
-update-replace	2026-06-13T10:43:46Z	PASS	65	verify.sh	in-place(S3/Lambda/IAM/SG)+replacement(S3 rename); 0 err 0 orphan
 s3-asset-deploy	2026-06-13T10:51:36Z	PASS	44	verify.sh	S3 zip asset upload + Lambda runs from it + generic Asset read-back; 0 err
 docker-image-asset	2026-06-13T11:02:44Z	PASS	60	verify.sh	ECR build+push (ARM_64 pinned); image by tag + Lambda runs; 0 err
 rollback-failure-injection	2026-06-13T11:11:55Z	PASS	418	verify.sh	deploy-engine rollback on rich VPC+Lambda + #808 fail events; 17 deleted 0 orphan
+deployment-events	2026-06-13T11:42:29Z	PASS	37	verify.sh	#831 +SNS/SSM not-found post-destroy; 0 err
+update-replace	2026-06-13T11:42:29Z	PASS	71	verify.sh	#831 +Lambda/IAM/SG not-found post-destroy; 0 err
+destroy-interrupt	2026-06-13T11:42:29Z	PASS	581	verify.sh	#831 +SG/IAM not-found post-destroy; #816+#804 verified; 0 orphan

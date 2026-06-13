@@ -55,6 +55,19 @@ cleanup() {
     # Sidecar deployment events live in a separate key family from state.
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/deployments/" --recursive >/dev/null 2>&1 || true
   fi
+  # Belt-and-suspenders: the replacement bucket name is fully predictable
+  # (cdkd-update-replace-{account}-{region}-v1 / -v2). If a deploy crashed
+  # MID-REPLACEMENT — after the v2 bucket was created but before state caught
+  # up — `state destroy` may not know about both names, so directly drop both
+  # predictable buckets so a re-run is not blocked by a leftover "v1"/"v2"
+  # bucket (S3 names are globally unique). `aws s3 rb --force` is a no-op /
+  # ignored error when the bucket does not exist.
+  cleanup_acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+  if [ -n "${cleanup_acct}" ] && [ "${cleanup_acct}" != "None" ]; then
+    for sfx in v1 v2; do
+      aws s3 rb "s3://cdkd-update-replace-${cleanup_acct}-${REGION}-${sfx}" --force --region "${REGION}" >/dev/null 2>&1 || true
+    done
+  fi
   set -eu
 }
 
@@ -284,6 +297,34 @@ for b in "${IN_PLACE_BUCKET}" "${REPLACE_BUCKET_AFTER}"; do
   fi
 done
 echo "    OK: both S3 buckets are gone after destroy"
+
+# The named NON-bucket resources must also be NOT-FOUND in AWS after destroy.
+# Checking only state.json + the buckets would miss an orphaned Lambda / IAM
+# role / SecurityGroup that carries no stack name (the "state-empty misses a
+# no-stack-name orphan" class). We use the physical ids captured from state in
+# Phase 1 (they are stable across the in-place update — id unchanged asserts
+# above prove it). Each AWS call exits non-zero once the resource is deleted.
+if aws lambda get-function-configuration --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: Lambda '${FUNCTION_NAME}' still exists after destroy (orphan)" >&2
+  exit 1
+fi
+echo "    OK: Lambda '${FUNCTION_NAME}' is gone"
+
+if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
+  echo "FAIL: IAM role '${ROLE_NAME}' still exists after destroy (orphan)" >&2
+  exit 1
+fi
+echo "    OK: IAM role '${ROLE_NAME}' is gone"
+
+# describe-security-groups exits non-zero (InvalidGroup.NotFound) once the SG
+# is deleted. The SG lives in the account's default VPC, so a lingering SG is
+# a true orphan that no VPC-gone check would surface here.
+if aws ec2 describe-security-groups --group-ids "${SG_ID}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: SecurityGroup '${SG_ID}' still exists after destroy (orphan)" >&2
+  exit 1
+fi
+echo "    OK: SecurityGroup '${SG_ID}' is gone"
+echo "    OK: named Lambda / IAM role / SecurityGroup are all gone after destroy"
 
 echo ""
 echo "==> update-replace test passed (in-place S3/Lambda/IAM/SG update + S3 BucketName replacement + clean destroy)"

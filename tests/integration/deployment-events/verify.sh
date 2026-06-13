@@ -60,6 +60,14 @@ cleanup() {
     # Direct AWS cleanup in case destroy itself is what broke.
     echo "[verify] cleanup: delete SSM parameter ${SSM_PARAM_NAME} (ignore NotFound)"
     aws ssm delete-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+    # SNS topic (deterministic name): resolve ARN from the account id, then delete.
+    echo "[verify] cleanup: delete SNS topic ${TOPIC_NAME} (ignore NotFound)"
+    cleanup_acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+    if [ -n "${cleanup_acct}" ] && [ "${cleanup_acct}" != "None" ]; then
+      aws sns delete-topic \
+        --topic-arn "arn:aws:sns:${REGION}:${cleanup_acct}:${TOPIC_NAME}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
   fi
   # ALWAYS remove the events sidecar so the integ leaves nothing behind
   # (events deliberately survive destroy — the test itself must clean them).
@@ -176,6 +184,22 @@ if aws ssm get-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}" >/dev/n
   echo "[verify] FAIL: SSM parameter ${SSM_PARAM_NAME} still exists after destroy"
   exit 1
 fi
+echo "[verify]   ok: SSM parameter ${SSM_PARAM_NAME} is gone"
+# Explicitly assert the named SNS topic is NOT-FOUND in AWS too — state-empty
+# alone would miss an orphaned topic that carries no stack name. SNS has no
+# "get one topic by name" call, so resolve the deterministic ARN and confirm
+# get-topic-attributes fails (NotFound). The topic name is `${STACK}-topic`.
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+if [ -z "${ACCOUNT_ID}" ] || [ "${ACCOUNT_ID}" = "None" ]; then
+  echo "[verify] FAIL: could not resolve account id to build the SNS topic ARN for the not-found assertion"
+  exit 1
+fi
+TOPIC_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
+if aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: SNS topic ${TOPIC_ARN} still exists after destroy (orphan)"
+  exit 1
+fi
+echo "[verify]   ok: SNS topic ${TOPIC_NAME} is gone"
 # Events deliberately survive destroy — the deployments/ sidecar must still
 # exist and now also carry the destroy run's own {runId}.jsonl.
 POST_KEYS="$(aws s3 ls "s3://${STATE_BUCKET}/${DEPLOYMENTS_PREFIX}" 2>&1 || true)"
