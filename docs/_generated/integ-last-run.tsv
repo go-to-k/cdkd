@@ -113,7 +113,6 @@ rds-aurora	2026-06-10T01:31:45Z	PASS	3000	verify.sh	#794 verify: MonitoringRoleA
 bench-cdk-sample	2026-06-10T01:42:03Z	PASS	480	standard	regression net post #609 batch (replacement-rules.ts shared change): 37 deleted/2 RETAIN logGroups/0 err; clean
 multi-resource	2026-06-10T03:34:10Z	PASS		standard	regression check post-#796; 17 created/17 deleted 0 errors 0 orphans
 remove-protection	2026-06-10T05:14:24Z	PASS		verify.sh	#798 re-verify delegated ASG target; instance terminated 0 orphans
-lambda	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 9 deleted 0 errors
 stepfunctions	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 5 deleted 0 errors (SM DELETING self-resolved)
 route53	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 6 deleted 0 errors
 custom-resource-provider	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 17 deleted 0 errors
@@ -124,3 +123,4 @@ vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 err
 drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 21 deleted 0 err 0 orphan
 ecs-fargate	2026-06-13T04:11:31Z	PASS	353	verify.sh	#807 propagation + #809 write-only UPDATE pass, 19 deleted 0 err
 microservices	2026-06-13T04:12:49Z	PASS	39	standard	#804 incremental destroy persistence; 19 deleted 0 err 0 orphan
+lambda	2026-06-13T04:41:51Z	PASS	76	verify.sh	#808 broad integ + cdkd events live-tested (deploy+destroy runs persisted); 9 deleted 0 err
