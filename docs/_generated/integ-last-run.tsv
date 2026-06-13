@@ -125,3 +125,4 @@ cross-stack-references	2026-06-13T09:16:21Z	PASS	26	standard	regression sweep 2-
 cc-api-fallback	2026-06-13T09:16:21Z	PASS	57	verify.sh	regression sweep; 0 err 0 orphan
 custom-resource-provider	2026-06-13T09:16:21Z	PASS	290	standard	regression sweep; 0 err 0 orphan
 deployment-events	2026-06-13T09:16:21Z	PASS	34	verify.sh	#808 events sidecar + cdkd events + no-secrets + survives-destroy; 2 deleted 0 err
+update-replace	2026-06-13T10:43:46Z	PASS	65	verify.sh	in-place(S3/Lambda/IAM/SG)+replacement(S3 rename); 0 err 0 orphan
