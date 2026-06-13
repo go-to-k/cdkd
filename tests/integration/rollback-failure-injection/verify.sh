@@ -37,7 +37,18 @@ export AWS_REGION="${REGION}"
 STACK="CdkdRollbackFailureExample"
 SSM_PARAM_NAME="${STACK}-marker"
 FAILING_QUEUE_NAME="${STACK}-failing-queue"
-CDK_PATH_PREFIX="${STACK}/"
+# Deterministic, NON-reserved tag the fixture applies to EVERY resource via
+# `cdk.Tags.of(this).add(...)` (lib/rollback-failure-stack.ts). We filter the
+# EC2 VPC / SecurityGroup and the IAM Role / Lambda cleanup by this tag instead
+# of `aws:cdk:path`: cdkd's EC2 provider only forwards template-supplied `Tags`,
+# and AWS reserves the `aws:` prefix, so cdkd NEVER sets `aws:cdk:path` on a
+# VPC / SG / Role / Lambda. A `tag:aws:cdk:path` filter therefore always returns
+# empty — it would FALSELY FAIL the "VPC created" assertion (step 5a) and
+# VACUOUSLY PASS the "gone" assertions (steps 3c/3d/7), masking real orphans.
+# cdkd DOES apply this non-reserved tag (EC2 CreateTags / IAM TagRole /
+# Lambda TagResource), so every resource-existence query below is reliable.
+FIXTURE_TAG_KEY="cdkd:integ-fixture"
+FIXTURE_TAG_VALUE="rollback-failure-injection"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-failure-injection"
@@ -53,18 +64,18 @@ DEPLOYMENTS_PREFIX="cdkd/${STACK}/${REGION}/deployments/"
 
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
-# --- Helper: find the fixture's VPC ids by the aws:cdk:path tag (begins with
-# the stack name). Echoes a space-separated list (may be empty). ---
+# --- Helper: find the fixture's VPC ids by the fixture tag. Echoes a
+# space-separated list (may be empty). ---
 find_fixture_vpcs() {
   aws ec2 describe-vpcs --region "${REGION}" \
-    --filters "Name=tag:aws:cdk:path,Values=${CDK_PATH_PREFIX}*" \
+    --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
     --query 'Vpcs[].VpcId' --output text 2>/dev/null || true
 }
 
-# --- Helper: find the fixture's SecurityGroup ids by the aws:cdk:path tag. ---
+# --- Helper: find the fixture's SecurityGroup ids by the fixture tag. ---
 find_fixture_sgs() {
   aws ec2 describe-security-groups --region "${REGION}" \
-    --filters "Name=tag:aws:cdk:path,Values=${CDK_PATH_PREFIX}*" \
+    --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
     --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true
 }
 
@@ -84,16 +95,16 @@ aggressive_cleanup() {
     aws sqs delete-queue --queue-url "${q_url}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
 
-  # Lambda functions tagged with our cdk path. ListFunctions has no tag filter,
-  # so enumerate + check each function's tags for our stack prefix.
+  # Lambda functions carrying the fixture tag. ListFunctions has no tag filter,
+  # so enumerate + check each function's tags for the fixture tag.
   local fn_arns fn_arn fn_name tagval
   fn_arns="$(aws lambda list-functions --region "${REGION}" \
     --query 'Functions[].FunctionArn' --output text 2>/dev/null || true)"
   for fn_arn in ${fn_arns}; do
     tagval="$(aws lambda list-tags --resource "${fn_arn}" --region "${REGION}" \
-      --query "Tags.\"aws:cdk:path\"" --output text 2>/dev/null || true)"
+      --query "Tags.\"${FIXTURE_TAG_KEY}\"" --output text 2>/dev/null || true)"
     case "${tagval}" in
-      "${CDK_PATH_PREFIX}"*)
+      "${FIXTURE_TAG_VALUE}")
         fn_name="${fn_arn##*:}"
         echo "[verify]   deleting orphan Lambda ${fn_name}"
         aws lambda delete-function --function-name "${fn_arn}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -101,15 +112,15 @@ aggressive_cleanup() {
     esac
   done
 
-  # IAM roles: ListRoles has no tag filter. Enumerate roles, check the cdk:path
+  # IAM roles: ListRoles has no tag filter. Enumerate roles, check the fixture
   # tag, detach managed policies, then delete.
   local role_names role_name rtag pol_arns pol_arn
   role_names="$(aws iam list-roles --query 'Roles[].RoleName' --output text 2>/dev/null || true)"
   for role_name in ${role_names}; do
     rtag="$(aws iam list-role-tags --role-name "${role_name}" \
-      --query "Tags[?Key=='aws:cdk:path'].Value | [0]" --output text 2>/dev/null || true)"
+      --query "Tags[?Key=='${FIXTURE_TAG_KEY}'].Value | [0]" --output text 2>/dev/null || true)"
     case "${rtag}" in
-      "${CDK_PATH_PREFIX}"*)
+      "${FIXTURE_TAG_VALUE}")
         echo "[verify]   deleting orphan IAM role ${role_name}"
         pol_arns="$(aws iam list-attached-role-policies --role-name "${role_name}" \
           --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null || true)"

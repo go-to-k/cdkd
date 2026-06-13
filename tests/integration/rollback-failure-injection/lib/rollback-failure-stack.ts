@@ -39,6 +39,14 @@ export class RollbackFailureStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // Deterministic, NON-reserved tag applied to every resource in this stack
+    // (verify.sh filters the EC2 VPC / SecurityGroup by it). cdkd's EC2 provider
+    // only forwards template-supplied `Tags`, and AWS reserves the `aws:` prefix,
+    // so cdkd never sets `aws:cdk:path` on a VPC/SG — a `tag:aws:cdk:path` filter
+    // would always return empty, falsely failing the "VPC created" assertion and
+    // vacuously passing the "VPC gone" assertions. This own-tag is reliable.
+    cdk.Tags.of(this).add('cdkd:integ-fixture', 'rollback-failure-injection');
+
     // --- VPC + Security Group (slow branch) ---
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 1,
