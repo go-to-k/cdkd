@@ -467,8 +467,11 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
   });
 
-  it('also caches DescribeType failures (warns once, no per-update retry storm)', async () => {
+  it('does NOT cache DescribeType failures: a later update of the same type retries', async () => {
     wireUpdateSuccess();
+    // A transient throttle must not poison the cache for the rest of the
+    // deploy — otherwise write-only re-inclusion would be silently disabled
+    // for every CC-routed update after the first failure.
     mockCloudFormationSend.mockRejectedValue(new Error('Rate exceeded'));
 
     await provider.update(
@@ -486,9 +489,73 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
       { TaskDefinition: 'arn:task:8' }
     );
 
+    // Both updates went out (graceful fallback), and each one re-attempted
+    // DescribeType + re-warned because the failed lookup was not cached.
     expect(updateResourceCallCount()).toBe(2);
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(2);
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries DescribeType after a transient failure and uses the populated set on success', async () => {
+    wireUpdateSuccess();
+    // First lookup throttles; the second succeeds with the real schema.
+    mockCloudFormationSend
+      .mockRejectedValueOnce(new Error('Rate exceeded'))
+      .mockResolvedValue({ Schema: ECS_SERVICE_SCHEMA });
+
+    // First update: DescribeType fails -> minimal patch, no write-only re-add.
+    await provider.update(
+      'ServiceA',
+      'svc-a',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:2', VolumeConfigurations: VOLUME_CONFIGURATIONS },
+      { TaskDefinition: 'arn:task:1', VolumeConfigurations: VOLUME_CONFIGURATIONS }
+    );
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/TaskDefinition', value: 'arn:task:2' }]);
+
+    // Second update of the same type: a REAL second DescribeType call runs
+    // (the failure was not cached) and the now-populated write-only set is
+    // applied — the unchanged VolumeConfigurations rides along as an add op.
+    vi.clearAllMocks();
+    wireUpdateSuccess();
+    await provider.update(
+      'ServiceB',
+      'svc-b',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:9', VolumeConfigurations: VOLUME_CONFIGURATIONS },
+      { TaskDefinition: 'arn:task:8', VolumeConfigurations: VOLUME_CONFIGURATIONS }
+    );
+
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
-    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'replace', path: '/TaskDefinition', value: 'arn:task:9' });
+    expect(patch).toContainEqual({
+      op: 'add',
+      path: '/VolumeConfigurations',
+      value: VOLUME_CONFIGURATIONS,
+    });
+    expect(patch).toHaveLength(2);
+  });
+
+  it('treats a DescribeType response without a Schema as no write-only properties (no warning)', async () => {
+    wireUpdateSuccess();
+    // A still-registering / publisher type can return no Schema at all.
+    mockCloudFormationSend.mockResolvedValue({});
+
+    await provider.update(
+      'MyService',
+      'svc-1',
+      'AWS::ECS::Service',
+      { TaskDefinition: 'arn:task:2', VolumeConfigurations: VOLUME_CONFIGURATIONS },
+      { TaskDefinition: 'arn:task:1', VolumeConfigurations: VOLUME_CONFIGURATIONS }
+    );
+
+    // No Schema -> no write-only set -> minimal patch (VolumeConfigurations
+    // is NOT re-added), and this is a successful lookup, not a failure: no
+    // warning, and it is cached as "none".
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/TaskDefinition', value: 'arn:task:2' }]);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
   });
 
   it('still skips the update entirely when nothing changed (no DescribeType call)', async () => {
