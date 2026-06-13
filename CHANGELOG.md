@@ -1,3 +1,10 @@
+## [0.219.9](https://github.com/go-to-k/cdkd/compare/v0.219.8...v0.219.9) (2026-06-13)
+
+
+### Bug Fixes
+
+* **destroy:** persist state incrementally and fail-fast CR delete when backing Lambda is gone ([#814](https://github.com/go-to-k/cdkd/issues/814)) ([29a2e5d](https://github.com/go-to-k/cdkd/commit/29a2e5de58cf9803cbf8f1c930da11edb52c94f6))
+
 ## [0.219.8](https://github.com/go-to-k/cdkd/compare/v0.219.7...v0.219.8) (2026-06-13)
 
 
