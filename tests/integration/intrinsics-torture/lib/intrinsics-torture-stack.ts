@@ -199,10 +199,10 @@ export class IntrinsicsTortureStack extends cdk.Stack {
     // -----------------------------------------------------------------
     // 7. ALL pseudo-parameters, each fed through Fn::Sub into a parameter
     //    value so verify.sh can read back the resolved concrete value.
-    //    AWS::NotificationARNs is a LIST pseudo param that cdkd resolves to
-    //    `undefined` (there is no notification ARN list in cdkd's
-    //    CloudFormation-free model); inside Fn::Sub that stringifies to the
-    //    literal "undefined". verify.sh asserts cdkd's documented behavior.
+    //    AWS::NotificationARNs is a LIST pseudo param that is always empty in
+    //    cdkd's CloudFormation-free model (there is no notification ARN list).
+    //    Matching CloudFormation, an empty list resolves to an EMPTY STRING
+    //    inside Fn::Sub, so `notif=` is empty. verify.sh asserts this.
     // -----------------------------------------------------------------
     intrinsicParam(
       'PseudoParam',

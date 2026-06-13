@@ -1424,6 +1424,46 @@ describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
   });
 });
 
+describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', () => {
+  // cdkd has no stack-notification-ARN concept, so AWS::NotificationARNs is
+  // always an empty list — which CloudFormation resolves to an empty string
+  // in an Fn::Sub / Ref string context. Before the fix it resolved to
+  // `undefined`, which left the literal `${AWS::NotificationARNs}` placeholder
+  // in an Fn::Sub body (the pseudo branch was skipped on `undefined`).
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  const context: ResolverContext = {
+    template: { Resources: {} },
+    resources: {},
+  };
+
+  it('substitutes ${AWS::NotificationARNs} to an empty string in Fn::Sub', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': '${AWS::NotificationARNs}' },
+      context
+    );
+    expect(result).toBe('');
+  });
+
+  it('substitutes ${AWS::NotificationARNs} embedded in a surrounding Fn::Sub string', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': 'notif=${AWS::NotificationARNs};done' },
+      context
+    );
+    expect(result).toBe('notif=;done');
+  });
+
+  it('resolves a bare Ref: AWS::NotificationARNs to an empty string', async () => {
+    const result = await resolver.resolve({ Ref: 'AWS::NotificationARNs' }, context);
+    expect(result).toBe('');
+  });
+});
+
 describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381)', () => {
   let resolver: IntrinsicFunctionResolver;
 

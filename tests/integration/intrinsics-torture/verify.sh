@@ -197,11 +197,13 @@ case "${NESTED_SUB}" in
 esac
 
 # -- 7. ALL pseudo-parameters via Fn::Sub --
-# cdkd resolves AWS::NotificationARNs to `undefined` (no CFn notification ARN
-# list in cdkd's model); inside Fn::Sub it stringifies to the literal
-# "undefined". This pins cdkd's DOCUMENTED behavior — a regression that
-# changed it (e.g. to empty string, or a crash) would flip this assertion.
-PSEUDO_EXPECTED="account=${ACCOUNT_ID};region=${REGION};partition=${PARTITION};stack=${STACK};urlsuffix=amazonaws.com;notif=undefined"
+# cdkd has no stack-notification-ARN concept (no CFn notification ARN list in
+# cdkd's model), so AWS::NotificationARNs is always an empty list. Matching
+# CloudFormation, an empty AWS::NotificationARNs list resolves to an EMPTY
+# STRING inside an Fn::Sub body — so `notif=` (nothing after the `=`). A
+# regression that left the literal `${AWS::NotificationARNs}` placeholder
+# (or crashed) would flip this assertion.
+PSEUDO_EXPECTED="account=${ACCOUNT_ID};region=${REGION};partition=${PARTITION};stack=${STACK};urlsuffix=amazonaws.com;notif="
 assert_param "all pseudo-parameters (Fn::Sub)" "${PFX}/pseudo" "${PSEUDO_EXPECTED}"
 
 # -- 8. Fn::Sub with pseudo params + a Ref to the SNS topic --

@@ -2096,7 +2096,13 @@ export class IntrinsicFunctionResolver {
         return 'amazonaws.com';
 
       case 'AWS::NotificationARNs':
-        return undefined;
+        // cdkd has no stack-notification-ARN concept — a cdkd deploy never
+        // sets SNS notification ARNs on a stack — so the list is always
+        // empty. CloudFormation resolves an empty AWS::NotificationARNs list
+        // to an empty string in an Fn::Sub / Ref string context, so returning
+        // '' (not undefined) matches CFn parity and ensures the pseudo
+        // parameter is substituted rather than left as a literal placeholder.
+        return '';
 
       case 'AWS::NoValue':
         // Return special symbol to indicate property should be omitted
