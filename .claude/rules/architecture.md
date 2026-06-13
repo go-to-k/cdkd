@@ -61,7 +61,7 @@ cdkd has a 7-layer system architecture:
      readable; the next write auto-migrates and deletes the legacy key.
    - An old cdkd binary fails clearly on a `version: 2` blob instead of
      silently mishandling unknown fields.
-   - State bucket region is resolved dynamically via `GetBucketLocation` (`src/utils/aws-region-resolver.ts`); both state-bucket S3 consumers — the state backend (PR #60) and the lock manager (issue #803) — rebuild their S3 client for the bucket's actual region before any state or lock operation, so the CLI works regardless of the profile region. Provisioning clients (CC API, Lambda, IAM, etc.) keep using `env.region` — only the state-bucket S3 clients are region-corrected.
+   - State bucket region is resolved dynamically via `GetBucketLocation` (`src/utils/aws-region-resolver.ts`); all three state-bucket S3 consumers — the state backend (PR #60), the lock manager (issue #803), and the exports index store (issue #819) — rebuild their S3 client for the bucket's actual region before any state / lock / exports-index operation, so the CLI works regardless of the profile region. Provisioning clients (CC API, Lambda, IAM, etc.) keep using `env.region` — only the state-bucket S3 clients are region-corrected.
 
 3. **Event-driven DAG Execution**
    - Analyzes dependencies via `Ref` / `Fn::GetAtt` / `DependsOn`

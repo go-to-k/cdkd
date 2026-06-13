@@ -37,6 +37,10 @@
       "description": "cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE."
     },
     {
+      "tag": "exports-index-region-resolve",
+      "description": "Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819)."
+    },
+    {
       "tag": "globaltable-cross-region-replica",
       "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call)."
     },
@@ -284,6 +288,7 @@
       "name": "cross-region-state-bucket",
       "annotated": true,
       "scenarios": [
+        "exports-index-region-resolve",
         "state-bucket-region-resolve"
       ]
     },
@@ -984,6 +989,13 @@
       "description": "cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE.",
       "fixtures": [
         "export"
+      ]
+    },
+    {
+      "scenario": "exports-index-region-resolve",
+      "description": "Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819).",
+      "fixtures": [
+        "cross-region-state-bucket"
       ]
     },
     {

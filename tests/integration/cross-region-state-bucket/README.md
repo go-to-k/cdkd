@@ -25,6 +25,21 @@ with S3's 301 PermanentRedirect ("must be addressed using the specified
 endpoint"). `LockManager` now resolves the bucket's actual region before
 its first S3 operation and rebuilds its own client when it differs.
 
+Issue #819 closed the last instance of the same class: the exports index
+store (`Fn::ImportValue` cross-stack reference tracking, writes
+`_index/{region}/exports.json`) also used a CLI-base-region client, so its
+index write (after deploy) and remove (after destroy) hit the 301 — logged
+as `Exports index ... failed (non-retryable): ... must be addressed using
+the specified endpoint; continuing without index update`. Non-fatal (the
+canonical `state.json` is unaffected and the index self-heals), so the run
+still passed while the cross-region index was silently never maintained.
+`ExportIndexStore` now resolves the bucket region the same way before its
+S3 ops. To exercise the path, the fixture stack publishes a CloudFormation
+Output with an `Export.Name` (an export-less stack short-circuits the index
+write), and `verify.sh` greps the deploy + destroy output to assert the 301
+warning is gone AND that `_index/{region}/exports.json` was actually written
+to the cross-region bucket.
+
 ## Automated run (`verify.sh`)
 
 `verify.sh` sets up the cross-region precondition itself — no pre-existing
@@ -36,10 +51,13 @@ bucket needed:
 2. Runs `cdkd deploy` / `cdkd state ls` / `cdkd destroy` with `AWS_REGION`
    pointed at `us-east-1` (the base region) while the state bucket lives in
    `us-west-2`. Pre-#803 the deploy failed at lock acquisition.
-3. Asserts after deploy: `state.json` exists in the bucket AND `lock.json`
-   was released (the lock path round-tripped cross-region), and the
-   fixture's SSM parameter exists in the base region.
-4. Asserts after destroy: state and the SSM parameter are gone.
+3. Asserts after deploy: `state.json` AND the exports index
+   `_index/{region}/exports.json` exist in the bucket, `lock.json` was
+   released (the lock path round-tripped cross-region), the fixture's SSM
+   parameter exists in the base region, and the deploy output carries NO
+   exports-index 301 warning (issue #819).
+4. Asserts after destroy: state and the SSM parameter are gone, and the
+   destroy output carries NO exports-index 301 warning.
 5. Deletes the temporary bucket at the end — including on failure, via an
    EXIT trap that also attempts `cdkd destroy` / direct SSM cleanup first.
 
