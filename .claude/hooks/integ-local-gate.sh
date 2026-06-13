@@ -2,13 +2,22 @@
 # integ-local-gate.sh
 #
 # PreToolUse hook. Blocks `gh pr merge` (including --auto) and
-# `git merge` unless the `integ-local` markgate marker is fresh for
-# the current content state. The gate's scope (see .markgate.yml)
-# covers every code path that participates in the `cdkd local *`
-# family (Lambda RIE containers, ECS task emulation, HTTP server,
-# container pool, etc.); editing any of them invalidates the marker
-# and forces a successful Docker-based `/run-integ local-*` run
-# before the PR can be merged.
+# `git merge` when the merged PR actually touches local-execution code
+# AND the `integ-local` markgate marker is not fresh. The gate's scope
+# (see .markgate.yml) covers every code path that participates in the
+# `cdkd local *` family (Lambda RIE containers, ECS task emulation,
+# HTTP server, container pool, etc.); editing any of them invalidates
+# the marker and forces a successful Docker-based `/run-integ local-*`
+# run before the PR can be merged.
+#
+# IMPORTANT — PR-diff scope guard (see below): for `gh pr merge <N>`
+# the hook first checks whether the PR's file list actually touches
+# local-execution scope. A PR that touches NO local code passes
+# through even when the marker is stale, mirroring integ-destroy-gate
+# / integ-broad-gate (which already scope-check). Without this guard a
+# stale marker (14d TTL expiry, or an unrelated src/local change
+# already on main) would block EVERY merge, including pure
+# src/provisioning PRs — the over-fire this guard fixes.
 #
 # This is the structural counterpart for local-execution changes,
 # mirroring `integ-destroy-gate.sh` for deletion logic.
@@ -107,6 +116,66 @@ if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 cd "$target_dir" 2>/dev/null || exit 0
+
+# --- PR-diff scope check (mirrors integ-destroy-gate.sh / integ-broad-gate.sh) ---
+# The markgate scope (.markgate.yml) is file-level, but markgate `verify`
+# cannot tell whether THIS PR's diff actually touches local-execution code.
+# Without this guard a stale `integ-local` marker (14d TTL expiry, or an
+# unrelated src/local change already on main) blocks EVERY merge — including
+# PRs that touch no local code at all (e.g. a pure src/provisioning fix).
+# The sibling gates integ-destroy / integ-broad already scope-check their
+# diff and pass non-matching PRs through; integ-local must do the same.
+#
+# Only applies to `gh pr merge <N>` where we can fetch the PR's file list.
+# `git merge` and number-less `gh pr merge` fall through to the
+# unconditional verify below (conservative — those are rarer and we
+# cannot cheaply enumerate the incoming diff).
+LOCAL_SCOPE_REGEX='^src/local/|^src/cli/commands/local-[A-Za-z0-9_-]*\.ts$|^tests/integration/local-'
+
+if printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
+  pr_number=""
+  args="${cmd#*merge}"
+  # shellcheck disable=SC2086
+  set -- $args
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --*=*) shift; continue ;;
+      --auto|--admin|--delete-branch|--squash|--merge|--rebase) shift; continue ;;
+      -*) shift; [ $# -gt 0 ] && shift; continue ;;
+      *)
+        if printf '%s' "$1" | grep -qE '^[0-9]+$'; then
+          pr_number="$1"
+          break
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [ -n "$pr_number" ]; then
+    # Pass-through on any gh error so an unrelated infra outage does not
+    # block merges (mirrors integ-broad-gate.sh / pr-review-gate.sh).
+    pr_json=$(gh pr view "$pr_number" --json files 2>/dev/null) || {
+      printf 'integ-local-gate: gh pr view %s failed; allowing merge (infra fail-open)\n' "$pr_number" >&2
+      exit 0
+    }
+    paths=$(printf '%s' "$pr_json" | jq -r '.files[].path' 2>/dev/null || echo "")
+    touches_local=0
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
+      if printf '%s' "$f" | grep -qE "$LOCAL_SCOPE_REGEX"; then
+        touches_local=1
+        break
+      fi
+    done <<EOF_FILES
+$paths
+EOF_FILES
+    # No local-execution file in the PR diff -> this gate does not apply.
+    if [ "$touches_local" -eq 0 ]; then
+      exit 0
+    fi
+  fi
+fi
 
 # Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's
 # canonical markgate wins over an older PATH binary; see check-gate.sh for

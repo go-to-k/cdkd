@@ -142,6 +142,57 @@ run_case "gh issue body quoting 'gh pr merge' passes through" 0 \
 run_case "echo body quoting 'git merge' passes through" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"reminder: git merge origin/main when ready\""}}' "$fixture_repo")"
 
+# --- PR-DIFF SCOPE-CHECK cases (mirrors integ-destroy / integ-broad gates) ---
+#
+# For `gh pr merge <N>` WITH a PR number, the gate fetches the PR's file
+# list via `gh pr view <N> --json files` and passes through when no file
+# touches local-execution scope (src/local/** / src/cli/commands/local-*.ts
+# / tests/integration/local-*). A stub `gh` on PATH returns a controlled
+# file list; the real markgate (stale in this checkout) drives the
+# fires-when-relevant case to exit 2.
+GH_STUB_DIR="$TMPDIR/ghstub"
+mkdir -p "$GH_STUB_DIR"
+GH_FILES_PAYLOAD="$TMPDIR/gh-files.json"
+cat > "$GH_STUB_DIR/gh" <<'GH_EOF'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "pr view" ]; then
+  if [ "${GH_STUB_FAIL:-}" = "1" ]; then exit 1; fi
+  cat "$GH_FILES_PAYLOAD"
+  exit 0
+fi
+exit 0
+GH_EOF
+chmod +x "$GH_STUB_DIR/gh"
+export GH_FILES_PAYLOAD
+OLD_PATH="$PATH"
+export PATH="$GH_STUB_DIR:$PATH"
+
+# 17. PR with a number whose files are all NON-local -> scope check
+#     passes the merge through (exit 0) even though integ-local is stale.
+printf '{"files":[{"path":"src/provisioning/cloud-control-provider.ts"},{"path":"docs/changelog-cdkd.md"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="" run_case "gh pr merge <N> non-local files passes through" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash --delete-branch"}}' "$fixture_repo")"
+
+# 18. PR with a number whose files include a local-execution file ->
+#     scope check engages, the (stale) marker blocks the merge (exit 2).
+printf '{"files":[{"path":"src/local/docker-runner.ts"},{"path":"docs/changelog-cdkd.md"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="" run_case "gh pr merge <N> with src/local file gate fires" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
+
+# 19. PR with a number whose files include a tests/integration/local-*
+#     fixture -> scope check engages, stale marker blocks (exit 2).
+printf '{"files":[{"path":"tests/integration/local-invoke/verify.sh"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="" run_case "gh pr merge <N> with tests/integration/local- file gate fires" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999"}}' "$fixture_repo")"
+
+# 20. `gh pr view` failure -> fail-open (exit 0), an infra outage must
+#     not block merges (mirrors integ-broad-gate.sh).
+printf '{"files":[{"path":"src/local/docker-runner.ts"}]}' > "$GH_FILES_PAYLOAD"
+GH_STUB_FAIL="1" run_case "gh pr view failure fails open" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
+
+export PATH="$OLD_PATH"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
