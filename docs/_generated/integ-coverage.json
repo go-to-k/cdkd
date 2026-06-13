@@ -728,6 +728,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -761,6 +762,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -820,6 +824,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -853,6 +858,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -934,6 +942,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -967,6 +976,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -1026,6 +1038,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -1059,6 +1072,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -1118,6 +1134,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -1148,6 +1165,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -1210,6 +1230,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -1243,6 +1264,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -1313,6 +1337,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -1346,6 +1371,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -1405,6 +1433,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -1438,6 +1467,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -1498,6 +1530,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "docdb-neptune",
+        "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-vpc",
@@ -1531,6 +1564,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "drift-revert-vpc": [
@@ -2709,6 +2745,7 @@
         "data-analytics",
         "diff-intrinsic-target-change",
         "drift-revert",
+        "drift-revert-arrays",
         "event-driven",
         "export",
         "full-stack-demo",
@@ -2763,6 +2800,9 @@
           "l2"
         ],
         "drift-revert": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "event-driven": [
@@ -2922,6 +2962,7 @@
         "composite-stack",
         "deployment-events",
         "drift-revert",
+        "drift-revert-arrays",
         "event-driven",
         "export",
         "full-stack-demo",
@@ -2947,6 +2988,9 @@
           "l2"
         ],
         "drift-revert": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "event-driven": [
@@ -3002,6 +3046,7 @@
         "bench-sdk",
         "composite-stack",
         "data-pipeline",
+        "drift-revert-arrays",
         "event-driven",
         "eventbridge",
         "full-stack-demo",
@@ -3025,6 +3070,9 @@
           "literal"
         ],
         "data-pipeline": [
+          "l2"
+        ],
+        "drift-revert-arrays": [
           "l2"
         ],
         "event-driven": [
