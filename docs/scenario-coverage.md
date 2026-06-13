@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**40 / 40 canonical scenarios** have at least one integ fixture exercising them. **107 / 126 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**41 / 41 canonical scenarios** have at least one integ fixture exercising them. **108 / 127 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (40 scenarios)
+## Per-scenario coverage (41 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -68,6 +68,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `remove-protection-bypass` | `--remove-protection` flag bypassing AWS-side deletion-protection on supported types. | [`remove-protection`](../tests/integration/remove-protection/) |
 | `state-bucket-region-resolve` | State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region. | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
 | `state-schema-migration` | Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema. | [`legacy-state-migration`](../tests/integration/legacy-state-migration/)<br>[`schema-v5-to-v6-migration`](../tests/integration/schema-v5-to-v6-migration/) |
+| `update-replace-breadth` | Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types. | [`update-replace`](../tests/integration/update-replace/) |
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 
