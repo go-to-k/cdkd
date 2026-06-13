@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**66 / 66 canonical scenarios** have at least one integ fixture exercising them. **134 / 153 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**67 / 67 canonical scenarios** have at least one integ fixture exercising them. **135 / 154 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (66 scenarios)
+## Per-scenario coverage (67 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -47,6 +47,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `drift-revert-array-canonicalization` | cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift. | [`drift-revert-arrays`](../tests/integration/drift-revert-arrays/) |
 | `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-arrays`](../tests/integration/drift-revert-arrays/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
 | `dynamic-reference-resolution` | CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.) | [`secrets-dynamic-ref`](../tests/integration/secrets-dynamic-ref/) |
+| `elbv2-listener-tg-lb-deletion-order` | ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation). | [`deletion-ordering-complex`](../tests/integration/deletion-ordering-complex/) |
 | `eventsourcemapping-fresh-source-race` | `AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy. | [`eventsourcemapping-race`](../tests/integration/eventsourcemapping-race/) |
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `exports-index-region-resolve` | Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819). | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |

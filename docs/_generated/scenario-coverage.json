@@ -69,6 +69,10 @@
       "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)"
     },
     {
+      "tag": "elbv2-listener-tg-lb-deletion-order",
+      "description": "ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation)."
+    },
+    {
       "tag": "eventsourcemapping-fresh-source-race",
       "description": "`AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy."
     },
@@ -450,6 +454,13 @@
       "annotated": true,
       "scenarios": [
         "deep-getatt-chain-resolution"
+      ]
+    },
+    {
+      "name": "deletion-ordering-complex",
+      "annotated": true,
+      "scenarios": [
+        "elbv2-listener-tg-lb-deletion-order"
       ]
     },
     {
@@ -1356,6 +1367,13 @@
       "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)",
       "fixtures": [
         "secrets-dynamic-ref"
+      ]
+    },
+    {
+      "scenario": "elbv2-listener-tg-lb-deletion-order",
+      "description": "ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation).",
+      "fixtures": [
+        "deletion-ordering-complex"
       ]
     },
     {

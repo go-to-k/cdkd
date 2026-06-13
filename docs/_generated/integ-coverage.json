@@ -718,11 +718,15 @@
     {
       "resourceType": "AWS::EC2::Instance",
       "integs": [
+        "deletion-ordering-complex",
         "ec2-instance",
         "propagation-races-2",
         "remove-protection"
       ],
       "signals": {
+        "deletion-ordering-complex": [
+          "l2"
+        ],
         "ec2-instance": [
           "l1"
         ],
@@ -743,6 +747,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -780,6 +785,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -859,6 +867,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -896,6 +905,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -997,6 +1009,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -1034,6 +1047,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -1113,6 +1129,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -1150,6 +1167,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -1229,6 +1249,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -1263,6 +1284,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -1350,6 +1374,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -1387,6 +1412,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -1477,6 +1505,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -1514,6 +1543,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -1593,6 +1625,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -1630,6 +1663,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -1710,6 +1746,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
         "drift-revert-arrays",
@@ -1747,6 +1784,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "deletion-ordering-complex": [
           "l2"
         ],
         "destroy-interrupt": [
@@ -2065,11 +2105,15 @@
       "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
       "integs": [
         "alb",
+        "deletion-ordering-complex",
         "local-start-alb",
         "local-start-alb-from-state"
       ],
       "signals": {
         "alb": [
+          "literal"
+        ],
+        "deletion-ordering-complex": [
           "literal"
         ],
         "local-start-alb": [
@@ -2086,6 +2130,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "deletion-ordering-complex",
         "drift-revert-vpc",
         "local-start-alb",
         "local-start-alb-from-state",
@@ -2097,6 +2142,10 @@
         ],
         "alb-advanced": [
           "l2"
+        ],
+        "deletion-ordering-complex": [
+          "l2",
+          "literal"
         ],
         "drift-revert-vpc": [
           "l2",
@@ -2120,11 +2169,15 @@
       "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
       "integs": [
         "alb",
+        "deletion-ordering-complex",
         "local-start-alb",
         "local-start-alb-from-state"
       ],
       "signals": {
         "alb": [
+          "literal"
+        ],
+        "deletion-ordering-complex": [
           "literal"
         ],
         "local-start-alb": [

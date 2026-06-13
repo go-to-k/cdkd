@@ -99,6 +99,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy).',
   'lambda-vpc-subnet-sg-deletion-order':
     'Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation.',
+  'elbv2-listener-tg-lb-deletion-order':
+    'ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation).',
   'iam-policy-propagation-retry':
     'CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race.',
   'sg-circular-dependency':

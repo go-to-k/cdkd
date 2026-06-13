@@ -132,3 +132,4 @@ update-replace	2026-06-13T11:42:29Z	PASS	71	verify.sh	#831 +Lambda/IAM/SG not-fo
 destroy-interrupt	2026-06-13T11:42:29Z	PASS	581	verify.sh	#831 +SG/IAM not-found post-destroy; #816+#804 verified; 0 orphan
 throttle-wide-dag	2026-06-14T04:35:46Z	PASS		verify.sh	bug15 throttle-retry validated deploy+destroy clean
 importvalue-chain	2026-06-14T04:47:40Z	PASS		verify.sh	fixture-fix: deploy C with --exclusively (avoid producer-chain global-param collision); clean 0 orphans
+deletion-ordering-complex	2026-06-14T05:02:58Z	PASS		verify.sh	ELBv2 destroy-order PASSES (DependencyViolation retry handles LB ENI race); predicted-fail did not materialize; 0 orphans
