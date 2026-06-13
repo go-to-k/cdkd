@@ -20,8 +20,23 @@
  *    the subnet down first triggers a DependencyViolation.
  */
 export const IMPLICIT_DELETE_DEPENDENCIES: Record<string, readonly string[]> = {
-  // IGW must be deleted AFTER VPCGatewayAttachment
-  'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
+  // IGW must be deleted AFTER VPCGatewayAttachment, and AFTER the NAT
+  // Gateway. A NAT Gateway holds an Elastic IP mapped to the VPC's public
+  // address space; until the NAT is gone (which releases/decouples the EIP),
+  // EC2 rejects the IGW detach with `Network vpc-xxx has some mapped public
+  // address(es)` and the IGW delete then hangs. CloudFormation enforces this
+  // same NAT-before-IGW ordering. (The EIP itself does not need a type-based
+  // rule: the NAT Ref's the EIP via `AllocationId`, so the reversed delete
+  // traversal already deletes the NAT before the EIP is released.)
+  'AWS::EC2::InternetGateway': [
+    'AWS::EC2::VPCGatewayAttachment',
+    'AWS::EC2::NatGateway',
+  ],
+
+  // VPCGatewayAttachment (the IGW<->VPC attachment) must be detached AFTER the
+  // NAT Gateway is gone — same `mapped public address(es)` rejection as the IGW
+  // delete above (the detach is the operation that actually trips the error).
+  'AWS::EC2::VPCGatewayAttachment': ['AWS::EC2::NatGateway'],
 
   // EventBus must be deleted AFTER Rules on that bus
   'AWS::Events::EventBus': ['AWS::Events::Rule'],
