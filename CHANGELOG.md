@@ -1,3 +1,10 @@
+## [0.220.3](https://github.com/go-to-k/cdkd/compare/v0.220.2...v0.220.3) (2026-06-13)
+
+
+### Bug Fixes
+
+* **analyzer:** order NAT Gateway deletion before IGW / VPCGatewayAttachment on destroy ([#823](https://github.com/go-to-k/cdkd/issues/823)) ([cbeb742](https://github.com/go-to-k/cdkd/commit/cbeb7422fd70ddc09c89d074b27af6fdba5e31ab))
+
 ## [0.220.2](https://github.com/go-to-k/cdkd/compare/v0.220.1...v0.220.2) (2026-06-13)
 
 
