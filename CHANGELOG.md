@@ -1,3 +1,10 @@
+## [0.220.5](https://github.com/go-to-k/cdkd/compare/v0.220.4...v0.220.5) (2026-06-13)
+
+
+### Bug Fixes
+
+* **provisioning:** convert ECS TaskDefinition volume sub-configurations PascalCase to camelCase ([#825](https://github.com/go-to-k/cdkd/issues/825)) ([2d54d40](https://github.com/go-to-k/cdkd/commit/2d54d40fb7e477f4e5a8e8596bd20f9dc08e1b53))
+
 ## [0.220.4](https://github.com/go-to-k/cdkd/compare/v0.220.3...v0.220.4) (2026-06-13)
 
 
