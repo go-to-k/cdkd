@@ -66,6 +66,24 @@ cd "${CDKD_PATH}/tests/integration/intrinsic-functions"
 vp install
 ```
 
+#### Intrinsics Torture Example (Stress-testing the intrinsic resolver)
+
+A real-AWS regression net for cdkd's hand-rolled intrinsic-function resolver
+(`src/deployment/intrinsic-function-resolver.ts`) that goes beyond the basic
+`intrinsic-functions` fixture (Ref / GetAtt / Join / Sub). Each harder
+intrinsic — `Fn::Cidr`, `Fn::FindInMap`, `Fn::GetAZs` + `Fn::Select`,
+`Fn::Base64`, nested `Fn::Split`/`Fn::Select`/`Fn::Join`, deeply-nested
+two-arg `Fn::Sub`, and ALL pseudo-parameters — computes an `AWS::SSM::Parameter`
+Value that `verify.sh` reads back from AWS and asserts against an
+independently-computed expected value, so a wrong resolution pinpoints the
+offending intrinsic.
+
+```bash
+cd "${CDKD_PATH}/tests/integration/intrinsics-torture"
+vp install
+STATE_BUCKET="your-cdkd-state-bucket" AWS_REGION="us-east-1" bash verify.sh
+```
+
 #### Lambda Example (Lambda + DynamoDB + IAM) ✅ Recommended
 
 A practical integration example with Lambda functions and DynamoDB tables:
