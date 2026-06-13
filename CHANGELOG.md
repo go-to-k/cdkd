@@ -1,3 +1,10 @@
+## [0.220.2](https://github.com/go-to-k/cdkd/compare/v0.220.1...v0.220.2) (2026-06-13)
+
+
+### Bug Fixes
+
+* **cli:** correct warnIfDeprecatedRegion message — --region is still honored, not ignored ([#822](https://github.com/go-to-k/cdkd/issues/822)) ([4ec8230](https://github.com/go-to-k/cdkd/commit/4ec8230196f944c129022be60ee6dbe0a32dad3a))
+
 ## [0.220.1](https://github.com/go-to-k/cdkd/compare/v0.220.0...v0.220.1) (2026-06-13)
 
 
