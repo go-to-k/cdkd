@@ -413,6 +413,78 @@ describe('CustomResourceProvider', () => {
       // delete still ran normally.
       expect(mockLambdaSend).toHaveBeenCalledTimes(4);
     });
+
+    // Gap 1: only ResourceNotFoundException is "definitively gone". Every
+    // other pre-check failure class (IAM AccessDenied, a generic 5xx) is
+    // INCONCLUSIVE and must fall through to the normal invoke path — we
+    // must never skip a real delete just because the probe couldn't read
+    // the function.
+    it.each([
+      ['AccessDeniedException', 'User is not authorized to perform: lambda:GetFunction'],
+      ['ServiceException', 'Internal server error'],
+    ])(
+      'falls through to the normal delete path on an inconclusive %s pre-check error',
+      async (errorName, message) => {
+        mockLambdaSend.mockRejectedValueOnce(
+          Object.assign(new Error(message), { name: errorName })
+        );
+
+        // S3 PutObject for placeholder
+        mockS3Send.mockResolvedValueOnce({});
+        // Backing-Lambda readiness waiters.
+        mockLambdaReady();
+        // Lambda invoke returns direct cfn-response
+        mockLambdaSend.mockResolvedValueOnce({
+          Payload: Buffer.from(
+            JSON.stringify({ Status: 'SUCCESS', PhysicalResourceId: 'cr-physical-id' })
+          ),
+        });
+        // S3 DeleteObject for cleanup
+        mockS3Send.mockResolvedValueOnce({});
+
+        await provider.delete('MyCustom', 'cr-physical-id', 'Custom::MyResource', {
+          ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:inconclusive-handler',
+        });
+
+        // 1 pre-check + 2 waiter polls + 1 Invoke = 4 Lambda SDK calls — the
+        // delete still ran normally; the custom resource was NOT skipped.
+        expect(mockLambdaSend).toHaveBeenCalledTimes(4);
+        expect(childWarnSpy).not.toHaveBeenCalledWith(expect.stringContaining('no longer exists'));
+      }
+    );
+
+    // Gap 2: an SNS-backed ServiceToken has no backing Lambda to probe —
+    // the `!isSnsServiceToken` short-circuit must skip the GetFunction
+    // pre-check entirely (issuing one against an SNS ARN would error
+    // spuriously / waste a call). Regression guard for that short-circuit.
+    it('does NOT issue a GetFunction pre-check for an SNS ServiceToken', async () => {
+      const snsTopicArn = 'arn:aws:sns:us-east-1:123456789012:my-topic';
+
+      // S3 PutObject for placeholder
+      mockS3Send.mockResolvedValueOnce({});
+      // SNS publish succeeds
+      mockSnsSend.mockResolvedValueOnce({ MessageId: 'msg-789' });
+      // S3 GetObject returns success response
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ Status: 'SUCCESS', PhysicalResourceId: 'sns-custom-id-456' })
+            ),
+        },
+      });
+      // S3 DeleteObject for cleanup
+      mockS3Send.mockResolvedValueOnce({});
+
+      await provider.delete('MySnsCustom', 'sns-custom-id-456', 'Custom::SnsResource', {
+        ServiceToken: snsTopicArn,
+      });
+
+      // The SNS delete path runs; the Lambda client is NEVER touched, so the
+      // GetFunction pre-check did not fire.
+      expect(mockSnsSend).toHaveBeenCalledTimes(1);
+      expect(mockLambdaSend).not.toHaveBeenCalled();
+    });
   });
 
   describe('update with SNS ServiceToken', () => {

@@ -73,7 +73,10 @@ function res(dependencies: string[] = [], extra: Partial<ResourceState> = {}): R
   };
 }
 
-function makeState(resources: Record<string, ResourceState>): StackState {
+function makeState(
+  resources: Record<string, ResourceState>,
+  extra: Partial<StackState> = {}
+): StackState {
   return {
     version: 8,
     stackName: 'TestStack',
@@ -81,6 +84,7 @@ function makeState(resources: Record<string, ResourceState>): StackState {
     resources,
     outputs: {},
     lastModified: 1,
+    ...extra,
   };
 }
 
@@ -96,6 +100,9 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
+        // No other stack imports from us — the strong-ref pre-flight /
+        // lock-protected scans short-circuit on an empty stack list.
+        listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
         acquireLock: mockAcquireLock,
@@ -113,8 +120,12 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
 
   /** Resources recorded in the Nth saveState call (0-based). */
   function savedResourcesAt(callIndex: number): Record<string, ResourceState> {
-    const stateArg = mockSaveState.mock.calls[callIndex]![2] as StackState;
-    return stateArg.resources;
+    return savedStateAt(callIndex).resources;
+  }
+
+  /** Full state object recorded in the Nth saveState call (0-based). */
+  function savedStateAt(callIndex: number): StackState {
+    return mockSaveState.mock.calls[callIndex]![2] as StackState;
   }
 
   beforeEach(() => {
@@ -244,5 +255,182 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     expect(Object.keys(savedResourcesAt(0))).toEqual(['Kept']);
     // Clean destroy: state file deleted wholesale (drops the Kept record).
     expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- MAJOR fix (issue #804 review): the preserved partial state must NOT
+  // advertise outputs / imports / outputReads for resources that are gone.
+  it('clears outputs and drops imports/outputReads in every persisted partial-destroy snapshot', async () => {
+    // A producer-shaped stack: it has outputs (a potential export), AND it
+    // is also a consumer (imports[] + outputReads[]). One resource fails so
+    // the state is PRESERVED (not deleted), surfacing the persisted shape.
+    const state = makeState(
+      { Failing: res(), Ok: res() },
+      {
+        outputs: { BucketArn: 'arn:aws:s3:::my-bucket' },
+        imports: [
+          { sourceStack: 'ProducerStack', sourceRegion: REGION, exportName: 'SomeExport' },
+        ],
+        outputReads: [
+          { sourceStack: 'OtherStack', sourceRegion: REGION, outputName: 'SomeOutput' },
+        ],
+      }
+    );
+
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'Failing' ? Promise.reject(new Error('boom')) : Promise.resolve()
+    );
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(result.errorCount).toBe(1);
+    // State preserved, not deleted.
+    expect(mockDeleteState).not.toHaveBeenCalled();
+
+    // EVERY persisted snapshot (incremental after Ok + the final
+    // preserve-write) clears outputs and drops imports / outputReads — the
+    // gone resources' exports must not linger.
+    expect(mockSaveState.mock.calls.length).toBeGreaterThanOrEqual(1);
+    for (let i = 0; i < mockSaveState.mock.calls.length; i++) {
+      const saved = savedStateAt(i);
+      expect(saved.outputs).toEqual({});
+      expect(saved.imports).toBeUndefined();
+      expect(saved.outputReads).toBeUndefined();
+    }
+
+    // The in-memory `state` object the strong-ref check reads is NOT mutated
+    // — clearing happens only in the persisted snapshot copies.
+    expect(state.outputs).toEqual({ BucketArn: 'arn:aws:s3:::my-bucket' });
+    expect(state.imports).toHaveLength(1);
+    expect(state.outputReads).toHaveLength(1);
+  });
+
+  it('also clears outputs in incremental snapshots on a clean destroy', async () => {
+    // Even when the destroy fully succeeds (state-file deleted at the end),
+    // the intermediate incremental snapshots must already be output-free —
+    // an interrupt between the last incremental persist and the wholesale
+    // delete would otherwise leave a phantom-export state behind.
+    const state = makeState(
+      { A: res(), B: res(['A']) },
+      { outputs: { Out: 'value' } }
+    );
+    mockProviderDelete.mockResolvedValue(undefined);
+
+    await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockSaveState).toHaveBeenCalledTimes(2);
+    expect(savedStateAt(0).outputs).toEqual({});
+    expect(savedStateAt(1).outputs).toEqual({});
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- Test gap 3: a mid-chain incremental persist failure must not poison
+  // later links — the destroy is still clean end-to-end.
+  it('a mid-chain incremental persist failure does not poison later links or the final deleteState', async () => {
+    // Three independent siblings → three incremental persists. The MIDDLE
+    // one (2nd saveState) rejects; the destroy must still complete cleanly
+    // and reach the wholesale deleteState.
+    const state = makeState({ A: res(), B: res(), C: res() });
+    mockProviderDelete.mockResolvedValue(undefined);
+
+    let saveCall = 0;
+    mockSaveState.mockReset().mockImplementation(() => {
+      saveCall++;
+      return saveCall === 2
+        ? Promise.reject(new Error('transient S3 error mid-chain'))
+        : Promise.resolve('"etag"');
+    });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(result.deletedCount).toBe(3);
+    expect(result.errorCount).toBe(0);
+    // All three links ran (the failed middle one did not abort the chain).
+    expect(mockSaveState).toHaveBeenCalledTimes(3);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to persist state'));
+    // The wholesale state-file delete still fired despite the mid-chain error.
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+    const lastSaveOrder = mockSaveState.mock.invocationCallOrder.at(-1)!;
+    const deleteOrder = mockDeleteState.mock.invocationCallOrder[0]!;
+    expect(deleteOrder).toBeGreaterThan(lastSaveOrder);
+  });
+
+  // ---- Test gap 5: concurrent-level snapshot determinism. Three independent
+  // siblings in one DAG level finish concurrently; the final snapshot is
+  // empty and the intermediate snapshots shrink monotonically.
+  it('produces monotonically shrinking snapshots for 3 concurrent siblings in one level', async () => {
+    const state = makeState({ A: res(), B: res(), C: res() });
+    mockProviderDelete.mockResolvedValue(undefined);
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(result.deletedCount).toBe(3);
+    expect(result.errorCount).toBe(0);
+
+    // One incremental persist per sibling, serialized through the save
+    // chain. The snapshot bodies are spread at FLUSH time (not schedule
+    // time) from the shared `remainingResources`, so with three siblings
+    // completing concurrently the exact per-snapshot sizes are NOT pinned —
+    // what IS deterministic is that the sizes are monotonically
+    // non-increasing and the LAST snapshot is empty (every delete has
+    // landed by the time the final chain link flushes). This pins the
+    // flush-time-spread semantics: a re-run after an interrupt never sees a
+    // snapshot LARGER than an earlier one, and the terminal snapshot is the
+    // fully-trimmed state.
+    expect(mockSaveState).toHaveBeenCalledTimes(3);
+    const sizes = mockSaveState.mock.calls.map(
+      (c) => Object.keys((c[2] as StackState).resources).length
+    );
+    for (let i = 1; i < sizes.length; i++) {
+      expect(sizes[i]!).toBeLessThanOrEqual(sizes[i - 1]!);
+    }
+    expect(sizes.at(-1)).toBe(0);
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- Test gap 4: nested-stack recursion. NestedStackProvider.delete
+  // recurses into runDestroyForStack for the CHILD (its own state key,
+  // flushing + deleting the child state before the parent's own final
+  // deleteState). We model the recursion at the provider seam the runner
+  // controls: the parent's single AWS::CloudFormation::Stack resource's
+  // delete() drives child-key state writes + a child deleteState, and we
+  // assert (a) the child key differs from the parent and (b) the child's
+  // deleteState lands BEFORE the parent's wholesale deleteState.
+  it('a nested-stack child delete drives its own state key and flushes before the parent deleteState', async () => {
+    const PARENT = 'ParentStack';
+    const CHILD_KEY = 'ParentStack~Nested';
+    const state = makeState({
+      Nested: res([], { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'child-arn' }),
+    });
+
+    // The provider's delete() simulates NestedStackProvider recursing into
+    // runDestroyForStack for the child: a child incremental persist + a
+    // child wholesale deleteState, both on the CHILD state key.
+    mockProviderDelete.mockImplementation(async () => {
+      await mockSaveState(CHILD_KEY, REGION, makeState({ GrandA: res() }));
+      await mockSaveState(CHILD_KEY, REGION, makeState({}));
+      await mockDeleteState(CHILD_KEY, REGION);
+    });
+
+    const result = await runDestroyForStack(PARENT, state, makeCtx());
+
+    expect(result.deletedCount).toBe(1);
+    expect(result.errorCount).toBe(0);
+
+    // Child state writes used the child key; parent's used the parent key.
+    const childKeySaves = mockSaveState.mock.calls.filter((c) => c[0] === CHILD_KEY);
+    const parentKeySaves = mockSaveState.mock.calls.filter((c) => c[0] === PARENT);
+    expect(childKeySaves.length).toBe(2);
+    expect(parentKeySaves.length).toBe(1); // incremental persist after the nested delete
+
+    // The child's wholesale deleteState (key = CHILD_KEY) landed BEFORE the
+    // parent's wholesale deleteState (key = PARENT) — child fully torn down
+    // and flushed before the parent's final state decision.
+    const childDeleteOrder = mockDeleteState.mock.calls.findIndex((c) => c[0] === CHILD_KEY);
+    const parentDeleteOrder = mockDeleteState.mock.calls.findIndex((c) => c[0] === PARENT);
+    expect(childDeleteOrder).toBeGreaterThanOrEqual(0);
+    expect(parentDeleteOrder).toBeGreaterThanOrEqual(0);
+    expect(
+      mockDeleteState.mock.invocationCallOrder[childDeleteOrder]!
+    ).toBeLessThan(mockDeleteState.mock.invocationCallOrder[parentDeleteOrder]!);
   });
 });

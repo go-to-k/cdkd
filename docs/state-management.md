@@ -786,12 +786,17 @@ async destroy(stackName: string) {
         // 4b. Incremental state persistence (issue #804): remove the
         // deleted resource and write the trimmed state back to S3 so an
         // interrupted destroy leaves a state file that only lists
-        // resources that still exist. Persist failures are logged and
-        // never fail the destroy — the final write below is authoritative.
+        // resources that still exist. The persisted snapshot also CLEARS
+        // outputs and drops imports/outputReads (see note below). Persist
+        // failures are logged and never fail the destroy — the final
+        // write below is authoritative.
         delete remainingResources[logicalId];
         await s3StateBackend.saveState(stackName, region, {
           ...state,
           resources: remainingResources,
+          outputs: {},      // never advertise a gone resource's export
+          imports: undefined,
+          outputReads: undefined,
         });
       } catch (error) {
         logger.error(`Failed to delete ${logicalId}:`, error);
@@ -801,14 +806,18 @@ async destroy(stackName: string) {
     }
 
     // 5. Full success: delete the state file. Partial failure: persist
-    // the remaining state (failed + not-yet-deleted + retained resources)
-    // so the user can re-run without replaying completed deletes.
+    // the remaining state (failed + not-yet-deleted + retained resources,
+    // with outputs cleared) so the user can re-run without replaying
+    // completed deletes.
     if (errorCount === 0) {
       await s3StateBackend.deleteState(stackName);
     } else {
       await s3StateBackend.saveState(stackName, region, {
         ...state,
         resources: remainingResources,
+        outputs: {},
+        imports: undefined,
+        outputReads: undefined,
       });
     }
 
@@ -838,6 +847,25 @@ wholesale state-file delete at the end of a fully successful destroy. A
 failed incremental write is logged and never fails the destroy — the final
 write (state-file delete on success, preserve-write on failure) remains
 authoritative.
+
+Every persisted destroy snapshot (both the incremental writes and the final
+partial-failure preserve-write) **clears `outputs` and drops `imports` /
+`outputReads`**. `outputs` is keyed by output *name*, not logical id, so it
+cannot be pruned precisely as the backing resources are deleted; a
+partially- or fully-destroyed stack has no meaningful outputs, and leaving
+them in the preserved state would advertise an export whose backing resource
+is gone — a phantom export the
+[exports index](cross-stack-references.md) or another producer's
+strong-reference consumer scan (`scanActiveConsumers`) could pick up.
+Clearing them removes that hazard. This does **not** affect the destroy's
+own strong-reference check: that reads the *in-memory* `state.outputs`
+*before* the delete loop, and the in-memory `state` object is never mutated
+— only the persisted snapshot copies are cleared. On a clean destroy the
+stack's entry is removed from the exports index outright
+(`exportIndexStore.removeStack`); on a partial destroy the index may briefly
+still list stale entries, but that index is a perf-only derived view that
+self-heals on the next deploy / fallback scan, while the canonical
+`state.json` no longer carries the phantom outputs.
 
 ### Computing Deletion Order
 

@@ -264,10 +264,14 @@ export function countProtectedResources(state: StackState): number {
  *   `saveStateAfterResource`. An interrupted destroy therefore leaves a
  *   state file listing only resources that still exist, so a re-run does
  *   not replay deletes against already-deleted resources. Persist
- *   failures are logged and never fail the destroy.
+ *   failures are logged and never fail the destroy. Every persisted
+ *   destroy snapshot CLEARS `outputs` (and drops `imports` / `outputReads`)
+ *   so a partial-destroy state never advertises an export / import whose
+ *   backing resource is gone — the in-memory `state` the strong-ref check
+ *   above reads is untouched.
  * - On full success, deletes the state file. On any failure, the state
- *   file is preserved (trimmed to the remaining resources) so the user
- *   can retry.
+ *   file is preserved (trimmed to the remaining resources, outputs/imports
+ *   cleared) so the user can retry.
  */
 export async function runDestroyForStack(
   stackName: string,
@@ -443,15 +447,51 @@ export async function runDestroyForStack(
   // authoritative, and any stale snapshot is a superset of what still
   // exists, which a re-run resolves via the idempotent "not found" path.
   const remainingResources: Record<string, ResourceState> = { ...state.resources };
+
+  // Build the partial-destroy snapshot persisted by both the incremental
+  // writes and the final preserve-write (issue #804). `outputs` / `imports`
+  // / `outputReads` are CLEARED in every persisted destroy snapshot, NOT
+  // carried over from the loaded `state`:
+  //
+  //   - `outputs` is keyed by output NAME, not logical id, so it cannot be
+  //     pruned precisely as the backing resources are deleted. A partially
+  //     (or fully) destroyed stack has no meaningful outputs, so a preserved
+  //     snapshot that still advertised them would name exports whose backing
+  //     resources are gone — a phantom export the exports index / a
+  //     cross-stack consumer scan could pick up.
+  //   - `imports` (this stack's `Fn::ImportValue` consumer records) and
+  //     `outputReads` (its `Fn::GetStackOutput` records) are likewise
+  //     meaningless once the stack is being torn down; clearing them keeps
+  //     another producer's `scanActiveConsumers` from treating a
+  //     mid-teardown stack as a live importer.
+  //
+  // This does NOT disturb the destroy's OWN strong-reference check: that
+  // reads the in-memory `state.outputs` (lines ~323 / ~412) BEFORE this
+  // loop, and the in-memory `state` object is never mutated here (each
+  // snapshot is a fresh spread). The export index for this stack is removed
+  // on a clean destroy via `exportIndexStore.removeStack`; on a partial
+  // destroy the index may still list stale entries (a perf-only DERIVED
+  // view that self-heals on the next deploy / fallback scan — see
+  // export-index-store.ts), but the canonical state.json no longer carries
+  // the phantom outputs.
+  const buildDestroySnapshot = (): StackState => {
+    // Strip `imports` / `outputReads` entirely (rather than writing `[]`) to
+    // keep the persisted shape identical to a freshly-deployed stack that
+    // has none — the deploy engine omits both keys when empty.
+    const { imports: _imports, outputReads: _outputReads, ...rest } = state;
+    return {
+      ...rest,
+      resources: { ...remainingResources },
+      outputs: {},
+      lastModified: Date.now(),
+    };
+  };
+
   let saveChain: Promise<void> = Promise.resolve();
   const persistStateAfterDelete = (logicalId: string): void => {
     saveChain = saveChain.then(async () => {
       try {
-        await ctx.stateBackend.saveState(stackName, regionForState, {
-          ...state,
-          resources: { ...remainingResources },
-          lastModified: Date.now(),
-        });
+        await ctx.stateBackend.saveState(stackName, regionForState, buildDestroySnapshot());
         logger.debug(`State persisted after deleting ${logicalId}`);
       } catch (error) {
         logger.warn(
@@ -735,11 +775,7 @@ export async function runDestroyForStack(
       // is then at worst a superset of what still exists, which a re-run
       // resolves via the idempotent "not found" path.
       try {
-        await ctx.stateBackend.saveState(stackName, regionForState, {
-          ...state,
-          resources: { ...remainingResources },
-          lastModified: Date.now(),
-        });
+        await ctx.stateBackend.saveState(stackName, regionForState, buildDestroySnapshot());
       } catch (error) {
         logger.warn(
           `Failed to persist remaining state after partial destroy: ${error instanceof Error ? error.message : String(error)}. ` +
