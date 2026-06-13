@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**39 / 39 canonical scenarios** have at least one integ fixture exercising them. **106 / 125 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**40 / 40 canonical scenarios** have at least one integ fixture exercising them. **107 / 126 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (39 scenarios)
+## Per-scenario coverage (40 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -37,6 +37,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `cross-cutting-deploy-destroy` | Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate. | [`bench-ccapi`](../tests/integration/bench-ccapi/)<br>[`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`bench-sdk`](../tests/integration/bench-sdk/)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/)<br>[`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/)<br>[`multi-resource`](../tests/integration/multi-resource/) |
 | `custom-resource-async-poll` | Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling. | [`cloudfront-function-url`](../tests/integration/cloudfront-function-url/)<br>[`custom-resource-provider`](../tests/integration/custom-resource-provider/)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) |
+| `deployment-events` | Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets). | [`deployment-events`](../tests/integration/deployment-events/) |
 | `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `exports-index-region-resolve` | Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819). | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |

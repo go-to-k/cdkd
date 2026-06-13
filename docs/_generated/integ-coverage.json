@@ -2896,6 +2896,7 @@
         "bench-sdk",
         "cloudwatch",
         "composite-stack",
+        "deployment-events",
         "drift-revert",
         "event-driven",
         "export",
@@ -2917,6 +2918,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "deployment-events": [
+          "l2"
         ],
         "drift-revert": [
           "l2"
@@ -3042,6 +3046,7 @@
         "cross-region-state-bucket",
         "cross-stack-references",
         "deletion-policy-retain",
+        "deployment-events",
         "export-nested-stack",
         "import-nested-stack",
         "import-value-strong-ref",
@@ -3079,6 +3084,9 @@
         "deletion-policy-retain": [
           "l2",
           "literal"
+        ],
+        "deployment-events": [
+          "l2"
         ],
         "export-nested-stack": [
           "l2",

@@ -158,6 +158,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // matrix is the real-AWS regression layer above it.
   'deletion-policy-retain':
     'DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).',
+  'deployment-events':
+    'Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets).',
 
   // ---- Multi-resource / broad-regression set ----
   'cross-cutting-deploy-destroy':
