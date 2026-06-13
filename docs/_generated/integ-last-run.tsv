@@ -128,3 +128,4 @@ deployment-events	2026-06-13T09:16:21Z	PASS	34	verify.sh	#808 events sidecar + c
 update-replace	2026-06-13T10:43:46Z	PASS	65	verify.sh	in-place(S3/Lambda/IAM/SG)+replacement(S3 rename); 0 err 0 orphan
 s3-asset-deploy	2026-06-13T10:51:36Z	PASS	44	verify.sh	S3 zip asset upload + Lambda runs from it + generic Asset read-back; 0 err
 docker-image-asset	2026-06-13T11:02:44Z	PASS	60	verify.sh	ECR build+push (ARM_64 pinned); image by tag + Lambda runs; 0 err
+destroy-interrupt	2026-06-13T11:07:27Z	PASS	331	verify.sh	#816 SIGINT lock-release+state-preserve + #804 CR fail-fast resume(49s no stall); 0 orphan
