@@ -168,6 +168,23 @@ if [ "${CROSS_REF_COUNT}" -lt 2 ]; then
   exit 1
 fi
 echo "    OK: ${CROSS_REF_COUNT} ingress resources carry a SG-to-SG SourceSecurityGroupId (true circular ref)"
+
+# Confirm NO AWS::EC2::SecurityGroup carries a non-empty inline
+# `Properties.SecurityGroupIngress` array — the circular refs MUST be emitted
+# ONLY as standalone AWS::EC2::SecurityGroupIngress resources (an inline ingress
+# entry pointing at the other SG is exactly what reintroduces the CFn cycle this
+# fixture exists to avoid). Names the offending SG logical id on failure.
+INLINE_INGRESS_SGS=$(jq -r '[.Resources | to_entries[]
+  | select(.value.Type == "AWS::EC2::SecurityGroup")
+  | select((.value.Properties.SecurityGroupIngress // []) | length > 0)
+  | .key] | join(", ")' "${TEMPLATE_FILE}")
+if [ -n "${INLINE_INGRESS_SGS}" ]; then
+  echo "FAIL: SecurityGroup(s) carry a non-empty inline Properties.SecurityGroupIngress: ${INLINE_INGRESS_SGS} — the circular refs must be emitted ONLY as standalone AWS::EC2::SecurityGroupIngress resources, not inline ingress" >&2
+  jq '.Resources | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup") | {id: .key, ingress: .value.Properties.SecurityGroupIngress}' "${TEMPLATE_FILE}" >&2
+  rm -rf "${SYNTH_DIR}"
+  exit 1
+fi
+echo "    OK: zero inline Properties.SecurityGroupIngress on any SecurityGroup (cross-refs are standalone-only)"
 rm -rf "${SYNTH_DIR}"
 
 # --- Phase 1: deploy --------------------------------------------------------
