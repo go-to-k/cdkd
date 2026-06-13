@@ -48,7 +48,7 @@ import {
   S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
-import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
+import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import type { S3StateBackend } from './s3-state-backend.js';
 
 /** Schema version for the exports index file. Separate from state.json's version. */
@@ -205,53 +205,23 @@ export class ExportIndexStore {
 
     this.resolveInFlight = (async (): Promise<void> => {
       try {
-        const config = (this.s3Client as { config?: { region?: unknown; credentials?: unknown } })
-          .config;
-        if (!config || typeof config.region !== 'function') {
-          // Test double or non-standard client — nothing to resolve.
-          this.clientResolved = true;
-          return;
-        }
-
-        const currentRegion = await (config.region as () => Promise<unknown>)();
-        const fallbackRegion = typeof currentRegion === 'string' ? currentRegion : undefined;
-
-        // Authenticate the GetBucketLocation probe the same way the caller's
-        // client does (honors --profile / static credentials). Best-effort:
-        // a failure here just downgrades the probe to the default chain, and
-        // resolveBucketRegion itself never throws.
-        let probeCredentials:
-          | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
-          | undefined;
-        try {
-          if (typeof config.credentials === 'function') {
-            probeCredentials = (await (
-              config.credentials as () => Promise<unknown>
-            )()) as typeof probeCredentials;
-          }
-        } catch {
-          probeCredentials = undefined;
-        }
-
-        const bucketRegion = await resolveBucketRegion(this.bucket, {
-          ...(probeCredentials && { credentials: probeCredentials }),
-          ...(fallbackRegion && { fallbackRegion }),
+        // Like the LockManager, the store reuses the supplied client's resolved
+        // credentials provider (no --profile / static-credential threading) and
+        // does NOT destroy the original (shared `AwsClients.s3`). It ALSO
+        // gracefully degrades when the supplied client is a non-standard test
+        // double whose `config.region` is not a function — the helper returns
+        // null in that case (no rebuild), so the original client is kept.
+        const replacement = await rebuildClientForBucketRegion(this.s3Client, this.bucket, {
+          reuseClientCredentials: true,
+          tolerateNonStandardClient: true,
+          onRebuild: ({ bucketRegion, currentRegion }) => {
+            this.logger.debug(
+              `State bucket '${this.bucket}' is in '${bucketRegion}' (exports-index client was '${String(currentRegion)}'); building a region-corrected S3 client for index operations.`
+            );
+          },
         });
-
-        if (bucketRegion !== currentRegion) {
-          this.logger.debug(
-            `State bucket '${this.bucket}' is in '${bucketRegion}' (exports-index client was '${String(currentRegion)}'); building a region-corrected S3 client for index operations.`
-          );
-          this.s3Client = new S3Client({
-            region: bucketRegion,
-            credentials: (this.s3Client as { config: { credentials: unknown } }).config
-              .credentials as never,
-            // Suppress "Are you using a Stream of unknown length" warning,
-            // matching the suppression in AwsClients.
-            logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-          });
-          // NOTE: the previous client is intentionally not destroyed here —
-          // it is shared with other components via AwsClients.s3.
+        if (replacement) {
+          this.s3Client = replacement;
         }
         this.clientResolved = true;
       } finally {

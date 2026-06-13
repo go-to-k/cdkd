@@ -10,7 +10,7 @@ import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { LockError } from '../utils/error-handler.js';
-import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
+import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { hostname } from 'os';
 
 /**
@@ -78,40 +78,20 @@ export class LockManager {
 
     this.resolveInFlight = (async (): Promise<void> => {
       try {
-        const currentRegion = await this.s3Client.config.region();
-        const fallbackRegion = typeof currentRegion === 'string' ? currentRegion : undefined;
-
-        // Authenticate the GetBucketLocation probe the same way the caller's
-        // client does (honors --profile / static credentials). Best-effort:
-        // a failure here just downgrades the probe to the default chain, and
-        // resolveBucketRegion itself never throws.
-        let probeCredentials:
-          | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
-          | undefined;
-        try {
-          probeCredentials = await this.s3Client.config.credentials();
-        } catch {
-          probeCredentials = undefined;
-        }
-
-        const bucketRegion = await resolveBucketRegion(this.config.bucket, {
-          ...(probeCredentials && { credentials: probeCredentials }),
-          ...(fallbackRegion && { fallbackRegion }),
+        // The LockManager does NOT thread --profile / static credentials; it
+        // reuses the supplied client's resolved credentials provider for both
+        // the probe and the rebuild, and does NOT destroy the original client
+        // (it is the shared `AwsClients.s3` instance other components hold).
+        const replacement = await rebuildClientForBucketRegion(this.s3Client, this.config.bucket, {
+          reuseClientCredentials: true,
+          onRebuild: ({ bucketRegion, currentRegion }) => {
+            this.logger.debug(
+              `State bucket '${this.config.bucket}' is in '${bucketRegion}' (lock client was '${String(currentRegion)}'); building a region-corrected S3 client for lock operations.`
+            );
+          },
         });
-
-        if (bucketRegion !== currentRegion) {
-          this.logger.debug(
-            `State bucket '${this.config.bucket}' is in '${bucketRegion}' (lock client was '${currentRegion}'); building a region-corrected S3 client for lock operations.`
-          );
-          this.s3Client = new S3Client({
-            region: bucketRegion,
-            credentials: this.s3Client.config.credentials,
-            // Suppress "Are you using a Stream of unknown length" warning,
-            // matching the suppression in AwsClients.
-            logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-          });
-          // NOTE: the previous client is intentionally not destroyed here —
-          // it is shared with other components via AwsClients.s3.
+        if (replacement) {
+          this.s3Client = replacement;
         }
         this.clientResolved = true;
       } finally {

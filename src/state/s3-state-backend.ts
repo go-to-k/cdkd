@@ -16,7 +16,7 @@ import {
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
-import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
+import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 
 /**
  * Identifier of a state record. The legacy layout (`version: 1`) didn't have
@@ -134,28 +134,21 @@ export class S3StateBackend {
 
     this.resolveInFlight = (async (): Promise<void> => {
       try {
-        const currentRegion = await this.s3Client.config.region();
-        const fallbackRegion = typeof currentRegion === 'string' ? currentRegion : undefined;
-        const bucketRegion = await resolveBucketRegion(this.config.bucket, {
+        // S3StateBackend OWNS its client and threads static `--profile` /
+        // credentials from its constructor `clientOpts` into both the probe
+        // and the rebuild; the replaced client is destroyed.
+        const replacement = await rebuildClientForBucketRegion(this.s3Client, this.config.bucket, {
           ...(this.clientOpts.profile && { profile: this.clientOpts.profile }),
           ...(this.clientOpts.credentials && { credentials: this.clientOpts.credentials }),
-          ...(fallbackRegion && { fallbackRegion }),
+          destroyOldClient: true,
+          onRebuild: ({ bucketRegion, currentRegion }) => {
+            this.logger.debug(
+              `State bucket '${this.config.bucket}' is in '${bucketRegion}' (client was '${String(currentRegion)}'); rebuilding S3 client.`
+            );
+          },
         });
-
-        if (bucketRegion !== currentRegion) {
-          this.logger.debug(
-            `State bucket '${this.config.bucket}' is in '${bucketRegion}' (client was '${currentRegion}'); rebuilding S3 client.`
-          );
-          const oldClient = this.s3Client;
-          this.s3Client = new S3Client({
-            region: bucketRegion,
-            ...(this.clientOpts.profile && { profile: this.clientOpts.profile }),
-            ...(this.clientOpts.credentials && { credentials: this.clientOpts.credentials }),
-            // Suppress "Are you using a Stream of unknown length" warning,
-            // matching the suppression in AwsClients.
-            logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-          });
-          oldClient.destroy();
+        if (replacement) {
+          this.s3Client = replacement;
         }
         this.clientResolved = true;
       } finally {

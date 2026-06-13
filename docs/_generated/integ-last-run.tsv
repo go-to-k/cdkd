@@ -122,5 +122,5 @@ drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 
 microservices	2026-06-13T06:25:57Z	PASS	34	standard	#816 SIGINT handler; normal destroy unaffected; 19 deleted 0 err 0 orphan
 lambda	2026-06-13T04:41:51Z	PASS	76	verify.sh	#808 broad integ + cdkd events live-tested (deploy+destroy runs persisted); 9 deleted 0 err
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
-cross-region-state-bucket	2026-06-13T06:16:49Z	PASS	34	verify.sh	#819 exports-index region-corrected client; no 301; 1 deleted 0 err, temp bucket cleaned
 ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfiguration camelCase reached AWS; 23 deleted 0 err
+cross-region-state-bucket	2026-06-13T07:10:46Z	PASS	34	verify.sh	#827 shared bucket-region helper; behavior preserved; 1 deleted 0 err, temp bucket cleaned
