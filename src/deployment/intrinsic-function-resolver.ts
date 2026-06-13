@@ -439,7 +439,7 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::Join' in obj) {
-      return await this.resolveJoin(obj['Fn::Join'] as [string, unknown[]], context);
+      return await this.resolveJoin(obj['Fn::Join'] as [string, unknown], context);
     }
 
     if ('Fn::Sub' in obj) {
@@ -1176,10 +1176,25 @@ export class IntrinsicFunctionResolver {
    * Fn::Join: [delimiter, [value1, value2, ...]]
    */
   private async resolveJoin(
-    joinArgs: [string, unknown[]],
+    joinArgs: [string, unknown],
     context: ResolverContext
   ): Promise<string> {
-    const [delimiter, values] = joinArgs;
+    const [delimiter, rawValues] = joinArgs;
+
+    // The 2nd arg is normally a literal array, but CloudFormation also allows it
+    // to be a SINGLE intrinsic that RETURNS a list (Fn::Cidr / Fn::GetAZs /
+    // Fn::Split, or a Ref to a CommaDelimitedList parameter). In that case
+    // resolve it first so it becomes an array before we map over it.
+    let values: unknown = rawValues;
+    if (!Array.isArray(values)) {
+      values = await this.resolveValue(values, context);
+    }
+
+    if (!Array.isArray(values)) {
+      throw new Error(
+        `Fn::Join's second argument must be a list (an array literal or a list-returning intrinsic such as Fn::Cidr / Fn::GetAZs / Fn::Split / a Ref to a CommaDelimitedList parameter), but resolved to ${typeof values}`
+      );
+    }
 
     // Resolve each value first
     const resolvedValues = await Promise.all(
