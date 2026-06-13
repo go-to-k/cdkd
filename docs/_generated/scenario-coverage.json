@@ -29,6 +29,10 @@
       "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template)."
     },
     {
+      "tag": "deployment-events",
+      "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets)."
+    },
+    {
       "tag": "drift-revert-roundtrip",
       "description": "cdkd drift detection + `--revert` round-trip via each provider.update()."
     },
@@ -321,6 +325,13 @@
       "annotated": true,
       "scenarios": [
         "deletion-policy-retain"
+      ]
+    },
+    {
+      "name": "deployment-events",
+      "annotated": true,
+      "scenarios": [
+        "deployment-events"
       ]
     },
     {
@@ -974,6 +985,13 @@
       "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).",
       "fixtures": [
         "deletion-policy-retain"
+      ]
+    },
+    {
+      "scenario": "deployment-events",
+      "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets).",
+      "fixtures": [
+        "deployment-events"
       ]
     },
     {
