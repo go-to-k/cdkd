@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "docker-image-asset-ecr-publish"
+  ]
+}

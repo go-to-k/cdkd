@@ -33,8 +33,8 @@
       "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets)."
     },
     {
-      "tag": "drift-revert-array-canonicalization",
-      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift."
+      "tag": "docker-image-asset-ecr-publish",
+      "description": "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy."
     },
     {
       "tag": "drift-revert-roundtrip",
@@ -357,17 +357,16 @@
       "scenarios": []
     },
     {
-      "name": "drift-revert",
+      "name": "docker-image-asset",
       "annotated": true,
       "scenarios": [
-        "drift-revert-roundtrip"
+        "docker-image-asset-ecr-publish"
       ]
     },
     {
-      "name": "drift-revert-arrays",
+      "name": "drift-revert",
       "annotated": true,
       "scenarios": [
-        "drift-revert-array-canonicalization",
         "drift-revert-roundtrip"
       ]
     },
@@ -1029,10 +1028,10 @@
       ]
     },
     {
-      "scenario": "drift-revert-array-canonicalization",
-      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift.",
+      "scenario": "docker-image-asset-ecr-publish",
+      "description": "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy.",
       "fixtures": [
-        "drift-revert-arrays"
+        "docker-image-asset"
       ]
     },
     {
@@ -1040,7 +1039,6 @@
       "description": "cdkd drift detection + `--revert` round-trip via each provider.update().",
       "fixtures": [
         "drift-revert",
-        "drift-revert-arrays",
         "drift-revert-vpc"
       ]
     },

@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**43 / 43 canonical scenarios** have at least one integ fixture exercising them. **110 / 129 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**41 / 41 canonical scenarios** have at least one integ fixture exercising them. **108 / 127 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (43 scenarios)
+## Per-scenario coverage (41 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -38,8 +38,8 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `custom-resource-async-poll` | Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling. | [`cloudfront-function-url`](../tests/integration/cloudfront-function-url/)<br>[`custom-resource-provider`](../tests/integration/custom-resource-provider/)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) |
 | `deployment-events` | Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets). | [`deployment-events`](../tests/integration/deployment-events/) |
-| `drift-revert-array-canonicalization` | cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift. | [`drift-revert-arrays`](../tests/integration/drift-revert-arrays/) |
-| `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-arrays`](../tests/integration/drift-revert-arrays/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
+| `docker-image-asset-ecr-publish` | cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy. | [`docker-image-asset`](../tests/integration/docker-image-asset/) |
+| `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `exports-index-region-resolve` | Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819). | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
 | `globaltable-cross-region-replica` | DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
@@ -67,10 +67,8 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `nested-stack-migrate-from-cfn` | CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A. | [`import-nested-stack`](../tests/integration/import-nested-stack/) |
 | `rds-aurora-cluster-instance` | RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family. | [`rds-aurora`](../tests/integration/rds-aurora/) |
 | `remove-protection-bypass` | `--remove-protection` flag bypassing AWS-side deletion-protection on supported types. | [`remove-protection`](../tests/integration/remove-protection/) |
-| `s3-asset-deploy` | File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy. | [`s3-asset-deploy`](../tests/integration/s3-asset-deploy/) |
 | `state-bucket-region-resolve` | State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region. | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
 | `state-schema-migration` | Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema. | [`legacy-state-migration`](../tests/integration/legacy-state-migration/)<br>[`schema-v5-to-v6-migration`](../tests/integration/schema-v5-to-v6-migration/) |
-| `update-replace-breadth` | Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types. | [`update-replace`](../tests/integration/update-replace/) |
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 
