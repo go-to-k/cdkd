@@ -1,3 +1,10 @@
+## [0.219.7](https://github.com/go-to-k/cdkd/compare/v0.219.6...v0.219.7) (2026-06-13)
+
+
+### Bug Fixes
+
+* **provisioning:** re-include write-only properties in Cloud Control UPDATE patches ([#812](https://github.com/go-to-k/cdkd/issues/812)) ([7dbc3cb](https://github.com/go-to-k/cdkd/commit/7dbc3cb002a3eba3d076c059442f095737c66175))
+
 ## [0.219.6](https://github.com/go-to-k/cdkd/compare/v0.219.5...v0.219.6) (2026-06-13)
 
 
