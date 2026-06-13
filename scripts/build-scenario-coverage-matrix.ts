@@ -115,6 +115,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling.',
   'vpc-lambda-cr-race':
     'Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window).',
+  'destroy-interrupt':
+    'Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly).',
 
   // ---- Migration patterns ----
   'export-to-cfn-handover':

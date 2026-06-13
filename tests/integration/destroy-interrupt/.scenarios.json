@@ -1,0 +1,7 @@
+{
+  "scenarios": [
+    "destroy-interrupt",
+    "custom-resource-async-poll",
+    "vpc-lambda-eni-release"
+  ]
+}
