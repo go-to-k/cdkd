@@ -63,7 +63,10 @@ ECR_REPO=""
 IMAGE_TAG=""
 
 cleanup() {
-  rc=$?
+  # rc is the script's exit status. When invoked from a combined EXIT trap that
+  # runs a command before cleanup (e.g. `rm -f`), that command clobbers $?, so
+  # the trap MUST capture $? first and pass it in as $1; we honor it here.
+  local rc="${1:-$?}"
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   destroy_rc=0
@@ -187,8 +190,9 @@ echo "    OK: Docker Lambda Code.ImageUri == ${IMAGE_URI}"
 
 # ImageUri form: {account}.dkr.ecr.{region}.amazonaws.com/{repo}:{tag}. cdkd
 # pushes by TAG (the content-addressed asset hash) and Lambda stores that exact
-# URI, so the tag identifies OUR image. Handle the digest (`@sha256:...`) form
-# defensively, but the tag form is what we observe.
+# URI, so the tag identifies OUR image. The digest (`@sha256:...`) form is NOT
+# supported here: cdkd pushes by tag, so we expect the tag form and treat a
+# digest URI as a parse failure (IMAGE_TAG stays empty -> the check below fails).
 ECR_REPO=$(echo "${IMAGE_URI}" | sed -E 's#^[^/]+/##; s#[@:].*$##')
 if echo "${IMAGE_URI}" | grep -q '@'; then
   IMAGE_TAG=""
@@ -235,7 +239,7 @@ assert_codesize "gamma" "${GAMMA_FN}"
 # cdkd wired any Lambda's Code ref to the WRONG asset, the marker would differ.
 echo "==> Phase 1c: invoke each Lambda + assert its DISTINCT marker (proves correct asset->Lambda wiring)"
 INVOKE_OUT="$(mktemp)"
-trap 'rm -f "${INVOKE_OUT}"; cleanup' EXIT
+trap 'rc=$?; rm -f "${INVOKE_OUT}"; cleanup $rc' EXIT
 
 invoke_marker() {
   # $1=function name, returns the .marker field on stdout (empty on failure).
