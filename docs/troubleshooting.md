@@ -31,6 +31,28 @@ Locked by: user@hostname:12345, operation: deploy
 - Another process is deploying the same stack
 - Previous process crashed and lock remains
 
+> **Note:** A first `Ctrl-C` during `cdkd destroy` / `cdkd state destroy` no
+> longer strands the lock — the graceful-SIGINT handler (issue
+> [#816](https://github.com/go-to-k/cdkd/issues/816)) finishes any in-flight
+> delete, flushes the incremental state, and **releases the lock** before
+> exiting non-zero. A re-run resumes immediately without waiting out the lock
+> TTL.
+>
+> A **second** `Ctrl-C` force-quits immediately (`exit 130`) without waiting
+> for the in-flight delete. Because the force-quit path cannot run the normal
+> lock-release cleanup, it fires a **best-effort** (un-awaited) lock release
+> AND prints the exact recovery command to stderr:
+>
+> ```text
+> Force-quit: stack lock may not be released. If the next run reports a lock, run: cdkd force-unlock MyStack
+> ```
+>
+> The best-effort release usually lands before the process dies, so most
+> force-quits leave no lock; if a subsequent run reports a lock, run the
+> printed `cdkd force-unlock <stackName>` (or the steps below) to clear it. A
+> leftover lock therefore means an ungraceful kill (`SIGKILL`, a force-quit
+> whose best-effort release did not complete, or a crash).
+
 #### Solutions
 
 **1. Check if another process is running**

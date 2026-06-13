@@ -175,6 +175,14 @@ export interface DestroyRunnerResult {
   retainedCount: number;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
+  /**
+   * True when a graceful SIGINT (issue #816) stopped the destroy early. The
+   * in-flight deletes finished, the (trimmed) state was preserved, and the
+   * lock was released — but resources may remain, so the caller surfaces a
+   * non-zero exit. Distinct from `errorCount > 0` (a resource actually failed
+   * to delete): an interrupt is a user-requested stop, not a failure.
+   */
+  interrupted: boolean;
 }
 
 /**
@@ -303,6 +311,7 @@ export async function runDestroyForStack(
     deletedCount: 0,
     retainedCount: 0,
     errorCount: 0,
+    interrupted: false,
   };
 
   const resourceCount = Object.keys(state.resources).length;
@@ -523,6 +532,66 @@ export async function runDestroyForStack(
   const renderer = getLiveRenderer();
   renderer.start();
 
+  // Graceful SIGINT handling (issue #816, Terraform parity). The first
+  // Ctrl-C flips `draining` true: the reverse-DAG delete loop below stops
+  // SCHEDULING new deletes (it checks the flag before each level and before
+  // dispatching each resource), but the already-dispatched in-flight
+  // `provider.delete` calls in the current level are awaited to completion.
+  // Control then falls through to the `finally` block, which flushes the
+  // incremental save-chain (issue #804) — leaving a clean, minimal preserved
+  // state — and releases the stack lock. Without this the process would die
+  // mid-destroy, skip the `finally`, and strand the lock for its 30m TTL.
+  //
+  // A SECOND Ctrl-C bypasses graceful shutdown entirely (`process.exit(130)`)
+  // — the user has decided not to wait for the in-flight call.
+  //
+  // The handler reads/writes ONLY this call's closure state, and is removed in
+  // the `finally` below, so no listener leaks across stacks. Nested-stack
+  // destroys recurse into `runDestroyForStack`, registering one handler per
+  // level — Node delivers SIGINT to every listener, so the first Ctrl-C drains
+  // the parent AND every in-flight child, which is the intended behavior.
+  let draining = false;
+  const sigintHandler = (): void => {
+    if (draining) {
+      // Second Ctrl-C: force-quit without waiting for the in-flight delete.
+      // The synchronous `process.exit(130)` bypasses the `finally` below,
+      // so the stack lock is NOT released through the normal path (issue
+      // #816). Fire a best-effort, un-awaited release first — it MAY land
+      // before the process dies on a fast network — but always print the
+      // exact recovery command so the user can recover deterministically if
+      // it does not (a force-quit leaving a stranded lock would otherwise
+      // re-introduce the 30m-TTL wait this issue fixes, just on this path).
+      void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
+        /* best-effort: the recovery line below is the real guarantee */
+      });
+      process.stderr.write(
+        `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
+          `cdkd force-unlock ${stackName}\n`
+      );
+      process.exit(130);
+    }
+    draining = true;
+    // Route the notice through the live renderer so it doesn't collide with
+    // the in-flight task display.
+    renderer.printAbove(() => {
+      process.stderr.write(
+        '\nInterrupted — finishing in-flight deletes, then flushing state and releasing the lock ' +
+          '(press Ctrl-C again to force-quit)...\n'
+      );
+    });
+  };
+  // Each nested-stack level recurses into `runDestroyForStack` and registers
+  // its own SIGINT listener, and each in-flight provider that installs its own
+  // SIGINT handler (CustomResource / CloudFront / ACM / Route53) adds one more.
+  // Deep nesting + high `--concurrency` can legitimately exceed Node's default
+  // 10-listener cap and emit a scary MaxListenersExceededWarning that is NOT a
+  // leak (every listener is removed in its own `finally`). Raise the ceiling
+  // with generous headroom for real fan-out while still leaving the warning
+  // active above it so an ACTUAL listener leak is not masked. `Math.max` keeps
+  // this safe under recursion (never lowers an already-raised limit).
+  process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
+  process.on('SIGINT', sigintHandler);
+
   try {
     logger.info('Building dependency graph...');
 
@@ -584,6 +653,15 @@ export async function runDestroyForStack(
 
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
+      // Graceful SIGINT (issue #816): once draining, do not start a new
+      // deletion level. Any level already in flight finished via its own
+      // `Promise.all` below; remaining levels are left untouched and their
+      // resources stay in the preserved state for a clean re-run.
+      if (draining) {
+        logger.debug('Interrupted (draining) — not scheduling further deletion levels');
+        break;
+      }
+
       const level = executionLevels[levelIndex];
       if (!level) continue;
 
@@ -594,6 +672,14 @@ export async function runDestroyForStack(
       const stackRegion = state.region ?? ctx.baseRegion;
 
       const deletePromises = level.map(async (logicalId) => {
+        // Graceful SIGINT (issue #816): if the interrupt landed after this
+        // level's promises were created but before this resource's delete was
+        // dispatched, skip it. It stays in the preserved state for re-run.
+        // (Deletes already in flight when the interrupt arrives are NOT
+        // cancelled — they run to completion; only not-yet-dispatched ones
+        // bail here.)
+        if (draining) return;
+
         const resource = state.resources[logicalId];
         if (!resource) {
           logger.warn(`Resource ${logicalId} not found in state, skipping`);
@@ -826,12 +912,21 @@ export async function runDestroyForStack(
       await Promise.all(deletePromises);
     }
 
+    // Carry the graceful-interrupt outcome (issue #816) into the result so the
+    // CLI surfaces a non-zero exit. Read AFTER the level loop so a SIGINT that
+    // arrived while the final level was draining is still observed.
+    result.interrupted = draining;
+
     // Flush pending incremental persists BEFORE the final state decision so
     // a chained write can never land after deleteState and re-create the
     // state file. The chain never rejects (each link catches internally).
     await saveChain;
 
-    if (result.errorCount === 0) {
+    // Preserve state (rather than delete it) when there were delete errors OR
+    // the destroy was gracefully interrupted (issue #816). An interrupt leaves
+    // not-yet-deleted resources, so deleting the state file would orphan them.
+    const preserveState = result.errorCount > 0 || result.interrupted;
+    if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
       // Drop this stack's entries from the exports index so the next
@@ -856,18 +951,29 @@ export async function runDestroyForStack(
             `The state file may still list already-deleted resources; a re-run resolves them idempotently.`
         );
       }
-      logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
+      if (result.interrupted) {
+        logger.warn(
+          `Destroy interrupted — ${Object.keys(remainingResources).length} resource(s) not deleted. State preserved.`
+        );
+      } else {
+        logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
+      }
     }
 
-    // Summary glyph distinguishes clean destroy (✓) from partial failure
-    // (⚠). The CLI's exit code reflects the same split (0 vs 2) — see
-    // PartialFailureError in src/utils/error-handler.ts. Without the
+    // Summary glyph distinguishes clean destroy (✓) from partial failure /
+    // interrupt (⚠). The CLI's exit code reflects the same split (0 vs 2) —
+    // see PartialFailureError in src/utils/error-handler.ts. Without the
     // visual marker, a partial failure scrolls past in the same shape
     // as a successful destroy and gets missed in CI / bench output.
     const retainedSuffix = result.retainedCount > 0 ? `, ${result.retainedCount} retained` : '';
-    if (result.errorCount === 0) {
+    if (!preserveState) {
       logger.info(
         `\n${green('✓')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors)`
+      );
+    } else if (result.interrupted && result.errorCount === 0) {
+      logger.warn(
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors). ` +
+          `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to finish.`
       );
     } else {
       logger.warn(
@@ -876,6 +982,11 @@ export async function runDestroyForStack(
       );
     }
   } finally {
+    // Remove our SIGINT listener so it never leaks past this call (each
+    // call registers and removes its own function reference — important for
+    // nested-stack recursion, where one handler is registered per level).
+    process.removeListener('SIGINT', sigintHandler);
+
     // Stop live renderer before releasing the lock so any pending in-flight
     // task lines are cleared cleanly.
     renderer.stop();

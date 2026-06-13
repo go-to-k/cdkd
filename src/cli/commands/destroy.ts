@@ -286,6 +286,9 @@ async function destroyCommand(
     // Hoisted out of the per-stack loop so the upfront nested-child-by-name
     // refusal (after the empty-match gate below) can use the same accumulator.
     let totalErrors = 0;
+    // Set true when a per-stack destroy was gracefully interrupted (issue
+    // #816). Stops the multi-stack loop and surfaces a non-zero exit below.
+    let interrupted = false;
 
     let stackNames: string[];
     if (options.all) {
@@ -560,6 +563,7 @@ async function destroyCommand(
             })
         );
         totalErrors += result.errorCount;
+        if (result.interrupted) interrupted = true;
 
         // Map the per-stack runner outcome to a run-level result. A
         // partial-failure (errorCount > 0) is a FAILED run; cancelled /
@@ -584,6 +588,11 @@ async function destroyCommand(
       } finally {
         await eventRecorder.finalize(destroyRunResult);
       }
+
+      // Graceful SIGINT (issue #816): do not start destroying further stacks
+      // once the user has asked to stop. The interrupted stack already
+      // finished its in-flight deletes, preserved state, and released its lock.
+      if (interrupted) break;
     }
 
     if (totalErrors > 0) {
@@ -595,6 +604,14 @@ async function destroyCommand(
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
           `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry.`
+      );
+    }
+    if (interrupted) {
+      // Graceful SIGINT (issue #816): in-flight deletes finished, state was
+      // preserved (trimmed), and the lock was released. Surface a non-zero
+      // exit so scripts / CI see the destroy did not complete.
+      throw new PartialFailureError(
+        `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd destroy' to finish.`
       );
     }
   } finally {

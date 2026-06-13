@@ -119,7 +119,7 @@ kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 
 sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
 vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
 drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 21 deleted 0 err 0 orphan
-microservices	2026-06-13T04:12:49Z	PASS	39	standard	#804 incremental destroy persistence; 19 deleted 0 err 0 orphan
+microservices	2026-06-13T06:25:57Z	PASS	34	standard	#816 SIGINT handler; normal destroy unaffected; 19 deleted 0 err 0 orphan
 lambda	2026-06-13T04:41:51Z	PASS	76	verify.sh	#808 broad integ + cdkd events live-tested (deploy+destroy runs persisted); 9 deleted 0 err
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 cross-region-state-bucket	2026-06-13T06:16:49Z	PASS	34	verify.sh	#819 exports-index region-corrected client; no 301; 1 deleted 0 err, temp bucket cleaned
