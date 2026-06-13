@@ -10,9 +10,9 @@ computed attribute** (the DB endpoint address consumed via `Fn::GetAtt`).
   subnets only (the DB is private; no egress).
 - **SecurityGroup** - explicit, self-referencing Postgres (5432) ingress.
 - **DBSubnetGroup** - explicit, spanning the two isolated subnets.
-- **DBParameterGroup** - explicit, Postgres 17.4, with a non-default
-  `application_name = cdkd-rds-full-stack` parameter.
-- **`rds.DatabaseInstance`** (L2) - Postgres 17.4, `db.t3.micro`, single-AZ,
+- **DBParameterGroup** - explicit, Postgres 16.9 (family `postgres16`), with a
+  non-default `application_name = cdkd-rds-full-stack` parameter.
+- **`rds.DatabaseInstance`** (L2) - Postgres 16.9, `db.t3.micro`, single-AZ,
   20 GiB gp2, CDK-managed Secrets Manager credentials, `deletionProtection:
   false`, `RemovalPolicy.DESTROY`, no final snapshot.
 - **SSM StringParameter** (`/cdkd/rds-full-stack/db-endpoint`) - its value is

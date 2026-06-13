@@ -102,7 +102,7 @@ export class RdsFullStackStack extends cdk.Stack {
     // `application_name` is a dynamic Postgres parameter (no reboot needed).
     const parameterGroup = new rds.ParameterGroup(this, 'DbParameterGroup', {
       engine: rds.DatabaseInstanceEngine.postgres({
-        version: rds.PostgresEngineVersion.VER_17_4,
+        version: rds.PostgresEngineVersion.VER_16_9,
       }),
       description: 'Explicit parameter group for the rds-full-stack DBInstance',
       parameters: {
@@ -115,7 +115,7 @@ export class RdsFullStackStack extends cdk.Stack {
     // explicit subnetGroup + parameterGroup + securityGroup are all wired in.
     const dbInstance = new rds.DatabaseInstance(this, 'Database', {
       engine: rds.DatabaseInstanceEngine.postgres({
-        version: rds.PostgresEngineVersion.VER_17_4,
+        version: rds.PostgresEngineVersion.VER_16_9,
       }),
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
       vpc,
