@@ -134,6 +134,10 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'cfn-macro-expansion':
     'CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`.',
 
+  // ---- Conditions / intrinsic-function patterns ----
+  'conditions-and-if':
+    'CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property.',
+
   // ---- Drift / state patterns ----
   'drift-revert-roundtrip':
     'cdkd drift detection + `--revert` round-trip via each provider.update().',
