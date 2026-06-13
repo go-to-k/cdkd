@@ -131,6 +131,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // ---- Drift / state patterns ----
   'drift-revert-roundtrip':
     'cdkd drift detection + `--revert` round-trip via each provider.update().',
+  'update-replace-breadth':
+    'Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types.',
   'remove-protection-bypass':
     '`--remove-protection` flag bypassing AWS-side deletion-protection on supported types.',
   'multi-region-state-key':
