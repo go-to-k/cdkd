@@ -123,4 +123,4 @@ kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 
 sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
 vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
 drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 21 deleted 0 err 0 orphan
-ecs-fargate	2026-06-13T03:25:23Z	PASS		verify.sh	ConfiguredAtLaunch+ManagedEBS pairing, clean destroy
+ecs-fargate	2026-06-13T04:11:31Z	PASS	353	verify.sh	#807 propagation + #809 write-only UPDATE pass, 19 deleted 0 err
