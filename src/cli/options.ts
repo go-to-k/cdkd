@@ -49,26 +49,37 @@ export const commonOptions = [
  * Deprecated `--region` option attached to non-bootstrap commands.
  *
  * Kept (rather than fully removed) so that scripts or muscle memory passing
- * `--region` do not break. The value is parsed but ignored — see
+ * `--region` do not break. The value IS still honored — every non-bootstrap
+ * command consumes `options.region` as the highest-precedence region source
+ * (`options.region || AWS_REGION || 'us-east-1'`): it sets the region of the
+ * provisioning / state-bucket SDK clients, the `applyRoleArnIfSet` STS hop,
+ * and (for `deploy` / `destroy` / `import` / `export` / `orphan`) the
+ * `AWS_REGION` env var inherited by the CDK synth subprocess. The flag is
+ * *deprecated* — the recommended way to choose the region is `AWS_REGION` or
+ * your AWS profile — but passing it is NOT a no-op. See
  * `warnIfDeprecatedRegion` for the runtime warning. Final removal is
  * tracked in PR 99 (see `docs/plans/05-region-flag-cleanup.md`).
  */
 export const deprecatedRegionOption = new Option(
   '--region <region>',
-  '[deprecated] No effect on this command; use AWS_REGION or your AWS profile'
+  '[deprecated] Prefer AWS_REGION or your AWS profile; --region is still honored but will be removed in a future release'
 ).hideHelp();
 
 /**
  * Emit a one-shot stderr warning when a non-bootstrap command receives
- * `--region`. PR 5 consolidates `--region` to bootstrap-only; everywhere
- * else the SDK picks up the region from `AWS_REGION` / profile, and
- * passing the flag does nothing useful.
+ * `--region`. The flag is deprecated in favor of `AWS_REGION` / profile, but
+ * — contrary to an earlier message that claimed "no effect" — it is NOT a
+ * no-op: every non-bootstrap command consumes `options.region` as the
+ * highest-precedence region source (see `deprecatedRegionOption`). So the
+ * warning steers users toward the recommended mechanism WITHOUT falsely
+ * telling them their flag had no effect (issue #818).
  */
 export function warnIfDeprecatedRegion(options: { region?: string }): void {
   if (options.region !== undefined) {
     process.stderr.write(
-      'Warning: --region is deprecated for this command and has no effect. ' +
-        'Use the AWS_REGION environment variable or your AWS profile to override the SDK default region.\n'
+      'Warning: --region is deprecated and will be removed in a future release. ' +
+        'It is still honored for now (it overrides AWS_REGION / your AWS profile), ' +
+        'but prefer the AWS_REGION environment variable or your AWS profile to choose the region.\n'
     );
   }
 }

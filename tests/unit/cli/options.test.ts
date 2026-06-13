@@ -61,6 +61,15 @@ describe('cli/options.ts', () => {
       // The exact field is internal but observable.
       expect((deprecatedRegionOption as unknown as { hidden?: boolean }).hidden).toBe(true);
     });
+
+    it('help text does NOT claim the flag has no effect (issue #818)', () => {
+      // The flag IS still honored on every non-bootstrap command (it feeds the
+      // SDK client region / AWS_REGION injection); the description must not
+      // falsely advertise it as a no-op.
+      expect(deprecatedRegionOption.description).not.toMatch(/no effect/i);
+      expect(deprecatedRegionOption.description).toMatch(/still honored/i);
+      expect(deprecatedRegionOption.description).toMatch(/AWS_REGION/);
+    });
   });
 
   describe('warnIfDeprecatedRegion', () => {
@@ -85,8 +94,19 @@ describe('cli/options.ts', () => {
     it('writes a deprecation warning to stderr when region is set', () => {
       warnIfDeprecatedRegion({ region: 'us-east-1' });
       const all = stderrChunks.join('');
-      expect(all).toMatch(/--region is deprecated for this command and has no effect/);
+      expect(all).toMatch(/--region is deprecated and will be removed in a future release/);
       expect(all).toMatch(/AWS_REGION/);
+    });
+
+    it('does NOT claim the flag has no effect (issue #818)', () => {
+      // The warning must steer users toward AWS_REGION / profile WITHOUT
+      // falsely telling them the flag they just passed did nothing: deploy /
+      // destroy / diff / list / etc. all consume options.region as the
+      // highest-precedence region source, so "has no effect" was a lie.
+      warnIfDeprecatedRegion({ region: 'eu-west-1' });
+      const all = stderrChunks.join('');
+      expect(all).not.toMatch(/no effect/i);
+      expect(all).toMatch(/still honored/i);
     });
 
     it('is silent when region is undefined', () => {
