@@ -137,6 +137,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout).',
   'state-bucket-region-resolve':
     'State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region.',
+  'exports-index-region-resolve':
+    'Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819).',
   'state-schema-migration':
     'Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.',
   'legacy-bucket-name-fallback':

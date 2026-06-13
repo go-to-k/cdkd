@@ -7,6 +7,33 @@ import {
 } from '../../../src/state/export-index-store.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 
+// Mock the S3Client constructor so the region-rebuild suite can assert that a
+// replacement client is constructed for the bucket's actual region. The
+// happy-path suites never construct an S3Client (they cast a plain object via
+// `mockS3`), so this mock is inert for them.
+vi.mock('@aws-sdk/client-s3', async () => {
+  const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({ send: vi.fn() })),
+  };
+});
+
+// Mock the region resolver so tests don't issue real GetBucketLocation calls.
+// Default: resolves to undefined, which the happy-path suites never observe
+// because their `mockS3` clients lack the SDK `config.region()` shape and so
+// short-circuit `ensureClientForBucket` before calling the resolver. The
+// region-rebuild suite overrides the implementation per case.
+vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/utils/aws-region-resolver.js')>(
+    '../../../src/utils/aws-region-resolver.js'
+  );
+  return {
+    ...actual,
+    resolveBucketRegion: vi.fn(),
+  };
+});
+
 /**
  * Helper: construct a mock S3Client whose `send` returns/throws per the
  * provided handler keyed on the command's constructor name. Reusable
@@ -703,5 +730,191 @@ describe('ExportIndexStore', () => {
         store.updateForStack('Me', 'us-east-1', { X: 'v' })
       ).resolves.toBeUndefined();
     });
+  });
+});
+
+/**
+ * Build a fake S3Client whose `.config.region()` / `.config.credentials()`
+ * resolve canned values — the shape `ExportIndexStore.ensureClientForBucket`
+ * reads. `send` is a separate `vi.fn` so a test can assert it was (not) used.
+ */
+function makeRegionAwareClient(region: string): {
+  send: ReturnType<typeof vi.fn>;
+  config: {
+    region: () => Promise<string>;
+    credentials: () => Promise<{ accessKeyId: string; secretAccessKey: string }>;
+  };
+} {
+  return {
+    send: vi.fn(),
+    config: {
+      region: () => Promise.resolve(region),
+      credentials: () =>
+        Promise.resolve({ accessKeyId: 'AKIAFAKE', secretAccessKey: 'fake-secret' }),
+    },
+  };
+}
+
+describe('ExportIndexStore.ensureClientForBucket — region rebuild (issue #819)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('writes the index through a region-corrected client when the bucket region differs (pre-fix: 301 PermanentRedirect on removeStack)', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    // Bucket lives in us-west-2; the supplied client was created for us-east-1.
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-west-2');
+
+    const initialClient = makeRegionAwareClient('us-east-1');
+    // Pre-fix behavior: any send against the wrong regional endpoint fails with
+    // S3's 301 PermanentRedirect. If the store kept using the original client,
+    // removeStack's GET/PUT would hit it and the index would silently not update.
+    initialClient.send.mockRejectedValue(
+      Object.assign(new Error('must be addressed using the specified endpoint'), {
+        name: 'PermanentRedirect',
+        $metadata: { httpStatusCode: 301 },
+      })
+    );
+
+    // The rebuilt (us-west-2) client serves the index: a 404 GET (no index yet)
+    // triggers a rebuild PUT, then removeStack's no-op short-circuits.
+    const rebuiltSend = vi.fn(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        throw Object.assign(new Error('NoSuchKey'), {
+          name: 'NoSuchKey',
+          $metadata: { httpStatusCode: 404 },
+        });
+      }
+      return { ETag: '"rebuilt-etag"' };
+    });
+    vi.mocked(S3Client).mockImplementation(() => ({ send: rebuiltSend }) as unknown as S3Client);
+
+    const store = new ExportIndexStore(
+      initialClient as unknown as S3Client,
+      'cross-region-bucket',
+      'cdkd',
+      'us-west-2',
+      mockBackend([{ stackName: 'Producer', region: 'us-west-2', outputs: { BucketArn: 'arn1' } }])
+    );
+
+    await store.removeStack('Producer', 'us-west-2');
+
+    // A replacement client was constructed for the bucket's actual region.
+    expect(vi.mocked(S3Client)).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-west-2' })
+    );
+    // Every S3 op went through the rebuilt client, never the original one.
+    expect(rebuiltSend).toHaveBeenCalled();
+    expect(initialClient.send).not.toHaveBeenCalled();
+  });
+
+  it('updateForStack succeeds through the region-corrected client (write path)', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-west-2');
+
+    const initialClient = makeRegionAwareClient('us-east-1');
+    initialClient.send.mockRejectedValue(
+      Object.assign(new Error('must be addressed using the specified endpoint'), {
+        name: 'PermanentRedirect',
+        $metadata: { httpStatusCode: 301 },
+      })
+    );
+
+    let savedBody = '';
+    const rebuiltSend = vi.fn(async (cmd: { constructor: { name: string }; input: unknown }) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        throw Object.assign(new Error('NoSuchKey'), {
+          name: 'NoSuchKey',
+          $metadata: { httpStatusCode: 404 },
+        });
+      }
+      // PutObject (rebuild + update).
+      savedBody = String((cmd.input as { Body: string }).Body);
+      return { ETag: '"rebuilt-etag"' };
+    });
+    vi.mocked(S3Client).mockImplementation(() => ({ send: rebuiltSend }) as unknown as S3Client);
+
+    const store = new ExportIndexStore(
+      initialClient as unknown as S3Client,
+      'cross-region-bucket',
+      'cdkd',
+      'us-west-2',
+      mockBackend([])
+    );
+
+    await store.updateForStack('Producer', 'us-west-2', { BucketArn: 'arn1' });
+
+    expect(vi.mocked(S3Client)).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-west-2' })
+    );
+    expect(initialClient.send).not.toHaveBeenCalled();
+    const parsed = JSON.parse(savedBody) as ExportIndexFile;
+    expect(parsed.exports['BucketArn']).toEqual({
+      value: 'arn1',
+      producerStack: 'Producer',
+      producerRegion: 'us-west-2',
+    });
+  });
+
+  it('does not rebuild the client when the resolved region matches', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+
+    const initialClient = makeRegionAwareClient('us-east-1');
+    initialClient.send.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        throw Object.assign(new Error('NoSuchKey'), {
+          name: 'NoSuchKey',
+          $metadata: { httpStatusCode: 404 },
+        });
+      }
+      return { ETag: '"e"' };
+    });
+
+    const store = new ExportIndexStore(
+      initialClient as unknown as S3Client,
+      'same-region-bucket',
+      'cdkd',
+      'us-east-1',
+      mockBackend([{ stackName: 'A', region: 'us-east-1', outputs: { X: 'v' } }])
+    );
+
+    await store.lookup('X');
+
+    // No replacement client was constructed; the original was used.
+    expect(vi.mocked(S3Client)).not.toHaveBeenCalled();
+    expect(initialClient.send).toHaveBeenCalled();
+  });
+
+  it('only resolves the bucket region once across multiple index operations (cached)', async () => {
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+
+    const initialClient = makeRegionAwareClient('us-east-1');
+    initialClient.send.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        throw Object.assign(new Error('NoSuchKey'), {
+          name: 'NoSuchKey',
+          $metadata: { httpStatusCode: 404 },
+        });
+      }
+      return { ETag: '"e"' };
+    });
+
+    const store = new ExportIndexStore(
+      initialClient as unknown as S3Client,
+      'same-region-bucket',
+      'cdkd',
+      'us-east-1',
+      mockBackend([{ stackName: 'A', region: 'us-east-1', outputs: { X: 'v' } }])
+    );
+
+    await store.lookup('X');
+    await store.updateForStack('A', 'us-east-1', { X: 'v2' });
+    await store.removeStack('A', 'us-east-1');
+
+    // resolveBucketRegion is called exactly once even though several index
+    // operations ran (no repeated GetBucketLocation).
+    expect(vi.mocked(resolveBucketRegion)).toHaveBeenCalledTimes(1);
   });
 });

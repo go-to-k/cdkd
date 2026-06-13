@@ -146,13 +146,17 @@ HEAD — has a body and avoids the AWS SDK v3 region-redirect parsing
 glitch on empty-body 301 HEAD responses) and rebuilds its state-bucket
 S3 client to that region before any state operation.
 
-Both S3 consumers of the state bucket do this: the state backend
-(`state.json` reads/writes, since PR #60) and the lock manager
+All three S3 consumers of the state bucket do this: the state backend
+(`state.json` reads/writes, since PR #60), the lock manager
 (`lock.json` acquire/release, since issue #803 — before that fix, state
 operations succeeded against a cross-region bucket but every lock
-acquisition failed with S3's 301 PermanentRedirect). The bucket-region
-lookup is cached per bucket name for the process lifetime, so the two
-consumers share a single `GetBucketLocation` call.
+acquisition failed with S3's 301 PermanentRedirect), and the exports
+index store (`_index/{region}/exports.json` writes/removes for
+`Fn::ImportValue` tracking, since issue #819 — before that fix the index
+write/remove also hit the 301; non-fatal, so the cross-region index was
+silently never maintained). The bucket-region lookup is cached per bucket
+name for the process lifetime, so all three consumers share a single
+`GetBucketLocation` call.
 
 This is intentionally scoped to the state-bucket S3 clients only.
 Provisioning clients (Cloud Control API, Lambda, IAM, etc.) continue to

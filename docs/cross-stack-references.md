@@ -342,6 +342,24 @@ ListExports across accounts; no strong-reference protection).
 
 Implemented in [`src/state/export-index-store.ts`](../src/state/export-index-store.ts).
 
+### Cross-region state bucket
+
+The index store tolerates a state bucket that lives in a different AWS
+region from the CLI's base region. Before its first S3 read or write it
+resolves the bucket's actual region via `GetBucketLocation` (cached
+process-wide, shared with the state backend's / lock manager's resolution)
+and, if it differs from the supplied client's region, builds a private
+replacement S3 client for the bucket's region — reusing the caller's
+credentials and leaving the shared client untouched. Without this (issue
+[#819](https://github.com/go-to-k/cdkd/issues/819)) every index write /
+remove against a cross-region bucket hit S3's 301 PermanentRedirect
+(`Exports index ... failed (non-retryable): ... must be addressed using
+the specified endpoint`) — non-fatal (the canonical `state.json` was
+unaffected and the index self-heals), so the index was silently never
+maintained cross-region. This mirrors the same region resolution
+`S3StateBackend` (PR #60) and `LockManager` (issue
+[#803](https://github.com/go-to-k/cdkd/issues/803)) already perform.
+
 ### Triggers
 
 | Operation | Trigger | Cost |

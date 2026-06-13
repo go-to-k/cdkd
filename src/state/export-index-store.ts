@@ -27,6 +27,18 @@
  *   lock + bounded retry. After exhaustion, the writer logs warn and
  *   continues; the index becomes stale until the next deploy/destroy
  *   updates it.
+ *
+ * Cross-region state bucket: like `S3StateBackend` and `LockManager`, the
+ * store tolerates a state bucket that lives in a different AWS region from
+ * the CLI's base region. Before its first S3 operation it resolves the
+ * bucket's actual region via `GetBucketLocation` and, if it differs from
+ * the supplied client's region, builds a private replacement client for
+ * that region (issue #819 — without this, every index write/remove against
+ * a cross-region bucket failed with S3's 301 PermanentRedirect, surfacing
+ * as `Exports index ... failed (non-retryable): ... must be addressed using
+ * the specified endpoint`; the index was silently never maintained
+ * cross-region, although the canonical state.json — written through the
+ * already-region-corrected `S3StateBackend` — stayed correct).
  */
 
 import {
@@ -36,6 +48,7 @@ import {
   S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
 import type { S3StateBackend } from './s3-state-backend.js';
 
 /** Schema version for the exports index file. Separate from state.json's version. */
@@ -137,6 +150,9 @@ export class ExportIndexStore {
    * where it actually matters. Reads (`lookup`) remain unsynchronized.
    */
   private writeChain: Promise<void> = Promise.resolve();
+  /** Memoization for the one-time bucket-region resolution (issue #819). */
+  private clientResolved = false;
+  private resolveInFlight: Promise<void> | null = null;
 
   constructor(
     s3Client: S3Client,
@@ -157,6 +173,93 @@ export class ExportIndexStore {
   /** S3 key for this region's index file. */
   private indexKey(): string {
     return `${this.prefix}/_index/${this.region}/exports.json`;
+  }
+
+  /**
+   * Resolve the state bucket's actual region and, if it differs from the
+   * supplied client's configured region, replace the client reference with
+   * a new S3Client pointed at the bucket's region (issue #819).
+   *
+   * Mirrors `LockManager.ensureClientForBucket()` (issue #803) with the same
+   * two deliberate differences from `S3StateBackend`:
+   *
+   * - The replacement client reuses the original client's resolved
+   *   credentials provider, so `--profile` / static credentials carry over
+   *   without the four `ExportIndexStore` call sites having to thread client
+   *   options.
+   * - The original client is NOT destroyed. It is the shared `AwsClients.s3`
+   *   instance that other components (state backend, lock manager) still hold
+   *   a reference to.
+   *
+   * `resolveBucketRegion` caches per bucket name for the process lifetime, so
+   * when the state backend / lock manager have already resolved the same
+   * bucket this incurs no additional `GetBucketLocation` call.
+   *
+   * Best-effort: if the supplied client does not expose the SDK
+   * `config.region()` shape (e.g. a hand-rolled test double) the resolution
+   * is skipped and the original client is used unchanged.
+   */
+  private async ensureClientForBucket(): Promise<void> {
+    if (this.clientResolved) return;
+    if (this.resolveInFlight) return this.resolveInFlight;
+
+    this.resolveInFlight = (async (): Promise<void> => {
+      try {
+        const config = (this.s3Client as { config?: { region?: unknown; credentials?: unknown } })
+          .config;
+        if (!config || typeof config.region !== 'function') {
+          // Test double or non-standard client — nothing to resolve.
+          this.clientResolved = true;
+          return;
+        }
+
+        const currentRegion = await (config.region as () => Promise<unknown>)();
+        const fallbackRegion = typeof currentRegion === 'string' ? currentRegion : undefined;
+
+        // Authenticate the GetBucketLocation probe the same way the caller's
+        // client does (honors --profile / static credentials). Best-effort:
+        // a failure here just downgrades the probe to the default chain, and
+        // resolveBucketRegion itself never throws.
+        let probeCredentials:
+          | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+          | undefined;
+        try {
+          if (typeof config.credentials === 'function') {
+            probeCredentials = (await (
+              config.credentials as () => Promise<unknown>
+            )()) as typeof probeCredentials;
+          }
+        } catch {
+          probeCredentials = undefined;
+        }
+
+        const bucketRegion = await resolveBucketRegion(this.bucket, {
+          ...(probeCredentials && { credentials: probeCredentials }),
+          ...(fallbackRegion && { fallbackRegion }),
+        });
+
+        if (bucketRegion !== currentRegion) {
+          this.logger.debug(
+            `State bucket '${this.bucket}' is in '${bucketRegion}' (exports-index client was '${String(currentRegion)}'); building a region-corrected S3 client for index operations.`
+          );
+          this.s3Client = new S3Client({
+            region: bucketRegion,
+            credentials: (this.s3Client as { config: { credentials: unknown } }).config
+              .credentials as never,
+            // Suppress "Are you using a Stream of unknown length" warning,
+            // matching the suppression in AwsClients.
+            logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+          });
+          // NOTE: the previous client is intentionally not destroyed here —
+          // it is shared with other components via AwsClients.s3.
+        }
+        this.clientResolved = true;
+      } finally {
+        this.resolveInFlight = null;
+      }
+    })();
+
+    return this.resolveInFlight;
   }
 
   /**
@@ -318,6 +421,7 @@ export class ExportIndexStore {
   }
 
   private async readIndexRaw(): Promise<{ body: string; etag: string | undefined } | null> {
+    await this.ensureClientForBucket();
     try {
       const response = await this.s3Client.send(
         new GetObjectCommand({
@@ -337,6 +441,7 @@ export class ExportIndexStore {
     next: ExportIndexFile,
     expectedEtag: string | undefined
   ): Promise<string | undefined> {
+    await this.ensureClientForBucket();
     const body = JSON.stringify(next, null, 2);
     const response = await this.s3Client.send(
       new PutObjectCommand({

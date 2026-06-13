@@ -1,5 +1,6 @@
 {
   "scenarios": [
-    "state-bucket-region-resolve"
+    "state-bucket-region-resolve",
+    "exports-index-region-resolve"
   ]
 }
