@@ -1,5 +1,4 @@
 # integ-last-run ledger (update-type: one row per test). cols: test  last_run_iso  result  duration_s  flow  note
-vpc-nat-gateway	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 dynamodb-streams	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 composite-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 nested-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
@@ -124,3 +123,4 @@ ecs-fargate	2026-06-13T04:11:31Z	PASS	353	verify.sh	#807 propagation + #809 writ
 microservices	2026-06-13T04:12:49Z	PASS	39	standard	#804 incremental destroy persistence; 19 deleted 0 err 0 orphan
 lambda	2026-06-13T04:41:51Z	PASS	76	verify.sh	#808 broad integ + cdkd events live-tested (deploy+destroy runs persisted); 9 deleted 0 err
 cross-region-state-bucket	2026-06-13T04:42:50Z	PASS	29	verify.sh	#803 LockManager cross-region; 1 deleted 0 err, temp bucket cleaned (exports-index 301 -> followup #819)
+vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)

@@ -34,6 +34,27 @@ describe('IMPLICIT_DELETE_DEPENDENCIES', () => {
     );
   });
 
+  it('IGW must be deleted after NatGateway (EIP mapped-address release)', () => {
+    expect(IMPLICIT_DELETE_DEPENDENCIES['AWS::EC2::InternetGateway']).toContain(
+      'AWS::EC2::NatGateway'
+    );
+  });
+
+  it('VPCGatewayAttachment must be detached after NatGateway (EIP mapped-address release)', () => {
+    expect(
+      IMPLICIT_DELETE_DEPENDENCIES['AWS::EC2::VPCGatewayAttachment']
+    ).toContain('AWS::EC2::NatGateway');
+  });
+
+  it('does not register a NatGateway implicit-delete key (EIP handled by Ref edge)', () => {
+    // The NAT Ref's its EIP via `AllocationId`, so the reversed delete
+    // traversal already deletes the NAT before the EIP is released. NatGateway
+    // is only ever a dependee here, never a KEY, so no EIP type-based rule is
+    // needed (and there is no need to add one for AWS::EC2::EIP either).
+    expect(IMPLICIT_DELETE_DEPENDENCIES['AWS::EC2::NatGateway']).toBeUndefined();
+    expect(IMPLICIT_DELETE_DEPENDENCIES['AWS::EC2::EIP']).toBeUndefined();
+  });
+
   it('CloudFront OAC must be deleted after Distribution', () => {
     expect(
       IMPLICIT_DELETE_DEPENDENCIES['AWS::CloudFront::OriginAccessControl']
