@@ -127,4 +127,4 @@ custom-resource-provider	2026-06-13T09:16:21Z	PASS	290	standard	regression sweep
 deployment-events	2026-06-13T09:16:21Z	PASS	34	verify.sh	#808 events sidecar + cdkd events + no-secrets + survives-destroy; 2 deleted 0 err
 update-replace	2026-06-13T10:43:46Z	PASS	65	verify.sh	in-place(S3/Lambda/IAM/SG)+replacement(S3 rename); 0 err 0 orphan
 s3-asset-deploy	2026-06-13T10:51:36Z	PASS	44	verify.sh	S3 zip asset upload + Lambda runs from it + generic Asset read-back; 0 err
-drift-revert-arrays	2026-06-13T10:57:27Z	PASS	114	verify.sh	#802 tag/ARN-array canonicalize; no-false-positive + true-drift detect+revert; 0 err
+docker-image-asset	2026-06-13T11:02:44Z	PASS	60	verify.sh	ECR build+push (ARM_64 pinned); image by tag + Lambda runs; 0 err

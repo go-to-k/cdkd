@@ -2301,6 +2301,7 @@
         "composite-stack",
         "custom-resource-provider",
         "data-pipeline",
+        "docker-image-asset",
         "dynamodb-streams",
         "ecr",
         "efs-lambda",
@@ -2378,6 +2379,10 @@
         ],
         "data-pipeline": [
           "l2"
+        ],
+        "docker-image-asset": [
+          "l2",
+          "literal"
         ],
         "dynamodb-streams": [
           "l2"

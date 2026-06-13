@@ -142,6 +142,25 @@ vp install
 - Docker image Lambda functions
 - ECR asset publishing
 
+#### Docker Image Asset Example (deploy-time ECR build + push)
+
+```bash
+cd "${CDKD_PATH}/tests/integration/docker-image-asset"
+vp install
+```
+
+**Tested features** (requires a running Docker daemon — the `verify.sh`
+SKIPs gracefully when `docker info` fails):
+
+- cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`):
+  `docker build` of the local Dockerfile, ECR auth, `docker push` to the
+  CDK-managed container-assets repo during `cdkd deploy`
+- `lambda.DockerImageFunction` (`PackageType=Image`) pointing at the pushed
+  ECR image; the `verify.sh` invokes the function to prove the pushed image
+  actually runs, then destroys and asserts the pushed image is gone from ECR
+- Distinct from the `local-invoke-container` family (which only exercises the
+  LOCAL emulation build path and never touches AWS)
+
 #### API Gateway Example (REST API + Lambda)
 
 ```bash

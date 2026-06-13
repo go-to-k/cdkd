@@ -181,6 +181,10 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'apigateway-cors-preflight':
     'API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays.',
 
+  // ---- Asset-publishing patterns ----
+  'docker-image-asset-ecr-publish':
+    "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy.",
+
   // ---- Local-execution patterns ----
   'local-lambda-rie-zip':
     '`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container.',
