@@ -1888,3 +1888,201 @@ describe('IntrinsicFunctionResolver - Fn::Join over a list-returning intrinsic',
     ).rejects.toThrow(/Fn::Join's second argument must be a list/);
   });
 });
+
+describe('IntrinsicFunctionResolver - evaluateConditions composite refs (#840)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  // Build a template whose conditions key off two parameters so we can drive
+  // every truth combination through real `Fn::Equals` / `{Condition: X}` refs.
+  const buildTemplate = (
+    conditions: Record<string, unknown>
+  ): CloudFormationTemplate => ({
+    Resources: {},
+    Parameters: {
+      Tier: { Type: 'String' },
+      Region: { Type: 'String' },
+    },
+    Conditions: conditions,
+  });
+
+  const truthCombos: Array<{ tier: string; region: string; premium: boolean; primary: boolean }> = [
+    { tier: 'premium', region: 'primary', premium: true, primary: true },
+    { tier: 'premium', region: 'secondary', premium: true, primary: false },
+    { tier: 'basic', region: 'primary', premium: false, primary: true },
+    { tier: 'basic', region: 'secondary', premium: false, primary: false },
+  ];
+
+  it('resolves Fn::And of two {Condition: X} refs for every truth combination', async () => {
+    const template = buildTemplate({
+      IsPremium: { 'Fn::Equals': [{ Ref: 'Tier' }, 'premium'] },
+      IsPrimaryRegion: { 'Fn::Equals': [{ Ref: 'Region' }, 'primary'] },
+      IsPremiumPrimary: {
+        'Fn::And': [{ Condition: 'IsPremium' }, { Condition: 'IsPrimaryRegion' }],
+      },
+    });
+
+    for (const c of truthCombos) {
+      const conditions = await resolver.evaluateConditions({
+        template,
+        resources: {},
+        parameters: { Tier: c.tier, Region: c.region },
+      });
+      expect(conditions['IsPremium']).toBe(c.premium);
+      expect(conditions['IsPrimaryRegion']).toBe(c.primary);
+      // And(premium, primary)
+      expect(conditions['IsPremiumPrimary']).toBe(c.premium && c.primary);
+    }
+  });
+
+  it('is declaration-order independent (composite declared BEFORE its referenced conditions)', async () => {
+    // IsPremiumPrimary references IsPremium / IsPrimaryRegion but is declared
+    // first. Object insertion order would have evaluated it before its deps
+    // under the old code, mis-evaluating to And(false, false) = false.
+    const template = buildTemplate({
+      IsPremiumPrimary: {
+        'Fn::And': [{ Condition: 'IsPremium' }, { Condition: 'IsPrimaryRegion' }],
+      },
+      IsPremium: { 'Fn::Equals': [{ Ref: 'Tier' }, 'premium'] },
+      IsPrimaryRegion: { 'Fn::Equals': [{ Ref: 'Region' }, 'primary'] },
+    });
+
+    // basic + primary -> And(false, true) = false (the integ-failing case)
+    const basic = await resolver.evaluateConditions({
+      template,
+      resources: {},
+      parameters: { Tier: 'basic', Region: 'primary' },
+    });
+    expect(basic['IsPremium']).toBe(false);
+    expect(basic['IsPrimaryRegion']).toBe(true);
+    expect(basic['IsPremiumPrimary']).toBe(false);
+
+    // premium + primary -> And(true, true) = true
+    const premium = await resolver.evaluateConditions({
+      template,
+      resources: {},
+      parameters: { Tier: 'premium', Region: 'primary' },
+    });
+    expect(premium['IsPremiumPrimary']).toBe(true);
+  });
+
+  it('resolves Fn::Or of {Condition: X} refs', async () => {
+    const template = buildTemplate({
+      IsPremium: { 'Fn::Equals': [{ Ref: 'Tier' }, 'premium'] },
+      IsPrimaryRegion: { 'Fn::Equals': [{ Ref: 'Region' }, 'primary'] },
+      IsPremiumOrPrimary: {
+        'Fn::Or': [{ Condition: 'IsPremium' }, { Condition: 'IsPrimaryRegion' }],
+      },
+    });
+
+    for (const c of truthCombos) {
+      const conditions = await resolver.evaluateConditions({
+        template,
+        resources: {},
+        parameters: { Tier: c.tier, Region: c.region },
+      });
+      expect(conditions['IsPremiumOrPrimary']).toBe(c.premium || c.primary);
+    }
+  });
+
+  it('resolves Fn::Not of a {Condition: X} ref', async () => {
+    const template = buildTemplate({
+      IsPremium: { 'Fn::Equals': [{ Ref: 'Tier' }, 'premium'] },
+      IsNotPremium: { 'Fn::Not': [{ Condition: 'IsPremium' }] },
+    });
+
+    const premium = await resolver.evaluateConditions({
+      template,
+      resources: {},
+      parameters: { Tier: 'premium', Region: 'x' },
+    });
+    expect(premium['IsNotPremium']).toBe(false);
+
+    const basic = await resolver.evaluateConditions({
+      template,
+      resources: {},
+      parameters: { Tier: 'basic', Region: 'x' },
+    });
+    expect(basic['IsNotPremium']).toBe(true);
+  });
+
+  it('resolves nested composite refs (composite referencing another composite)', async () => {
+    const template = buildTemplate({
+      IsPremium: { 'Fn::Equals': [{ Ref: 'Tier' }, 'premium'] },
+      IsPrimaryRegion: { 'Fn::Equals': [{ Ref: 'Region' }, 'primary'] },
+      IsPremiumPrimary: {
+        'Fn::And': [{ Condition: 'IsPremium' }, { Condition: 'IsPrimaryRegion' }],
+      },
+      // References the composite IsPremiumPrimary plus a leaf condition.
+      IsDeployable: {
+        'Fn::Or': [{ Condition: 'IsPremiumPrimary' }, { Condition: 'IsPrimaryRegion' }],
+      },
+    });
+
+    const basicPrimary = await resolver.evaluateConditions({
+      template,
+      resources: {},
+      parameters: { Tier: 'basic', Region: 'primary' },
+    });
+    // IsPremiumPrimary = And(false,true) = false; IsDeployable = Or(false,true) = true
+    expect(basicPrimary['IsPremiumPrimary']).toBe(false);
+    expect(basicPrimary['IsDeployable']).toBe(true);
+  });
+
+  it('downgrades a circular {Condition: X} reference to false instead of looping', async () => {
+    const warnSpy = vi.spyOn(
+      (resolver as unknown as { logger: { warn: (m: string) => void } }).logger,
+      'warn'
+    );
+    const template = buildTemplate({
+      CondA: { 'Fn::And': [{ Condition: 'CondB' }, { 'Fn::Equals': ['x', 'x'] }] },
+      CondB: { 'Fn::And': [{ Condition: 'CondA' }, { 'Fn::Equals': ['x', 'x'] }] },
+    });
+
+    const conditions = await resolver.evaluateConditions({
+      template,
+      resources: {},
+      parameters: {},
+    });
+
+    // Both collapse to false; no infinite recursion / stack overflow.
+    expect(conditions['CondA']).toBe(false);
+    expect(conditions['CondB']).toBe(false);
+    expect(
+      warnSpy.mock.calls.some(([m]) => String(m).includes('Circular condition reference'))
+    ).toBe(true);
+  });
+
+  it('warns and assumes false for a {Condition: X} ref to an undeclared condition', async () => {
+    const template = buildTemplate({
+      IsBoth: { 'Fn::And': [{ Condition: 'Missing' }, { 'Fn::Equals': ['x', 'x'] }] },
+    });
+
+    const conditions = await resolver.evaluateConditions({
+      template,
+      resources: {},
+      parameters: {},
+    });
+    // And(false, true) = false because Missing is undeclared.
+    expect(conditions['IsBoth']).toBe(false);
+  });
+
+  it('does not misdetect a resource property literally named "Condition"', async () => {
+    // A `{ Condition: 'X', Other: 'Y' }` object (>1 key) is a normal object,
+    // not a condition reference — it must be resolved recursively, not routed
+    // through resolveConditionReference.
+    const result = await resolver.resolve(
+      { Condition: 'SomeString', Other: { Ref: 'P' } },
+      {
+        template: { Resources: {} },
+        resources: {},
+        parameters: { P: 'pval' },
+      }
+    );
+    expect(result).toEqual({ Condition: 'SomeString', Other: 'pval' });
+  });
+});
