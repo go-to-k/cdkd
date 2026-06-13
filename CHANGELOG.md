@@ -1,3 +1,10 @@
+## [0.220.1](https://github.com/go-to-k/cdkd/compare/v0.220.0...v0.220.1) (2026-06-13)
+
+
+### Bug Fixes
+
+* **state:** resolve the state bucket's region in LockManager before lock operations ([#821](https://github.com/go-to-k/cdkd/issues/821)) ([5a82714](https://github.com/go-to-k/cdkd/commit/5a82714f224682c1bd388915e8d70ef1191d6330))
+
 # [0.220.0](https://github.com/go-to-k/cdkd/compare/v0.219.9...v0.220.0) (2026-06-13)
 
 
