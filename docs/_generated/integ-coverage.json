@@ -743,6 +743,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -812,6 +813,9 @@
         "rollback-failure-injection": [
           "l2"
         ],
+        "sg-circular-dependency": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -847,6 +851,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -913,6 +918,9 @@
           "l2"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "sg-circular-dependency": [
           "l2"
         ],
         "vpc-lambda": [
@@ -973,6 +981,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1040,6 +1049,9 @@
           "l2"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "sg-circular-dependency": [
           "l2"
         ],
         "vpc-lambda": [
@@ -1077,6 +1089,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1146,6 +1159,9 @@
         "rollback-failure-injection": [
           "l2"
         ],
+        "sg-circular-dependency": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -1178,6 +1194,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "update-replace",
         "vpc-lambda",
         "vpc-lambda-cr-race"
@@ -1238,6 +1255,10 @@
         "rollback-failure-injection": [
           "l2"
         ],
+        "sg-circular-dependency": [
+          "l2",
+          "literal"
+        ],
         "update-replace": [
           "l2",
           "literal"
@@ -1253,10 +1274,14 @@
     {
       "resourceType": "AWS::EC2::SecurityGroupIngress",
       "integs": [
-        "alb"
+        "alb",
+        "sg-circular-dependency"
       ],
       "signals": {
         "alb": [
+          "literal"
+        ],
+        "sg-circular-dependency": [
           "literal"
         ]
       }
@@ -1285,6 +1310,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1352,6 +1378,9 @@
           "l2"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "sg-circular-dependency": [
           "l2"
         ],
         "vpc-lambda": [
@@ -1400,6 +1429,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1467,6 +1497,9 @@
           "l2"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "sg-circular-dependency": [
           "l2"
         ],
         "vpc-lambda": [
@@ -1504,6 +1537,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1572,6 +1606,9 @@
           "l2"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "sg-circular-dependency": [
           "l2"
         ],
         "vpc-lambda": [
@@ -1609,6 +1646,7 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "rollback-failure-injection",
+        "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1676,6 +1714,9 @@
           "l2"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "sg-circular-dependency": [
           "l2"
         ],
         "vpc-lambda": [

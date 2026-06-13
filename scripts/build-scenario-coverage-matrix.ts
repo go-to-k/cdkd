@@ -101,6 +101,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation.',
   'iam-policy-propagation-retry':
     'CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race.',
+  'sg-circular-dependency':
+    'Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation.',
   'cdk-defensive-vpc-deps-relax':
     'CDK-defensive route DependsOn relaxation for VPC Lambda parallelization.',
 
