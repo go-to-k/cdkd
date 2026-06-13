@@ -199,27 +199,60 @@ echo "    OK: edge 1 - Lambda invoked on its fresh exec role"
 
 # Edge 2: start + describe an SFN execution (uses the fresh SFN role; the
 # task invokes the Lambda via the fresh grant). We poll for a terminal state.
-EXEC_ARN=$(aws stepfunctions start-execution \
-  --state-machine-arn "${SM_ARN}" --region "${REGION}" \
-  --input '{"hello":"cdkd"}' \
-  --query 'executionArn' --output text 2>/dev/null)
-if [ -z "${EXEC_ARN}" ] || [ "${EXEC_ARN}" = "None" ]; then
-  echo "FAIL: could not start an SFN execution (fresh SFN role may have failed)" >&2
-  exit 1
-fi
-SM_STATUS="RUNNING"
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-  SM_STATUS=$(aws stepfunctions describe-execution \
-    --execution-arn "${EXEC_ARN}" --region "${REGION}" \
-    --query 'status' --output text 2>/dev/null)
-  if [ "${SM_STATUS}" != "RUNNING" ]; then
+#
+# IAM-propagation note: cdkd's fast SDK path attaches the SFN role's inline
+# lambda:InvokeFunction grant and returns ~immediately; the SFN service then
+# assumes that role and may cache policy-less credentials before IAM has
+# propagated the grant to the assumed-role session, so the FIRST execution can
+# FAIL with `lambda:InvokeFunction ... no identity-based policy allows` /
+# AccessDenied. This is the very race this fixture stresses; CloudFormation
+# never hits it because its slower finish lets IAM settle. The grant propagates
+# within ~30s, so retry a FRESH execution across the propagation window on that
+# narrow authz signal (a non-authz FAILED is a real failure - fail immediately).
+SM_STATUS=""
+SM_LAST_CAUSE=""
+for attempt in 1 2 3 4 5 6; do
+  EXEC_ARN=$(aws stepfunctions start-execution \
+    --state-machine-arn "${SM_ARN}" --region "${REGION}" \
+    --input '{"hello":"cdkd"}' \
+    --query 'executionArn' --output text 2>/dev/null)
+  if [ -z "${EXEC_ARN}" ] || [ "${EXEC_ARN}" = "None" ]; then
+    echo "FAIL: could not start an SFN execution (fresh SFN role may have failed)" >&2
+    exit 1
+  fi
+  SM_STATUS="RUNNING"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    SM_STATUS=$(aws stepfunctions describe-execution \
+      --execution-arn "${EXEC_ARN}" --region "${REGION}" \
+      --query 'status' --output text 2>/dev/null)
+    if [ "${SM_STATUS}" != "RUNNING" ]; then
+      break
+    fi
+    sleep 2
+  done
+  if [ "${SM_STATUS}" = "SUCCEEDED" ]; then
     break
   fi
-  sleep 2
+  # FAILED (or timed out): inspect the cause. Retry only on the IAM-propagation
+  # authz signal; any other terminal status is a real failure.
+  SM_LAST_CAUSE=$(aws stepfunctions describe-execution \
+    --execution-arn "${EXEC_ARN}" --region "${REGION}" \
+    --query 'cause' --output text 2>/dev/null || echo "")
+  case "${SM_LAST_CAUSE}" in
+    *"lambda:InvokeFunction"*|*"no identity-based policy allows"*|*"AccessDeniedException"*|*"not authorized to perform"*)
+      echo "    edge 2 attempt ${attempt}: SFN role grant not yet propagated (retrying a fresh execution)" >&2
+      sleep $(( attempt * 5 ))
+      continue
+      ;;
+    *)
+      echo "FAIL: SFN execution status is '${SM_STATUS}', expected 'SUCCEEDED' (fresh SFN role / SFN->Lambda grant)" >&2
+      aws stepfunctions describe-execution --execution-arn "${EXEC_ARN}" --region "${REGION}" >&2 2>/dev/null || true
+      exit 1
+      ;;
+  esac
 done
 if [ "${SM_STATUS}" != "SUCCEEDED" ]; then
-  echo "FAIL: SFN execution status is '${SM_STATUS}', expected 'SUCCEEDED' (fresh SFN role / SFN->Lambda grant)" >&2
-  aws stepfunctions describe-execution --execution-arn "${EXEC_ARN}" --region "${REGION}" >&2 2>/dev/null || true
+  echo "FAIL: SFN execution never SUCCEEDED after IAM-propagation retries (last status '${SM_STATUS}', cause: ${SM_LAST_CAUSE})" >&2
   exit 1
 fi
 echo "    OK: edge 2 - SFN execution SUCCEEDED on the fresh SFN role (and invoked the Lambda)"
