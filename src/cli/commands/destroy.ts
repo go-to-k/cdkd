@@ -23,11 +23,8 @@ import {
 } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { DeploymentEventsStore } from '../../state/deployment-events-store.js';
-import {
-  extractDeploymentEventError,
-  type DeploymentRunResult,
-} from '../../types/deployment-events.js';
+import type { DeploymentRunResult } from '../../types/deployment-events.js';
+import { startRunRecorder, recordRunFailed } from './deployment-events-run.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -487,20 +484,16 @@ async function destroyCommand(
 
       // Issue [#808] — best-effort structured deployment-event recorder
       // for this destroy run. The runner emits per-resource DELETE events
-      // through it; this CLI emits RUN_STARTED / RUN_FINISHED and
-      // finalize()s below. Failures are swallowed inside the store.
-      const eventRecorder = new DeploymentEventsStore(stateBackend, {
+      // through it; this CLI emits RUN_STARTED (inside startRunRecorder) /
+      // RUN_FINISHED and finalize()s below. Failures are swallowed inside
+      // the store. (Destroy never runs under --dry-run, so the recorder is
+      // always created here.)
+      const eventRecorder = startRunRecorder({
+        backend: stateBackend,
         stackName,
         region: stackTargetRegion,
         command: 'destroy',
-      });
-      eventRecorder.record({
-        eventType: 'RUN_STARTED',
-        stackName,
-        command: 'destroy',
-        region: stackTargetRegion,
-        cdkdVersion: eventRecorder.cdkdVersion,
-      });
+      })!;
       let destroyRunResult: DeploymentRunResult = 'SUCCEEDED';
 
       // Set the NestedStackProvider context for this destroy. The provider
@@ -586,12 +579,7 @@ async function destroyCommand(
         });
       } catch (destroyError) {
         destroyRunResult = 'FAILED';
-        eventRecorder.record({
-          eventType: 'RUN_FINISHED',
-          stackName,
-          result: 'FAILED',
-          error: extractDeploymentEventError(destroyError),
-        });
+        recordRunFailed(eventRecorder, stackName, destroyError);
         throw destroyError;
       } finally {
         await eventRecorder.finalize(destroyRunResult);

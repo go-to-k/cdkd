@@ -92,7 +92,11 @@ cdkd events MyStack --stack-region us-east-1
 
 - With no `--run`: lists the runs from `index.json` (newest first). When
   the index is missing or unreadable it falls back to enumerating the
-  `{runId}.jsonl` keys directly.
+  `{runId}.jsonl` keys directly and deriving each run's result from its
+  own JSONL (the last `RUN_FINISHED` event) — a run whose stream has no
+  terminal `RUN_FINISHED` (interrupted, or its index write lost the
+  last-writer-wins race) is reported as `UNKNOWN`, never fabricated as
+  `FAILED`.
 - With `--run <id>`: prints that run's ordered events. Malformed / torn
   final lines (from an interrupted flush) are skipped, never hiding the
   rest of the stream.

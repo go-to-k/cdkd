@@ -304,6 +304,89 @@ describe('DeploymentEventsReader', () => {
     ]);
   });
 
+  it('fallback derives the true result from the run JSONL (no FAILED fabrication)', async () => {
+    const { backend, objects } = makeFakeBackend();
+    // A SUCCEEDED run whose index write lost the race: its JSONL carries a
+    // terminal RUN_FINISHED { result: SUCCEEDED } but there is NO index.json.
+    objects.set(
+      'cdkd/S/us-east-1/deployments/20260103T000000000Z-ok.jsonl',
+      [
+        JSON.stringify({
+          timestamp: '2026-01-03T00:00:00.000Z',
+          eventType: 'RUN_STARTED',
+          stackName: 'S',
+          command: 'deploy',
+          region: 'us-east-1',
+          cdkdVersion: '9.9.9',
+        }),
+        JSON.stringify({
+          timestamp: '2026-01-03T00:01:00.000Z',
+          eventType: 'RUN_FINISHED',
+          stackName: 'S',
+          result: 'SUCCEEDED',
+        }),
+        '',
+      ].join('\n')
+    );
+    // A destroy run that genuinely failed.
+    objects.set(
+      'cdkd/S/us-east-1/deployments/20260102T000000000Z-bad.jsonl',
+      [
+        JSON.stringify({
+          timestamp: '2026-01-02T00:00:00.000Z',
+          eventType: 'RUN_STARTED',
+          stackName: 'S',
+          command: 'destroy',
+          cdkdVersion: '1.0.0',
+        }),
+        JSON.stringify({
+          timestamp: '2026-01-02T00:00:30.000Z',
+          eventType: 'RUN_FINISHED',
+          stackName: 'S',
+          result: 'FAILED',
+        }),
+        '',
+      ].join('\n')
+    );
+    // An interrupted run: no terminal RUN_FINISHED at all.
+    objects.set(
+      'cdkd/S/us-east-1/deployments/20260101T000000000Z-torn.jsonl',
+      JSON.stringify({
+        timestamp: '2026-01-01T00:00:00.000Z',
+        eventType: 'RUN_STARTED',
+        stackName: 'S',
+        command: 'deploy',
+        cdkdVersion: '2.0.0',
+      }) + '\n'
+    );
+
+    const reader = new DeploymentEventsReader(backend);
+    const runs = await reader.listRuns('S', 'us-east-1');
+
+    // Newest first; results derived from each run's own JSONL.
+    expect(runs.map((r) => ({ runId: r.runId, result: r.result, command: r.command }))).toEqual([
+      { runId: '20260103T000000000Z-ok', result: 'SUCCEEDED', command: 'deploy' },
+      { runId: '20260102T000000000Z-bad', result: 'FAILED', command: 'destroy' },
+      // No RUN_FINISHED -> UNKNOWN, NOT fabricated as FAILED.
+      { runId: '20260101T000000000Z-torn', result: 'UNKNOWN', command: 'deploy' },
+    ]);
+    // The successful run carries the mined version + timestamps.
+    expect(runs[0]!.cdkdVersion).toBe('9.9.9');
+    expect(runs[0]!.startedAt).toBe('2026-01-03T00:00:00.000Z');
+    expect(runs[0]!.finishedAt).toBe('2026-01-03T00:01:00.000Z');
+    expect(runs[0]!.eventCount).toBe(2);
+  });
+
+  it('fallback reports UNKNOWN for an empty/torn JSONL', async () => {
+    const { backend, objects } = makeFakeBackend();
+    objects.set('cdkd/S/us-east-1/deployments/20260101T000000000Z-empty.jsonl', '\n');
+    const reader = new DeploymentEventsReader(backend);
+    const runs = await reader.listRuns('S', 'us-east-1');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.result).toBe('UNKNOWN');
+    expect(runs[0]!.command).toBe('deploy');
+  });
+
   it('reads a single run, skipping torn/malformed lines', async () => {
     const { backend, objects } = makeFakeBackend();
     objects.set(

@@ -155,7 +155,12 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
     return;
   }
   for (const run of runs) {
-    const resultColored = run.result === 'SUCCEEDED' ? green(run.result) : red(run.result);
+    const resultColored =
+      run.result === 'SUCCEEDED'
+        ? green(run.result)
+        : run.result === 'UNKNOWN'
+          ? gray(run.result)
+          : red(run.result);
     logger.info(
       `  ${cyan(run.runId)}  ${run.command}  ${resultColored}  ` +
         `${gray(run.startedAt || '?')} -> ${gray(run.finishedAt || '?')}  ` +

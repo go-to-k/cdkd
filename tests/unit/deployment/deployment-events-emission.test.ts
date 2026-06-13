@@ -56,6 +56,8 @@ describe('DeployEngine - #808 deployment events', () => {
     changes: Map<string, ResourceChange>;
     deps: Record<string, string[]>;
     failOn?: Set<string>;
+    /** Logical ids whose rollback `delete()` should throw (exercise ROLLBACK_RESOURCE_FAILED). */
+    failDeleteOn?: Set<string>;
     recorder?: DeploymentEventRecorder;
   }) {
     const mockProvider = {
@@ -73,7 +75,12 @@ describe('DeployEngine - #808 deployment events', () => {
         return Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} });
       }),
       update: vi.fn().mockResolvedValue({ physicalId: 'phys-x', wasReplaced: false }),
-      delete: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockImplementation((logicalId: string) => {
+        if (opts.failDeleteOn?.has(logicalId)) {
+          return Promise.reject(new Error(`rollback delete failed: ${logicalId}`));
+        }
+        return Promise.resolve(undefined);
+      }),
       getMinResourceTimeoutMs: vi.fn().mockReturnValue(0),
     };
 
@@ -180,6 +187,41 @@ describe('DeployEngine - #808 deployment events', () => {
     expect(types).toContain('ROLLBACK_FINISHED');
     const rolled = recorder.events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')!;
     expect(rolled.logicalId).toBe('A');
+  });
+
+  it('emits ROLLBACK_RESOURCE_FAILED when a rollback step itself throws', async () => {
+    const recorder = new CollectingRecorder();
+    const changes = new Map<string, ResourceChange>([
+      ['A', makeChange('A', 'AWS::S3::Bucket')],
+      ['B', makeChange('B', 'AWS::S3::Bucket')],
+    ]);
+    // A succeeds; B fails -> rollback A (CREATE) by delete, which ALSO throws.
+    const engine = buildEngine({
+      changes,
+      deps: { A: [], B: ['A'] },
+      failOn: new Set(['B']),
+      failDeleteOn: new Set(['A']),
+      recorder,
+    });
+    await expect(
+      engine.deploy(stackName, {
+        Resources: {
+          A: { Type: 'AWS::S3::Bucket', Properties: {} },
+          B: { Type: 'AWS::S3::Bucket', Properties: {} },
+        },
+      })
+    ).rejects.toThrow(/Failed to create resource B/);
+
+    const types = recorder.events.map((e) => e.eventType);
+    expect(types).toContain('ROLLBACK_STARTED');
+    expect(types).toContain('ROLLBACK_RESOURCE_FAILED');
+    expect(types).toContain('ROLLBACK_FINISHED');
+    // The successful sibling A's rollback delete threw -> FAILED, not SUCCEEDED.
+    expect(types).not.toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+    const rollbackFailed = recorder.events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED')!;
+    expect(rollbackFailed.logicalId).toBe('A');
+    expect(rollbackFailed.operation).toBe('CREATE');
+    expect(rollbackFailed.error?.message).toMatch(/rollback delete failed: A/);
   });
 
   it('is a no-op when no recorder is supplied (back-compat)', async () => {

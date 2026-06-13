@@ -22,6 +22,17 @@ export type DeploymentRunCommand = 'deploy' | 'destroy';
 /** Terminal result of a deployment run. */
 export type DeploymentRunResult = 'SUCCEEDED' | 'FAILED';
 
+/**
+ * Result as reported in a `DeploymentRunSummary`. A superset of
+ * {@link DeploymentRunResult} with `'UNKNOWN'` for the index-fallback case:
+ * when `deployments/index.json` is missing / corrupt, `cdkd events` rebuilds
+ * the run list by enumerating the `{runId}.jsonl` keys, and a run whose JSONL
+ * carries no terminal `RUN_FINISHED` event (e.g. an interrupted run, or one
+ * whose index write lost the race) has no definitively-known result — it must
+ * NOT be fabricated as `'FAILED'`.
+ */
+export type DeploymentRunSummaryResult = DeploymentRunResult | 'UNKNOWN';
+
 /** Per-resource operation kind (mirrors the deploy engine's change types). */
 export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
 
@@ -133,7 +144,13 @@ export interface DeploymentRunSummary {
   startedAt: string;
   /** ISO 8601 — when the run was finalized. */
   finishedAt: string;
-  result: DeploymentRunResult;
+  /**
+   * Terminal result. `'SUCCEEDED'` / `'FAILED'` come from the index
+   * (written by `finalize()`); `'UNKNOWN'` only appears in the read-side
+   * index-fallback when a run's JSONL carries no terminal `RUN_FINISHED`
+   * event (see {@link DeploymentRunSummaryResult}).
+   */
+  result: DeploymentRunSummaryResult;
   /** Number of events persisted for the run. */
   eventCount: number;
 }

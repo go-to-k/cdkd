@@ -517,7 +517,53 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(deletes).toHaveLength(1);
     });
   });
-});
 
-// Reference unused imports to keep ESLint happy without changing behavior.
-void ListObjectsV2Command;
+  describe('listRawKeys', () => {
+    it('collects keys across multiple ListObjectsV2 pages via ContinuationToken', async () => {
+      // Page 1: truncated, hands back a continuation token.
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [
+          { Key: 'cdkd/S/us-east-1/deployments/run-1.jsonl' },
+          { Key: 'cdkd/S/us-east-1/deployments/run-2.jsonl' },
+        ],
+        IsTruncated: true,
+        NextContinuationToken: 'token-page-2',
+      });
+      // Page 2: terminal page, no further token.
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [
+          { Key: 'cdkd/S/us-east-1/deployments/run-3.jsonl' },
+          { Key: 'cdkd/S/us-east-1/deployments/index.json' },
+        ],
+        IsTruncated: false,
+      });
+
+      const keys = await backend.listRawKeys('cdkd/S/us-east-1/deployments/');
+
+      // All keys from BOTH pages are collected (pagination did not stop at page 1).
+      expect(keys).toEqual([
+        'cdkd/S/us-east-1/deployments/run-1.jsonl',
+        'cdkd/S/us-east-1/deployments/run-2.jsonl',
+        'cdkd/S/us-east-1/deployments/run-3.jsonl',
+        'cdkd/S/us-east-1/deployments/index.json',
+      ]);
+
+      const listCalls = s3Client.send.mock.calls.filter(
+        (c: unknown[]) => c[0] instanceof ListObjectsV2Command
+      );
+      expect(listCalls).toHaveLength(2);
+      // First page has no ContinuationToken; second page carries page-1's token.
+      expect((listCalls[0][0] as ListObjectsV2Command).input.ContinuationToken).toBeUndefined();
+      expect((listCalls[1][0] as ListObjectsV2Command).input.ContinuationToken).toBe('token-page-2');
+      expect((listCalls[0][0] as ListObjectsV2Command).input.Prefix).toBe(
+        'cdkd/S/us-east-1/deployments/'
+      );
+    });
+
+    it('returns an empty list when no objects match the prefix', async () => {
+      s3Client.send.mockResolvedValueOnce({ Contents: undefined, IsTruncated: false });
+      const keys = await backend.listRawKeys('cdkd/Nope/');
+      expect(keys).toEqual([]);
+    });
+  });
+});

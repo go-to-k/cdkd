@@ -311,7 +311,16 @@ export class DeploymentEventsReader {
    * Run summaries for `(stackName, region)`, newest first. Returns the
    * index file's `runs` (already newest-first); when the index is missing
    * or unreadable, falls back to enumerating `{runId}.jsonl` keys (sorted
-   * descending — runIds are time-prefixed) with `null` summaries elided.
+   * descending — runIds are time-prefixed).
+   *
+   * In the fallback path the run's terminal result / command / version are
+   * NOT known from the key alone, so each run's JSONL is read and its last
+   * `RUN_FINISHED` (+ first `RUN_STARTED`) event mined for the true result,
+   * command, version, and timestamps. A run whose JSONL has no terminal
+   * `RUN_FINISHED` (interrupted run, or one whose index write lost the
+   * race) is reported as `'UNKNOWN'` — it is NEVER fabricated as `'FAILED'`,
+   * which would mislabel a successful run that merely failed to update the
+   * derived index.
    */
   async listRuns(stackName: string, region: string): Promise<DeploymentRunSummary[]> {
     const key = deploymentEventsIndexKey(this.backend.prefix, stackName, region);
@@ -326,20 +335,57 @@ export class DeploymentEventsReader {
     }
     const dirPrefix = `${this.backend.prefix}/${stackName}/${region}/deployments/`;
     const keys = await this.backend.listRawKeys(dirPrefix);
-    return keys
+    const runIds = keys
       .filter((k) => k.endsWith('.jsonl'))
       .map((k) => k.slice(dirPrefix.length, -'.jsonl'.length))
       .sort()
-      .reverse()
-      .map((runId) => ({
-        runId,
-        command: 'deploy' as DeploymentRunCommand,
-        cdkdVersion: 'unknown',
-        startedAt: '',
-        finishedAt: '',
-        result: 'FAILED' as DeploymentRunResult,
-        eventCount: 0,
-      }));
+      .reverse();
+    return Promise.all(runIds.map((runId) => this.summarizeRunFromJsonl(stackName, region, runId)));
+  }
+
+  /**
+   * Reconstruct a {@link DeploymentRunSummary} for the index-fallback path
+   * by reading the run's JSONL. Derives the true result from the last
+   * `RUN_FINISHED` event; absent that, returns `'UNKNOWN'` rather than
+   * fabricating a definitive failure.
+   */
+  private async summarizeRunFromJsonl(
+    stackName: string,
+    region: string,
+    runId: string
+  ): Promise<DeploymentRunSummary> {
+    const fallback: DeploymentRunSummary = {
+      runId,
+      command: 'deploy',
+      cdkdVersion: 'unknown',
+      startedAt: '',
+      finishedAt: '',
+      result: 'UNKNOWN',
+      eventCount: 0,
+    };
+    let events: DeploymentEvent[] | null = null;
+    try {
+      events = await this.readRunEvents(stackName, region, runId);
+    } catch {
+      return fallback;
+    }
+    if (events === null || events.length === 0) return fallback;
+
+    const started = events.find((e) => e.eventType === 'RUN_STARTED');
+    // Last RUN_FINISHED wins (a re-finalized run could in theory append two).
+    let finished: DeploymentEvent | undefined;
+    for (const e of events) {
+      if (e.eventType === 'RUN_FINISHED') finished = e;
+    }
+    return {
+      runId,
+      command: started?.command ?? fallback.command,
+      cdkdVersion: started?.cdkdVersion ?? fallback.cdkdVersion,
+      startedAt: started?.timestamp ?? fallback.startedAt,
+      finishedAt: finished?.timestamp ?? fallback.finishedAt,
+      result: finished?.result ?? 'UNKNOWN',
+      eventCount: events.length,
+    };
   }
 
   /**

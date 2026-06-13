@@ -25,11 +25,8 @@ import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { DeploymentEventsStore } from '../../state/deployment-events-store.js';
-import {
-  extractDeploymentEventError,
-  type DeploymentRunResult,
-} from '../../types/deployment-events.js';
+import type { DeploymentRunResult } from '../../types/deployment-events.js';
+import { startRunRecorder, recordRunSucceeded, recordRunFailed } from './deployment-events-run.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -452,27 +449,19 @@ async function deployCommand(
       }
 
       // Issue [#808] — best-effort structured deployment-event recorder.
-      // Skipped under --dry-run (no real run to record). The engine emits
-      // per-resource + rollback events through it; this CLI emits the
-      // run-level RUN_STARTED / RUN_FINISHED and finalize()s in the
-      // finally below. Failures are swallowed inside the store and never
-      // surface here. Declared OUTSIDE the try so the catch / finally see it.
-      const eventRecorder = options.dryRun
-        ? undefined
-        : new DeploymentEventsStore(stackStateBackend, {
-            stackName: stackInfo.stackName,
-            region: stackRegion,
-            command: 'deploy',
-          });
-      if (eventRecorder) {
-        eventRecorder.record({
-          eventType: 'RUN_STARTED',
-          stackName: stackInfo.stackName,
-          command: 'deploy',
-          region: stackRegion,
-          cdkdVersion: eventRecorder.cdkdVersion,
-        });
-      }
+      // Skipped under --dry-run (no real run to record — startRunRecorder
+      // returns undefined). The engine emits per-resource + rollback events
+      // through it; this CLI emits the run-level RUN_STARTED (inside
+      // startRunRecorder) / RUN_FINISHED and finalize()s in the finally
+      // below. Failures are swallowed inside the store and never surface
+      // here. Declared OUTSIDE the try so the catch / finally see it.
+      const eventRecorder = startRunRecorder({
+        backend: stackStateBackend,
+        stackName: stackInfo.stackName,
+        region: stackRegion,
+        command: 'deploy',
+        dryRun: options.dryRun,
+      });
       // Tracks the terminal result for the recorder's index summary;
       // flipped to FAILED in the catch below.
       let runResult: DeploymentRunResult = 'SUCCEEDED';
@@ -680,29 +669,21 @@ async function deployCommand(
           logger.info(`\n${green('✓')} ${bold('Deployment completed successfully')}`);
         }
 
-        if (eventRecorder) {
-          eventRecorder.record({
-            eventType: 'RUN_FINISHED',
-            stackName: stackInfo.stackName,
-            result: 'SUCCEEDED',
-            durationMs: deployResult.durationMs,
-            counts: {
-              created: deployResult.created,
-              updated: deployResult.updated,
-              deleted: deployResult.deleted,
-            },
-          });
-        }
+        recordRunSucceeded(
+          eventRecorder,
+          stackInfo.stackName,
+          {
+            created: deployResult.created,
+            updated: deployResult.updated,
+            deleted: deployResult.deleted,
+          },
+          deployResult.durationMs
+        );
       } catch (deployError) {
         // Issue [#808] — record the run-level failure event before
         // re-throwing. Error metadata only (no resource properties).
         runResult = 'FAILED';
-        eventRecorder?.record({
-          eventType: 'RUN_FINISHED',
-          stackName: stackInfo.stackName,
-          result: 'FAILED',
-          error: extractDeploymentEventError(deployError),
-        });
+        recordRunFailed(eventRecorder, stackInfo.stackName, deployError);
         throw deployError;
       } finally {
         // Best-effort final flush + index update. Never throws.
