@@ -69,6 +69,25 @@ lock_exists() {
   aws s3 ls "s3://${STATE_BUCKET}/${LOCK_KEY}" >/dev/null 2>&1
 }
 
+# Bounded poll: returns 0 (released) once the lock object is GONE, or 1
+# if it is still present after the budget. Lock release is the final
+# step of the destroy's `finally` (an async S3 DeleteObject) that may
+# settle slightly after the node process exits, so a single immediate
+# check can race the delete. Only call this AFTER `wait` has confirmed
+# the node process fully exited — while the process is alive the lock is
+# LEGITIMATELY held (it is released in the finally, not mid-drain).
+wait_for_lock_release() {
+  local tries=0
+  while [ "${tries}" -lt 10 ]; do
+    if ! lock_exists; then
+      return 0
+    fi
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
 # --- preconditions ----------------------------------------------------
 
 if [ -z "${STATE_BUCKET:-}" ]; then
@@ -118,17 +137,33 @@ echo "${PARAM_NAMES}" | sed 's/^/      - /'
 # --- Phase 2: first Ctrl-C (graceful SIGINT, #816) --------------------
 #
 # Timing mechanism: launch `cdkd destroy --force` in the BACKGROUND with
-# its stdout+stderr tee'd to a log file, capture the node PID, then POLL
-# the log for evidence that the delete loop has started (a "Deleting " /
-# "deleted" line, or the "Acquiring lock" + "Resources to be deleted"
-# banner) before sending ONE SIGINT. The poll is bounded
-# (SIGINT_WAIT_MAX_S); if the destroy finishes before we can interrupt
-# (a legitimate race on a fast account), we DETECT the process already
-# exited, LOG it, and skip straight to the re-run / clean-end assertions
-# instead of hard-failing on the race. This keeps the test robust:
-# the contract under test (lock released + state preserved on interrupt)
-# is only asserted when an interrupt actually lands; a too-fast destroy
-# is an acceptable non-interrupt outcome.
+# its stdout+stderr redirected to a log file, capture the node PID, then
+# POLL the log for evidence that the delete loop has ACTUALLY STARTED
+# before sending ONE SIGINT. The poll is bounded (SIGINT_WAIT_MAX_S); if
+# the destroy finishes before we can interrupt (a legitimate race on a
+# fast account), we DETECT the process already exited, LOG it, and skip
+# straight to the re-run / clean-end assertions instead of hard-failing
+# on the race. This keeps the test robust: the contract under test (lock
+# released + state preserved on interrupt) is only asserted when an
+# interrupt actually lands; a too-fast destroy is an acceptable
+# non-interrupt outcome.
+#
+# CRITICAL — the detection signal must prove the delete loop is underway
+# AND the #816 SIGINT handler is already registered. cdkd registers the
+# graceful-SIGINT handler in `runDestroyForStack` only AFTER acquiring
+# the stack lock, immediately before logging "Building dependency
+# graph..." (destroy-runner.ts ~L593). The "Resources to be deleted"
+# PLAN banner is printed much EARLIER — before the lock acquire and
+# before the handler exists. Triggering on that banner (the original
+# bug) sent the SIGINT during lock-acquire, when Node's DEFAULT SIGINT
+# behavior terminates the process before any handler runs: the `finally`
+# that releases the lock never executes and the lock is stranded. That
+# is a TEST race, not a #816 cdkd gap. We therefore trigger only on a
+# signal emitted AFTER the handler is live: a per-resource completion
+# line ("... deleted" via formatResourceLine) or the post-handler
+# "Building dependency graph..." line (the live-renderer "Deleting ..."
+# label is suppressed on the non-TTY redirected log, so it is not a
+# reliable signal here).
 SIGINT_WAIT_MAX_S=30
 DESTROY_LOG="$(mktemp)"
 
@@ -151,10 +186,17 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
   if ! kill -0 "${DESTROY_PID}" 2>/dev/null; then
     break
   fi
-  # First sign of an in-flight delete: a per-resource "Deleting" or
-  # "deleted" line, OR the pre-loop banner. Match with grep -E (BSD-safe).
-  if grep -E -q "Deleting |deleted|Resources to be deleted" "${DESTROY_LOG}" 2>/dev/null; then
-    echo "    delete loop started — sending SIGINT to PID ${DESTROY_PID}"
+  # First sign the delete loop is underway AND the #816 SIGINT handler is
+  # registered: either a per-resource completion line ("<id> (<type>)
+  # deleted") or the post-handler "Building dependency graph..." line.
+  # Deliberately NOT matching the "Resources to be deleted" plan banner —
+  # that prints before the lock acquire / handler registration, so a
+  # SIGINT then would hit Node's default-terminate and strand the lock
+  # (the original false failure). Match with grep -E (BSD-safe); anchor
+  # "deleted" to the trailing-verb position so it cannot match the plan
+  # banner's "Resources to be deleted".
+  if grep -E -q "Building dependency graph|\) deleted" "${DESTROY_LOG}" 2>/dev/null; then
+    echo "    delete loop started (handler registered) — sending SIGINT to PID ${DESTROY_PID}"
     kill -INT "${DESTROY_PID}" 2>/dev/null || true
     interrupted_sent=1
     break
@@ -165,14 +207,22 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
   sleep 0.3
 done
 
-# If we never saw delete evidence AND the process is still alive, the
-# destroy may be stuck in the pre-delete phase (strong-ref scan / lock).
-# Send the SIGINT anyway so we still exercise the handler; if it already
-# exited this is a no-op.
+# If we never saw the handler-registration signal AND the process is
+# still alive, send the SIGINT anyway ONLY if the handler-registration
+# line has by now appeared in the log — otherwise the process is stuck
+# pre-handler (strong-ref scan / lock acquire) and a SIGINT would hit
+# Node's default-terminate and strand the lock (a false failure, not a
+# #816 bug). In the (unexpected) pre-handler-stuck case, leave the
+# process alone: `wait` below collects it, and the state-preserved /
+# state-gone branch handles whatever it did.
 if [ "${interrupted_sent}" -eq 0 ] && kill -0 "${DESTROY_PID}" 2>/dev/null; then
-  echo "    no explicit delete evidence within ${SIGINT_WAIT_MAX_S}s; sending SIGINT anyway"
-  kill -INT "${DESTROY_PID}" 2>/dev/null || true
-  interrupted_sent=1
+  if grep -E -q "Building dependency graph|\) deleted" "${DESTROY_LOG}" 2>/dev/null; then
+    echo "    handler registered but no per-resource delete yet within ${SIGINT_WAIT_MAX_S}s; sending SIGINT now"
+    kill -INT "${DESTROY_PID}" 2>/dev/null || true
+    interrupted_sent=1
+  else
+    echo "    WARNING: no handler-registration signal within ${SIGINT_WAIT_MAX_S}s — destroy appears stuck pre-handler; NOT sending SIGINT (would strand the lock via default-terminate)"
+  fi
 fi
 
 # Wait for the background destroy to exit and capture its REAL rc.
@@ -190,16 +240,22 @@ if state_exists; then
 
   # (a) graceful exit: the handler printed the drain notice and the
   #     process exited (it did — `wait` returned). The interrupt path
-  #     surfaces a non-zero exit; just assert it exited.
-  if grep -E -q "Interrupted|interrupt" "${DESTROY_LOG}"; then
+  #     surfaces a non-zero exit; just assert it exited. Match the
+  #     ACTUAL drain-notice text ("Interrupted — finishing in-flight
+  #     deletes") — NOT a bare "interrupt", which also matches the stack
+  #     name CdkdDestroyInterruptExample and would be a false positive.
+  if grep -E -q "finishing in-flight deletes" "${DESTROY_LOG}"; then
     echo "    OK: destroy logged the graceful-interrupt drain notice"
   else
-    echo "    NOTE: no explicit interrupt notice in log (drain may have been very fast); continuing"
+    echo "    NOTE: no explicit drain notice in log (interrupt may have landed between levels, before any in-flight delete); continuing"
   fi
 
   # (b) lock released — no lock object remains (the #816 fix: finally ran
-  #     and released the lock; pre-fix the lock stranded for 30m).
-  if lock_exists; then
+  #     and released the lock; pre-fix the lock stranded for 30m). The
+  #     node process already exited (`wait` returned above), so the
+  #     finally has run; allow a brief bounded poll for the async S3
+  #     DeleteObject to settle before asserting.
+  if ! wait_for_lock_release; then
     echo "FAIL: stack lock object still present after graceful interrupt (should be released)" >&2
     exit 1
   fi
@@ -214,8 +270,9 @@ else
   echo "          state is already gone. The #816 contract is only assertable on an"
   echo "          actual interrupt, so skipping the lock/state-preserved asserts and"
   echo "          verifying the clean-end state below."
-  # A finished destroy must have released the lock too.
-  if lock_exists; then
+  # A finished destroy must have released the lock too (bounded poll for
+  # the async S3 DeleteObject to settle after the process exit).
+  if ! wait_for_lock_release; then
     echo "FAIL: stack lock object present after a completed destroy" >&2
     exit 1
   fi
@@ -278,7 +335,7 @@ if state_exists; then
 fi
 echo "    OK: state file is gone"
 
-if lock_exists; then
+if ! wait_for_lock_release; then
   echo "FAIL: lock object still present at end of run" >&2
   exit 1
 fi
