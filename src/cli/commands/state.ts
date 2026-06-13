@@ -1184,6 +1184,9 @@ async function stateDestroyCommand(
     logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
 
     let totalErrors = 0;
+    // Set true when a per-stack destroy was gracefully interrupted (issue
+    // #816). Stops the multi-stack loop and surfaces a non-zero exit below.
+    let interrupted = false;
     for (const stackName of stackNames) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):
@@ -1293,6 +1296,10 @@ async function stateDestroyCommand(
             })
         );
         totalErrors += result.errorCount;
+        if (result.interrupted) interrupted = true;
+        // A graceful interrupt (issue #816) stops the per-stack loop too: do
+        // not start destroying further stacks once the user has asked to stop.
+        if (interrupted) break;
       }
     }
 
@@ -1303,6 +1310,14 @@ async function stateDestroyCommand(
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
           `inspect 'cdkd state show <stack>' and re-run 'cdkd state destroy' to retry.`
+      );
+    }
+    if (interrupted) {
+      // Graceful SIGINT (issue #816): in-flight deletes finished, state was
+      // preserved (trimmed), and the lock was released. Surface a non-zero
+      // exit so scripts / CI see the destroy did not complete.
+      throw new PartialFailureError(
+        `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd state destroy' to finish.`
       );
     }
   } finally {

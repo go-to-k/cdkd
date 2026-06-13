@@ -592,6 +592,28 @@ Default: **15 minutes**
 
 Even if a process crashes, after 15 minutes the old lock is considered stale and can be force released.
 
+### Destroy interruption (Ctrl-C)
+
+`cdkd destroy` and `cdkd state destroy` handle the first `Ctrl-C` (SIGINT)
+gracefully (issue [#816](https://github.com/go-to-k/cdkd/issues/816)),
+mirroring Terraform:
+
+- **First Ctrl-C** stops scheduling new deletes. Any provider delete already
+  in flight is allowed to finish (it is not cancelled). The runner then flushes
+  the incremental destroy state (the same per-resource save-chain that powers
+  the partial-failure path — see "Incremental destroy persistence" below), so
+  the preserved `state.json` lists only the resources that still exist.
+  Finally it **releases the stack lock** and the command exits non-zero. A
+  re-run of `cdkd destroy` resumes cleanly with no replay and no wait for the
+  lock TTL.
+- **Second Ctrl-C** force-quits immediately (`process.exit(130)`) without
+  waiting for the in-flight delete. In that case the lock may be left behind
+  and is reclaimed after the TTL above (or cleared with `cdkd force-unlock`).
+
+This is why an interrupted destroy no longer strands the lock for its full
+TTL: only an ungraceful kill (`SIGKILL`, a second Ctrl-C, or a crash) leaves a
+stale lock.
+
 ## State Saving and Updating
 
 ### Initial Save (New Stack)

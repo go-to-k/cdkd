@@ -31,6 +31,15 @@ Locked by: user@hostname:12345, operation: deploy
 - Another process is deploying the same stack
 - Previous process crashed and lock remains
 
+> **Note:** A first `Ctrl-C` during `cdkd destroy` / `cdkd state destroy` no
+> longer strands the lock — the graceful-SIGINT handler (issue
+> [#816](https://github.com/go-to-k/cdkd/issues/816)) finishes any in-flight
+> delete, flushes the incremental state, and **releases the lock** before
+> exiting non-zero. A re-run resumes immediately without waiting out the lock
+> TTL. A leftover lock therefore means an ungraceful kill (`SIGKILL`, a
+> _second_ Ctrl-C that force-quit, or a crash); use the steps below to clear
+> it.
+
 #### Solutions
 
 **1. Check if another process is running**
