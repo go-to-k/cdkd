@@ -49,7 +49,6 @@ bench-sdk	2026-06-02T11:37:34Z	PASS	25	standard	sweep: deploy+destroy clean, 0 e
 cache-streaming	2026-06-02T11:37:34Z	PASS	467	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 ci-cd	2026-06-02T11:37:34Z	PASS	58	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 cloudfront-function-url	2026-06-02T11:37:34Z	PASS	440	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
-cross-region-state-bucket	2026-06-02T11:37:34Z	PASS	16	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 data-analytics	2026-06-02T11:37:34Z	PASS	51	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 data-pipeline	2026-06-02T11:37:34Z	PASS	51	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 diff-intrinsic-target-change	2026-06-02T11:37:34Z	PASS	48	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -124,3 +123,4 @@ drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 
 ecs-fargate	2026-06-13T04:11:31Z	PASS	353	verify.sh	#807 propagation + #809 write-only UPDATE pass, 19 deleted 0 err
 microservices	2026-06-13T04:12:49Z	PASS	39	standard	#804 incremental destroy persistence; 19 deleted 0 err 0 orphan
 lambda	2026-06-13T04:41:51Z	PASS	76	verify.sh	#808 broad integ + cdkd events live-tested (deploy+destroy runs persisted); 9 deleted 0 err
+cross-region-state-bucket	2026-06-13T04:42:50Z	PASS	29	verify.sh	#803 LockManager cross-region; 1 deleted 0 err, temp bucket cleaned (exports-index 301 -> followup #819)
