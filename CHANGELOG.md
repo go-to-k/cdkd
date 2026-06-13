@@ -1,3 +1,10 @@
+## [0.221.1](https://github.com/go-to-k/cdkd/compare/v0.221.0...v0.221.1) (2026-06-13)
+
+
+### Bug Fixes
+
+* **deployment:** retry SNS/SQS resource-policy create on fresh-role propagation ([#839](https://github.com/go-to-k/cdkd/issues/839)) ([#843](https://github.com/go-to-k/cdkd/issues/843)) ([05a4070](https://github.com/go-to-k/cdkd/commit/05a4070c76b91924437a026f5e14061976b82c4c))
+
 # [0.221.0](https://github.com/go-to-k/cdkd/compare/v0.220.5...v0.221.0) (2026-06-13)
 
 
