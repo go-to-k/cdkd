@@ -166,6 +166,86 @@ describe('SQSQueueProvider.update', () => {
     expect(input.Attributes?.['RedriveAllowPolicy']).toBe(JSON.stringify(redriveAllow));
   });
 
+  it('clears RedrivePolicy on AWS when it was set previously but is now absent (Fn::If -> AWS::NoValue)', async () => {
+    // Regression for the conditions-update-2 integ: a WorkQueue carries a
+    // RedrivePolicy in phase a (Fn::If true branch) and AWS::NoValue in
+    // phase b. The phase-b resolved properties OMIT RedrivePolicy entirely.
+    // The diff layer fires the change, but the provider must explicitly
+    // reset the attribute to "" (clear) — otherwise the stale DLQ config
+    // lingers on AWS. Pre-fix the update loop only acted on keys PRESENT in
+    // the new properties, so the removal was a silent no-op.
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'WorkQueue',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      // phase-b desired props: RedrivePolicy resolved away (absent).
+      {},
+      // phase-a previous props: RedrivePolicy was set.
+      {
+        RedrivePolicy: {
+          deadLetterTargetArn: 'arn:aws:sqs:us-east-1:0:dlq',
+          maxReceiveCount: 3,
+        },
+      }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    // Documented SQS clear form — empty string, NOT "{}" (rejected) and NOT omitted.
+    expect(input.Attributes['RedrivePolicy']).toBe('');
+  });
+
+  it('resets a numeric attribute to its SQS default when removed on update', async () => {
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      // VisibilityTimeout no longer present in the desired template.
+      {},
+      { VisibilityTimeout: 120 }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    // CFn resets a removed property to its default; SQS VisibilityTimeout default is 30.
+    expect(input.Attributes['VisibilityTimeout']).toBe('30');
+  });
+
+  it('does NOT reset an attribute that was absent in BOTH previous and new properties', async () => {
+    // Guard against over-clearing: a property never set must not be reset on
+    // an unrelated update (e.g. a tag-only change).
+    // applyTagDiff (TagQueue) fires before the trailing GetQueueAttributes,
+    // so mock every send with the QueueArn response.
+    mockSend.mockResolvedValue({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      // Only a tag change; no SQS attributes set on either side.
+      { Tags: [{ Key: 'env', Value: 'prod' }] },
+      {}
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    // No SetQueueAttributes at all — nothing to set or reset.
+    expect(setAttrsCall).toBeUndefined();
+  });
+
   it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
     // Mechanical guard for Class 2 placeholder regression. See
     // docs/provider-development.md § 3b "Read-update round-trip test".

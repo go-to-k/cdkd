@@ -82,6 +82,44 @@ function serializeRedriveAllowPolicy(value: unknown): string {
 }
 
 /**
+ * Reset value for a CDK-managed SQS attribute that was set on a previous
+ * deploy but is ABSENT from the desired properties on an in-place UPDATE
+ * (e.g. its `Fn::If` branch resolved to `AWS::NoValue`, so the resolved
+ * desired properties no longer carry the key).
+ *
+ * cdkd's diff layer correctly classifies a property present in current
+ * state but absent from the desired template as a change, but the provider
+ * `update()` loop only acts on keys PRESENT in the new properties — so
+ * without an explicit reset the stale value lingers on AWS (the
+ * `conditions-update-2` integ exercises exactly this for `RedrivePolicy`).
+ *
+ * CloudFormation resets a removed property to the attribute's default. We
+ * mirror that here:
+ *   - The JSON policy attributes (`RedrivePolicy` / `RedriveAllowPolicy`)
+ *     are cleared with the empty string the SQS API documents for removal.
+ *   - `KmsMasterKeyId` is cleared with the empty string (removes a custom
+ *     CMK; SQS falls back to its own default encryption behavior).
+ *   - Numeric attributes reset to their documented `SetQueueAttributes`
+ *     defaults (see the SQS API reference).
+ *
+ * Attributes NOT in this map (immutable / FIFO-discriminated ones such as
+ * `FifoQueue` / `DeduplicationScope` / `FifoThroughputLimit`) are never
+ * reset on removal — flipping them would either be rejected by AWS or
+ * require a replacement, which the diff layer handles separately.
+ */
+const SQS_ATTRIBUTE_REMOVAL_RESET: Record<string, string> = {
+  RedrivePolicy: '',
+  RedriveAllowPolicy: '',
+  KmsMasterKeyId: '',
+  VisibilityTimeout: '30',
+  MaximumMessageSize: '262144',
+  MessageRetentionPeriod: '345600',
+  DelaySeconds: '0',
+  ReceiveMessageWaitTimeSeconds: '0',
+  KmsDataKeyReusePeriodSeconds: '300',
+};
+
+/**
  * CDK property name to SQS attribute name mapping
  */
 const CDK_TO_SQS_ATTRIBUTES: Record<string, string> = {
@@ -247,6 +285,16 @@ export class SQSQueueProvider implements ResourceProvider {
           } else {
             attributes[sqsKey] = stringifyValue(value);
           }
+        } else if (
+          previousProperties[cdkKey] !== undefined &&
+          cdkKey in SQS_ATTRIBUTE_REMOVAL_RESET
+        ) {
+          // The property was set on a previous deploy and is now ABSENT from
+          // the desired properties (e.g. `Fn::If` -> `AWS::NoValue`). cdkd's
+          // diff fires a change, but the provider must explicitly reset the
+          // attribute to its default — otherwise the stale value lingers on
+          // AWS. (See `SQS_ATTRIBUTE_REMOVAL_RESET`.)
+          attributes[sqsKey] = SQS_ATTRIBUTE_REMOVAL_RESET[cdkKey]!;
         }
       }
 

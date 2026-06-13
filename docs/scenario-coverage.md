@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**53 / 53 canonical scenarios** have at least one integ fixture exercising them. **120 / 139 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**54 / 54 canonical scenarios** have at least one integ fixture exercising them. **121 / 140 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (53 scenarios)
+## Per-scenario coverage (54 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -35,6 +35,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `cfn-macro-expansion` | CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`. | [`macro-expansion`](../tests/integration/macro-expansion/) |
 | `cloudfront-oai-attribute-enrichment` | CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly). | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) |
 | `conditions-and-if` | CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property. | [`conditions-and-if`](../tests/integration/conditions-and-if/) |
+| `conditions-update-semantics` | Harder CloudFormation-Conditions-on-UPDATE semantics beyond the simple flip in `conditions-and-if` (which surfaced #840). A CDK-context phase flip (-c phase=a|b) redeploys the SAME stack in place and asserts: a resource that MOVES gating conditions (IsPhaseA-gated -> condition-false -> DELETED) and its reverse (IsPhaseB-gated absent -> CREATED); `Fn::If` -> `AWS::NoValue` REMOVING a nested property block (SQS RedrivePolicy) on an in-place UPDATE (same physical id, not a replacement); a condition-gated OUTPUT present vs absent in cdkd state outputs; a `DependsOn` to a condition-EXCLUDED resource being dropped (the depender still deploys); and a `Ref` to a condition-excluded resource living inside another condition-excluded resource (both pruned together, no dangling-ref crash). | [`conditions-update-2`](../tests/integration/conditions-update-2/) |
 | `cross-cutting-deploy-destroy` | Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate. | [`bench-ccapi`](../tests/integration/bench-ccapi/)<br>[`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`bench-sdk`](../tests/integration/bench-sdk/)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/)<br>[`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/)<br>[`multi-resource`](../tests/integration/multi-resource/) |
 | `custom-resource-async-poll` | Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling. | [`cloudfront-function-url`](../tests/integration/cloudfront-function-url/)<br>[`custom-resource-provider`](../tests/integration/custom-resource-provider/)<br>[`destroy-interrupt`](../tests/integration/destroy-interrupt/)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) |
