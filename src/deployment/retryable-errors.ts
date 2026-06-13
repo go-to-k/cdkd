@@ -46,6 +46,19 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // errors. CloudFormation tolerates this via deployment latency; cdkd retries.
   // See issue #794.
   'required permissions for: ENHANCED_MONITORING',
+  // ECS CapacityProvider (Managed Instances): the Cloud Control CreateResource
+  // references a same-stack infrastructure IAM role, but cdkd's fast SDK path
+  // issues the create before IAM finishes propagating the just-created role
+  // for ECS to assume. The CC API handler classifies it as a terminal
+  // InvalidRequest ("Caught ServiceAccessDeniedException for
+  // ECSInfrastructureRole[arn:...]", SDK Attempt Count: 1) instead of
+  // retrying internally. Anchored on the handler's "Caught
+  // ServiceAccessDeniedException" wording so a genuine, permanent role
+  // misconfiguration only burns the bounded retries before surfacing.
+  // Any CC-provisioned type that validates a same-stack role at create time
+  // can hit this. CloudFormation tolerates it via deployment latency; cdkd
+  // retries. See issue #805.
+  'Caught ServiceAccessDeniedException',
   // S3 bucket creation/deletion still in progress
   'conflicting conditional operation',
   // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
