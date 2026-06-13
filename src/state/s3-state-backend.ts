@@ -515,6 +515,74 @@ export class S3StateBackend {
   }
 
   /**
+   * Raw sidecar-object write under the state bucket. Used for non-state
+   * auxiliary files that share the bucket + region-resolution plumbing
+   * (e.g. deployment-event JSONL streams + their `index.json`, issue
+   * #808) without going through the state-schema validation that
+   * `saveState` applies. No optimistic locking — callers own their key
+   * uniqueness / last-writer-wins semantics.
+   */
+  async putRawObject(key: string, body: string, contentType = 'application/json'): Promise<void> {
+    await this.ensureClientForBucket();
+    await this.s3Client.send(
+      new PutObjectCommand({
+        Bucket: this.config.bucket,
+        Key: key,
+        Body: body,
+        ContentLength: Buffer.byteLength(body),
+        ContentType: contentType,
+      })
+    );
+  }
+
+  /**
+   * Raw sidecar-object read under the state bucket. Returns `null` when
+   * the key does not exist; other errors propagate.
+   */
+  async getRawObject(key: string): Promise<string | null> {
+    await this.ensureClientForBucket();
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.config.bucket,
+          Key: key,
+        })
+      );
+      return (await response.Body?.transformToString()) ?? null;
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Raw key listing under an arbitrary key prefix in the state bucket
+   * (paginated). Used by `cdkd events` to discover regions / runs under
+   * `{prefix}/{stackName}/.../deployments/`.
+   */
+  async listRawKeys(keyPrefix: string): Promise<string[]> {
+    await this.ensureClientForBucket();
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const response = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          Prefix: keyPrefix,
+          ...(continuationToken && { ContinuationToken: continuationToken }),
+        })
+      );
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key) keys.push(obj.Key);
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return keys;
+  }
+
+  /**
    * HeadObject probe — returns true on 200, false on NotFound. Other errors
    * propagate so we don't accidentally swallow IAM denials.
    */

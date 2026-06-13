@@ -25,6 +25,11 @@ import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { DeploymentEventsStore } from '../../state/deployment-events-store.js';
+import {
+  extractDeploymentEventError,
+  type DeploymentRunResult,
+} from '../../types/deployment-events.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -446,6 +451,32 @@ async function deployCommand(
         stackProviderRegistry.allowUnsupportedProperties(options.allowUnsupportedProperties);
       }
 
+      // Issue [#808] — best-effort structured deployment-event recorder.
+      // Skipped under --dry-run (no real run to record). The engine emits
+      // per-resource + rollback events through it; this CLI emits the
+      // run-level RUN_STARTED / RUN_FINISHED and finalize()s in the
+      // finally below. Failures are swallowed inside the store and never
+      // surface here. Declared OUTSIDE the try so the catch / finally see it.
+      const eventRecorder = options.dryRun
+        ? undefined
+        : new DeploymentEventsStore(stackStateBackend, {
+            stackName: stackInfo.stackName,
+            region: stackRegion,
+            command: 'deploy',
+          });
+      if (eventRecorder) {
+        eventRecorder.record({
+          eventType: 'RUN_STARTED',
+          stackName: stackInfo.stackName,
+          command: 'deploy',
+          region: stackRegion,
+          cdkdVersion: eventRecorder.cdkdVersion,
+        });
+      }
+      // Tracks the terminal result for the recorder's index summary;
+      // flipped to FAILED in the catch below.
+      let runResult: DeploymentRunResult = 'SUCCEEDED';
+
       try {
         // Pre-flight migration check for --no-prefix-user-supplied-names.
         // When the flag is on AND the stack has existing state with
@@ -565,6 +596,7 @@ async function deployCommand(
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: !options.rollback,
+          ...(eventRecorder && { eventRecorder }),
           ...(recreateViaCcApiTargets &&
             recreateViaCcApiTargets.size > 0 && { recreateViaCcApiTargets }),
           ...(recreateViaSdkProviderTargets &&
@@ -647,7 +679,36 @@ async function deployCommand(
         } else {
           logger.info(`\n${green('✓')} ${bold('Deployment completed successfully')}`);
         }
+
+        if (eventRecorder) {
+          eventRecorder.record({
+            eventType: 'RUN_FINISHED',
+            stackName: stackInfo.stackName,
+            result: 'SUCCEEDED',
+            durationMs: deployResult.durationMs,
+            counts: {
+              created: deployResult.created,
+              updated: deployResult.updated,
+              deleted: deployResult.deleted,
+            },
+          });
+        }
+      } catch (deployError) {
+        // Issue [#808] — record the run-level failure event before
+        // re-throwing. Error metadata only (no resource properties).
+        runResult = 'FAILED';
+        eventRecorder?.record({
+          eventType: 'RUN_FINISHED',
+          stackName: stackInfo.stackName,
+          result: 'FAILED',
+          error: extractDeploymentEventError(deployError),
+        });
+        throw deployError;
       } finally {
+        // Best-effort final flush + index update. Never throws.
+        if (eventRecorder) {
+          await eventRecorder.finalize(runResult);
+        }
         stackAwsClients.destroy();
         stateS3Client.destroy();
         switchRegion(baseRegion);

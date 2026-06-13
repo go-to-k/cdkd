@@ -11,6 +11,10 @@ import { IMPLICIT_DELETE_DEPENDENCIES } from '../../analyzer/implicit-delete-dep
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
+import {
+  extractDeploymentEventError,
+  type DeploymentEventRecorder,
+} from '../../types/deployment-events.js';
 import { withResourceDeadline } from '../../deployment/resource-deadline.js';
 import { isRetryableTransientError } from '../../deployment/retryable-errors.js';
 import {
@@ -122,6 +126,19 @@ export interface DestroyRunnerContext {
    * up, so a stack deployed with the flag can also be destroyed.
    */
   allowUnsupportedTypes?: string[];
+
+  /**
+   * Issue [#808] — best-effort structured deployment-event recorder.
+   * When supplied, the runner emits one RESOURCE_STARTED /
+   * RESOURCE_SUCCEEDED / RESOURCE_FAILED / RESOURCE_RETAINED event per
+   * resource it deletes (operation always DELETE). `record()` is
+   * synchronous and never throws. The CALLER (`cdkd destroy` /
+   * `cdkd state destroy`) owns the RUN_STARTED / RUN_FINISHED events and
+   * `finalize()`s the recorder. When `undefined` the runner behaves
+   * exactly as before #808 (events are a no-op). Error + metadata only —
+   * never resource properties.
+   */
+  eventRecorder?: DeploymentEventRecorder;
 }
 
 /**
@@ -594,11 +611,28 @@ export async function runDestroyForStack(
             `  ⊘ ${logicalId} (${resource.resourceType}) retained — DeletionPolicy: ${resource.deletionPolicy}`
           );
           result.retainedCount++;
+          ctx.eventRecorder?.record({
+            eventType: 'RESOURCE_RETAINED',
+            stackName,
+            operation: 'DELETE',
+            logicalId,
+            resourceType: resource.resourceType,
+            ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+          });
           return;
         }
 
         const baseLabel = `Deleting ${logicalId} (${resource.resourceType})`;
         renderer.addTask(logicalId, baseLabel);
+        const resourceStartedAt = Date.now();
+        ctx.eventRecorder?.record({
+          eventType: 'RESOURCE_STARTED',
+          stackName,
+          operation: 'DELETE',
+          logicalId,
+          resourceType: resource.resourceType,
+          ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+        });
         try {
           // Schema v7+ (#614): route DELETE via state-recorded
           // `provisionedBy` so a CC-managed resource is deleted via Cloud
@@ -710,6 +744,16 @@ export async function runDestroyForStack(
           renderer.removeTask(logicalId);
           logger.info(`  ${formatResourceLine('deleted', logicalId, resource.resourceType)}`);
           result.deletedCount++;
+          ctx.eventRecorder?.record({
+            eventType: 'RESOURCE_SUCCEEDED',
+            stackName,
+            operation: 'DELETE',
+            logicalId,
+            resourceType: resource.resourceType,
+            ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+            ...(resource.physicalId && { physicalId: resource.physicalId }),
+            durationMs: Date.now() - resourceStartedAt,
+          });
           delete remainingResources[logicalId];
           persistStateAfterDelete(logicalId);
         } catch (error) {
@@ -725,6 +769,16 @@ export async function runDestroyForStack(
           ) {
             logger.debug(`  ${logicalId} already deleted, removing from state`);
             result.deletedCount++;
+            ctx.eventRecorder?.record({
+              eventType: 'RESOURCE_SUCCEEDED',
+              stackName,
+              operation: 'DELETE',
+              logicalId,
+              resourceType: resource.resourceType,
+              ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+              ...(resource.physicalId && { physicalId: resource.physicalId }),
+              durationMs: Date.now() - resourceStartedAt,
+            });
             delete remainingResources[logicalId];
             persistStateAfterDelete(logicalId);
           } else if (error instanceof ResourceTimeoutError) {
@@ -740,9 +794,29 @@ export async function runDestroyForStack(
             );
             logger.error(`  ✗ Failed to delete ${logicalId}:`, wrapped.message);
             result.errorCount++;
+            ctx.eventRecorder?.record({
+              eventType: 'RESOURCE_FAILED',
+              stackName,
+              operation: 'DELETE',
+              logicalId,
+              resourceType: resource.resourceType,
+              ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+              durationMs: Date.now() - resourceStartedAt,
+              error: extractDeploymentEventError(wrapped),
+            });
           } else {
             logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
             result.errorCount++;
+            ctx.eventRecorder?.record({
+              eventType: 'RESOURCE_FAILED',
+              stackName,
+              operation: 'DELETE',
+              logicalId,
+              resourceType: resource.resourceType,
+              ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+              durationMs: Date.now() - resourceStartedAt,
+              error: extractDeploymentEventError(error),
+            });
           }
         } finally {
           renderer.removeTask(logicalId);

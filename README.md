@@ -578,6 +578,25 @@ spec: S3 key layout, optimistic-locking mechanism (ETag-based), state
 schema, legacy `version: 1` migration, bucket-name migration via
 `cdkd state migrate`, and troubleshooting.
 
+## Deployment events (`cdkd events`)
+
+Every `cdkd deploy` / `cdkd destroy` run records a structured event
+stream to S3 — cdkd's local equivalent of CloudFormation's
+`DescribeStackEvents`. Read it back with `cdkd events <stack>`:
+
+```bash
+cdkd events MyStack                 # list runs, newest first
+cdkd events MyStack --run <runId>   # one run's full event stream
+cdkd events MyStack --format json   # machine-readable (AI-agent hand-off)
+```
+
+Events are persisted as JSONL under a `deployments/` key family separate
+from `state.json` (no state schema bump), so a destroyed stack's failure
+history stays readable. Recording is best-effort and never blocks the
+run; events carry error + metadata only (never resource properties). See
+**[docs/deployment-events.md](docs/deployment-events.md)** for the full
+reference.
+
 ## Stack Outputs
 
 CDK's `CfnOutput` constructs are resolved and stored in the state file:

@@ -1710,3 +1710,26 @@ full reference for all `cdkd local *` subcommands (`local invoke` /
 `local start-agentcore`) lives in
 **[docs/local-emulation.md](local-emulation.md)**.
 
+## `events` (read deployment-event history)
+
+`cdkd events <stack>` reads back the structured deployment events cdkd
+records for every `cdkd deploy` / `cdkd destroy` run — cdkd's local
+equivalent of CloudFormation's `DescribeStackEvents`. Events are
+persisted as JSONL under a `deployments/` key family separate from
+`state.json` (no state schema bump), so a destroyed stack's failure
+history stays readable. Event recording is best-effort and never blocks
+the deploy / destroy; events carry error + metadata only (never resource
+properties).
+
+```bash
+cdkd events MyStack                       # list runs, newest first
+cdkd events MyStack --run <runId>         # one run's full event stream
+cdkd events MyStack --format json         # machine-readable JSON (or --json)
+cdkd events MyStack --stack-region <r>    # disambiguate multi-region history
+```
+
+State-driven (no synth, no lock). See
+**[docs/deployment-events.md](deployment-events.md)** for the full
+reference: event types, S3 key layout, flush strategy, and `index.json`
+semantics.
+
