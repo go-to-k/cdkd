@@ -275,8 +275,25 @@ if aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}" >/d
 fi
 echo "    OK: Lambda function is gone"
 
-if aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: state machine ${SM_ARN} still exists after destroy" >&2
+# StepFunctions DeleteStateMachine is ASYNC: the state machine enters
+# Status=DELETING and `describe-state-machine` keeps returning it for a short
+# window before it is fully removed (StateMachineDoesNotExist). cdkd's destroy
+# correctly issued the delete (0 errors); poll until AWS finishes the async
+# teardown rather than asserting immediate NotFound (which races the API).
+SM_GONE=""
+for _ in $(seq 1 24); do
+  SM_DESCRIBE_STATUS=$(aws stepfunctions describe-state-machine \
+    --state-machine-arn "${SM_ARN}" --region "${REGION}" \
+    --query 'status' --output text 2>/dev/null) || { SM_GONE="yes"; break; }
+  # An ACTIVE status here means the delete never fired - a real failure; stop polling.
+  if [ "${SM_DESCRIBE_STATUS}" != "DELETING" ]; then
+    echo "FAIL: state machine ${SM_ARN} still ${SM_DESCRIBE_STATUS} after destroy (delete not issued)" >&2
+    exit 1
+  fi
+  sleep 5
+done
+if [ "${SM_GONE}" != "yes" ]; then
+  echo "FAIL: state machine ${SM_ARN} still exists (stuck in DELETING) after destroy" >&2
   exit 1
 fi
 echo "    OK: state machine is gone"
