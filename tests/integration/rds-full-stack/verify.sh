@@ -209,7 +209,7 @@ ACTUAL_APP_NAME=$(aws rds describe-db-parameters \
   --db-parameter-group-name "${DB_PARAM_GROUP}" \
   --region "${REGION}" \
   --query "Parameters[?ParameterName=='application_name'].ParameterValue | [0]" \
-  --output text 2>/dev/null || echo "null")
+  --output json 2>/dev/null | jq -r '. // "null"')
 if [ "${ACTUAL_APP_NAME}" != "${EXPECTED_APP_NAME}" ]; then
   echo "FAIL: DBParameterGroup application_name is '${ACTUAL_APP_NAME}', expected '${EXPECTED_APP_NAME}'" >&2
   exit 1
