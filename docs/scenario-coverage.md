@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**49 / 49 canonical scenarios** have at least one integ fixture exercising them. **116 / 135 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**50 / 50 canonical scenarios** have at least one integ fixture exercising them. **117 / 136 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (49 scenarios)
+## Per-scenario coverage (50 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -70,6 +70,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `nat-gateway-cleanup` | NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`vpc-nat-gateway`](../tests/integration/vpc-nat-gateway/) |
 | `nested-stack-migrate-from-cfn` | CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A. | [`import-nested-stack`](../tests/integration/import-nested-stack/) |
 | `rds-aurora-cluster-instance` | RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family. | [`rds-aurora`](../tests/integration/rds-aurora/) |
+| `rds-full-stack` | Realistic single-instance RDS deployment: L2 `rds.DatabaseInstance` (db.t3.micro, single-AZ, isolated subnets, no NAT) with an EXPLICIT DBSubnetGroup + DBParameterGroup + SecurityGroup + CDK-managed Secrets Manager credentials, plus an SSM Parameter consuming the DBInstance COMPUTED endpoint via `Fn::GetAtt(<DBInstance>, Endpoint.Address)`. Stresses event-driven DAG ordering (sub-groups before the instance), slow-create propagation (~5-10 min instance create), and intrinsic resolution of a computed attribute only known post-create (the SSM value must equal the live endpoint). | [`rds-full-stack`](../tests/integration/rds-full-stack/) |
 | `remove-protection-bypass` | `--remove-protection` flag bypassing AWS-side deletion-protection on supported types. | [`remove-protection`](../tests/integration/remove-protection/) |
 | `rollback-failure-injection` | deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED. | [`rollback-failure-injection`](../tests/integration/rollback-failure-injection/) |
 | `s3-asset-deploy` | File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy. | [`s3-asset-deploy`](../tests/integration/s3-asset-deploy/) |

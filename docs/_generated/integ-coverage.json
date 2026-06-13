@@ -741,6 +741,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -807,6 +808,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-full-stack": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -849,6 +853,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -912,6 +917,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "remove-protection": [
@@ -979,6 +987,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1043,6 +1052,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "remove-protection": [
@@ -1087,6 +1099,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1153,6 +1166,9 @@
         "rds-dbinstance-backfill": [
           "l2"
         ],
+        "rds-full-stack": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -1192,6 +1208,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1247,6 +1264,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "remove-protection": [
@@ -1308,6 +1328,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1372,6 +1393,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "remove-protection": [
@@ -1427,6 +1451,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1491,6 +1516,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "remove-protection": [
@@ -1535,6 +1563,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1600,6 +1629,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "remove-protection": [
@@ -1644,6 +1676,7 @@
         "multi-stack-deps",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-full-stack",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1708,6 +1741,9 @@
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "remove-protection": [
@@ -2825,7 +2861,8 @@
       "resourceType": "AWS::RDS::DBInstance",
       "integs": [
         "rds-aurora",
-        "rds-dbinstance-backfill"
+        "rds-dbinstance-backfill",
+        "rds-full-stack"
       ],
       "signals": {
         "rds-aurora": [
@@ -2833,6 +2870,9 @@
         ],
         "rds-dbinstance-backfill": [
           "l1"
+        ],
+        "rds-full-stack": [
+          "l2"
         ]
       }
     },
@@ -2851,13 +2891,17 @@
       "resourceType": "AWS::RDS::DBSubnetGroup",
       "integs": [
         "rds-aurora",
-        "rds-dbinstance-backfill"
+        "rds-dbinstance-backfill",
+        "rds-full-stack"
       ],
       "signals": {
         "rds-aurora": [
           "l2"
         ],
         "rds-dbinstance-backfill": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ]
       }
@@ -3305,6 +3349,7 @@
         "multi-region-same-stack",
         "nested-stack",
         "nested-stack-deep",
+        "rds-full-stack",
         "rollback-failure-injection",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
@@ -3373,6 +3418,9 @@
           "l2"
         ],
         "nested-stack-deep": [
+          "l2"
+        ],
+        "rds-full-stack": [
           "l2"
         ],
         "rollback-failure-injection": [
