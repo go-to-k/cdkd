@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { CloudFormationTemplate } from '../../types/resource.js';
+import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
 import type { ResourceChange, StackState } from '../../types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
@@ -163,7 +163,8 @@ export async function computeStackDiff(
   region: string,
   stackName: string,
   stateBackend: S3StateBackend,
-  diffCalculator: DiffCalculator
+  diffCalculator: DiffCalculator,
+  parameters?: Record<string, unknown>
 ): Promise<Map<string, ResourceChange>> {
   const intrinsicResolver = new IntrinsicFunctionResolver(region);
   const resolveFn = (value: unknown): Promise<unknown> =>
@@ -172,8 +173,73 @@ export async function computeStackDiff(
       resources: currentState.resources,
       stateBackend,
       stackName,
+      // Nested-stack children receive their input `Parameters` resolved
+      // against the parent's deployed state (issue #555 follow-up). Without
+      // this, a `Ref` to a synthesized nested-stack input parameter (e.g.
+      // `referenceto<Parent>RootTopicName`) is neither a resource nor a
+      // parameter in the diff context, so `resolveBestEffort` keeps the raw
+      // intrinsic and the diff calculator reports a spurious UPDATE of every
+      // property whose value derives from that parameter — even on a freshly
+      // deployed tree. The deploy engine forwards exactly this resolved
+      // parameter map to the child engine via `DeployEngineOptions.parameters`
+      // (`NestedStackProvider.extractParameters`), so resolving here too makes
+      // the recursive diff match what the deploy actually wrote to state.
+      ...(parameters && { parameters }),
     });
   return diffCalculator.calculateDiff(currentState, template, resolveFn);
+}
+
+/**
+ * Resolve a nested-stack child's input `Parameters` (declared on the parent's
+ * `AWS::CloudFormation::Stack` row under `Properties.Parameters`) to scalar
+ * values against the PARENT's deployed state + already-resolved parameters.
+ *
+ * This is the diff-time analogue of `NestedStackProvider.extractParameters`:
+ * the deploy engine resolves these same `Parameters` against the parent's
+ * resolver context and forwards the scalar map to the child engine as
+ * `DeployEngineOptions.parameters`, so a `Ref` to a child input parameter
+ * resolves at deploy time. The recursive diff must do the same or it reports
+ * spurious changes on every freshly-deployed nested child whose property
+ * derives from a passed-down parameter.
+ *
+ * Each value is resolved independently and best-effort: a value that cannot
+ * be resolved (e.g. a `Ref` to a resource not yet in state) is dropped from
+ * the map rather than forwarded as a raw intrinsic — leaving it out means the
+ * child's `Ref` to that parameter falls through to the existing
+ * intrinsic-vs-resolved comparison path (no behavior change for the
+ * unresolvable case), while resolvable parameters (the freshly-deployed tree)
+ * get exact scalar values.
+ */
+async function resolveChildStackParameters(
+  parentStackRow: TemplateResource,
+  parentTemplate: CloudFormationTemplate,
+  parentState: StackState,
+  region: string,
+  parentStackName: string,
+  stateBackend: S3StateBackend,
+  parentParameters: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
+  const rawParams = parentStackRow.Properties?.['Parameters'];
+  if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
+    return {};
+  }
+  const resolver = new IntrinsicFunctionResolver(region);
+  const resolved: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
+    try {
+      resolved[name] = await resolver.resolve(value, {
+        template: parentTemplate,
+        resources: parentState.resources,
+        stateBackend,
+        stackName: parentStackName,
+        ...(parentParameters && { parameters: parentParameters }),
+      });
+    } catch {
+      // Unresolvable (e.g. references a not-yet-deployed resource): omit it so
+      // the child diff falls back to the intrinsic-vs-resolved comparison.
+    }
+  }
+  return resolved;
 }
 
 /**
@@ -205,6 +271,14 @@ export async function buildDiffTree(args: {
   recursive: boolean;
   stateBackend: S3StateBackend;
   diffCalculator: DiffCalculator;
+  /**
+   * Input `Parameters` for THIS node's template, already resolved to scalar
+   * values against the parent's deployed state. Empty / undefined for the
+   * top-level root (it takes no nested-stack input parameters). Threaded into
+   * {@link computeStackDiff}'s resolver context so a `Ref` to a synthesized
+   * nested-stack parameter resolves instead of surfacing as spurious drift.
+   */
+  parameters?: Record<string, unknown>;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -215,6 +289,7 @@ export async function buildDiffTree(args: {
     recursive,
     stateBackend,
     diffCalculator,
+    parameters,
   } = args;
 
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
@@ -224,7 +299,8 @@ export async function buildDiffTree(args: {
     region,
     stackName,
     stateBackend,
-    diffCalculator
+    diffCalculator,
+    parameters
   );
   const ccApiRoutes = collectCcApiRoutes(template, state);
   const node: DiffTreeNode = {
@@ -253,6 +329,20 @@ export async function buildDiffTree(args: {
     const childStackName = `${stackName}~${logicalId}`;
     const childTemplate = readNestedTemplate(childTemplatePath);
     const grandchildTemplates = indexNestedChildTemplates(childTemplate, childTemplatePath);
+    // Resolve the child's input `Parameters` (declared on this parent's
+    // `AWS::CloudFormation::Stack` row) against THIS node's deployed state +
+    // already-resolved parameters, so the child's diff resolver can resolve a
+    // `Ref` to one of those parameters — mirroring the deploy engine's
+    // parent->child `DeployEngineOptions.parameters` forwarding.
+    const childParameters = await resolveChildStackParameters(
+      resource,
+      template,
+      state,
+      region,
+      stackName,
+      stateBackend,
+      parameters
+    );
     node.children.push(
       await buildDiffTree({
         stackName: childStackName,
@@ -263,6 +353,7 @@ export async function buildDiffTree(args: {
         recursive: true,
         stateBackend,
         diffCalculator,
+        parameters: childParameters,
       })
     );
   }

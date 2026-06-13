@@ -96,6 +96,25 @@ CdkdNestedStack3LevelExample (root, depth=0)
 The skill runs `cdkd deploy` then `cdkd destroy` and verifies no orphan AWS
 resources remain at `s3://cdkd-state-{accountId}/cdkd/`.
 
+## Bug surfaced by this fixture
+
+`cdkd diff --recursive` on a freshly-deployed tree reported **spurious changes**
+(item 5 above should be clean right after deploy). Root cause: the recursive
+diff walker (`src/cli/commands/diff-recursive.ts`) built each nested child's
+intrinsic resolver context with the child's deployed `resources` but **without
+the resolved input `Parameters`** the deploy engine forwards to the child
+(`NestedStackProvider.extractParameters` -> `DeployEngineOptions.parameters`).
+So a child property whose value derives from a DOWN-passed parameter — e.g. the
+great-grandchild's `Value: Fn::Join['', ['…:', {Ref: referenceto…RootTopicName}]]`
+— kept its raw intrinsic at diff time (the `Ref` resolved to neither a resource
+nor a parameter), while cdkd state held the resolved string; the diff calculator
+then reported a phantom `UPDATE` of that property. The fix resolves each child
+stack row's `Parameters` against the parent's deployed state and threads the
+resolved scalar map into the child's diff resolver — mirroring the deploy
+engine's parent->child parameter forwarding. The bottom-up `Fn::GetAtt` chain
+was already correct (it resolves against `attributes['Outputs.<key>']`, which
+the diff path already supplies).
+
 ## Notes
 
 - No `RemovalPolicy.DESTROY` is needed on SSM Parameters or SNS Topics — both
