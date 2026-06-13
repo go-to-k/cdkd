@@ -277,15 +277,29 @@ export class DiffCalculator {
             path: propKey,
             oldValue,
             newValue,
+            replacementPropagated: true,
             // Re-evaluate the replacement rules for the dependent itself:
             // if the property carrying the reference is immutable for the
             // dependent's type, the dependent must be replaced too (and
             // its own dependents promoted transitively below).
+            //
+            // The referencing property's value is NOT actually changing in
+            // the template — only the resolved physical ID / ARN it points
+            // at will change after the upstream replacement. `oldValue` is
+            // the resolved current value (e.g. an old ARN string) while
+            // `newValue` is the still-unresolved intrinsic ({Ref: ...}), so
+            // feeding both to a conditionalReplacement's `condition(old,
+            // new)` would compare a string against an object and reliably
+            // (and spuriously) report "changed". We therefore pass
+            // undefined/undefined: UNCONDITIONAL replacementProperties match
+            // on the property NAME alone and still fire correctly (the
+            // immutable-property case this propagation cares about), while
+            // conditional rules see no phantom delta and don't over-promote.
             requiresReplacement: this.replacementRules.requiresReplacement(
               change.resourceType,
               propKey,
-              oldValue,
-              newValue
+              undefined,
+              undefined
             ),
           });
         }

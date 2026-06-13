@@ -440,4 +440,16 @@ export interface PropertyChange {
 
   /** Whether this change requires replacement */
   requiresReplacement: boolean;
+
+  /**
+   * Set on synthetic changes created by replacement propagation (issue
+   * #807): the property's template value did not change, but a resource it
+   * references via Ref / Fn::GetAtt will be REPLACED, so the resolved
+   * physical ID / ARN it points at will change at deploy time. `oldValue`
+   * is the resolved current value (e.g. an old ARN) while `newValue` is the
+   * still-unresolved intrinsic — the diff renderer annotates this so the
+   * apparent string -> {Ref} delta reads as a propagated replacement rather
+   * than a literal value edit.
+   */
+  replacementPropagated?: boolean;
 }
