@@ -2085,4 +2085,25 @@ describe('IntrinsicFunctionResolver - evaluateConditions composite refs (#840)',
     );
     expect(result).toEqual({ Condition: 'SomeString', Other: 'pval' });
   });
+
+  it('does not coerce a single-key { Condition: "X" } resource property to a boolean in normal context', async () => {
+    // A single-key `{ Condition: '<string>' }` object IS the named-condition
+    // reference form — but only inside `evaluateConditions`, which threads a
+    // `conditionResolver` hook onto the context. In a normal resource / output
+    // property context (the public `resolve` entry, no conditionResolver) the
+    // same shape is just a plain property literally named `Condition` and MUST
+    // resolve as an ordinary object — never get coerced to `false` by
+    // resolveConditionReference (which, lacking a resolver hook AND a
+    // `conditions` map, would otherwise return false and corrupt the property).
+    const result = await resolver.resolve(
+      { Condition: 'Foo' },
+      {
+        template: { Resources: {} },
+        resources: {},
+        parameters: {},
+      }
+    );
+    expect(result).toEqual({ Condition: 'Foo' });
+    expect(result).not.toBe(false);
+  });
 });

@@ -528,10 +528,20 @@ export class IntrinsicFunctionResolver {
     // `{Condition: <name>}` — a named-condition reference. Valid only inside
     // another condition's definition (`Fn::And` / `Fn::Or` / `Fn::Not`),
     // where it resolves to the referenced condition's evaluated boolean
-    // (issue #840). Guard against false positives: only treat a single-key
-    // `{Condition: "<string>"}` object as the reference, never a resource
-    // property literally named `Condition` alongside siblings.
+    // (issue #840). This form is ONLY reachable during `evaluateConditions`,
+    // which is the sole code path that threads a `conditionResolver` hook onto
+    // the context — so gate the branch on `context.conditionResolver` being
+    // present. Outside that context (a normal resource / output property), a
+    // single-key `{Condition: "<string>"}` object is a plain property literally
+    // named `Condition`, NOT an intrinsic, and must fall through to be resolved
+    // as an ordinary object — otherwise it would be silently coerced to a
+    // boolean (and to `false`, since neither the resolver hook nor the
+    // already-evaluated `conditions` map is available there), corrupting the
+    // property. The single-key + `typeof string` guards remain as defense in
+    // depth so even inside `evaluateConditions` a composite-condition object
+    // carrying sibling keys is never misread as the reference form.
     if (
+      context.conditionResolver &&
       'Condition' in obj &&
       Object.keys(obj).length === 1 &&
       typeof obj['Condition'] === 'string'
