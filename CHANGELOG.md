@@ -1,3 +1,10 @@
+## [0.219.8](https://github.com/go-to-k/cdkd/compare/v0.219.7...v0.219.8) (2026-06-13)
+
+
+### Bug Fixes
+
+* **analyzer:** propagate resource replacement to dependents diffed as NO_CHANGE ([#813](https://github.com/go-to-k/cdkd/issues/813)) ([8c1bd39](https://github.com/go-to-k/cdkd/commit/8c1bd395e835c790e1a908d5706f3262549e0c3e))
+
 ## [0.219.7](https://github.com/go-to-k/cdkd/compare/v0.219.6...v0.219.7) (2026-06-13)
 
 
