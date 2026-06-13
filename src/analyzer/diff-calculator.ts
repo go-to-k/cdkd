@@ -9,6 +9,7 @@ import type {
 } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
 import { ReplacementRulesRegistry } from './replacement-rules.js';
+import { TemplateParser } from './template-parser.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -23,6 +24,7 @@ export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
 export class DiffCalculator {
   private logger = getLogger().child('DiffCalculator');
   private replacementRules = new ReplacementRulesRegistry();
+  private parser = new TemplateParser();
 
   /**
    * Calculate changes needed to reach desired state
@@ -167,12 +169,164 @@ export class DiffCalculator {
       }
     }
 
+    // Propagate replacements to dependents (issue #807): a dependent whose
+    // only "change" is a Ref / Fn::GetAtt to a resource that will be
+    // REPLACED resolves against CURRENT state above and lands on NO_CHANGE,
+    // even though the reference's value (new physical ID / ARN) WILL change.
+    this.promoteReplacementDependents(changes, desiredTemplate);
+
     const summary = this.getSummary(changes);
     this.logger.debug(
       `Diff calculated: ${summary.create} CREATE, ${summary.update} UPDATE, ${summary.delete} DELETE, ${summary.noChange} NO_CHANGE`
     );
 
     return changes;
+  }
+
+  /**
+   * Promote transitive dependents of to-be-replaced resources from
+   * NO_CHANGE to UPDATE (issue #807).
+   *
+   * Diff-time intrinsic resolution runs against the CURRENT state, so a
+   * dependent referencing a resource that will be REPLACED (new physical
+   * ID — e.g. an `AWS::ECS::TaskDefinition` revision) compares equal and
+   * stays NO_CHANGE; the deploy engine then never re-points it at the new
+   * physical resource (for ECS: `UpdateService` is never issued and the
+   * service keeps running the old, now-deregistered revision).
+   * CloudFormation propagates the new physical ID to dependents — mirror
+   * that here by walking reverse reference edges (`Ref` / `Fn::GetAtt` /
+   * `Fn::Sub` and intrinsics nesting them — the same extraction the DAG
+   * builder uses) from every replacement-triggering UPDATE and promoting
+   * NO_CHANGE dependents to UPDATE.
+   *
+   * Promotion is safe even when speculative: the deploy engine re-resolves
+   * the promoted resource's properties against the in-flight state map
+   * (which the DAG guarantees already carries the dependency's new
+   * physical ID) and skips the provider call if nothing actually changed.
+   *
+   * Promotion is transitive: each referencing property of a promoted
+   * dependent is re-evaluated against the replacement rules, and if the
+   * dependent is itself replacement-triggering (the referencing property
+   * is immutable for its type), its own dependents are promoted in turn.
+   * The same re-evaluation also applies to dependents that already had
+   * their own (non-replacement) property changes — their referencing
+   * property gains a synthetic PropertyChange so a replacement cascade is
+   * not masked by an unrelated in-place change.
+   */
+  private promoteReplacementDependents(
+    changes: Map<string, ResourceChange>,
+    desiredTemplate: CloudFormationTemplate
+  ): void {
+    // Seed queue: resources whose computed diff already requires replacement.
+    const queue: string[] = [];
+    for (const [logicalId, change] of changes) {
+      if (
+        change.changeType === 'UPDATE' &&
+        change.propertyChanges?.some((pc) => pc.requiresReplacement)
+      ) {
+        queue.push(logicalId);
+      }
+    }
+    if (queue.length === 0) {
+      return;
+    }
+
+    // Reverse reference edges from the desired template:
+    // referencedId -> (dependentId -> top-level property keys referencing it).
+    const dependentsOf = new Map<string, Map<string, Set<string>>>();
+    for (const [logicalId, resource] of Object.entries(desiredTemplate.Resources)) {
+      if (resource.Type === 'AWS::CDK::Metadata') continue;
+      for (const [propKey, propValue] of Object.entries(resource.Properties ?? {})) {
+        for (const referencedId of this.parser.extractReferences(propValue)) {
+          if (referencedId === logicalId) continue; // self-reference defense
+          let dependents = dependentsOf.get(referencedId);
+          if (!dependents) {
+            dependents = new Map();
+            dependentsOf.set(referencedId, dependents);
+          }
+          let propKeys = dependents.get(logicalId);
+          if (!propKeys) {
+            propKeys = new Set();
+            dependents.set(logicalId, propKeys);
+          }
+          propKeys.add(propKey);
+        }
+      }
+    }
+
+    const enqueued = new Set(queue);
+    while (queue.length > 0) {
+      const replacedId = queue.shift()!;
+      const dependents = dependentsOf.get(replacedId);
+      if (!dependents) continue;
+
+      for (const [dependentId, refPropKeys] of dependents) {
+        const change = changes.get(dependentId);
+        if (!change) continue;
+        // CREATE resolves fresh at provisioning time anyway; DELETE is
+        // going away — neither needs propagation.
+        if (change.changeType !== 'NO_CHANGE' && change.changeType !== 'UPDATE') continue;
+
+        const existingPaths = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
+        const syntheticChanges: PropertyChange[] = [];
+        for (const propKey of refPropKeys) {
+          if (existingPaths.has(propKey)) continue; // already diffed on its own
+          const oldValue = change.currentProperties?.[propKey];
+          const newValue = change.desiredProperties?.[propKey];
+          syntheticChanges.push({
+            path: propKey,
+            oldValue,
+            newValue,
+            replacementPropagated: true,
+            // Re-evaluate the replacement rules for the dependent itself:
+            // if the property carrying the reference is immutable for the
+            // dependent's type, the dependent must be replaced too (and
+            // its own dependents promoted transitively below).
+            //
+            // The referencing property's value is NOT actually changing in
+            // the template — only the resolved physical ID / ARN it points
+            // at will change after the upstream replacement. `oldValue` is
+            // the resolved current value (e.g. an old ARN string) while
+            // `newValue` is the still-unresolved intrinsic ({Ref: ...}), so
+            // feeding both to a conditionalReplacement's `condition(old,
+            // new)` would compare a string against an object and reliably
+            // (and spuriously) report "changed". We therefore pass
+            // undefined/undefined: UNCONDITIONAL replacementProperties match
+            // on the property NAME alone and still fire correctly (the
+            // immutable-property case this propagation cares about), while
+            // conditional rules see no phantom delta and don't over-promote.
+            requiresReplacement: this.replacementRules.requiresReplacement(
+              change.resourceType,
+              propKey,
+              undefined,
+              undefined
+            ),
+          });
+        }
+        if (syntheticChanges.length === 0) continue;
+
+        if (change.changeType === 'NO_CHANGE') {
+          change.changeType = 'UPDATE';
+          change.propertyChanges = syntheticChanges;
+          this.logger.debug(
+            `UPDATE (promoted): ${dependentId} references replaced resource ${replacedId} via ${[...refPropKeys].join(', ')}`
+          );
+        } else {
+          change.propertyChanges = [...(change.propertyChanges ?? []), ...syntheticChanges];
+          this.logger.debug(
+            `UPDATE (augmented): ${dependentId} references replaced resource ${replacedId} via ${[...refPropKeys].join(', ')}`
+          );
+        }
+
+        if (
+          !enqueued.has(dependentId) &&
+          change.propertyChanges.some((pc) => pc.requiresReplacement)
+        ) {
+          enqueued.add(dependentId);
+          queue.push(dependentId);
+        }
+      }
+    }
   }
 
   /**

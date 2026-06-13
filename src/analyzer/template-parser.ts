@@ -62,6 +62,23 @@ export class TemplateParser {
   }
 
   /**
+   * Extract resource references (Ref / Fn::GetAtt / Fn::Sub / Fn::Join /
+   * Fn::Select / Fn::Split) from an arbitrary template value.
+   *
+   * Public wrapper over the same recursive extraction `extractDependencies`
+   * uses for Properties — exposed so the diff phase can compute
+   * per-property reference edges (issue #807 replacement propagation)
+   * without duplicating the intrinsic walk. Unlike `extractDependencies`
+   * this does NOT include `DependsOn` (which is pure ordering, not a data
+   * reference — a replaced dependency carries no new value to propagate).
+   */
+  extractReferences(value: unknown): Set<string> {
+    const references = new Set<string>();
+    this.extractRefsFromValue(value, references);
+    return references;
+  }
+
+  /**
    * Recursively extract Ref and Fn::GetAtt from a value
    */
   private extractRefsFromValue(value: unknown, dependencies: Set<string>): void {

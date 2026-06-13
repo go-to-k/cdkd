@@ -564,6 +564,13 @@ export function renderChangeLines(
         if (change.propertyChanges && change.propertyChanges.length > 0) {
           for (const propChange of change.propertyChanges) {
             const requiresReplace = propChange.requiresReplacement ? ' [requires replacement]' : '';
+            // Issue #807: a propagated change shows old=<resolved value> /
+            // new=<unresolved intrinsic> because the property's template
+            // value did not change — only the physical ID / ARN it
+            // references will change after the upstream replacement. Label
+            // it so the apparent string -> {Ref} delta is not misread as a
+            // literal value edit.
+            const propagated = propChange.replacementPropagated ? ' [replacement propagated]' : '';
             // Strip unchanged and intrinsic values to show only actual changes
             const oldFiltered = stripUnchangedValues(propChange.oldValue, propChange.newValue);
             const newFiltered = stripUnchangedValues(propChange.newValue, propChange.oldValue);
@@ -576,7 +583,7 @@ export function renderChangeLines(
               /\n/g,
               `\n${indent}`
             );
-            logFn(`      - ${propChange.path}:${requiresReplace}`);
+            logFn(`      - ${propChange.path}:${requiresReplace}${propagated}`);
             logFn(`          old: ${oldStr}`);
             logFn(`          new: ${newStr}`);
           }

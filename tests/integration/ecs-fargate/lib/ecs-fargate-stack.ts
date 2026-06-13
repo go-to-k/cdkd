@@ -82,7 +82,15 @@ export class EcsFargateStack extends cdk.Stack {
         logGroup: containerLogGroup,
         streamPrefix: 'cdkd-ecs-fargate',
       }),
-      command: ['echo', 'hello'],
+      // UPDATE test (issue #807): changing the container command in update
+      // mode registers a NEW TaskDefinition revision (ContainerDefinitions
+      // is immutable -> replacement). The Service has no template change of
+      // its own, so before the #807 fix it diffed as NO_CHANGE and
+      // UpdateService was never called — the service kept pointing at the
+      // old (deregistered) revision. verify.sh asserts the service's
+      // taskDefinition tracks the new revision ARN after the redeploy.
+      command:
+        process.env.CDKD_TEST_UPDATE === 'true' ? ['echo', 'hello-updated'] : ['echo', 'hello'],
       portMappings: [
         {
           containerPort: 80,

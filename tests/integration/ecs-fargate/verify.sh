@@ -9,6 +9,11 @@
 # definition and that the paired Service carries the managed EBS volume
 # configuration (issue #806), and that the destroy path cleans up.
 #
+# Phase 1b (issue #807) additionally redeploys with CDKD_TEST_UPDATE=true
+# (container command change -> TaskDefinition replacement) and asserts the
+# Service's `taskDefinition` tracks the NEW revision ARN — i.e. the
+# replacement propagated to the Ref-only dependent and UpdateService ran.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -204,6 +209,57 @@ case "${CLUSTER_SVC_CONNECT}" in
 esac
 echo "    OK: cluster.serviceConnectDefaults.namespace == '${CLUSTER_SVC_CONNECT}' on AWS (silent-drop CLOSED by #609)"
 
+# --- Phase 1b: UPDATE pass (issue #807 replacement propagation) -------
+# CDKD_TEST_UPDATE=true changes the container command, which registers a
+# NEW TaskDefinition revision (ContainerDefinitions is immutable ->
+# replacement). The Service itself has NO template change — its only
+# "change" is the Ref to the replaced TaskDefinition. Before the #807 fix
+# the Service diffed as NO_CHANGE, UpdateService was never called, and the
+# service kept running the old (deregistered) revision.
+echo "==> Phase 1b: redeploy with CDKD_TEST_UPDATE=true (TaskDefinition replacement -> Service propagation)"
+
+SERVICE_TD_BEFORE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].taskDefinition' --output text)
+echo "    service taskDefinition before update: ${SERVICE_TD_BEFORE}"
+
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+SERVICE_TD_AFTER=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].taskDefinition' --output text)
+
+if [ -z "${SERVICE_TD_AFTER}" ] || [ "${SERVICE_TD_AFTER}" = "None" ]; then
+  echo "FAIL: could not read service taskDefinition after update deploy" >&2
+  exit 1
+fi
+if [ "${SERVICE_TD_AFTER}" = "${SERVICE_TD_BEFORE}" ]; then
+  echo "FAIL: service taskDefinition is still '${SERVICE_TD_BEFORE}' after the update deploy — the TaskDefinition replacement was NOT propagated to the Service (issue #807 regression: UpdateService never called)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" --query 'services[0].{taskDefinition:taskDefinition,deployments:deployments}' | jq .
+  exit 1
+fi
+
+# The revision the service now points at must be the NEW one: ACTIVE and
+# carrying the updated container command.
+NEW_TD_STATUS=$(aws ecs describe-task-definition \
+  --task-definition "${SERVICE_TD_AFTER}" --region "${REGION}" \
+  --query 'taskDefinition.status' --output text)
+NEW_TD_COMMAND=$(aws ecs describe-task-definition \
+  --task-definition "${SERVICE_TD_AFTER}" --region "${REGION}" \
+  --query 'taskDefinition.containerDefinitions[0].command' --output json)
+if [ "${NEW_TD_STATUS}" != "ACTIVE" ]; then
+  echo "FAIL: service points at taskDefinition '${SERVICE_TD_AFTER}' with status '${NEW_TD_STATUS}', expected ACTIVE" >&2
+  exit 1
+fi
+if [ "$(echo "${NEW_TD_COMMAND}" | jq -c .)" != '["echo","hello-updated"]' ]; then
+  echo "FAIL: service's taskDefinition command is ${NEW_TD_COMMAND}, expected [\"echo\",\"hello-updated\"] — service is not running the updated revision" >&2
+  exit 1
+fi
+echo "    OK: service taskDefinition tracks the new ACTIVE revision ${SERVICE_TD_AFTER} (replacement propagated — issue #807 CLOSED)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -218,4 +274,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + clean destroy)"
+echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + #807 replacement propagation + clean destroy)"

@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi } from 'vite-plus/test';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -506,5 +507,477 @@ describe('DiffCalculator - DeletionPolicy / UpdateReplacePolicy attribute diff (
     expect(change?.attributeChanges).toEqual([
       { attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' },
     ]);
+  });
+});
+
+describe('DiffCalculator - replacement propagation to dependents (issue #807)', () => {
+  // Mirrors the deploy engine's diff-time resolution: intrinsics resolve
+  // against CURRENT state, so a Ref / Fn::GetAtt to a to-be-replaced
+  // resource yields the OLD physical value and the dependent compares
+  // equal (NO_CHANGE) without the propagation walk.
+  const makeResolver =
+    (state: StackState) =>
+    async (value: unknown): Promise<unknown> => {
+      const resolve = async (v: unknown): Promise<unknown> => {
+        if (v === null || typeof v !== 'object') return v;
+        if (Array.isArray(v)) return Promise.all(v.map((item) => resolve(item)));
+        const obj = v as Record<string, unknown>;
+        if ('Ref' in obj && Object.keys(obj).length === 1) {
+          const id = obj['Ref'] as string;
+          const res = state.resources[id];
+          if (!res) throw new Error(`Ref ${id} not found`);
+          return res.physicalId;
+        }
+        if ('Fn::GetAtt' in obj && Object.keys(obj).length === 1) {
+          const [id, attr] = obj['Fn::GetAtt'] as [string, string];
+          const res = state.resources[id];
+          const attrValue = res?.attributes?.[attr];
+          if (attrValue === undefined) throw new Error(`GetAtt ${id}.${attr} not found`);
+          return attrValue;
+        }
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(obj)) out[k] = await resolve(val);
+        return out;
+      };
+      return resolve(value);
+    };
+
+  it('promotes a NO_CHANGE dependent referencing a to-be-replaced resource via Ref; unrelated NO_CHANGE stays', async () => {
+    const state = baseState();
+    state.resources['TaskDef'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+      resourceType: 'AWS::ECS::TaskDefinition',
+      properties: { Family: 'app', ContainerDefinitions: [{ Name: 'app', Image: 'img:1' }] },
+      attributes: {},
+    };
+    state.resources['Service'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+      resourceType: 'AWS::ECS::Service',
+      properties: {
+        TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+        DesiredCount: 1,
+      },
+      attributes: {},
+    };
+    state.resources['Unrelated'] = {
+      physicalId: 'log-group',
+      resourceType: 'AWS::Logs::LogGroup',
+      properties: { LogGroupName: 'log-group' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        TaskDef: {
+          Type: 'AWS::ECS::TaskDefinition',
+          // ContainerDefinitions change -> requiresReplacement (immutable)
+          Properties: {
+            Family: 'app',
+            ContainerDefinitions: [{ Name: 'app', Image: 'img:2' }],
+          },
+        },
+        Service: {
+          Type: 'AWS::ECS::Service',
+          Properties: { TaskDefinition: { Ref: 'TaskDef' }, DesiredCount: 1 },
+        },
+        Unrelated: {
+          Type: 'AWS::Logs::LogGroup',
+          Properties: { LogGroupName: 'log-group' },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const taskDef = changes.get('TaskDef');
+    expect(taskDef?.changeType).toBe('UPDATE');
+    expect(taskDef?.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(true);
+
+    // Without the propagation walk, the Service resolves the Ref against
+    // current state (old revision ARN) and would stay NO_CHANGE.
+    const service = changes.get('Service');
+    expect(service?.changeType).toBe('UPDATE');
+    expect(service?.propertyChanges?.map((pc) => pc.path)).toContain('TaskDefinition');
+    // ECS::Service has no replacement rule for TaskDefinition -> in-place.
+    expect(service?.propertyChanges?.every((pc) => !pc.requiresReplacement)).toBe(true);
+
+    expect(changes.get('Unrelated')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('promotes a NO_CHANGE dependent referencing a to-be-replaced resource via Fn::GetAtt', async () => {
+    const state = baseState();
+    state.resources['Queue'] = {
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123/old-queue',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'old-queue' },
+      attributes: { Arn: 'arn:aws:sqs:us-east-1:123:old-queue' },
+    };
+    state.resources['Param'] = {
+      physicalId: 'param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'param', Value: 'arn:aws:sqs:us-east-1:123:old-queue' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Queue: {
+          Type: 'AWS::SQS::Queue',
+          // QueueName change -> requiresReplacement
+          Properties: { QueueName: 'new-queue' },
+        },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'param', Value: { 'Fn::GetAtt': ['Queue', 'Arn'] } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Queue')?.changeType).toBe('UPDATE');
+    const param = changes.get('Param');
+    expect(param?.changeType).toBe('UPDATE');
+    expect(param?.propertyChanges?.map((pc) => pc.path)).toContain('Value');
+  });
+
+  it('promotes transitively: A replaced -> B promoted and itself replacement-triggering -> C promoted', async () => {
+    const state = baseState();
+    state.resources['Queue'] = {
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123/old-queue',
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: 'old-queue' },
+      attributes: { Arn: 'arn:aws:sqs:us-east-1:123:old-queue' },
+    };
+    state.resources['TaskDef'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+      resourceType: 'AWS::ECS::TaskDefinition',
+      properties: {
+        Family: 'app',
+        ContainerDefinitions: [
+          {
+            Name: 'app',
+            Environment: [{ Name: 'QUEUE_ARN', Value: 'arn:aws:sqs:us-east-1:123:old-queue' }],
+          },
+        ],
+      },
+      attributes: {},
+    };
+    state.resources['Service'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+      resourceType: 'AWS::ECS::Service',
+      properties: { TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Queue: {
+          Type: 'AWS::SQS::Queue',
+          // A: QueueName change -> replacement (new physical queue + ARN)
+          Properties: { QueueName: 'new-queue' },
+        },
+        TaskDef: {
+          Type: 'AWS::ECS::TaskDefinition',
+          // B: unchanged on its own; ContainerDefinitions references A.
+          // ContainerDefinitions is immutable for TaskDefinition -> B is
+          // itself replacement-triggering once promoted.
+          Properties: {
+            Family: 'app',
+            ContainerDefinitions: [
+              {
+                Name: 'app',
+                Environment: [{ Name: 'QUEUE_ARN', Value: { 'Fn::GetAtt': ['Queue', 'Arn'] } }],
+              },
+            ],
+          },
+        },
+        Service: {
+          Type: 'AWS::ECS::Service',
+          // C: unchanged on its own; references B.
+          Properties: { TaskDefinition: { Ref: 'TaskDef' } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Queue')?.changeType).toBe('UPDATE');
+
+    const taskDef = changes.get('TaskDef');
+    expect(taskDef?.changeType).toBe('UPDATE');
+    const tdChange = taskDef?.propertyChanges?.find((pc) => pc.path === 'ContainerDefinitions');
+    expect(tdChange?.requiresReplacement).toBe(true);
+
+    const service = changes.get('Service');
+    expect(service?.changeType).toBe('UPDATE');
+    expect(service?.propertyChanges?.map((pc) => pc.path)).toContain('TaskDefinition');
+  });
+
+  it('keeps a dependent that already had its own property change as UPDATE and appends the reference change once', async () => {
+    const state = baseState();
+    state.resources['TaskDef'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+      resourceType: 'AWS::ECS::TaskDefinition',
+      properties: { Family: 'app', Cpu: '256' },
+      attributes: {},
+    };
+    state.resources['Service'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+      resourceType: 'AWS::ECS::Service',
+      properties: {
+        TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+        DesiredCount: 1,
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        TaskDef: {
+          Type: 'AWS::ECS::TaskDefinition',
+          // Cpu change -> requiresReplacement
+          Properties: { Family: 'app', Cpu: '512' },
+        },
+        Service: {
+          Type: 'AWS::ECS::Service',
+          // Own change (DesiredCount) AND a reference to the replaced TaskDef
+          Properties: { TaskDefinition: { Ref: 'TaskDef' }, DesiredCount: 2 },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const service = changes.get('Service');
+    expect(service?.changeType).toBe('UPDATE');
+    const paths = service?.propertyChanges?.map((pc) => pc.path) ?? [];
+    expect(paths).toContain('DesiredCount');
+    expect(paths).toContain('TaskDefinition');
+    // No duplicate entries for the same path
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+
+  it('does not promote dependents of an in-place (non-replacement) update', async () => {
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'my-fn', Description: 'old' },
+      attributes: { Arn: 'arn:aws:lambda:us-east-1:123:function:my-fn' },
+    };
+    state.resources['Param'] = {
+      physicalId: 'param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'param', Value: 'arn:aws:lambda:us-east-1:123:function:my-fn' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          // Description is updateable in-place -> no replacement, same ARN
+          Properties: { FunctionName: 'my-fn', Description: 'new' },
+        },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'param', Value: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Fn')?.changeType).toBe('UPDATE');
+    expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('marks synthetic promoted changes with replacementPropagated for the diff display', async () => {
+    const state = baseState();
+    state.resources['TaskDef'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+      resourceType: 'AWS::ECS::TaskDefinition',
+      properties: { Family: 'app', ContainerDefinitions: [{ Name: 'app', Image: 'img:1' }] },
+      attributes: {},
+    };
+    state.resources['Service'] = {
+      physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+      resourceType: 'AWS::ECS::Service',
+      properties: {
+        TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+        DesiredCount: 1,
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        TaskDef: {
+          Type: 'AWS::ECS::TaskDefinition',
+          Properties: { Family: 'app', ContainerDefinitions: [{ Name: 'app', Image: 'img:2' }] },
+        },
+        Service: {
+          Type: 'AWS::ECS::Service',
+          Properties: { TaskDefinition: { Ref: 'TaskDef' }, DesiredCount: 1 },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    const service = changes.get('Service');
+    const refChange = service?.propertyChanges?.find((pc) => pc.path === 'TaskDefinition');
+    expect(refChange?.replacementPropagated).toBe(true);
+  });
+
+  it('does NOT spuriously promote grandchildren when the referencing property is a conditionalReplacement (issue #807 Fix 1)', async () => {
+    // A type whose referencing property is governed by a conditional rule
+    // comparing oldValue vs newValue. If the synthetic promotion fed the
+    // phantom string -> {Ref} delta to the condition, it would reliably
+    // report "changed" and falsely set requiresReplacement on the
+    // dependent, spuriously enqueueing its grandchildren. The fix passes
+    // undefined/undefined so conditional rules see no phantom delta.
+    //
+    // Simulate a conditional rule for AWS::ECS::Service.TaskDefinition that
+    // ALWAYS reports replacement when old !== new (the over-broad shape).
+    const spy = vi
+      .spyOn(ReplacementRulesRegistry.prototype, 'requiresReplacement')
+      .mockImplementation(
+        (resourceType: string, propertyPath: string, oldValue: unknown, newValue: unknown) => {
+          if (resourceType === 'AWS::ECS::Service' && propertyPath === 'TaskDefinition') {
+            // Phantom-delta-sensitive conditional rule.
+            return oldValue !== newValue;
+          }
+          if (resourceType === 'AWS::ECS::TaskDefinition') {
+            // Keep the seed replacement (immutable property changed).
+            return true;
+          }
+          return false;
+        }
+      );
+
+    try {
+      const state = baseState();
+      state.resources['TaskDef'] = {
+        physicalId: 'arn:aws:ecs:us-east-1:123:task-definition/app:1',
+        resourceType: 'AWS::ECS::TaskDefinition',
+        properties: { Family: 'app', ContainerDefinitions: [{ Name: 'app', Image: 'img:1' }] },
+        attributes: {},
+      };
+      // Service references the replaced TaskDef (the dependent under test).
+      state.resources['Service'] = {
+        physicalId: 'arn:aws:ecs:us-east-1:123:service/cluster/app-svc',
+        resourceType: 'AWS::ECS::Service',
+        properties: { TaskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/app:1' },
+        attributes: { Name: 'service/cluster/app-svc' },
+      };
+      // Grandchild references the Service. It must NOT be promoted unless the
+      // Service is genuinely replacement-triggering. Its own resolved value
+      // is unchanged (Service.Name does not change on an in-place Service
+      // update), so any UPDATE here could only come from a spurious cascade.
+      state.resources['ScalableTarget'] = {
+        physicalId: 'service/cluster/app-svc',
+        resourceType: 'AWS::ApplicationAutoScaling::ScalableTarget',
+        properties: { ResourceId: 'service/cluster/app-svc' },
+        attributes: {},
+      };
+
+      const template: CloudFormationTemplate = {
+        Resources: {
+          TaskDef: {
+            Type: 'AWS::ECS::TaskDefinition',
+            Properties: { Family: 'app', ContainerDefinitions: [{ Name: 'app', Image: 'img:2' }] },
+          },
+          Service: {
+            Type: 'AWS::ECS::Service',
+            Properties: { TaskDefinition: { Ref: 'TaskDef' } },
+          },
+          ScalableTarget: {
+            Type: 'AWS::ApplicationAutoScaling::ScalableTarget',
+            Properties: { ResourceId: { 'Fn::GetAtt': ['Service', 'Name'] } },
+          },
+        },
+      };
+
+      const calc = new DiffCalculator();
+      const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+      // Service is promoted (it references the replaced TaskDef) but must NOT
+      // be flagged as requiring replacement — the conditional rule was fed
+      // undefined/undefined, not the phantom string -> {Ref} delta.
+      const service = changes.get('Service');
+      expect(service?.changeType).toBe('UPDATE');
+      expect(service?.propertyChanges?.every((pc) => !pc.requiresReplacement)).toBe(true);
+
+      // Grandchild stays NO_CHANGE — the cascade did not over-broaden.
+      expect(changes.get('ScalableTarget')?.changeType).toBe('NO_CHANGE');
+
+      // The synthetic promotion evaluated the rule with undefined/undefined.
+      expect(spy).toHaveBeenCalledWith('AWS::ECS::Service', 'TaskDefinition', undefined, undefined);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('terminates on a reference cycle (A -> B -> A) without infinite-looping (issue #807 Fix 3)', async () => {
+    // Two SQS queues that reference each other's ARN (a synthetic cycle).
+    // The `enqueued` guard must prevent re-enqueueing an already-visited
+    // node so the BFS terminates.
+    const state = baseState();
+    state.resources['QueueA'] = {
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123/a-old',
+      resourceType: 'AWS::SQS::Queue',
+      properties: {
+        QueueName: 'a-old',
+        RedrivePolicy: { deadLetterTargetArn: 'arn:aws:sqs:us-east-1:123:b-old' },
+      },
+      attributes: { Arn: 'arn:aws:sqs:us-east-1:123:a-old' },
+    };
+    state.resources['QueueB'] = {
+      physicalId: 'https://sqs.us-east-1.amazonaws.com/123/b-old',
+      resourceType: 'AWS::SQS::Queue',
+      properties: {
+        QueueName: 'b-old',
+        RedrivePolicy: { deadLetterTargetArn: 'arn:aws:sqs:us-east-1:123:a-old' },
+      },
+      attributes: { Arn: 'arn:aws:sqs:us-east-1:123:b-old' },
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        QueueA: {
+          Type: 'AWS::SQS::Queue',
+          // QueueName change -> replacement (seeds the walk).
+          Properties: {
+            QueueName: 'a-new',
+            RedrivePolicy: { deadLetterTargetArn: { 'Fn::GetAtt': ['QueueB', 'Arn'] } },
+          },
+        },
+        QueueB: {
+          Type: 'AWS::SQS::Queue',
+          // QueueName change -> replacement too; references A back (cycle).
+          Properties: {
+            QueueName: 'b-new',
+            RedrivePolicy: { deadLetterTargetArn: { 'Fn::GetAtt': ['QueueA', 'Arn'] } },
+          },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    // If the `enqueued` guard regresses, this never resolves (infinite loop).
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('QueueA')?.changeType).toBe('UPDATE');
+    expect(changes.get('QueueB')?.changeType).toBe('UPDATE');
+    expect(changes.get('QueueA')?.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(true);
+    expect(changes.get('QueueB')?.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(true);
   });
 });
