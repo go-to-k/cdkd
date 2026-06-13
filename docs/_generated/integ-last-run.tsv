@@ -63,7 +63,6 @@ legacy-bucket-name-fallback	2026-06-02T11:37:34Z	PASS	17	standard	sweep: deploy+
 legacy-state-migration	2026-06-02T11:37:34Z	PASS	17	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 log-pipeline	2026-06-02T11:37:34Z	PASS	68	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 macro-expansion	2026-06-02T11:37:34Z	PASS	105	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
-microservices	2026-06-02T11:37:34Z	PASS	55	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 migrate-from-bare-cfn	2026-06-02T11:37:34Z	PASS	148	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 migrate-from-bare-cfn-codegen-only	2026-06-02T11:37:34Z	PASS	30	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 multi-region-same-stack	2026-06-02T11:37:34Z	PASS	16	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -124,3 +123,4 @@ sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0
 vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
 drift-revert-vpc	2026-06-11T06:05:51Z	PASS		verify.sh	order-normalize backport; 21 deleted 0 err 0 orphan
 ecs-fargate	2026-06-13T04:11:31Z	PASS	353	verify.sh	#807 propagation + #809 write-only UPDATE pass, 19 deleted 0 err
+microservices	2026-06-13T04:12:49Z	PASS	39	standard	#804 incremental destroy persistence; 19 deleted 0 err 0 orphan
