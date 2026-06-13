@@ -149,6 +149,31 @@ describe('isRetryableTransientError', () => {
         'Failed to create SNS topic policy MyTopicPolicy: Invalid parameter: Policy statement action out of service scope!';
       expect(isRetryableTransientError(new Error(message), message)).toBe(false);
     });
+
+    it('retries a structurally-malformed SQS QueuePolicy carrying the #839 Policy-parameter phrase (accepted bounded-retry-then-surface tradeoff)', () => {
+      // The #839 SQS pattern `Invalid value for the parameter Policy` is
+      // intentionally BROAD: AWS emits that EXACT phrase for ANY malformed SQS
+      // QueuePolicy, not just the fresh-principal IAM-propagation race. We
+      // accept that a permanently-malformed QueuePolicy (e.g. a structurally
+      // broken statement) is ALSO classified retryable here — it only burns the
+      // bounded retries before surfacing the same error. This test PINS that
+      // accepted tradeoff so a future narrowing of the pattern is a deliberate,
+      // reviewed change rather than an accident. See issue #839.
+      const message =
+        'Failed to create SQS queue policy MyQueuePolicy: Invalid value for the parameter Policy.';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(true);
+    });
+
+    it('does not retry an SQS error that lacks the #839 Policy-parameter phrase', () => {
+      // Guard the SQS boundary the other way: the broad `Invalid value for the
+      // parameter Policy` substring must NOT over-broaden into other SQS
+      // SetQueueAttributes validation errors. A generic attribute-validation
+      // failure that does not contain the Policy-parameter phrase stays
+      // non-retryable so a permanent misconfiguration fails fast.
+      const message =
+        'InvalidAttributeValue: Unknown attribute Foo for SetQueueAttributes';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
   });
 
   describe('robustness', () => {

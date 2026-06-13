@@ -233,8 +233,20 @@ for attempt in 1 2 3 4 5 6; do
   if [ "${SM_STATUS}" = "SUCCEEDED" ]; then
     break
   fi
-  # FAILED (or timed out): inspect the cause. Retry only on the IAM-propagation
-  # authz signal; any other terminal status is a real failure.
+  # Still RUNNING after the inner 15x2s=30s poll: the execution is slow, not
+  # failed. Its `cause` query returns `None`, which matches no authz pattern and
+  # would otherwise fall into the `*)` arm and FAIL a perfectly healthy-but-slow
+  # run. Treat it as transient and continue the OUTER loop (start a fresh
+  # execution after backoff) so it gets more wall-clock across attempts; the
+  # outer loop is already capped at 6, and the post-loop guard below fails only
+  # if it never SUCCEEDED.
+  if [ "${SM_STATUS}" = "RUNNING" ]; then
+    echo "    edge 2 attempt ${attempt}: SFN execution still RUNNING after inner poll (slow, retrying a fresh execution)" >&2
+    sleep $(( attempt * 5 ))
+    continue
+  fi
+  # FAILED (or other terminal status): inspect the cause. Retry only on the
+  # IAM-propagation authz signal; any other terminal status is a real failure.
   SM_LAST_CAUSE=$(aws stepfunctions describe-execution \
     --execution-arn "${EXEC_ARN}" --region "${REGION}" \
     --query 'cause' --output text 2>/dev/null || echo "")
