@@ -1727,10 +1727,14 @@
     {
       "resourceType": "AWS::EFS::AccessPoint",
       "integs": [
+        "ecs-fargate",
         "efs-lambda",
         "efs-standalone"
       ],
       "signals": {
+        "ecs-fargate": [
+          "l2"
+        ],
         "efs-lambda": [
           "literal"
         ],
@@ -1743,6 +1747,7 @@
       "resourceType": "AWS::EFS::FileSystem",
       "integs": [
         "drift-revert-vpc",
+        "ecs-fargate",
         "efs-lambda",
         "efs-standalone"
       ],
@@ -1750,6 +1755,9 @@
         "drift-revert-vpc": [
           "l1",
           "literal"
+        ],
+        "ecs-fargate": [
+          "l2"
         ],
         "efs-lambda": [
           "l2",
@@ -1765,6 +1773,7 @@
       "resourceType": "AWS::EFS::MountTarget",
       "integs": [
         "drift-revert-vpc",
+        "ecs-fargate",
         "efs-lambda",
         "efs-standalone"
       ],
@@ -1772,6 +1781,9 @@
         "drift-revert-vpc": [
           "l1",
           "literal"
+        ],
+        "ecs-fargate": [
+          "l2"
         ],
         "efs-lambda": [
           "l2",

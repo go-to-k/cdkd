@@ -149,6 +149,77 @@ describe('ECSProvider.readCurrentState', () => {
     });
   });
 
+  it('normalizes camelCase SDK volume shape back to PascalCase CFn form (issue #815)', async () => {
+    // DescribeTaskDefinition returns camelCase volume sub-keys; the
+    // readCurrentState snapshot must match the deploy-time PascalCase
+    // template form so a future drift comparison does not see a phantom
+    // key-case divergence.
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'vol-td',
+        volumes: [
+          { name: 'host-vol', host: { sourcePath: '/ecs/data' } },
+          {
+            name: 'efs-vol',
+            efsVolumeConfiguration: {
+              fileSystemId: 'fs-01234567',
+              rootDirectory: '/data',
+              transitEncryption: 'ENABLED',
+              transitEncryptionPort: 2049,
+              authorizationConfig: { accessPointId: 'fsap-0', iam: 'ENABLED' },
+            },
+          },
+          {
+            name: 'docker-vol',
+            dockerVolumeConfiguration: { scope: 'shared', autoprovision: true, driver: 'local' },
+          },
+          {
+            name: 'fsx-vol',
+            fsxWindowsFileServerVolumeConfiguration: {
+              fileSystemId: 'fs-0abc',
+              rootDirectory: '\\data',
+              authorizationConfig: { credentialsParameter: 'arn:secret', domain: 'corp.local' },
+            },
+            configuredAtLaunch: false,
+          },
+        ],
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/vol-td:1',
+      'VolTd',
+      'AWS::ECS::TaskDefinition'
+    );
+
+    expect(result?.Volumes).toEqual([
+      { Name: 'host-vol', Host: { SourcePath: '/ecs/data' } },
+      {
+        Name: 'efs-vol',
+        EFSVolumeConfiguration: {
+          FilesystemId: 'fs-01234567',
+          RootDirectory: '/data',
+          TransitEncryption: 'ENABLED',
+          TransitEncryptionPort: 2049,
+          AuthorizationConfig: { AccessPointId: 'fsap-0', IAM: 'ENABLED' },
+        },
+      },
+      {
+        Name: 'docker-vol',
+        DockerVolumeConfiguration: { Scope: 'shared', Autoprovision: true, Driver: 'local' },
+      },
+      {
+        Name: 'fsx-vol',
+        FSxWindowsFileServerVolumeConfiguration: {
+          FileSystemId: 'fs-0abc',
+          RootDirectory: '\\data',
+          AuthorizationConfig: { CredentialsParameter: 'arn:secret', Domain: 'corp.local' },
+        },
+        ConfiguredAtLaunch: false,
+      },
+    ]);
+  });
+
   it('emits EnableFaultInjection when DescribeTaskDefinition returns it (#609 backfill)', async () => {
     mockSend.mockResolvedValueOnce({
       taskDefinition: {

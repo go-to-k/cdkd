@@ -386,7 +386,9 @@ describe('ECSProvider', () => {
           {
             name: 'docker-data',
             host: undefined,
+            dockerVolumeConfiguration: undefined,
             efsVolumeConfiguration: undefined,
+            fsxWindowsFileServerVolumeConfiguration: undefined,
             configuredAtLaunch: true,
           },
         ]);
@@ -427,7 +429,8 @@ describe('ECSProvider', () => {
         await provider.create('EfsTask', 'AWS::ECS::TaskDefinition', {
           Family: 'efs-task',
           ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
-          Volumes: [{ Name: 'plain-vol', Host: { sourcePath: '/var/data' } }],
+          // CFn uses PascalCase `SourcePath` under `Host` (issue #815).
+          Volumes: [{ Name: 'plain-vol', Host: { SourcePath: '/var/data' } }],
         });
 
         const input = mockSend.mock.calls[0][0].input;
@@ -451,6 +454,190 @@ describe('ECSProvider', () => {
 
         const input = mockSend.mock.calls[0][0].input;
         expect(input.volumes[0].configuredAtLaunch).toBe(false);
+      });
+    });
+
+    describe('volume sub-configurations (issue #815)', () => {
+      // Regression guard for issue #815: convertVolumes did not map
+      // DockerVolumeConfiguration / FSxWindowsFileServerVolumeConfiguration
+      // at all (silently dropped) and cast Host / EFSVolumeConfiguration
+      // through raw (nested keys reached the SDK still PascalCase). Each
+      // volume sub-block must run through the PascalCase->camelCase
+      // conversion so the registered task definition is correct on AWS.
+      const arnResp = {
+        taskDefinition: {
+          taskDefinitionArn:
+            'arn:aws:ecs:us-east-1:123456789012:task-definition/vol-task:1',
+        },
+      };
+
+      it('converts EFSVolumeConfiguration PascalCase keys to SDK camelCase', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('EfsTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'efs-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            {
+              Name: 'efs-data',
+              // CFn uses `FilesystemId` (lowercase s) and `IAM` (all caps)
+              // under AuthorizationConfig — not a simple first-letter flip.
+              EFSVolumeConfiguration: {
+                FilesystemId: 'fs-01234567',
+                RootDirectory: '/data',
+                TransitEncryption: 'ENABLED',
+                TransitEncryptionPort: 2049,
+                AuthorizationConfig: {
+                  AccessPointId: 'fsap-0123456789abcdef0',
+                  IAM: 'ENABLED',
+                },
+              },
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].efsVolumeConfiguration).toEqual({
+          fileSystemId: 'fs-01234567',
+          rootDirectory: '/data',
+          transitEncryption: 'ENABLED',
+          transitEncryptionPort: 2049,
+          authorizationConfig: {
+            accessPointId: 'fsap-0123456789abcdef0',
+            iam: 'ENABLED',
+          },
+        });
+        // The Docker/FSx siblings are absent -> omitted.
+        expect(input.volumes[0].dockerVolumeConfiguration).toBeUndefined();
+        expect(input.volumes[0].fsxWindowsFileServerVolumeConfiguration).toBeUndefined();
+      });
+
+      it('coerces a stringly-typed EFS TransitEncryptionPort to a number', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('EfsTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'efs-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            {
+              Name: 'efs-data',
+              EFSVolumeConfiguration: { FilesystemId: 'fs-01234567', TransitEncryptionPort: '2049' },
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].efsVolumeConfiguration.transitEncryptionPort).toBe(2049);
+      });
+
+      it('converts DockerVolumeConfiguration PascalCase keys to SDK camelCase', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('DockerTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'docker-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            {
+              Name: 'docker-vol',
+              DockerVolumeConfiguration: {
+                Scope: 'shared',
+                Autoprovision: true,
+                Driver: 'local',
+                DriverOpts: { type: 'nfs' },
+                Labels: { team: 'platform' },
+              },
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].dockerVolumeConfiguration).toEqual({
+          scope: 'shared',
+          autoprovision: true,
+          driver: 'local',
+          driverOpts: { type: 'nfs' },
+          labels: { team: 'platform' },
+        });
+      });
+
+      it('coerces a stringly-typed DockerVolumeConfiguration Autoprovision boolean', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('DockerTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'docker-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            { Name: 'docker-vol', DockerVolumeConfiguration: { Scope: 'shared', Autoprovision: 'true' } },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].dockerVolumeConfiguration.autoprovision).toBe(true);
+      });
+
+      it('converts FSxWindowsFileServerVolumeConfiguration PascalCase keys to SDK camelCase', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('FsxTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'fsx-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            {
+              Name: 'fsx-data',
+              // CFn uses `FileSystemId` (capital S) here, unlike EFS's
+              // `FilesystemId` (lowercase s).
+              FSxWindowsFileServerVolumeConfiguration: {
+                FileSystemId: 'fs-0abcdef0123456789',
+                RootDirectory: '\\data',
+                AuthorizationConfig: {
+                  CredentialsParameter:
+                    'arn:aws:secretsmanager:us-east-1:123456789012:secret:fsx-creds',
+                  Domain: 'corp.example.com',
+                },
+              },
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].fsxWindowsFileServerVolumeConfiguration).toEqual({
+          fileSystemId: 'fs-0abcdef0123456789',
+          rootDirectory: '\\data',
+          authorizationConfig: {
+            credentialsParameter:
+              'arn:aws:secretsmanager:us-east-1:123456789012:secret:fsx-creds',
+            domain: 'corp.example.com',
+          },
+        });
+      });
+
+      it('converts Host.SourcePath PascalCase key to SDK camelCase', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('HostTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'host-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [{ Name: 'host-vol', Host: { SourcePath: '/ecs/data' } }],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].host).toEqual({ sourcePath: '/ecs/data' });
+      });
+
+      it('omits every volume sub-configuration when absent (omit-when-absent)', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('BareTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'bare-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [{ Name: 'bare-vol' }],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].host).toBeUndefined();
+        expect(input.volumes[0].dockerVolumeConfiguration).toBeUndefined();
+        expect(input.volumes[0].efsVolumeConfiguration).toBeUndefined();
+        expect(input.volumes[0].fsxWindowsFileServerVolumeConfiguration).toBeUndefined();
       });
     });
 

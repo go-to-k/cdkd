@@ -52,6 +52,14 @@ import {
   type ApplicationProtocol,
   type LogDriver,
   type EFSVolumeConfiguration,
+  type EFSAuthorizationConfig,
+  type DockerVolumeConfiguration,
+  type FSxWindowsFileServerVolumeConfiguration,
+  type FSxWindowsFileServerAuthorizationConfig,
+  type HostVolumeProperties,
+  type Scope,
+  type EFSTransitEncryption,
+  type EFSAuthorizationConfigIAM,
   type AssignPublicIp,
   type ContainerCondition,
   type EnvironmentFileType,
@@ -1177,15 +1185,33 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
-   * Convert CFn Volumes to ECS SDK format
+   * Convert CFn Volumes to ECS SDK format.
+   *
+   * Every nested volume-configuration block is PascalCase in the CFn
+   * template and camelCase in the ECS SDK input, so each sub-block runs
+   * through a dedicated converter — the same PascalCase->camelCase trap
+   * already fixed for the ContainerDefinitions sub-arrays
+   * (convertEnvironment / convertSecrets / convertMountPoints etc.).
+   * Before issue #815, `Host` / `EFSVolumeConfiguration` were cast through
+   * raw (so their nested keys reached the SDK still PascalCase) and
+   * `DockerVolumeConfiguration` / `FSxWindowsFileServerVolumeConfiguration`
+   * were not mapped at all (silently dropped).
    */
   private convertVolumes(volumes?: Array<Record<string, unknown>>): Volume[] | undefined {
     if (!volumes) return undefined;
 
     return volumes.map((v) => ({
       name: v['Name'] as string,
-      host: v['Host'] as { sourcePath?: string } | undefined,
-      efsVolumeConfiguration: v['EFSVolumeConfiguration'] as EFSVolumeConfiguration | undefined,
+      host: this.convertVolumeHost(v['Host'] as Record<string, unknown> | undefined),
+      dockerVolumeConfiguration: this.convertDockerVolumeConfiguration(
+        v['DockerVolumeConfiguration'] as Record<string, unknown> | undefined
+      ),
+      efsVolumeConfiguration: this.convertEFSVolumeConfiguration(
+        v['EFSVolumeConfiguration'] as Record<string, unknown> | undefined
+      ),
+      fsxWindowsFileServerVolumeConfiguration: this.convertFSxWindowsVolumeConfiguration(
+        v['FSxWindowsFileServerVolumeConfiguration'] as Record<string, unknown> | undefined
+      ),
       // ConfiguredAtLaunch marks the volume as attach-at-launch so a
       // same-stack AWS::ECS::Service can carry a matching
       // VolumeConfigurations entry (managed EBS volume). Dropping it made
@@ -1194,6 +1220,181 @@ export class ECSProvider implements ResourceProvider {
       // (issue #806).
       configuredAtLaunch: this.coerceBool(v['ConfiguredAtLaunch']),
     }));
+  }
+
+  /**
+   * Convert CFn Volumes[].Host to ECS SDK format.
+   * CFn: `{SourcePath}` -> SDK: `{sourcePath}`.
+   */
+  private convertVolumeHost(host?: Record<string, unknown>): HostVolumeProperties | undefined {
+    if (!host) return undefined;
+    return {
+      sourcePath: host['SourcePath'] as string | undefined,
+    };
+  }
+
+  /**
+   * Convert CFn Volumes[].DockerVolumeConfiguration to ECS SDK format.
+   * CFn: `{Scope, Autoprovision, Driver, DriverOpts, Labels}`
+   * -> SDK: `{scope, autoprovision, driver, driverOpts, labels}`.
+   */
+  private convertDockerVolumeConfiguration(
+    config?: Record<string, unknown>
+  ): DockerVolumeConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      scope: config['Scope'] as Scope | undefined,
+      autoprovision: this.coerceBool(config['Autoprovision']),
+      driver: config['Driver'] as string | undefined,
+      driverOpts: config['DriverOpts'] as Record<string, string> | undefined,
+      labels: config['Labels'] as Record<string, string> | undefined,
+    };
+  }
+
+  /**
+   * Convert CFn Volumes[].EFSVolumeConfiguration to ECS SDK format.
+   * CFn: `{FilesystemId, RootDirectory, TransitEncryption,
+   * TransitEncryptionPort, AuthorizationConfig}`
+   * -> SDK: `{fileSystemId, rootDirectory, transitEncryption,
+   * transitEncryptionPort, authorizationConfig}`.
+   * Note the CFn property is `FilesystemId` (lowercase `s`) while the SDK
+   * field is `fileSystemId` — they are not a simple first-letter case flip.
+   */
+  private convertEFSVolumeConfiguration(
+    config?: Record<string, unknown>
+  ): EFSVolumeConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      fileSystemId: config['FilesystemId'] as string,
+      rootDirectory: config['RootDirectory'] as string | undefined,
+      transitEncryption: config['TransitEncryption'] as EFSTransitEncryption | undefined,
+      transitEncryptionPort:
+        config['TransitEncryptionPort'] !== undefined
+          ? Number(config['TransitEncryptionPort'])
+          : undefined,
+      authorizationConfig: this.convertEFSAuthorizationConfig(
+        config['AuthorizationConfig'] as Record<string, unknown> | undefined
+      ),
+    };
+  }
+
+  /**
+   * Convert CFn EFSVolumeConfiguration.AuthorizationConfig to ECS SDK format.
+   * CFn: `{AccessPointId, IAM}` -> SDK: `{accessPointId, iam}`.
+   * Note the CFn key is `IAM` (all caps), NOT `Iam` — not a simple
+   * first-letter case flip (verified against the CDK L1 `IAM` mapping).
+   */
+  private convertEFSAuthorizationConfig(
+    config?: Record<string, unknown>
+  ): EFSAuthorizationConfig | undefined {
+    if (!config) return undefined;
+    return {
+      accessPointId: config['AccessPointId'] as string | undefined,
+      iam: config['IAM'] as EFSAuthorizationConfigIAM | undefined,
+    };
+  }
+
+  /**
+   * Convert CFn Volumes[].FSxWindowsFileServerVolumeConfiguration to ECS
+   * SDK format.
+   * CFn: `{FileSystemId, RootDirectory, AuthorizationConfig}`
+   * -> SDK: `{fileSystemId, rootDirectory, authorizationConfig}`.
+   */
+  private convertFSxWindowsVolumeConfiguration(
+    config?: Record<string, unknown>
+  ): FSxWindowsFileServerVolumeConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      fileSystemId: config['FileSystemId'] as string,
+      rootDirectory: config['RootDirectory'] as string,
+      authorizationConfig: this.convertFSxWindowsAuthorizationConfig(
+        config['AuthorizationConfig'] as Record<string, unknown> | undefined
+      ) as FSxWindowsFileServerAuthorizationConfig,
+    };
+  }
+
+  /**
+   * Convert CFn FSxWindowsFileServerVolumeConfiguration.AuthorizationConfig
+   * to ECS SDK format.
+   * CFn: `{CredentialsParameter, Domain}`
+   * -> SDK: `{credentialsParameter, domain}`.
+   */
+  private convertFSxWindowsAuthorizationConfig(
+    config?: Record<string, unknown>
+  ): FSxWindowsFileServerAuthorizationConfig | undefined {
+    if (!config) return undefined;
+    return {
+      credentialsParameter: config['CredentialsParameter'] as string,
+      domain: config['Domain'] as string,
+    };
+  }
+
+  /**
+   * Convert the camelCase SDK `volumes` shape returned by
+   * DescribeTaskDefinition back to the PascalCase CFn template form, so the
+   * `readCurrentState` snapshot matches the deploy-time template
+   * representation for drift comparison (issue #815). Only volume keys
+   * present on the SDK side are emitted, so a future field cdkd does not
+   * map cannot surface as phantom drift. TaskDefinitions are immutable
+   * replace-only today, so this is forward-looking normalization.
+   */
+  private volumesToCfn(volumes?: Volume[]): Array<Record<string, unknown>> {
+    if (!volumes) return [];
+    return volumes.map((v) => {
+      const out: Record<string, unknown> = {};
+      if (v.name !== undefined) out['Name'] = v.name;
+      if (v.host !== undefined) {
+        const host: Record<string, unknown> = {};
+        if (v.host.sourcePath !== undefined) host['SourcePath'] = v.host.sourcePath;
+        out['Host'] = host;
+      }
+      if (v.dockerVolumeConfiguration !== undefined) {
+        const d = v.dockerVolumeConfiguration;
+        const docker: Record<string, unknown> = {};
+        if (d.scope !== undefined) docker['Scope'] = d.scope;
+        if (d.autoprovision !== undefined) docker['Autoprovision'] = d.autoprovision;
+        if (d.driver !== undefined) docker['Driver'] = d.driver;
+        if (d.driverOpts !== undefined) docker['DriverOpts'] = d.driverOpts;
+        if (d.labels !== undefined) docker['Labels'] = d.labels;
+        out['DockerVolumeConfiguration'] = docker;
+      }
+      if (v.efsVolumeConfiguration !== undefined) {
+        const e = v.efsVolumeConfiguration;
+        const efs: Record<string, unknown> = {};
+        if (e.fileSystemId !== undefined) efs['FilesystemId'] = e.fileSystemId;
+        if (e.rootDirectory !== undefined) efs['RootDirectory'] = e.rootDirectory;
+        if (e.transitEncryption !== undefined) efs['TransitEncryption'] = e.transitEncryption;
+        if (e.transitEncryptionPort !== undefined) {
+          efs['TransitEncryptionPort'] = e.transitEncryptionPort;
+        }
+        if (e.authorizationConfig !== undefined) {
+          const a = e.authorizationConfig;
+          const auth: Record<string, unknown> = {};
+          if (a.accessPointId !== undefined) auth['AccessPointId'] = a.accessPointId;
+          if (a.iam !== undefined) auth['IAM'] = a.iam;
+          efs['AuthorizationConfig'] = auth;
+        }
+        out['EFSVolumeConfiguration'] = efs;
+      }
+      if (v.fsxWindowsFileServerVolumeConfiguration !== undefined) {
+        const f = v.fsxWindowsFileServerVolumeConfiguration;
+        const fsx: Record<string, unknown> = {};
+        if (f.fileSystemId !== undefined) fsx['FileSystemId'] = f.fileSystemId;
+        if (f.rootDirectory !== undefined) fsx['RootDirectory'] = f.rootDirectory;
+        if (f.authorizationConfig !== undefined) {
+          const a = f.authorizationConfig;
+          const auth: Record<string, unknown> = {};
+          if (a.credentialsParameter !== undefined) {
+            auth['CredentialsParameter'] = a.credentialsParameter;
+          }
+          if (a.domain !== undefined) auth['Domain'] = a.domain;
+          fsx['AuthorizationConfig'] = auth;
+        }
+        out['FSxWindowsFileServerVolumeConfiguration'] = fsx;
+      }
+      if (v.configuredAtLaunch !== undefined) out['ConfiguredAtLaunch'] = v.configuredAtLaunch;
+      return out;
+    });
   }
 
   /**
@@ -1528,7 +1729,7 @@ export class ECSProvider implements ResourceProvider {
       : [];
     if (td.executionRoleArn !== undefined) result['ExecutionRoleArn'] = td.executionRoleArn;
     if (td.taskRoleArn !== undefined) result['TaskRoleArn'] = td.taskRoleArn;
-    result['Volumes'] = td.volumes ?? [];
+    result['Volumes'] = this.volumesToCfn(td.volumes);
     result['PlacementConstraints'] = td.placementConstraints ?? [];
     if (td.runtimePlatform) result['RuntimePlatform'] = td.runtimePlatform;
     if (td.proxyConfiguration) result['ProxyConfiguration'] = td.proxyConfiguration;

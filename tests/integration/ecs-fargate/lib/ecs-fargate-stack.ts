@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as efs from 'aws-cdk-lib/aws-efs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
@@ -122,6 +123,41 @@ export class EcsFargateStack extends cdk.Stack {
       readOnly: false,
     });
     taskDefinition.addVolume(ebsVolume);
+
+    // Exercise the #815 fix: a Volumes[].EFSVolumeConfiguration must reach
+    // RegisterTaskDefinition with its nested keys converted PascalCase ->
+    // camelCase. Before #815, convertVolumes cast EFSVolumeConfiguration
+    // through raw, so the nested keys (FilesystemId / RootDirectory /
+    // TransitEncryption / AuthorizationConfig.{AccessPointId, IAM}) reached
+    // the SDK still PascalCase. The FileSystem itself is created in the
+    // public subnets (the VPC has no private subnets to minimize cost) with
+    // RemovalPolicy.DESTROY so destroy stays clean. No task ever launches
+    // (desiredCount: 0), so the volume is never actually mounted — the
+    // assertion is purely on the registered task definition's
+    // efsVolumeConfiguration shape reaching AWS.
+    const fileSystem = new efs.FileSystem(this, 'EfsFileSystem', {
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const accessPoint = new efs.AccessPoint(this, 'EfsAccessPoint', {
+      fileSystem,
+      path: '/data',
+      createAcl: { ownerGid: '1000', ownerUid: '1000', permissions: '755' },
+      posixUser: { gid: '1000', uid: '1000' },
+    });
+    taskDefinition.addVolume({
+      name: 'efs-data',
+      efsVolumeConfiguration: {
+        fileSystemId: fileSystem.fileSystemId,
+        rootDirectory: '/',
+        transitEncryption: 'ENABLED',
+        authorizationConfig: {
+          accessPointId: accessPoint.accessPointId,
+          iam: 'ENABLED',
+        },
+      },
+    });
 
     // Create Fargate Service with desiredCount: 0 and Service Connect
     // This tests resource creation without actually running containers
