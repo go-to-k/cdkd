@@ -168,6 +168,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets).',
   's3-asset-deploy':
     'File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy.',
+  'rollback-failure-injection':
+    'deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.',
 
   // ---- Multi-resource / broad-regression set ----
   'cross-cutting-deploy-destroy':

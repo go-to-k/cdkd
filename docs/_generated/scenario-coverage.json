@@ -33,18 +33,6 @@
       "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets)."
     },
     {
-      "tag": "destroy-interrupt",
-      "description": "Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly)."
-    },
-    {
-      "tag": "docker-image-asset-ecr-publish",
-      "description": "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy."
-    },
-    {
-      "tag": "drift-revert-array-canonicalization",
-      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift."
-    },
-    {
       "tag": "drift-revert-roundtrip",
       "description": "cdkd drift detection + `--revert` round-trip via each provider.update()."
     },
@@ -157,8 +145,8 @@
       "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types."
     },
     {
-      "tag": "s3-asset-deploy",
-      "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy."
+      "tag": "rollback-failure-injection",
+      "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED."
     },
     {
       "tag": "state-bucket-region-resolve",
@@ -167,10 +155,6 @@
     {
       "tag": "state-schema-migration",
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema."
-    },
-    {
-      "tag": "update-replace-breadth",
-      "description": "Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types."
     },
     {
       "tag": "vpc-lambda-cr-race",
@@ -355,15 +339,6 @@
       ]
     },
     {
-      "name": "destroy-interrupt",
-      "annotated": true,
-      "scenarios": [
-        "custom-resource-async-poll",
-        "destroy-interrupt",
-        "vpc-lambda-eni-release"
-      ]
-    },
-    {
       "name": "diff-intrinsic-target-change",
       "annotated": true,
       "scenarios": []
@@ -374,24 +349,9 @@
       "scenarios": []
     },
     {
-      "name": "docker-image-asset",
-      "annotated": true,
-      "scenarios": [
-        "docker-image-asset-ecr-publish"
-      ]
-    },
-    {
       "name": "drift-revert",
       "annotated": true,
       "scenarios": [
-        "drift-revert-roundtrip"
-      ]
-    },
-    {
-      "name": "drift-revert-arrays",
-      "annotated": true,
-      "scenarios": [
-        "drift-revert-array-canonicalization",
         "drift-revert-roundtrip"
       ]
     },
@@ -861,16 +821,16 @@
       ]
     },
     {
+      "name": "rollback-failure-injection",
+      "annotated": true,
+      "scenarios": [
+        "rollback-failure-injection"
+      ]
+    },
+    {
       "name": "route53",
       "annotated": true,
       "scenarios": []
-    },
-    {
-      "name": "s3-asset-deploy",
-      "annotated": true,
-      "scenarios": [
-        "s3-asset-deploy"
-      ]
     },
     {
       "name": "s3-cloudfront",
@@ -945,13 +905,6 @@
       "name": "stepfunctions",
       "annotated": true,
       "scenarios": []
-    },
-    {
-      "name": "update-replace",
-      "annotated": true,
-      "scenarios": [
-        "update-replace-breadth"
-      ]
     },
     {
       "name": "vpc-lambda",
@@ -1035,7 +988,6 @@
       "fixtures": [
         "cloudfront-function-url",
         "custom-resource-provider",
-        "destroy-interrupt",
         "vpc-lambda-cr-race"
       ]
     },
@@ -1054,32 +1006,10 @@
       ]
     },
     {
-      "scenario": "destroy-interrupt",
-      "description": "Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly).",
-      "fixtures": [
-        "destroy-interrupt"
-      ]
-    },
-    {
-      "scenario": "docker-image-asset-ecr-publish",
-      "description": "cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy.",
-      "fixtures": [
-        "docker-image-asset"
-      ]
-    },
-    {
-      "scenario": "drift-revert-array-canonicalization",
-      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift.",
-      "fixtures": [
-        "drift-revert-arrays"
-      ]
-    },
-    {
       "scenario": "drift-revert-roundtrip",
       "description": "cdkd drift detection + `--revert` round-trip via each provider.update().",
       "fixtures": [
         "drift-revert",
-        "drift-revert-arrays",
         "drift-revert-vpc"
       ]
     },
@@ -1298,10 +1228,10 @@
       ]
     },
     {
-      "scenario": "s3-asset-deploy",
-      "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy.",
+      "scenario": "rollback-failure-injection",
+      "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.",
       "fixtures": [
-        "s3-asset-deploy"
+        "rollback-failure-injection"
       ]
     },
     {
@@ -1320,13 +1250,6 @@
       ]
     },
     {
-      "scenario": "update-replace-breadth",
-      "description": "Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types.",
-      "fixtures": [
-        "update-replace"
-      ]
-    },
-    {
       "scenario": "vpc-lambda-cr-race",
       "description": "Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window).",
       "fixtures": [
@@ -1338,7 +1261,6 @@
       "description": "Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent).",
       "fixtures": [
         "bench-cdk-sample",
-        "destroy-interrupt",
         "lambda",
         "vpc-lambda"
       ]
