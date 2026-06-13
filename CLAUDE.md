@@ -136,6 +136,7 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and solutions
 - **[docs/testing.md](docs/testing.md)** - Testing guide, integration test examples
 - **[docs/cross-stack-references.md](docs/cross-stack-references.md)** - `Fn::ImportValue` strong reference design, exports index architecture, schema v4 migration
+- **[docs/deployment-events.md](docs/deployment-events.md)** - Structured deployment events (`cdkd events`) — CloudFormation `DescribeStackEvents` equivalent, event types, S3 `deployments/` key layout (separate from state.json, no schema bump), best-effort flush, `index.json` semantics (issue #808)
 
 ## Known Limitations
 

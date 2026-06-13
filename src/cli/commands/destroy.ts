@@ -23,6 +23,8 @@ import {
 } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import type { DeploymentRunResult } from '../../types/deployment-events.js';
+import { startRunRecorder, recordRunFailed } from './deployment-events-run.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -480,68 +482,108 @@ async function destroyCommand(
         continue;
       }
 
+      // Issue [#808] — best-effort structured deployment-event recorder
+      // for this destroy run. The runner emits per-resource DELETE events
+      // through it; this CLI emits RUN_STARTED (inside startRunRecorder) /
+      // RUN_FINISHED and finalize()s below. Failures are swallowed inside
+      // the store. (Destroy never runs under --dry-run, so the recorder is
+      // always created here.)
+      const eventRecorder = startRunRecorder({
+        backend: stateBackend,
+        stackName,
+        region: stackTargetRegion,
+        command: 'destroy',
+      })!;
+      let destroyRunResult: DeploymentRunResult = 'SUCCEEDED';
+
       // Set the NestedStackProvider context for this destroy. The provider
       // is registered globally (it's state-less) and only fires when the
       // state file actually carries an AWS::CloudFormation::Stack record;
       // for stacks without nested children this is a cheap no-op.
-      const result = await withNestedStackContext(
-        {
-          stateBackend,
-          lockManager,
-          providerRegistry,
-          parentStackName: stackName,
-          parentRegion: stackTargetRegion,
-          accountId,
-          awsClients,
-          stateBucket,
-          exportIndexStore,
-          destroyOptions: {
-            ...(options.profile && { profile: options.profile }),
-            ...(options.removeProtection === true && { removeProtection: true }),
-            ...(options.resourceWarnAfter?.globalMs !== undefined && {
-              resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-            }),
-            ...(options.resourceTimeout?.globalMs !== undefined && {
-              resourceTimeoutMs: options.resourceTimeout.globalMs,
-            }),
-            ...(options.resourceWarnAfter?.perTypeMs && {
-              resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-            }),
-            ...(options.resourceTimeout?.perTypeMs && {
-              resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-            }),
-          },
-        },
-        () =>
-          runDestroyForStack(stackName, stateResult.state, {
+      try {
+        const result = await withNestedStackContext(
+          {
             stateBackend,
             lockManager,
             providerRegistry,
-            baseAwsClients: awsClients,
-            baseRegion: region,
-            ...(options.profile && { profile: options.profile }),
+            parentStackName: stackName,
+            parentRegion: stackTargetRegion,
+            accountId,
+            awsClients,
             stateBucket,
-            skipConfirmation: options.yes || options.force,
-            removeProtection: options.removeProtection === true,
             exportIndexStore,
-            ...(options.allowUnsupportedTypes?.length && {
-              allowUnsupportedTypes: options.allowUnsupportedTypes,
-            }),
-            ...(options.resourceWarnAfter?.globalMs !== undefined && {
-              resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-            }),
-            ...(options.resourceTimeout?.globalMs !== undefined && {
-              resourceTimeoutMs: options.resourceTimeout.globalMs,
-            }),
-            ...(options.resourceWarnAfter?.perTypeMs && {
-              resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-            }),
-            ...(options.resourceTimeout?.perTypeMs && {
-              resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-            }),
-          })
-      );
-      totalErrors += result.errorCount;
+            destroyOptions: {
+              ...(options.profile && { profile: options.profile }),
+              ...(options.removeProtection === true && { removeProtection: true }),
+              ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+              }),
+              ...(options.resourceTimeout?.globalMs !== undefined && {
+                resourceTimeoutMs: options.resourceTimeout.globalMs,
+              }),
+              ...(options.resourceWarnAfter?.perTypeMs && {
+                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+              }),
+              ...(options.resourceTimeout?.perTypeMs && {
+                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+              }),
+            },
+          },
+          () =>
+            runDestroyForStack(stackName, stateResult.state, {
+              stateBackend,
+              lockManager,
+              providerRegistry,
+              baseAwsClients: awsClients,
+              baseRegion: region,
+              ...(options.profile && { profile: options.profile }),
+              stateBucket,
+              skipConfirmation: options.yes || options.force,
+              removeProtection: options.removeProtection === true,
+              exportIndexStore,
+              ...(options.allowUnsupportedTypes?.length && {
+                allowUnsupportedTypes: options.allowUnsupportedTypes,
+              }),
+              ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+              }),
+              ...(options.resourceTimeout?.globalMs !== undefined && {
+                resourceTimeoutMs: options.resourceTimeout.globalMs,
+              }),
+              ...(options.resourceWarnAfter?.perTypeMs && {
+                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+              }),
+              ...(options.resourceTimeout?.perTypeMs && {
+                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+              }),
+              eventRecorder,
+            })
+        );
+        totalErrors += result.errorCount;
+
+        // Map the per-stack runner outcome to a run-level result. A
+        // partial-failure (errorCount > 0) is a FAILED run; cancelled /
+        // empty-skip / clean destroy are all SUCCEEDED (no resource
+        // failed). The RUN_FINISHED event mirrors deploy's shape.
+        destroyRunResult = result.errorCount > 0 ? 'FAILED' : 'SUCCEEDED';
+        eventRecorder.record({
+          eventType: 'RUN_FINISHED',
+          stackName,
+          result: destroyRunResult,
+          counts: {
+            created: 0,
+            updated: 0,
+            deleted: result.deletedCount,
+            ...(result.errorCount > 0 && { failed: result.errorCount }),
+          },
+        });
+      } catch (destroyError) {
+        destroyRunResult = 'FAILED';
+        recordRunFailed(eventRecorder, stackName, destroyError);
+        throw destroyError;
+      } finally {
+        await eventRecorder.finalize(destroyRunResult);
+      }
     }
 
     if (totalErrors > 0) {

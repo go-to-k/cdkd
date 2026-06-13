@@ -17,6 +17,11 @@ import {
   type ResourceChange,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
+import {
+  extractDeploymentEventError,
+  type DeploymentEventRecorder,
+  type DeploymentResourceOperation,
+} from '../types/deployment-events.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
@@ -189,6 +194,25 @@ export interface DeployEngineOptions {
    * the engine behaves exactly as before #651.
    */
   recreateViaSdkProviderTargets?: ReadonlySet<string>;
+
+  /**
+   * Issue [#808] — best-effort structured deployment-event recorder. When
+   * supplied, the engine emits one event per per-resource operation
+   * (RESOURCE_STARTED / RESOURCE_SUCCEEDED / RESOURCE_FAILED) and per
+   * rollback step (ROLLBACK_STARTED / ROLLBACK_RESOURCE_SUCCEEDED /
+   * ROLLBACK_RESOURCE_FAILED / ROLLBACK_FINISHED). The run-level
+   * RUN_STARTED / RUN_FINISHED events are emitted by the OWNER (the
+   * deploy CLI) which knows the command / cdkd version / terminal result
+   * and `finalize()`s the recorder after the run reaches a terminal
+   * state. `record()` is synchronous and never throws — the recorder
+   * buffers in memory and flushes to S3 asynchronously, so event
+   * recording can NEVER fail or block the deploy. When `undefined` the
+   * engine behaves exactly as before #808 (events are a no-op).
+   *
+   * NOTE: events carry error + metadata ONLY — never resource
+   * properties (which may contain secrets and already live in state.json).
+   */
+  eventRecorder?: DeploymentEventRecorder;
 }
 
 /**
@@ -1335,7 +1359,7 @@ export class DeployEngine {
   private async performRollback(
     completedOperations: CompletedOperation[],
     stateResources: Record<string, ResourceState>,
-    _stackName: string
+    stackName: string
   ): Promise<void> {
     if (completedOperations.length === 0) {
       this.logger.info('No completed operations to roll back.');
@@ -1343,6 +1367,7 @@ export class DeployEngine {
     }
 
     this.logger.info(`Rolling back ${completedOperations.length} completed operation(s)...`);
+    this.recordEvent({ eventType: 'ROLLBACK_STARTED', stackName });
 
     // Separate CREATE operations (which need dependency-aware ordering) from others
     const createOps: CompletedOperation[] = [];
@@ -1359,7 +1384,7 @@ export class DeployEngine {
     // Step 1: Process UPDATE/DELETE rollbacks in reverse order (simple reversal is fine)
     for (let i = otherOps.length - 1; i >= 0; i--) {
       const op = otherOps[i]!;
-      await this.performSingleRollback(op, stateResources);
+      await this.performSingleRollback(op, stateResources, stackName);
     }
 
     // Step 2: Process CREATE rollbacks (deletions) in dependency-aware order
@@ -1367,11 +1392,12 @@ export class DeployEngine {
     if (createOps.length > 0) {
       const sortedCreateOps = this.sortRollbackCreates(createOps, stateResources);
       for (const op of sortedCreateOps) {
-        await this.performSingleRollback(op, stateResources);
+        await this.performSingleRollback(op, stateResources, stackName);
       }
     }
 
     this.logger.info('Rollback completed. Some resources may remain if deletion failed.');
+    this.recordEvent({ eventType: 'ROLLBACK_FINISHED', stackName });
   }
 
   /**
@@ -1455,7 +1481,8 @@ export class DeployEngine {
    */
   private async performSingleRollback(
     op: CompletedOperation,
-    stateResources: Record<string, ResourceState>
+    stateResources: Record<string, ResourceState>,
+    stackName: string
   ): Promise<void> {
     try {
       switch (op.changeType) {
@@ -1483,6 +1510,14 @@ export class DeployEngine {
           // Remove from state
           delete stateResources[op.logicalId];
           this.logger.info(`  Rollback: ${op.logicalId} deleted successfully`);
+          this.recordEvent({
+            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+            stackName,
+            operation: 'CREATE',
+            logicalId: op.logicalId,
+            resourceType: op.resourceType,
+            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          });
           break;
         }
 
@@ -1525,6 +1560,14 @@ export class DeployEngine {
           // Restore previous state
           stateResources[op.logicalId] = op.previousState;
           this.logger.info(`  Rollback: ${op.logicalId} restored successfully`);
+          this.recordEvent({
+            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+            stackName,
+            operation: 'UPDATE',
+            logicalId: op.logicalId,
+            resourceType: op.resourceType,
+            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          });
           break;
         }
 
@@ -1542,6 +1585,15 @@ export class DeployEngine {
         `  Rollback failed for ${op.logicalId} (${op.changeType}): ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
       );
       this.logger.warn('  Continuing with remaining rollback operations...');
+      this.recordEvent({
+        eventType: 'ROLLBACK_RESOURCE_FAILED',
+        stackName,
+        operation: op.changeType,
+        logicalId: op.logicalId,
+        resourceType: op.resourceType,
+        ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+        error: extractDeploymentEventError(rollbackError),
+      });
     }
   }
 
@@ -1630,6 +1682,20 @@ export class DeployEngine {
       this.options.resourceTimeoutByType?.[resourceType] ??
       Math.max(providerMinTimeoutMs, globalTimeoutMs);
 
+    // #808 best-effort event: per-resource op started. `provisionedBy`
+    // is the routing inference used for the live label (same decision the
+    // real provider call makes); good enough for the event metadata.
+    const eventOp: DeploymentResourceOperation = operationKind;
+    const resourceStartedAt = Date.now();
+    this.recordEvent({
+      eventType: 'RESOURCE_STARTED',
+      stackName,
+      operation: eventOp,
+      logicalId,
+      resourceType,
+      ...(labelRouting && { provisionedBy: labelRouting }),
+    });
+
     try {
       await withResourceDeadline(
         async () => {
@@ -1671,10 +1737,42 @@ export class DeployEngine {
             ),
         }
       );
+      // #808 best-effort event: per-resource op succeeded. Read the
+      // freshly-stamped routing layer + physical id off the state record
+      // the body just wrote (falls back to the label inference / undefined).
+      this.recordEvent({
+        eventType: 'RESOURCE_SUCCEEDED',
+        stackName,
+        operation: eventOp,
+        logicalId,
+        resourceType,
+        ...(stateResources[logicalId]?.provisionedBy
+          ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
+          : labelRouting && { provisionedBy: labelRouting }),
+        ...(stateResources[logicalId]?.physicalId && {
+          physicalId: stateResources[logicalId]?.physicalId,
+        }),
+        durationMs: Date.now() - resourceStartedAt,
+      });
     } catch (error) {
       renderer.removeTask(logicalId);
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed to ${change.changeType.toLowerCase()} ${logicalId}: ${message}`);
+
+      // #808 best-effort event: per-resource op failed. Error metadata
+      // only — no resource properties.
+      this.recordEvent({
+        eventType: 'RESOURCE_FAILED',
+        stackName,
+        operation: eventOp,
+        logicalId,
+        resourceType,
+        ...(stateResources[logicalId]?.provisionedBy
+          ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
+          : labelRouting && { provisionedBy: labelRouting }),
+        durationMs: Date.now() - resourceStartedAt,
+        error: extractDeploymentEventError(error),
+      });
 
       throw new ProvisioningError(
         `Failed to ${change.changeType.toLowerCase()} resource ${logicalId}`,
@@ -1696,6 +1794,23 @@ export class DeployEngine {
     existingState: ResourceState | undefined
   ): 'sdk' | 'cc-api' | undefined {
     return deriveLabelRouting(change, existingState, this.providerRegistry);
+  }
+
+  /**
+   * #808 — forward one structured deployment event to the optional
+   * recorder. No-op when no recorder was supplied. `record()` is
+   * contractually synchronous and never-throwing, but we still guard
+   * with a try/catch so an event emission can NEVER abort a deploy.
+   */
+  private recordEvent(
+    event: Omit<import('../types/deployment-events.js').DeploymentEvent, 'timestamp'>
+  ): void {
+    if (!this.options.eventRecorder) return;
+    try {
+      this.options.eventRecorder.record(event);
+    } catch {
+      // best-effort: never let event recording surface into the deploy path
+    }
   }
 
   /**
