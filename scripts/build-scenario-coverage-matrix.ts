@@ -159,6 +159,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'cdkd drift detection + `--revert` round-trip via each provider.update().',
   'update-replace-breadth':
     'Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types.',
+  'replacement-fanout-propagation':
+    'Replacement propagation (#807) at FAN-OUT scale: ONE base resource (SNS Topic, TopicName change -> new ARN) referenced by MANY (10) dependents via Fn::Sub of its Ref (10 SSM Parameters + an SNS TopicPolicy). A second deploy with `-c phase=b` replaces the base; `promoteReplacementDependents` (src/analyzer/diff-calculator.ts) must propagate the new ARN to EVERY dependent so none keeps the stale phase-a ARN. Catches fan-out gaps the narrow ECS-only #807 case cannot.',
   'drift-revert-array-canonicalization':
     'cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift.',
   'remove-protection-bypass':

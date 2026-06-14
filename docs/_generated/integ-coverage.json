@@ -3277,6 +3277,7 @@
         "migrate-from-cfn",
         "monitoring",
         "nested-stack-3level",
+        "replacement-fanout",
         "scheduled-task",
         "serverless-api",
         "sns-sqs-event"
@@ -3338,6 +3339,10 @@
         "nested-stack-3level": [
           "l2"
         ],
+        "replacement-fanout": [
+          "l2",
+          "literal"
+        ],
         "scheduled-task": [
           "l2"
         ],
@@ -3354,6 +3359,7 @@
       "integs": [
         "iam-propagation-stress",
         "migrate-from-cfn",
+        "replacement-fanout",
         "sns-sqs-event"
       ],
       "signals": {
@@ -3361,6 +3367,10 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "replacement-fanout": [
+          "l2",
           "literal"
         ],
         "sns-sqs-event": [
@@ -3489,6 +3499,7 @@
         "nested-stack-3level",
         "nested-stack-deep",
         "rds-full-stack",
+        "replacement-fanout",
         "rollback-failure-injection",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
@@ -3585,6 +3596,10 @@
         ],
         "rds-full-stack": [
           "l2"
+        ],
+        "replacement-fanout": [
+          "l2",
+          "literal"
         ],
         "rollback-failure-injection": [
           "l2"
