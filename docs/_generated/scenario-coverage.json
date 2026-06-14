@@ -205,6 +205,10 @@
       "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy."
     },
     {
+      "tag": "sdk-ccapi-crossref-boundary",
+      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`)."
+    },
+    {
       "tag": "sg-circular-dependency",
       "description": "Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation."
     },
@@ -1043,6 +1047,13 @@
       "scenarios": []
     },
     {
+      "name": "sdk-ccapi-crossref",
+      "annotated": true,
+      "scenarios": [
+        "sdk-ccapi-crossref-boundary"
+      ]
+    },
+    {
       "name": "serverless-api",
       "annotated": true,
       "scenarios": []
@@ -1513,6 +1524,13 @@
       "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy.",
       "fixtures": [
         "s3-asset-deploy"
+      ]
+    },
+    {
+      "scenario": "sdk-ccapi-crossref-boundary",
+      "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`).",
+      "fixtures": [
+        "sdk-ccapi-crossref"
       ]
     },
     {
