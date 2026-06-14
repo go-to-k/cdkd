@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**58 / 58 canonical scenarios** have at least one integ fixture exercising them. **125 / 144 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**59 / 59 canonical scenarios** have at least one integ fixture exercising them. **126 / 145 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (58 scenarios)
+## Per-scenario coverage (59 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -38,6 +38,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `conditions-update-semantics` | Harder CloudFormation-Conditions-on-UPDATE semantics beyond the simple flip in `conditions-and-if` (which surfaced #840). A CDK-context phase flip (-c phase=a|b) redeploys the SAME stack in place and asserts: a resource that MOVES gating conditions (IsPhaseA-gated -> condition-false -> DELETED) and its reverse (IsPhaseB-gated absent -> CREATED); `Fn::If` -> `AWS::NoValue` REMOVING a nested property block (SQS RedrivePolicy) on an in-place UPDATE (same physical id, not a replacement); a condition-gated OUTPUT present vs absent in cdkd state outputs; a `DependsOn` to a condition-EXCLUDED resource being dropped (the depender still deploys); and a `Ref` to a condition-excluded resource living inside another condition-excluded resource (both pruned together, no dangling-ref crash). | [`conditions-update-2`](../tests/integration/conditions-update-2/) |
 | `cross-cutting-deploy-destroy` | Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate. | [`bench-ccapi`](../tests/integration/bench-ccapi/)<br>[`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`bench-sdk`](../tests/integration/bench-sdk/)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/)<br>[`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/)<br>[`multi-resource`](../tests/integration/multi-resource/) |
 | `custom-resource-async-poll` | Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling. | [`cloudfront-function-url`](../tests/integration/cloudfront-function-url/)<br>[`custom-resource-provider`](../tests/integration/custom-resource-provider/)<br>[`destroy-interrupt`](../tests/integration/destroy-interrupt/)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
+| `custom-resource-getatt-data` | Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. | [`custom-resource-getatt-data`](../tests/integration/custom-resource-getatt-data/) |
 | `deep-getatt-chain-resolution` | Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture). | [`deep-getatt-chains`](../tests/integration/deep-getatt-chains/) |
 | `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) |
 | `deployment-events` | Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets). | [`deployment-events`](../tests/integration/deployment-events/) |

@@ -33,6 +33,10 @@
       "description": "Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling."
     },
     {
+      "tag": "custom-resource-getatt-data",
+      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency."
+    },
+    {
       "tag": "deep-getatt-chain-resolution",
       "description": "Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture)."
     },
@@ -387,6 +391,13 @@
       "annotated": true,
       "scenarios": [
         "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "custom-resource-getatt-data",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-getatt-data"
       ]
     },
     {
@@ -1195,6 +1206,13 @@
         "custom-resource-provider",
         "destroy-interrupt",
         "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "scenario": "custom-resource-getatt-data",
+      "description": "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency.",
+      "fixtures": [
+        "custom-resource-getatt-data"
       ]
     },
     {

@@ -2542,6 +2542,7 @@
         "cc-api-fallback-transitions",
         "cloudfront-function-url",
         "composite-stack",
+        "custom-resource-getatt-data",
         "custom-resource-provider",
         "data-pipeline",
         "deep-getatt-chains",
@@ -2623,6 +2624,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "custom-resource-getatt-data": [
+          "l2"
         ],
         "custom-resource-provider": [
           "l2"
@@ -3465,6 +3469,7 @@
         "context-test",
         "cross-region-state-bucket",
         "cross-stack-references",
+        "custom-resource-getatt-data",
         "deep-getatt-chains",
         "deletion-policy-retain",
         "deployment-events",
@@ -3514,6 +3519,9 @@
         ],
         "cross-stack-references": [
           "l1"
+        ],
+        "custom-resource-getatt-data": [
+          "l2"
         ],
         "deep-getatt-chains": [
           "l1"
@@ -3727,6 +3735,7 @@
     "AWS::ApplicationAutoScaling::ScalableTarget",
     "AWS::Athena::NamedQuery",
     "AWS::Athena::WorkGroup",
+    "AWS::CloudFormation::CustomResource",
     "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CodePipeline::Pipeline",
