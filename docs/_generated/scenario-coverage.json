@@ -221,6 +221,10 @@
       "description": "Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation."
     },
     {
+      "tag": "stack-level-tag-propagation-multitype",
+      "description": "STACK-LEVEL tags (`cdk.Tags.of(app/stack).add(k, v)`) propagate to ALL taggable resources across MANY types on BOTH the SDK-provider path (S3 / SNS / SQS / SSM Parameter / IAM Role / Logs LogGroup / Lambda / DynamoDB) AND the Cloud Control API path (Athena WorkGroup, no SDK provider). Each AWS type accepts tags in a DIFFERENT wire shape ({Key,Value}[] list vs { k: v } map vs the CC-API forwarder) — notably `AWS::SSM::Parameter.Tags` is a CFn MAP (the historical `Tags.map()` deploy-crash type per feedback_ssm_parameter_tags_is_a_map). verify.sh reads live AWS tags per type via that type-specific list/describe API and asserts ALL stack-level tags landed with the right value; a dropped tag FAILs naming the type. Also asserts post-deploy `cdkd drift` is clean (no #802 tag-list-reorder false positive)."
+    },
+    {
       "tag": "state-bucket-region-resolve",
       "description": "State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region."
     },
@@ -1113,6 +1117,13 @@
       "scenarios": []
     },
     {
+      "name": "tags-propagation",
+      "annotated": true,
+      "scenarios": [
+        "stack-level-tag-propagation-multitype"
+      ]
+    },
+    {
       "name": "update-replace",
       "annotated": true,
       "scenarios": [
@@ -1574,6 +1585,13 @@
       "description": "Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation.",
       "fixtures": [
         "sg-circular-dependency"
+      ]
+    },
+    {
+      "scenario": "stack-level-tag-propagation-multitype",
+      "description": "STACK-LEVEL tags (`cdk.Tags.of(app/stack).add(k, v)`) propagate to ALL taggable resources across MANY types on BOTH the SDK-provider path (S3 / SNS / SQS / SSM Parameter / IAM Role / Logs LogGroup / Lambda / DynamoDB) AND the Cloud Control API path (Athena WorkGroup, no SDK provider). Each AWS type accepts tags in a DIFFERENT wire shape ({Key,Value}[] list vs { k: v } map vs the CC-API forwarder) — notably `AWS::SSM::Parameter.Tags` is a CFn MAP (the historical `Tags.map()` deploy-crash type per feedback_ssm_parameter_tags_is_a_map). verify.sh reads live AWS tags per type via that type-specific list/describe API and asserts ALL stack-level tags landed with the right value; a dropped tag FAILs naming the type. Also asserts post-deploy `cdkd drift` is clean (no #802 tag-list-reorder false positive).",
+      "fixtures": [
+        "tags-propagation"
       ]
     },
     {
