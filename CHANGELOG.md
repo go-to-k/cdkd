@@ -1,3 +1,10 @@
+## [0.221.14](https://github.com/go-to-k/cdkd/compare/v0.221.13...v0.221.14) (2026-06-14)
+
+
+### Bug Fixes
+
+* **provisioning:** enrich AWS::OpenSearchService::Domain endpoint/ARN attributes on the Cloud Control path ([#866](https://github.com/go-to-k/cdkd/issues/866)) ([f2dc68f](https://github.com/go-to-k/cdkd/commit/f2dc68fc4cb55ee2eb80b3429ab4f077d45dbd90))
+
 ## [0.221.13](https://github.com/go-to-k/cdkd/compare/v0.221.12...v0.221.13) (2026-06-14)
 
 
