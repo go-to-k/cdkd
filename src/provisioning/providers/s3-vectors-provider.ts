@@ -260,16 +260,11 @@ export class S3VectorsProvider implements ResourceProvider {
       | undefined;
 
     // CFn shape: `Tags: [{ Key, Value }]`. SDK shape:
-    // `tags?: Record<string, string>`. Convert + omit-when-absent (an
-    // empty array would force a no-op CloudTrail event per Tag).
-    const tagsArray = properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
-    const tags =
-      tagsArray && tagsArray.length > 0
-        ? tagsArray.reduce<Record<string, string>>((acc, t) => {
-            if (t.Key !== undefined && t.Value !== undefined) acc[t.Key] = t.Value;
-            return acc;
-          }, {})
-        : undefined;
+    // `tags?: Record<string, string>`. Convert (shared with the update path)
+    // + omit-when-absent (an empty array would force a no-op CloudTrail event
+    // per Tag).
+    const tagRecord = this.cfnTagsToRecord(properties['Tags']);
+    const tags = Object.keys(tagRecord).length > 0 ? tagRecord : undefined;
 
     try {
       const result = await this.getClient().send(

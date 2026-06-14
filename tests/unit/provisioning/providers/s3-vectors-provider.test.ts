@@ -347,6 +347,63 @@ describe('S3VectorsProvider', () => {
       // Must fail BEFORE any AWS call.
       expect(mockSend).not.toHaveBeenCalled();
     });
+
+    it('rejects a VectorBucketName (create-only) change before any AWS call', async () => {
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { VectorBucketName: 'renamed-bucket' },
+          { VectorBucketName: 'my-vector-bucket' }
+        )
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('THROWS when GetVectorBucket (ARN resolution) fails', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.reject(
+            Object.assign(new Error('throttled'), { name: 'ThrottlingException' })
+          );
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { Tags: [{ Key: 'new', Value: 'v' }] },
+          {}
+        )
+      ).rejects.toThrow(/Failed to resolve ARN/);
+      // The tag write must NOT be attempted when the ARN is unknown.
+      expect(
+        mockSend.mock.calls.find((call: unknown[]) => call[0] instanceof TagResourceCommand)
+      ).toBeUndefined();
+    });
+
+    it('THROWS when GetVectorBucket returns no ARN', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.resolve({ vectorBucket: {} }); // ARN-less response
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { Tags: [{ Key: 'new', Value: 'v' }] },
+          {}
+        )
+      ).rejects.toThrow(/Could not resolve ARN/);
+    });
   });
 
   describe('import', () => {
