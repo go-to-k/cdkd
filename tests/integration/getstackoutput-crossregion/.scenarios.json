@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "multi-stack-getstackoutput",
+    "getstackoutput-cross-region"
+  ]
+}

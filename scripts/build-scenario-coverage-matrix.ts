@@ -119,6 +119,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // ---- Cross-stack reference patterns ----
   'multi-stack-getstackoutput':
     'Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export).',
+  'getstackoutput-cross-region':
+    'Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped).',
   'multi-stack-importvalue-strong-ref':
     'Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]).',
   'sdk-ccapi-crossref-boundary':

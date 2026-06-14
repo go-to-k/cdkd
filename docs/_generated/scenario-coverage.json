@@ -77,6 +77,10 @@
       "description": "A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal (\"Invalid principal in policy\"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts."
     },
     {
+      "tag": "getstackoutput-cross-region",
+      "description": "Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped)."
+    },
+    {
       "tag": "globaltable-cross-region-replica",
       "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call)."
     },
@@ -568,6 +572,14 @@
       "annotated": true,
       "scenarios": [
         "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "getstackoutput-crossregion",
+      "annotated": true,
+      "scenarios": [
+        "getstackoutput-cross-region",
+        "multi-stack-getstackoutput"
       ]
     },
     {
@@ -1310,6 +1322,13 @@
       ]
     },
     {
+      "scenario": "getstackoutput-cross-region",
+      "description": "Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped).",
+      "fixtures": [
+        "getstackoutput-crossregion"
+      ]
+    },
+    {
       "scenario": "globaltable-cross-region-replica",
       "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call).",
       "fixtures": [
@@ -1499,6 +1518,7 @@
       "fixtures": [
         "composite-stack",
         "cross-stack-references",
+        "getstackoutput-crossregion",
         "multi-stack-deps"
       ]
     },
