@@ -1,3 +1,10 @@
+## [0.221.11](https://github.com/go-to-k/cdkd/compare/v0.221.10...v0.221.11) (2026-06-14)
+
+
+### Bug Fixes
+
+* **deployment:** retry AWS throttling that surfaces as HTTP 400 by error name ([#861](https://github.com/go-to-k/cdkd/issues/861)) ([867f9d3](https://github.com/go-to-k/cdkd/commit/867f9d3293abfccf42f9d532c3adc8af0a5f3010))
+
 ## [0.221.10](https://github.com/go-to-k/cdkd/compare/v0.221.9...v0.221.10) (2026-06-14)
 
 
