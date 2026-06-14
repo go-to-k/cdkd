@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**65 / 65 canonical scenarios** have at least one integ fixture exercising them. **132 / 151 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**66 / 66 canonical scenarios** have at least one integ fixture exercising them. **133 / 152 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (65 scenarios)
+## Per-scenario coverage (66 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -95,6 +95,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `update-replace-breadth` | Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types. | [`update-replace`](../tests/integration/update-replace/) |
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`destroy-interrupt`](../tests/integration/destroy-interrupt/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
+| `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](../tests/integration/throttle-wide-dag/) |
 
 ## Un-annotated fixtures (19)
 

@@ -2291,6 +2291,7 @@
         "rollback-failure-injection",
         "sdk-ccapi-crossref",
         "tags-propagation",
+        "throttle-wide-dag",
         "update-replace",
         "vpc-lambda-cr-race"
       ],
@@ -2409,6 +2410,10 @@
         ],
         "tags-propagation": [
           "l2",
+          "literal"
+        ],
+        "throttle-wide-dag": [
+          "l1",
           "literal"
         ],
         "update-replace": [
@@ -3320,6 +3325,7 @@
         "serverless-api",
         "sns-sqs-event",
         "tags-propagation",
+        "throttle-wide-dag",
         "update-policy-mutations"
       ],
       "signals": {
@@ -3394,6 +3400,10 @@
         ],
         "tags-propagation": [
           "l2"
+        ],
+        "throttle-wide-dag": [
+          "l1",
+          "literal"
         ],
         "update-policy-mutations": [
           "l2",
@@ -3565,6 +3575,7 @@
         "secrets-dynamic-ref",
         "state-info-command",
         "tags-propagation",
+        "throttle-wide-dag",
         "update-policy-mutations",
         "vpc-lookup"
       ],
@@ -3690,6 +3701,10 @@
         ],
         "tags-propagation": [
           "l2",
+          "literal"
+        ],
+        "throttle-wide-dag": [
+          "l1",
           "literal"
         ],
         "update-policy-mutations": [
