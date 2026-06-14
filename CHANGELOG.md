@@ -1,3 +1,10 @@
+## [0.221.6](https://github.com/go-to-k/cdkd/compare/v0.221.5...v0.221.6) (2026-06-14)
+
+
+### Bug Fixes
+
+* **provisioning:** clear SQS attributes removed on UPDATE (Fn::If -> AWS::NoValue) ([#850](https://github.com/go-to-k/cdkd/issues/850)) ([dd91172](https://github.com/go-to-k/cdkd/commit/dd9117242a34cf565b852f1b93571760833f5f55))
+
 ## [0.221.5](https://github.com/go-to-k/cdkd/compare/v0.221.4...v0.221.5) (2026-06-14)
 
 
