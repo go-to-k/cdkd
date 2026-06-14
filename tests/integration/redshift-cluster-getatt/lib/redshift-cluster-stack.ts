@@ -43,7 +43,7 @@ export class RedshiftClusterStack extends cdk.Stack {
       subnetIds: vpc.isolatedSubnets.map((s) => s.subnetId),
     });
 
-    // L1 CfnCluster: single-node dc2.large, AWS-managed master password
+    // L1 CfnCluster: single-node ra3.large, AWS-managed master password
     // (manageMasterPassword) so no literal secret is committed. Redshift has
     // no core L2.
     const cluster = new redshift.CfnCluster(this, 'Cluster', {

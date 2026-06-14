@@ -16,7 +16,7 @@ and populates the flat-key `Endpoint.Address` / `Endpoint.Port` attributes.
 ## Topology
 
 A `natGateways: 0` VPC + Redshift `CfnClusterSubnetGroup` + SecurityGroup + a
-single-node `dc2.large` `CfnCluster` (AWS-managed master password — no literal
+single-node `ra3.large` `CfnCluster` (AWS-managed master password — no literal
 secret committed), plus two SSM Parameters whose `Value` is `Fn::GetAtt`
 against the cluster's `Endpoint.Address` / `Endpoint.Port`.
 
