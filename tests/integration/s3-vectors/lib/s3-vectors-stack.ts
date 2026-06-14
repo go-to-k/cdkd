@@ -10,12 +10,27 @@ export class S3VectorsStack extends cdk.Stack {
     // through `CreateVectorBucket.tags` and read back via
     // `ListTagsForResource`. The L1 `CfnVectorBucket` accepts a standard
     // `Array<cdk.CfnTag>`.
+    //
+    // CDKD_TEST_UPDATE=true mutates the tag set so a second deploy exercises
+    // the in-place Tags UPDATE path (TagResource for env-changed + owner-added,
+    // UntagResource for team-removed) — the path that was a silent no-op before
+    // this fix. VectorBucketName is held constant (it is create-only; changing
+    // it would force a replacement, not an update).
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const tags = isUpdate
+      ? [
+          { key: 'env', value: 'cdkd-integ-updated' }, // changed value
+          { key: 'owner', value: 'cdkd' }, // added
+          // 'team' removed
+        ]
+      : [
+          { key: 'env', value: 'cdkd-integ' },
+          { key: 'team', value: 'platform' },
+        ];
+
     const vectorBucket = new s3vectors.CfnVectorBucket(this, 'VectorBucket', {
       vectorBucketName: `${this.stackName}-vector-bucket`.toLowerCase(),
-      tags: [
-        { key: 'env', value: 'cdkd-integ' },
-        { key: 'team', value: 'platform' },
-      ],
+      tags,
     });
 
     new cdk.CfnOutput(this, 'VectorBucketName', {

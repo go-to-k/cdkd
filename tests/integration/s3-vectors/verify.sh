@@ -98,6 +98,41 @@ if [ "${TEAM_TAG}" != "platform" ]; then
 fi
 echo "    OK: VectorBucket tags { env=cdkd-integ, team=platform } reached AWS (Tags backfill CLOSED)"
 
+# --- Phase 1.5: in-place Tags UPDATE ---------------------------------
+# Re-deploy with CDKD_TEST_UPDATE=true so the fixture changes the tag set
+# (env value changed, owner added, team removed). This exercises the
+# VectorBucket update() path — TagResource + UntagResource — which was a
+# silent no-op before the fix. Assert the AWS-side tags reflect the change.
+echo "==> Phase 1.5: in-place Tags update (CDKD_TEST_UPDATE=true)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+UPD_TAGS_JSON=$(aws s3vectors list-tags-for-resource \
+  --resource-arn "${BUCKET_ARN}" --region "${REGION}" \
+  --query 'tags' --output json 2>/dev/null)
+UPD_ENV=$(echo "${UPD_TAGS_JSON}" | jq -r '.env // empty')
+UPD_OWNER=$(echo "${UPD_TAGS_JSON}" | jq -r '.owner // empty')
+UPD_TEAM=$(echo "${UPD_TAGS_JSON}" | jq -r 'if has("team") then .team else "ABSENT" end')
+
+if [ "${UPD_ENV}" != "cdkd-integ-updated" ]; then
+  echo "FAIL: after update, tag 'env' is '${UPD_ENV}', expected 'cdkd-integ-updated' (TagResource not applied)" >&2
+  echo "      raw tags: ${UPD_TAGS_JSON}" >&2
+  exit 1
+fi
+if [ "${UPD_OWNER}" != "cdkd" ]; then
+  echo "FAIL: after update, tag 'owner' is '${UPD_OWNER}', expected 'cdkd' (TagResource not applied)" >&2
+  echo "      raw tags: ${UPD_TAGS_JSON}" >&2
+  exit 1
+fi
+if [ "${UPD_TEAM}" != "ABSENT" ]; then
+  echo "FAIL: after update, tag 'team' is '${UPD_TEAM}', expected ABSENT (UntagResource not applied)" >&2
+  echo "      raw tags: ${UPD_TAGS_JSON}" >&2
+  exit 1
+fi
+echo "    OK: tags updated on AWS { env=cdkd-integ-updated, owner=cdkd, team removed } (update() path works)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

@@ -6,11 +6,13 @@ import {
   ListIndexesCommand,
   ListVectorBucketsCommand,
   ListTagsForResourceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   DeleteIndexCommand,
   type SseType,
 } from '@aws-sdk/client-s3vectors';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
@@ -68,25 +70,151 @@ export class S3VectorsProvider implements ResourceProvider {
     }
   }
 
-  update(
+  async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::S3Vectors::VectorBucket':
-        // VectorBucket does not support updates
-        return Promise.resolve({ physicalId: _physicalId, wasReplaced: false });
+        return this.updateVectorBucket(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
           resourceType,
           logicalId,
-          _physicalId
+          physicalId
         );
     }
+  }
+
+  /**
+   * The ONLY in-place-updatable property of `AWS::S3Vectors::VectorBucket` is
+   * `Tags` — `VectorBucketName` and `EncryptionConfiguration` are create-only
+   * (per the CFn registry schema), so a change to either drives a replacement
+   * (handled by the deploy engine, not here). Reaching `update()` therefore
+   * means a non-create-only diff, which can only be `Tags`.
+   *
+   * Pre-fix this method was a silent no-op (`return { wasReplaced: false }`),
+   * so a tag change was dropped while cdkd recorded the new Tags into state as
+   * if applied — the next deploy then saw no diff and the AWS-side tags stayed
+   * stale forever (the exact silent-drift failure mode documented in
+   * `feedback_tags_on_update_must_throw`). We now diff old vs new tags and
+   * apply them via TagResource / UntagResource, and any tag-API failure THROWS
+   * (state is NOT written, so the next deploy retries) rather than being
+   * swallowed. A non-Tags diff that somehow reaches here (immutable property)
+   * is surfaced as `ResourceUpdateNotSupportedError`.
+   */
+  private async updateVectorBucket(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // Guard: a create-only property reaching update() means the engine did not
+    // replace — fail loudly rather than silently leaving AWS unchanged.
+    for (const createOnly of ['VectorBucketName', 'EncryptionConfiguration']) {
+      if (
+        JSON.stringify(properties[createOnly]) !== JSON.stringify(previousProperties[createOnly])
+      ) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `'${createOnly}' is immutable (create-only) on VectorBucket '${physicalId}'; a change requires replacement (cdkd deploy --replace)`
+        );
+      }
+    }
+
+    const oldTags = this.cfnTagsToRecord(previousProperties['Tags']);
+    const newTags = this.cfnTagsToRecord(properties['Tags']);
+
+    const toSet: Record<string, string> = {};
+    for (const [k, v] of Object.entries(newTags)) {
+      if (oldTags[k] !== v) toSet[k] = v;
+    }
+    const toRemove = Object.keys(oldTags).filter((k) => !(k in newTags));
+
+    if (Object.keys(toSet).length === 0 && toRemove.length === 0) {
+      // No tag delta — nothing to do on AWS (e.g. a metadata-only diff).
+      return { physicalId, wasReplaced: false };
+    }
+
+    // TagResource / UntagResource need the bucket ARN; the update() contract
+    // only hands us the physicalId (the bucket name), so resolve the ARN.
+    let resourceArn: string | undefined;
+    try {
+      const got = await this.getClient().send(
+        new GetVectorBucketCommand({ vectorBucketName: physicalId })
+      );
+      resourceArn = got.vectorBucket?.vectorBucketArn;
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to resolve ARN for S3 VectorBucket ${logicalId} (${physicalId}) before tag update: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+    if (!resourceArn) {
+      throw new ProvisioningError(
+        `Could not resolve ARN for S3 VectorBucket ${logicalId} (${physicalId}); cannot apply tag update.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    // Apply tag changes; a failure THROWS (state not written → next deploy
+    // retries) instead of being swallowed — see the method doc above.
+    try {
+      if (Object.keys(toSet).length > 0) {
+        await this.getClient().send(new TagResourceCommand({ resourceArn, tags: toSet }));
+      }
+      if (toRemove.length > 0) {
+        await this.getClient().send(new UntagResourceCommand({ resourceArn, tagKeys: toRemove }));
+      }
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update tags for S3 VectorBucket ${logicalId} (${physicalId}): ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+
+    this.logger.debug(
+      `Updated tags for S3 VectorBucket ${logicalId} (${physicalId}): set ${Object.keys(toSet).length}, removed ${toRemove.length}`
+    );
+    return { physicalId, wasReplaced: false };
+  }
+
+  /**
+   * Convert a CFn `Tags: [{ Key, Value }]` list to the SDK
+   * `Record<string, string>` shape. Tolerates undefined / non-array input
+   * (returns an empty record) and skips entries missing Key or Value.
+   */
+  private cfnTagsToRecord(tags: unknown): Record<string, string> {
+    if (!Array.isArray(tags)) return {};
+    return (tags as Array<{ Key?: string; Value?: string }>).reduce<Record<string, string>>(
+      (acc, t) => {
+        if (t.Key !== undefined && t.Value !== undefined) acc[t.Key] = t.Value;
+        return acc;
+      },
+      {}
+    );
   }
 
   async delete(
@@ -132,16 +260,11 @@ export class S3VectorsProvider implements ResourceProvider {
       | undefined;
 
     // CFn shape: `Tags: [{ Key, Value }]`. SDK shape:
-    // `tags?: Record<string, string>`. Convert + omit-when-absent (an
-    // empty array would force a no-op CloudTrail event per Tag).
-    const tagsArray = properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
-    const tags =
-      tagsArray && tagsArray.length > 0
-        ? tagsArray.reduce<Record<string, string>>((acc, t) => {
-            if (t.Key !== undefined && t.Value !== undefined) acc[t.Key] = t.Value;
-            return acc;
-          }, {})
-        : undefined;
+    // `tags?: Record<string, string>`. Convert (shared with the update path)
+    // + omit-when-absent (an empty array would force a no-op CloudTrail event
+    // per Tag).
+    const tagRecord = this.cfnTagsToRecord(properties['Tags']);
+    const tags = Object.keys(tagRecord).length > 0 ? tagRecord : undefined;
 
     try {
       const result = await this.getClient().send(

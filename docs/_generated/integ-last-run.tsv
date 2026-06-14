@@ -62,7 +62,6 @@ migrate-from-bare-cfn-codegen-only	2026-06-02T11:37:34Z	PASS	30	verify.sh	sweep:
 multi-region-same-stack	2026-06-02T11:37:34Z	PASS	16	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 orphan-resource	2026-06-02T11:37:34Z	PASS	31	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 s3-cloudfront	2026-06-02T11:37:34Z	PASS	431	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
-s3-vectors	2026-06-02T11:37:34Z	PASS	17	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 scheduled-task	2026-06-02T11:37:34Z	PASS	32	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 state-destroy	2026-06-02T11:37:34Z	PASS	18	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 state-info-command	2026-06-02T11:37:34Z	PASS	15	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -136,3 +135,4 @@ deletion-ordering-complex	2026-06-14T05:02:58Z	PASS		verify.sh	ELBv2 destroy-ord
 elasticache-replicationgroup-getatt	2026-06-14T09:11:22Z	PASS		verify.sh	CC-API GetAtt enrichment for ElastiCache RG; PrimaryEndPoint resolved real endpoint; 0 orphans
 redshift-cluster-getatt	2026-06-14T10:05:32Z	PASS	220	verify.sh	CC-API GetAtt Endpoint.Address/Port enrichment; ra3.large single-node; 0 orphans
 opensearch-domain-getatt	2026-06-14T10:54:56Z	PASS	2000	verify.sh	CC-API GetAtt DomainEndpoint/Arn enrichment; t3.small.search public domain; 0 orphans
+s3-vectors	2026-06-14T13:39:25Z	PASS	60	verify.sh	Tags backfill + in-place Tags update() (TagResource/UntagResource) re-run after create dedup; 0 orphans

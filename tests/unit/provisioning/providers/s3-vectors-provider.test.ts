@@ -35,10 +35,14 @@ vi.mock('../../../../src/utils/logger.js', () => {
 import {
   CreateVectorBucketCommand,
   DeleteVectorBucketCommand,
+  GetVectorBucketCommand,
   ListIndexesCommand,
   DeleteIndexCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
 } from '@aws-sdk/client-s3vectors';
 import { S3VectorsProvider } from '../../../../src/provisioning/providers/s3-vectors-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('S3VectorsProvider', () => {
   let provider: S3VectorsProvider;
@@ -239,18 +243,166 @@ describe('S3VectorsProvider', () => {
   });
 
   describe('update', () => {
-    it('should be a no-op and return the existing physicalId', async () => {
+    const ARN = 'arn:aws:s3vectors:us-east-1:123456789012:vector-bucket/my-vector-bucket';
+
+    it('is a no-op (no AWS calls) when there is no tag delta', async () => {
+      const tags = [{ Key: 'env', Value: 'prod' }];
       const result = await provider.update(
         'MyVectorBucket',
         'my-vector-bucket',
         'AWS::S3Vectors::VectorBucket',
-        {},
-        {}
+        { Tags: tags },
+        { Tags: tags }
       );
 
       expect(result.physicalId).toBe('my-vector-bucket');
       expect(result.wasReplaced).toBe(false);
+      // No tag diff → no ARN lookup, no Tag/Untag calls.
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('applies added / changed tags via TagResource (resolving the ARN first)', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.resolve({ vectorBucket: { vectorBucketArn: ARN } });
+        }
+        return Promise.resolve({});
+      });
+
+      await provider.update(
+        'MyVectorBucket',
+        'my-vector-bucket',
+        'AWS::S3Vectors::VectorBucket',
+        { Tags: [{ Key: 'env', Value: 'prod' }, { Key: 'new', Value: 'added' }] },
+        { Tags: [{ Key: 'env', Value: 'dev' }] }
+      );
+
+      const tagCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof TagResourceCommand
+      );
+      expect(tagCall).toBeDefined();
+      // env changed dev->prod AND new added; both go in one TagResource.
+      expect(tagCall![0].input).toEqual({ resourceArn: ARN, tags: { env: 'prod', new: 'added' } });
+      // No removed keys → no UntagResource.
+      expect(
+        mockSend.mock.calls.find((call: unknown[]) => call[0] instanceof UntagResourceCommand)
+      ).toBeUndefined();
+    });
+
+    it('removes dropped tags via UntagResource', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.resolve({ vectorBucket: { vectorBucketArn: ARN } });
+        }
+        return Promise.resolve({});
+      });
+
+      await provider.update(
+        'MyVectorBucket',
+        'my-vector-bucket',
+        'AWS::S3Vectors::VectorBucket',
+        { Tags: [{ Key: 'env', Value: 'prod' }] },
+        { Tags: [{ Key: 'env', Value: 'prod' }, { Key: 'stale', Value: 'x' }] }
+      );
+
+      const untagCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UntagResourceCommand
+      );
+      expect(untagCall).toBeDefined();
+      expect(untagCall![0].input).toEqual({ resourceArn: ARN, tagKeys: ['stale'] });
+    });
+
+    it('THROWS (does not swallow) when the tag API fails — state must not be written', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.resolve({ vectorBucket: { vectorBucketArn: ARN } });
+        }
+        if (cmd instanceof TagResourceCommand) {
+          return Promise.reject(Object.assign(new Error('throttled'), { name: 'ThrottlingException' }));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { Tags: [{ Key: 'new', Value: 'v' }] },
+          {}
+        )
+      ).rejects.toThrow(/Failed to update tags/);
+    });
+
+    it('rejects an immutable (create-only) property change with ResourceUpdateNotSupportedError', async () => {
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { EncryptionConfiguration: { SSEType: 'aws:kms' } },
+          { EncryptionConfiguration: { SSEType: 'AES256' } }
+        )
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      // Must fail BEFORE any AWS call.
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects a VectorBucketName (create-only) change before any AWS call', async () => {
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { VectorBucketName: 'renamed-bucket' },
+          { VectorBucketName: 'my-vector-bucket' }
+        )
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('THROWS when GetVectorBucket (ARN resolution) fails', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.reject(
+            Object.assign(new Error('throttled'), { name: 'ThrottlingException' })
+          );
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { Tags: [{ Key: 'new', Value: 'v' }] },
+          {}
+        )
+      ).rejects.toThrow(/Failed to resolve ARN/);
+      // The tag write must NOT be attempted when the ARN is unknown.
+      expect(
+        mockSend.mock.calls.find((call: unknown[]) => call[0] instanceof TagResourceCommand)
+      ).toBeUndefined();
+    });
+
+    it('THROWS when GetVectorBucket returns no ARN', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetVectorBucketCommand) {
+          return Promise.resolve({ vectorBucket: {} }); // ARN-less response
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyVectorBucket',
+          'my-vector-bucket',
+          'AWS::S3Vectors::VectorBucket',
+          { Tags: [{ Key: 'new', Value: 'v' }] },
+          {}
+        )
+      ).rejects.toThrow(/Could not resolve ARN/);
     });
   });
 
