@@ -886,6 +886,11 @@ describe('CloudControlProvider OpenSearch Domain attribute enrichment (CC-API ro
     // DomainArn is the documented alias for the same value.
     expect(enriched['DomainArn']).toBe('arn:aws:es:us-east-1:111122223333:domain/mydomain');
     expect(enriched['Id']).toBe('111122223333/mydomain');
+    // DescribeDomain must be issued for the physicalId (the domain name).
+    expect(mockOpenSearchSend).toHaveBeenCalledWith({
+      __type: 'DescribeDomain',
+      input: { DomainName: 'mydomain' },
+    });
   });
 
   it('falls back to the Endpoints.vpc entry for a VPC domain (no public Endpoint)', async () => {
@@ -901,6 +906,9 @@ describe('CloudControlProvider OpenSearch Domain attribute enrichment (CC-API ro
     expect(enriched['DomainEndpoint']).toBe(
       'vpc-mydomain-abc123.us-east-1.es.amazonaws.com'
     );
+    // Arn overlay is endpoint-branch-independent — assert it still lands on
+    // the VPC path too.
+    expect(enriched['Arn']).toBe('arn:aws:es:us-east-1:111122223333:domain/mydomain');
   });
 
   it('is best-effort: a failed DescribeDomain does not throw and leaves attributes unchanged', async () => {
