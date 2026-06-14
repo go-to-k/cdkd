@@ -662,7 +662,8 @@
         "multi-resource",
         "multi-stack-deps",
         "remove-protection",
-        "serverless-api"
+        "serverless-api",
+        "tags-propagation"
       ],
       "signals": {
         "appsync": [
@@ -707,6 +708,9 @@
           "literal"
         ],
         "serverless-api": [
+          "l2"
+        ],
+        "tags-propagation": [
           "l2"
         ]
       }
@@ -2286,6 +2290,7 @@
         "recreate-via-sdk-provider",
         "rollback-failure-injection",
         "sdk-ccapi-crossref",
+        "tags-propagation",
         "update-replace",
         "vpc-lambda-cr-race"
       ],
@@ -2400,6 +2405,10 @@
         ],
         "sdk-ccapi-crossref": [
           "l1",
+          "literal"
+        ],
+        "tags-propagation": [
+          "l2",
           "literal"
         ],
         "update-replace": [
@@ -2594,6 +2603,7 @@
         "serverless-api",
         "sns-sqs-event",
         "stepfunctions",
+        "tags-propagation",
         "update-replace",
         "vpc-lambda",
         "vpc-lambda-cr-race"
@@ -2791,6 +2801,9 @@
         "stepfunctions": [
           "l2"
         ],
+        "tags-propagation": [
+          "l2"
+        ],
         "update-replace": [
           "l2",
           "literal"
@@ -2870,7 +2883,8 @@
         "log-pipeline",
         "monitoring",
         "remove-protection",
-        "scheduled-task"
+        "scheduled-task",
+        "tags-propagation"
       ],
       "signals": {
         "cloudwatch": [
@@ -2904,6 +2918,9 @@
           "literal"
         ],
         "scheduled-task": [
+          "l2"
+        ],
+        "tags-propagation": [
           "l2"
         ]
       }
@@ -3060,6 +3077,7 @@
         "recreate-via-cc-api",
         "s3-cloudfront",
         "state-destroy",
+        "tags-propagation",
         "update-replace"
       ],
       "signals": {
@@ -3161,6 +3179,9 @@
           "l2"
         ],
         "state-destroy": [
+          "l2"
+        ],
+        "tags-propagation": [
           "l2"
         ],
         "update-replace": [
@@ -3280,7 +3301,8 @@
         "replacement-fanout",
         "scheduled-task",
         "serverless-api",
-        "sns-sqs-event"
+        "sns-sqs-event",
+        "tags-propagation"
       ],
       "signals": {
         "bench-sdk": [
@@ -3351,6 +3373,9 @@
         ],
         "sns-sqs-event": [
           "l2"
+        ],
+        "tags-propagation": [
+          "l2"
         ]
       }
     },
@@ -3397,7 +3422,8 @@
         "migrate-from-cfn",
         "multi-resource",
         "rollback-failure-injection",
-        "sns-sqs-event"
+        "sns-sqs-event",
+        "tags-propagation"
       ],
       "signals": {
         "basic": [
@@ -3450,6 +3476,9 @@
           "l1"
         ],
         "sns-sqs-event": [
+          "l2"
+        ],
+        "tags-propagation": [
           "l2"
         ]
       }
@@ -3506,6 +3535,7 @@
         "schema-v7-to-v8-migration",
         "sdk-ccapi-crossref",
         "state-info-command",
+        "tags-propagation",
         "vpc-lookup"
       ],
       "signals": {
@@ -3620,6 +3650,10 @@
         ],
         "state-info-command": [
           "l2"
+        ],
+        "tags-propagation": [
+          "l2",
+          "literal"
         ],
         "vpc-lookup": [
           "l2"

@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "stack-level-tag-propagation-multitype"
+  ]
+}

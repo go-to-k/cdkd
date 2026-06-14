@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**60 / 60 canonical scenarios** have at least one integ fixture exercising them. **127 / 146 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**61 / 61 canonical scenarios** have at least one integ fixture exercising them. **128 / 147 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (60 scenarios)
+## Per-scenario coverage (61 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -85,6 +85,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `s3-asset-deploy` | File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy. | [`s3-asset-deploy`](../tests/integration/s3-asset-deploy/) |
 | `sdk-ccapi-crossref-boundary` | Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`). | [`sdk-ccapi-crossref`](../tests/integration/sdk-ccapi-crossref/) |
 | `sg-circular-dependency` | Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation. | [`sg-circular-dependency`](../tests/integration/sg-circular-dependency/) |
+| `stack-level-tag-propagation-multitype` | STACK-LEVEL tags (`cdk.Tags.of(app/stack).add(k, v)`) propagate to ALL taggable resources across MANY types on BOTH the SDK-provider path (S3 / SNS / SQS / SSM Parameter / IAM Role / Logs LogGroup / Lambda / DynamoDB) AND the Cloud Control API path (Athena WorkGroup, no SDK provider). Each AWS type accepts tags in a DIFFERENT wire shape ({Key,Value}[] list vs { k: v } map vs the CC-API forwarder) — notably `AWS::SSM::Parameter.Tags` is a CFn MAP (the historical `Tags.map()` deploy-crash type per feedback_ssm_parameter_tags_is_a_map). verify.sh reads live AWS tags per type via that type-specific list/describe API and asserts ALL stack-level tags landed with the right value; a dropped tag FAILs naming the type. Also asserts post-deploy `cdkd drift` is clean (no #802 tag-list-reorder false positive). | [`tags-propagation`](../tests/integration/tags-propagation/) |
 | `state-bucket-region-resolve` | State-bucket S3 clients (state backend + lock manager) auto-detect bucket region via `GetBucketLocation` regardless of caller-profile region. | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
 | `state-schema-migration` | Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema. | [`legacy-state-migration`](../tests/integration/legacy-state-migration/)<br>[`schema-v5-to-v6-migration`](../tests/integration/schema-v5-to-v6-migration/) |
 | `update-replace-breadth` | Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types. | [`update-replace`](../tests/integration/update-replace/) |
