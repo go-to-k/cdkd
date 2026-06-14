@@ -37,10 +37,16 @@ vi.mock('@aws-sdk/client-elasticache', () => ({
 // runs (a plain const interleaved between earlier vi.mock calls was not
 // reliably hoisted, leaving the real client in place and the mock a no-op).
 const mockRedshiftSend = vi.hoisted(() => vi.fn());
+const mockOpenSearchSend = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-redshift', () => ({
   RedshiftClient: vi.fn(() => ({ send: mockRedshiftSend })),
   DescribeClustersCommand: vi.fn((input: unknown) => ({ __type: 'DescribeClusters', input })),
+}));
+
+vi.mock('@aws-sdk/client-opensearch', () => ({
+  OpenSearchClient: vi.fn(() => ({ send: mockOpenSearchSend })),
+  DescribeDomainCommand: vi.fn((input: unknown) => ({ __type: 'DescribeDomain', input })),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -840,5 +846,88 @@ describe('CloudControlProvider Redshift Cluster attribute enrichment (CC-API rou
 
     expect(enriched['Endpoint.Address']).toBeUndefined();
     expect(enriched['Endpoint.Port']).toBeUndefined();
+  });
+});
+
+describe('CloudControlProvider OpenSearch Domain attribute enrichment (CC-API routing)', () => {
+  let provider: CloudControlProvider;
+
+  const enrich = (physicalId: string, attributes: Record<string, unknown>) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes('AWS::OpenSearchService::Domain', physicalId, attributes);
+
+  beforeEach(() => {
+    mockOpenSearchSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('overlays DomainEndpoint / Arn / DomainArn / Id from DescribeDomain (public domain)', async () => {
+    mockOpenSearchSend.mockResolvedValueOnce({
+      DomainStatus: {
+        Endpoint: 'search-mydomain-abc123.us-east-1.es.amazonaws.com',
+        ARN: 'arn:aws:es:us-east-1:111122223333:domain/mydomain',
+        DomainId: '111122223333/mydomain',
+      },
+    });
+
+    const enriched = await enrich('mydomain', {});
+
+    expect(enriched['DomainEndpoint']).toBe(
+      'search-mydomain-abc123.us-east-1.es.amazonaws.com'
+    );
+    expect(enriched['Arn']).toBe('arn:aws:es:us-east-1:111122223333:domain/mydomain');
+    // DomainArn is the documented alias for the same value.
+    expect(enriched['DomainArn']).toBe('arn:aws:es:us-east-1:111122223333:domain/mydomain');
+    expect(enriched['Id']).toBe('111122223333/mydomain');
+    // DescribeDomain must be issued for the physicalId (the domain name).
+    expect(mockOpenSearchSend).toHaveBeenCalledWith({
+      __type: 'DescribeDomain',
+      input: { DomainName: 'mydomain' },
+    });
+  });
+
+  it('falls back to the Endpoints.vpc entry for a VPC domain (no public Endpoint)', async () => {
+    mockOpenSearchSend.mockResolvedValueOnce({
+      DomainStatus: {
+        Endpoints: { vpc: 'vpc-mydomain-abc123.us-east-1.es.amazonaws.com' },
+        ARN: 'arn:aws:es:us-east-1:111122223333:domain/mydomain',
+      },
+    });
+
+    const enriched = await enrich('mydomain', {});
+
+    expect(enriched['DomainEndpoint']).toBe(
+      'vpc-mydomain-abc123.us-east-1.es.amazonaws.com'
+    );
+    // Arn overlay is endpoint-branch-independent — assert it still lands on
+    // the VPC path too.
+    expect(enriched['Arn']).toBe('arn:aws:es:us-east-1:111122223333:domain/mydomain');
+  });
+
+  it('is best-effort: a failed DescribeDomain does not throw and leaves attributes unchanged', async () => {
+    mockOpenSearchSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const enriched = await enrich('mydomain', { ExistingAttr: 'keep-me' });
+
+    expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
+    expect(enriched['DomainEndpoint']).toBeUndefined();
+  });
+
+  it('tolerates a domain with no Endpoint yet (returns attributes unchanged)', async () => {
+    mockOpenSearchSend.mockResolvedValueOnce({ DomainStatus: {} });
+
+    const enriched = await enrich('mydomain', {});
+
+    expect(enriched['DomainEndpoint']).toBeUndefined();
+    expect(enriched['Arn']).toBeUndefined();
   });
 });

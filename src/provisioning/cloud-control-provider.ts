@@ -18,6 +18,7 @@ import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudf
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
 import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
+import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
 import { getAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import {
@@ -1019,6 +1020,55 @@ export class CloudControlProvider implements ResourceProvider {
         } catch (error) {
           this.logger.debug(
             `Failed to enrich Redshift Cluster ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        break;
+      }
+
+      case 'AWS::OpenSearchService::Domain': {
+        // OpenSearch Service Domain has no SDK provider, so it always routes
+        // through Cloud Control. The CC API GetResource model does not surface
+        // the search endpoint / ARN in the flat-key shape cdkd's intrinsic
+        // resolver expects, so `Fn::GetAtt(<Domain>, 'DomainEndpoint')` (the
+        // https://search-... URL clients connect to) and
+        // `Fn::GetAtt(<Domain>, 'Arn')` / 'DomainArn' would fall through the
+        // resolver's constructAttribute to the physicalId (the domain NAME,
+        // NOT the endpoint hostname / ARN). Overlay them from DescribeDomain.
+        //
+        // SHAPE NOTE: the CFn return-value names are `DomainEndpoint` (single,
+        // public access) / `DomainEndpoints` (map, e.g. { vpc: '...' } for
+        // VPC-deployed domains) / `Arn` (and the alias `DomainArn`) / `Id`.
+        // The SDK `DomainStatus` fields are `Endpoint` (public) / `Endpoints`
+        // (map) / `ARN` / `DomainId`. We populate the flat-keys with the CFn
+        // names so the resolver finds them; for a VPC domain (no public
+        // `Endpoint`) we fall back to the `vpc` entry of the `Endpoints` map.
+        // Best-effort: a failed Describe leaves the CC-API attribute shape
+        // unchanged and never fails the deploy.
+        try {
+          const openSearchClient = new OpenSearchClient({});
+          const describeResponse = await openSearchClient.send(
+            new DescribeDomainCommand({ DomainName: physicalId })
+          );
+          const domain = describeResponse.DomainStatus;
+          if (domain) {
+            const endpoint = domain.Endpoint ?? domain.Endpoints?.['vpc'];
+            if (endpoint) {
+              enriched['DomainEndpoint'] = endpoint;
+            }
+            if (domain.ARN) {
+              enriched['Arn'] = domain.ARN;
+              enriched['DomainArn'] = domain.ARN;
+            }
+            if (domain.DomainId) {
+              enriched['Id'] = domain.DomainId;
+            }
+            this.logger.debug(
+              `Enriched OpenSearch Domain ${physicalId} with DomainEndpoint/Arn from DescribeDomain`
+            );
+          }
+        } catch (error) {
+          this.logger.debug(
+            `Failed to enrich OpenSearch Domain ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
           );
         }
         break;
