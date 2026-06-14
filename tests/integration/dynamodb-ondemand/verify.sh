@@ -15,6 +15,12 @@
 # silent-drop routing flip is caught, and that the destroy path cleans up the
 # table, the Kinesis stream, and the cdkd state file.
 #
+# Phase 1.5 additionally exercises the BillingMode/ProvisionedThroughput
+# in-place UPDATE path on a standalone PROVISIONED table: a re-deploy with
+# CDKD_TEST_UPDATE=true flips its capacity (RCU 5->20 / WCU 5->10) and asserts
+# AWS reflects the new ProvisionedThroughput. Before the fix update() issued no
+# UpdateTable for ProvisionedThroughput, so the change was silently dropped.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -31,6 +37,13 @@ STREAM_NAME="cdkd-ondemand-test-stream"
 EXPECTED_READ=10
 EXPECTED_WRITE=5
 EXPECTED_CI_MODE="ACCESSED_AND_THROTTLED_KEYS"
+# Standalone PROVISIONED table exercising the BillingMode/ProvisionedThroughput
+# in-place UPDATE path (silent-drop fix).
+PROV_TABLE_NAME="cdkd-ondemand-test-provisioned-table"
+PROV_INITIAL_READ=5
+PROV_INITIAL_WRITE=5
+PROV_UPDATED_READ=20
+PROV_UPDATED_WRITE=10
 
 LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 
@@ -44,6 +57,7 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -189,6 +203,65 @@ if [ "${CI_MODE}" != "${EXPECTED_CI_MODE}" ]; then
 fi
 echo "    OK: ContributorInsightsSpecification.Mode == ${EXPECTED_CI_MODE} on AWS"
 
+# --- Assertion 5: PROVISIONED table initial capacity reached AWS ------
+# A helper that reads the provisioned table's ProvisionedThroughput from AWS
+# and asserts the RCU/WCU match the expected pair.
+assert_provisioned_capacity() {
+  local expected_read="$1" expected_write="$2" phase="$3"
+  local pt actual_read actual_write
+  pt=$(aws dynamodb describe-table \
+    --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.ProvisionedThroughput' --output json 2>/dev/null)
+  actual_read=$(echo "${pt}" | jq -r 'if has("ReadCapacityUnits") then .ReadCapacityUnits | tostring else "null" end')
+  actual_write=$(echo "${pt}" | jq -r 'if has("WriteCapacityUnits") then .WriteCapacityUnits | tostring else "null" end')
+  if [ "${actual_read}" != "${expected_read}" ]; then
+    echo "FAIL (${phase}): ProvisionedThroughput.ReadCapacityUnits is '${actual_read}', expected '${expected_read}'" >&2
+    echo "${pt}" | jq .
+    exit 1
+  fi
+  if [ "${actual_write}" != "${expected_write}" ]; then
+    echo "FAIL (${phase}): ProvisionedThroughput.WriteCapacityUnits is '${actual_write}', expected '${expected_write}'" >&2
+    echo "${pt}" | jq .
+    exit 1
+  fi
+  echo "    OK (${phase}): ProvisionedThroughput RCU=${expected_read} / WCU=${expected_write} on AWS"
+}
+
+assert_provisioned_capacity "${PROV_INITIAL_READ}" "${PROV_INITIAL_WRITE}" "Phase 1"
+
+# --- Phase 1.5: in-place ProvisionedThroughput UPDATE -----------------
+# Re-deploy with CDKD_TEST_UPDATE=true, which flips the provisioned table's
+# capacity from RCU=5/WCU=5 to RCU=20/WCU=10. Before the fix, update() issued
+# NO UpdateTable for ProvisionedThroughput, so the change was silently dropped
+# (state recorded the new value, AWS stayed at 5/5). This assertion is the
+# real-AWS proof the silent drop is closed: AWS must report the NEW capacity.
+echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# UpdateTable is async; the table briefly reports UPDATING. Poll until ACTIVE
+# (and the new capacity is reflected) rather than racing the async update.
+UPDATE_OK=""
+for _ in $(seq 1 24); do
+  STATUS=$(aws dynamodb describe-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>/dev/null || echo "")
+  READ_NOW=$(aws dynamodb describe-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text 2>/dev/null || echo "")
+  if [ "${STATUS}" = "ACTIVE" ] && [ "${READ_NOW}" = "${PROV_UPDATED_READ}" ]; then
+    UPDATE_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${UPDATE_OK}" ]; then
+  echo "FAIL: provisioned table did not reflect the updated capacity within ~2min after CDKD_TEST_UPDATE re-deploy (silent-drop NOT closed)" >&2
+  exit 1
+fi
+assert_provisioned_capacity "${PROV_UPDATED_READ}" "${PROV_UPDATED_WRITE}" "Phase 1.5"
+echo "    OK: ProvisionedThroughput in-place UPDATE reached AWS (silent-drop CLOSED)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -213,6 +286,21 @@ if [ -z "${TABLE_GONE}" ]; then
 fi
 echo "    OK: DynamoDB table is gone"
 
+# The standalone PROVISIONED table is async-deleted too.
+PROV_TABLE_GONE=""
+for _ in $(seq 1 24); do
+  if ! aws dynamodb describe-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+    PROV_TABLE_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${PROV_TABLE_GONE}" ]; then
+  echo "FAIL: DynamoDB table ${PROV_TABLE_NAME} still exists ~2min after destroy" >&2
+  exit 1
+fi
+echo "    OK: provisioned DynamoDB table is gone"
+
 # Kinesis DeleteStream is async too.
 STREAM_GONE=""
 for _ in $(seq 1 24); do
@@ -235,4 +323,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + clean destroy)"
+echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + clean destroy)"

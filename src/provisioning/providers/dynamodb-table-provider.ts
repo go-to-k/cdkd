@@ -18,6 +18,7 @@ import {
   UntagResourceCommand,
   UpdateContributorInsightsCommand,
   UpdateTableCommand,
+  type UpdateTableCommandInput,
   UpdateContinuousBackupsCommand,
   type PointInTimeRecoverySpecification,
   UpdateTimeToLiveCommand,
@@ -354,16 +355,67 @@ export class DynamoDBTableProvider implements ResourceProvider {
         );
       }
 
+      // BillingMode / ProvisionedThroughput — both ride on UpdateTable and are
+      // mutable (CFn createOnly = only TableName + ImportSourceSpecification).
+      // Fire a SINGLE UpdateTable when either changed so:
+      //  - a pure ProvisionedThroughput capacity bump (RCU/WCU change, mode
+      //    stays PROVISIONED) actually reaches AWS instead of being silently
+      //    dropped (state would otherwise record the new value as applied and
+      //    the next deploy would see no diff — the throw-not-swallow / no-
+      //    silent-drop rule);
+      //  - a pure BillingMode switch (PROVISIONED <-> PAY_PER_REQUEST) reaches
+      //    AWS;
+      //  - a combined switch-to-PROVISIONED-with-caps sends both in ONE call,
+      //    BEFORE the OnDemandThroughput branch below, so AWS sees a consistent
+      //    request rather than a throughput change against a still-PAY_PER_-
+      //    REQUEST table (or vice versa).
+      // Constraints AWS enforces and we mirror here: PAY_PER_REQUEST must NOT
+      // carry ProvisionedThroughput; PROVISIONED requires it. Numeric capacity
+      // values arrive as strings from the template, so coerce via Number()
+      // (matches create()).
+      //
+      // NOTE: per-index ProvisionedThroughput on GlobalSecondaryIndexes is NOT
+      // handled here — that needs GlobalSecondaryIndexUpdates and is a separate
+      // (deferred) concern; the top-level table throughput is the load-bearing
+      // case. A GSI-only capacity change is therefore still a silent gap.
+      if (
+        JSON.stringify(properties['BillingMode']) !==
+          JSON.stringify(previousProperties['BillingMode']) ||
+        JSON.stringify(properties['ProvisionedThroughput']) !==
+          JSON.stringify(previousProperties['ProvisionedThroughput'])
+      ) {
+        const billingMode = properties['BillingMode'] as
+          | 'PROVISIONED'
+          | 'PAY_PER_REQUEST'
+          | undefined;
+        const updateInput: UpdateTableCommandInput = { TableName: physicalId };
+        if (billingMode) {
+          updateInput.BillingMode = billingMode;
+        }
+        // PAY_PER_REQUEST rejects ProvisionedThroughput. When BillingMode is
+        // PROVISIONED (or omitted, in which case the table is already
+        // PROVISIONED and only its capacity is changing) forward the caps.
+        if (billingMode !== 'PAY_PER_REQUEST' && properties['ProvisionedThroughput']) {
+          const pt = properties['ProvisionedThroughput'] as Record<string, unknown>;
+          updateInput.ProvisionedThroughput = {
+            ReadCapacityUnits: Number(pt['ReadCapacityUnits'] ?? 5),
+            WriteCapacityUnits: Number(pt['WriteCapacityUnits'] ?? 5),
+          };
+        }
+        await this.dynamoDBClient.send(new UpdateTableCommand(updateInput));
+        // UpdateTable is async; wait for ACTIVE so later branches (and any
+        // subsequent UpdateTable for OnDemand/Warm throughput) don't race a
+        // still-UPDATING table.
+        await this.waitForTableActiveAfterUpdate(physicalId);
+        this.logger.debug(
+          `Updated BillingMode/ProvisionedThroughput on DynamoDB table ${physicalId}`
+        );
+      }
+
       // OnDemandThroughput — rides on UpdateTable (NOT a separate control-
       // plane API like PITR / TTL). Fire only when the value changed so a
       // no-op update doesn't issue a redundant UpdateTable; AWS validates
       // the PAY_PER_REQUEST-only constraint.
-      //
-      // Caveat (pre-existing gap, fails loud not silent): a one-shot
-      // PROVISIONED -> PAY_PER_REQUEST switch that ALSO adds caps would issue
-      // this UpdateTable against a table AWS still considers PROVISIONED and
-      // get a clear ValidationException — update() does not yet send a
-      // BillingMode change. A future BillingMode-update wiring closes it.
       if (
         JSON.stringify(properties['OnDemandThroughput']) !==
         JSON.stringify(previousProperties['OnDemandThroughput'])

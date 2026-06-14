@@ -85,5 +85,36 @@ export class DynamodbOndemandStack extends cdk.Stack {
         resources: ['*'],
       })
     );
+
+    // --- BillingMode / ProvisionedThroughput in-place UPDATE coverage ----
+    //
+    // A SECOND, standalone PROVISIONED table whose capacity (and, when
+    // combined with the billing-mode flip below, billing mode) changes under
+    // CDKD_TEST_UPDATE=true. This isolates the BillingMode /
+    // ProvisionedThroughput update path from the OnDemand table above so the
+    // assertions can't be confused by the on-demand caps.
+    //
+    // Both BillingMode and ProvisionedThroughput are mutable yet update() used
+    // to issue NO UpdateTable for either — a pure capacity bump (or a pure
+    // billing-mode switch) was silently dropped (state recorded the new value
+    // as applied, so the next deploy saw no diff and AWS stayed stale). This
+    // fixture's Phase-1.5 re-deploy + describe-table assertion is the
+    // real-AWS proof the silent drop is closed.
+    //
+    // Default deploy:        PROVISIONED, RCU=5  / WCU=5.
+    // CDKD_TEST_UPDATE=true: PROVISIONED, RCU=20 / WCU=10  (pure capacity
+    //                        change — the load-bearing silent-drop case).
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    new dynamodb.Table(this, 'ProvisionedTable', {
+      tableName: 'cdkd-ondemand-test-provisioned-table',
+      partitionKey: {
+        name: 'id',
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PROVISIONED,
+      readCapacity: isUpdate ? 20 : 5,
+      writeCapacity: isUpdate ? 10 : 5,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
   }
 }
