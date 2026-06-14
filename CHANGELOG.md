@@ -1,3 +1,10 @@
+## [0.221.15](https://github.com/go-to-k/cdkd/compare/v0.221.14...v0.221.15) (2026-06-14)
+
+
+### Bug Fixes
+
+* **provisioning:** implement S3Vectors::VectorBucket in-place Tags update (was a silent no-op) ([#867](https://github.com/go-to-k/cdkd/issues/867)) ([d24115f](https://github.com/go-to-k/cdkd/commit/d24115f761aa97028bbe91c958576c4358f77119))
+
 ## [0.221.14](https://github.com/go-to-k/cdkd/compare/v0.221.13...v0.221.14) (2026-06-14)
 
 
