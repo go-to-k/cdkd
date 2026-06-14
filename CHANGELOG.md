@@ -1,3 +1,10 @@
+## [0.221.5](https://github.com/go-to-k/cdkd/compare/v0.221.4...v0.221.5) (2026-06-14)
+
+
+### Bug Fixes
+
+* **cli:** forward resolved nested-stack Parameters in cdkd diff --recursive (no spurious changes) ([#849](https://github.com/go-to-k/cdkd/issues/849)) ([ae2281f](https://github.com/go-to-k/cdkd/commit/ae2281fc03d9306ec2daded37798fe30d64cae1d))
+
 ## [0.221.4](https://github.com/go-to-k/cdkd/compare/v0.221.3...v0.221.4) (2026-06-13)
 
 
