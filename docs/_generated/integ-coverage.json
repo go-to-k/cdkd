@@ -711,10 +711,14 @@
       "resourceType": "AWS::EC2::Instance",
       "integs": [
         "ec2-instance",
+        "propagation-races-2",
         "remove-protection"
       ],
       "signals": {
         "ec2-instance": [
+          "l1"
+        ],
+        "propagation-races-2": [
           "l1"
         ],
         "remove-protection": [
@@ -743,6 +747,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -804,6 +809,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -855,6 +863,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -915,6 +924,9 @@
           "l2"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -989,6 +1001,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -1050,6 +1063,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -1101,6 +1117,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -1164,6 +1181,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "propagation-races-2": [
+          "l2"
+        ],
         "rds-aurora": [
           "l2"
         ],
@@ -1210,6 +1230,7 @@
         "efs-standalone",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -1262,6 +1283,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -1330,6 +1354,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -1391,6 +1416,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -1453,6 +1481,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -1514,6 +1543,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -1565,6 +1597,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -1627,6 +1660,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -1678,6 +1714,7 @@
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
@@ -1739,6 +1776,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "propagation-races-2": [
           "l2"
         ],
         "rds-aurora": [
@@ -2160,9 +2200,13 @@
     {
       "resourceType": "AWS::IAM::InstanceProfile",
       "integs": [
+        "propagation-races-2",
         "remove-protection"
       ],
       "signals": {
+        "propagation-races-2": [
+          "l1"
+        ],
         "remove-protection": [
           "literal"
         ]
@@ -2229,6 +2273,7 @@
         "multi-resource",
         "multi-stack-deps",
         "nested-stack",
+        "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "recreate-mixed-direction",
@@ -2323,6 +2368,9 @@
         "nested-stack": [
           "l2"
         ],
+        "propagation-races-2": [
+          "l2"
+        ],
         "rds-aurora": [
           "l2"
         ],
@@ -2398,7 +2446,8 @@
         "drift-revert",
         "dynamodb-streams",
         "infra-security",
-        "kms-encryption"
+        "kms-encryption",
+        "propagation-races-2"
       ],
       "signals": {
         "composite-stack": [
@@ -2416,6 +2465,9 @@
         "kms-encryption": [
           "l2",
           "literal"
+        ],
+        "propagation-races-2": [
+          "l1"
         ]
       }
     },
@@ -2511,6 +2563,7 @@
         "multi-resource",
         "multi-stack-deps",
         "orphan-resource",
+        "propagation-races-2",
         "recreate-mixed-direction",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
@@ -2677,6 +2730,9 @@
           "l2",
           "literal"
         ],
+        "propagation-races-2": [
+          "l2"
+        ],
         "recreate-mixed-direction": [
           "l1"
         ],
@@ -2737,6 +2793,7 @@
         "cloudfront-function-url",
         "export",
         "migrate-from-cfn",
+        "propagation-races-2",
         "serverless-api"
       ],
       "signals": {
@@ -2748,6 +2805,10 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "propagation-races-2": [
+          "l1",
           "literal"
         ],
         "serverless-api": [
@@ -2964,6 +3025,7 @@
         "multi-stack-deps",
         "nested-stack",
         "orphan-resource",
+        "propagation-races-2",
         "recreate-via-cc-api",
         "s3-cloudfront",
         "state-destroy",
@@ -3058,6 +3120,9 @@
           "l2",
           "literal"
         ],
+        "propagation-races-2": [
+          "l2"
+        ],
         "recreate-via-cc-api": [
           "l1"
         ],
@@ -3076,11 +3141,15 @@
     {
       "resourceType": "AWS::S3::BucketPolicy",
       "integs": [
-        "migrate-from-cfn"
+        "migrate-from-cfn",
+        "propagation-races-2"
       ],
       "signals": {
         "migrate-from-cfn": [
           "literal"
+        ],
+        "propagation-races-2": [
+          "l1"
         ]
       }
     },

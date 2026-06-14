@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**55 / 55 canonical scenarios** have at least one integ fixture exercising them. **122 / 141 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**56 / 56 canonical scenarios** have at least one integ fixture exercising them. **123 / 142 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (55 scenarios)
+## Per-scenario coverage (56 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -46,9 +46,10 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-arrays`](../tests/integration/drift-revert-arrays/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `exports-index-region-resolve` | Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819). | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
+| `fresh-principal-consumer-race` | A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal ("Invalid principal in policy"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts. | [`propagation-races-2`](../tests/integration/propagation-races-2/) |
 | `globaltable-cross-region-replica` | DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
 | `iam-fresh-role-immediate-assume` | Race detector: SEVERAL brand-new IAM roles each consumed within ~1s by a DIFFERENT service in ONE deploy (Lambda exec role -> CreateFunction; SFN role -> CreateStateMachine; EventBridge target role -> PutTargets; fresh principal -> SQS QueuePolicy + SNS TopicPolicy). Deploy SUCCESS is the pass condition — a failure is an unprotected consumer racing IAM propagation (the narrow #794/#805/#756 fixes cover only a few consumers). | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) |
-| `iam-policy-propagation-retry` | CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race. | [`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/) |
+| `iam-policy-propagation-retry` | CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race. | [`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/)<br>[`propagation-races-2`](../tests/integration/propagation-races-2/) |
 | `intrinsic-hard-arg-shapes` | Resolver correctness on the harder / less-common intrinsic arg shapes feeding real resource values: `Fn::Select` over a list-returning intrinsic (`Fn::GetAZs` / `Fn::Split`), `Fn::FindInMap` enhanced 4th-arg `{DefaultValue}` + `Ref`-driven top key, `Fn::GetAtt` with a `Ref`-valued attribute name, the `Fn::Sub` `${!Literal}` escape, `Fn::Base64` of an intrinsic, a triple-nested `Fn::If`-in-`Fn::Sub`-in-`Fn::Join`, and `Fn::Cidr` IPv6. Sibling of `intrinsics-torture` (which found bug #838). | [`intrinsics-torture-2`](../tests/integration/intrinsics-torture-2/) |
 | `intrinsics-torture` | Stress-test of cdkd's hand-rolled intrinsic-function resolver (`src/deployment/intrinsic-function-resolver.ts`), which resolves EVERY intrinsic itself instead of deferring to CloudFormation. Each harder intrinsic computes an `AWS::SSM::Parameter` Value read back + asserted against an independently-computed expected value: `Fn::Cidr` (carve a /16 into eight /24s), `Fn::FindInMap` (Mappings region/env lookup), `Fn::GetAZs` + `Fn::Select`, `Fn::Base64`, nested `Fn::Split` + `Fn::Select` + `Fn::Join`, deeply-nested two-arg `Fn::Sub` (literal-map var via `Fn::Join` + `${AWS::Region}` + `${Resource.Arn}` GetAtt), and ALL pseudo-parameters (AccountId / Region / Partition / StackName / URLSuffix / NotificationARNs). Goes beyond the `intrinsic-functions` fixture (which covers only Ref / GetAtt / Join / Sub). | [`intrinsics-torture`](../tests/integration/intrinsics-torture/) |
 | `lambda-vpc-subnet-sg-deletion-order` | Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |

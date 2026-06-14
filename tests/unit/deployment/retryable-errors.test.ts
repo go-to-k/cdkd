@@ -111,6 +111,28 @@ describe('isRetryableTransientError', () => {
         'Failed to create SQS queue policy StressQueuePolicy: Invalid value for the parameter Policy.',
         'SQS QueuePolicy fresh-principal IAM propagation',
       ],
+      // KMS CreateKey fresh-principal IAM-propagation race (propagation-races-2):
+      // the key policy names a just-created same-stack IAM role as a principal,
+      // and KMS rejects CreateKey with MalformedPolicyDocumentException before
+      // IAM propagates the role. A DIFFERENT consumer than the SNS/SQS policy
+      // PUTs above (#839).
+      [
+        'MalformedPolicyDocumentException: Policy contains a statement with one or more invalid principals.',
+        'KMS key-policy fresh-principal IAM propagation',
+      ],
+      // EC2 RunInstances / AssociateIamInstanceProfile fresh-instance-profile
+      // propagation race (propagation-races-2): the instance references an
+      // IAM instance profile created ~1s earlier in the same deploy, and EC2
+      // rejects the launch/associate with "Invalid IAM Instance Profile name"
+      // before the profile propagates to EC2's view.
+      [
+        "Invalid IAM Instance Profile name 'MyStack-InstanceProfile'",
+        'EC2 fresh-instance-profile name propagation',
+      ],
+      [
+        'Value (arn:aws:iam::123456789012:instance-profile/MyStack-InstanceProfile) for parameter Invalid IAM Instance Profile ARN is invalid',
+        'EC2 fresh-instance-profile ARN propagation',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });
@@ -173,6 +195,31 @@ describe('isRetryableTransientError', () => {
       const message =
         'InvalidAttributeValue: Unknown attribute Foo for SetQueueAttributes';
       expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
+
+    it('does not retry an EC2 error that lacks the Invalid-IAM-Instance-Profile phrase', () => {
+      // Guard the EC2 boundary: the fresh-instance-profile pattern is anchored
+      // on "Invalid IAM Instance Profile", so an unrelated EC2 launch failure
+      // (e.g. an insufficient-capacity error) stays non-retryable here and is
+      // handled by the generic HTTP-status path instead of this message match.
+      const capacity =
+        'InsufficientInstanceCapacity: We currently do not have sufficient m5.large capacity in the AZ you requested';
+      expect(isRetryableTransientError(new Error(capacity), capacity)).toBe(false);
+    });
+
+    it('does not retry a KMS error that lacks the invalid-principals propagation phrase', () => {
+      // Guard the KMS boundary: the fresh-principal pattern is anchored on the
+      // full "Policy contains a statement with one or more invalid principals"
+      // phrase, so a clearly-different KMS error (a disabled key, a generic
+      // validation failure) stays non-retryable and fails fast.
+      const disabledKey = 'KMSInvalidStateException: KMS key is disabled';
+      expect(isRetryableTransientError(new Error(disabledKey), disabledKey)).toBe(false);
+
+      const genericValidation =
+        'ValidationException: 1 validation error detected: value at keyUsage failed to satisfy constraint';
+      expect(
+        isRetryableTransientError(new Error(genericValidation), genericValidation)
+      ).toBe(false);
     });
   });
 
