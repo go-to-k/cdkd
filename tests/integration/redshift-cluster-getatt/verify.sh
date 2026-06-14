@@ -61,6 +61,11 @@ DEPLOY_RC=$?
 set -e
 if [ "${DEPLOY_RC}" -ne 0 ]; then
   echo "FAIL: deploy exited ${DEPLOY_RC}" >&2
+  # Surface the actual CREATE-failure reason first — a verbose rollback can
+  # push it out of a plain `tail`, forcing a manual diagnostic re-deploy.
+  echo "--- CREATE failure reason(s) ---" >&2
+  grep -iE "Failed to create|CREATE failed for|Invalid|ValidationException|not valid|not authorized|exceeded|quota" "${DEPLOY_LOG}" >&2 || true
+  echo "--- deploy log tail ---" >&2
   tail -60 "${DEPLOY_LOG}" >&2
   exit 1
 fi
