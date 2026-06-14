@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**67 / 67 canonical scenarios** have at least one integ fixture exercising them. **135 / 154 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**68 / 68 canonical scenarios** have at least one integ fixture exercising them. **136 / 155 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,11 +26,12 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (67 scenarios)
+## Per-scenario coverage (68 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
 | `apigateway-cors-preflight` | API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays. | [`apigateway`](../tests/integration/apigateway/) |
+| `cc-api-getatt-enrichment-elasticache-replicationgroup` | CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id). | [`elasticache-replicationgroup-getatt`](../tests/integration/elasticache-replicationgroup-getatt/) |
 | `cdk-defensive-vpc-deps-relax` | CDK-defensive route DependsOn relaxation for VPC Lambda parallelization. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) |
 | `cfn-macro-expansion` | CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`. | [`macro-expansion`](../tests/integration/macro-expansion/) |
 | `cloudfront-oai-attribute-enrichment` | CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly). | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) |

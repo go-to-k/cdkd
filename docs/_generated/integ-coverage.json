@@ -757,6 +757,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -815,6 +816,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-replicationgroup-getatt": [
           "l2"
         ],
         "infra-security": [
@@ -877,6 +881,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -935,6 +940,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-replicationgroup-getatt": [
           "l2"
         ],
         "infra-security": [
@@ -1019,6 +1027,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1077,6 +1086,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-replicationgroup-getatt": [
           "l2"
         ],
         "infra-security": [
@@ -1139,6 +1151,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1199,6 +1212,9 @@
         "efs-standalone": [
           "l2"
         ],
+        "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -1257,6 +1273,7 @@
         "ec2-instance",
         "ec2-vpc",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1309,6 +1326,9 @@
         ],
         "efs-standalone": [
           "literal"
+        ],
+        "elasticache-replicationgroup-getatt": [
+          "l2"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -1384,6 +1404,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1442,6 +1463,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-replicationgroup-getatt": [
           "l2"
         ],
         "infra-security": [
@@ -1515,6 +1539,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1573,6 +1598,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-replicationgroup-getatt": [
           "l2"
         ],
         "infra-security": [
@@ -1635,6 +1663,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1695,6 +1724,9 @@
         "efs-standalone": [
           "l2",
           "literal"
+        ],
+        "elasticache-replicationgroup-getatt": [
+          "l2"
         ],
         "infra-security": [
           "l2"
@@ -1756,6 +1788,7 @@
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone",
+        "elasticache-replicationgroup-getatt",
         "infra-security",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1814,6 +1847,9 @@
           "l2"
         ],
         "efs-standalone": [
+          "l2"
+        ],
+        "elasticache-replicationgroup-getatt": [
           "l2"
         ],
         "infra-security": [
@@ -2092,10 +2128,15 @@
     {
       "resourceType": "AWS::ElastiCache::SubnetGroup",
       "integs": [
-        "cache-streaming"
+        "cache-streaming",
+        "elasticache-replicationgroup-getatt"
       ],
       "signals": {
         "cache-streaming": [
+          "l1",
+          "l2"
+        ],
+        "elasticache-replicationgroup-getatt": [
           "l1",
           "l2"
         ]
@@ -3607,6 +3648,7 @@
         "deletion-policy-retain",
         "deployment-events",
         "destroy-interrupt",
+        "elasticache-replicationgroup-getatt",
         "export-nested-stack",
         "getstackoutput-crossregion",
         "import-nested-stack",
@@ -3676,6 +3718,9 @@
         "destroy-interrupt": [
           "l2",
           "literal"
+        ],
+        "elasticache-replicationgroup-getatt": [
+          "l1"
         ],
         "export-nested-stack": [
           "l2",
@@ -3913,6 +3958,7 @@
     "AWS::EC2::EIP",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::ELBv2::LoadBalancer",
+    "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",

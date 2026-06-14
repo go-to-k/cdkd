@@ -224,6 +224,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call).',
   'cloudfront-oai-attribute-enrichment':
     'CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly).',
+  'cc-api-getatt-enrichment-elasticache-replicationgroup':
+    'CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id).',
   'rds-aurora-cluster-instance':
     'RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family.',
   'rds-full-stack':

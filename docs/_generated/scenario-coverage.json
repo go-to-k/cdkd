@@ -5,6 +5,10 @@
       "description": "API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays."
     },
     {
+      "tag": "cc-api-getatt-enrichment-elasticache-replicationgroup",
+      "description": "CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id)."
+    },
+    {
       "tag": "cdk-defensive-vpc-deps-relax",
       "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization."
     },
@@ -571,6 +575,13 @@
       "name": "efs-standalone",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "elasticache-replicationgroup-getatt",
+      "annotated": true,
+      "scenarios": [
+        "cc-api-getatt-enrichment-elasticache-replicationgroup"
+      ]
     },
     {
       "name": "event-driven",
@@ -1244,6 +1255,13 @@
       "description": "API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays.",
       "fixtures": [
         "apigateway"
+      ]
+    },
+    {
+      "scenario": "cc-api-getatt-enrichment-elasticache-replicationgroup",
+      "description": "CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id).",
+      "fixtures": [
+        "elasticache-replicationgroup-getatt"
       ]
     },
     {
