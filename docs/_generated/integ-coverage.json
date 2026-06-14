@@ -3171,6 +3171,7 @@
         "full-stack-demo",
         "iam-propagation-stress",
         "intrinsics-torture",
+        "intrinsics-torture-2",
         "microservices",
         "migrate-from-cfn",
         "monitoring",
@@ -3216,6 +3217,9 @@
           "l2"
         ],
         "intrinsics-torture": [
+          "l2"
+        ],
+        "intrinsics-torture-2": [
           "l2"
         ],
         "microservices": [
@@ -3369,6 +3373,7 @@
         "import-value-strong-ref",
         "infra-security",
         "intrinsics-torture",
+        "intrinsics-torture-2",
         "legacy-bucket-name-fallback",
         "legacy-state-migration",
         "local-invoke-from-cfn-stack-multi-stack",
@@ -3434,6 +3439,10 @@
           "l2"
         ],
         "intrinsics-torture": [
+          "l1",
+          "literal"
+        ],
+        "intrinsics-torture-2": [
           "l1",
           "literal"
         ],

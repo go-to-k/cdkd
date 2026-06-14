@@ -149,8 +149,14 @@ export class TemplateParser {
         }
       }
       if (body !== undefined) {
-        for (const match of body.matchAll(/\$\{([^}]+)\}/g)) {
-          const placeholder = match[1];
+        // Match the optional leading `!` so the literal-escape form `${!X}` can
+        // be skipped. Per the CloudFormation spec a `${` immediately followed by
+        // `!` renders as the literal `${X}` (no substitution), so it is NOT a
+        // reference and must not contribute a phantom DependsOn / Ref edge.
+        for (const match of body.matchAll(/\$\{(!)?([^}]+)\}/g)) {
+          const isEscaped = match[1] === '!';
+          if (isEscaped) continue; // Literal escape — not a reference.
+          const placeholder = match[2];
           if (!placeholder) continue;
           // ${X.AttrName} is an implicit Fn::GetAtt — depend on X (the prefix).
           // ${X} is an implicit Ref to X.

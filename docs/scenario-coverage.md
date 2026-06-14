@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**54 / 54 canonical scenarios** have at least one integ fixture exercising them. **121 / 140 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**55 / 55 canonical scenarios** have at least one integ fixture exercising them. **122 / 141 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (54 scenarios)
+## Per-scenario coverage (55 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -49,6 +49,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `globaltable-cross-region-replica` | DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
 | `iam-fresh-role-immediate-assume` | Race detector: SEVERAL brand-new IAM roles each consumed within ~1s by a DIFFERENT service in ONE deploy (Lambda exec role -> CreateFunction; SFN role -> CreateStateMachine; EventBridge target role -> PutTargets; fresh principal -> SQS QueuePolicy + SNS TopicPolicy). Deploy SUCCESS is the pass condition — a failure is an unprotected consumer racing IAM propagation (the narrow #794/#805/#756 fixes cover only a few consumers). | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) |
 | `iam-policy-propagation-retry` | CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race. | [`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/) |
+| `intrinsic-hard-arg-shapes` | Resolver correctness on the harder / less-common intrinsic arg shapes feeding real resource values: `Fn::Select` over a list-returning intrinsic (`Fn::GetAZs` / `Fn::Split`), `Fn::FindInMap` enhanced 4th-arg `{DefaultValue}` + `Ref`-driven top key, `Fn::GetAtt` with a `Ref`-valued attribute name, the `Fn::Sub` `${!Literal}` escape, `Fn::Base64` of an intrinsic, a triple-nested `Fn::If`-in-`Fn::Sub`-in-`Fn::Join`, and `Fn::Cidr` IPv6. Sibling of `intrinsics-torture` (which found bug #838). | [`intrinsics-torture-2`](../tests/integration/intrinsics-torture-2/) |
 | `intrinsics-torture` | Stress-test of cdkd's hand-rolled intrinsic-function resolver (`src/deployment/intrinsic-function-resolver.ts`), which resolves EVERY intrinsic itself instead of deferring to CloudFormation. Each harder intrinsic computes an `AWS::SSM::Parameter` Value read back + asserted against an independently-computed expected value: `Fn::Cidr` (carve a /16 into eight /24s), `Fn::FindInMap` (Mappings region/env lookup), `Fn::GetAZs` + `Fn::Select`, `Fn::Base64`, nested `Fn::Split` + `Fn::Select` + `Fn::Join`, deeply-nested two-arg `Fn::Sub` (literal-map var via `Fn::Join` + `${AWS::Region}` + `${Resource.Arn}` GetAtt), and ALL pseudo-parameters (AccountId / Region / Partition / StackName / URLSuffix / NotificationARNs). Goes beyond the `intrinsic-functions` fixture (which covers only Ref / GetAtt / Join / Sub). | [`intrinsics-torture`](../tests/integration/intrinsics-torture/) |
 | `lambda-vpc-subnet-sg-deletion-order` | Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `legacy-bucket-name-fallback` | New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution. | [`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) |

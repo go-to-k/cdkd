@@ -495,7 +495,7 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::GetAtt' in obj) {
-      return await this.resolveGetAtt(obj['Fn::GetAtt'] as [string, string] | string, context);
+      return await this.resolveGetAtt(obj['Fn::GetAtt'] as [string, unknown] | string, context);
     }
 
     if ('Fn::Join' in obj) {
@@ -571,7 +571,7 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::FindInMap' in obj) {
       return await this.resolveFindInMap(
-        obj['Fn::FindInMap'] as [unknown, unknown, unknown],
+        obj['Fn::FindInMap'] as [unknown, unknown, unknown] | [unknown, unknown, unknown, unknown],
         context
       );
     }
@@ -654,7 +654,7 @@ export class IntrinsicFunctionResolver {
    * Resolve Fn::GetAtt intrinsic function
    */
   private async resolveGetAtt(
-    getAtt: [string, string] | string,
+    getAtt: [string, unknown] | string,
     context: ResolverContext
   ): Promise<unknown> {
     // Fn::GetAtt can be either [LogicalId, AttributeName] or "LogicalId.AttributeName"
@@ -662,7 +662,23 @@ export class IntrinsicFunctionResolver {
     let attributeName: string;
 
     if (Array.isArray(getAtt)) {
-      [logicalId, attributeName] = getAtt;
+      // The attribute name (arg 2) may itself be an intrinsic (e.g.
+      // `{Ref: AttrNameParam}`, `{Fn::Sub: ...}`) — CloudFormation allows the
+      // GetAtt attribute name to be any string-valued expression. Resolve it
+      // first, before any string operations (`.includes`, `.split`, the
+      // nested-path walk, the per-type switch), which would otherwise crash
+      // with `attributeName.includes is not a function` on a non-string.
+      // The logical id (arg 1) must be a static string per CFn, so it is not
+      // resolved.
+      const [rawLogicalId, rawAttributeName] = getAtt;
+      logicalId = rawLogicalId;
+      const resolvedAttributeName = await this.resolveValue(rawAttributeName, context);
+      if (typeof resolvedAttributeName !== 'string') {
+        throw new Error(
+          `Fn::GetAtt attribute name for ${logicalId} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(resolvedAttributeName)}`
+        );
+      }
+      attributeName = resolvedAttributeName;
     } else {
       const parts = getAtt.split('.');
       if (parts.length !== 2) {
@@ -1327,12 +1343,28 @@ export class IntrinsicFunctionResolver {
 
     // Collect all replacements
     const replacements: Array<{ match: string; replacement: string }> = [];
-    const matches = template.matchAll(/\$\{([^}]+)\}/g);
+    // Match BOTH the literal-escape form `${!X}` and the variable form `${X}`.
+    // The CloudFormation rule: a `${` immediately followed by `!` is an escape —
+    // it renders as the literal text `${X}` with NO variable substitution. We
+    // capture the optional leading `!` so escaped tokens are special-cased here
+    // (emit `${X}` literally) and never reach variable / Ref / GetAtt resolution.
+    const matches = template.matchAll(/\$\{(!)?([^}]*)\}/g);
 
     for (const match of matches) {
-      const varNameStr = match[1];
+      const isEscaped = match[1] === '!';
+      const varNameStr = match[2];
+
+      // Literal-escape form `${!X}` -> emit `${X}` verbatim, no resolution.
+      if (isEscaped) {
+        replacements.push({ match: match[0], replacement: `\${${varNameStr ?? ''}}` });
+        continue;
+      }
+
       if (!varNameStr) {
-        continue; // Skip if no capture group
+        // An empty `${}` has nothing to resolve — leave it verbatim. Push an
+        // entry so the positional single-pass replace below stays aligned.
+        replacements.push({ match: match[0], replacement: match[0] });
+        continue;
       }
 
       let replacement: string;
@@ -1371,11 +1403,20 @@ export class IntrinsicFunctionResolver {
       replacements.push({ match: match[0], replacement });
     }
 
-    // Apply all replacements
-    let result = template;
-    for (const { match, replacement } of replacements) {
-      result = result.replace(match, replacement);
-    }
+    // Apply all replacements in a SINGLE left-to-right pass over the same
+    // regex, consuming the pre-collected replacements positionally. This avoids
+    // the first-occurrence hazard of a sequential `String.replace(match, ...)`
+    // loop — e.g. an escaped `${!X}` produces the literal `${X}`, which a later
+    // `${X}` variable replacement's `.replace` would otherwise clobber — and
+    // never re-scans an escaped token's literal output.
+    let cursor = 0;
+    let result = template.replace(/\$\{(!)?([^}]*)\}/g, (whole) => {
+      const entry = replacements[cursor++];
+      // Every regex match pushes exactly one entry during collection (including
+      // the verbatim-kept empty `${}`), so this stays positionally aligned;
+      // fall back to the matched text if a gap ever appears.
+      return entry ? entry.replacement : whole;
+    });
 
     // Resolve any dynamic references in the substituted result
     if (result.includes('{{resolve:')) {
@@ -2043,38 +2084,68 @@ export class IntrinsicFunctionResolver {
    * Resolve Fn::FindInMap intrinsic function
    *
    * Fn::FindInMap: [MapName, TopLevelKey, SecondLevelKey]
-   * Looks up a value in the Mappings section of the template
+   * Fn::FindInMap: [MapName, TopLevelKey, SecondLevelKey, { DefaultValue: <value> }]
+   * Looks up a value in the Mappings section of the template. When the optional
+   * 4th argument supplies a `DefaultValue` and the requested top-level OR
+   * second-level key is absent, CloudFormation returns the DefaultValue instead
+   * of failing; cdkd mirrors that here. Without a DefaultValue the missing-key
+   * cases throw (backward compatible).
    */
   private async resolveFindInMap(
-    findInMapArgs: [unknown, unknown, unknown],
+    findInMapArgs: [unknown, unknown, unknown] | [unknown, unknown, unknown, unknown],
     context: ResolverContext
   ): Promise<unknown> {
-    const [rawMapName, rawTopLevelKey, rawSecondLevelKey] = findInMapArgs;
+    const [rawMapName, rawTopLevelKey, rawSecondLevelKey, rawOptions] = findInMapArgs;
 
     // Recursively resolve each argument (they could be Refs or other intrinsic functions)
     const mapName = String(await this.resolveValue(rawMapName, context));
     const topLevelKey = String(await this.resolveValue(rawTopLevelKey, context));
     const secondLevelKey = String(await this.resolveValue(rawSecondLevelKey, context));
 
+    // Optional 4th argument: { DefaultValue: <value> }. The DefaultValue may
+    // itself be an intrinsic, so resolve it lazily only when we need to fall
+    // back to it. `hasDefaultValue` distinguishes "no 4th arg" from a 4th arg
+    // whose DefaultValue is intentionally undefined/null.
+    const hasDefaultValue =
+      typeof rawOptions === 'object' &&
+      rawOptions !== null &&
+      !Array.isArray(rawOptions) &&
+      'DefaultValue' in (rawOptions as Record<string, unknown>);
+    const resolveDefault = (): Promise<unknown> =>
+      this.resolveValue((rawOptions as Record<string, unknown>)['DefaultValue'], context);
+
     // Access the Mappings section of the template
     const mappings = context.template.Mappings;
+    const map = mappings?.[mapName] as Record<string, Record<string, unknown>> | undefined;
+
     if (!mappings) {
+      if (hasDefaultValue) {
+        return await resolveDefault();
+      }
       throw new Error(`Fn::FindInMap: no Mappings section found in template`);
     }
 
-    const map = mappings[mapName] as Record<string, Record<string, unknown>> | undefined;
     if (!map) {
+      if (hasDefaultValue) {
+        return await resolveDefault();
+      }
       throw new Error(`Fn::FindInMap: mapping '${mapName}' not found in Mappings section`);
     }
 
     const topLevel = map[topLevelKey];
     if (!topLevel || typeof topLevel !== 'object') {
+      if (hasDefaultValue) {
+        return await resolveDefault();
+      }
       throw new Error(
         `Fn::FindInMap: top-level key '${topLevelKey}' not found in mapping '${mapName}'`
       );
     }
 
     if (!(secondLevelKey in topLevel)) {
+      if (hasDefaultValue) {
+        return await resolveDefault();
+      }
       throw new Error(
         `Fn::FindInMap: second-level key '${secondLevelKey}' not found in mapping '${mapName}' -> '${topLevelKey}'`
       );

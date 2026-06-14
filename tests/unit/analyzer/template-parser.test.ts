@@ -237,6 +237,36 @@ describe('TemplateParser.extractDependencies', () => {
     });
   });
 
+  describe('Fn::Sub ${!Literal} escape', () => {
+    // `${!X}` is a CloudFormation literal escape (renders as `${X}`), NOT a
+    // reference, so it must not contribute a phantom DependsOn / Ref edge.
+    it('does not extract a dependency for a bare ${!X} escape', () => {
+      const resource: TemplateResource = {
+        Type: 'AWS::Test',
+        Properties: {
+          A: { 'Fn::Sub': 'before-${!NotAVar}-after' },
+        },
+      };
+      const deps = parser.extractDependencies(resource);
+      expect(deps.has('NotAVar')).toBe(false);
+      expect(deps.has('!NotAVar')).toBe(false);
+      expect(deps.size).toBe(0);
+    });
+
+    it('extracts the real ref but skips the escaped token in a mixed body', () => {
+      const resource: TemplateResource = {
+        Type: 'AWS::Test',
+        Properties: {
+          A: { 'Fn::Sub': 'pre-${RealDep}-${!Lit}-post' },
+        },
+      };
+      const deps = parser.extractDependencies(resource);
+      expect(deps.has('RealDep')).toBe(true);
+      expect(deps.has('Lit')).toBe(false);
+      expect(deps.has('!Lit')).toBe(false);
+    });
+  });
+
   describe('DAG integration', () => {
     it('DagBuilder produces a Bucket -> Role edge for a Fn::Join-buried Ref', () => {
       // End-to-end: the new explicit descent must propagate through

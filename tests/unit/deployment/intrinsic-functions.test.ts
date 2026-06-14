@@ -224,6 +224,150 @@ describe('IntrinsicFunctionResolver - Fn::FindInMap', () => {
 
     expect(result).toBe(3);
   });
+
+  it('should resolve the mapped value when the 4-arg form has a present key (DefaultValue ignored)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Mappings: {
+        RegionMap: {
+          'us-east-1': { AMI: 'ami-12345678' },
+        },
+      },
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::FindInMap': ['RegionMap', 'us-east-1', 'AMI', { DefaultValue: 'ami-default' }],
+      },
+      context
+    );
+
+    expect(result).toBe('ami-12345678');
+  });
+
+  it('should return DefaultValue when the top-level key is absent (4-arg form)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Mappings: {
+        RegionMap: {
+          'us-east-1': { AMI: 'ami-12345678' },
+        },
+      },
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::FindInMap': ['RegionMap', 'eu-west-1', 'AMI', { DefaultValue: 'ami-default' }],
+      },
+      context
+    );
+
+    expect(result).toBe('ami-default');
+  });
+
+  it('should return DefaultValue when the second-level key is absent (4-arg form)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Mappings: {
+        RegionMap: {
+          'us-east-1': { AMI: 'ami-12345678' },
+        },
+      },
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::FindInMap': ['RegionMap', 'us-east-1', 'VPC', { DefaultValue: 'vpc-default' }],
+      },
+      context
+    );
+
+    expect(result).toBe('vpc-default');
+  });
+
+  it('should resolve a DefaultValue that is itself an intrinsic', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Mappings: {
+        RegionMap: {
+          'us-east-1': { AMI: 'ami-12345678' },
+        },
+      },
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+      parameters: {
+        FallbackAmi: 'ami-from-param',
+      },
+    };
+
+    // Top-level key absent -> the DefaultValue intrinsic ({Ref: FallbackAmi}) resolves.
+    const refDefault = await resolver.resolve(
+      {
+        'Fn::FindInMap': [
+          'RegionMap',
+          'eu-west-1',
+          'AMI',
+          { DefaultValue: { Ref: 'FallbackAmi' } },
+        ],
+      },
+      context
+    );
+    expect(refDefault).toBe('ami-from-param');
+
+    // A nested Fn::Join DefaultValue also resolves.
+    const joinDefault = await resolver.resolve(
+      {
+        'Fn::FindInMap': [
+          'RegionMap',
+          'eu-west-1',
+          'AMI',
+          { DefaultValue: { 'Fn::Join': ['-', ['ami', 'joined']] } },
+        ],
+      },
+      context
+    );
+    expect(joinDefault).toBe('ami-joined');
+  });
+
+  it('should still throw when the key is absent and no DefaultValue is provided (3-arg form)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Mappings: {
+        RegionMap: {
+          'us-east-1': { AMI: 'ami-12345678' },
+        },
+      },
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    await expect(
+      resolver.resolve({ 'Fn::FindInMap': ['RegionMap', 'eu-west-1', 'AMI'] }, context)
+    ).rejects.toThrow(
+      "Fn::FindInMap: top-level key 'eu-west-1' not found in mapping 'RegionMap'"
+    );
+  });
 });
 
 describe('IntrinsicFunctionResolver - Fn::Base64', () => {
@@ -1424,6 +1568,63 @@ describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
   });
 });
 
+describe('IntrinsicFunctionResolver - Fn::Sub ${!Literal} escape', () => {
+  // Per the CloudFormation spec, a `${` immediately followed by `!` is an
+  // escape: `${!X}` renders as the LITERAL text `${X}` with NO variable
+  // substitution. cdkd must strip the `!` and emit `${X}` verbatim without
+  // attempting to resolve X as a variable / Ref / GetAtt (which previously
+  // left the `${!X}` placeholder + a spurious "variable !X not found" warn).
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  const makeContext = (): ResolverContext => ({
+    template: { Resources: {} },
+    resources: {
+      MyRepo: {
+        physicalId: 'cdkmyrepo123-abcdef',
+        resourceType: 'AWS::ECR::Repository',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    },
+  });
+
+  it('emits ${X} literally for a bare ${!X} escape (no substitution)', async () => {
+    const result = await resolver.resolve({ 'Fn::Sub': '${!NotAVar}' }, makeContext());
+    expect(result).toBe('${NotAVar}');
+  });
+
+  it('emits the literal inside a surrounding string (the integ-fixture shape)', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': 'before-${!NotAVar}-after' },
+      makeContext()
+    );
+    expect(result).toBe('before-${NotAVar}-after');
+  });
+
+  it('handles a mixed string: resolves ${Real} and escapes ${!Lit}', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': 'pre-${MyRepo}-${!Lit}-post' },
+      makeContext()
+    );
+    expect(result).toBe('pre-cdkmyrepo123-abcdef-${Lit}-post');
+  });
+
+  it('escapes a token even when a same-named variable exists in the 2-arg map', async () => {
+    // ${!MyRepo} is a literal escape and must NOT pick up the variable map value.
+    const result = await resolver.resolve(
+      { 'Fn::Sub': ['${MyRepo}-${!MyRepo}', { MyRepo: 'from-map' }] },
+      makeContext()
+    );
+    expect(result).toBe('from-map-${MyRepo}');
+  });
+});
+
 describe('IntrinsicFunctionResolver - AWS::NotificationARNs pseudo parameter', () => {
   // cdkd has no stack-notification-ARN concept, so AWS::NotificationARNs is
   // always an empty list — which CloudFormation resolves to an empty string
@@ -1784,6 +1985,70 @@ describe('IntrinsicFunctionResolver - unknown intrinsic detection', () => {
     expect(await resolver.resolve({ 'Fn::Base64': 'hi' }, ctx)).toBe(
       Buffer.from('hi').toString('base64')
     );
+  });
+});
+
+describe('IntrinsicFunctionResolver - Fn::GetAtt with a dynamic (intrinsic) attribute name', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+  });
+
+  const mkContext = (attrNameValue: unknown): ResolverContext => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Res: { Type: 'AWS::Custom::Foo', Properties: {} },
+      },
+      Parameters: {},
+    };
+    return {
+      template,
+      resources: {
+        Res: {
+          physicalId: 'phys-id',
+          resourceType: 'AWS::Custom::Foo',
+          properties: {},
+          attributes: { Arn: 'the-arn-value' },
+          dependencies: [],
+        },
+      },
+      parameters: { AttrNameParam: attrNameValue as string },
+    };
+  };
+
+  it('resolves a {Ref: AttrNameParam} attribute name the same as a literal attribute name', async () => {
+    const context = mkContext('Arn');
+
+    const dynamic = await resolver.resolve(
+      { 'Fn::GetAtt': ['Res', { Ref: 'AttrNameParam' }] },
+      context
+    );
+    const literal = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'Arn'] }, context);
+
+    expect(dynamic).toBe('the-arn-value');
+    expect(dynamic).toBe(literal);
+  });
+
+  it('resolves an Fn::Sub attribute name the same as a literal attribute name', async () => {
+    const context = mkContext('ignored');
+
+    const dynamic = await resolver.resolve(
+      { 'Fn::GetAtt': ['Res', { 'Fn::Sub': 'Arn' }] },
+      context
+    );
+
+    expect(dynamic).toBe('the-arn-value');
+  });
+
+  it('throws a clear error when the resolved attribute name is not a string', async () => {
+    // Parameter resolves to a non-string (e.g. a numeric CommaDelimitedList
+    // entry coerced upstream); the GetAtt attribute name must be a string.
+    const context = mkContext(['not', 'a', 'string']);
+
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Res', { Ref: 'AttrNameParam' }] }, context)
+    ).rejects.toThrow(/attribute name for Res must resolve to a string/);
   });
 });
 
