@@ -1,3 +1,10 @@
+## [0.221.13](https://github.com/go-to-k/cdkd/compare/v0.221.12...v0.221.13) (2026-06-14)
+
+
+### Bug Fixes
+
+* **provisioning:** enrich AWS::Redshift::Cluster endpoint attributes on the Cloud Control path ([#865](https://github.com/go-to-k/cdkd/issues/865)) ([e349799](https://github.com/go-to-k/cdkd/commit/e34979974e10e8650acad12d005b1bc07c6fff4d))
+
 ## [0.221.12](https://github.com/go-to-k/cdkd/compare/v0.221.11...v0.221.12) (2026-06-14)
 
 
