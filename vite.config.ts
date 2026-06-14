@@ -240,6 +240,14 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-property-coverage.ts',
         cache: false,
       },
+      'gen:enrichment-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-enrichment-coverage.ts',
+        cache: false,
+      },
+      'audit:enrichment-coverage:check': {
+        command: 'node --experimental-strip-types scripts/gen-enrichment-coverage.ts --check',
+        cache: false,
+      },
       'compat-corpus': {
         command: 'node --experimental-strip-types scripts/compat-corpus.ts',
         cache: false,

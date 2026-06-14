@@ -98,6 +98,24 @@ jobs:
             exit 1
           fi
 
+      # Fail CI when docs/_generated/enrichment-coverage.{json,md} is stale
+      # relative to the CFn schema fixtures + the enrichResourceAttributes
+      # switch in src/provisioning/cloud-control-provider.ts. The matrix records
+      # which CC-routable types' computed readOnly Fn::GetAtt attributes are
+      # populated by enrichment (the bug class fixed in #844/#864/#865/#866).
+      # Same diff-on-stale shape as the integ-coverage / property-coverage
+      # guards above. The second step is the CRITIC: it hard-fails on a pure-CC
+      # (no-SDK-provider) latent gap that is neither enriched nor allow-listed.
+      - name: enrichment-coverage matrix is up-to-date
+        run: |
+          vp run gen:enrichment-coverage
+          if ! git diff --quiet -- docs/_generated/enrichment-coverage.json docs/_generated/enrichment-coverage.md; then
+            echo "::error::enrichment-coverage matrix is stale — run \`vp run gen:enrichment-coverage\` and commit the regenerated docs/_generated/enrichment-coverage.{json,md}"
+            git --no-pager diff -- docs/_generated/enrichment-coverage.json docs/_generated/enrichment-coverage.md
+            exit 1
+          fi
+      - run: vp run audit:enrichment-coverage:check
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
