@@ -3086,6 +3086,7 @@
         "s3-cloudfront",
         "state-destroy",
         "tags-propagation",
+        "update-policy-mutations",
         "update-replace"
       ],
       "signals": {
@@ -3191,6 +3192,10 @@
         ],
         "tags-propagation": [
           "l2"
+        ],
+        "update-policy-mutations": [
+          "l2",
+          "literal"
         ],
         "update-replace": [
           "l2",
@@ -3310,7 +3315,8 @@
         "scheduled-task",
         "serverless-api",
         "sns-sqs-event",
-        "tags-propagation"
+        "tags-propagation",
+        "update-policy-mutations"
       ],
       "signals": {
         "bench-sdk": [
@@ -3384,6 +3390,10 @@
         ],
         "tags-propagation": [
           "l2"
+        ],
+        "update-policy-mutations": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -3550,6 +3560,7 @@
         "sdk-ccapi-crossref",
         "state-info-command",
         "tags-propagation",
+        "update-policy-mutations",
         "vpc-lookup"
       ],
       "signals": {
@@ -3670,6 +3681,10 @@
           "l2"
         ],
         "tags-propagation": [
+          "l2",
+          "literal"
+        ],
+        "update-policy-mutations": [
           "l2",
           "literal"
         ],

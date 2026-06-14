@@ -241,6 +241,10 @@
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema."
     },
     {
+      "tag": "update-policy-mutations",
+      "description": "Second-deploy mutation of CloudFormation template-level ATTRIBUTES (not properties) across a CDK context flip (`-c phase=a|b`): (1) `UpdateReplacePolicy: Retain` orphan-on-replace — an S3 `BucketName` change forces replacement, the OLD physical bucket must be RETAINED on AWS (not deleted) while the new one is created; (2) `DeletionPolicy` flip DESTROY->RETAIN on an SSM Parameter — the final destroy must honor the CURRENT (Retain) policy and leave it on AWS; (3) `DependsOn` add/remove between SNS topics — a metadata-only change that must update successfully without replacing either topic; (4) metadata-only / no-op identical redeploy reporting `No changes detected`. Intentional orphans (Retain bucket + Retain param) are cleaned by captured physical id in the verify.sh trap. Regression net for `diff-calculator.ts` attribute diff + `deploy-engine.ts` Retain-on-replace / DeletionPolicy destroy-skip paths."
+    },
+    {
       "tag": "update-replace-breadth",
       "description": "Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types."
     },
@@ -1147,6 +1151,13 @@
       ]
     },
     {
+      "name": "update-policy-mutations",
+      "annotated": true,
+      "scenarios": [
+        "update-policy-mutations"
+      ]
+    },
+    {
       "name": "update-replace",
       "annotated": true,
       "scenarios": [
@@ -1645,6 +1656,13 @@
       "fixtures": [
         "legacy-state-migration",
         "schema-v5-to-v6-migration"
+      ]
+    },
+    {
+      "scenario": "update-policy-mutations",
+      "description": "Second-deploy mutation of CloudFormation template-level ATTRIBUTES (not properties) across a CDK context flip (`-c phase=a|b`): (1) `UpdateReplacePolicy: Retain` orphan-on-replace — an S3 `BucketName` change forces replacement, the OLD physical bucket must be RETAINED on AWS (not deleted) while the new one is created; (2) `DeletionPolicy` flip DESTROY->RETAIN on an SSM Parameter — the final destroy must honor the CURRENT (Retain) policy and leave it on AWS; (3) `DependsOn` add/remove between SNS topics — a metadata-only change that must update successfully without replacing either topic; (4) metadata-only / no-op identical redeploy reporting `No changes detected`. Intentional orphans (Retain bucket + Retain param) are cleaned by captured physical id in the verify.sh trap. Regression net for `diff-calculator.ts` attribute diff + `deploy-engine.ts` Retain-on-replace / DeletionPolicy destroy-skip paths.",
+      "fixtures": [
+        "update-policy-mutations"
       ]
     },
     {
