@@ -264,6 +264,107 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
       expect(result).toBe('full-secret-value');
     });
+
+    // Whole-secret form: ":SecretString" sits at the END of the reference with NO trailing
+    // colon and no JSON_KEY. This is the CFn form CDK emits for the whole secret value.
+    // Regression: previously the trailing-colon-only delimiter check missed it and leaked
+    // ":SecretString" into the secret id (SecretId="my-secret:SecretString"), which AWS
+    // rejected as an invalid secret name.
+    it('should resolve secretsmanager whole-secret form (no JSON key, no trailing colon)', async () => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: 'whole-secret-value',
+      });
+
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:my-secret:SecretString}}'
+      );
+
+      expect(result).toBe('whole-secret-value');
+      expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
+      // The SecretId must be the bare name, NOT "my-secret:SecretString".
+      const callArgs = mockSecretsManagerSend.mock.calls[0]![0];
+      expect(callArgs.input.SecretId).toBe('my-secret');
+      // Whole-secret form defaults to the AWSCURRENT stage and carries no version id.
+      expect(callArgs.input.VersionStage).toBe('AWSCURRENT');
+      expect(callArgs.input.VersionId).toBeUndefined();
+    });
+
+    it('should resolve secretsmanager whole-secret form with an ARN secret id', async () => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: 'whole-arn-secret-value',
+      });
+
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1:123456789012:secret:MySecret-abc123:SecretString}}'
+      );
+
+      expect(result).toBe('whole-arn-secret-value');
+      const callArgs = mockSecretsManagerSend.mock.calls[0]![0];
+      expect(callArgs.input.SecretId).toBe(
+        'arn:aws:secretsmanager:us-east-1:123456789012:secret:MySecret-abc123'
+      );
+    });
+
+    it('should not split a secret name that merely contains ":SecretString" mid-name (whole-secret)', async () => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: 'tricky-secret-value',
+      });
+
+      // Name embeds ":SecretString" but the reference still ends with the real ":SecretString"
+      // type segment. Only the END-anchored segment is the delimiter.
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:my:SecretStringName:SecretString}}'
+      );
+
+      expect(result).toBe('tricky-secret-value');
+      const callArgs = mockSecretsManagerSend.mock.calls[0]![0];
+      expect(callArgs.input.SecretId).toBe('my:SecretStringName');
+    });
+
+    it('should resolve secretsmanager whole-secret form with a JSON key extracted', async () => {
+      // Regression guard: the whole-secret-form fix must not change the JSON-key path.
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: JSON.stringify({ username: 'admin', password: 'json-key-pass' }),
+      });
+
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:my-secret:SecretString:password}}'
+      );
+
+      expect(result).toBe('json-key-pass');
+      const callArgs = mockSecretsManagerSend.mock.calls[0]![0];
+      expect(callArgs.input.SecretId).toBe('my-secret');
+    });
+
+    it('should resolve secretsmanager whole-secret form via SecretBinary type segment', async () => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: 'binary-segment-value',
+      });
+
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:my-secret:SecretBinary}}'
+      );
+
+      expect(result).toBe('binary-segment-value');
+      const callArgs = mockSecretsManagerSend.mock.calls[0]![0];
+      expect(callArgs.input.SecretId).toBe('my-secret');
+    });
+
+    it('should not split a secret name that merely contains ":SecretBinary" mid-name (whole-secret)', async () => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: 'tricky-binary-value',
+      });
+
+      // Symmetric to the SecretString mid-name guard: only the END-anchored
+      // ":SecretBinary" segment is the delimiter, not the one embedded in the name.
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:my:SecretBinaryName:SecretBinary}}'
+      );
+
+      expect(result).toBe('tricky-binary-value');
+      const callArgs = mockSecretsManagerSend.mock.calls[0]![0];
+      expect(callArgs.input.SecretId).toBe('my:SecretBinaryName');
+    });
   });
 
   describe('resolveValue integration with dynamic references', () => {

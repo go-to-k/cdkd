@@ -2442,6 +2442,13 @@ export class IntrinsicFunctionResolver {
    * SECRET_ID can be a simple name or an ARN (arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME)
    * which contains colons, so we cannot simply split on ':'.
    * Instead, we find ':SecretString:' or ':SecretBinary:' as the delimiter.
+   *
+   * The whole-secret form omits everything after the type segment and carries no trailing
+   * colon: "secretsmanager:SECRET_ID:SecretString" (returns the full secret string). We detect
+   * it with an end-anchored check so that, for the whole-secret form, a SECRET_ID that merely
+   * contains ":SecretString" mid-name is not split incorrectly. (The end-anchored fallback only
+   * runs when no mid-string ":SecretString:" delimiter is present, so the json-key / version
+   * forms are unaffected.)
    */
   private async resolveSecretsManagerReference(inner: string): Promise<string> {
     // inner = "secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID"
@@ -2454,8 +2461,24 @@ export class IntrinsicFunctionResolver {
     let versionStage = '';
     let versionId = '';
 
-    const secretStringIdx = afterService.indexOf(':SecretString:');
-    const secretBinaryIdx = afterService.indexOf(':SecretBinary:');
+    let secretStringIdx = afterService.indexOf(':SecretString:');
+    let secretBinaryIdx = afterService.indexOf(':SecretBinary:');
+    let delimiterLenAtBinary = ':SecretBinary:'.length;
+    let delimiterLenAtString = ':SecretString:'.length;
+
+    // Whole-secret form: "<SECRET_ID>:SecretString" / "<SECRET_ID>:SecretBinary" with NO
+    // trailing colon and no JSON_KEY (end of string). The trailing-colon indexOf above misses
+    // it, so fall back to an END-ANCHORED check. An end-anchored check (not a loose includes)
+    // avoids a false split when a secret NAME legitimately contains ":SecretString" mid-name.
+    if (secretStringIdx < 0 && afterService.endsWith(':SecretString')) {
+      secretStringIdx = afterService.length - ':SecretString'.length;
+      delimiterLenAtString = ':SecretString'.length;
+    }
+    if (secretBinaryIdx < 0 && afterService.endsWith(':SecretBinary')) {
+      secretBinaryIdx = afterService.length - ':SecretBinary'.length;
+      delimiterLenAtBinary = ':SecretBinary'.length;
+    }
+
     const delimiterIdx =
       secretStringIdx >= 0 && secretBinaryIdx >= 0
         ? Math.min(secretStringIdx, secretBinaryIdx)
@@ -2464,12 +2487,12 @@ export class IntrinsicFunctionResolver {
           : secretBinaryIdx;
     const delimiterLen =
       delimiterIdx >= 0 && delimiterIdx === secretBinaryIdx
-        ? ':SecretBinary:'.length
-        : ':SecretString:'.length;
+        ? delimiterLenAtBinary
+        : delimiterLenAtString;
 
     if (delimiterIdx >= 0) {
       secretId = afterService.substring(0, delimiterIdx);
-      // remaining = "JSON_KEY:VERSION_STAGE:VERSION_ID"
+      // remaining = "JSON_KEY:VERSION_STAGE:VERSION_ID" (empty for the whole-secret form)
       const remaining = afterService.substring(delimiterIdx + delimiterLen);
       const remainingParts = remaining.split(':');
       jsonKey = remainingParts[0] || '';

@@ -126,6 +126,10 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'sdk-ccapi-crossref-boundary':
     'Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`).',
 
+  // ---- Dynamic reference patterns ----
+  'dynamic-reference-resolution':
+    'CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)',
+
   // ---- Custom Resource patterns ----
   'custom-resource-async-poll':
     'Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling.',
