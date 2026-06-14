@@ -1,3 +1,10 @@
+## [0.221.8](https://github.com/go-to-k/cdkd/compare/v0.221.7...v0.221.8) (2026-06-14)
+
+
+### Bug Fixes
+
+* **provisioning:** retry KMS fresh-principal policy + bind EC2 IAM instance profile post-launch ([#848](https://github.com/go-to-k/cdkd/issues/848)) ([afd5c63](https://github.com/go-to-k/cdkd/commit/afd5c63eecbdb198bc21c66bd523c154b4ee6959))
+
 ## [0.221.7](https://github.com/go-to-k/cdkd/compare/v0.221.6...v0.221.7) (2026-06-14)
 
 
