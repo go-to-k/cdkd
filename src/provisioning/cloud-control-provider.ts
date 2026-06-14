@@ -16,6 +16,7 @@ import {
 import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
+import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { getAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import {
@@ -903,6 +904,87 @@ export class CloudControlProvider implements ResourceProvider {
           }
         }
         break;
+
+      case 'AWS::ElastiCache::ReplicationGroup': {
+        // ElastiCache ReplicationGroup has NO SDK provider, so it always routes
+        // through Cloud Control — and the CC API GetResource model does not
+        // surface the connection endpoints in the flat-key shape cdkd's
+        // intrinsic resolver expects. `Fn::GetAtt(<RG>, 'PrimaryEndPoint.Address')`
+        // (and the Reader / Configuration variants) would otherwise fall through
+        // the resolver's `constructAttribute` to `physicalId` (the replication-
+        // group id, NOT the Redis hostname), so a security-group rule / client
+        // connection string built from it points at garbage.
+        //
+        // SHAPE NOTE: the CFn return-value attribute names use capital-P
+        // `EndPoint` (`PrimaryEndPoint.Address`, `ReaderEndPoint.Address`,
+        // `ConfigurationEndPoint.Address`, `ReadEndPoint.Addresses` list) while
+        // the AWS SDK fields are `Endpoint` (lower p) on
+        // `NodeGroups[].PrimaryEndpoint` / `NodeGroups[].ReaderEndpoint` and the
+        // top-level `ConfigurationEndpoint` (cluster-mode). We populate the
+        // flat-keys with the CFn casing so the resolver finds them.
+        // Best-effort: a failed Describe leaves the CC-API attribute shape
+        // unchanged and must not fail the deploy.
+        try {
+          const elastiCacheClient = new ElastiCacheClient({});
+          const describeResponse = await elastiCacheClient.send(
+            new DescribeReplicationGroupsCommand({ ReplicationGroupId: physicalId })
+          );
+          const rg = describeResponse.ReplicationGroups?.[0];
+          if (rg) {
+            // Cluster-mode-disabled: NodeGroups[0] carries the primary/reader.
+            const primaryNode = rg.NodeGroups?.[0];
+            if (primaryNode?.PrimaryEndpoint?.Address) {
+              enriched['PrimaryEndPoint.Address'] = primaryNode.PrimaryEndpoint.Address;
+            }
+            if (primaryNode?.PrimaryEndpoint?.Port !== undefined) {
+              enriched['PrimaryEndPoint.Port'] = String(primaryNode.PrimaryEndpoint.Port);
+            }
+            if (primaryNode?.ReaderEndpoint?.Address) {
+              enriched['ReaderEndPoint.Address'] = primaryNode.ReaderEndpoint.Address;
+            }
+            if (primaryNode?.ReaderEndpoint?.Port !== undefined) {
+              enriched['ReaderEndPoint.Port'] = String(primaryNode.ReaderEndpoint.Port);
+            }
+            // Cluster-mode-enabled: a single ConfigurationEndpoint fronts all shards.
+            if (rg.ConfigurationEndpoint?.Address) {
+              enriched['ConfigurationEndPoint.Address'] = rg.ConfigurationEndpoint.Address;
+            }
+            if (rg.ConfigurationEndpoint?.Port !== undefined) {
+              enriched['ConfigurationEndPoint.Port'] = String(rg.ConfigurationEndpoint.Port);
+            }
+            // ReadEndPoint.Addresses / .Ports are CFn comma-delimited LIST
+            // attributes covering the read-capable endpoints. Per the CFn
+            // return-value docs these list "the primary and the read-only
+            // replicas", so collect BOTH the primary and reader endpoint of
+            // every node group (a reader-only list would be empty for a
+            // single-node cluster-mode-disabled RG, diverging from CFn).
+            const readEndpoints = (rg.NodeGroups ?? []).flatMap((ng) => [
+              ng.PrimaryEndpoint,
+              ng.ReaderEndpoint,
+            ]);
+            const readAddrs = readEndpoints
+              .map((ep) => ep?.Address)
+              .filter((a): a is string => typeof a === 'string' && a.length > 0);
+            const readPorts = readEndpoints
+              .map((ep) => ep?.Port)
+              .filter((p): p is number => p !== undefined);
+            if (readAddrs.length > 0) {
+              enriched['ReadEndPoint.Addresses'] = readAddrs.join(',');
+            }
+            if (readPorts.length > 0) {
+              enriched['ReadEndPoint.Ports'] = readPorts.map(String).join(',');
+            }
+            this.logger.debug(
+              `Enriched ElastiCache ReplicationGroup ${physicalId} with endpoint attributes from DescribeReplicationGroups`
+            );
+          }
+        } catch (error) {
+          this.logger.debug(
+            `Failed to enrich ElastiCache ReplicationGroup ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        break;
+      }
 
       default:
         break;

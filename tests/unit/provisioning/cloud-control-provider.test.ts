@@ -16,6 +16,20 @@ vi.mock('@aws-sdk/client-rds', () => ({
   DescribeDBInstancesCommand: vi.fn((input: unknown) => ({ __type: 'DescribeDBInstances', input })),
 }));
 
+// `new ElastiCacheClient({})` is constructed directly inside
+// enrichResourceAttributes' ElastiCache::ReplicationGroup branch (same shape as
+// the RDS branches), so mock the module to control the constructed client's
+// send() per-test.
+const mockElastiCacheSend = vi.fn();
+
+vi.mock('@aws-sdk/client-elasticache', () => ({
+  ElastiCacheClient: vi.fn(() => ({ send: mockElastiCacheSend })),
+  DescribeReplicationGroupsCommand: vi.fn((input: unknown) => ({
+    __type: 'DescribeReplicationGroups',
+    input,
+  })),
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     cloudControl: {
@@ -665,5 +679,94 @@ describe('CloudControlProvider RDS DBInstance attribute enrichment (CC-API routi
     expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
     expect(enriched['Endpoint.Address']).toBeUndefined();
     expect(enriched['Endpoint.Port']).toBeUndefined();
+  });
+});
+
+describe('CloudControlProvider ElastiCache ReplicationGroup attribute enrichment (CC-API routing)', () => {
+  let provider: CloudControlProvider;
+
+  const enrich = (physicalId: string, attributes: Record<string, unknown>) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes('AWS::ElastiCache::ReplicationGroup', physicalId, attributes);
+
+  beforeEach(() => {
+    mockElastiCacheSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('overlays CFn-cased PrimaryEndPoint/ReaderEndPoint flat-keys (cluster-mode disabled) from DescribeReplicationGroups', async () => {
+    // SDK fields are `Endpoint` (lower p); CFn GetAtt names are `EndPoint`.
+    mockElastiCacheSend.mockResolvedValueOnce({
+      ReplicationGroups: [
+        {
+          NodeGroups: [
+            {
+              PrimaryEndpoint: { Address: 'master.myrg.abc.use1.cache.amazonaws.com', Port: 6379 },
+              ReaderEndpoint: { Address: 'replica.myrg.abc.use1.cache.amazonaws.com', Port: 6379 },
+            },
+          ],
+        },
+      ],
+    });
+
+    const enriched = await enrich('myrg', {});
+
+    expect(enriched['PrimaryEndPoint.Address']).toBe('master.myrg.abc.use1.cache.amazonaws.com');
+    // Port coerced to string (matches the flat-key shape consumers expect).
+    expect(enriched['PrimaryEndPoint.Port']).toBe('6379');
+    expect(enriched['ReaderEndPoint.Address']).toBe('replica.myrg.abc.use1.cache.amazonaws.com');
+    expect(enriched['ReaderEndPoint.Port']).toBe('6379');
+    // List-form ReadEndPoint.Addresses covers the primary AND reader endpoints
+    // of every node group (per the CFn return-value docs), not readers only.
+    expect(enriched['ReadEndPoint.Addresses']).toBe(
+      'master.myrg.abc.use1.cache.amazonaws.com,replica.myrg.abc.use1.cache.amazonaws.com'
+    );
+    expect(enriched['ReadEndPoint.Ports']).toBe('6379,6379');
+    // No ConfigurationEndpoint in cluster-mode-disabled.
+    expect(enriched['ConfigurationEndPoint.Address']).toBeUndefined();
+  });
+
+  it('overlays ConfigurationEndPoint flat-keys (cluster-mode enabled) from DescribeReplicationGroups', async () => {
+    mockElastiCacheSend.mockResolvedValueOnce({
+      ReplicationGroups: [
+        {
+          ConfigurationEndpoint: { Address: 'clustercfg.myrg.abc.use1.cache.amazonaws.com', Port: 6379 },
+          NodeGroups: [
+            { ReaderEndpoint: { Address: 'shard1-ro.myrg.abc.use1.cache.amazonaws.com', Port: 6379 } },
+            { ReaderEndpoint: { Address: 'shard2-ro.myrg.abc.use1.cache.amazonaws.com', Port: 6379 } },
+          ],
+        },
+      ],
+    });
+
+    const enriched = await enrich('myrg', {});
+
+    expect(enriched['ConfigurationEndPoint.Address']).toBe(
+      'clustercfg.myrg.abc.use1.cache.amazonaws.com'
+    );
+    expect(enriched['ConfigurationEndPoint.Port']).toBe('6379');
+    // ReadEndPoint.Addresses is the comma-joined list across both shards' readers.
+    expect(enriched['ReadEndPoint.Addresses']).toBe(
+      'shard1-ro.myrg.abc.use1.cache.amazonaws.com,shard2-ro.myrg.abc.use1.cache.amazonaws.com'
+    );
+    expect(enriched['ReadEndPoint.Ports']).toBe('6379,6379');
+  });
+
+  it('is best-effort: a failed DescribeReplicationGroups does not throw and leaves attributes unchanged', async () => {
+    mockElastiCacheSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const enriched = await enrich('myrg', { ExistingAttr: 'keep-me' });
+
+    expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
+    expect(enriched['PrimaryEndPoint.Address']).toBeUndefined();
   });
 });
