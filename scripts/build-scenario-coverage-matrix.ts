@@ -129,6 +129,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling.',
   'vpc-lambda-cr-race':
     'Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window).',
+  'custom-resource-getatt-data':
+    "Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency.",
   'destroy-interrupt':
     'Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly).',
 
