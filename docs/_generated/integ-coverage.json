@@ -3701,6 +3701,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "opensearch-domain-getatt",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "replacement-fanout",
@@ -3811,6 +3812,9 @@
         ],
         "nested-stack-deep": [
           "l2"
+        ],
+        "opensearch-domain-getatt": [
+          "l1"
         ],
         "rds-full-stack": [
           "l2"
@@ -4006,6 +4010,7 @@
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
     "AWS::Logs::SubscriptionFilter",
+    "AWS::OpenSearchService::Domain",
     "AWS::Pipes::Pipe",
     "AWS::Redshift::Cluster",
     "AWS::Route53::CidrCollection",

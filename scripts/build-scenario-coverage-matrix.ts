@@ -228,6 +228,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id).',
   'cc-api-getatt-enrichment-redshift-cluster':
     'CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id).',
+  'cc-api-getatt-enrichment-opensearch-domain':
+    'CC-API attribute enrichment for `AWS::OpenSearchService::Domain` (no SDK provider): `Fn::GetAtt(<Domain>, DomainEndpoint / Arn)` must resolve to the real `*.es.amazonaws.com` endpoint / `arn:aws:es:...:domain/...` ARN via DescribeDomain, not fall through to the physicalId (the domain name).',
   'rds-aurora-cluster-instance':
     'RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family.',
   'rds-full-stack':
