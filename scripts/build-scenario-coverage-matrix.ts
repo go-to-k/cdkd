@@ -108,6 +108,10 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'cdk-defensive-vpc-deps-relax':
     'CDK-defensive route DependsOn relaxation for VPC Lambda parallelization.',
 
+  // ---- Intrinsic-function resolution patterns ----
+  'intrinsic-hard-arg-shapes':
+    'Resolver correctness on the harder / less-common intrinsic arg shapes feeding real resource values: `Fn::Select` over a list-returning intrinsic (`Fn::GetAZs` / `Fn::Split`), `Fn::FindInMap` enhanced 4th-arg `{DefaultValue}` + `Ref`-driven top key, `Fn::GetAtt` with a `Ref`-valued attribute name, the `Fn::Sub` `${!Literal}` escape, `Fn::Base64` of an intrinsic, a triple-nested `Fn::If`-in-`Fn::Sub`-in-`Fn::Join`, and `Fn::Cidr` IPv6. Sibling of `intrinsics-torture` (which found bug #838).',
+
   // ---- Cross-stack reference patterns ----
   'multi-stack-getstackoutput':
     'Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export).',
