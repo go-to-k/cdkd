@@ -30,6 +30,19 @@ vi.mock('@aws-sdk/client-elasticache', () => ({
   })),
 }));
 
+// `new RedshiftClient({})` is constructed directly inside
+// enrichResourceAttributes' Redshift::Cluster branch (same shape as the RDS /
+// ElastiCache branches), so mock the module to control its send() per-test.
+// Use vi.hoisted() so the spy exists before vitest's hoisted vi.mock factory
+// runs (a plain const interleaved between earlier vi.mock calls was not
+// reliably hoisted, leaving the real client in place and the mock a no-op).
+const mockRedshiftSend = vi.hoisted(() => vi.fn());
+
+vi.mock('@aws-sdk/client-redshift', () => ({
+  RedshiftClient: vi.fn(() => ({ send: mockRedshiftSend })),
+  DescribeClustersCommand: vi.fn((input: unknown) => ({ __type: 'DescribeClusters', input })),
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     cloudControl: {
@@ -768,5 +781,64 @@ describe('CloudControlProvider ElastiCache ReplicationGroup attribute enrichment
 
     expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
     expect(enriched['PrimaryEndPoint.Address']).toBeUndefined();
+  });
+});
+
+describe('CloudControlProvider Redshift Cluster attribute enrichment (CC-API routing)', () => {
+  let provider: CloudControlProvider;
+
+  const enrich = (physicalId: string, attributes: Record<string, unknown>) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes('AWS::Redshift::Cluster', physicalId, attributes);
+
+  beforeEach(() => {
+    mockRedshiftSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('overlays flat-key Endpoint.Address / Endpoint.Port (string) from DescribeClusters', async () => {
+    mockRedshiftSend.mockResolvedValueOnce({
+      Clusters: [
+        {
+          Endpoint: {
+            Address: 'mycluster.abc123.us-east-1.redshift.amazonaws.com',
+            Port: 5439,
+          },
+        },
+      ],
+    });
+
+    const enriched = await enrich('mycluster', {});
+
+    expect(enriched['Endpoint.Address']).toBe('mycluster.abc123.us-east-1.redshift.amazonaws.com');
+    // Port coerced to string (the flat-key shape Fn::GetAtt consumers expect).
+    expect(enriched['Endpoint.Port']).toBe('5439');
+  });
+
+  it('is best-effort: a failed DescribeClusters does not throw and leaves attributes unchanged', async () => {
+    mockRedshiftSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const enriched = await enrich('mycluster', { ExistingAttr: 'keep-me' });
+
+    expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
+    expect(enriched['Endpoint.Address']).toBeUndefined();
+  });
+
+  it('tolerates a cluster with no Endpoint yet (returns attributes unchanged)', async () => {
+    mockRedshiftSend.mockResolvedValueOnce({ Clusters: [{}] });
+
+    const enriched = await enrich('mycluster', {});
+
+    expect(enriched['Endpoint.Address']).toBeUndefined();
+    expect(enriched['Endpoint.Port']).toBeUndefined();
   });
 });

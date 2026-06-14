@@ -17,6 +17,7 @@ import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
 import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
+import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { getAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import {
@@ -981,6 +982,43 @@ export class CloudControlProvider implements ResourceProvider {
         } catch (error) {
           this.logger.debug(
             `Failed to enrich ElastiCache ReplicationGroup ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        break;
+      }
+
+      case 'AWS::Redshift::Cluster': {
+        // Redshift Cluster has no SDK provider, so it always routes through
+        // Cloud Control. The CC API GetResource model does not reliably surface
+        // the cluster endpoint, so `Fn::GetAtt(<Cluster>, 'Endpoint.Address')` /
+        // `Endpoint.Port` (the JDBC/ODBC connection coordinates) would fall
+        // through the resolver's constructAttribute to the physicalId (the
+        // cluster identifier, NOT the endpoint hostname). Overlay the flat-key
+        // Endpoint.Address / Endpoint.Port from DescribeClusters. The SDK
+        // `Cluster.Endpoint` object uses the SAME `Endpoint.Address` /
+        // `Endpoint.Port` names as the CFn return values (no casing quirk,
+        // unlike ElastiCache). Best-effort: a failed Describe leaves the CC-API
+        // attribute shape unchanged and never fails the deploy.
+        try {
+          const redshiftClient = new RedshiftClient({});
+          const describeResponse = await redshiftClient.send(
+            new DescribeClustersCommand({ ClusterIdentifier: physicalId })
+          );
+          const cluster = describeResponse.Clusters?.[0];
+          if (cluster?.Endpoint) {
+            if (cluster.Endpoint.Address) {
+              enriched['Endpoint.Address'] = cluster.Endpoint.Address;
+            }
+            if (cluster.Endpoint.Port !== undefined) {
+              enriched['Endpoint.Port'] = String(cluster.Endpoint.Port);
+            }
+            this.logger.debug(
+              `Enriched Redshift Cluster ${physicalId} with Endpoint.Address/Port from DescribeClusters`
+            );
+          }
+        } catch (error) {
+          this.logger.debug(
+            `Failed to enrich Redshift Cluster ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
           );
         }
         break;

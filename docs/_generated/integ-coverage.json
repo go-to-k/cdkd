@@ -765,6 +765,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -843,6 +844,9 @@
         "rds-full-stack": [
           "l2"
         ],
+        "redshift-cluster-getatt": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -889,6 +893,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -964,6 +969,9 @@
           "l2"
         ],
         "rds-full-stack": [
+          "l2"
+        ],
+        "redshift-cluster-getatt": [
           "l2"
         ],
         "remove-protection": [
@@ -1035,6 +1043,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1111,6 +1120,9 @@
           "l2"
         ],
         "rds-full-stack": [
+          "l2"
+        ],
+        "redshift-cluster-getatt": [
           "l2"
         ],
         "remove-protection": [
@@ -1159,6 +1171,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1237,6 +1250,9 @@
         "rds-full-stack": [
           "l2"
         ],
+        "redshift-cluster-getatt": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -1280,6 +1296,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1349,6 +1366,9 @@
         "rds-full-stack": [
           "l2"
         ],
+        "redshift-cluster-getatt": [
+          "l2"
+        ],
         "remove-protection": [
           "l2"
         ],
@@ -1412,6 +1432,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1488,6 +1509,9 @@
           "l2"
         ],
         "rds-full-stack": [
+          "l2"
+        ],
+        "redshift-cluster-getatt": [
           "l2"
         ],
         "remove-protection": [
@@ -1547,6 +1571,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1623,6 +1648,9 @@
           "l2"
         ],
         "rds-full-stack": [
+          "l2"
+        ],
+        "redshift-cluster-getatt": [
           "l2"
         ],
         "remove-protection": [
@@ -1671,6 +1699,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1748,6 +1777,9 @@
           "l2"
         ],
         "rds-full-stack": [
+          "l2"
+        ],
+        "redshift-cluster-getatt": [
           "l2"
         ],
         "remove-protection": [
@@ -1796,6 +1828,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
@@ -1872,6 +1905,9 @@
           "l2"
         ],
         "rds-full-stack": [
+          "l2"
+        ],
+        "redshift-cluster-getatt": [
           "l2"
         ],
         "remove-protection": [
@@ -3666,6 +3702,7 @@
         "nested-stack-3level",
         "nested-stack-deep",
         "rds-full-stack",
+        "redshift-cluster-getatt",
         "replacement-fanout",
         "rollback-failure-injection",
         "schema-v5-to-v6-migration",
@@ -3777,6 +3814,9 @@
         ],
         "rds-full-stack": [
           "l2"
+        ],
+        "redshift-cluster-getatt": [
+          "l1"
         ],
         "replacement-fanout": [
           "l2",
@@ -3967,6 +4007,7 @@
     "AWS::Logs::MetricFilter",
     "AWS::Logs::SubscriptionFilter",
     "AWS::Pipes::Pipe",
+    "AWS::Redshift::Cluster",
     "AWS::Route53::CidrCollection",
     "AWS::Route53::HealthCheck",
     "AWS::SSM::Document",

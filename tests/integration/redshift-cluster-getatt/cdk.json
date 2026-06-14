@@ -1,0 +1,1 @@
+{ "app": "node bin/app.ts", "context": { "cdkd": { "stateBucket": "cdkd-state-test" } } }

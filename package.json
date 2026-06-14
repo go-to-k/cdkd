@@ -94,7 +94,8 @@
     "graphql": "^16.14.0",
     "p-limit": "^5.0.0",
     "ws": "^8.20.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "@aws-sdk/client-redshift": "^3.1017.0"
   },
   "devDependencies": {
     "@semantic-release/changelog": "^6.0.3",
