@@ -2297,6 +2297,17 @@
       }
     },
     {
+      "resourceType": "AWS::Glue::Crawler",
+      "integs": [
+        "glue-update-hardening"
+      ],
+      "signals": {
+        "glue-update-hardening": [
+          "l1"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Glue::Database",
       "integs": [
         "data-analytics",
@@ -2313,6 +2324,17 @@
       }
     },
     {
+      "resourceType": "AWS::Glue::Job",
+      "integs": [
+        "glue-update-hardening"
+      ],
+      "signals": {
+        "glue-update-hardening": [
+          "l1"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Glue::Table",
       "integs": [
         "data-analytics"
@@ -2321,6 +2343,28 @@
         "data-analytics": [
           "l1",
           "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Glue::Trigger",
+      "integs": [
+        "glue-update-hardening"
+      ],
+      "signals": {
+        "glue-update-hardening": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Glue::Workflow",
+      "integs": [
+        "glue-update-hardening"
+      ],
+      "signals": {
+        "glue-update-hardening": [
+          "l1"
         ]
       }
     },
@@ -2395,6 +2439,7 @@
         "drift-revert",
         "eventbridge",
         "export",
+        "glue-update-hardening",
         "iam-managed-policy",
         "iam-propagation-stress",
         "infra-security",
@@ -2460,6 +2505,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "glue-update-hardening": [
+          "l2"
         ],
         "iam-managed-policy": [
           "l2"
@@ -3207,6 +3255,7 @@
         "event-driven",
         "export",
         "full-stack-demo",
+        "glue-update-hardening",
         "import-value-strong-ref",
         "infra-security",
         "intrinsic-functions",
@@ -3274,6 +3323,9 @@
           "literal"
         ],
         "full-stack-demo": [
+          "l2"
+        ],
+        "glue-update-hardening": [
           "l2"
         ],
         "import-value-strong-ref": [
@@ -3957,24 +4009,8 @@
       "rationale": "drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise."
     },
     {
-      "resourceType": "AWS::Glue::Crawler",
-      "rationale": "drift coverage only; Crawler has its own start/stop schedule lifecycle, deferred until a user-reported regression makes integ ROI clear."
-    },
-    {
-      "resourceType": "AWS::Glue::Job",
-      "rationale": "drift coverage only; standalone Job integ deferred until a real-AWS issue surfaces (current usage at user sites is Studio-driven)."
-    },
-    {
       "resourceType": "AWS::Glue::SecurityConfiguration",
       "rationale": "immutable resource type; unit roundtrip + drift coverage suffice. Add integ if a future bug surfaces a real-AWS-only behavior."
-    },
-    {
-      "resourceType": "AWS::Glue::Trigger",
-      "rationale": "drift coverage only; Trigger has DEACTIVATED-ACTIVATED state-machine semantics in update() that warrant a real-AWS integ — file follow-up."
-    },
-    {
-      "resourceType": "AWS::Glue::Workflow",
-      "rationale": "drift-revert coverage only; no end-to-end Workflow integ yet (file follow-up if real-AWS Workflow lifecycle needs verification)."
     },
     {
       "resourceType": "AWS::Kinesis::StreamConsumer",

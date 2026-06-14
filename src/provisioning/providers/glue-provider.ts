@@ -40,7 +40,9 @@ import {
   GetTriggerCommand,
   StartTriggerCommand,
   StopTriggerCommand,
+  StopCrawlerCommand,
   EntityNotFoundException,
+  CrawlerRunningException,
   type DatabaseInput,
   type TableInput,
   type OpenTableFormatInput,
@@ -1049,7 +1051,11 @@ export class GlueWorkflowProvider implements ResourceProvider {
     }
 
     try {
-      const tags = workflowTagsForCreate(properties['Tags']);
+      // Glue Workflow Tags may arrive as a CFn `{Key,Value}[]` list OR a tag map
+      // (CDK can synth either shape); use the map-tolerant helper so a map shape
+      // is not silently dropped. Elide the key when there are no tags.
+      const tagsMap = cfnTagsToMap(properties['Tags']);
+      const tags = tagsMap && Object.keys(tagsMap).length > 0 ? tagsMap : undefined;
       await this.getClient().send(
         new CreateWorkflowCommand({
           Name: name,
@@ -1060,7 +1066,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
             DefaultRunProperties: properties['DefaultRunProperties'] as Record<string, string>,
           }),
           ...(properties['MaxConcurrentRuns'] !== undefined && {
-            MaxConcurrentRuns: properties['MaxConcurrentRuns'] as number,
+            MaxConcurrentRuns: coerceNumber(properties['MaxConcurrentRuns']) as number,
           }),
           ...(tags && { Tags: tags }),
         })
@@ -1100,7 +1106,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
             DefaultRunProperties: properties['DefaultRunProperties'] as Record<string, string>,
           }),
           ...(properties['MaxConcurrentRuns'] !== undefined && {
-            MaxConcurrentRuns: properties['MaxConcurrentRuns'] as number,
+            MaxConcurrentRuns: coerceNumber(properties['MaxConcurrentRuns']) as number,
           }),
         })
       );
@@ -1530,22 +1536,18 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
 
 // ─── Helpers (file-level) ──────────────────────────────────────────
 
-/**
- * Normalize the CFn `Tags` shape (`Array<{Key,Value}>`) into the SDK's
- * `TagsMap` (`Record<string,string>`) for `CreateWorkflow`. Returns
- * `undefined` when no tags — the caller drops the key.
- */
-function workflowTagsForCreate(tags: unknown): Record<string, string> | undefined {
-  if (!Array.isArray(tags) || tags.length === 0) return undefined;
-  const out: Record<string, string> = {};
-  for (const t of tags) {
-    const obj = t as Record<string, unknown>;
-    const k = typeof obj['Key'] === 'string' ? obj['Key'] : undefined;
-    const v = typeof obj['Value'] === 'string' ? obj['Value'] : '';
-    if (!k) continue;
-    out[k] = v;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
+/** Max GetCrawler polls while waiting for a stopped crawler to settle. */
+const CRAWLER_STOP_MAX_ATTEMPTS = 30;
+/** Delay between GetCrawler polls while waiting for a crawler to stop. */
+const CRAWLER_STOP_POLL_INTERVAL_MS = 2000;
+/** Max GetTrigger polls while waiting for a trigger to reach DEACTIVATED. */
+const TRIGGER_DEACTIVATE_MAX_ATTEMPTS = 30;
+/** Delay between GetTrigger polls while waiting for a trigger to deactivate. */
+const TRIGGER_DEACTIVATE_POLL_INTERVAL_MS = 1000;
+
+/** Promise-based sleep used by the crawler / trigger state-machine waiters. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -2027,44 +2029,81 @@ function buildJobCommand(c: Record<string, unknown>): JobCommandShape {
  */
 function buildJobCommonFields(p: Record<string, unknown>): Partial<JobUpdate> {
   const r: Partial<JobUpdate> = {};
-  const passThrough: Array<keyof JobUpdate> = [
+  // String pass-through props (CFn delivers these as strings and the SDK types
+  // them as strings too).
+  const stringPassThrough: Array<keyof JobUpdate> = [
     'JobMode',
     'JobRunQueuingEnabled',
     'Description',
     'LogUri',
     'DefaultArguments',
     'NonOverridableArguments',
-    'MaxRetries',
-    'AllocatedCapacity',
-    'Timeout',
-    'MaxCapacity',
     'WorkerType',
-    'NumberOfWorkers',
     'SecurityConfiguration',
     'GlueVersion',
     'ExecutionClass',
     'MaintenanceWindow',
   ];
-  for (const k of passThrough) {
+  for (const k of stringPassThrough) {
     if (p[k as string] !== undefined) {
       // Cast to any: union of multiple field types, type-gated by AWS SDK at the wire layer.
       (r as Record<string, unknown>)[k as string] = p[k as string];
     }
   }
+  // Numeric props: CFn delivers these as STRINGS (CDK synths e.g. "10"), but the
+  // Glue SDK types them as int/double. `as number` is compile-only and does NOT
+  // coerce at runtime, so the SDK would receive a string for a number-typed field.
+  // Coerce at the wire boundary. See feedback_cfn_stringly_typed_numerics_need_coerce.
+  const numericPassThrough: Array<keyof JobUpdate> = [
+    'MaxRetries',
+    'AllocatedCapacity',
+    'Timeout',
+    'MaxCapacity',
+    'NumberOfWorkers',
+  ];
+  for (const k of numericPassThrough) {
+    const v = p[k as string];
+    if (v !== undefined) {
+      (r as Record<string, unknown>)[k as string] = coerceNumber(v);
+    }
+  }
   if (p['ExecutionProperty'] !== undefined) {
-    r.ExecutionProperty = p['ExecutionProperty'] as ExecutionProperty;
+    const ep = { ...(p['ExecutionProperty'] as Record<string, unknown>) };
+    if (ep['MaxConcurrentRuns'] !== undefined) {
+      ep['MaxConcurrentRuns'] = coerceNumber(ep['MaxConcurrentRuns']);
+    }
+    r.ExecutionProperty = ep as ExecutionProperty;
   }
   if (p['Connections'] !== undefined) {
     const conn = p['Connections'] as Record<string, unknown>;
     r.Connections = { Connections: (conn['Connections'] as string[] | undefined) ?? [] };
   }
   if (p['NotificationProperty'] !== undefined) {
-    r.NotificationProperty = p['NotificationProperty'] as NotificationProperty;
+    const np = { ...(p['NotificationProperty'] as Record<string, unknown>) };
+    if (np['NotifyDelayAfter'] !== undefined) {
+      np['NotifyDelayAfter'] = coerceNumber(np['NotifyDelayAfter']);
+    }
+    r.NotificationProperty = np as NotificationProperty;
   }
   if (p['SourceControlDetails'] !== undefined) {
     r.SourceControlDetails = p['SourceControlDetails'] as SourceControlDetails;
   }
   return r;
+}
+
+/**
+ * Coerce a CFn-delivered numeric property (often a string like `"10"`) to a
+ * JS number at the SDK wire boundary. Non-finite / unparseable inputs are
+ * returned unchanged so AWS surfaces a clear validation error rather than
+ * silently sending `NaN`.
+ */
+function coerceNumber(value: unknown): unknown {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return value;
 }
 
 /**
@@ -2225,16 +2264,29 @@ export class GlueCrawlerProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Glue Crawler ${logicalId}: ${physicalId}`);
     try {
-      await this.getClient().send(
-        new UpdateCrawlerCommand({
-          Name: physicalId,
-          ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
-          ...(properties['Targets'] !== undefined && {
-            Targets: properties['Targets'] as CrawlerTargets,
-          }),
-          ...buildCrawlerCommonFields(properties),
-        })
-      );
+      const updateInput = {
+        Name: physicalId,
+        ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
+        ...(properties['Targets'] !== undefined && {
+          Targets: properties['Targets'] as CrawlerTargets,
+        }),
+        ...buildCrawlerCommonFields(properties),
+      };
+      try {
+        await this.getClient().send(new UpdateCrawlerCommand(updateInput));
+      } catch (err) {
+        // UpdateCrawler rejects a mid-run crawler with CrawlerRunningException.
+        // Stop it, wait for it to settle, then retry the update.
+        if (err instanceof CrawlerRunningException) {
+          this.logger.debug(
+            `Glue Crawler ${physicalId} is running; stopping before update and retrying`
+          );
+          await this.stopCrawlerAndWait(physicalId);
+          await this.getClient().send(new UpdateCrawlerCommand(updateInput));
+        } else {
+          throw err;
+        }
+      }
 
       const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
       const newTags = cfnTagsToMap(properties['Tags']) ?? {};
@@ -2276,6 +2328,17 @@ export class GlueCrawlerProvider implements ResourceProvider {
         this.logger.debug(`Glue Crawler ${physicalId} does not exist, skipping deletion`);
         return;
       }
+      // A crawler that is mid-run rejects DeleteCrawler with
+      // CrawlerRunningException. Stop it, wait for it to settle, then retry the
+      // delete so destroy does not fail on an actively-crawling crawler.
+      if (error instanceof CrawlerRunningException) {
+        this.logger.debug(
+          `Glue Crawler ${physicalId} is running; stopping before delete and retrying`
+        );
+        await this.stopCrawlerAndWait(physicalId);
+        await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
+        return;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2284,6 +2347,38 @@ export class GlueCrawlerProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Stop a running crawler and poll until it leaves the RUNNING / STOPPING
+   * state (or until {@link CRAWLER_STOP_MAX_ATTEMPTS} is exhausted). Tolerates a
+   * CrawlerStoppingException / "not running" race (the crawler may have just
+   * finished on its own) so callers can unconditionally retry their delete /
+   * update afterwards.
+   */
+  private async stopCrawlerAndWait(physicalId: string): Promise<void> {
+    try {
+      await this.getClient().send(new StopCrawlerCommand({ Name: physicalId }));
+    } catch (err) {
+      // CrawlerNotRunningException / CrawlerStoppingException etc. mean the
+      // crawler is already stopping or stopped — nothing to do but wait it out.
+      this.logger.debug(
+        `StopCrawler for ${physicalId} returned ${
+          err instanceof Error ? err.name : String(err)
+        }; continuing to wait`
+      );
+    }
+    for (let attempt = 0; attempt < CRAWLER_STOP_MAX_ATTEMPTS; attempt++) {
+      try {
+        const cur = await this.getClient().send(new GetCrawlerCommand({ Name: physicalId }));
+        const state = cur.Crawler?.State;
+        if (state !== 'RUNNING' && state !== 'STOPPING') return;
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return;
+        // Inconclusive read — keep polling until the attempt budget is gone.
+      }
+      await sleep(CRAWLER_STOP_POLL_INTERVAL_MS);
     }
   }
 
@@ -2834,14 +2929,17 @@ export class GlueTriggerProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Glue Trigger ${logicalId}: ${physicalId}`);
     try {
-      // Glue requires the trigger be DEACTIVATED before UpdateTrigger.
-      // Read the current state to decide whether we need to stop+restart.
+      // Glue requires the trigger be DEACTIVATED before UpdateTrigger. Read the
+      // current state to decide whether we need to stop+restart.
       let restart = false;
       try {
         const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
         if (cur.Trigger?.State === 'ACTIVATED') {
           restart = true;
           await this.getClient().send(new StopTriggerCommand({ Name: physicalId }));
+          // StopTrigger is async — UpdateTrigger fails if the trigger has not
+          // yet transitioned out of ACTIVATED, so wait for DEACTIVATED first.
+          await this.waitForTriggerDeactivated(physicalId);
         }
       } catch (err) {
         // If GetTrigger fails for any reason other than NotFound, fall
@@ -2872,12 +2970,16 @@ export class GlueTriggerProvider implements ResourceProvider {
           EventBatchingCondition: properties['EventBatchingCondition'] as EventBatchingCondition,
         }),
       };
-      await this.getClient().send(
-        new UpdateTriggerCommand({ Name: physicalId, TriggerUpdate: update })
-      );
-
-      if (restart) {
-        await this.getClient().send(new StartTriggerCommand({ Name: physicalId }));
+      // Restore the ACTIVATED state even if UpdateTrigger throws — otherwise a
+      // failed update would leave a previously-running trigger stuck DEACTIVATED.
+      try {
+        await this.getClient().send(
+          new UpdateTriggerCommand({ Name: physicalId, TriggerUpdate: update })
+        );
+      } finally {
+        if (restart) {
+          await this.getClient().send(new StartTriggerCommand({ Name: physicalId }));
+        }
       }
 
       const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
@@ -2897,6 +2999,26 @@ export class GlueTriggerProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Poll GetTrigger until the trigger leaves the ACTIVATED / ACTIVATING state
+   * (StopTrigger is async). Returns once DEACTIVATED (or any non-active state)
+   * is observed, the trigger is gone, or the attempt budget is exhausted —
+   * callers then proceed with UpdateTrigger / DeleteTrigger.
+   */
+  private async waitForTriggerDeactivated(physicalId: string): Promise<void> {
+    for (let attempt = 0; attempt < TRIGGER_DEACTIVATE_MAX_ATTEMPTS; attempt++) {
+      try {
+        const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+        const state = cur.Trigger?.State;
+        if (state !== 'ACTIVATED' && state !== 'ACTIVATING') return;
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return;
+        // Inconclusive read — keep polling until the budget is gone.
+      }
+      await sleep(TRIGGER_DEACTIVATE_POLL_INTERVAL_MS);
+    }
+  }
+
   async delete(
     logicalId: string,
     physicalId: string,
@@ -2906,6 +3028,25 @@ export class GlueTriggerProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Trigger ${logicalId}: ${physicalId}`);
     try {
+      // An ACTIVATED scheduled / conditional trigger should be stopped before
+      // deletion so a firing trigger does not race the delete.
+      try {
+        const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+        if (cur.Trigger?.State === 'ACTIVATED') {
+          await this.getClient().send(new StopTriggerCommand({ Name: physicalId }));
+          await this.waitForTriggerDeactivated(physicalId);
+        }
+      } catch (err) {
+        // Pre-check is best-effort; if it fails for anything other than NotFound
+        // (which DeleteTrigger handles below) let DeleteTrigger surface the error.
+        if (!(err instanceof EntityNotFoundException)) {
+          this.logger.debug(
+            `GetTrigger pre-delete check failed for ${physicalId}; continuing: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
       await this.getClient().send(new DeleteTriggerCommand({ Name: physicalId }));
     } catch (error) {
       if (error instanceof EntityNotFoundException) {
