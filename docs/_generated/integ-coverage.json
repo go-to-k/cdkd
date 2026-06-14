@@ -3314,6 +3314,7 @@
         "export",
         "full-stack-demo",
         "iam-propagation-stress",
+        "importvalue-chain",
         "intrinsics-torture",
         "intrinsics-torture-2",
         "microservices",
@@ -3365,6 +3366,9 @@
           "l2"
         ],
         "iam-propagation-stress": [
+          "l2"
+        ],
+        "importvalue-chain": [
           "l2"
         ],
         "intrinsics-torture": [
@@ -3554,6 +3558,7 @@
         "getstackoutput-crossregion",
         "import-nested-stack",
         "import-value-strong-ref",
+        "importvalue-chain",
         "infra-security",
         "intrinsics-torture",
         "intrinsics-torture-2",
@@ -3632,6 +3637,9 @@
           "literal"
         ],
         "import-value-strong-ref": [
+          "l2"
+        ],
+        "importvalue-chain": [
           "l2"
         ],
         "infra-security": [

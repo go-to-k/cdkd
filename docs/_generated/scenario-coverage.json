@@ -632,6 +632,13 @@
       ]
     },
     {
+      "name": "importvalue-chain",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-importvalue-strong-ref"
+      ]
+    },
+    {
       "name": "infra-security",
       "annotated": true,
       "scenarios": []
@@ -1584,7 +1591,8 @@
       "scenario": "multi-stack-importvalue-strong-ref",
       "description": "Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]).",
       "fixtures": [
-        "import-value-strong-ref"
+        "import-value-strong-ref",
+        "importvalue-chain"
       ]
     },
     {
