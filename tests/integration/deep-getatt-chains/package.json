@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-deep-getatt-chains",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd failure-seeking example: long GetAtt chains where each resource's post-create attribute feeds the next (SDK + CC-API mix)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

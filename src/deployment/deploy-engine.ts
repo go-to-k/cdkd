@@ -28,7 +28,10 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
-import { IMPLICIT_DELETE_DEPENDENCIES } from '../analyzer/implicit-delete-deps.js';
+import {
+  IMPLICIT_DELETE_DEPENDENCIES,
+  computeImplicitDeleteEdges,
+} from '../analyzer/implicit-delete-deps.js';
 import { withRetry } from './retry.js';
 import { withResourceDeadline } from './resource-deadline.js';
 
@@ -2561,6 +2564,26 @@ export class DeployEngine {
             );
           }
         }
+      }
+    }
+
+    // Per-resource implicit delete edges that cannot be inferred from a
+    // type-pair rule (e.g. CompositeAlarm -> the metric alarms its AlarmRule
+    // references by name, which carry no Ref / Fn::GetAtt edge).
+    const scoped: Record<string, ResourceState> = {};
+    for (const id of deleteIds) {
+      const resource = state.resources[id];
+      if (resource) scoped[id] = resource;
+    }
+    for (const { before, after } of computeImplicitDeleteEdges(scoped)) {
+      // `before` must be deleted before `after`, so `before` is in `after`'s
+      // deletion deps (picked / deleted first).
+      if (!dependedBy.has(after)) dependedBy.set(after, new Set());
+      if (!dependedBy.get(after)!.has(before)) {
+        dependedBy.get(after)!.add(before);
+        this.logger.debug(
+          `Implicit delete dependency: ${before} (${scoped[before]?.resourceType}) must be deleted before ${after} (${scoped[after]?.resourceType})`
+        );
       }
     }
   }

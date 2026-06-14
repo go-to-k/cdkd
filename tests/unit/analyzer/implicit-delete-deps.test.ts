@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { IMPLICIT_DELETE_DEPENDENCIES } from '../../../src/analyzer/implicit-delete-deps.js';
+import {
+  IMPLICIT_DELETE_DEPENDENCIES,
+  computeImplicitDeleteEdges,
+  extractReferencedAlarmNames,
+  type DeleteOrderingResource,
+} from '../../../src/analyzer/implicit-delete-deps.js';
 
 describe('IMPLICIT_DELETE_DEPENDENCIES', () => {
   it('Subnet must be deleted after Lambda::Function (ENI detach race)', () => {
@@ -78,5 +83,144 @@ describe('IMPLICIT_DELETE_DEPENDENCIES', () => {
     for (const [key, values] of Object.entries(IMPLICIT_DELETE_DEPENDENCIES)) {
       expect(values).not.toContain(key);
     }
+  });
+});
+
+describe('extractReferencedAlarmNames', () => {
+  it('extracts a bare-name ALARM() reference', () => {
+    expect(extractReferencedAlarmNames('ALARM(cdkd-getatt-chain-alarm)')).toEqual([
+      'cdkd-getatt-chain-alarm',
+    ]);
+  });
+
+  it('extracts quoted names (single and double quotes)', () => {
+    expect(extractReferencedAlarmNames('ALARM("my-alarm")')).toEqual(['my-alarm']);
+    expect(extractReferencedAlarmNames("OK('other-alarm')")).toEqual(['other-alarm']);
+  });
+
+  it('extracts all three alarm-state functions', () => {
+    const rule = 'ALARM(a) OR (OK(b) AND INSUFFICIENT_DATA(c))';
+    expect(extractReferencedAlarmNames(rule).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('reduces an ARN argument to the trailing alarm name', () => {
+    const rule = 'ALARM("arn:aws:cloudwatch:us-east-1:123456789012:alarm:my-alarm")';
+    expect(extractReferencedAlarmNames(rule)).toEqual(['my-alarm']);
+  });
+
+  it('deduplicates repeated references', () => {
+    expect(extractReferencedAlarmNames('ALARM(a) OR OK(a)')).toEqual(['a']);
+  });
+
+  it('ignores TRUE / FALSE boolean literals (no argument)', () => {
+    expect(extractReferencedAlarmNames('TRUE OR FALSE')).toEqual([]);
+  });
+
+  it('returns empty for a rule with no alarm references', () => {
+    expect(extractReferencedAlarmNames('')).toEqual([]);
+  });
+});
+
+describe('computeImplicitDeleteEdges', () => {
+  it('orders a CompositeAlarm before the metric Alarm its AlarmRule references by name', () => {
+    const resources: Record<string, DeleteOrderingResource> = {
+      ChainAlarm: {
+        resourceType: 'AWS::CloudWatch::Alarm',
+        physicalId: 'cdkd-getatt-chain-alarm',
+        properties: { AlarmName: 'cdkd-getatt-chain-alarm' },
+      },
+      ChainComposite: {
+        resourceType: 'AWS::CloudWatch::CompositeAlarm',
+        physicalId: 'cdkd-getatt-chain-composite',
+        properties: {
+          AlarmName: 'cdkd-getatt-chain-composite',
+          AlarmRule: 'ALARM(cdkd-getatt-chain-alarm)',
+        },
+      },
+    };
+    expect(computeImplicitDeleteEdges(resources)).toEqual([
+      { before: 'ChainComposite', after: 'ChainAlarm' },
+    ]);
+  });
+
+  it('matches the referenced alarm by physicalId when AlarmName property is absent', () => {
+    const resources: Record<string, DeleteOrderingResource> = {
+      MetricAlarm: {
+        resourceType: 'AWS::CloudWatch::Alarm',
+        physicalId: 'metric-alarm-name',
+      },
+      Composite: {
+        resourceType: 'AWS::CloudWatch::CompositeAlarm',
+        properties: { AlarmRule: 'ALARM("metric-alarm-name")' },
+      },
+    };
+    expect(computeImplicitDeleteEdges(resources)).toEqual([
+      { before: 'Composite', after: 'MetricAlarm' },
+    ]);
+  });
+
+  it('handles composite-of-composite (one CompositeAlarm referencing another)', () => {
+    const resources: Record<string, DeleteOrderingResource> = {
+      Inner: {
+        resourceType: 'AWS::CloudWatch::CompositeAlarm',
+        properties: { AlarmName: 'inner', AlarmRule: 'ALARM(metric)' },
+      },
+      MetricAlarm: {
+        resourceType: 'AWS::CloudWatch::Alarm',
+        properties: { AlarmName: 'metric' },
+      },
+      Outer: {
+        resourceType: 'AWS::CloudWatch::CompositeAlarm',
+        properties: { AlarmName: 'outer', AlarmRule: 'ALARM(inner)' },
+      },
+    };
+    const edges = computeImplicitDeleteEdges(resources);
+    expect(edges).toContainEqual({ before: 'Inner', after: 'MetricAlarm' });
+    expect(edges).toContainEqual({ before: 'Outer', after: 'Inner' });
+    expect(edges).toHaveLength(2);
+  });
+
+  it('emits an edge per referenced alarm when the rule references several', () => {
+    const resources: Record<string, DeleteOrderingResource> = {
+      A: { resourceType: 'AWS::CloudWatch::Alarm', properties: { AlarmName: 'a' } },
+      B: { resourceType: 'AWS::CloudWatch::Alarm', properties: { AlarmName: 'b' } },
+      Composite: {
+        resourceType: 'AWS::CloudWatch::CompositeAlarm',
+        properties: { AlarmName: 'c', AlarmRule: 'ALARM(a) AND OK(b)' },
+      },
+    };
+    const edges = computeImplicitDeleteEdges(resources);
+    expect(edges).toContainEqual({ before: 'Composite', after: 'A' });
+    expect(edges).toContainEqual({ before: 'Composite', after: 'B' });
+    expect(edges).toHaveLength(2);
+  });
+
+  it('skips references to alarms not present in the delete set', () => {
+    const resources: Record<string, DeleteOrderingResource> = {
+      Composite: {
+        resourceType: 'AWS::CloudWatch::CompositeAlarm',
+        properties: { AlarmName: 'c', AlarmRule: 'ALARM(external-alarm-not-in-stack)' },
+      },
+    };
+    expect(computeImplicitDeleteEdges(resources)).toEqual([]);
+  });
+
+  it('never emits a self-cycle edge', () => {
+    const resources: Record<string, DeleteOrderingResource> = {
+      // Pathological: a composite whose rule names itself.
+      Composite: {
+        resourceType: 'AWS::CloudWatch::CompositeAlarm',
+        properties: { AlarmName: 'self', AlarmRule: 'ALARM(self)' },
+      },
+    };
+    expect(computeImplicitDeleteEdges(resources)).toEqual([]);
+  });
+
+  it('returns no edges when there are no composite alarms', () => {
+    const resources: Record<string, DeleteOrderingResource> = {
+      Alarm: { resourceType: 'AWS::CloudWatch::Alarm', properties: { AlarmName: 'a' } },
+      Bucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'my-bucket' },
+    };
+    expect(computeImplicitDeleteEdges(resources)).toEqual([]);
   });
 });

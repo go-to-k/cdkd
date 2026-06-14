@@ -2372,3 +2372,236 @@ describe('IntrinsicFunctionResolver - evaluateConditions composite refs (#840)',
     expect(result).not.toBe(false);
   });
 });
+
+describe('IntrinsicFunctionResolver - AWS::CloudWatch::CompositeAlarm Fn::GetAtt', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockEc2Send.mockReset();
+  });
+
+  it('resolves Arn to the :alarm: ARN built from the physical id (not the alarm name)', async () => {
+    // AWS::CloudWatch::CompositeAlarm has no SDK provider, so it is routed via
+    // Cloud Control and its Arn may not be captured in attributes. Without the
+    // constructAttribute case, Fn::GetAtt(<CompositeAlarm>, 'Arn') fell through
+    // to the physicalId default and returned the alarm NAME instead of its ARN.
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyComposite: { Type: 'AWS::CloudWatch::CompositeAlarm', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyComposite: {
+          physicalId: 'my-composite-alarm',
+          resourceType: 'AWS::CloudWatch::CompositeAlarm',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyComposite', 'Arn'] },
+      context
+    );
+    expect(result).toBe('arn:aws:cloudwatch:us-east-1:123456789012:alarm:my-composite-alarm');
+    // No live lookup is needed for a CompositeAlarm ARN.
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the physical id for a non-Arn attribute', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyComposite: { Type: 'AWS::CloudWatch::CompositeAlarm', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyComposite: {
+          physicalId: 'my-composite-alarm',
+          resourceType: 'AWS::CloudWatch::CompositeAlarm',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyComposite', 'SomethingElse'] },
+      context
+    );
+    expect(result).toBe('my-composite-alarm');
+  });
+});
+
+describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live DescribeInstances)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockEc2Send.mockReset();
+  });
+
+  it('resolves PrivateIp to the live IP from DescribeInstances (not the instance id)', async () => {
+    // Without the live-lookup case, Fn::GetAtt(<Instance>, 'PrivateIp') fell
+    // through to the physicalId default and handed the instance id to a
+    // downstream consumer expecting an IP (e.g. an ELBv2 IP-target group
+    // registration rejects `i-...` with `not a valid IPv4 address`).
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        {
+          Instances: [
+            {
+              InstanceId: 'i-0123456789abcdef0',
+              PrivateIpAddress: '10.0.3.42',
+              PublicIpAddress: '54.1.2.3',
+              PrivateDnsName: 'ip-10-0-3-42.ec2.internal',
+              PublicDnsName: 'ec2-54-1-2-3.compute-1.amazonaws.com',
+              Placement: { AvailabilityZone: 'us-east-1a' },
+            },
+          ],
+        },
+      ],
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] },
+      context
+    );
+    expect(result).toBe('10.0.3.42');
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves the other live attributes (PublicIp / DnsName / AvailabilityZone)', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        {
+          Instances: [
+            {
+              InstanceId: 'i-0123456789abcdef0',
+              PrivateIpAddress: '10.0.3.42',
+              PublicIpAddress: '54.1.2.3',
+              PrivateDnsName: 'ip-10-0-3-42.ec2.internal',
+              PublicDnsName: 'ec2-54-1-2-3.compute-1.amazonaws.com',
+              Placement: { AvailabilityZone: 'us-east-1a' },
+            },
+          ],
+        },
+      ],
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} },
+      },
+    };
+    const makeContext = (): ResolverContext => ({
+      template,
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    });
+
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
+      '54.1.2.3'
+    );
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicDnsName'] }, makeContext())
+    ).toBe('ec2-54-1-2-3.compute-1.amazonaws.com');
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'AvailabilityZone'] }, makeContext())
+    ).toBe('us-east-1a');
+  });
+
+  it('caches per (physicalId, attribute) so a repeated reference makes one DescribeInstances call', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [{ Instances: [{ PrivateIpAddress: '10.0.3.42' }] }],
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} },
+      },
+    };
+    const makeContext = (): ResolverContext => ({
+      template,
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    });
+
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, makeContext())).toBe(
+      '10.0.3.42'
+    );
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, makeContext())).toBe(
+      '10.0.3.42'
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the physical id when DescribeInstances fails', async () => {
+    mockEc2Send.mockRejectedValue(new Error('Access Denied'));
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] },
+      context
+    );
+    expect(result).toBe('i-0123456789abcdef0');
+  });
+});

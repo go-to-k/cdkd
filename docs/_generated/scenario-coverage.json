@@ -33,6 +33,10 @@
       "description": "Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling."
     },
     {
+      "tag": "deep-getatt-chain-resolution",
+      "description": "Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture)."
+    },
+    {
       "tag": "deletion-policy-retain",
       "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template)."
     },
@@ -397,6 +401,13 @@
       "name": "data-pipeline",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "deep-getatt-chains",
+      "annotated": true,
+      "scenarios": [
+        "deep-getatt-chain-resolution"
+      ]
     },
     {
       "name": "deletion-policy-retain",
@@ -1173,6 +1184,13 @@
         "custom-resource-provider",
         "destroy-interrupt",
         "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "scenario": "deep-getatt-chain-resolution",
+      "description": "Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture).",
+      "fixtures": [
+        "deep-getatt-chains"
       ]
     },
     {

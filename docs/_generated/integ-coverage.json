@@ -530,6 +530,7 @@
       "integs": [
         "cloudwatch",
         "composite-stack",
+        "deep-getatt-chains",
         "full-stack-demo",
         "log-pipeline",
         "scheduled-task"
@@ -542,6 +543,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "deep-getatt-chains": [
+          "l1"
         ],
         "full-stack-demo": [
           "l2"
@@ -2251,6 +2255,7 @@
         "cc-api-fallback",
         "cc-api-fallback-transitions",
         "composite-stack",
+        "deep-getatt-chains",
         "destroy-interrupt",
         "diff-intrinsic-target-change",
         "drift-revert",
@@ -2299,6 +2304,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "deep-getatt-chains": [
+          "l1"
         ],
         "destroy-interrupt": [
           "l2"
@@ -2526,6 +2534,7 @@
         "composite-stack",
         "custom-resource-provider",
         "data-pipeline",
+        "deep-getatt-chains",
         "destroy-interrupt",
         "docker-image-asset",
         "dynamodb-streams",
@@ -2609,6 +2618,9 @@
         ],
         "data-pipeline": [
           "l2"
+        ],
+        "deep-getatt-chains": [
+          "l1"
         ],
         "destroy-interrupt": [
           "l2"
@@ -3232,6 +3244,7 @@
         "cloudwatch",
         "composite-stack",
         "conditions-and-if",
+        "deep-getatt-chains",
         "deployment-events",
         "drift-revert",
         "drift-revert-arrays",
@@ -3261,6 +3274,9 @@
           "literal"
         ],
         "conditions-and-if": [
+          "l1"
+        ],
+        "deep-getatt-chains": [
           "l1"
         ],
         "deployment-events": [
@@ -3434,6 +3450,7 @@
         "context-test",
         "cross-region-state-bucket",
         "cross-stack-references",
+        "deep-getatt-chains",
         "deletion-policy-retain",
         "deployment-events",
         "destroy-interrupt",
@@ -3480,6 +3497,9 @@
           "l1"
         ],
         "cross-stack-references": [
+          "l1"
+        ],
+        "deep-getatt-chains": [
           "l1"
         ],
         "deletion-policy-retain": [
@@ -3688,6 +3708,7 @@
     "AWS::Athena::NamedQuery",
     "AWS::Athena::WorkGroup",
     "AWS::CloudFront::OriginAccessControl",
+    "AWS::CloudWatch::CompositeAlarm",
     "AWS::CodePipeline::Pipeline",
     "AWS::Cognito::UserPoolDomain",
     "AWS::EC2::EIP",
