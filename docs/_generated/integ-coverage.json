@@ -3267,6 +3267,7 @@
         "bench-cdk-sample",
         "bench-sdk",
         "composite-stack",
+        "conditions-update-2",
         "data-pipeline",
         "drift-revert-arrays",
         "event-driven",
@@ -3293,6 +3294,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "conditions-update-2": [
+          "l1"
         ],
         "data-pipeline": [
           "l2"
@@ -3353,6 +3357,7 @@
         "bench-sdk",
         "composite-stack",
         "conditions-and-if",
+        "conditions-update-2",
         "context-test",
         "cross-region-state-bucket",
         "cross-stack-references",
@@ -3389,6 +3394,9 @@
           "literal"
         ],
         "conditions-and-if": [
+          "l1"
+        ],
+        "conditions-update-2": [
           "l1"
         ],
         "context-test": [

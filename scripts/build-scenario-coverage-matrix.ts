@@ -139,6 +139,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // ---- Conditions / intrinsic-function patterns ----
   'conditions-and-if':
     'CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property.',
+  'conditions-update-semantics':
+    'Harder CloudFormation-Conditions-on-UPDATE semantics beyond the simple flip in `conditions-and-if` (which surfaced #840). A CDK-context phase flip (-c phase=a|b) redeploys the SAME stack in place and asserts: a resource that MOVES gating conditions (IsPhaseA-gated -> condition-false -> DELETED) and its reverse (IsPhaseB-gated absent -> CREATED); `Fn::If` -> `AWS::NoValue` REMOVING a nested property block (SQS RedrivePolicy) on an in-place UPDATE (same physical id, not a replacement); a condition-gated OUTPUT present vs absent in cdkd state outputs; a `DependsOn` to a condition-EXCLUDED resource being dropped (the depender still deploys); and a `Ref` to a condition-excluded resource living inside another condition-excluded resource (both pruned together, no dangling-ref crash).',
 
   // ---- Drift / state patterns ----
   'drift-revert-roundtrip':

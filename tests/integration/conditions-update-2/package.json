@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-conditions-update-2",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Harder CloudFormation Conditions-on-UPDATE semantics stress test for cdkd",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.172.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
