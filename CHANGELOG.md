@@ -1,3 +1,10 @@
+## [0.221.12](https://github.com/go-to-k/cdkd/compare/v0.221.11...v0.221.12) (2026-06-14)
+
+
+### Bug Fixes
+
+* **provisioning:** enrich ElastiCache ReplicationGroup endpoint attributes on the Cloud Control path ([#864](https://github.com/go-to-k/cdkd/issues/864)) ([efab00f](https://github.com/go-to-k/cdkd/commit/efab00f688cd0a9e193f04d47a65063404006bc6))
+
 ## [0.221.11](https://github.com/go-to-k/cdkd/compare/v0.221.10...v0.221.11) (2026-06-14)
 
 
