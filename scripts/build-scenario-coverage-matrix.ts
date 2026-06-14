@@ -210,6 +210,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // ---- Multi-resource / broad-regression set ----
   'cross-cutting-deploy-destroy':
     'Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate.',
+  'wide-dag-throttle-retry':
+    'Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans.',
 
   // ---- Intrinsic-function resolution patterns ----
   'intrinsics-torture':

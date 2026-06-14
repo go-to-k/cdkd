@@ -146,6 +146,23 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // teardown lock and avoid retrying unrelated create-already-exists
   // conflicts that share the same exception name.
   'because it is in use',
+  // Throttling backstop: many AWS services surface a rate-limit rejection
+  // with the canonical "Rate exceeded" message (SSM PutParameter, STS,
+  // CloudWatch, API Gateway, etc.) and an HTTP 400 (NOT 429), so the status-
+  // code check below misses them. When cdkd dispatches a wide DAG at a high
+  // `--concurrency`, the create burst can exceed a per-service rate limit and
+  // AWS rejects the losers with `Rate exceeded. Ensure you have the high-
+  // throughput setting enabled ...`. The AWS SDK's own retry layer (3 fast
+  // attempts) is not enough to drain a large burst; cdkd's outer withRetry —
+  // with its longer 1s/2s/4s/8s backoff — spreads the remaining creates out
+  // until the rate window clears. "Rate exceeded" only ever means throttling,
+  // so a permanent failure cannot false-positive into the retry loop. This is
+  // a message-level backstop for the name-based throttle detection in
+  // isThrottlingError() (the ProvisioningError wrap preserves the SDK error's
+  // message string even when the original `.name` is one cause-link deeper).
+  // Surfaced by tests/integration/throttle-wide-dag (80 SSM parameters at
+  // --concurrency 40).
+  'Rate exceeded',
 ];
 
 /**
@@ -155,12 +172,57 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
 export const RETRYABLE_HTTP_STATUS_CODES: ReadonlySet<number> = new Set([429, 503]);
 
 /**
+ * AWS SDK v3 canonical throttling error names. Mirrors
+ * `@aws-sdk/service-error-classification`'s `THROTTLING_ERROR_CODES` — any
+ * error (or wrapped cause) whose `name` is one of these is a transient rate-
+ * limit rejection worth retrying with backoff. Detecting by NAME is more
+ * robust than by HTTP status because most AWS throttles surface as HTTP 400
+ * (not 429) with the throttling signal carried only in the error code / name
+ * (e.g. SSM `ThrottlingException` for the `Rate exceeded` message).
+ */
+export const THROTTLING_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'BandwidthLimitExceeded',
+  'EC2ThrottledException',
+  'LimitExceededException',
+  'PriorRequestNotComplete',
+  'ProvisionedThroughputExceededException',
+  'RequestLimitExceeded',
+  'RequestThrottled',
+  'RequestThrottledException',
+  'SlowDown',
+  'ThrottledException',
+  'Throttling',
+  'ThrottlingException',
+  'TooManyRequestsException',
+  'TransactionInProgressException',
+]);
+
+/**
+ * Walk the error + its `.cause` chain (bounded) looking for an AWS SDK v3
+ * throttling error `name`. cdkd wraps the original AWS error in a
+ * `ProvisioningError`, so the throttling signal is typically one cause-link
+ * deep; the bounded walk also tolerates SDK errors that nest a `$response`/
+ * cause without exploding on a cyclic chain.
+ */
+function isThrottlingError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current != null; depth++) {
+    const name = (current as { name?: unknown }).name;
+    if (typeof name === 'string' && THROTTLING_ERROR_NAMES.has(name)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
  * Determine whether an AWS error should be retried.
  *
  * Checks (in order):
  *   1. HTTP status code on the error itself (`$metadata.httpStatusCode`)
  *   2. HTTP status code on a wrapped cause (`cause.$metadata.httpStatusCode`)
- *   3. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
+ *   3. Throttling error `name` on the error or any wrapped cause (most AWS
+ *      throttles are HTTP 400, not 429 — see {@link THROTTLING_ERROR_NAMES})
+ *   4. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
  */
 export function isRetryableTransientError(error: unknown, message: string): boolean {
   const metadata = (error as { $metadata?: { httpStatusCode?: number } }).$metadata;
@@ -170,6 +232,8 @@ export function isRetryableTransientError(error: unknown, message: string): bool
   const cause = (error as { cause?: { $metadata?: { httpStatusCode?: number } } }).cause;
   const causeStatus = cause?.$metadata?.httpStatusCode;
   if (causeStatus !== undefined && RETRYABLE_HTTP_STATUS_CODES.has(causeStatus)) return true;
+
+  if (isThrottlingError(error)) return true;
 
   return RETRYABLE_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
 }

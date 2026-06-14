@@ -223,6 +223,65 @@ describe('isRetryableTransientError', () => {
     });
   });
 
+  describe('throttling (name-based, HTTP 400 not 429)', () => {
+    it('retries an SSM ThrottlingException (HTTP 400) by its error name', () => {
+      // Real shape from SSM PutParameter under a wide burst: name is
+      // ThrottlingException, status is 400 (not 429), message is "Rate exceeded".
+      const err = Object.assign(new Error('Rate exceeded'), {
+        name: 'ThrottlingException',
+        $metadata: { httpStatusCode: 400 },
+      });
+      expect(isRetryableTransientError(err, err.message)).toBe(true);
+    });
+
+    it('retries when the throttling name is one cause-link deep (ProvisioningError wrap)', () => {
+      // cdkd wraps the SDK error in a ProvisioningError; the throttling name
+      // lives on the cause, and the wrapped message no longer says "Rate exceeded".
+      const cause = Object.assign(new Error('Rate exceeded'), {
+        name: 'ThrottlingException',
+        $metadata: { httpStatusCode: 400 },
+      });
+      const wrapped = Object.assign(
+        new Error('Failed to create SSM parameter WideParam54: something'),
+        { name: 'ProvisioningError', cause }
+      );
+      expect(isRetryableTransientError(wrapped, wrapped.message)).toBe(true);
+    });
+
+    it('retries on the "Rate exceeded" message even when the name is lost', () => {
+      // Defense-in-depth: the wrapped message preserves "Rate exceeded" so the
+      // message-pattern backstop still fires if the name is not reachable.
+      const msg =
+        'Failed to create SSM parameter WideParam54: Rate exceeded. Ensure you have the high-throughput setting enabled for higher limits';
+      expect(isRetryableTransientError(new Error(msg), msg)).toBe(true);
+    });
+
+    it('retries other canonical throttling names (TooManyRequestsException)', () => {
+      const err = Object.assign(new Error('throttled'), {
+        name: 'TooManyRequestsException',
+        $metadata: { httpStatusCode: 400 },
+      });
+      expect(isRetryableTransientError(err, err.message)).toBe(true);
+    });
+
+    it('does not retry a non-throttling 400 whose name is not in the throttling set', () => {
+      const err = Object.assign(new Error('parameter already exists'), {
+        name: 'ParameterAlreadyExists',
+        $metadata: { httpStatusCode: 400 },
+      });
+      expect(isRetryableTransientError(err, err.message)).toBe(false);
+    });
+
+    it('does not loop forever on a cyclic cause chain', () => {
+      const a = Object.assign(new Error('a'), { name: 'NotThrottle' }) as Error & {
+        cause?: unknown;
+      };
+      const b = Object.assign(new Error('b'), { name: 'AlsoNot', cause: a });
+      a.cause = b; // cycle
+      expect(isRetryableTransientError(a, 'unrelated')).toBe(false);
+    });
+  });
+
   describe('robustness', () => {
     it('handles non-Error inputs (string thrown) by falling back to message matching', () => {
       expect(

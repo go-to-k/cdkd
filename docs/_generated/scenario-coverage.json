@@ -259,6 +259,10 @@
     {
       "tag": "vpc-lambda-eni-release",
       "description": "Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent)."
+    },
+    {
+      "tag": "wide-dag-throttle-retry",
+      "description": "Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans."
     }
   ],
   "fixtures": [
@@ -1162,6 +1166,13 @@
       ]
     },
     {
+      "name": "throttle-wide-dag",
+      "annotated": true,
+      "scenarios": [
+        "wide-dag-throttle-retry"
+      ]
+    },
+    {
       "name": "update-policy-mutations",
       "annotated": true,
       "scenarios": [
@@ -1705,6 +1716,13 @@
         "destroy-interrupt",
         "lambda",
         "vpc-lambda"
+      ]
+    },
+    {
+      "scenario": "wide-dag-throttle-retry",
+      "description": "Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans.",
+      "fixtures": [
+        "throttle-wide-dag"
       ]
     }
   ],
