@@ -131,3 +131,4 @@ deployment-events	2026-06-13T11:42:29Z	PASS	37	verify.sh	#831 +SNS/SSM not-found
 update-replace	2026-06-13T11:42:29Z	PASS	71	verify.sh	#831 +Lambda/IAM/SG not-found post-destroy; 0 err
 destroy-interrupt	2026-06-13T11:42:29Z	PASS	581	verify.sh	#831 +SG/IAM not-found post-destroy; #816+#804 verified; 0 orphan
 throttle-wide-dag	2026-06-14T04:35:46Z	PASS		verify.sh	bug15 throttle-retry validated deploy+destroy clean
+importvalue-chain	2026-06-14T04:47:40Z	PASS		verify.sh	fixture-fix: deploy C with --exclusively (avoid producer-chain global-param collision); clean 0 orphans
