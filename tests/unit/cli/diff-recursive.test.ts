@@ -719,3 +719,185 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     ).rejects.toThrow(/Nested template file not found/);
   });
 });
+
+/**
+ * Regression for the spurious-change bug the `nested-stack-3level` integ
+ * found: a nested child template whose property derives from a DOWN-passed
+ * `Parameter` (CDK's `referenceto<Parent>...` synthesized input) diffed as a
+ * spurious UPDATE on a freshly-deployed tree, because the recursive diff
+ * resolver was never given the resolved parameter values that the deploy
+ * engine forwarded to the child (`NestedStackProvider.extractParameters` ->
+ * `DeployEngineOptions.parameters`). The state held the resolved string while
+ * the diff kept the raw `Fn::Join`/`Ref` intrinsic -> `valuesEqual` reported
+ * "changed".
+ */
+describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change regression)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cdkd-diff-param-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const PARAM = 'referencetoParentTopicName';
+
+  // Parent owns a Topic; its name is threaded DOWN into the child as a
+  // synthesized nested-stack Parameter. The child's SSM param Value is
+  // `Fn::Join['', ['prefix:', {Ref: PARAM}]]` — exactly the great-grandchild
+  // shape from the fixture (one boundary is enough to reproduce).
+  function writeChildTemplate(): string {
+    const childPath = join(dir, 'child.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { [PARAM]: { Type: 'String' } },
+        Resources: {
+          ChildRes: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: {
+              Type: 'String',
+              Value: { 'Fn::Join': ['', ['prefix:', { Ref: PARAM }]] },
+            },
+          },
+        },
+      })
+    );
+    return childPath;
+  }
+
+  function parentTemplate(): CloudFormationTemplate {
+    return {
+      Resources: {
+        ParentTopic: { Type: 'AWS::SNS::Topic', Properties: {} },
+        Child: {
+          Type: NESTED,
+          Metadata: { 'aws:asset:path': 'child.json' },
+          Properties: {
+            // CDK passes the parent topic name DOWN via Fn::GetAtt on the
+            // AWS::CloudFormation::Stack row's Parameters block.
+            Parameters: { [PARAM]: { 'Fn::GetAtt': ['ParentTopic', 'TopicName'] } },
+          },
+        },
+      },
+    };
+  }
+
+  // Freshly-deployed state: the parent topic's physical id is its name, the
+  // child's SSM Value is the RESOLVED `prefix:<topic-name>` string (what the
+  // deploy engine wrote after forwarding the resolved parameter).
+  function freshStates(): Record<string, StackState> {
+    return {
+      Parent: st('Parent', {
+        ParentTopic: {
+          physicalId: 'arn:aws:sns:us-east-1:111111111111:my-topic',
+          resourceType: 'AWS::SNS::Topic',
+          properties: {},
+          attributes: { TopicName: 'my-topic' },
+          dependencies: [],
+        },
+        Child: res(NESTED, { Parameters: { [PARAM]: 'my-topic' } }),
+      }),
+      'Parent~Child': st('Parent~Child', {
+        ChildRes: res('AWS::SSM::Parameter', { Type: 'String', Value: 'prefix:my-topic' }),
+      }),
+    };
+  }
+
+  it('diffs a freshly-deployed down-passed-parameter child as NO_CHANGE', async () => {
+    const childPath = writeChildTemplate();
+    const backend = fakeBackend(freshStates());
+
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: parentTemplate(),
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    expect(root.children).toHaveLength(1);
+    const child = root.children[0]!;
+    expect(child.stackName).toBe('Parent~Child');
+    // The crux: the child's down-passed-parameter property must NOT surface as
+    // a spurious change on a freshly-deployed tree.
+    expect(child.changes.get('ChildRes')!.changeType).toBe('NO_CHANGE');
+    expect(nodeHasChanges(child)).toBe(false);
+    expect(treeHasChanges(root)).toBe(false);
+  });
+
+  it('still detects a genuine change to the resolved down-passed value (regression guard)', async () => {
+    const childPath = writeChildTemplate();
+    // State holds a STALE resolved value (topic was renamed out of band /
+    // the prefix changed) -> the child must diff as UPDATE.
+    const states = freshStates();
+    states['Parent~Child']!.resources['ChildRes']!.properties['Value'] = 'prefix:OLD-topic';
+    const backend = fakeBackend(states);
+
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: parentTemplate(),
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const child = root.children[0]!;
+    expect(child.changes.get('ChildRes')!.changeType).toBe('UPDATE');
+    expect(treeHasChanges(root)).toBe(true);
+  });
+
+  it('computeStackDiff resolves a Ref to a supplied parameter (NO_CHANGE)', async () => {
+    const template: CloudFormationTemplate = {
+      Parameters: { [PARAM]: { Type: 'String' } },
+      Resources: {
+        A: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Type: 'String', Value: { 'Fn::Join': ['', ['prefix:', { Ref: PARAM }]] } },
+        },
+      },
+    };
+    const state = st('S', { A: res('AWS::SSM::Parameter', { Type: 'String', Value: 'prefix:my-topic' }) });
+    const changes = await computeStackDiff(
+      state,
+      template,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      { [PARAM]: 'my-topic' }
+    );
+    expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
+  });
+
+  it('computeStackDiff without the parameter reports the spurious change (proves the fix path)', async () => {
+    const template: CloudFormationTemplate = {
+      Parameters: { [PARAM]: { Type: 'String' } },
+      Resources: {
+        A: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Type: 'String', Value: { 'Fn::Join': ['', ['prefix:', { Ref: PARAM }]] } },
+        },
+      },
+    };
+    const state = st('S', { A: res('AWS::SSM::Parameter', { Type: 'String', Value: 'prefix:my-topic' }) });
+    // No parameters passed -> the Ref cannot resolve -> raw intrinsic kept ->
+    // spurious UPDATE. This is the pre-fix behavior the recursive walker hit.
+    const changes = await computeStackDiff(
+      state,
+      template,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator()
+    );
+    expect(changes.get('A')!.changeType).toBe('UPDATE');
+  });
+});

@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**52 / 52 canonical scenarios** have at least one integ fixture exercising them. **119 / 138 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**53 / 53 canonical scenarios** have at least one integ fixture exercising them. **120 / 139 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (52 scenarios)
+## Per-scenario coverage (53 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -70,6 +70,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `multi-stack-getstackoutput` | Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export). | [`composite-stack`](../tests/integration/composite-stack/)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/)<br>[`multi-stack-deps`](../tests/integration/multi-stack-deps/) |
 | `multi-stack-importvalue-strong-ref` | Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]). | [`import-value-strong-ref`](../tests/integration/import-value-strong-ref/) |
 | `nat-gateway-cleanup` | NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`vpc-nat-gateway`](../tests/integration/vpc-nat-gateway/) |
+| `nested-stack-deep-deploy-cascade` | Recursive `cdk.NestedStack` deploy + destroy at depth >= 3 (root → child → grandchild → great-grandchild): per-level `<parent>~<logicalId>` v6 state-key derivation with populated `parentStack` / `parentLogicalId`, bidirectional cross-level refs (bottom-up `Fn::GetAtt` outputs AND top-down `Parameters` forwarding), `state list --tree` hierarchy rendering, and the full reverse-DAG destroy cascade that removes every level's resources + state files. | [`nested-stack-3level`](../tests/integration/nested-stack-3level/) |
 | `nested-stack-migrate-from-cfn` | CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A. | [`import-nested-stack`](../tests/integration/import-nested-stack/) |
 | `rds-aurora-cluster-instance` | RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family. | [`rds-aurora`](../tests/integration/rds-aurora/) |
 | `rds-full-stack` | Realistic single-instance RDS deployment: L2 `rds.DatabaseInstance` (db.t3.micro, single-AZ, isolated subnets, no NAT) with an EXPLICIT DBSubnetGroup + DBParameterGroup + SecurityGroup + CDK-managed Secrets Manager credentials, plus an SSM Parameter consuming the DBInstance COMPUTED endpoint via `Fn::GetAtt(<DBInstance>, Endpoint.Address)`. Stresses event-driven DAG ordering (sub-groups before the instance), slow-create propagation (~5-10 min instance create), and intrinsic resolution of a computed attribute only known post-create (the SSM value must equal the live endpoint). | [`rds-full-stack`](../tests/integration/rds-full-stack/) |

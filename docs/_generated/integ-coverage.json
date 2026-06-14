@@ -458,6 +458,7 @@
         "export-nested-stack",
         "import-nested-stack",
         "nested-stack",
+        "nested-stack-3level",
         "nested-stack-deep"
       ],
       "signals": {
@@ -468,6 +469,9 @@
           "literal"
         ],
         "nested-stack": [
+          "literal"
+        ],
+        "nested-stack-3level": [
           "literal"
         ],
         "nested-stack-deep": [
@@ -3170,6 +3174,7 @@
         "microservices",
         "migrate-from-cfn",
         "monitoring",
+        "nested-stack-3level",
         "scheduled-task",
         "serverless-api",
         "sns-sqs-event"
@@ -3220,6 +3225,9 @@
           "l2"
         ],
         "monitoring": [
+          "l2"
+        ],
+        "nested-stack-3level": [
           "l2"
         ],
         "scheduled-task": [
@@ -3362,6 +3370,7 @@
         "microservices",
         "multi-region-same-stack",
         "nested-stack",
+        "nested-stack-3level",
         "nested-stack-deep",
         "rds-full-stack",
         "rollback-failure-injection",
@@ -3436,6 +3445,9 @@
           "l2"
         ],
         "nested-stack": [
+          "l2"
+        ],
+        "nested-stack-3level": [
           "l2"
         ],
         "nested-stack-deep": [
