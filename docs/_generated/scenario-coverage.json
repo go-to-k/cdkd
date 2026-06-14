@@ -9,6 +9,10 @@
       "description": "CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id)."
     },
     {
+      "tag": "cc-api-getatt-enrichment-redshift-cluster",
+      "description": "CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id)."
+    },
+    {
       "tag": "cdk-defensive-vpc-deps-relax",
       "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization."
     },
@@ -1060,6 +1064,13 @@
       "scenarios": []
     },
     {
+      "name": "redshift-cluster-getatt",
+      "annotated": true,
+      "scenarios": [
+        "cc-api-getatt-enrichment-redshift-cluster"
+      ]
+    },
+    {
       "name": "remove-protection",
       "annotated": true,
       "scenarios": [
@@ -1262,6 +1273,13 @@
       "description": "CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id).",
       "fixtures": [
         "elasticache-replicationgroup-getatt"
+      ]
+    },
+    {
+      "scenario": "cc-api-getatt-enrichment-redshift-cluster",
+      "description": "CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id).",
+      "fixtures": [
+        "redshift-cluster-getatt"
       ]
     },
     {
