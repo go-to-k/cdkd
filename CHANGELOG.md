@@ -1,3 +1,10 @@
+## [0.221.9](https://github.com/go-to-k/cdkd/compare/v0.221.8...v0.221.9) (2026-06-14)
+
+
+### Bug Fixes
+
+* **deployment:** resolve CompositeAlarm/EC2 GetAtt attributes + CompositeAlarm delete ordering ([#851](https://github.com/go-to-k/cdkd/issues/851)) ([da5d976](https://github.com/go-to-k/cdkd/commit/da5d97618ef916ac1cb5ed30ff5a724303cce022))
+
 ## [0.221.8](https://github.com/go-to-k/cdkd/compare/v0.221.7...v0.221.8) (2026-06-14)
 
 
