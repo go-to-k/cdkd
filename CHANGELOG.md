@@ -1,3 +1,10 @@
+## [0.221.10](https://github.com/go-to-k/cdkd/compare/v0.221.9...v0.221.10) (2026-06-14)
+
+
+### Bug Fixes
+
+* **deployment:** parse secretsmanager whole-secret dynamic-reference form ([#860](https://github.com/go-to-k/cdkd/issues/860)) ([3261b6b](https://github.com/go-to-k/cdkd/commit/3261b6b4fe15655cfd85813f9274eee28af00fb5))
+
 ## [0.221.9](https://github.com/go-to-k/cdkd/compare/v0.221.8...v0.221.9) (2026-06-14)
 
 
