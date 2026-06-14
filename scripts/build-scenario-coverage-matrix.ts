@@ -121,6 +121,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export).',
   'multi-stack-importvalue-strong-ref':
     'Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]).',
+  'sdk-ccapi-crossref-boundary':
+    'Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`).',
 
   // ---- Custom Resource patterns ----
   'custom-resource-async-poll':

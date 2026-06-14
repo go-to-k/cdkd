@@ -2285,6 +2285,7 @@
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "rollback-failure-injection",
+        "sdk-ccapi-crossref",
         "update-replace",
         "vpc-lambda-cr-race"
       ],
@@ -2397,6 +2398,10 @@
         "rollback-failure-injection": [
           "l2"
         ],
+        "sdk-ccapi-crossref": [
+          "l1",
+          "literal"
+        ],
         "update-replace": [
           "l2",
           "literal"
@@ -2484,7 +2489,8 @@
       "integs": [
         "cache-streaming",
         "dynamodb-ondemand",
-        "log-pipeline"
+        "log-pipeline",
+        "sdk-ccapi-crossref"
       ],
       "signals": {
         "cache-streaming": [
@@ -2495,6 +2501,10 @@
         ],
         "log-pipeline": [
           "l2"
+        ],
+        "sdk-ccapi-crossref": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -2579,6 +2589,7 @@
         "rollback-failure-injection",
         "s3-asset-deploy",
         "scheduled-task",
+        "sdk-ccapi-crossref",
         "serverless-api",
         "sns-sqs-event",
         "stepfunctions",
@@ -2762,6 +2773,10 @@
         ],
         "scheduled-task": [
           "l2"
+        ],
+        "sdk-ccapi-crossref": [
+          "l1",
+          "literal"
         ],
         "serverless-api": [
           "l2"
@@ -3473,6 +3488,7 @@
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
+        "sdk-ccapi-crossref",
         "state-info-command",
         "vpc-lookup"
       ],
@@ -3574,6 +3590,10 @@
         "schema-v7-to-v8-migration": [
           "l1",
           "l2"
+        ],
+        "sdk-ccapi-crossref": [
+          "l1",
+          "literal"
         ],
         "state-info-command": [
           "l2"
