@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**62 / 62 canonical scenarios** have at least one integ fixture exercising them. **129 / 148 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**63 / 63 canonical scenarios** have at least one integ fixture exercising them. **130 / 149 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (62 scenarios)
+## Per-scenario coverage (63 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -46,6 +46,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `docker-image-asset-ecr-publish` | cdkd's deploy-time Docker ASSET pipeline (`DockerAssetPublisher`): `docker build` of a local Dockerfile -> ECR auth -> `docker push` to the CDK-managed container-assets repo, then an `AWS::Lambda::Function` with `PackageType=Image` pointing at the pushed image. Distinct from the local-emulation container scenarios (which never touch AWS) — this verifies the real build+push happens during `cdkd deploy`, the image runs (Lambda invoke), and the pushed image is gone after destroy. | [`docker-image-asset`](../tests/integration/docker-image-asset/) |
 | `drift-revert-array-canonicalization` | cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift. | [`drift-revert-arrays`](../tests/integration/drift-revert-arrays/) |
 | `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-arrays`](../tests/integration/drift-revert-arrays/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
+| `eventsourcemapping-fresh-source-race` | `AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy. | [`eventsourcemapping-race`](../tests/integration/eventsourcemapping-race/) |
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `exports-index-region-resolve` | Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819). | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
 | `fresh-principal-consumer-race` | A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal ("Invalid principal in policy"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts. | [`propagation-races-2`](../tests/integration/propagation-races-2/) |
