@@ -113,6 +113,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // ---- Intrinsic-function resolution patterns ----
   'intrinsic-hard-arg-shapes':
     'Resolver correctness on the harder / less-common intrinsic arg shapes feeding real resource values: `Fn::Select` over a list-returning intrinsic (`Fn::GetAZs` / `Fn::Split`), `Fn::FindInMap` enhanced 4th-arg `{DefaultValue}` + `Ref`-driven top key, `Fn::GetAtt` with a `Ref`-valued attribute name, the `Fn::Sub` `${!Literal}` escape, `Fn::Base64` of an intrinsic, a triple-nested `Fn::If`-in-`Fn::Sub`-in-`Fn::Join`, and `Fn::Cidr` IPv6. Sibling of `intrinsics-torture` (which found bug #838).',
+  'deep-getatt-chain-resolution':
+    'Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture).',
 
   // ---- Cross-stack reference patterns ----
   'multi-stack-getstackoutput':

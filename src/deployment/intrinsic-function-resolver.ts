@@ -1,6 +1,7 @@
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import {
   DescribeAvailabilityZonesCommand,
+  DescribeInstancesCommand,
   DescribeLaunchTemplatesCommand,
 } from '@aws-sdk/client-ec2';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
@@ -214,6 +215,16 @@ const cachedAvailabilityZones: Record<string, string[]> = {};
 const cachedDynamicReferences: Record<string, string> = {};
 
 /**
+ * Cache for EC2 instance attributes that require a live DescribeInstances
+ * lookup (PrivateIp / PublicIp / PrivateDnsName / PublicDnsName /
+ * AvailabilityZone). Keyed by `${physicalId}#${attributeName}`. The IP /
+ * DNS attributes are not derivable from the instance id, so they are read
+ * back from AWS once per (instance, attribute) and memoized for the deploy
+ * lifetime.
+ */
+const cachedEc2InstanceAttributes: Record<string, string> = {};
+
+/**
  * Get AWS account information from STS
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
@@ -268,6 +279,10 @@ export function resetAccountInfoCache(): void {
   // Also reset dynamic reference cache
   for (const key of Object.keys(cachedDynamicReferences)) {
     delete cachedDynamicReferences[key];
+  }
+  // Also reset EC2 instance attribute cache
+  for (const key of Object.keys(cachedEc2InstanceAttributes)) {
+    delete cachedEc2InstanceAttributes[key];
   }
 }
 
@@ -1060,6 +1075,20 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // CloudWatch CompositeAlarm. CompositeAlarm has no SDK provider, so it is
+    // routed via the Cloud Control API; its `Arn` is not always captured in
+    // attributes, so synthesize it here. The ARN format is identical to a
+    // metric alarm (`:alarm:<AlarmName>`), so it is fully derivable from the
+    // physical id (the alarm name) — no AWS call is needed.
+    if (resourceType === 'AWS::CloudWatch::CompositeAlarm') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:cloudwatch:${region}:${accountId}:alarm:${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
     // RDS DBInstance (DocDB and Neptune share the same rds: service prefix and db: separator)
     if (
       resourceType === 'AWS::RDS::DBInstance' ||
@@ -1221,6 +1250,68 @@ export class IntrinsicFunctionResolver {
       switch (attributeName) {
         case 'SubnetId':
           return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // EC2 Instance — IP / DNS / AZ attributes are AWS-assigned at launch and
+    // are NOT derivable from the instance id, so they require a live
+    // `DescribeInstances` lookup (cached per (physicalId, attribute) for the
+    // deploy lifetime). Falling back to the physical id — as the previous
+    // default did — handed the instance id to a downstream consumer expecting
+    // an IP (e.g. an ELBv2 IP-target group registration, which rejects
+    // `i-...` with `not a valid IPv4 address`).
+    if (resourceType === 'AWS::EC2::Instance') {
+      switch (attributeName) {
+        case 'PrivateIp':
+        case 'PublicIp':
+        case 'PrivateDnsName':
+        case 'PublicDnsName':
+        case 'AvailabilityZone': {
+          const cacheKey = `${physicalId}#${attributeName}`;
+          const cached = cachedEc2InstanceAttributes[cacheKey];
+          if (cached !== undefined) {
+            return cached;
+          }
+          try {
+            const clients = getAwsClients();
+            const response = await clients.ec2.send(
+              new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+            );
+            const instance = response.Reservations?.[0]?.Instances?.[0];
+            let value: string | undefined;
+            switch (attributeName) {
+              case 'PrivateIp':
+                value = instance?.PrivateIpAddress;
+                break;
+              case 'PublicIp':
+                value = instance?.PublicIpAddress;
+                break;
+              case 'PrivateDnsName':
+                value = instance?.PrivateDnsName;
+                break;
+              case 'PublicDnsName':
+                value = instance?.PublicDnsName;
+                break;
+              case 'AvailabilityZone':
+                value = instance?.Placement?.AvailabilityZone;
+                break;
+            }
+            if (value !== undefined && value !== null && value !== '') {
+              cachedEc2InstanceAttributes[cacheKey] = value;
+              return value;
+            }
+            this.logger.warn(
+              `DescribeInstances(${physicalId}) returned no ${attributeName}; returning physical ID`
+            );
+          } catch (err) {
+            this.logger.warn(
+              `DescribeInstances(${physicalId}) failed for ${attributeName}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+          return physicalId;
+        }
         default:
           return physicalId;
       }

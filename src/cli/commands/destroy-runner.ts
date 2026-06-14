@@ -7,7 +7,10 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
-import { IMPLICIT_DELETE_DEPENDENCIES } from '../../analyzer/implicit-delete-deps.js';
+import {
+  IMPLICIT_DELETE_DEPENDENCIES,
+  computeImplicitDeleteEdges,
+} from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
@@ -642,6 +645,25 @@ export async function runDestroyForStack(
             );
           }
         }
+      }
+    }
+
+    // Per-resource implicit delete edges that cannot be inferred from a
+    // type-pair rule (e.g. CompositeAlarm -> the metric alarms its AlarmRule
+    // references by name, which carry no Ref / Fn::GetAtt edge). `before` must
+    // be deleted before `after`, so `before` DependsOn `after` (creation order
+    // is reversed for deletion, so `before` is torn down first).
+    for (const { before, after } of computeImplicitDeleteEdges(state.resources)) {
+      const existing = template.Resources[before]?.DependsOn ?? [];
+      const depsArray = Array.isArray(existing) ? existing : [existing];
+      if (!depsArray.includes(after)) {
+        template.Resources[before] = {
+          ...template.Resources[before]!,
+          DependsOn: [...depsArray, after],
+        };
+        logger.debug(
+          `Implicit delete dependency: ${before} (${state.resources[before]?.resourceType}) must be deleted before ${after} (${state.resources[after]?.resourceType})`
+        );
       }
     }
 
