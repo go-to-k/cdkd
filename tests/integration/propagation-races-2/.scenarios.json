@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "iam-policy-propagation-retry",
+    "fresh-principal-consumer-race"
+  ]
+}

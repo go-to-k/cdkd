@@ -89,6 +89,32 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   'Please ensure the role can perform',
   // KMS: IAM role not yet propagated for CreateGrant
   'KMS key is invalid for CreateGrant',
+  // KMS CreateKey / PutKeyPolicy: the key policy document names a same-stack,
+  // just-created IAM role as a principal, but cdkd's fast SDK path issues the
+  // CreateKey before IAM finishes propagating the new role, so KMS rejects it
+  // with MalformedPolicyDocumentException "Policy contains a statement with one
+  // or more invalid principals". This is a DIFFERENT consumer than the SNS/SQS
+  // resource-policy PUTs covered above (#839) — KMS validates every principal
+  // in the key policy at create time. Anchored on the full KMS/IAM policy-
+  // document phrase so a genuinely malformed key policy (a typo'd / deleted
+  // principal) only burns the bounded retries before surfacing — it won't
+  // false-positive other KMS errors. CloudFormation tolerates this via
+  // deployment latency; cdkd retries. Surfaced by tests/integration/
+  // propagation-races-2 (the KMS key-policy fresh-principal race edge).
+  'Policy contains a statement with one or more invalid principals',
+  // EC2 RunInstances / AssociateIamInstanceProfile: cdkd's fast SDK path
+  // creates the AWS::IAM::InstanceProfile only ~1s before launching the
+  // instance that references it, but the instance profile + its role
+  // membership takes a few seconds to propagate to EC2's view. When EC2 does
+  // raise (rather than silently launching without the profile — which
+  // EC2Provider.createInstance handles by post-launch association), it surfaces
+  // as `Invalid IAM Instance Profile name '<name>'` /
+  // `Invalid IAM Instance Profile ARN`. Anchored on the "Invalid IAM Instance
+  // Profile" wording so a genuinely typo'd / deleted profile only burns the
+  // bounded retries before surfacing. CloudFormation tolerates this via
+  // deployment latency; cdkd retries. Surfaced by tests/integration/
+  // propagation-races-2 (the fresh-instance-profile EC2 launch race edge).
+  'Invalid IAM Instance Profile',
   // CloudWatch Logs SubscriptionFilter: Kinesis stream eventual consistency
   // or SubscriptionFilter role propagation. CW Logs probes the destination
   // by delivering a test message; if the stream is freshly ACTIVE or the

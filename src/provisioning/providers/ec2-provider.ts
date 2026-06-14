@@ -37,6 +37,8 @@ import {
   RunInstancesCommand,
   TerminateInstancesCommand,
   DescribeInstancesCommand,
+  AssociateIamInstanceProfileCommand,
+  DescribeIamInstanceProfileAssociationsCommand,
   ModifyInstanceAttributeCommand,
   ModifyInstanceMetadataOptionsCommand,
   ModifyInstanceCreditSpecificationCommand,
@@ -2242,9 +2244,18 @@ export class EC2Provider implements ResourceProvider {
     try {
       const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;
       const securityGroups = properties['SecurityGroups'] as string[] | undefined;
-      const iamInstanceProfile = properties['IamInstanceProfile'] as
-        | Record<string, unknown>
-        | undefined;
+      // The CFn `AWS::EC2::Instance.IamInstanceProfile` property is the
+      // instance-profile NAME (a plain string) — what `instanceProfile.ref`
+      // resolves to in CDK. It is NOT the `{Arn,Name}` object the
+      // `RunInstances` SDK input takes (that object shape is what
+      // `AWS::EC2::LaunchTemplate` uses). The previous code cast the property
+      // to `Record<string, unknown>` and read `['Arn']` / `['Name']` off it —
+      // both `undefined` for a string — so `RunInstances` got an empty
+      // profile spec, the instance launched with NO profile, and the later
+      // associate helper returned early (no arn/name). Normalize all three
+      // accepted input shapes (name string / ARN string / `{Arn,Name}` object)
+      // into one `{arn?,name?}` here, robust to name-vs-ARN.
+      const iamInstanceProfile = this.normalizeIamInstanceProfile(properties['IamInstanceProfile']);
 
       const response = await this.ec2Client.send(
         new RunInstancesCommand({
@@ -2258,10 +2269,7 @@ export class EC2Provider implements ResourceProvider {
           MinCount: 1,
           MaxCount: 1,
           IamInstanceProfile: iamInstanceProfile
-            ? {
-                Arn: iamInstanceProfile['Arn'] as string | undefined,
-                Name: iamInstanceProfile['Name'] as string | undefined,
-              }
+            ? { Arn: iamInstanceProfile.arn, Name: iamInstanceProfile.name }
             : undefined,
           BlockDeviceMappings: this.buildBlockDeviceMappings(properties),
           // Security-focused backfill (#609). These all ride on RunInstances
@@ -2322,6 +2330,28 @@ export class EC2Provider implements ResourceProvider {
           { InstanceIds: [instanceId] }
         );
 
+        // Ensure the freshly-created IAM instance profile actually bound.
+        // cdkd's fast SDK path creates the InstanceProfile only ~1s before
+        // RunInstances; an instance profile (and its role membership) takes a
+        // few seconds to propagate to EC2's view. RunInstances does NOT
+        // synchronously validate the profile against IAM — it accepts the
+        // request and associates the profile asynchronously, and when the
+        // profile isn't visible yet the launch can complete with NO profile
+        // attached and NO error raised (the symptom: the running instance has
+        // an empty IamInstanceProfile despite the template requesting one).
+        // CloudFormation never hits this because its deployment latency lets
+        // the profile settle before launch; cdkd does NOT, so verify the
+        // association post-launch and explicitly AssociateIamInstanceProfile
+        // (retrying through the propagation window) when it is missing.
+        if (iamInstanceProfile) {
+          await this.ensureIamInstanceProfileAssociated(
+            instanceId,
+            iamInstanceProfile.arn,
+            iamInstanceProfile.name,
+            logicalId
+          );
+        }
+
         // Describe instance to get attributes after running
         const describeResponse = await this.ec2Client.send(
           new DescribeInstancesCommand({ InstanceIds: [instanceId] })
@@ -2364,6 +2394,193 @@ export class EC2Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Normalize the CFn `AWS::EC2::Instance.IamInstanceProfile` property into a
+   * `{ arn?, name? }` pair the `RunInstances` / `AssociateIamInstanceProfile`
+   * SDK inputs accept.
+   *
+   * The CFn-canonical shape is a plain STRING — the instance-profile NAME
+   * (what `instanceProfile.ref` resolves to in CDK). cdkd's intrinsic
+   * resolver hands us that resolved string. For robustness we ALSO accept an
+   * ARN string (classified by the `arn:` prefix) and the `{Arn,Name}` object
+   * shape (defensive for hand-written / SDK-shaped templates). Returns
+   * `undefined` when no profile is requested.
+   */
+  private normalizeIamInstanceProfile(raw: unknown): { arn?: string; name?: string } | undefined {
+    if (raw == null) return undefined;
+    if (typeof raw === 'string') {
+      const value = raw.trim();
+      if (value === '') return undefined;
+      return value.startsWith('arn:') ? { arn: value } : { name: value };
+    }
+    if (typeof raw === 'object') {
+      const obj = raw as Record<string, unknown>;
+      const arn = typeof obj['Arn'] === 'string' ? (obj['Arn'] as string) : undefined;
+      const name = typeof obj['Name'] === 'string' ? (obj['Name'] as string) : undefined;
+      if (!arn && !name) return undefined;
+      const normalized: { arn?: string; name?: string } = {};
+      if (arn) normalized.arn = arn;
+      if (name) normalized.name = name;
+      return normalized;
+    }
+    return undefined;
+  }
+
+  /**
+   * Guarantee the requested IAM instance profile is actually associated with
+   * the just-launched instance, closing the fresh-profile propagation race.
+   *
+   * cdkd's fast SDK path creates the `AWS::IAM::InstanceProfile` only ~1s
+   * before `RunInstances`. The instance profile (and the role membership the
+   * `IAMInstanceProfileProvider` attached to it) takes a few seconds to
+   * propagate to EC2's view. `RunInstances` does not synchronously validate
+   * the supplied `IamInstanceProfile` — when the profile is not yet visible it
+   * can launch the instance WITHOUT the profile and return success with no
+   * error. The result is a running instance whose `IamInstanceProfile` is
+   * empty even though the template requested one (the `propagation-races-2`
+   * integ caught exactly this).
+   *
+   * Strategy (always run when a profile was requested):
+   *  - `DescribeIamInstanceProfileAssociations` for the instance. Only a
+   *    fully `associated` association counts as bound — an `associating`
+   *    state may never complete when the profile wasn't visible at launch, so
+   *    we do NOT treat it as done; we fall through and poll.
+   *  - When no `associated` association exists, call
+   *    `AssociateIamInstanceProfile`, retrying through the IAM propagation
+   *    window on the `Invalid IAM Instance Profile ...` / `NoSuchEntity` /
+   *    `not authorized` / `InvalidParameterValue` signals AWS raises while the
+   *    just-created profile is still propagating.
+   *  - After associating, POLL `DescribeIamInstanceProfileAssociations` until
+   *    the association reaches `associated` (bounded) so the profile is
+   *    genuinely bound by the time `createInstance` returns — the verify.sh
+   *    `describe-instances .IamInstanceProfile` check sees it immediately.
+   *    This mirrors the settle CloudFormation gets for free via its latency.
+   */
+  private async ensureIamInstanceProfileAssociated(
+    instanceId: string,
+    arn: string | undefined,
+    name: string | undefined,
+    logicalId: string
+  ): Promise<void> {
+    if (!arn && !name) return;
+
+    // If RunInstances already fully bound the profile, we're done.
+    if (await this.isInstanceProfileAssociated(instanceId)) {
+      this.logger.debug(
+        `IAM instance profile already associated with instance ${instanceId} (${logicalId})`
+      );
+      return;
+    }
+
+    this.logger.debug(
+      `IAM instance profile not bound at launch for instance ${instanceId} (${logicalId}); ` +
+        `associating ${arn ?? name} explicitly`
+    );
+
+    const maxAttempts = 10;
+    let associated = false;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.ec2Client.send(
+          new AssociateIamInstanceProfileCommand({
+            InstanceId: instanceId,
+            IamInstanceProfile: { Arn: arn, Name: name },
+          })
+        );
+        this.logger.debug(
+          `AssociateIamInstanceProfile issued for instance ${instanceId} (${logicalId}) ` +
+            `on attempt ${attempt}`
+        );
+        associated = true;
+        break;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // Already associated (a concurrent RunInstances-side bind landed
+        // between our describe and this associate) is success, not failure.
+        if (msg.includes('IncorrectState') || msg.includes('already associated')) {
+          this.logger.debug(
+            `IAM instance profile already associated with instance ${instanceId} (${logicalId})`
+          );
+          associated = true;
+          break;
+        }
+        if (this.isInstanceProfilePropagationError(msg) && attempt < maxAttempts) {
+          this.logger.debug(
+            `IAM instance profile not yet propagated for instance ${instanceId} ` +
+              `(associate attempt ${attempt}/${maxAttempts}: ${msg}), retrying in ${attempt}s...`
+          );
+          await this.sleep(attempt * 1000);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!associated) return;
+
+    // AssociateIamInstanceProfile returns while the association is still
+    // `associating`. Poll until it flips to `associated` so the profile is
+    // genuinely bound before createInstance returns.
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (await this.isInstanceProfileAssociated(instanceId)) {
+        this.logger.debug(
+          `IAM instance profile is now associated with instance ${instanceId} (${logicalId})`
+        );
+        return;
+      }
+      if (attempt < maxAttempts) {
+        this.logger.debug(
+          `Waiting for IAM instance profile association to reach 'associated' for ` +
+            `instance ${instanceId} (${logicalId}) (poll ${attempt}/${maxAttempts})...`
+        );
+        await this.sleep(attempt * 1000);
+      }
+    }
+    this.logger.warn(
+      `IAM instance profile association for instance ${instanceId} (${logicalId}) did not ` +
+        `reach 'associated' within the propagation window; the instance may still be missing ` +
+        `its profile`
+    );
+  }
+
+  /**
+   * True iff the instance currently has a fully-`associated` IAM instance
+   * profile association. An `associating` state is intentionally NOT counted —
+   * a launch-time association that never completes can sit in `associating`
+   * forever, so the caller must poll for the terminal `associated` state.
+   * A describe failure is treated as "not yet associated" so the caller falls
+   * through to the associate/poll path (the real fix), not a false positive.
+   */
+  private async isInstanceProfileAssociated(instanceId: string): Promise<boolean> {
+    try {
+      const assoc = await this.ec2Client.send(
+        new DescribeIamInstanceProfileAssociationsCommand({
+          Filters: [{ Name: 'instance-id', Values: [instanceId] }],
+        })
+      );
+      return assoc.IamInstanceProfileAssociations?.some((a) => a.State === 'associated') ?? false;
+    } catch (err) {
+      this.logger.debug(
+        `DescribeIamInstanceProfileAssociations failed for ${instanceId}: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Classify an AssociateIamInstanceProfile error as a fresh-profile
+   * propagation signal worth retrying (vs a hard failure to surface).
+   */
+  private isInstanceProfilePropagationError(msg: string): boolean {
+    return (
+      msg.includes('Invalid IAM Instance Profile') ||
+      msg.includes('NoSuchEntity') ||
+      msg.includes('not authorized') ||
+      (msg.includes('InvalidParameterValue') && msg.includes('instance profile'))
+    );
   }
 
   private async updateInstance(

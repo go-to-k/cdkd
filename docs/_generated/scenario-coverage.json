@@ -65,6 +65,10 @@
       "description": "Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819)."
     },
     {
+      "tag": "fresh-principal-consumer-race",
+      "description": "A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal (\"Invalid principal in policy\"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts."
+    },
+    {
       "tag": "globaltable-cross-region-replica",
       "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call)."
     },
@@ -916,6 +920,14 @@
       "scenarios": []
     },
     {
+      "name": "propagation-races-2",
+      "annotated": true,
+      "scenarios": [
+        "fresh-principal-consumer-race",
+        "iam-policy-propagation-retry"
+      ]
+    },
+    {
       "name": "rds-aurora",
       "annotated": true,
       "scenarios": [
@@ -1222,6 +1234,13 @@
       ]
     },
     {
+      "scenario": "fresh-principal-consumer-race",
+      "description": "A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal (\"Invalid principal in policy\"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts.",
+      "fixtures": [
+        "propagation-races-2"
+      ]
+    },
+    {
       "scenario": "globaltable-cross-region-replica",
       "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call).",
       "fixtures": [
@@ -1240,7 +1259,8 @@
       "description": "CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race.",
       "fixtures": [
         "lambda",
-        "microservices"
+        "microservices",
+        "propagation-races-2"
       ]
     },
     {
