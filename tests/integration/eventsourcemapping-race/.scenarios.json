@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "eventsourcemapping-fresh-source-race"
+  ]
+}

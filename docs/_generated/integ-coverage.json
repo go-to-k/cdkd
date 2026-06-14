@@ -2532,10 +2532,14 @@
     {
       "resourceType": "AWS::Lambda::EventSourceMapping",
       "integs": [
-        "dynamodb-streams"
+        "dynamodb-streams",
+        "eventsourcemapping-race"
       ],
       "signals": {
         "dynamodb-streams": [
+          "literal"
+        ],
+        "eventsourcemapping-race": [
           "literal"
         ]
       }
@@ -2562,6 +2566,7 @@
         "efs-lambda",
         "event-driven",
         "eventbridge",
+        "eventsourcemapping-race",
         "export",
         "full-stack-demo",
         "iam-propagation-stress",
@@ -2667,6 +2672,9 @@
           "l2"
         ],
         "eventbridge": [
+          "l2"
+        ],
+        "eventsourcemapping-race": [
           "l2"
         ],
         "export": [
@@ -3415,6 +3423,7 @@
         "drift-revert-arrays",
         "event-driven",
         "eventbridge",
+        "eventsourcemapping-race",
         "full-stack-demo",
         "iam-propagation-stress",
         "intrinsics-torture",
@@ -3453,6 +3462,10 @@
         ],
         "eventbridge": [
           "l2"
+        ],
+        "eventsourcemapping-race": [
+          "l2",
+          "literal"
         ],
         "full-stack-demo": [
           "l2"

@@ -220,6 +220,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Realistic single-instance RDS deployment: L2 `rds.DatabaseInstance` (db.t3.micro, single-AZ, isolated subnets, no NAT) with an EXPLICIT DBSubnetGroup + DBParameterGroup + SecurityGroup + CDK-managed Secrets Manager credentials, plus an SSM Parameter consuming the DBInstance COMPUTED endpoint via `Fn::GetAtt(<DBInstance>, Endpoint.Address)`. Stresses event-driven DAG ordering (sub-groups before the instance), slow-create propagation (~5-10 min instance create), and intrinsic resolution of a computed attribute only known post-create (the SSM value must equal the live endpoint).',
   'apigateway-cors-preflight':
     'API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays.',
+  'eventsourcemapping-fresh-source-race':
+    '`AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy.',
 
   // ---- Asset-publishing patterns ----
   'docker-image-asset-ecr-publish':

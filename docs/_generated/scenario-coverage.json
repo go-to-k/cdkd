@@ -65,6 +65,10 @@
       "description": "cdkd drift detection + `--revert` round-trip via each provider.update()."
     },
     {
+      "tag": "eventsourcemapping-fresh-source-race",
+      "description": "`AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy."
+    },
+    {
       "tag": "export-to-cfn-handover",
       "description": "cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE."
     },
@@ -554,6 +558,13 @@
       "name": "eventbridge",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "eventsourcemapping-race",
+      "annotated": true,
+      "scenarios": [
+        "eventsourcemapping-fresh-source-race"
+      ]
     },
     {
       "name": "export",
@@ -1298,6 +1309,13 @@
         "drift-revert",
         "drift-revert-arrays",
         "drift-revert-vpc"
+      ]
+    },
+    {
+      "scenario": "eventsourcemapping-fresh-source-race",
+      "description": "`AWS::Lambda::EventSourceMapping` created against a FRESH source (SQS/Kinesis/DynamoDB-stream) + a FRESH execution role in the SAME deploy: the ESM create races source-readiness + role/policy propagation (cdkd dispatches with no level barrier), AND the orphan-ESM-on-redeploy collision class (a killed mid-deploy leaves an out-of-state ESM that collides on the next CREATE). The fixture pre-flight-scans for orphan ESMs by stack name, asserts the ESM reaches Enabled + actually delivers a probe message to the Lambda, and asserts no orphan ESM survives destroy.",
+      "fixtures": [
+        "eventsourcemapping-race"
       ]
     },
     {
