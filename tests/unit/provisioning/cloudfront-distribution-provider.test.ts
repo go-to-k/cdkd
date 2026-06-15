@@ -872,6 +872,60 @@ describe('CloudFrontDistributionProvider', () => {
       expect(result!['Tags']).toEqual([{ Key: 'Env', Value: 'prod' }]);
     });
 
+    it('unwraps the deeper cache-behavior {Quantity,Items} fields (LambdaFunctionAssociations + 3-level ForwardedValues.Cookies.WhitelistedNames + QueryStringCacheKeys)', async () => {
+      // These fields are in CACHE_BEHAVIOR_QUANTITY_FIELDS but not covered by
+      // the main round-trip above; the 3-level Cookies.WhitelistedNames path
+      // exercises unwrapQuantityAtPath's multi-level recursion specifically.
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: {
+          CallerReference: 'ref',
+          Enabled: true,
+          Comment: '',
+          DefaultCacheBehavior: {
+            TargetOriginId: 'o',
+            ViewerProtocolPolicy: 'https-only',
+            LambdaFunctionAssociations: {
+              Quantity: 1,
+              Items: [{ EventType: 'origin-request', LambdaFunctionARN: 'arn:aws:lambda:...' }],
+            },
+            FunctionAssociations: { Quantity: 0, Items: [] },
+            ForwardedValues: {
+              QueryString: true,
+              QueryStringCacheKeys: { Quantity: 1, Items: ['lang'] },
+              Cookies: {
+                Forward: 'whitelist',
+                WhitelistedNames: { Quantity: 2, Items: ['sid', 'theme'] },
+              },
+            },
+          },
+        },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
+
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+
+      const dcb = (result!['DistributionConfig'] as Record<string, unknown>)[
+        'DefaultCacheBehavior'
+      ] as Record<string, unknown>;
+      expect(dcb['LambdaFunctionAssociations']).toEqual([
+        { EventType: 'origin-request', LambdaFunctionARN: 'arn:aws:lambda:...' },
+      ]);
+      expect(dcb['FunctionAssociations']).toEqual([]);
+      const fv = dcb['ForwardedValues'] as Record<string, unknown>;
+      expect(fv['QueryStringCacheKeys']).toEqual(['lang']);
+      // The 3-level nested path: ForwardedValues.Cookies.WhitelistedNames.
+      const cookies = fv['Cookies'] as Record<string, unknown>;
+      expect(cookies['WhitelistedNames']).toEqual(['sid', 'theme']);
+      expect(cookies['Forward']).toBe('whitelist');
+    });
+
     it('returns DistributionConfig without Tags key when no user tags exist', async () => {
       mockSend.mockResolvedValueOnce({
         DistributionConfig: { CallerReference: 'ref', Enabled: true, Comment: '' },
@@ -941,10 +995,15 @@ describe('CloudFrontDistributionProvider', () => {
   });
 
   describe('getDriftUnknownPaths', () => {
-    it('excludes CallerReference + Logging.Bucket for CloudFront::Distribution', () => {
+    it('excludes CallerReference + Logging.Bucket + OriginGroups for CloudFront::Distribution', () => {
       expect(provider.getDriftUnknownPaths('AWS::CloudFront::Distribution')).toEqual([
         'DistributionConfig.CallerReference',
         'DistributionConfig.Logging.Bucket',
+        // OriginGroups inner {Quantity,Items} (Members / FailoverCriteria.
+        // StatusCodes) is not unwrapped by convertToCfnFormat yet, so it is
+        // suppressed to avoid a properties-fallback-baseline false positive
+        // until a dedicated revertOriginGroup + fixture lands.
+        'DistributionConfig.OriginGroups',
       ]);
     });
 
