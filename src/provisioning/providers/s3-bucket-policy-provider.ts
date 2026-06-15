@@ -5,16 +5,105 @@ import {
   GetBucketPolicyCommand,
   NoSuchBucket,
 } from '@aws-sdk/client-s3';
+import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+
+/**
+ * Matches a CloudFront Origin Access Identity (OAI) principal ARN, e.g.
+ * `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity E1UREC9EUJDVG5`.
+ * The capture group is the OAI id, which resolves to the OAI's S3 canonical
+ * user id via `GetCloudFrontOriginAccessIdentity`.
+ */
+const OAI_USER_ARN_RE =
+  /^arn:aws[a-z-]*:iam::cloudfront:user\/CloudFront Origin Access Identity ([A-Z0-9]+)$/;
+
+/**
+ * Matches a bare IAM principal unique id (e.g. `AIDAIBJOSOJSBZ753XCAW`). S3
+ * returns an OAI grant's principal in this transient form immediately after
+ * `PutBucketPolicy` (before it settles to the friendly cloudfront-user ARN).
+ * It carries no recoverable link back to the OAI, so it can only be
+ * canonicalized by matching against the template's `{ CanonicalUser }` form.
+ */
+const IAM_UNIQUE_ID_RE = /^A[A-Z0-9]{15,}$/;
+
+/**
+ * Process-lifetime cache of OAI id -> S3 canonical user id (or `null` when the
+ * lookup failed / the OAI is gone), so a `cdkd drift` run with many OAI-granting
+ * bucket policies issues at most one `GetCloudFrontOriginAccessIdentity` per OAI.
+ */
+const oaiCanonicalUserIdCache = new Map<string, string | null>();
+
+/** Test-only: reset the OAI canonical-user-id cache between unit tests. */
+export function clearOaiCanonicalUserIdCacheForTest(): void {
+  oaiCanonicalUserIdCache.clear();
+}
+
+/**
+ * Build an `oaiId -> S3CanonicalUserId` map from the same-stack sibling
+ * `AWS::CloudFront::CloudFrontOriginAccessIdentity` resources in the read
+ * context. The OAI's `S3CanonicalUserId` is a readOnly attribute cdkd already
+ * resolved at deploy time (the bucket-policy grant `Fn::GetAtt`s it), so this
+ * lets the bucket-policy drift read reconcile the OAI principal forms with zero
+ * extra AWS calls (and no `cloudfront:GetCloudFrontOriginAccessIdentity` IAM
+ * grant) whenever the OAI lives in the same stack. The OAI resource's
+ * `physicalId` IS the OAI id embedded in the cloudfront-user ARN.
+ */
+function buildSiblingOaiCanonicalMap(context?: ReadCurrentStateContext): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const sib of Object.values(context?.siblings ?? {})) {
+    if (sib.resourceType !== 'AWS::CloudFront::CloudFrontOriginAccessIdentity') continue;
+    const canonical = sib.attributes?.['S3CanonicalUserId'];
+    if (sib.physicalId && typeof canonical === 'string') {
+      map.set(sib.physicalId, canonical);
+    }
+  }
+  return map;
+}
+
+/**
+ * Pull the `Statement` array out of a parsed policy document, tolerating both
+ * the single-object and array shapes (and a non-object input). Returns the live
+ * statement objects so callers can mutate their `Principal` in place.
+ */
+function extractStatements(policyDoc: unknown): Record<string, unknown>[] {
+  if (!policyDoc || typeof policyDoc !== 'object') return [];
+  const stmt = (policyDoc as Record<string, unknown>)['Statement'];
+  const arr = Array.isArray(stmt) ? stmt : stmt ? [stmt] : [];
+  return arr.filter(
+    (s): s is Record<string, unknown> => !!s && typeof s === 'object' && !Array.isArray(s)
+  );
+}
+
+/**
+ * Find the `CanonicalUser` principal of the template statement that matches a
+ * given AWS-side statement by Effect / Action / Resource, used to canonicalize
+ * the unresolvable transient `{ AWS: <IAM-unique-id> }` OAI form. Returns
+ * `undefined` when no single matching template statement carries one.
+ */
+function findTemplateCanonicalUser(
+  awsStmt: Record<string, unknown>,
+  templateStmts: Record<string, unknown>[]
+): string | undefined {
+  const key = (s: Record<string, unknown>): string =>
+    JSON.stringify([s['Effect'], s['Action'], s['Resource']]);
+  const want = key(awsStmt);
+  const matches = templateStmts.filter((t) => key(t) === want);
+  if (matches.length !== 1) return undefined;
+  const principal = matches[0]!['Principal'];
+  if (!principal || typeof principal !== 'object' || Array.isArray(principal)) return undefined;
+  const canonical = (principal as Record<string, unknown>)['CanonicalUser'];
+  return typeof canonical === 'string' ? canonical : undefined;
+}
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 
 /**
@@ -238,7 +327,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | undefined> {
     let policyJson: string | undefined;
     try {
@@ -256,12 +347,116 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     const result: Record<string, unknown> = {
       Bucket: physicalId,
     };
+    let policyDoc: unknown;
     try {
-      result['PolicyDocument'] = JSON.parse(policyJson) as unknown;
+      policyDoc = JSON.parse(policyJson) as unknown;
     } catch {
       result['PolicyDocument'] = policyJson;
+      return result;
     }
+
+    // Canonicalize CloudFront OAI grant principals (issue #872). AWS returns an
+    // OAI grant's principal in THREE unstable forms over a policy's lifetime —
+    // the template's `{ CanonicalUser: <64-hex> }`, a transient
+    // `{ AWS: <IAM-unique-id> }` right after PutBucketPolicy, and the settled
+    // `{ AWS: arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity <id> }`.
+    // The drift comparator sees these as different and fires a guaranteed false
+    // positive. Normalize every recognizable OAI principal back to the canonical
+    // user id form (matching what the template carries + what cdkd state holds).
+    await this.normalizeOaiPrincipals(policyDoc, properties, context);
+    result['PolicyDocument'] = policyDoc;
     return result;
+  }
+
+  /**
+   * Normalize CloudFront OAI grant principals in a (parsed) bucket policy to
+   * the `{ CanonicalUser: <id> }` form, in place (issue #872):
+   *   - `{ AWS: <oai-user-arn> }` -> map the OAI id in the ARN to its
+   *     `S3CanonicalUserId`, preferring the sibling OAI resource's already-read
+   *     state attributes (zero AWS call — the OAI's `S3CanonicalUserId` is a
+   *     readOnly attribute cdkd already resolved at deploy time) and falling
+   *     back to `GetCloudFrontOriginAccessIdentity` only when the OAI is not a
+   *     same-stack sibling (e.g. an imported / external OAI). This is the SAFE
+   *     path: a genuinely-different OAI resolves to a different canonical id, so
+   *     real drift is still detected.
+   *   - `{ AWS: <bare-IAM-unique-id> }` -> the transient post-PutBucketPolicy
+   *     rendering, which carries no recoverable link to the OAI. Canonicalize
+   *     it only by matching the corresponding template statement (same Effect /
+   *     Action / Resource) carrying a `{ CanonicalUser }` principal. A user
+   *     cannot author a bare IAM unique id as a bucket-policy principal, so
+   *     adopting the template form here only fires for AWS's transient
+   *     rendering. NOTE: once the principal settles to the ARN form (seconds
+   *     to minutes), a genuine out-of-band OAI repoint IS detected via the ARN
+   *     path above; the only masking window is a repoint observed during the
+   *     transient bare-id phase, which the next drift run (ARN form) reports.
+   * Statements whose principal is not a single-string `AWS` OAI form (e.g. a
+   * wildcard, a service principal, a normal role ARN, or an `AWS` ARRAY of
+   * principals) are left untouched — skipping is safe (it can only leave a
+   * residual false positive, never hide real drift). CDK's single-OAI grant
+   * emits the single-string form.
+   */
+  private async normalizeOaiPrincipals(
+    policyDoc: unknown,
+    templateProps?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
+  ): Promise<void> {
+    const stmts = extractStatements(policyDoc);
+    if (stmts.length === 0) return;
+    const templateStmts = extractStatements(templateProps?.['PolicyDocument']);
+    const siblingCanonicalById = buildSiblingOaiCanonicalMap(context);
+
+    for (const stmt of stmts) {
+      const principal = stmt['Principal'];
+      if (!principal || typeof principal !== 'object' || Array.isArray(principal)) continue;
+      const awsPrincipal = (principal as Record<string, unknown>)['AWS'];
+      if (typeof awsPrincipal !== 'string') continue;
+
+      const arnMatch = OAI_USER_ARN_RE.exec(awsPrincipal);
+      if (arnMatch) {
+        const oaiId = arnMatch[1]!;
+        // Prefer the sibling OAI's already-read state attribute; only call AWS
+        // when the OAI is not a same-stack sibling.
+        const canonical =
+          siblingCanonicalById.get(oaiId) ?? (await this.resolveOaiCanonicalUserId(oaiId));
+        if (canonical) stmt['Principal'] = { CanonicalUser: canonical };
+        continue;
+      }
+
+      if (IAM_UNIQUE_ID_RE.test(awsPrincipal)) {
+        const tmplCanonical = findTemplateCanonicalUser(stmt, templateStmts);
+        if (tmplCanonical) stmt['Principal'] = { CanonicalUser: tmplCanonical };
+      }
+    }
+  }
+
+  /**
+   * Resolve a CloudFront OAI id to its S3 canonical user id via
+   * `GetCloudFrontOriginAccessIdentity`, cached for the process lifetime. Used
+   * only as a FALLBACK when the OAI is not a same-stack sibling (its
+   * `S3CanonicalUserId` is otherwise read straight from sibling state — see
+   * {@link buildSiblingOaiCanonicalMap}). Best-effort: returns `null` (and
+   * caches it) on any failure so a missing OAI / missing permission leaves the
+   * principal unchanged rather than failing the drift read.
+   */
+  private async resolveOaiCanonicalUserId(oaiId: string): Promise<string | null> {
+    const cached = oaiCanonicalUserIdCache.get(oaiId);
+    if (cached !== undefined) return cached;
+    let canonical: string | null = null;
+    try {
+      const resp = await getAwsClients().cloudFront.send(
+        new GetCloudFrontOriginAccessIdentityCommand({ Id: oaiId })
+      );
+      canonical = resp.CloudFrontOriginAccessIdentity?.S3CanonicalUserId ?? null;
+    } catch (err) {
+      this.logger.debug(
+        `Could not resolve CloudFront OAI ${oaiId} canonical user id for bucket-policy drift normalization: ${
+          err instanceof Error ? err.message : String(err)
+        } — leaving the principal unchanged.`
+      );
+      canonical = null;
+    }
+    oaiCanonicalUserIdCache.set(oaiId, canonical);
+    return canonical;
   }
 
   /**
