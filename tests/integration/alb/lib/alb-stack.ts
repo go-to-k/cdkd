@@ -58,6 +58,18 @@ export class AlbStack extends cdk.Stack {
       defaultTargetGroups: [targetGroup],
     });
 
+    // ListenerAttributes (#609 backfill coverage). The L2 ApplicationListener
+    // does not surface listener attributes, so set them via the L1 escape
+    // hatch on the underlying CfnListener. `routing.http.response.server.enabled`
+    // is a valid attribute key for an HTTP/HTTPS ApplicationLoadBalancer
+    // listener (NLB-only keys like `tcp.idle_timeout.seconds` would be rejected
+    // on an Application listener). cdkd applies it via a post-create
+    // ModifyListenerAttributes call.
+    const cfnListener = listener.node.defaultChild as elbv2.CfnListener;
+    cfnListener.listenerAttributes = [
+      { key: 'routing.http.response.server.enabled', value: 'false' },
+    ];
+
     // ListenerRule (path-based routing)
     new elbv2.CfnListenerRule(this, 'HealthRule', {
       listenerArn: listener.listenerArn,
