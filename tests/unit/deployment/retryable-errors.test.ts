@@ -49,6 +49,15 @@ describe('isRetryableTransientError', () => {
         'Firehose is unable to assume role arn:aws:iam::111:role/FirehoseDeliveryRole. Please check the role provided.',
         'Firehose IAM propagation',
       ],
+      // Glue Crawler / Job / Trigger same-stack role IAM-propagation race:
+      // the Glue create is issued before the just-created role's trust policy
+      // propagates to Glue's assume layer (surfaced by glue-update-hardening
+      // integ on a fresh Crawler role CREATE). Note the capital-T "TrustPolicy"
+      // is NOT matched by the lower-case 'trust policy' pattern.
+      [
+        'Service is unable to assume provided role. Please verify role\'s TrustPolicy.',
+        'Glue assume-role IAM propagation',
+      ],
       ['The execution role you provided does not have permission', 'execution role'],
       ['Role validation failed', 'Role validation failed'],
       // CW Logs SubscriptionFilter (the bug we are fixing)
