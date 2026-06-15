@@ -312,4 +312,112 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
       { sourceStack: 'upstream', sourceRegion: 'us-east-1', outputName: 'ReadThing' },
     ]);
   });
+
+  it('carries BOTH a refreshed observedProperties baseline AND the new outputs in one save', async () => {
+    // The novel thing this path does: merge the pre-existing observed-properties
+    // auto-refresh (a resource lacking observedProperties triggers a
+    // readCurrentState capture that the no-change path drains) with the new
+    // Outputs-only persistence into a SINGLE saveState. Build a state whose
+    // resource has NO observedProperties so the auto-refresh fires, AND a
+    // template that adds an export, and assert one save carries both.
+    const noObsState: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: 'us-east-1',
+      stackName,
+      resources: {
+        BucketA: {
+          physicalId: 'phys-bucket-a',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'bucket-a' },
+          // observedProperties intentionally absent → auto-refresh kicks off.
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    mockStateBackend.getState.mockResolvedValue({ state: noObsState, etag: 'etag-old' });
+    mockProvider.readCurrentState.mockResolvedValue({ BucketName: 'bucket-a', refreshed: true });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      Outputs: {
+        BucketArn: { Value: 'arn:aws:s3:::bucket-a', Export: { Name: 'producer:BucketArn' } },
+      },
+    };
+
+    const engine = makeEngine();
+    const result = await engine.deploy(stackName, template);
+
+    expect(mockProvider.readCurrentState).toHaveBeenCalledTimes(1);
+    // Exactly one save carrying BOTH the refreshed observedProperties AND the
+    // newly-resolved outputs (not one or the other).
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.resources['BucketA']!.observedProperties).toEqual({
+      BucketName: 'bucket-a',
+      refreshed: true,
+    });
+    expect(saved.outputs).toEqual({
+      BucketArn: 'arn:aws:s3:::bucket-a',
+      'producer:BucketArn': 'arn:aws:s3:::bucket-a',
+    });
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledTimes(1);
+    expect(result.outputs).toEqual({ BucketArn: 'arn:aws:s3:::bucket-a' });
+  });
+
+  it('keeps existing outputs (no save / no index) when an output cannot be resolved', async () => {
+    // resolveOutputs stores `undefined` for any output it could not resolve
+    // (e.g. a Fn::If → AWS::NoValue). The guard must NOT overwrite the good
+    // persisted outputs with a partial map, and must NOT touch the index.
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({ Existing: 'keep-me' }),
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      // An Output whose Value resolves to undefined (resolver returns it as-is).
+      Outputs: {
+        Unresolvable: { Value: undefined as unknown as string },
+      },
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+    expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+  });
+
+  it('treats key-reordered and deep-equal output maps as unchanged (no save)', async () => {
+    // outputMapsEqual is key-order-insensitive and deep — a resolved map that
+    // matches the persisted one only by reordered keys / nested structure must
+    // NOT trigger a save.
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({
+        Alpha: 'a',
+        Beta: 'b',
+      } as Record<string, string>),
+      etag: 'etag-old',
+    });
+
+    // Template declares the same two outputs in the OPPOSITE order; the resolver
+    // returns each Value as-is, so the resolved map has the same entries with a
+    // different insertion order.
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      Outputs: {
+        Beta: { Value: 'b' },
+        Alpha: { Value: 'a' },
+      },
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+    expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+  });
 });
