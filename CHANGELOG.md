@@ -1,3 +1,10 @@
+# [0.224.0](https://github.com/go-to-k/cdkd/compare/v0.223.4...v0.224.0) (2026-06-15)
+
+
+### Features
+
+* **provisioning:** backfill AWS::ElasticLoadBalancingV2::Listener ListenerAttributes ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#879](https://github.com/go-to-k/cdkd/issues/879)) ([254078a](https://github.com/go-to-k/cdkd/commit/254078adcb41718bbf44d02e1921628ba4469369))
+
 ## [0.223.4](https://github.com/go-to-k/cdkd/compare/v0.223.3...v0.223.4) (2026-06-15)
 
 
