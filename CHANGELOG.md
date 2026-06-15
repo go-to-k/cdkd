@@ -1,3 +1,10 @@
+## [0.221.16](https://github.com/go-to-k/cdkd/compare/v0.221.15...v0.221.16) (2026-06-15)
+
+
+### Bug Fixes
+
+* **provisioning:** implement DynamoDB Table BillingMode/ProvisionedThroughput in-place update (was a silent no-op) ([#868](https://github.com/go-to-k/cdkd/issues/868)) ([56c3562](https://github.com/go-to-k/cdkd/commit/56c35620011652614245ce65b0f7bf5694faac3f))
+
 ## [0.221.15](https://github.com/go-to-k/cdkd/compare/v0.221.14...v0.221.15) (2026-06-14)
 
 
