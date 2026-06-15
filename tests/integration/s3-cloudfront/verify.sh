@@ -34,6 +34,24 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # Belt-and-suspenders sweep of the deterministically-named standalone OAC
+  # (`${STACK}-oac`). An interrupted prior run can leave it orphaned, and a
+  # CREATE on the next run then hard-fails with "...already exists" before the
+  # rest of the stack deploys. `state destroy` handles it when it is in state;
+  # this name-based sweep covers the interrupted-mid-create case.
+  local oac_id
+  oac_id=$(aws cloudfront list-origin-access-controls \
+    --query "OriginAccessControlList.Items[?Name=='${STACK}-oac'].Id | [0]" \
+    --output text 2>/dev/null)
+  if [ -n "${oac_id}" ] && [ "${oac_id}" != "None" ]; then
+    local oac_etag
+    oac_etag=$(aws cloudfront get-origin-access-control --id "${oac_id}" \
+      --query ETag --output text 2>/dev/null)
+    if [ -n "${oac_etag}" ] && [ "${oac_etag}" != "None" ]; then
+      aws cloudfront delete-origin-access-control --id "${oac_id}" \
+        --if-match "${oac_etag}" >/dev/null 2>&1 || true
+    fi
+  fi
   set -eu
 }
 

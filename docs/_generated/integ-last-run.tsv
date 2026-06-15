@@ -61,7 +61,6 @@ migrate-from-bare-cfn	2026-06-02T11:37:34Z	PASS	148	verify.sh	sweep: deploy+dest
 migrate-from-bare-cfn-codegen-only	2026-06-02T11:37:34Z	PASS	30	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 multi-region-same-stack	2026-06-02T11:37:34Z	PASS	16	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 orphan-resource	2026-06-02T11:37:34Z	PASS	31	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
-s3-cloudfront	2026-06-02T11:37:34Z	PASS	431	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 scheduled-task	2026-06-02T11:37:34Z	PASS	32	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 state-destroy	2026-06-02T11:37:34Z	PASS	18	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 state-info-command	2026-06-02T11:37:34Z	PASS	15	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -137,3 +136,4 @@ opensearch-domain-getatt	2026-06-14T10:54:56Z	PASS	2000	verify.sh	CC-API GetAtt 
 s3-vectors	2026-06-14T13:39:25Z	PASS	60	verify.sh	Tags backfill + in-place Tags update() (TagResource/UntagResource) re-run after create dedup; 0 orphans
 dynamodb-ondemand	2026-06-14T14:54:16Z	PASS	120	verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE + backfills; 0 orphans
 glue-update-hardening	2026-06-15T01:57:37Z	PASS		verify.sh	rc ok, orph clean (re-run after review fix; deploy+update+destroy clean)
+s3-cloudfront	2026-06-15T02:14:34Z	PASS		verify.sh	rc ok, orph clean (distribution drift clean+detect, clean destroy; OAC orphan swept)
