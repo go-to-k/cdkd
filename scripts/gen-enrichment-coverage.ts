@@ -613,12 +613,24 @@ function loadReport(): EnrichmentCoverageReport {
   return buildReport(fixtures, enrichmentByType, sdkBacked);
 }
 
+/**
+ * The `--check` critic's gate: the pure-CC latent gaps that must fail CI.
+ * Extracted so a unit test can pin the exact bucket the critic keys off — a
+ * regression that flipped this filter (or dropped the bucket) would otherwise
+ * pass every classifier test while making the critic silently never fire.
+ */
+export function findLatentGaps(
+  report: EnrichmentCoverageReport
+): readonly TypeClassification[] {
+  return report.types.filter((t) => t.bucket === 'unenriched-computed');
+}
+
 function main(): void {
   const checkMode = process.argv.includes('--check');
   const report = loadReport();
 
   if (checkMode) {
-    const gapTypes = report.types.filter((t) => t.bucket === 'unenriched-computed');
+    const gapTypes = findLatentGaps(report);
     if (gapTypes.length > 0) {
       process.stderr.write(
         'enrichment-coverage: FAIL — pure-CC latent enrichment gap(s) detected.\n' +

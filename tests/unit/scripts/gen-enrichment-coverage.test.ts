@@ -3,6 +3,7 @@ import {
   parseEnrichmentSwitch,
   classifyType,
   buildReport,
+  findLatentGaps,
   ENRICHMENT_ALLOW_LIST,
   type AllowListEntry,
 } from '../../../scripts/gen-enrichment-coverage.js';
@@ -94,6 +95,26 @@ describe('parseEnrichmentSwitch', () => {
 
   it('returns empty when the method is absent', () => {
     expect(parseEnrichmentSwitch('class X {}').size).toBe(0);
+  });
+
+  it('extracts keys from a block-scoped case body (the real pure-CC shape)', () => {
+    // The provider writes ElastiCache / Redshift / OpenSearchService cases as
+    // `case 'X': { ... }` block statements — exactly the pure-CC types this
+    // tool guards. A parser regression that stopped recursing into the Block
+    // would make the critic blind precisely where it matters.
+    const map = parseEnrichmentSwitch(
+      wrap(`
+        case 'AWS::OpenSearchService::Domain': {
+          const status = await this.describe(physicalId);
+          enriched['DomainEndpoint'] = status.endpoint;
+          enriched['Arn'] = status.arn;
+          break;
+        }
+      `)
+    );
+    expect(map.get('AWS::OpenSearchService::Domain')).toEqual(
+      new Set(['DomainEndpoint', 'Arn'])
+    );
   });
 });
 
@@ -226,6 +247,54 @@ describe('buildReport', () => {
     const report = buildReport(fixtures, enrichment, sdkBacked);
     const blocking = report.types.filter((t) => t.bucket === 'unenriched-computed');
     expect(blocking.map((t) => t.resourceType)).toEqual(['AWS::PureCc::Gap']);
+  });
+});
+
+describe('findLatentGaps (the --check critic gate)', () => {
+  // These pin the exact bucket the `--check` critic fails CI on. A regression
+  // that flipped the filter to another bucket (e.g. `sdk-fallback-gap`) or
+  // dropped it entirely would pass every classifier test above while making
+  // the critic silently never fire — the stated worst case for a CI guard.
+  const fixtures = [
+    {
+      resourceType: 'AWS::PureCc::Gap',
+      generatedAt: '2026-01-01',
+      properties: ['Endpoint'],
+      readOnlyProperties: ['Endpoint'],
+    },
+    {
+      resourceType: 'AWS::Sdk::FallbackGap',
+      generatedAt: '2026-01-01',
+      properties: ['Endpoint'],
+      readOnlyProperties: ['Endpoint'],
+    },
+    {
+      resourceType: 'AWS::Sdk::NoComputed',
+      generatedAt: '2026-01-01',
+      properties: ['Name'],
+      readOnlyProperties: [],
+    },
+  ];
+  const enrichment = new Map<string, Set<string>>();
+  const sdkBacked = new Set(['AWS::Sdk::FallbackGap', 'AWS::Sdk::NoComputed']);
+
+  it('returns exactly the pure-CC unenriched-computed types', () => {
+    const gaps = findLatentGaps(buildReport(fixtures, enrichment, sdkBacked));
+    expect(gaps.map((t) => t.resourceType)).toEqual(['AWS::PureCc::Gap']);
+  });
+
+  it('returns empty when there are no pure-CC gaps (the passing-CI case)', () => {
+    // Enrich the pure-CC type's computed attr — the gap closes.
+    const closed = new Map<string, Set<string>>([
+      ['AWS::PureCc::Gap', new Set(['Endpoint'])],
+    ]);
+    const gaps = findLatentGaps(buildReport(fixtures, closed, sdkBacked));
+    expect(gaps).toEqual([]);
+  });
+
+  it('does not count an SDK-fallback gap as a CI-blocking latent gap', () => {
+    const gaps = findLatentGaps(buildReport(fixtures, enrichment, sdkBacked));
+    expect(gaps.map((t) => t.resourceType)).not.toContain('AWS::Sdk::FallbackGap');
   });
 });
 
