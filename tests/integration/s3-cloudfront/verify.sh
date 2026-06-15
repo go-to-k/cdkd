@@ -103,6 +103,18 @@ if [ -z "${DIST_ARN}" ] || [ "${DIST_ARN}" = "None" ]; then
   exit 1
 fi
 
+# --- Assertion: the distribution actually carries an OriginGroup -------
+# Proves the OriginGroups drift path (#873) is genuinely exercised — if a
+# future fixture change drops the origin group, this fails loudly rather than
+# silently stop testing OriginGroups normalization.
+OG_QTY=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGION}" \
+  --query 'DistributionConfig.OriginGroups.Quantity' --output text 2>/dev/null)
+if [ "${OG_QTY}" != "1" ]; then
+  echo "FAIL: distribution does not carry exactly 1 OriginGroup (got Quantity=${OG_QTY}) — the #873 drift path is not being exercised" >&2
+  exit 1
+fi
+echo "    OK: distribution carries an OriginGroup (exercises #873 OriginGroups drift normalization)"
+
 # --- Assertion: AWS reflects the two CDK Tags -------------------------
 TAGS_JSON=$(aws cloudfront list-tags-for-resource --resource "${DIST_ARN}" --region "${REGION}" \
   --query 'Tags.Items' --output json)
