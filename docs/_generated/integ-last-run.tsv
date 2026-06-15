@@ -24,7 +24,6 @@ basic	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (S3+SSM Document)
 conditions	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (Fn::If gated S3 buckets), 2 deleted 0 errors
 parameters	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (CFn Parameters -> S3), 1 deleted 0 errors
 ecr	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (ECR repo), 3 deleted 0 errors
-cloudwatch	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (Alarm/MetricFilter/LogGroup/LogStream/SNS), 5 deleted 0 errors
 lambda-versioning	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (Lambda Version/Alias), 4 deleted 0 errors
 monitoring	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (CW dashboard/alarms), 7 deleted 0 errors
 s3-directory-bucket	2026-06-02T09:40:41Z	PASS		standard	clean after deleting a PRE-EXISTING orphan directory bucket (not this session); re-run created+deleted clean, 1 deleted 0 errors
@@ -139,3 +138,4 @@ import-value-strong-ref	2026-06-15T05:48:41Z	PASS		verify.sh	rc ok, orph clean; 
 alb	2026-06-15T06:14:28Z	PASS		verify.sh	rc ok, orph clean; #609 ListenerAttributes assert
 serverless-api	2026-06-15T06:49:27Z	PASS	48	verify.sh	AuthorizerCredentialsArn reached AWS; clean destroy 0 orphans
 servicediscovery	2026-06-15T07:22:22Z	PASS	108	verify.sh	ServiceAttributes reached AWS; clean destroy 0 orphans
+cloudwatch	2026-06-15T07:39:23Z	PASS	47	standard	Alarm create+destroy clean 0 orphans (#609 unhandledByDesign cleanup)
