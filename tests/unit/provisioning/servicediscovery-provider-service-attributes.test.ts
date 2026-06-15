@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateServiceCommand,
   DeleteServiceCommand,
+  UpdateServiceCommand,
   UpdateServiceAttributesCommand,
   DeleteServiceAttributesCommand,
 } from '@aws-sdk/client-servicediscovery';
@@ -199,6 +200,51 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
           { ServiceAttributes: { team: 'cdkd' } }
         )
       ).rejects.toThrow();
+    });
+
+    it('combines a ServiceChange + attribute upsert + attribute removal in one update', async () => {
+      // The three mutation paths are independent and all fire in the same
+      // update() call: UpdateService (ServiceChange body) then
+      // UpdateServiceAttributes (upsert) then DeleteServiceAttributes (remove).
+      mockSend
+        .mockResolvedValueOnce({}) // UpdateService — no OperationId, polling skipped
+        .mockResolvedValueOnce({}) // UpdateServiceAttributes
+        .mockResolvedValueOnce({}); // DeleteServiceAttributes
+
+      const result = await provider.update(
+        'Svc',
+        'srv-1',
+        TYPE,
+        {
+          Description: 'new description',
+          ServiceAttributes: { team: 'cdkd', tier: 'frontend' },
+        },
+        {
+          Description: 'old description',
+          ServiceAttributes: { team: 'cdkd', tier: 'backend', stale: 'gone' },
+        }
+      );
+
+      expect(result).toEqual({ physicalId: 'srv-1', wasReplaced: false });
+
+      // 1. ServiceChange carried Description via UpdateService.
+      const svcChange = callOf(UpdateServiceCommand);
+      expect(svcChange).toBeDefined();
+      expect((svcChange!.input as { Service?: Record<string, unknown> }).Service).toEqual({
+        Description: 'new description',
+      });
+
+      // 2. Only the changed attribute key (`tier`) is upserted (`team` unchanged).
+      const upsert = callOf(UpdateServiceAttributesCommand);
+      expect(upsert).toBeDefined();
+      expect(upsert!.input).toEqual({ ServiceId: 'srv-1', Attributes: { tier: 'frontend' } });
+
+      // 3. The key present only in the old state (`stale`) is removed.
+      const del = callOf(DeleteServiceAttributesCommand);
+      expect(del).toBeDefined();
+      expect(del!.input).toEqual({ ServiceId: 'srv-1', Attributes: ['stale'] });
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
     });
   });
 });
