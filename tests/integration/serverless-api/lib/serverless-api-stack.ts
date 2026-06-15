@@ -5,6 +5,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 /**
  * Serverless API example stack
  *
@@ -152,12 +153,25 @@ def handler(event, context):
       target: cdk.Fn.join('/', ['integrations', integration.ref]),
     });
 
-    // Standalone REQUEST authorizer (not attached to any route, no IAM role
-    // or lambda permission needed since it is never invoked). It exists
+    // IAM role API Gateway assumes to invoke the REQUEST authorizer Lambda.
+    // This is what authorizerCredentialsArn (below) points at.
+    const requestAuthorizerRole = new iam.Role(this, 'RequestAuthorizerRole', {
+      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+    });
+    requestAuthorizerRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['lambda:InvokeFunction'],
+        resources: [fn.functionArn],
+      })
+    );
+
+    // Standalone REQUEST authorizer (not attached to any route). It exists
     // solely to exercise the #609 Authorizer backfill props
     // authorizerResultTtlInSeconds / enableSimpleResponses /
-    // identityValidationExpression (all ride on
-    // CreateAuthorizer/UpdateAuthorizer directly).
+    // identityValidationExpression / authorizerCredentialsArn (all ride on
+    // CreateAuthorizer/UpdateAuthorizer directly). authorizerCredentialsArn
+    // is the REQUEST-only IAM role ARN API Gateway assumes to invoke the
+    // authorizer Lambda.
     new apigatewayv2.CfnAuthorizer(this, 'RequestAuthorizer', {
       apiId: httpApi.ref,
       authorizerType: 'REQUEST',
@@ -168,6 +182,7 @@ def handler(event, context):
       enableSimpleResponses: true,
       authorizerResultTtlInSeconds: 300,
       identityValidationExpression: '^Bearer .+$',
+      authorizerCredentialsArn: requestAuthorizerRole.roleArn,
     });
 
     // Outputs

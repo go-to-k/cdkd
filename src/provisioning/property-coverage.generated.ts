@@ -178,6 +178,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'ApiId',
+        'AuthorizerCredentialsArn',
         'AuthorizerPayloadFormatVersion',
         'AuthorizerResultTtlInSeconds',
         'AuthorizerType',
@@ -188,9 +189,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'JwtConfiguration',
         'Name',
       ]),
-      silentDrop: new Map<string, string>([
-        ['AuthorizerCredentialsArn', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

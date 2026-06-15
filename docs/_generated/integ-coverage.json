@@ -2466,6 +2466,7 @@
         "recreate-via-sdk-provider",
         "rollback-failure-injection",
         "sdk-ccapi-crossref",
+        "serverless-api",
         "tags-propagation",
         "throttle-wide-dag",
         "update-replace",
@@ -2586,6 +2587,9 @@
         "sdk-ccapi-crossref": [
           "l1",
           "literal"
+        ],
+        "serverless-api": [
+          "l2"
         ],
         "tags-propagation": [
           "l2",

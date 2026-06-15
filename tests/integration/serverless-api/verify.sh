@@ -16,8 +16,8 @@
 #     OperationName (GetDefault) on the $default route via CreateRoute.
 #   - AWS::ApiGatewayV2::Authorizer  AuthorizerResultTtlInSeconds (300) +
 #     EnableSimpleResponses (true) + IdentityValidationExpression
-#     ('^Bearer .+$') on the standalone REQUEST authorizer via
-#     CreateAuthorizer.
+#     ('^Bearer .+$') + AuthorizerCredentialsArn (an IAM role ARN) on the
+#     standalone REQUEST authorizer via CreateAuthorizer.
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -220,7 +220,17 @@ if [ "${IDENTITY_VALIDATION}" != '^Bearer .+$' ]; then
   echo "      raw authorizer: ${AUTHORIZER}" >&2
   exit 1
 fi
+AUTH_CREDS=$(echo "${AUTHORIZER}" | jq -r '.AuthorizerCredentialsArn // empty')
+case "${AUTH_CREDS}" in
+  arn:aws:iam::*:role/*) ;;
+  *)
+    echo "FAIL: Authorizer AuthorizerCredentialsArn is '${AUTH_CREDS}', expected an IAM role ARN" >&2
+    echo "      raw authorizer: ${AUTHORIZER}" >&2
+    exit 1
+    ;;
+esac
 echo "    OK: Authorizer AuthorizerResultTtlInSeconds == 300 + EnableSimpleResponses == true + IdentityValidationExpression == '^Bearer .+\$' reached AWS (Authorizer backfill CLOSED)"
+echo "    OK: Authorizer AuthorizerCredentialsArn (${AUTH_CREDS}) reached AWS (AuthorizerCredentialsArn backfill CLOSED)"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy"

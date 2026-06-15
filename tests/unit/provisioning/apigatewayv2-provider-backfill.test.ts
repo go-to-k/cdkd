@@ -58,7 +58,7 @@ const API_ID = 'abcd1234';
  *   - Integration: TimeoutInMillis / RequestParameters / Description
  *   - Route:       AuthorizationScopes / OperationName
  *   - Authorizer:  AuthorizerResultTtlInSeconds / EnableSimpleResponses /
- *                  IdentityValidationExpression
+ *                  IdentityValidationExpression / AuthorizerCredentialsArn
  *
  * Each block covers create-send (field reaches the SDK input), update-send
  * (field rides the diffed UpdateX input), and readCurrentState emit/omit
@@ -787,6 +787,87 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       ApiId: API_ID,
       AuthorizerType: 'REQUEST',
       IdentityValidationExpression: '^Bearer .+$',
+    };
+    await provider.update(
+      'AuthorizerLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      same,
+      same
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  const AUTHORIZER_CREDS_ARN = 'arn:aws:iam::123456789012:role/RequestAuthorizerRole';
+
+  it('Authorizer create(): AuthorizerCredentialsArn reaches CreateAuthorizer', async () => {
+    mockSend.mockResolvedValueOnce({ AuthorizerId: 'auth-1' });
+
+    await provider.create('AuthorizerLogical', 'AWS::ApiGatewayV2::Authorizer', {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      Name: 'req-auth',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+      AuthorizerCredentialsArn: AUTHORIZER_CREDS_ARN,
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['AuthorizerCredentialsArn']).toBe(AUTHORIZER_CREDS_ARN);
+  });
+
+  it('Authorizer create(): omits AuthorizerCredentialsArn from CreateAuthorizer when absent', async () => {
+    mockSend.mockResolvedValueOnce({ AuthorizerId: 'auth-1' });
+
+    await provider.create('AuthorizerLogical', 'AWS::ApiGatewayV2::Authorizer', {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      Name: 'req-auth',
+      IdentitySource: ['$request.header.Authorization'],
+      AuthorizerUri: 'arn:aws:apigateway:::lambda:path/.../invocations',
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateAuthorizerCommand);
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['AuthorizerCredentialsArn']).toBeUndefined();
+  });
+
+  it('Authorizer update(): AuthorizerCredentialsArn change emits UpdateAuthorizer with only the diffed field', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthorizerLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        AuthorizerCredentialsArn: AUTHORIZER_CREDS_ARN,
+      },
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        AuthorizerCredentialsArn: 'arn:aws:iam::123456789012:role/OldRole',
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      AuthorizerId: 'auth-1',
+      AuthorizerCredentialsArn: AUTHORIZER_CREDS_ARN,
+    });
+  });
+
+  it('Authorizer update(): unchanged AuthorizerCredentialsArn produces zero SDK calls', async () => {
+    const same = {
+      ApiId: API_ID,
+      AuthorizerType: 'REQUEST',
+      AuthorizerCredentialsArn: AUTHORIZER_CREDS_ARN,
     };
     await provider.update(
       'AuthorizerLogical',
