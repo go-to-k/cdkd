@@ -136,4 +136,4 @@ opensearch-domain-getatt	2026-06-14T10:54:56Z	PASS	2000	verify.sh	CC-API GetAtt 
 s3-vectors	2026-06-14T13:39:25Z	PASS	60	verify.sh	Tags backfill + in-place Tags update() (TagResource/UntagResource) re-run after create dedup; 0 orphans
 dynamodb-ondemand	2026-06-14T14:54:16Z	PASS	120	verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE + backfills; 0 orphans
 glue-update-hardening	2026-06-15T01:57:37Z	PASS		verify.sh	rc ok, orph clean (re-run after review fix; deploy+update+destroy clean)
-s3-cloudfront	2026-06-15T03:49:55Z	PASS		verify.sh	rc ok, orph clean (#872 S3 BucketPolicy OAI principal drift now clean; distribution clean+detect; clean destroy)
+s3-cloudfront	2026-06-15T04:03:59Z	PASS		verify.sh	rc ok, orph clean (#872 re-run after review fixes; bucket policy + distribution clean; clean destroy)
