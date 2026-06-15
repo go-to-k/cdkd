@@ -2471,6 +2471,7 @@
         "rollback-failure-injection",
         "sdk-ccapi-crossref",
         "serverless-api",
+        "stepfunctions-s3-definition",
         "tags-propagation",
         "throttle-wide-dag",
         "update-replace",
@@ -2593,6 +2594,9 @@
           "literal"
         ],
         "serverless-api": [
+          "l2"
+        ],
+        "stepfunctions-s3-definition": [
           "l2"
         ],
         "tags-propagation": [
@@ -4004,7 +4008,8 @@
       "resourceType": "AWS::StepFunctions::StateMachine",
       "integs": [
         "iam-propagation-stress",
-        "stepfunctions"
+        "stepfunctions",
+        "stepfunctions-s3-definition"
       ],
       "signals": {
         "iam-propagation-stress": [
@@ -4012,6 +4017,9 @@
         ],
         "stepfunctions": [
           "l2"
+        ],
+        "stepfunctions-s3-definition": [
+          "l1"
         ]
       }
     },

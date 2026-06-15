@@ -2328,6 +2328,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'Definition',
+        'DefinitionS3Location',
         'DefinitionString',
         'DefinitionSubstitutions',
         'EncryptionConfiguration',
@@ -2338,9 +2339,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'TracingConfiguration',
       ]),
-      silentDrop: new Map<string, string>([
-        ['DefinitionS3Location', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [
