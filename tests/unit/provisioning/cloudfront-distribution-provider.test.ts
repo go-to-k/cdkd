@@ -741,4 +741,274 @@ describe('CloudFrontDistributionProvider', () => {
       expect(mockSend.mock.calls[4][0].input.Tags.Items).toEqual([{ Key: 'Env', Value: 'prod' }]);
     });
   });
+
+  describe('readCurrentState', () => {
+    it('returns undefined for a non-CloudFront resource type', async () => {
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::S3::Bucket'
+      );
+      expect(result).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('returns undefined when the distribution no longer exists', async () => {
+      mockSend.mockRejectedValueOnce(
+        new NoSuchDistribution({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+      expect(result).toBeUndefined();
+    });
+
+    it('inverts convertToSdkFormat: drops Quantity wrappers + CallerReference, surfaces tags', async () => {
+      // GetDistributionConfigCommand — AWS-shape DistributionConfig with
+      // the { Quantity, Items } wrappers cdkd's create path injects.
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E2QWRUHAPOMQZL',
+        DistributionConfig: {
+          CallerReference: '1700000000000-MyDistribution-abc123',
+          Comment: 'integ',
+          Enabled: true,
+          DefaultRootObject: 'index.html',
+          Aliases: { Quantity: 1, Items: ['cdn.example.com'] },
+          Origins: {
+            Quantity: 1,
+            Items: [
+              {
+                Id: 'myS3Origin',
+                DomainName: 'bucket.s3.amazonaws.com',
+                CustomHeaders: {
+                  Quantity: 1,
+                  Items: [{ HeaderName: 'X-From', HeaderValue: 'cdn' }],
+                },
+                CustomOriginConfig: {
+                  HTTPPort: 80,
+                  HTTPSPort: 443,
+                  OriginSslProtocols: { Quantity: 1, Items: ['TLSv1.2'] },
+                },
+              },
+            ],
+          },
+          DefaultCacheBehavior: {
+            TargetOriginId: 'myS3Origin',
+            ViewerProtocolPolicy: 'redirect-to-https',
+            AllowedMethods: {
+              Quantity: 2,
+              Items: ['GET', 'HEAD'],
+              CachedMethods: { Quantity: 2, Items: ['GET', 'HEAD'] },
+            },
+          },
+          CacheBehaviors: {
+            Quantity: 1,
+            Items: [
+              {
+                PathPattern: '/api/*',
+                TargetOriginId: 'myS3Origin',
+                ViewerProtocolPolicy: 'https-only',
+                ForwardedValues: {
+                  QueryString: true,
+                  Headers: { Quantity: 1, Items: ['Authorization'] },
+                },
+              },
+            ],
+          },
+        },
+      });
+      // GetDistributionCommand (ARN for tag lookup)
+      mockSend.mockResolvedValueOnce({
+        Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
+      });
+      // ListTagsForResourceCommand — includes an aws:cdk:* tag that must
+      // be filtered out (CDK auto-injects it; comparing it fires false drift).
+      mockSend.mockResolvedValueOnce({
+        Tags: {
+          Items: [
+            { Key: 'Env', Value: 'prod' },
+            { Key: 'aws:cdk:path', Value: 'Stack/Distribution/Resource' },
+          ],
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+
+      expect(result).toBeDefined();
+      const cfg = result!['DistributionConfig'] as Record<string, unknown>;
+
+      // CallerReference dropped.
+      expect(cfg['CallerReference']).toBeUndefined();
+      // Top-level Quantity + Items → bare arrays.
+      expect(cfg['Aliases']).toEqual(['cdn.example.com']);
+      expect(Array.isArray(cfg['Origins'])).toBe(true);
+      expect(Array.isArray(cfg['CacheBehaviors'])).toBe(true);
+
+      // Nested origin fields unwrapped.
+      const origin = (cfg['Origins'] as Record<string, unknown>[])[0]!;
+      expect(origin['CustomHeaders']).toEqual([{ HeaderName: 'X-From', HeaderValue: 'cdn' }]);
+      const customOrigin = origin['CustomOriginConfig'] as Record<string, unknown>;
+      expect(customOrigin['OriginSslProtocols']).toEqual(['TLSv1.2']);
+
+      // DefaultCacheBehavior: AllowedMethods unwraps to a bare array, and the
+      // AWS-nested CachedMethods is hoisted to a sibling bare array (matching
+      // the CFn shape CDK synthesizes).
+      const dcb = cfg['DefaultCacheBehavior'] as Record<string, unknown>;
+      expect(dcb['AllowedMethods']).toEqual(['GET', 'HEAD']);
+      expect(dcb['CachedMethods']).toEqual(['GET', 'HEAD']);
+
+      // CacheBehaviors[].ForwardedValues.Headers unwrapped.
+      const cb = (cfg['CacheBehaviors'] as Record<string, unknown>[])[0]!;
+      const fv = cb['ForwardedValues'] as Record<string, unknown>;
+      expect(fv['Headers']).toEqual(['Authorization']);
+
+      // Tags surfaced, aws:cdk:* filtered out.
+      expect(result!['Tags']).toEqual([{ Key: 'Env', Value: 'prod' }]);
+    });
+
+    it('unwraps the deeper cache-behavior {Quantity,Items} fields (LambdaFunctionAssociations + 3-level ForwardedValues.Cookies.WhitelistedNames + QueryStringCacheKeys)', async () => {
+      // These fields are in CACHE_BEHAVIOR_QUANTITY_FIELDS but not covered by
+      // the main round-trip above; the 3-level Cookies.WhitelistedNames path
+      // exercises unwrapQuantityAtPath's multi-level recursion specifically.
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: {
+          CallerReference: 'ref',
+          Enabled: true,
+          Comment: '',
+          DefaultCacheBehavior: {
+            TargetOriginId: 'o',
+            ViewerProtocolPolicy: 'https-only',
+            LambdaFunctionAssociations: {
+              Quantity: 1,
+              Items: [{ EventType: 'origin-request', LambdaFunctionARN: 'arn:aws:lambda:...' }],
+            },
+            FunctionAssociations: { Quantity: 0, Items: [] },
+            ForwardedValues: {
+              QueryString: true,
+              QueryStringCacheKeys: { Quantity: 1, Items: ['lang'] },
+              Cookies: {
+                Forward: 'whitelist',
+                WhitelistedNames: { Quantity: 2, Items: ['sid', 'theme'] },
+              },
+            },
+          },
+        },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
+
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+
+      const dcb = (result!['DistributionConfig'] as Record<string, unknown>)[
+        'DefaultCacheBehavior'
+      ] as Record<string, unknown>;
+      expect(dcb['LambdaFunctionAssociations']).toEqual([
+        { EventType: 'origin-request', LambdaFunctionARN: 'arn:aws:lambda:...' },
+      ]);
+      expect(dcb['FunctionAssociations']).toEqual([]);
+      const fv = dcb['ForwardedValues'] as Record<string, unknown>;
+      expect(fv['QueryStringCacheKeys']).toEqual(['lang']);
+      // The 3-level nested path: ForwardedValues.Cookies.WhitelistedNames.
+      const cookies = fv['Cookies'] as Record<string, unknown>;
+      expect(cookies['WhitelistedNames']).toEqual(['sid', 'theme']);
+      expect(cookies['Forward']).toBe('whitelist');
+    });
+
+    it('returns DistributionConfig without Tags key when no user tags exist', async () => {
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: { CallerReference: 'ref', Enabled: true, Comment: '' },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
+
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+      expect(result).toBeDefined();
+      expect(result!['Tags']).toBeUndefined();
+      expect(result!['DistributionConfig']).toEqual({ Enabled: true, Comment: '' });
+    });
+
+    it('still returns DistributionConfig when the tag read fails', async () => {
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: { CallerReference: 'ref', Enabled: true },
+      });
+      // GetDistributionCommand fails — tag read is best-effort.
+      mockSend.mockRejectedValueOnce(new Error('throttled'));
+
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+      expect(result).toBeDefined();
+      expect(result!['DistributionConfig']).toEqual({ Enabled: true });
+      expect(result!['Tags']).toBeUndefined();
+    });
+
+    it('readCurrentState output is byte-stable across two reads (no phantom drift)', async () => {
+      const awsConfig = {
+        CallerReference: '1700000000000-MyDistribution-abc123',
+        Comment: 'integ',
+        Enabled: true,
+        Origins: {
+          Quantity: 1,
+          Items: [{ Id: 'o1', DomainName: 'b.s3.amazonaws.com' }],
+        },
+        DefaultCacheBehavior: {
+          TargetOriginId: 'o1',
+          ViewerProtocolPolicy: 'redirect-to-https',
+        },
+      };
+      const read = async () => {
+        mockSend.mockResolvedValueOnce({ DistributionConfig: { ...awsConfig } });
+        mockSend.mockResolvedValueOnce({
+          Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
+        });
+        mockSend.mockResolvedValueOnce({ Tags: { Items: [{ Key: 'Env', Value: 'prod' }] } });
+        return provider.readCurrentState(
+          'EDFDVBD6EXAMPLE',
+          'MyDistribution',
+          'AWS::CloudFront::Distribution'
+        );
+      };
+      const first = await read();
+      const second = await read();
+      expect(JSON.stringify(first)).toEqual(JSON.stringify(second));
+    });
+  });
+
+  describe('getDriftUnknownPaths', () => {
+    it('excludes CallerReference + Logging.Bucket + OriginGroups for CloudFront::Distribution', () => {
+      expect(provider.getDriftUnknownPaths('AWS::CloudFront::Distribution')).toEqual([
+        'DistributionConfig.CallerReference',
+        'DistributionConfig.Logging.Bucket',
+        // OriginGroups inner {Quantity,Items} (Members / FailoverCriteria.
+        // StatusCodes) is not unwrapped by convertToCfnFormat yet, so it is
+        // suppressed to avoid a properties-fallback-baseline false positive
+        // until a dedicated revertOriginGroup + fixture lands.
+        'DistributionConfig.OriginGroups',
+      ]);
+    });
+
+    it('returns an empty list for unrelated resource types', () => {
+      expect(provider.getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
+    });
+  });
 });

@@ -349,6 +349,118 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current `DistributionConfig` for drift detection.
+   *
+   * Calls the read-only `GetDistributionConfigCommand` and inverts the
+   * provider's own `convertToSdkFormat` (the CFn-shape → SDK-shape
+   * `{ Quantity, Items }` mapping the create / update path applies) back
+   * into the CloudFormation `DistributionConfig` shape that cdkd state
+   * stores — so the drift comparator sees the same structure on both
+   * the deploy-time observed snapshot and a later drift read.
+   *
+   * The comparator only descends into keys present in cdkd state (or the
+   * union of state + AWS when an observed baseline exists), so this does
+   * not need to surface every AWS-injected field; it returns the same
+   * `DistributionConfig` / `Tags` keys the provider manages.
+   *
+   * `CallerReference` (a create-time idempotency token AWS echoes back
+   * but CDK never templates) is dropped so it cannot fire phantom drift.
+   * The remaining write-only / never-readable sub-fields are declared in
+   * `getDriftUnknownPaths`.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    if (resourceType !== 'AWS::CloudFront::Distribution') return undefined;
+
+    let config: DistributionConfig | undefined;
+    try {
+      const response = await this.cloudFrontClient.send(
+        new GetDistributionConfigCommand({ Id: physicalId })
+      );
+      config = response.DistributionConfig;
+    } catch (error) {
+      if (error instanceof NoSuchDistribution) return undefined;
+      throw error;
+    }
+    if (!config) return undefined;
+
+    const result: Record<string, unknown> = {
+      DistributionConfig: this.convertToCfnFormat(config as unknown as Record<string, unknown>),
+    };
+
+    // Surface AWS-current tags so a console-side tag edit is detectable.
+    // CloudFront tags live on the distribution's ARN, fetched separately
+    // via ListTagsForResource. A tag read failure is non-fatal — the
+    // DistributionConfig drift is still meaningful on its own.
+    try {
+      const getResponse = await this.cloudFrontClient.send(
+        new GetDistributionCommand({ Id: physicalId })
+      );
+      const arn = getResponse.Distribution?.ARN;
+      if (arn) {
+        const tagsResponse = await this.cloudFrontClient.send(
+          new ListTagsForResourceCommand({ Resource: arn })
+        );
+        const items = tagsResponse.Tags?.Items ?? [];
+        const cfnTags = items
+          .filter((t) => typeof t.Key === 'string' && !t.Key.startsWith('aws:cdk:'))
+          .map((t) => ({ Key: t.Key as string, Value: t.Value ?? '' }));
+        if (cfnTags.length > 0) {
+          result['Tags'] = cfnTags;
+        }
+      }
+    } catch (error) {
+      this.logger.debug(
+        `Tag read for CloudFront Distribution ${physicalId} failed during drift read: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * State property paths cdkd cannot read back faithfully from AWS, so
+   * the drift comparator skips them rather than firing a guaranteed
+   * false positive every run (mirrors the Lambda `Code.S3*` precedent).
+   *
+   * - `DistributionConfig.CallerReference`: a create-time idempotency
+   *   token. cdkd generates it internally (`<ts>-<logicalId>-<rand>`);
+   *   AWS echoes it back, but it is never templated by CDK, so comparing
+   *   it would diff cdkd's generated value on every run. `convertToCfnFormat`
+   *   already drops it from the AWS side; declaring it here also excludes
+   *   it from the observed-baseline side.
+   * - `DistributionConfig.Logging.Bucket`: CloudFront normalizes the S3
+   *   logging bucket to its `<bucket>.s3.amazonaws.com` regional domain on
+   *   read, which never matches the bare bucket domain a template may
+   *   carry; treat it as drift-unknown to avoid a guaranteed mismatch.
+   * - `DistributionConfig.OriginGroups`: each origin group carries its own
+   *   inner `{ Quantity, Items }` wrappers (`Members`,
+   *   `FailoverCriteria.StatusCodes`) that `convertToCfnFormat` does not yet
+   *   unwrap symmetrically (only the top-level OriginGroups list is unwrapped;
+   *   there is no `revertOriginGroup` pass, and `convertToSdkFormat` likewise
+   *   does not descend into them). Against the observed baseline both sides go
+   *   through the same `readCurrentState` so this never false-positives on a
+   *   normal deploy, but against the `properties`-fallback baseline (older
+   *   state without `observedProperties`) the raw `{ Quantity, Items }` shape
+   *   would diff the bare-array template form. Suppress it until a dedicated
+   *   fix lands a `revertOriginGroup` + a real OriginGroups integ fixture
+   *   (there is no OriginGroups fixture to verify the inner shape today). See
+   *   the PR #871 review thread.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::CloudFront::Distribution') return [];
+    return [
+      'DistributionConfig.CallerReference',
+      'DistributionConfig.Logging.Bucket',
+      'DistributionConfig.OriginGroups',
+    ];
+  }
+
+  /**
    * Get resource attribute (for Fn::GetAtt resolution)
    */
   async getAttribute(
@@ -498,6 +610,162 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     }
 
     return result;
+  }
+
+  /**
+   * Invert {@link convertToSdkFormat}: map an AWS-returned SDK-shape
+   * `DistributionConfig` ({@link GetDistributionConfigCommand} output) back
+   * into the CloudFormation `DistributionConfig` shape cdkd state stores.
+   *
+   * The inversion is the mirror image of the create / update conversion:
+   * every `{ Quantity, Items }` wrapper becomes its bare `Items` array
+   * (top-level list fields + the nested cache-behavior / origin fields),
+   * and `CallerReference` is dropped (a create-time idempotency token CDK
+   * never templates — see `getDriftUnknownPaths`).
+   *
+   * Lossiness note: the conversion is NOT perfectly lossless because
+   * `convertToSdkFormat` injects SDK-required defaults the CFn template may
+   * omit (`Comment: ''`, `Logging.{Enabled,IncludeCookies,Prefix}`,
+   * `CustomOriginConfig.HTTP{,S}Port`). Those defaults are preserved on the
+   * inverted side, which is correct for the drift comparator: the
+   * deploy-time observed baseline (also produced by THIS method) carries the
+   * same defaults, so they compare equal. They would only matter against the
+   * `properties` fallback baseline (resources with no observedProperties),
+   * where an AWS-injected default the template omitted is legitimately a
+   * key cdkd never set — but the comparator's state-keys-only walk in that
+   * mode never descends into a key absent from the template, so the extra
+   * defaults cannot fire false drift there either.
+   */
+  private convertToCfnFormat(config: Record<string, unknown>): Record<string, unknown> {
+    const result = { ...config };
+
+    // Drop the create-time idempotency token (never templated by CDK).
+    delete result['CallerReference'];
+
+    // Unwrap top-level Quantity + Items fields back to bare arrays.
+    for (const field of QUANTITY_ITEM_FIELDS) {
+      if (result[field] !== undefined) {
+        result[field] = this.unwrapQuantity(result[field]);
+      }
+    }
+
+    // Unwrap nested Quantity + Items inside DefaultCacheBehavior.
+    if (result['DefaultCacheBehavior'] && typeof result['DefaultCacheBehavior'] === 'object') {
+      result['DefaultCacheBehavior'] = this.revertCacheBehavior(
+        result['DefaultCacheBehavior'] as Record<string, unknown>
+      );
+    }
+
+    // Unwrap nested Quantity + Items inside each CacheBehavior (now a bare array).
+    if (Array.isArray(result['CacheBehaviors'])) {
+      result['CacheBehaviors'] = (result['CacheBehaviors'] as Record<string, unknown>[]).map((cb) =>
+        this.revertCacheBehavior(cb)
+      );
+    }
+
+    // Unwrap nested Quantity + Items inside each Origin (now a bare array).
+    if (Array.isArray(result['Origins'])) {
+      result['Origins'] = (result['Origins'] as Record<string, unknown>[]).map((origin) =>
+        this.revertOrigin(origin)
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Inverse of {@link wrapWithQuantity}: a `{ Quantity, Items }` object
+   * becomes its bare `Items` array; anything else is returned unchanged.
+   */
+  private unwrapQuantity(value: unknown): unknown {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      if (Array.isArray(obj['Items'])) {
+        return obj['Items'];
+      }
+    }
+    return value;
+  }
+
+  /**
+   * Inverse of {@link convertCacheBehavior}: unwrap the Quantity + Items
+   * fields nested inside a CacheBehavior back to bare arrays.
+   */
+  private revertCacheBehavior(behavior: Record<string, unknown>): Record<string, unknown> {
+    const result = { ...behavior };
+
+    // AWS nests `CachedMethods` INSIDE the `AllowedMethods` wrapper
+    // ({ Quantity, Items, CachedMethods: { Quantity, Items } }), whereas the
+    // CFn shape carries them as SIBLINGS (AllowedMethods + CachedMethods both
+    // bare arrays — `convertToSdkFormat` only wraps the two CFn arrays
+    // independently and never re-nests). Hoist CachedMethods back out to a
+    // sibling before the generic unwrap so the inverted shape matches CFn and
+    // a console-side CachedMethods change stays detectable.
+    if (result['AllowedMethods'] && typeof result['AllowedMethods'] === 'object') {
+      const allowed = result['AllowedMethods'] as Record<string, unknown>;
+      if (allowed['CachedMethods'] !== undefined && result['CachedMethods'] === undefined) {
+        result['CachedMethods'] = allowed['CachedMethods'];
+        const allowedCopy = { ...allowed };
+        delete allowedCopy['CachedMethods'];
+        result['AllowedMethods'] = allowedCopy;
+      }
+    }
+
+    for (const fieldPath of CACHE_BEHAVIOR_QUANTITY_FIELDS) {
+      const parts = fieldPath.split('.');
+      this.unwrapQuantityAtPath(result, parts);
+    }
+
+    return result;
+  }
+
+  /**
+   * Inverse of {@link convertOrigin}: unwrap CustomHeaders and
+   * CustomOriginConfig.OriginSslProtocols back to bare arrays.
+   */
+  private revertOrigin(origin: Record<string, unknown>): Record<string, unknown> {
+    const result = { ...origin };
+
+    if (result['CustomHeaders'] !== undefined) {
+      result['CustomHeaders'] = this.unwrapQuantity(result['CustomHeaders']);
+    }
+
+    if (result['CustomOriginConfig'] && typeof result['CustomOriginConfig'] === 'object') {
+      const customOriginConfig = { ...(result['CustomOriginConfig'] as Record<string, unknown>) };
+      if (customOriginConfig['OriginSslProtocols'] !== undefined) {
+        customOriginConfig['OriginSslProtocols'] = this.unwrapQuantity(
+          customOriginConfig['OriginSslProtocols']
+        );
+      }
+      result['CustomOriginConfig'] = customOriginConfig;
+    }
+
+    return result;
+  }
+
+  /**
+   * Inverse of {@link applyQuantityAtPath}: unwrap a `{ Quantity, Items }`
+   * value at a nested path (e.g. "ForwardedValues.Headers") back to a bare
+   * array.
+   */
+  private unwrapQuantityAtPath(obj: Record<string, unknown>, path: string[]): void {
+    if (path.length === 0) return;
+
+    if (path.length === 1) {
+      const key = path[0]!;
+      if (obj[key] !== undefined) {
+        obj[key] = this.unwrapQuantity(obj[key]);
+      }
+      return;
+    }
+
+    const [head, ...rest] = path;
+    const headKey = head!;
+    if (obj[headKey] && typeof obj[headKey] === 'object') {
+      const nested = { ...(obj[headKey] as Record<string, unknown>) };
+      obj[headKey] = nested;
+      this.unwrapQuantityAtPath(nested, rest);
+    }
   }
 
   /**
