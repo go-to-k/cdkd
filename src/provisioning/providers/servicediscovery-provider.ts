@@ -6,6 +6,9 @@ import {
   CreateServiceCommand,
   UpdateServiceCommand,
   DeleteServiceCommand,
+  UpdateServiceAttributesCommand,
+  DeleteServiceAttributesCommand,
+  GetServiceAttributesCommand,
   GetNamespaceCommand,
   GetOperationCommand,
   GetServiceCommand,
@@ -25,6 +28,7 @@ import {
 } from '@aws-sdk/client-servicediscovery';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
+import { withRetry } from '../../deployment/retry.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -69,6 +73,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         'HealthCheckConfig',
         'Tags',
         'Type',
+        'ServiceAttributes',
       ]),
     ],
   ]);
@@ -412,15 +417,53 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (!service || !service.Id) {
         throw new Error('CreateService did not return Service ID');
       }
+      const serviceId = service.Id;
 
       this.logger.debug(
-        `Successfully created service discovery service ${logicalId}: ${service.Id}`
+        `Successfully created service discovery service ${logicalId}: ${serviceId}`
       );
 
+      // ServiceAttributes is NOT accepted by CreateService — it rides on a
+      // separate post-create `UpdateServiceAttributes` control-plane call.
+      // CreateService has already committed the service on AWS, so a failure
+      // here would strand a half-configured service that the next deploy plans
+      // CREATE for (and AWS then rejects with a name collision). Wrap the
+      // attributes call in an inner try/catch that issues a best-effort
+      // `DeleteService` before re-throwing (atomicity), mirroring the ELBv2
+      // Listener create path (PR #879).
+      try {
+        const attrs = this.normalizeServiceAttributes(properties['ServiceAttributes']);
+        if (Object.keys(attrs).length > 0) {
+          await withRetry(
+            () =>
+              client.send(
+                new UpdateServiceAttributesCommand({ ServiceId: serviceId, Attributes: attrs })
+              ),
+            logicalId,
+            { logger: this.logger }
+          );
+          this.logger.debug(
+            `Applied ${Object.keys(attrs).length} ServiceAttribute(s) for ${logicalId}`
+          );
+        }
+      } catch (innerError) {
+        try {
+          await client.send(new DeleteServiceCommand({ Id: serviceId }));
+          this.logger.debug(
+            `Cleaned up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws servicediscovery delete-service --id ${serviceId}`
+          );
+        }
+        throw innerError;
+      }
+
       return {
-        physicalId: service.Id,
+        physicalId: serviceId,
         attributes: {
-          Id: service.Id,
+          Id: serviceId,
           Arn: service.Arn || '',
           Name: service.Name || name || '',
         },
@@ -459,7 +502,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -480,7 +523,26 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       serviceChange.HealthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig;
     }
 
-    if (Object.keys(serviceChange).length === 0) {
+    // ServiceAttributes is NOT part of the `ServiceChange` body — it is
+    // mutated via its own `UpdateServiceAttributes` (upsert) /
+    // `DeleteServiceAttributes` (remove keys) APIs. Diff old vs new: keys
+    // whose value changed or are new go in the upsert map; keys present only
+    // in the old set are removed. These calls THROW on AWS failure (NOT
+    // warn-swallow) so cdkd state is never written as-if-applied — see memory
+    // feedback_tags_on_update_must_throw; the next deploy retries naturally.
+    const newAttrs = this.normalizeServiceAttributes(properties['ServiceAttributes']);
+    const oldAttrs = this.normalizeServiceAttributes(previousProperties['ServiceAttributes']);
+    const upsertAttrs: Record<string, string> = {};
+    for (const [k, v] of Object.entries(newAttrs)) {
+      if (oldAttrs[k] !== v) upsertAttrs[k] = v;
+    }
+    const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !(k in newAttrs));
+
+    const hasServiceChange = Object.keys(serviceChange).length > 0;
+    const hasAttrUpsert = Object.keys(upsertAttrs).length > 0;
+    const hasAttrRemove = removedAttrKeys.length > 0;
+
+    if (!hasServiceChange && !hasAttrUpsert && !hasAttrRemove) {
       this.logger.debug(
         `No mutable diff for ServiceDiscovery Service ${logicalId}, skipping update`
       );
@@ -488,16 +550,47 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
 
     try {
-      const response = await client.send(
-        new UpdateServiceCommand({
-          Id: physicalId,
-          Service: serviceChange,
-        })
-      );
+      if (hasServiceChange) {
+        const response = await client.send(
+          new UpdateServiceCommand({
+            Id: physicalId,
+            Service: serviceChange,
+          })
+        );
 
-      const operationId = response.OperationId;
-      if (operationId) {
-        await this.pollOperation(operationId, logicalId, resourceType);
+        const operationId = response.OperationId;
+        if (operationId) {
+          await this.pollOperation(operationId, logicalId, resourceType);
+        }
+      }
+
+      if (hasAttrUpsert) {
+        await withRetry(
+          () =>
+            client.send(
+              new UpdateServiceAttributesCommand({ ServiceId: physicalId, Attributes: upsertAttrs })
+            ),
+          logicalId,
+          { logger: this.logger }
+        );
+        this.logger.debug(
+          `Applied ${Object.keys(upsertAttrs).length} ServiceAttribute change(s) for ${logicalId}`
+        );
+      }
+
+      if (hasAttrRemove) {
+        await withRetry(
+          () =>
+            client.send(
+              new DeleteServiceAttributesCommand({
+                ServiceId: physicalId,
+                Attributes: removedAttrKeys,
+              })
+            ),
+          logicalId,
+          { logger: this.logger }
+        );
+        this.logger.debug(`Removed ${removedAttrKeys.length} ServiceAttribute(s) for ${logicalId}`);
       }
 
       this.logger.debug(`Successfully updated service discovery service ${logicalId}`);
@@ -726,8 +819,46 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         unknown
       >;
     }
+
+    // ServiceAttributes via GetServiceAttributes (a separate call from
+    // GetService). Emit the full key→value map so a console-side attribute
+    // change surfaces as drift against the deploy-time baseline. On a
+    // permission / transient error leave the key absent rather than firing
+    // false drift on every run (matching attachTags' best-effort posture);
+    // the drift comparator is state-keys-only so an absent key is safe.
+    try {
+      const attrsResp = await this.getClient().send(
+        new GetServiceAttributesCommand({ ServiceId: physicalId })
+      );
+      result['ServiceAttributes'] = attrsResp.ServiceAttributes?.Attributes ?? {};
+    } catch (err) {
+      this.logger.debug(
+        `ServiceDiscovery GetServiceAttributes(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
     if (svc.Arn) await this.attachTags(result, svc.Arn);
     return result;
+  }
+
+  /**
+   * Normalize a CFn `ServiceAttributes` value (a bare key→value JSON map) into
+   * the SDK's `Attributes` shape (`Record<string,string>`). Only string /
+   * number / boolean values are coerced via `String()`; a non-scalar value is
+   * malformed input and is dropped rather than stringified to `[object
+   * Object]`. A non-object input (absent / null / array) yields `{}` so callers
+   * can branch on `Object.keys(...).length`.
+   */
+  private normalizeServiceAttributes(raw: unknown): Record<string, string> {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        out[k] = String(v);
+      }
+    }
+    return out;
   }
 
   /** Best-effort tag fetch via `ListTagsForResource(ResourceARN)`. */

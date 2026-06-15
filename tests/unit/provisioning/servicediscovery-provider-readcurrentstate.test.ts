@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   GetNamespaceCommand,
   GetServiceCommand,
+  GetServiceAttributesCommand,
   ListTagsForResourceCommand,
   NamespaceNotFound,
   ServiceNotFound,
@@ -112,15 +113,18 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
 
   describe('AWS::ServiceDiscovery::Service', () => {
     it('returns CFn-shaped Service properties (happy path)', async () => {
-      mockSend.mockResolvedValueOnce({
-        Service: {
-          Id: 'srv-1',
-          Name: 'mysvc',
-          NamespaceId: 'ns-1',
-          Type: 'DNS',
-          DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 60 }] },
-        },
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          Service: {
+            Id: 'srv-1',
+            Name: 'mysvc',
+            NamespaceId: 'ns-1',
+            Type: 'DNS',
+            DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 60 }] },
+          },
+        })
+        // GetServiceAttributes (no attributes set)
+        .mockResolvedValueOnce({ ServiceAttributes: { Attributes: {} } });
 
       const result = await provider.readCurrentState(
         'srv-1',
@@ -135,7 +139,42 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         Description: '',
         Type: 'DNS',
         DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 60 }] },
+        ServiceAttributes: {},
       });
+    });
+
+    it('emits ServiceAttributes from GetServiceAttributes', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Service: { Id: 'srv-1', Name: 'mysvc', NamespaceId: 'ns-1', Type: 'DNS' },
+        })
+        .mockResolvedValueOnce({
+          ServiceAttributes: { Attributes: { team: 'cdkd', tier: 'backend' } },
+        });
+
+      const result = await provider.readCurrentState(
+        'srv-1',
+        'L',
+        'AWS::ServiceDiscovery::Service'
+      );
+
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetServiceAttributesCommand);
+      expect(result?.ServiceAttributes).toEqual({ team: 'cdkd', tier: 'backend' });
+    });
+
+    it('emits an empty ServiceAttributes map when AWS returns none', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Service: { Id: 'srv-1', Name: 'mysvc', NamespaceId: 'ns-1', Type: 'DNS' },
+        })
+        .mockResolvedValueOnce({});
+
+      const result = await provider.readCurrentState(
+        'srv-1',
+        'L',
+        'AWS::ServiceDiscovery::Service'
+      );
+      expect(result?.ServiceAttributes).toEqual({});
     });
 
     it('returns undefined when service is gone', async () => {
