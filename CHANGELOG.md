@@ -1,3 +1,10 @@
+## [0.223.1](https://github.com/go-to-k/cdkd/compare/v0.223.0...v0.223.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **provisioning:** canonicalize CloudFront OAI principals in S3 BucketPolicy drift readback ([#874](https://github.com/go-to-k/cdkd/issues/874)) ([77e32ea](https://github.com/go-to-k/cdkd/commit/77e32eae6e3519d85a59caf56d3887292c67b4dc))
+
 # [0.223.0](https://github.com/go-to-k/cdkd/compare/v0.222.1...v0.223.0) (2026-06-15)
 
 
