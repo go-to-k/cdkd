@@ -1,3 +1,10 @@
+## [0.223.4](https://github.com/go-to-k/cdkd/compare/v0.223.3...v0.223.4) (2026-06-15)
+
+
+### Bug Fixes
+
+* **deploy:** warn when a no-change-path Outputs resolution suppresses persist ([#875](https://github.com/go-to-k/cdkd/issues/875) follow-up) ([#878](https://github.com/go-to-k/cdkd/issues/878)) ([cf4c6f1](https://github.com/go-to-k/cdkd/commit/cf4c6f1cc89ce5b6545f2e478cf417a4f9c1b724))
+
 ## [0.223.3](https://github.com/go-to-k/cdkd/compare/v0.223.2...v0.223.3) (2026-06-15)
 
 
