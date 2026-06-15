@@ -1,3 +1,10 @@
+## [0.223.3](https://github.com/go-to-k/cdkd/compare/v0.223.2...v0.223.3) (2026-06-15)
+
+
+### Bug Fixes
+
+* **deploy:** persist an Outputs-only change on a no-resource-diff deploy ([#877](https://github.com/go-to-k/cdkd/issues/877)) ([f14ed0e](https://github.com/go-to-k/cdkd/commit/f14ed0e2d3d96ac7a41c5e2cc8874fd69afd789f))
+
 ## [0.223.2](https://github.com/go-to-k/cdkd/compare/v0.223.1...v0.223.2) (2026-06-15)
 
 
