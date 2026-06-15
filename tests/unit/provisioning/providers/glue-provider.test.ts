@@ -245,6 +245,23 @@ describe('GlueJobProvider numeric coercion', () => {
     const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateJobCommand);
     expect((call![0].input as Record<string, unknown>)['Timeout']).toBe(30);
   });
+
+  it('create: leaves a non-finite / unparseable numeric value unchanged (so AWS surfaces a clear validation error, not NaN)', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.create('MyJob', 'AWS::Glue::Job', {
+      Name: 'myjob',
+      Role: 'arn:aws:iam::123456789012:role/glue',
+      Command: { Name: 'glueetl' },
+      Timeout: 'not-a-number',
+    });
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateJobCommand);
+    const timeout = (call![0].input as Record<string, unknown>)['Timeout'];
+    // coerceNumber must NOT turn an unparseable string into NaN — it leaves the
+    // original value so AWS rejects it with a real validation error.
+    expect(timeout).toBe('not-a-number');
+  });
 });
 
 // Bug 4: Glue Workflow Tags map shape + MaxConcurrentRuns coercion.
@@ -347,6 +364,25 @@ describe('GlueCrawlerProvider running-state handling', () => {
     const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
     expect(types).toContain('StopCrawlerCommand');
     expect(types.filter((t) => t === 'UpdateCrawlerCommand')).toHaveLength(2);
+  });
+
+  it('delete: tolerates a StopCrawler rejection (already-stopping race) and still retries the delete', async () => {
+    // 1st DeleteCrawler -> CrawlerRunningException
+    mockGlueSend.mockRejectedValueOnce(runningError());
+    // StopCrawler -> rejects because the crawler is ALREADY stopping. The
+    // provider must swallow this (nothing to do but wait it out), not abort.
+    mockGlueSend.mockRejectedValueOnce(new Error('CrawlerStoppingException: already stopping'));
+    // GetCrawler poll -> READY (it finished stopping)
+    mockGlueSend.mockResolvedValueOnce({ Crawler: { State: 'READY' } });
+    // 2nd DeleteCrawler -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyCrawler', 'mycrawler', 'AWS::Glue::Crawler', {}, undefined);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(types).toContain('StopCrawlerCommand');
+    expect(types).toContain('GetCrawlerCommand');
+    expect(types.filter((t) => t === 'DeleteCrawlerCommand')).toHaveLength(2);
   });
 });
 

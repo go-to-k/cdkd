@@ -2971,16 +2971,34 @@ export class GlueTriggerProvider implements ResourceProvider {
         }),
       };
       // Restore the ACTIVATED state even if UpdateTrigger throws — otherwise a
-      // failed update would leave a previously-running trigger stuck DEACTIVATED.
+      // failed update would leave a previously-running trigger stuck
+      // DEACTIVATED. Capture the update error rather than using `finally` so
+      // that if BOTH the update and the re-activation throw, the root-cause
+      // update error wins (a bare `finally` would let the secondary
+      // "failed to re-activate" error mask it). A re-activation failure on an
+      // OTHERWISE-successful update still surfaces (the trigger really is stuck
+      // deactivated in that case).
+      let updateError: unknown;
       try {
         await this.getClient().send(
           new UpdateTriggerCommand({ Name: physicalId, TriggerUpdate: update })
         );
-      } finally {
-        if (restart) {
+      } catch (err) {
+        updateError = err;
+      }
+      if (restart) {
+        try {
           await this.getClient().send(new StartTriggerCommand({ Name: physicalId }));
+        } catch (restartError) {
+          if (updateError === undefined) throw restartError;
+          this.logger.warn(
+            `Failed to re-activate Glue Trigger ${physicalId} after a failed update: ${
+              (restartError as Error).message
+            }`
+          );
         }
       }
+      if (updateError !== undefined) throw updateError;
 
       const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
       const newTags = cfnTagsToMap(properties['Tags']) ?? {};

@@ -230,6 +230,20 @@ describe('isRetryableTransientError', () => {
         isRetryableTransientError(new Error(genericValidation), genericValidation)
       ).toBe(false);
     });
+
+    it('does not retry a Glue error that lacks the assume-role propagation phrase', () => {
+      // Guard the Glue boundary: the just-created-role propagation pattern is
+      // anchored on "is unable to assume provided role", so an unrelated Glue
+      // failure (a genuinely malformed job, a missing database) stays
+      // non-retryable and fails fast rather than burning the bounded retries.
+      const malformedJob =
+        'InvalidInputException: Command name should be glueetl or pythonshell';
+      expect(isRetryableTransientError(new Error(malformedJob), malformedJob)).toBe(false);
+
+      const missingDb =
+        'EntityNotFoundException: Database glueupdatehardeningstack-db not found';
+      expect(isRetryableTransientError(new Error(missingDb), missingDb)).toBe(false);
+    });
   });
 
   describe('throttling (name-based, HTTP 400 not 429)', () => {
