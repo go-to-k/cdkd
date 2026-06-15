@@ -1,3 +1,10 @@
+# [0.222.0](https://github.com/go-to-k/cdkd/compare/v0.221.16...v0.222.0) (2026-06-15)
+
+
+### Features
+
+* **provisioning:** CC-API enrichment-coverage matrix + CI critic ([#869](https://github.com/go-to-k/cdkd/issues/869)) ([e55ff37](https://github.com/go-to-k/cdkd/commit/e55ff37f62379055c1a5b6e8804a33412e8b60f1))
+
 ## [0.221.16](https://github.com/go-to-k/cdkd/compare/v0.221.15...v0.221.16) (2026-06-15)
 
 
