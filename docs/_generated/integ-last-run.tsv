@@ -99,7 +99,6 @@ local-invoke	2026-06-08T16:20:50Z	PASS	28	verify.sh	0.147.0; 5/5 host-gateway ad
 local-run-task	2026-06-08T16:20:50Z	PASS	14	verify.sh	0.147.0; host-gateway adopted; rc ok, no orphans
 efs-standalone	2026-06-09T16:34:55Z	PASS	134	verify.sh	#609 EFS backfill: 4 control-plane props asserted, destroy 0 err 0 orphan
 cognito	2026-06-09T16:50:23Z	PASS	54	verify.sh	#609 UserPoolTier/SOFTWARE_TOKEN_MFA/WebAuthn asserted; EMAIL_OTP unit-only (SES); destroy 0 err
-dynamodb-ondemand	2026-06-09T17:02:56Z	PASS	70	verify.sh	#609: ResourcePolicy/Kinesis/ContributorInsights asserted; destroy 0 err 0 orphan
 ec2-instance	2026-06-09T17:10:25Z	PASS	105	verify.sh	#609 security slice: DisableApiTermination/MetadataOptions/Monitoring/EbsOptimized/CreditSpecification asserted; destroy 0 err
 rds-dbinstance-backfill	2026-06-09T18:23:15Z	PASS	561	verify.sh	#609 DBInstance security props (MonitoringRoleArn/Interval/IAMauth/KmsKeyId/MasterUserSecret) asserted; destroy 0 err
 rds-aurora	2026-06-10T01:31:45Z	PASS	3000	verify.sh	#794 verify: MonitoringRoleArn cluster create survived IAM-race via retry; +#609 cluster props; destroy 23/0 err
@@ -136,3 +135,4 @@ elasticache-replicationgroup-getatt	2026-06-14T09:11:22Z	PASS		verify.sh	CC-API 
 redshift-cluster-getatt	2026-06-14T10:05:32Z	PASS	220	verify.sh	CC-API GetAtt Endpoint.Address/Port enrichment; ra3.large single-node; 0 orphans
 opensearch-domain-getatt	2026-06-14T10:54:56Z	PASS	2000	verify.sh	CC-API GetAtt DomainEndpoint/Arn enrichment; t3.small.search public domain; 0 orphans
 s3-vectors	2026-06-14T13:39:25Z	PASS	60	verify.sh	Tags backfill + in-place Tags update() (TagResource/UntagResource) re-run after create dedup; 0 orphans
+dynamodb-ondemand	2026-06-14T14:54:16Z	PASS	120	verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE + backfills; 0 orphans
