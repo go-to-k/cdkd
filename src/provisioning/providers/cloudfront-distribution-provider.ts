@@ -28,16 +28,21 @@ import type {
 } from '../../types/resource.js';
 
 /**
- * Fields in the DistributionConfig that follow the { Quantity, Items } pattern.
- * The CDK template may provide just Items (an array); we wrap it with Quantity.
+ * Top-level `DistributionConfig` fields that are a BARE ARRAY in the CFn
+ * template but a `{ Quantity, Items }` wrapper in the SDK shape — so
+ * `convertToSdkFormat` wraps them and `convertToCfnFormat` unwraps them.
+ *
+ * `OriginGroups` is deliberately NOT here (issue #873): unlike `Origins` /
+ * `CacheBehaviors` / `Aliases` / `CustomErrorResponses` (bare lists in CFn), the
+ * CFn `DistributionConfig.OriginGroups` property is ITSELF a `{ Quantity, Items }`
+ * object, and so are its nested `Members` and `FailoverCriteria.StatusCodes`.
+ * CDK synthesizes that full `{ Quantity, Items }` shape and `GetDistributionConfig`
+ * returns the same, so OriginGroups must pass through UNTOUCHED in both
+ * directions — unwrapping it (it was incorrectly listed here before) turned the
+ * read-back OriginGroups into a bare array that no longer matched the template's
+ * `{ Quantity, Items }`, firing phantom drift.
  */
-const QUANTITY_ITEM_FIELDS = [
-  'Origins',
-  'CacheBehaviors',
-  'CustomErrorResponses',
-  'Aliases',
-  'OriginGroups',
-];
+const QUANTITY_ITEM_FIELDS = ['Origins', 'CacheBehaviors', 'CustomErrorResponses', 'Aliases'];
 
 /**
  * Nested fields inside each CacheBehavior / DefaultCacheBehavior that use
@@ -437,27 +442,18 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    *   logging bucket to its `<bucket>.s3.amazonaws.com` regional domain on
    *   read, which never matches the bare bucket domain a template may
    *   carry; treat it as drift-unknown to avoid a guaranteed mismatch.
-   * - `DistributionConfig.OriginGroups`: each origin group carries its own
-   *   inner `{ Quantity, Items }` wrappers (`Members`,
-   *   `FailoverCriteria.StatusCodes`) that `convertToCfnFormat` does not yet
-   *   unwrap symmetrically (only the top-level OriginGroups list is unwrapped;
-   *   there is no `revertOriginGroup` pass, and `convertToSdkFormat` likewise
-   *   does not descend into them). Against the observed baseline both sides go
-   *   through the same `readCurrentState` so this never false-positives on a
-   *   normal deploy, but against the `properties`-fallback baseline (older
-   *   state without `observedProperties`) the raw `{ Quantity, Items }` shape
-   *   would diff the bare-array template form. Suppress it until a dedicated
-   *   fix lands a `revertOriginGroup` + a real OriginGroups integ fixture
-   *   (there is no OriginGroups fixture to verify the inner shape today). See
-   *   the PR #871 review thread.
+   *
+   * NOTE: `DistributionConfig.OriginGroups` is NO LONGER suppressed (issue
+   * #873). The earlier suppression worked around `convertToCfnFormat`
+   * incorrectly unwrapping the top-level OriginGroups `{ Quantity, Items }`
+   * wrapper; the real fix (dropping OriginGroups from `QUANTITY_ITEM_FIELDS` so
+   * it passes through untouched in both directions) makes OriginGroups compare
+   * equal, so it is now drift-checked normally and a real OriginGroups change
+   * IS reported.
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::CloudFront::Distribution') return [];
-    return [
-      'DistributionConfig.CallerReference',
-      'DistributionConfig.Logging.Bucket',
-      'DistributionConfig.OriginGroups',
-    ];
+    return ['DistributionConfig.CallerReference', 'DistributionConfig.Logging.Bucket'];
   }
 
   /**

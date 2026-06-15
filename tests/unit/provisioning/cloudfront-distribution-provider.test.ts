@@ -945,6 +945,45 @@ describe('CloudFrontDistributionProvider', () => {
       expect(result!['DistributionConfig']).toEqual({ Enabled: true, Comment: '' });
     });
 
+    it('passes OriginGroups through UNCHANGED — it is {Quantity,Items} in both CFn and the SDK (#873)', async () => {
+      // The CFn DistributionConfig.OriginGroups property (+ its inner Members /
+      // FailoverCriteria.StatusCodes) is ITSELF a { Quantity, Items } object, so
+      // it must NOT be unwrapped like Origins/CacheBehaviors/Aliases — the
+      // template and the AWS read-back are identical and compare equal.
+      const originGroups = {
+        Quantity: 1,
+        Items: [
+          {
+            Id: 'group1',
+            FailoverCriteria: { StatusCodes: { Quantity: 4, Items: [500, 502, 503, 504] } },
+            Members: {
+              Quantity: 2,
+              Items: [{ OriginId: 'origin1' }, { OriginId: 'origin2' }],
+            },
+          },
+        ],
+      };
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: { CallerReference: 'ref', Enabled: true, Comment: '', OriginGroups: originGroups },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
+
+      const result = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+
+      // OriginGroups is byte-equal to the input { Quantity, Items } shape — not
+      // unwrapped to a bare array (which is what caused the #873 phantom drift).
+      expect((result!['DistributionConfig'] as Record<string, unknown>)['OriginGroups']).toEqual(
+        originGroups
+      );
+    });
+
     it('still returns DistributionConfig when the tag read fails', async () => {
       mockSend.mockResolvedValueOnce({
         DistributionConfig: { CallerReference: 'ref', Enabled: true },
@@ -995,15 +1034,10 @@ describe('CloudFrontDistributionProvider', () => {
   });
 
   describe('getDriftUnknownPaths', () => {
-    it('excludes CallerReference + Logging.Bucket + OriginGroups for CloudFront::Distribution', () => {
+    it('excludes CallerReference + Logging.Bucket for CloudFront::Distribution (OriginGroups is now drift-checked, #873)', () => {
       expect(provider.getDriftUnknownPaths('AWS::CloudFront::Distribution')).toEqual([
         'DistributionConfig.CallerReference',
         'DistributionConfig.Logging.Bucket',
-        // OriginGroups inner {Quantity,Items} (Members / FailoverCriteria.
-        // StatusCodes) is not unwrapped by convertToCfnFormat yet, so it is
-        // suppressed to avoid a properties-fallback-baseline false positive
-        // until a dedicated revertOriginGroup + fixture lands.
-        'DistributionConfig.OriginGroups',
       ]);
     });
 

@@ -509,7 +509,8 @@
           "l2"
         ],
         "s3-cloudfront": [
-          "l2"
+          "l2",
+          "literal"
         ]
       }
     },

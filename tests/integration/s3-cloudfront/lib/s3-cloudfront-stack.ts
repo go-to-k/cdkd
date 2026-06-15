@@ -43,12 +43,24 @@ export class S3CloudFrontStack extends cdk.Stack {
       })
     );
 
+    // Primary S3-via-OAI origin, plus an OriginGroup with an HTTP fallback so
+    // the distribution carries an `AWS::CloudFront::Distribution.OriginGroups`
+    // block — exercises CloudFrontDistributionProvider drift normalization of
+    // the OriginGroups inner `{ Quantity, Items }` wrappers (Members /
+    // FailoverCriteria.StatusCodes), issue #873.
+    const s3Origin = origins.S3BucketOrigin.withOriginAccessIdentity(bucket, {
+      originAccessIdentity: oai,
+    });
+    const originGroup = new origins.OriginGroup({
+      primaryOrigin: s3Origin,
+      fallbackOrigin: new origins.HttpOrigin('fallback.example.com'),
+      fallbackStatusCodes: [500, 502, 503, 504],
+    });
+
     // Create CloudFront Distribution
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessIdentity(bucket, {
-          originAccessIdentity: oai,
-        }),
+        origin: originGroup,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       },
       defaultRootObject: 'index.html',
