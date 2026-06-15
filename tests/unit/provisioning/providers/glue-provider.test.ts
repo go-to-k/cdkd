@@ -41,8 +41,21 @@ vi.mock('../../../../src/utils/logger.js', () => {
   };
 });
 
-import { UpdateDatabaseCommand } from '@aws-sdk/client-glue';
-import { GlueProvider } from '../../../../src/provisioning/providers/glue-provider.js';
+import {
+  UpdateDatabaseCommand,
+  CreateJobCommand,
+  UpdateJobCommand,
+  CreateWorkflowCommand,
+  StopCrawlerCommand,
+  CrawlerRunningException,
+} from '@aws-sdk/client-glue';
+import {
+  GlueProvider,
+  GlueJobProvider,
+  GlueWorkflowProvider,
+  GlueCrawlerProvider,
+  GlueTriggerProvider,
+} from '../../../../src/provisioning/providers/glue-provider.js';
 
 describe('GlueProvider import', () => {
   let provider: GlueProvider;
@@ -151,5 +164,329 @@ describe('GlueProvider update', () => {
     const input = call![0].input as { Name: string; DatabaseInput: { Description?: string } };
     expect(input.Name).toBe('mydb');
     expect(input.DatabaseInput.Description).toBe('updated');
+  });
+});
+
+// Bug 1: Glue Job stringly-typed numeric coercion.
+describe('GlueJobProvider numeric coercion', () => {
+  let provider: GlueJobProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueJobProvider();
+  });
+
+  it('create: coerces string numerics to numbers at the SDK boundary', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    // CFn delivers these as STRINGS (CDK synths e.g. "10").
+    const properties = {
+      Name: 'myjob',
+      Role: 'arn:aws:iam::123456789012:role/glue',
+      Command: { Name: 'glueetl', ScriptLocation: 's3://bucket/script.py' },
+      MaxRetries: '2',
+      AllocatedCapacity: '5',
+      Timeout: '60',
+      MaxCapacity: '10',
+      NumberOfWorkers: '4',
+      ExecutionProperty: { MaxConcurrentRuns: '3' },
+      NotificationProperty: { NotifyDelayAfter: '7' },
+    };
+
+    await provider.create('MyJob', 'AWS::Glue::Job', properties);
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateJobCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['MaxRetries']).toBe(2);
+    expect(input['AllocatedCapacity']).toBe(5);
+    expect(input['Timeout']).toBe(60);
+    expect(input['MaxCapacity']).toBe(10);
+    expect(input['NumberOfWorkers']).toBe(4);
+    expect((input['ExecutionProperty'] as { MaxConcurrentRuns: number }).MaxConcurrentRuns).toBe(3);
+    expect((input['NotificationProperty'] as { NotifyDelayAfter: number }).NotifyDelayAfter).toBe(7);
+    // Every coerced value must be a real number, not a string.
+    for (const key of ['MaxRetries', 'AllocatedCapacity', 'Timeout', 'MaxCapacity', 'NumberOfWorkers']) {
+      expect(typeof input[key]).toBe('number');
+    }
+  });
+
+  it('update: coerces string numerics inside JobUpdate', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    const properties = {
+      Name: 'myjob',
+      Role: 'arn:aws:iam::123456789012:role/glue',
+      Command: { Name: 'glueetl', ScriptLocation: 's3://bucket/script.py' },
+      Timeout: '120',
+      NumberOfWorkers: '8',
+    };
+
+    await provider.update('MyJob', 'myjob', 'AWS::Glue::Job', properties, properties);
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateJobCommand);
+    expect(call).toBeDefined();
+    const jobUpdate = (call![0].input as { JobUpdate: Record<string, unknown> }).JobUpdate;
+    expect(jobUpdate['Timeout']).toBe(120);
+    expect(jobUpdate['NumberOfWorkers']).toBe(8);
+    expect(typeof jobUpdate['Timeout']).toBe('number');
+  });
+
+  it('create: leaves already-numeric values untouched', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.create('MyJob', 'AWS::Glue::Job', {
+      Name: 'myjob',
+      Role: 'arn:aws:iam::123456789012:role/glue',
+      Command: { Name: 'glueetl' },
+      Timeout: 30,
+    });
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateJobCommand);
+    expect((call![0].input as Record<string, unknown>)['Timeout']).toBe(30);
+  });
+
+  it('create: leaves a non-finite / unparseable numeric value unchanged (so AWS surfaces a clear validation error, not NaN)', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.create('MyJob', 'AWS::Glue::Job', {
+      Name: 'myjob',
+      Role: 'arn:aws:iam::123456789012:role/glue',
+      Command: { Name: 'glueetl' },
+      Timeout: 'not-a-number',
+    });
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateJobCommand);
+    const timeout = (call![0].input as Record<string, unknown>)['Timeout'];
+    // coerceNumber must NOT turn an unparseable string into NaN — it leaves the
+    // original value so AWS rejects it with a real validation error.
+    expect(timeout).toBe('not-a-number');
+  });
+});
+
+// Bug 4: Glue Workflow Tags map shape + MaxConcurrentRuns coercion.
+describe('GlueWorkflowProvider tags + numeric', () => {
+  let provider: GlueWorkflowProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueWorkflowProvider();
+  });
+
+  it('create: tags from a MAP shape reach the SDK (not silently dropped)', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.create('MyWf', 'AWS::Glue::Workflow', {
+      Name: 'mywf',
+      Tags: { env: 'prod', team: 'data' },
+      MaxConcurrentRuns: '5',
+    });
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateWorkflowCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['Tags']).toEqual({ env: 'prod', team: 'data' });
+    expect(input['MaxConcurrentRuns']).toBe(5);
+    expect(typeof input['MaxConcurrentRuns']).toBe('number');
+  });
+
+  it('create: tags from a {Key,Value}[] list shape also reach the SDK', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.create('MyWf', 'AWS::Glue::Workflow', {
+      Name: 'mywf',
+      Tags: [{ Key: 'env', Value: 'prod' }],
+    });
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateWorkflowCommand);
+    expect((call![0].input as Record<string, unknown>)['Tags']).toEqual({ env: 'prod' });
+  });
+
+  it('create: no Tags key when there are no tags', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.create('MyWf', 'AWS::Glue::Workflow', { Name: 'mywf' });
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof CreateWorkflowCommand);
+    expect((call![0].input as Record<string, unknown>)['Tags']).toBeUndefined();
+  });
+});
+
+// Bug 2: Glue Crawler CrawlerRunningException handling.
+describe('GlueCrawlerProvider running-state handling', () => {
+  let provider: GlueCrawlerProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueCrawlerProvider();
+  });
+
+  function runningError(): CrawlerRunningException {
+    return new CrawlerRunningException({
+      $metadata: {},
+      message: 'Crawler is running',
+    });
+  }
+
+  it('delete: stops a running crawler and retries DeleteCrawler', async () => {
+    // 1st DeleteCrawler -> CrawlerRunningException
+    mockGlueSend.mockRejectedValueOnce(runningError());
+    // StopCrawler
+    mockGlueSend.mockResolvedValueOnce({});
+    // GetCrawler poll -> READY (loop exits without sleeping)
+    mockGlueSend.mockResolvedValueOnce({ Crawler: { State: 'READY' } });
+    // 2nd DeleteCrawler -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyCrawler', 'mycrawler', 'AWS::Glue::Crawler', {}, undefined);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(types).toContain('StopCrawlerCommand');
+    expect(types.filter((t) => t === 'DeleteCrawlerCommand')).toHaveLength(2);
+    const stopCall = mockGlueSend.mock.calls.find((c) => c[0] instanceof StopCrawlerCommand);
+    expect((stopCall![0].input as { Name: string }).Name).toBe('mycrawler');
+  });
+
+  it('update: stops a running crawler and retries UpdateCrawler', async () => {
+    // 1st UpdateCrawler -> CrawlerRunningException
+    mockGlueSend.mockRejectedValueOnce(runningError());
+    // StopCrawler
+    mockGlueSend.mockResolvedValueOnce({});
+    // GetCrawler poll -> READY
+    mockGlueSend.mockResolvedValueOnce({ Crawler: { State: 'READY' } });
+    // 2nd UpdateCrawler -> success
+    mockGlueSend.mockResolvedValueOnce({});
+    // applyTagDiff GetTags (no-op when tags empty) — provider only calls when diff non-empty
+    const props = { Role: 'arn:aws:iam::123456789012:role/glue', Targets: { S3Targets: [] } };
+
+    await provider.update('MyCrawler', 'mycrawler', 'AWS::Glue::Crawler', props, props);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(types).toContain('StopCrawlerCommand');
+    expect(types.filter((t) => t === 'UpdateCrawlerCommand')).toHaveLength(2);
+  });
+
+  it('delete: tolerates a StopCrawler rejection (already-stopping race) and still retries the delete', async () => {
+    // 1st DeleteCrawler -> CrawlerRunningException
+    mockGlueSend.mockRejectedValueOnce(runningError());
+    // StopCrawler -> rejects because the crawler is ALREADY stopping. The
+    // provider must swallow this (nothing to do but wait it out), not abort.
+    mockGlueSend.mockRejectedValueOnce(new Error('CrawlerStoppingException: already stopping'));
+    // GetCrawler poll -> READY (it finished stopping)
+    mockGlueSend.mockResolvedValueOnce({ Crawler: { State: 'READY' } });
+    // 2nd DeleteCrawler -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyCrawler', 'mycrawler', 'AWS::Glue::Crawler', {}, undefined);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(types).toContain('StopCrawlerCommand');
+    expect(types).toContain('GetCrawlerCommand');
+    expect(types.filter((t) => t === 'DeleteCrawlerCommand')).toHaveLength(2);
+  });
+});
+
+// Bug 3: Glue Trigger update state-machine (wait + restore-on-failure + stop-before-delete).
+describe('GlueTriggerProvider state-machine', () => {
+  let provider: GlueTriggerProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueTriggerProvider();
+  });
+
+  it('update: restores ACTIVATED via StartTrigger even when UpdateTrigger throws', async () => {
+    // GetTrigger pre-check -> ACTIVATED
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'ACTIVATED' } });
+    // StopTrigger
+    mockGlueSend.mockResolvedValueOnce({});
+    // waitForTriggerDeactivated: GetTrigger -> DEACTIVATED (exits without sleep)
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'DEACTIVATED' } });
+    // UpdateTrigger -> throws
+    mockGlueSend.mockRejectedValueOnce(new Error('update boom'));
+    // StartTrigger (in finally) -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    const props = { Schedule: 'cron(0 12 * * ? *)' };
+    await expect(
+      provider.update('MyTrig', 'mytrig', 'AWS::Glue::Trigger', props, props)
+    ).rejects.toThrow(/Failed to update Glue Trigger/);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    // The finally block must have run StartTrigger to re-activate the trigger.
+    expect(types).toContain('StartTriggerCommand');
+    expect(types.filter((t) => t === 'UpdateTriggerCommand')).toHaveLength(1);
+  });
+
+  it('update: waits for DEACTIVATED between StopTrigger and UpdateTrigger', async () => {
+    // GetTrigger pre-check -> ACTIVATED
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'ACTIVATED' } });
+    // StopTrigger
+    mockGlueSend.mockResolvedValueOnce({});
+    // waitForTriggerDeactivated: GetTrigger -> DEACTIVATED
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'DEACTIVATED' } });
+    // UpdateTrigger -> success
+    mockGlueSend.mockResolvedValueOnce({});
+    // StartTrigger -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    const props = { Schedule: 'cron(0 1 * * ? *)' };
+    await provider.update('MyTrig', 'mytrig', 'AWS::Glue::Trigger', props, props);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    const stopIdx = types.indexOf('StopTriggerCommand');
+    const updateIdx = types.indexOf('UpdateTriggerCommand');
+    const getBetween = types
+      .slice(stopIdx + 1, updateIdx)
+      .filter((t) => t === 'GetTriggerCommand');
+    // At least one GetTrigger poll happened between Stop and Update.
+    expect(getBetween.length).toBeGreaterThanOrEqual(1);
+    expect(types).toContain('StartTriggerCommand');
+  });
+
+  it('update: does not stop/restart a trigger that is already DEACTIVATED', async () => {
+    // GetTrigger pre-check -> DEACTIVATED
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'DEACTIVATED' } });
+    // UpdateTrigger -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    const props = { Schedule: 'cron(0 2 * * ? *)' };
+    await provider.update('MyTrig', 'mytrig', 'AWS::Glue::Trigger', props, props);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(types).not.toContain('StopTriggerCommand');
+    expect(types).not.toContain('StartTriggerCommand');
+  });
+
+  it('delete: stops an ACTIVATED trigger before DeleteTrigger', async () => {
+    // GetTrigger pre-delete check -> ACTIVATED
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'ACTIVATED' } });
+    // StopTrigger
+    mockGlueSend.mockResolvedValueOnce({});
+    // waitForTriggerDeactivated: GetTrigger -> DEACTIVATED
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'DEACTIVATED' } });
+    // DeleteTrigger -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTrig', 'mytrig', 'AWS::Glue::Trigger', {}, undefined);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    const stopIdx = types.indexOf('StopTriggerCommand');
+    const deleteIdx = types.indexOf('DeleteTriggerCommand');
+    expect(stopIdx).toBeGreaterThanOrEqual(0);
+    expect(deleteIdx).toBeGreaterThan(stopIdx);
+  });
+
+  it('delete: does not stop a trigger that is not ACTIVATED', async () => {
+    // GetTrigger pre-delete check -> DEACTIVATED
+    mockGlueSend.mockResolvedValueOnce({ Trigger: { State: 'DEACTIVATED' } });
+    // DeleteTrigger -> success
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTrig', 'mytrig', 'AWS::Glue::Trigger', {}, undefined);
+
+    const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(types).not.toContain('StopTriggerCommand');
+    expect(types).toContain('DeleteTriggerCommand');
   });
 });

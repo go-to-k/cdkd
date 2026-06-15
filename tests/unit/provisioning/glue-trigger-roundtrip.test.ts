@@ -139,10 +139,15 @@ describe('GlueTriggerProvider', () => {
   });
 
   it('update() with ACTIVATED trigger executes Stop -> Update -> Start (state preserved across update)', async () => {
-    // GetTrigger returns ACTIVATED — provider must Stop, Update, then Start.
+    // The pre-check GetTrigger returns ACTIVATED; after StopTrigger the provider
+    // polls GetTrigger until DEACTIVATED (StopTrigger is async), so subsequent
+    // reads must report DEACTIVATED or the wait loop would spin.
+    let getCount = 0;
     mockSend.mockImplementation((cmd) => {
       if (cmd instanceof GetTriggerCommand) {
-        return Promise.resolve({ Trigger: { Name: 'my-trigger', State: 'ACTIVATED' } });
+        getCount += 1;
+        const state = getCount === 1 ? 'ACTIVATED' : 'DEACTIVATED';
+        return Promise.resolve({ Trigger: { Name: 'my-trigger', State: state } });
       }
       return Promise.resolve({});
     });
@@ -282,9 +287,20 @@ describe('GlueTriggerProvider', () => {
 
   it('delete() treats EntityNotFoundException as idempotent when region matches', async () => {
     const { EntityNotFoundException } = await import('@aws-sdk/client-glue');
-    mockSend.mockRejectedValueOnce(
-      new EntityNotFoundException({ message: 'not found', $metadata: {} })
-    );
+    // The pre-delete GetTrigger check returns a non-ACTIVATED trigger (no stop),
+    // then DeleteTrigger throws EntityNotFoundException — which delete() must
+    // treat as idempotent success.
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof GetTriggerCommand) {
+        return Promise.resolve({ Trigger: { Name: 'my-trigger', State: 'DEACTIVATED' } });
+      }
+      if (cmd instanceof DeleteTriggerCommand) {
+        return Promise.reject(
+          new EntityNotFoundException({ message: 'not found', $metadata: {} })
+        );
+      }
+      return Promise.resolve({});
+    });
 
     await expect(
       provider.delete('L', 'my-trigger', 'AWS::Glue::Trigger', undefined, {

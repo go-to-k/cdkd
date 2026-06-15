@@ -49,6 +49,15 @@ describe('isRetryableTransientError', () => {
         'Firehose is unable to assume role arn:aws:iam::111:role/FirehoseDeliveryRole. Please check the role provided.',
         'Firehose IAM propagation',
       ],
+      // Glue Crawler / Job / Trigger same-stack role IAM-propagation race:
+      // the Glue create is issued before the just-created role's trust policy
+      // propagates to Glue's assume layer (surfaced by glue-update-hardening
+      // integ on a fresh Crawler role CREATE). Note the capital-T "TrustPolicy"
+      // is NOT matched by the lower-case 'trust policy' pattern.
+      [
+        'Service is unable to assume provided role. Please verify role\'s TrustPolicy.',
+        'Glue assume-role IAM propagation',
+      ],
       ['The execution role you provided does not have permission', 'execution role'],
       ['Role validation failed', 'Role validation failed'],
       // CW Logs SubscriptionFilter (the bug we are fixing)
@@ -220,6 +229,20 @@ describe('isRetryableTransientError', () => {
       expect(
         isRetryableTransientError(new Error(genericValidation), genericValidation)
       ).toBe(false);
+    });
+
+    it('does not retry a Glue error that lacks the assume-role propagation phrase', () => {
+      // Guard the Glue boundary: the just-created-role propagation pattern is
+      // anchored on "is unable to assume provided role", so an unrelated Glue
+      // failure (a genuinely malformed job, a missing database) stays
+      // non-retryable and fails fast rather than burning the bounded retries.
+      const malformedJob =
+        'InvalidInputException: Command name should be glueetl or pythonshell';
+      expect(isRetryableTransientError(new Error(malformedJob), malformedJob)).toBe(false);
+
+      const missingDb =
+        'EntityNotFoundException: Database glueupdatehardeningstack-db not found';
+      expect(isRetryableTransientError(new Error(missingDb), missingDb)).toBe(false);
     });
   });
 

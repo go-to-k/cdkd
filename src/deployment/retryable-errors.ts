@@ -16,6 +16,19 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // because of explicit deny" from a different service won't false-
   // positive into the retry loop.
   'Firehose is unable to assume role',
+  // Glue Crawler / Job / Trigger create validates that the Glue service can
+  // assume the same-stack IAM role at create time. cdkd's fast SDK path issues
+  // the Crawler create only ~1s after the role's CREATE, before IAM finishes
+  // propagating the role's trust policy to Glue's assume layer, so AWS rejects
+  // it with "Service is unable to assume provided role. Please verify role's
+  // TrustPolicy". CloudFormation never hits this (its deployment latency lets
+  // IAM settle) but cdkd does. Anchored on the Glue-specific "is unable to
+  // assume provided role" wording (the existing 'trust policy' pattern is
+  // lower-case + spaced and does NOT match Glue's "TrustPolicy"; 'cannot be
+  // assumed' is a different service's phrasing) so a genuinely mis-configured /
+  // deleted role only burns the bounded retries before surfacing. Surfaced by
+  // tests/integration/glue-update-hardening.
+  'is unable to assume provided role',
   'role defined for the function',
   'not authorized to perform',
   'execution role',

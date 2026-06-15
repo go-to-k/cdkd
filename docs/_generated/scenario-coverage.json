@@ -636,6 +636,11 @@
       ]
     },
     {
+      "name": "glue-update-hardening",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "iam-managed-policy",
       "annotated": false,
       "scenarios": []
