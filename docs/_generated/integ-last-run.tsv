@@ -14,7 +14,6 @@ eventbridge	2026-06-01T21:12:13Z	PASS	67	verify.sh	rc ok, orph clean
 migrate-from-cfn	2026-06-01T21:12:13Z	PASS	89	standard	rc ok, orph clean
 nested-stack-deep	2026-06-01T21:12:13Z	PASS	48	verify.sh	rc ok, orph clean
 apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
-import-value-strong-ref	2026-06-02T02:13:34Z	PASS		verify.sh	F3 fixed: version-agnostic schema assertion (>= 4); deploy+strong-ref+destroy clean
 vpc-lambda-cr-race	2026-06-02T07:34:17Z	PASS		standard	coverage batch: VPC+Lambda+CR; withRetry handled role-assume propagation, deploy ok, 9 deleted 0 errors 0 orphans
 event-driven	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 19 deleted 0 errors 0 orphans
 deletion-policy-retain	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: all retain checks passed, AWS clean
@@ -107,7 +106,6 @@ kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 
 sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
 vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
 microservices	2026-06-13T06:25:57Z	PASS	34	standard	#816 SIGINT handler; normal destroy unaffected; 19 deleted 0 err 0 orphan
-lambda	2026-06-13T04:41:51Z	PASS	76	verify.sh	#808 broad integ + cdkd events live-tested (deploy+destroy runs persisted); 9 deleted 0 err
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfiguration camelCase reached AWS; 23 deleted 0 err
 cross-region-state-bucket	2026-06-13T07:10:46Z	PASS	34	verify.sh	#827 shared bucket-region helper; behavior preserved; 1 deleted 0 err, temp bucket cleaned
@@ -136,5 +134,7 @@ s3-vectors	2026-06-14T13:39:25Z	PASS	60	verify.sh	Tags backfill + in-place Tags 
 dynamodb-ondemand	2026-06-14T14:54:16Z	PASS	120	verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE + backfills; 0 orphans
 glue-update-hardening	2026-06-15T01:57:37Z	PASS		verify.sh	rc ok, orph clean (re-run after review fix; deploy+update+destroy clean)
 s3-cloudfront	2026-06-15T04:27:23Z	PASS		verify.sh	rc ok, orph clean (#873 OriginGroups drift clean + distribution/bucket-policy clean; clean destroy)
-outputs-only-export	2026-06-15T05:10:33Z	PASS		verify.sh	rc ok, orph clean; #875 no-op-deploy export persist
 multi-stack-deps	2026-06-15T05:18:06Z	PASS		standard	rc ok, orph clean; #875 broad gate
+outputs-only-export	2026-06-15T05:44:20Z	PASS		verify.sh	rc ok, orph clean; #875 nits PR
+lambda	2026-06-15T05:46:21Z	PASS		verify.sh	rc ok, orph clean; #875 nits broad gate
+import-value-strong-ref	2026-06-15T05:48:41Z	PASS		verify.sh	rc ok, orph clean; hygiene (was 13d)
