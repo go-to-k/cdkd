@@ -16,6 +16,7 @@ import {
   type Tag,
   type StateMachineType,
 } from '@aws-sdk/client-sfn';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -39,6 +40,7 @@ import type {
  */
 export class StepFunctionsProvider implements ResourceProvider {
   private sfnClient?: SFNClient;
+  private s3Client?: S3Client;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('StepFunctionsProvider');
 
@@ -54,6 +56,7 @@ export class StepFunctionsProvider implements ResourceProvider {
         'Tags',
         'DefinitionString',
         'Definition',
+        'DefinitionS3Location',
         'DefinitionSubstitutions',
         'EncryptionConfiguration',
       ]),
@@ -65,6 +68,13 @@ export class StepFunctionsProvider implements ResourceProvider {
       this.sfnClient = new SFNClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.sfnClient;
+  }
+
+  private getS3Client(): S3Client {
+    if (!this.s3Client) {
+      this.s3Client = new S3Client(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.s3Client;
   }
 
   /**
@@ -91,8 +101,10 @@ export class StepFunctionsProvider implements ResourceProvider {
     }
 
     try {
-      // Build definition string - handle both string and object forms
-      const definitionString = this.buildDefinitionString(properties);
+      // Build definition string - handle inline string/object forms AND the
+      // S3-sourced form (DefinitionS3Location). The S3 path fetches the
+      // object and applies DefinitionSubstitutions, so this is async.
+      const definitionString = await this.buildDefinitionString(properties);
 
       // Build tags: CDK uses [{Key, Value}], SFN SDK uses [{key, value}]
       let tags: Tag[] | undefined;
@@ -171,7 +183,7 @@ export class StepFunctionsProvider implements ResourceProvider {
     this.logger.debug(`Updating Step Functions state machine ${logicalId}: ${physicalId}`);
 
     try {
-      const definitionString = this.buildDefinitionString(properties);
+      const definitionString = await this.buildDefinitionString(properties);
 
       // Translate every CFn-PascalCase nested object to the SDK's
       // camelCase shape (see helpers below). All three mappers also fold
@@ -502,10 +514,22 @@ export class StepFunctionsProvider implements ResourceProvider {
   }
 
   /**
-   * Build definition string from CDK properties.
-   * Handles both DefinitionString (string) and DefinitionString (object) forms.
+   * Build the state-machine definition string from CDK properties.
+   *
+   * Precedence (mirrors CloudFormation): an inline `DefinitionString` /
+   * `Definition` wins over `DefinitionS3Location`. The inline forms are
+   * returned verbatim — any `DefinitionSubstitutions` they need are already
+   * folded into the template as `Fn::Sub` and resolved by cdkd's intrinsic
+   * resolver before the provider sees them.
+   *
+   * `DefinitionS3Location` ({@link https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-stepfunctions-statemachine-s3location.html S3Location})
+   * has no SDK `CreateStateMachine` field — CloudFormation reads the S3 object
+   * and inlines its contents as the `definition`. cdkd does the same: fetch
+   * the object body, then apply `DefinitionSubstitutions` ourselves because
+   * the intrinsic resolver cannot reach into S3 content (unlike the inline
+   * path, where substitutions arrive pre-resolved).
    */
-  private buildDefinitionString(properties: Record<string, unknown>): string {
+  private async buildDefinitionString(properties: Record<string, unknown>): Promise<string> {
     const definitionString = properties['DefinitionString'];
     const definition = properties['Definition'];
 
@@ -524,9 +548,76 @@ export class StepFunctionsProvider implements ResourceProvider {
       return JSON.stringify(definition);
     }
 
+    const s3Location = properties['DefinitionS3Location'] as
+      | { Bucket?: string; Key?: string; Version?: string }
+      | undefined;
+    if (s3Location?.Bucket && s3Location.Key) {
+      const body = await this.fetchDefinitionFromS3(
+        s3Location.Bucket,
+        s3Location.Key,
+        s3Location.Version
+      );
+      return this.applyDefinitionSubstitutions(body, properties['DefinitionSubstitutions']);
+    }
+
     // Empty definition - SFN API will reject this, but let it through
     // for consistent error reporting from the API
     return '{}';
+  }
+
+  /**
+   * Fetch a state-machine definition (Amazon States Language JSON/YAML) from
+   * S3 and return its body as a UTF-8 string. Honors an optional object
+   * version for versioning-enabled buckets.
+   */
+  private async fetchDefinitionFromS3(
+    bucket: string,
+    key: string,
+    version?: string
+  ): Promise<string> {
+    this.logger.debug(
+      `Fetching state-machine definition from s3://${bucket}/${key}${version ? `?versionId=${version}` : ''}`
+    );
+    const resp = await this.getS3Client().send(
+      new GetObjectCommand({ Bucket: bucket, Key: key, ...(version && { VersionId: version }) })
+    );
+    if (!resp.Body) {
+      throw new Error(`DefinitionS3Location object s3://${bucket}/${key} returned no body`);
+    }
+    const body = await resp.Body.transformToString();
+    if (body.length === 0) {
+      // A zero-byte object has a present Body whose transformToString() is ''.
+      // Fail here with a clear message rather than send '' to CreateStateMachine
+      // (which AWS rejects with a generic validation error).
+      throw new Error(`DefinitionS3Location object s3://${bucket}/${key} returned an empty body`);
+    }
+    return body;
+  }
+
+  /**
+   * Apply CloudFormation `DefinitionSubstitutions` (a `{ name: value }` map) to
+   * a definition body by replacing each `${name}` token with its value.
+   * Returns the body unchanged when no substitutions are supplied.
+   */
+  private applyDefinitionSubstitutions(body: string, substitutions: unknown): string {
+    if (
+      substitutions === null ||
+      typeof substitutions !== 'object' ||
+      Array.isArray(substitutions)
+    ) {
+      return body;
+    }
+    let result = body;
+    for (const [name, value] of Object.entries(substitutions as Record<string, unknown>)) {
+      // Substitution values are scalars (CFn resolves intrinsics before
+      // passing them in). Coerce to string; objects/arrays are not valid
+      // substitution values, so skip them rather than emit "[object Object]".
+      if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+        continue;
+      }
+      result = result.split(`\${${name}}`).join(String(value));
+    }
+    return result;
   }
 }
 

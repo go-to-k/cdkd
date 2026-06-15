@@ -1231,6 +1231,11 @@
       "scenarios": []
     },
     {
+      "name": "stepfunctions-s3-definition",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "tags-propagation",
       "annotated": true,
       "scenarios": [
@@ -1855,6 +1860,7 @@
     "recreate-via-sdk-provider",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
-    "servicediscovery"
+    "servicediscovery",
+    "stepfunctions-s3-definition"
   ]
 }

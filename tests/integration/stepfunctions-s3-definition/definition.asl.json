@@ -1,0 +1,12 @@
+{
+  "Comment": "cdkd DefinitionS3Location integ - definition sourced from S3, with a ${Greeting} substitution applied at deploy time.",
+  "StartAt": "Greet",
+  "States": {
+    "Greet": {
+      "Type": "Pass",
+      "Result": "${Greeting}",
+      "ResultPath": "$.greeting",
+      "End": true
+    }
+  }
+}

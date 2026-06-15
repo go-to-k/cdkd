@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
+const mockS3Send = vi.fn();
 
 // Mock the SFN client module (local client, not from getAwsClients)
 vi.mock('@aws-sdk/client-sfn', async () => {
@@ -11,6 +12,15 @@ vi.mock('@aws-sdk/client-sfn', async () => {
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
+  };
+});
+
+// Mock the S3 client module (local client used for DefinitionS3Location fetch)
+vi.mock('@aws-sdk/client-s3', async () => {
+  const actual = await vi.importActual('@aws-sdk/client-s3');
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send })),
   };
 });
 
@@ -423,6 +433,149 @@ describe('StepFunctionsProvider', () => {
 
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
+    });
+  });
+
+  describe('DefinitionS3Location (create)', () => {
+    const CREATE_ARN = 'arn:aws:states:us-east-1:123456789012:stateMachine:s3-sm';
+
+    const mockCreateOk = (): void => {
+      mockSend.mockResolvedValueOnce({
+        stateMachineArn: CREATE_ARN,
+        stateMachineVersionArn: `${CREATE_ARN}:1`,
+      });
+    };
+
+    const mockS3Body = (body: string): void => {
+      mockS3Send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(body) },
+      });
+    };
+
+    it('fetches the definition from S3 and passes it as the SDK definition', async () => {
+      const asl = '{"StartAt":"Hello","States":{"Hello":{"Type":"Pass","End":true}}}';
+      mockS3Body(asl);
+      mockCreateOk();
+
+      await provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+        RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+        DefinitionS3Location: { Bucket: 'my-bucket', Key: 'def.asl.json' },
+      });
+
+      // GetObject was issued for the right object (no VersionId).
+      expect(mockS3Send).toHaveBeenCalledTimes(1);
+      expect(mockS3Send.mock.calls[0][0].input).toEqual({
+        Bucket: 'my-bucket',
+        Key: 'def.asl.json',
+      });
+      // The fetched body became the CreateStateMachine definition.
+      const createInput = mockSend.mock.calls[0][0].input;
+      expect(createInput.definition).toBe(asl);
+    });
+
+    it('passes VersionId through when DefinitionS3Location.Version is set', async () => {
+      mockS3Body('{"StartAt":"X","States":{"X":{"Type":"Pass","End":true}}}');
+      mockCreateOk();
+
+      await provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+        RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+        DefinitionS3Location: { Bucket: 'b', Key: 'k', Version: 'v-42' },
+      });
+
+      expect(mockS3Send.mock.calls[0][0].input).toEqual({
+        Bucket: 'b',
+        Key: 'k',
+        VersionId: 'v-42',
+      });
+    });
+
+    it('applies DefinitionSubstitutions to the fetched S3 body', async () => {
+      // The intrinsic resolver cannot reach S3 content, so the provider
+      // applies ${name} substitutions itself (CloudFormation parity).
+      mockS3Body(
+        '{"StartAt":"Call","States":{"Call":{"Type":"Task","Resource":"${TableArn}","TimeoutSeconds":${Timeout},"End":true}}}'
+      );
+      mockCreateOk();
+
+      await provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+        RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+        DefinitionS3Location: { Bucket: 'b', Key: 'k' },
+        DefinitionSubstitutions: {
+          TableArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/T',
+          Timeout: 30,
+        },
+      });
+
+      const def = mockSend.mock.calls[0][0].input.definition as string;
+      expect(def).toContain('"Resource":"arn:aws:dynamodb:us-east-1:123456789012:table/T"');
+      expect(def).toContain('"TimeoutSeconds":30');
+      expect(def).not.toContain('${TableArn}');
+      expect(def).not.toContain('${Timeout}');
+    });
+
+    it('skips a non-scalar DefinitionSubstitutions value (leaves the token untouched)', async () => {
+      // Substitution values are scalars (CFn resolves intrinsics before passing
+      // them in). A non-scalar value is malformed; it must be skipped, never
+      // String()'d into "[object Object]". The token stays literal.
+      mockS3Body(
+        '{"StartAt":"Call","States":{"Call":{"Type":"Task","Resource":"${Good}","Comment":"${Bad}","End":true}}}'
+      );
+      mockCreateOk();
+
+      await provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+        RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+        DefinitionS3Location: { Bucket: 'b', Key: 'k' },
+        DefinitionSubstitutions: { Good: 'resolved', Bad: { nested: 1 } },
+      });
+
+      const def = mockSend.mock.calls[0][0].input.definition as string;
+      expect(def).toContain('"Resource":"resolved"');
+      // The non-scalar substitution was skipped — token left untouched, no "[object Object]".
+      expect(def).toContain('"Comment":"${Bad}"');
+      expect(def).not.toContain('[object Object]');
+    });
+
+    it('prefers an inline DefinitionString over DefinitionS3Location (no S3 fetch)', async () => {
+      mockCreateOk();
+      const inline = '{"StartAt":"Inline","States":{"Inline":{"Type":"Pass","End":true}}}';
+
+      await provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+        RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+        DefinitionString: inline,
+        DefinitionS3Location: { Bucket: 'b', Key: 'k' },
+      });
+
+      expect(mockS3Send).not.toHaveBeenCalled();
+      expect(mockSend.mock.calls[0][0].input.definition).toBe(inline);
+    });
+
+    it('throws (and does not create) when the S3 object has no body', async () => {
+      mockS3Send.mockResolvedValueOnce({ Body: undefined });
+
+      await expect(
+        provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+          RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+          DefinitionS3Location: { Bucket: 'b', Key: 'k' },
+        })
+      ).rejects.toThrow(/no body/);
+
+      // CreateStateMachine was never reached.
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('throws (and does not create) when the S3 object body is a zero-byte string', async () => {
+      // A present Body whose transformToString() yields '' must be caught here,
+      // not sent as an empty definition to CreateStateMachine.
+      mockS3Body('');
+
+      await expect(
+        provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+          RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+          DefinitionS3Location: { Bucket: 'b', Key: 'k' },
+        })
+      ).rejects.toThrow(/empty body/);
+
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

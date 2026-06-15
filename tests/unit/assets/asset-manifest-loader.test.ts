@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { getDockerImageBySourceHash } from '../../../src/assets/asset-manifest-loader.js';
-import type { AssetManifest, DockerImageAsset } from '../../../src/types/assets.js';
+import {
+  AssetManifestLoader,
+  getDockerImageBySourceHash,
+  isCfnTemplateAssetPath,
+} from '../../../src/assets/asset-manifest-loader.js';
+import type { AssetManifest, DockerImageAsset, FileAsset } from '../../../src/types/assets.js';
 
 const buildManifest = (
   dockerImages: Record<string, DockerImageAsset>
@@ -83,5 +87,44 @@ describe('getDockerImageBySourceHash', () => {
       'r@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
     );
     expect(result).toBeUndefined();
+  });
+});
+
+describe('isCfnTemplateAssetPath', () => {
+  it('matches top-level and nested CloudFormation template asset paths only', () => {
+    expect(isCfnTemplateAssetPath('MyStack.template.json')).toBe(true);
+    expect(isCfnTemplateAssetPath('MyStack.MyNested.nested.template.json')).toBe(true);
+    // A legitimate user `.json` file asset is NOT a template.
+    expect(isCfnTemplateAssetPath('asset.57e7c7fe.json')).toBe(false);
+    expect(isCfnTemplateAssetPath('asset.handler/index.js')).toBe(false);
+  });
+});
+
+describe('getFileAssets', () => {
+  const fileAsset = (path: string): FileAsset => ({
+    displayName: path,
+    source: { path, packaging: path.endsWith('.json') ? 'file' : 'zip' },
+    destinations: {},
+  });
+
+  it('publishes non-template .json file assets while excluding template assets', () => {
+    const loader = new AssetManifestLoader();
+    const manifest: AssetManifest = {
+      version: '52.0.0',
+      dockerImages: {},
+      files: {
+        tmpl: fileAsset('MyStack.template.json'),
+        nested: fileAsset('MyStack.MyNested.nested.template.json'),
+        // A Step Functions DefinitionS3Location ASL document — MUST be published.
+        asl: fileAsset('asset.aslhash.json'),
+        lambda: fileAsset('asset.lambda/index.js'),
+      },
+    };
+
+    const result = loader.getFileAssets(manifest);
+
+    expect(new Set(result.keys())).toEqual(new Set(['asl', 'lambda']));
+    expect(result.has('tmpl')).toBe(false);
+    expect(result.has('nested')).toBe(false);
   });
 });
