@@ -1,3 +1,10 @@
+# [0.223.0](https://github.com/go-to-k/cdkd/compare/v0.222.1...v0.223.0) (2026-06-15)
+
+
+### Features
+
+* **provisioning:** CloudFrontDistributionProvider.readCurrentState + getDriftUnknownPaths ([#871](https://github.com/go-to-k/cdkd/issues/871)) ([7cdf202](https://github.com/go-to-k/cdkd/commit/7cdf202cb1472c98130cbc6ea06493f76ad04957))
+
 ## [0.222.1](https://github.com/go-to-k/cdkd/compare/v0.222.0...v0.222.1) (2026-06-15)
 
 
