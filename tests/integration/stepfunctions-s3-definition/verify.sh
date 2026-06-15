@@ -132,11 +132,22 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --yes
 
-if aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: state machine ${SM_ARN} still exists after destroy" >&2
-  exit 1
-fi
-echo "    OK: state machine is gone"
+# Step Functions DeleteStateMachine is ASYNC: the state machine enters DELETING
+# status and `describe-state-machine` keeps returning it (status DELETING) until
+# the async deletion completes, so a successful describe is NOT a failure here —
+# only a still-ACTIVE status would be. Accept GONE (describe errors) / DELETING /
+# DELETED; the DELETING machine finishes deleting on its own.
+SM_STATUS=$(aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" \
+  --region "${REGION}" --query 'status' --output text 2>/dev/null || echo "GONE")
+case "${SM_STATUS}" in
+  GONE | DELETING | DELETED)
+    echo "    OK: state machine is deleted or async-deleting (status=${SM_STATUS})"
+    ;;
+  *)
+    echo "FAIL: state machine ${SM_ARN} is still '${SM_STATUS}' after destroy" >&2
+    exit 1
+    ;;
+esac
 
 if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
   echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2

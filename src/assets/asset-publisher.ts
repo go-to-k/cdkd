@@ -92,9 +92,16 @@ export class AssetPublisher {
     const nodeIds: string[] = [];
 
     // File assets: single publish node
+    // Exclude ONLY the CloudFormation template asset(s). The template's source
+    // path is always `<Stack>.template.json` (and nested-stack templates
+    // `<Stack>.nested.template.json`), so `.template.json` is the reliable
+    // discriminator — cdkd deploys templates itself and never needs them in
+    // the bootstrap bucket. A plain `.json` exclusion is WRONG: a legitimate
+    // user file asset can be a `.json` file (e.g. a Step Functions
+    // `DefinitionS3Location` ASL document, or an app config), whose source path
+    // is `asset.<hash>.json` — those MUST be published.
     const fileAssets = Object.entries(manifest.files || {}).filter(
-      ([, asset]) =>
-        !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
+      ([, asset]) => !asset.source.path.endsWith('.template.json')
     );
     for (const [hash, asset] of fileAssets) {
       const nodeId = `asset-publish:${prefix}file:${hash}`;

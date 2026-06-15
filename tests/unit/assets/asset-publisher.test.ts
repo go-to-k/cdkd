@@ -148,7 +148,7 @@ describe('AssetPublisher', () => {
     );
   });
 
-  it('should skip CloudFormation template assets', async () => {
+  it('should skip CloudFormation template assets (top-level and nested) but publish other file assets', async () => {
     const manifest = makeManifest({
       files: {
         'template-hash': {
@@ -161,13 +161,27 @@ describe('AssetPublisher', () => {
             },
           },
         },
-        'template-hash2': {
-          displayName: 'CFnTemplate2',
-          source: { path: 'output.json', packaging: 'file' },
+        'nested-template-hash': {
+          displayName: 'NestedCFnTemplate',
+          // Nested-stack template — also `.template.json`, also skipped.
+          source: { path: 'MyStack.MyNested.nested.template.json', packaging: 'file' },
           destinations: {
             current: {
               bucketName: 'cdk-assets-bucket',
-              objectKey: 'output.json',
+              objectKey: 'nested.template.json',
+            },
+          },
+        },
+        // A legitimate user `.json` file asset (e.g. a Step Functions
+        // DefinitionS3Location ASL document). It is NOT a template, so it MUST
+        // be published — a plain `.json` exclusion would wrongly drop it.
+        'asl-hash': {
+          displayName: 'StateMachineDefinition',
+          source: { path: 'asset.aslhash.json', packaging: 'file' },
+          destinations: {
+            current: {
+              bucketName: 'cdk-assets-bucket',
+              objectKey: 'aslhash.json',
             },
           },
         },
@@ -191,16 +205,14 @@ describe('AssetPublisher', () => {
       region: 'us-east-1',
     });
 
-    // Only the lambda asset should be published; .json and .template.json skipped
-    expect(mockFilePublish).toHaveBeenCalledTimes(1);
-    expect(mockFilePublish).toHaveBeenCalledWith(
-      'lambda-hash',
-      expect.objectContaining({ displayName: 'LambdaCode' }),
-      '/tmp/cdk.out',
-      '123456789012',
-      'us-east-1',
-      undefined
-    );
+    // The two `.template.json` assets are skipped; the ASL `.json` asset AND
+    // the lambda zip are published.
+    expect(mockFilePublish).toHaveBeenCalledTimes(2);
+    const publishedHashes = mockFilePublish.mock.calls.map((c) => c[0]);
+    expect(publishedHashes).toContain('lambda-hash');
+    expect(publishedHashes).toContain('asl-hash');
+    expect(publishedHashes).not.toContain('template-hash');
+    expect(publishedHashes).not.toContain('nested-template-hash');
   });
 
   it('should resolve account ID from STS if not provided', async () => {
