@@ -107,25 +107,39 @@ fi
 echo "    OK: tag cdkd-test-env=integ-env present on distribution"
 echo "    OK: CloudFront::Distribution Tags silent-drop CLOSED by #609"
 
-# --- Assertion: cdkd drift is clean on a freshly-deployed distribution ---
+# --- Assertion: cdkd drift is clean on the freshly-deployed DISTRIBUTION ---
 # Exercises CloudFrontDistributionProvider.readCurrentState +
 # getDriftUnknownPaths (this PR). Before this PR the type fell back to the
 # CC-API GetResource path, whose deeply-nested DistributionConfig shape
 # (AWS-injected Quantity wrappers / defaults) diverged from cdkd state and
 # surfaced phantom drift. The new readCurrentState inverts convertToSdkFormat
-# so a no-change distribution reports NO drift (exit 0).
-echo "==> Asserting cdkd drift reports NO false-positive on a fresh distribution"
+# so a no-change distribution reports NO drift.
+#
+# The assertion is SCOPED to the AWS::CloudFront::Distribution resource (via
+# --json + jq) rather than whole-stack-clean, because the fixture's S3
+# BucketPolicy granting the OAI carries a SEPARATE, pre-existing latent
+# false-positive: cdkd stores the OAI principal as the S3 canonical user id at
+# deploy time but GetBucketPolicy returns it as
+# `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity <id>`, so the
+# two equivalent principal forms compare unequal. That is an S3 BucketPolicy
+# provider gap unrelated to this PR (tracked separately); asserting only the
+# distribution keeps this PR's drift test honest about what it actually fixes.
+echo "==> Asserting cdkd drift reports NO false-positive on the fresh DISTRIBUTION"
 set +e
-node "${LOCAL_DIST}" drift "${STACK}" \
+DRIFT_JSON=$(node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}"
-DRIFT_RC=$?
+  --region "${REGION}" \
+  --json 2>/dev/null)
 set -e
-if [ "${DRIFT_RC}" -ne 0 ]; then
-  echo "FAIL: cdkd drift exited ${DRIFT_RC} on a freshly-deployed distribution (expected 0 / no drift)" >&2
+# The distribution must be in the `clean` bucket and NOT in `drifted`.
+DIST_CLEAN=$(echo "${DRIFT_JSON}" | jq '[.[].clean[] | select(.type == "AWS::CloudFront::Distribution")] | length')
+DIST_DRIFTED=$(echo "${DRIFT_JSON}" | jq '[.[].drifted[] | select(.type == "AWS::CloudFront::Distribution")] | length')
+if [ "${DIST_CLEAN}" != "1" ] || [ "${DIST_DRIFTED}" != "0" ]; then
+  echo "FAIL: CloudFront::Distribution drift not clean on a fresh deploy (clean=${DIST_CLEAN}, drifted=${DIST_DRIFTED})" >&2
+  echo "${DRIFT_JSON}" | jq '.[].drifted[] | select(.type == "AWS::CloudFront::Distribution")' >&2
   exit 1
 fi
-echo "    OK: cdkd drift clean (exit 0) on fresh distribution — no phantom drift"
+echo "    OK: CloudFront::Distribution reports clean on a fresh deploy — no phantom drift"
 
 # --- Assertion: cdkd drift DETECTS an out-of-band console-style change ---
 # Mutate the distribution Comment via update-distribution (the console path)
@@ -142,21 +156,21 @@ aws cloudfront update-distribution --id "${DIST_ID}" --region "${REGION}" \
   --distribution-config "file:///tmp/cdkd-cf-drift-conf.json" >/dev/null
 
 set +e
-DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" \
+DRIFT_JSON=$(node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" 2>&1)
-DRIFT_RC=$?
+  --region "${REGION}" \
+  --json 2>/dev/null)
 set -e
-echo "${DRIFT_OUT}"
-if [ "${DRIFT_RC}" -ne 1 ]; then
-  echo "FAIL: cdkd drift exited ${DRIFT_RC} after an out-of-band Comment change (expected 1 / drift detected)" >&2
+# Scope the assertion to the distribution: it must now be in `drifted` with a
+# Comment change. (The exit code is 1 once ANYTHING drifts, so we assert on the
+# per-resource JSON instead of the exit code to stay distribution-scoped.)
+DIST_COMMENT_DRIFT=$(echo "${DRIFT_JSON}" | jq '[.[].drifted[] | select(.type == "AWS::CloudFront::Distribution") | .changes[] | select(.path | test("Comment"))] | length')
+if [ "${DIST_COMMENT_DRIFT}" -lt 1 ]; then
+  echo "FAIL: cdkd drift did not detect the out-of-band Comment change on the distribution" >&2
+  echo "${DRIFT_JSON}" | jq '.[].drifted[] | select(.type == "AWS::CloudFront::Distribution")' >&2
   exit 1
 fi
-if ! echo "${DRIFT_OUT}" | grep -qi "Comment"; then
-  echo "FAIL: cdkd drift detected drift but did not name the changed 'Comment' key" >&2
-  exit 1
-fi
-echo "    OK: cdkd drift detected the out-of-band Comment change (exit 1)"
+echo "    OK: cdkd drift detected the out-of-band Comment change on the distribution"
 
 # Revert the out-of-band change so the disable+delete in Phase 2 starts from
 # the cdkd-managed config (avoids an extra propagation cycle on a drifted config).
