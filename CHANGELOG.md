@@ -1,3 +1,10 @@
+# [0.225.0](https://github.com/go-to-k/cdkd/compare/v0.224.0...v0.225.0) (2026-06-15)
+
+
+### Features
+
+* **provisioning:** backfill AWS::ApiGatewayV2::Authorizer AuthorizerCredentialsArn ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#880](https://github.com/go-to-k/cdkd/issues/880)) ([68567a9](https://github.com/go-to-k/cdkd/commit/68567a97a5a2b4e058241b2a72822e2015a8cf59))
+
 # [0.224.0](https://github.com/go-to-k/cdkd/compare/v0.223.4...v0.224.0) (2026-06-15)
 
 
