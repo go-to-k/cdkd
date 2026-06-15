@@ -310,6 +310,38 @@ export function deriveLabelRouting(
   }
 }
 
+/**
+ * Structural equality for resolved Outputs maps (issue #875).
+ *
+ * Output values are intrinsic-resolved primitives or nested objects/arrays
+ * and key order is irrelevant. Used by the no-change deploy path to decide
+ * whether an Outputs-only change (a new Export added because a downstream
+ * stack now references this one, with no resource diff) must be persisted.
+ */
+function outputMapsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  return deepEqualValue(a, b);
+}
+
+function deepEqualValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return a === b;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== 'object') return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => deepEqualValue(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao);
+  if (ak.length !== Object.keys(bo).length) return false;
+  for (const k of ak) {
+    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
+    if (!deepEqualValue(ao[k], bo[k])) return false;
+  }
+  return true;
+}
+
 export class DeployEngine {
   private logger = getLogger().child('DeployEngine');
   private resolver: IntrinsicFunctionResolver;
@@ -792,50 +824,98 @@ export class DeployEngine {
       if (!hasChanges) {
         this.logger.info('No changes detected. Stack is up to date.');
 
-        // No-change path: if the auto-refresh kicked off any
-        // readCurrentState calls (e.g. v2 → v3 schema upgrade on a
-        // stack with nothing to deploy), drain them and persist the
-        // refreshed observed-properties baseline so the next `cdkd
-        // drift` run sees a real AWS-current snapshot. Skipped in
-        // dry-run / when nothing was kicked off (drainObservedCaptures
-        // short-circuits on empty map).
-        if (!this.options.dryRun && this.observedCaptureTasks.size > 0) {
-          await this.drainObservedCaptures(currentState.resources);
-          try {
-            const refreshedState: StackState = {
-              version: STATE_SCHEMA_VERSION_CURRENT,
-              region: this.stackRegion,
-              stackName: currentState.stackName,
-              resources: currentState.resources,
-              outputs: currentState.outputs,
-              // Preserve existing imports[] (no-change path: nothing
-              // re-resolved). Otherwise the refresh would silently
-              // strip the strong-reference record on every diff-clean
-              // deploy. Same logic applies to outputReads[] (v8+).
-              ...(currentState.imports &&
-                currentState.imports.length > 0 && {
-                  imports: currentState.imports,
-                }),
-              ...(currentState.outputReads &&
-                currentState.outputReads.length > 0 && {
-                  outputReads: currentState.outputReads,
-                }),
-              lastModified: Date.now(),
-            };
-            const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
-            if (currentEtag !== undefined) saveOptions.expectedEtag = currentEtag;
-            if (migrationPending) saveOptions.migrateLegacy = true;
-            await this.stateBackend.saveState(
-              stackName,
-              this.stackRegion,
-              this.withParentInfo(refreshedState),
-              saveOptions
-            );
-            this.logger.debug('Persisted refreshed observedProperties (no-change path)');
-          } catch (saveError) {
-            this.logger.warn(
-              `Failed to persist refreshed observedProperties: ${saveError instanceof Error ? saveError.message : String(saveError)} — drift baseline will be re-fetched on next deploy.`
-            );
+        // The diff only inspects Resources, so an Outputs-only change (a new
+        // Export added because a downstream stack now references this one — its
+        // Resources stay identical) lands here with hasChanges=false. If we
+        // early-returned without persisting, the new export would never be
+        // written to state / the exports index and the consumer's subsequent
+        // Fn::ImportValue would fail (issue #875). So in the no-change path we
+        // also resolve the template outputs against current state and persist
+        // them when they differ — alongside the existing observed-properties
+        // refresh (e.g. a v2 → v3 schema upgrade on a stack with nothing to
+        // deploy). Both are skipped in dry-run.
+        let persistedOutputs: Record<string, unknown> = currentState.outputs ?? {};
+        if (!this.options.dryRun) {
+          const resolvedOutputs = await this.resolveOutputs(
+            effectiveTemplate,
+            currentState.resources,
+            stackName,
+            parameterValues,
+            conditions
+          );
+          // resolveOutputs stores `undefined` for any output it could not
+          // resolve (logged as a warn there). In the no-change path every
+          // resource is already in state so resolution should succeed; if it
+          // doesn't, keep the existing good outputs rather than overwrite them
+          // with a partial map.
+          const resolutionFailed = Object.values(resolvedOutputs).some((v) => v === undefined);
+          const outputsChanged =
+            !resolutionFailed && !outputMapsEqual(persistedOutputs, resolvedOutputs);
+
+          // Drain any auto-refresh readCurrentState calls (drainObservedCaptures
+          // short-circuits on an empty map) so the refreshed observed-properties
+          // baseline lands in the same save.
+          const observedRefresh = this.observedCaptureTasks.size > 0;
+          if (observedRefresh) {
+            await this.drainObservedCaptures(currentState.resources);
+          }
+
+          if (observedRefresh || outputsChanged) {
+            try {
+              const refreshedState: StackState = {
+                version: STATE_SCHEMA_VERSION_CURRENT,
+                region: this.stackRegion,
+                stackName: currentState.stackName,
+                resources: currentState.resources,
+                outputs: (outputsChanged ? resolvedOutputs : persistedOutputs) as Record<
+                  string,
+                  string
+                >,
+                // Preserve existing imports[] (no-change path: nothing
+                // re-resolved). Otherwise the refresh would silently
+                // strip the strong-reference record on every diff-clean
+                // deploy. Same logic applies to outputReads[] (v8+).
+                ...(currentState.imports &&
+                  currentState.imports.length > 0 && {
+                    imports: currentState.imports,
+                  }),
+                ...(currentState.outputReads &&
+                  currentState.outputReads.length > 0 && {
+                    outputReads: currentState.outputReads,
+                  }),
+                lastModified: Date.now(),
+              };
+              const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
+              if (currentEtag !== undefined) saveOptions.expectedEtag = currentEtag;
+              if (migrationPending) saveOptions.migrateLegacy = true;
+              await this.stateBackend.saveState(
+                stackName,
+                this.stackRegion,
+                this.withParentInfo(refreshedState),
+                saveOptions
+              );
+              if (outputsChanged) {
+                persistedOutputs = resolvedOutputs;
+                this.logger.info('Persisted Outputs-only change (no resource diff).');
+                // Update the persistent exports index so the newly-added export
+                // resolves O(1) for consumers. Inside the try so a failed state
+                // save doesn't publish an export that wasn't persisted;
+                // updateForStack is itself best-effort (swallows + warns).
+                if (this.exportIndexStore) {
+                  await this.exportIndexStore.updateForStack(
+                    stackName,
+                    this.stackRegion,
+                    persistedOutputs
+                  );
+                }
+              } else {
+                this.logger.debug('Persisted refreshed observedProperties (no-change path)');
+              }
+            } catch (saveError) {
+              this.logger.warn(
+                `Failed to persist no-change state update: ${saveError instanceof Error ? saveError.message : String(saveError)} — drift baseline / outputs will be re-resolved on next deploy.`
+              );
+            }
           }
         }
 
@@ -846,7 +926,7 @@ export class DeployEngine {
           deleted: 0,
           unchanged: Object.keys(currentState.resources).length,
           durationMs: Date.now() - startTime,
-          outputs: this.buildDisplayOutputs(template, currentState.outputs ?? {}),
+          outputs: this.buildDisplayOutputs(template, persistedOutputs),
         };
       }
 

@@ -125,6 +125,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped).',
   'multi-stack-importvalue-strong-ref':
     'Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]).',
+  'multi-stack-outputs-only-export':
+    'Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue.',
   'sdk-ccapi-crossref-boundary':
     'Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`).',
 

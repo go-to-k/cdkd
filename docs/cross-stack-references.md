@@ -366,7 +366,7 @@ maintained cross-region. This mirrors the same region resolution
 |---|---|---|
 | Initial build | First `lookup()` call after the index file is absent (404) | 1 `listStacks` + N parallel `getState`, persisted as 1 PUT |
 | Patch on miss | `lookup()` miss → fallback scan succeeds → patches single entry | 1 PUT |
-| Update for stack | After successful deploy save | 1 PUT (read-modify-write with If-Match) |
+| Update for stack | After successful deploy save — including a no-resource-diff deploy whose only change is an added/removed Output (issue [#875](https://github.com/go-to-k/cdkd/issues/875)), so a producer that gains an export because a downstream stack started referencing it still publishes it | 1 PUT (read-modify-write with If-Match) |
 | Remove for stack | After successful destroy | 1 PUT (read-modify-write with If-Match) |
 | Rebuild on corruption | Index file JSON parse fails | Same as initial build |
 
