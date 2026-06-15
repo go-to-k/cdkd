@@ -836,6 +836,11 @@ export class DeployEngine {
         // deploy). Both are skipped in dry-run.
         let persistedOutputs: Record<string, unknown> = currentState.outputs ?? {};
         if (!this.options.dryRun) {
+          // Resolve against `effectiveTemplate` (condition-pruned) — the same
+          // map the executeDeployment path resolves. Outputs reference
+          // resources, which come from `currentState.resources` (the arg), and
+          // condition pruning only touches `Resources`, so resolving against
+          // `effectiveTemplate` vs the raw `template` is equivalent here.
           const resolvedOutputs = await this.resolveOutputs(
             effectiveTemplate,
             currentState.resources,
@@ -851,6 +856,19 @@ export class DeployEngine {
           const resolutionFailed = Object.values(resolvedOutputs).some((v) => v === undefined);
           const outputsChanged =
             !resolutionFailed && !outputMapsEqual(persistedOutputs, resolvedOutputs);
+
+          // Surface the rare case where outputs DID change but a resolution
+          // failure suppressed the persist. resolveOutputs already warns
+          // per-output, but a call-site summary makes the "deploy reports
+          // no-change yet a new export silently failed to land" path explicit
+          // (a downstream Fn::ImportValue would otherwise break later with no
+          // obvious link back to this deploy).
+          if (resolutionFailed && !outputMapsEqual(persistedOutputs, resolvedOutputs)) {
+            this.logger.warn(
+              'Outputs changed but one or more could not be resolved; keeping the previously ' +
+                'persisted outputs. A downstream Fn::ImportValue may fail until the next deploy.'
+            );
+          }
 
           // Drain any auto-refresh readCurrentState calls (drainObservedCaptures
           // short-circuits on an empty map) so the refreshed observed-properties
