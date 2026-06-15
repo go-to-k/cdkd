@@ -1,3 +1,10 @@
+# [0.226.0](https://github.com/go-to-k/cdkd/compare/v0.225.0...v0.226.0) (2026-06-15)
+
+
+### Features
+
+* **provisioning:** backfill AWS::ServiceDiscovery::Service ServiceAttributes ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#881](https://github.com/go-to-k/cdkd/issues/881)) ([7df8217](https://github.com/go-to-k/cdkd/commit/7df821746bd75ea523ecfd2eef2d7b86bba81661))
+
 # [0.225.0](https://github.com/go-to-k/cdkd/compare/v0.224.0...v0.225.0) (2026-06-15)
 
 
