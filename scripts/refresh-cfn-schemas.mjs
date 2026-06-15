@@ -143,6 +143,32 @@ export function extractCreateOnlyProperties(schemaJson) {
 }
 
 /**
+ * Extract the per-type primary-identifier property list (the property names
+ * whose values together form the CC-API physicalId). cdkd's intrinsic resolver
+ * resolves a `Fn::GetAtt` against the primaryIdentifier correctly via the
+ * physicalId fallback, so a readOnly attribute that IS the primaryIdentifier
+ * does NOT need enrichment — consumed by scripts/gen-enrichment-coverage.ts to
+ * auto-classify those as not-a-gap instead of requiring a hand-written
+ * ENRICHMENT_ALLOW_LIST entry per type. Same top-level JSON-pointer stripping
+ * as the read-only / create-only extractors above.
+ *
+ * @param {string} schemaJson
+ * @returns {string[]}
+ */
+export function extractPrimaryIdentifier(schemaJson) {
+  /** @type {{primaryIdentifier?: string[]}} */
+  const schema = JSON.parse(schemaJson);
+  if (!Array.isArray(schema.primaryIdentifier)) {
+    return [];
+  }
+  return schema.primaryIdentifier
+    .filter((p) => typeof p === 'string' && p.startsWith('/properties/'))
+    .map((p) => p.replace(/^\/properties\//, ''))
+    .filter((p) => !p.includes('/'))
+    .sort();
+}
+
+/**
  * Retry on CloudFormation's throttling shape ("Rate exceeded" / HTTP 429).
  * Exponential backoff with jitter, 1s -> 2s -> 4s -> 8s -> 16s -> 32s.
  *
@@ -199,6 +225,7 @@ async function processType(client, resourceType) {
     const properties = extractTopLevelProperties(resp.Schema);
     const readOnlyProperties = extractReadOnlyProperties(resp.Schema);
     const createOnlyProperties = extractCreateOnlyProperties(resp.Schema);
+    const primaryIdentifier = extractPrimaryIdentifier(resp.Schema);
     const fixture = {
       resourceType,
       // YYYY-MM-DD only so an unchanged schema produces an unchanged fixture
@@ -207,6 +234,7 @@ async function processType(client, resourceType) {
       properties,
       readOnlyProperties,
       createOnlyProperties,
+      primaryIdentifier,
     };
     const path = join(FIXTURES_DIR, fixtureFilename(resourceType));
     await writeFile(path, JSON.stringify(fixture, null, 2) + '\n', 'utf8');

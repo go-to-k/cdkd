@@ -1,0 +1,2749 @@
+{
+  "schemaVersion": 1,
+  "summary": {
+    "classifiedCount": 114,
+    "enriched": 3,
+    "noComputedAttr": 13,
+    "unenrichedGap": 0,
+    "sdkFallbackGap": 98,
+    "allowListedTypes": 0
+  },
+  "types": [
+    {
+      "resourceType": "AWS::ApiGateway::Account",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Authorizer",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AuthorizerId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AuthorizerId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AuthorizerId"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Deployment",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DeploymentId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "DeploymentId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DeploymentId"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Method",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Resource",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ResourceId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ResourceId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ResourceId"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Stage",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Api",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ApiEndpoint",
+        "ApiId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ApiEndpoint",
+          "status": "gap"
+        },
+        {
+          "name": "ApiId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ApiEndpoint",
+        "ApiId"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Authorizer",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AuthorizerId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AuthorizerId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AuthorizerId"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Integration",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "IntegrationId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "IntegrationId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "IntegrationId"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Route",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "RouteId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "RouteId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "RouteId"
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Stage",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::AppSync::ApiKey",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ApiKey",
+        "ApiKeyId",
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ApiKey",
+          "status": "gap"
+        },
+        {
+          "name": "ApiKeyId",
+          "status": "gap"
+        },
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ApiKey",
+        "ApiKeyId",
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::AppSync::DataSource",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DataSourceArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "DataSourceArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DataSourceArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLApi",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ApiId",
+        "Arn",
+        "GraphQLDns",
+        "GraphQLEndpointArn",
+        "GraphQLUrl",
+        "RealtimeDns",
+        "RealtimeUrl"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ApiId",
+          "status": "gap"
+        },
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "GraphQLDns",
+          "status": "gap"
+        },
+        {
+          "name": "GraphQLEndpointArn",
+          "status": "gap"
+        },
+        {
+          "name": "GraphQLUrl",
+          "status": "gap"
+        },
+        {
+          "name": "RealtimeDns",
+          "status": "gap"
+        },
+        {
+          "name": "RealtimeUrl",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ApiId",
+        "Arn",
+        "GraphQLDns",
+        "GraphQLEndpointArn",
+        "GraphQLUrl",
+        "RealtimeDns",
+        "RealtimeUrl"
+      ]
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLSchema",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::AppSync::Resolver",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ResolverArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ResolverArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ResolverArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::AutoScaling::AutoScalingGroup",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AutoScalingGroupARN"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AutoScalingGroupARN",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AutoScalingGroupARN"
+      ]
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Runtime",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AgentRuntimeArn",
+        "AgentRuntimeId",
+        "AgentRuntimeVersion",
+        "CreatedAt",
+        "FailureReason",
+        "LastUpdatedAt",
+        "Status",
+        "WorkloadIdentityDetails"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AgentRuntimeArn",
+          "status": "gap"
+        },
+        {
+          "name": "AgentRuntimeId",
+          "status": "gap"
+        },
+        {
+          "name": "AgentRuntimeVersion",
+          "status": "gap"
+        },
+        {
+          "name": "CreatedAt",
+          "status": "gap"
+        },
+        {
+          "name": "FailureReason",
+          "status": "gap"
+        },
+        {
+          "name": "LastUpdatedAt",
+          "status": "gap"
+        },
+        {
+          "name": "Status",
+          "status": "gap"
+        },
+        {
+          "name": "WorkloadIdentityDetails",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AgentRuntimeArn",
+        "AgentRuntimeId",
+        "AgentRuntimeVersion",
+        "CreatedAt",
+        "FailureReason",
+        "LastUpdatedAt",
+        "Status",
+        "WorkloadIdentityDetails"
+      ]
+    },
+    {
+      "resourceType": "AWS::CertificateManager::Certificate",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudFormation::Stack",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ChangeSetId",
+        "CreationTime",
+        "LastUpdateTime",
+        "Outputs",
+        "ParentId",
+        "RootId",
+        "StackId",
+        "StackStatus"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ChangeSetId",
+          "status": "gap"
+        },
+        {
+          "name": "CreationTime",
+          "status": "gap"
+        },
+        {
+          "name": "LastUpdateTime",
+          "status": "gap"
+        },
+        {
+          "name": "Outputs",
+          "status": "gap"
+        },
+        {
+          "name": "ParentId",
+          "status": "gap"
+        },
+        {
+          "name": "RootId",
+          "status": "gap"
+        },
+        {
+          "name": "StackId",
+          "status": "gap"
+        },
+        {
+          "name": "StackStatus",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ChangeSetId",
+        "CreationTime",
+        "LastUpdateTime",
+        "Outputs",
+        "ParentId",
+        "RootId",
+        "StackId",
+        "StackStatus"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id",
+        "S3CanonicalUserId"
+      ],
+      "enrichedKeys": [
+        "S3CanonicalUserId"
+      ],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        },
+        {
+          "name": "S3CanonicalUserId",
+          "status": "enriched"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudFront::Distribution",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DomainName",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "DomainName",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DomainName",
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudTrail::Trail",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "SnsTopicArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "SnsTopicArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "SnsTopicArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudWatch::Alarm",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::CodeBuild::Project",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPool",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "ProviderName",
+        "ProviderURL",
+        "UserPoolId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "ProviderName",
+          "status": "gap"
+        },
+        {
+          "name": "ProviderURL",
+          "status": "gap"
+        },
+        {
+          "name": "UserPoolId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "ProviderName",
+        "ProviderURL",
+        "UserPoolId"
+      ]
+    },
+    {
+      "resourceType": "AWS::DocDB::DBCluster",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ClusterResourceId",
+        "Endpoint",
+        "Id",
+        "ReadEndpoint"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ClusterResourceId",
+          "status": "gap"
+        },
+        {
+          "name": "Endpoint",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        },
+        {
+          "name": "ReadEndpoint",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ClusterResourceId",
+        "Endpoint",
+        "Id",
+        "ReadEndpoint"
+      ]
+    },
+    {
+      "resourceType": "AWS::DocDB::DBInstance",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Endpoint",
+        "Id",
+        "Port"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Endpoint",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        },
+        {
+          "name": "Port",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Endpoint",
+        "Id",
+        "Port"
+      ]
+    },
+    {
+      "resourceType": "AWS::DocDB::DBSubnetGroup",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::DynamoDB::GlobalTable",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "StreamArn",
+        "TableId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "StreamArn",
+          "status": "gap"
+        },
+        {
+          "name": "TableId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "StreamArn",
+        "TableId"
+      ]
+    },
+    {
+      "resourceType": "AWS::DynamoDB::Table",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "StreamArn"
+      ],
+      "enrichedKeys": [
+        "StreamArn"
+      ],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "StreamArn",
+          "status": "enriched"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::Instance",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "InstanceId",
+        "PrivateDnsName",
+        "PrivateIp",
+        "PublicDnsName",
+        "PublicIp",
+        "State",
+        "VpcId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "InstanceId",
+          "status": "gap"
+        },
+        {
+          "name": "PrivateDnsName",
+          "status": "gap"
+        },
+        {
+          "name": "PrivateIp",
+          "status": "gap"
+        },
+        {
+          "name": "PublicDnsName",
+          "status": "gap"
+        },
+        {
+          "name": "PublicIp",
+          "status": "gap"
+        },
+        {
+          "name": "State",
+          "status": "gap"
+        },
+        {
+          "name": "VpcId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "InstanceId",
+        "PrivateDnsName",
+        "PrivateIp",
+        "PublicDnsName",
+        "PublicIp",
+        "State",
+        "VpcId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::InternetGateway",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "InternetGatewayId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "InternetGatewayId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "InternetGatewayId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::NatGateway",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AutoProvisionZones",
+        "AutoScalingIps",
+        "EniId",
+        "NatGatewayId",
+        "RouteTableId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AutoProvisionZones",
+          "status": "gap"
+        },
+        {
+          "name": "AutoScalingIps",
+          "status": "gap"
+        },
+        {
+          "name": "EniId",
+          "status": "gap"
+        },
+        {
+          "name": "NatGatewayId",
+          "status": "gap"
+        },
+        {
+          "name": "RouteTableId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AutoProvisionZones",
+        "AutoScalingIps",
+        "EniId",
+        "NatGatewayId",
+        "RouteTableId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAcl",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAclEntry",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::Route",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CidrBlock"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CidrBlock",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CidrBlock"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::RouteTable",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "RouteTableId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "RouteTableId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "RouteTableId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroup",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "GroupId",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "GroupId",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "GroupId",
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::Subnet",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "BlockPublicAccessStates",
+        "Ipv6CidrBlocks",
+        "NetworkAclAssociationId",
+        "SubnetId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "BlockPublicAccessStates",
+          "status": "gap"
+        },
+        {
+          "name": "Ipv6CidrBlocks",
+          "status": "gap"
+        },
+        {
+          "name": "NetworkAclAssociationId",
+          "status": "gap"
+        },
+        {
+          "name": "SubnetId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "BlockPublicAccessStates",
+        "Ipv6CidrBlocks",
+        "NetworkAclAssociationId",
+        "SubnetId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AssociationId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AssociationId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AssociationId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::VPC",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CidrBlockAssociations",
+        "DefaultNetworkAcl",
+        "DefaultSecurityGroup",
+        "Ipv6CidrBlocks",
+        "VpcId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CidrBlockAssociations",
+          "status": "gap"
+        },
+        {
+          "name": "DefaultNetworkAcl",
+          "status": "gap"
+        },
+        {
+          "name": "DefaultSecurityGroup",
+          "status": "gap"
+        },
+        {
+          "name": "Ipv6CidrBlocks",
+          "status": "gap"
+        },
+        {
+          "name": "VpcId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CidrBlockAssociations",
+        "DefaultNetworkAcl",
+        "DefaultSecurityGroup",
+        "Ipv6CidrBlocks",
+        "VpcId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::VPCGatewayAttachment",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AttachmentType"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AttachmentType",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AttachmentType"
+      ]
+    },
+    {
+      "resourceType": "AWS::ECR::Repository",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "RepositoryUri"
+      ],
+      "enrichedKeys": [
+        "Arn",
+        "RepositoryUri"
+      ],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "enriched"
+        },
+        {
+          "name": "RepositoryUri",
+          "status": "enriched"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ECS::Cluster",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::ECS::Service",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Name",
+        "ServiceArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Name",
+          "status": "gap"
+        },
+        {
+          "name": "ServiceArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Name",
+        "ServiceArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::ECS::TaskDefinition",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "TaskDefinitionArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "TaskDefinitionArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "TaskDefinitionArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::EFS::AccessPoint",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AccessPointId",
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AccessPointId",
+          "status": "gap"
+        },
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AccessPointId",
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::EFS::FileSystem",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "FileSystemId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "FileSystemId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "FileSystemId"
+      ]
+    },
+    {
+      "resourceType": "AWS::EFS::MountTarget",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::ElastiCache::CacheCluster",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ConfigurationEndpoint",
+        "RedisEndpoint"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ConfigurationEndpoint",
+          "status": "gap"
+        },
+        {
+          "name": "RedisEndpoint",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ConfigurationEndpoint",
+        "RedisEndpoint"
+      ]
+    },
+    {
+      "resourceType": "AWS::ElastiCache::SubnetGroup",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ListenerArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ListenerArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ListenerArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CanonicalHostedZoneID",
+        "DNSName",
+        "LoadBalancerArn",
+        "LoadBalancerFullName",
+        "LoadBalancerName"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CanonicalHostedZoneID",
+          "status": "gap"
+        },
+        {
+          "name": "DNSName",
+          "status": "gap"
+        },
+        {
+          "name": "LoadBalancerArn",
+          "status": "gap"
+        },
+        {
+          "name": "LoadBalancerFullName",
+          "status": "gap"
+        },
+        {
+          "name": "LoadBalancerName",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CanonicalHostedZoneID",
+        "DNSName",
+        "LoadBalancerArn",
+        "LoadBalancerFullName",
+        "LoadBalancerName"
+      ]
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "LoadBalancerArns",
+        "TargetGroupArn",
+        "TargetGroupFullName",
+        "TargetGroupName"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "LoadBalancerArns",
+          "status": "gap"
+        },
+        {
+          "name": "TargetGroupArn",
+          "status": "gap"
+        },
+        {
+          "name": "TargetGroupFullName",
+          "status": "gap"
+        },
+        {
+          "name": "TargetGroupName",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "LoadBalancerArns",
+        "TargetGroupArn",
+        "TargetGroupFullName",
+        "TargetGroupName"
+      ]
+    },
+    {
+      "resourceType": "AWS::Events::EventBus",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::Events::Rule",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::Glue::Connection",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::Glue::Crawler",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Database",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Job",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::Glue::Table",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::Glue::Trigger",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Workflow",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::Group",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::InstanceProfile",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::ManagedPolicy",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AttachmentCount",
+        "CreateDate",
+        "DefaultVersionId",
+        "IsAttachable",
+        "PermissionsBoundaryUsageCount",
+        "PolicyArn",
+        "PolicyId",
+        "UpdateDate"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AttachmentCount",
+          "status": "gap"
+        },
+        {
+          "name": "CreateDate",
+          "status": "gap"
+        },
+        {
+          "name": "DefaultVersionId",
+          "status": "gap"
+        },
+        {
+          "name": "IsAttachable",
+          "status": "gap"
+        },
+        {
+          "name": "PermissionsBoundaryUsageCount",
+          "status": "gap"
+        },
+        {
+          "name": "PolicyArn",
+          "status": "gap"
+        },
+        {
+          "name": "PolicyId",
+          "status": "gap"
+        },
+        {
+          "name": "UpdateDate",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AttachmentCount",
+        "CreateDate",
+        "DefaultVersionId",
+        "IsAttachable",
+        "PermissionsBoundaryUsageCount",
+        "PolicyArn",
+        "PolicyId",
+        "UpdateDate"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::Policy",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::Role",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "RoleId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "RoleId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "RoleId"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::User",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::UserToGroupAddition",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::Kinesis::Stream",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "WarmThroughputObject"
+      ],
+      "enrichedKeys": [
+        "Arn"
+      ],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "enriched"
+        },
+        {
+          "name": "WarmThroughputObject",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "WarmThroughputObject"
+      ]
+    },
+    {
+      "resourceType": "AWS::Kinesis::StreamConsumer",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ConsumerARN",
+        "ConsumerCreationTimestamp",
+        "ConsumerStatus"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ConsumerARN",
+          "status": "gap"
+        },
+        {
+          "name": "ConsumerCreationTimestamp",
+          "status": "gap"
+        },
+        {
+          "name": "ConsumerStatus",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ConsumerARN",
+        "ConsumerCreationTimestamp",
+        "ConsumerStatus"
+      ]
+    },
+    {
+      "resourceType": "AWS::KinesisFirehose::DeliveryStream",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::KMS::Alias",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::KMS::Key",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "KeyId"
+      ],
+      "enrichedKeys": [
+        "Arn",
+        "KeyId"
+      ],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "enriched"
+        },
+        {
+          "name": "KeyId",
+          "status": "enriched"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventSourceMapping",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "EventSourceMappingArn",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "EventSourceMappingArn",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "EventSourceMappingArn",
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::Function",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "SnapStartResponse"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "SnapStartResponse",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "SnapStartResponse"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::LayerVersion",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "LayerVersionArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "LayerVersionArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "LayerVersionArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::Permission",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::Url",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "FunctionArn",
+        "FunctionUrl"
+      ],
+      "enrichedKeys": [
+        "FunctionArn",
+        "FunctionUrl"
+      ],
+      "attributes": [
+        {
+          "name": "FunctionArn",
+          "status": "enriched"
+        },
+        {
+          "name": "FunctionUrl",
+          "status": "enriched"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Logs::LogGroup",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::Neptune::DBCluster",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "ClusterResourceId",
+        "Endpoint",
+        "Port",
+        "ReadEndpoint"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "ClusterResourceId",
+          "status": "gap"
+        },
+        {
+          "name": "Endpoint",
+          "status": "gap"
+        },
+        {
+          "name": "Port",
+          "status": "gap"
+        },
+        {
+          "name": "ReadEndpoint",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ClusterResourceId",
+        "Endpoint",
+        "Port",
+        "ReadEndpoint"
+      ]
+    },
+    {
+      "resourceType": "AWS::Neptune::DBInstance",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Endpoint",
+        "Port"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Endpoint",
+          "status": "gap"
+        },
+        {
+          "name": "Port",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Endpoint",
+        "Port"
+      ]
+    },
+    {
+      "resourceType": "AWS::Neptune::DBSubnetGroup",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBCluster",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DBClusterArn",
+        "DBClusterResourceId",
+        "Endpoint",
+        "ReadEndpoint",
+        "StorageEncryptionType",
+        "StorageThroughput"
+      ],
+      "enrichedKeys": [
+        "Arn",
+        "DBClusterResourceId",
+        "Endpoint.Address",
+        "Endpoint.Port",
+        "ReadEndpoint.Address"
+      ],
+      "attributes": [
+        {
+          "name": "DBClusterArn",
+          "status": "gap"
+        },
+        {
+          "name": "DBClusterResourceId",
+          "status": "enriched"
+        },
+        {
+          "name": "Endpoint",
+          "status": "enriched"
+        },
+        {
+          "name": "ReadEndpoint",
+          "status": "enriched"
+        },
+        {
+          "name": "StorageEncryptionType",
+          "status": "gap"
+        },
+        {
+          "name": "StorageThroughput",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DBClusterArn",
+        "StorageEncryptionType",
+        "StorageThroughput"
+      ]
+    },
+    {
+      "resourceType": "AWS::RDS::DBInstance",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AutomaticRestartTime",
+        "CertificateDetails",
+        "DBInstanceArn",
+        "DBInstanceStatus",
+        "DbiResourceId",
+        "Endpoint",
+        "InstanceCreateTime",
+        "IsStorageConfigUpgradeAvailable",
+        "LatestRestorableTime",
+        "ListenerEndpoint",
+        "PercentProgress",
+        "ReadReplicaDBClusterIdentifiers",
+        "ReadReplicaDBInstanceIdentifiers",
+        "ResumeFullAutomationModeTime",
+        "SecondaryAvailabilityZone",
+        "StatusInfos"
+      ],
+      "enrichedKeys": [
+        "Arn",
+        "Endpoint.Address",
+        "Endpoint.HostedZoneId",
+        "Endpoint.Port"
+      ],
+      "attributes": [
+        {
+          "name": "AutomaticRestartTime",
+          "status": "gap"
+        },
+        {
+          "name": "CertificateDetails",
+          "status": "gap"
+        },
+        {
+          "name": "DBInstanceArn",
+          "status": "gap"
+        },
+        {
+          "name": "DBInstanceStatus",
+          "status": "gap"
+        },
+        {
+          "name": "DbiResourceId",
+          "status": "gap"
+        },
+        {
+          "name": "Endpoint",
+          "status": "enriched"
+        },
+        {
+          "name": "InstanceCreateTime",
+          "status": "gap"
+        },
+        {
+          "name": "IsStorageConfigUpgradeAvailable",
+          "status": "gap"
+        },
+        {
+          "name": "LatestRestorableTime",
+          "status": "gap"
+        },
+        {
+          "name": "ListenerEndpoint",
+          "status": "gap"
+        },
+        {
+          "name": "PercentProgress",
+          "status": "gap"
+        },
+        {
+          "name": "ReadReplicaDBClusterIdentifiers",
+          "status": "gap"
+        },
+        {
+          "name": "ReadReplicaDBInstanceIdentifiers",
+          "status": "gap"
+        },
+        {
+          "name": "ResumeFullAutomationModeTime",
+          "status": "gap"
+        },
+        {
+          "name": "SecondaryAvailabilityZone",
+          "status": "gap"
+        },
+        {
+          "name": "StatusInfos",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AutomaticRestartTime",
+        "CertificateDetails",
+        "DBInstanceArn",
+        "DBInstanceStatus",
+        "DbiResourceId",
+        "InstanceCreateTime",
+        "IsStorageConfigUpgradeAvailable",
+        "LatestRestorableTime",
+        "ListenerEndpoint",
+        "PercentProgress",
+        "ReadReplicaDBClusterIdentifiers",
+        "ReadReplicaDBInstanceIdentifiers",
+        "ResumeFullAutomationModeTime",
+        "SecondaryAvailabilityZone",
+        "StatusInfos"
+      ]
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxy",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DBProxyArn",
+        "Endpoint",
+        "VpcId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "DBProxyArn",
+          "status": "gap"
+        },
+        {
+          "name": "Endpoint",
+          "status": "gap"
+        },
+        {
+          "name": "VpcId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DBProxyArn",
+        "Endpoint",
+        "VpcId"
+      ]
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyEndpoint",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DBProxyEndpointArn",
+        "Endpoint",
+        "IsDefault",
+        "VpcId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "DBProxyEndpointArn",
+          "status": "gap"
+        },
+        {
+          "name": "Endpoint",
+          "status": "gap"
+        },
+        {
+          "name": "IsDefault",
+          "status": "gap"
+        },
+        {
+          "name": "VpcId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DBProxyEndpointArn",
+        "Endpoint",
+        "IsDefault",
+        "VpcId"
+      ]
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyTargetGroup",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "TargetGroupArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "TargetGroupArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "TargetGroupArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::RDS::DBSubnetGroup",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Route53::HostedZone",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id",
+        "NameServers"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        },
+        {
+          "name": "NameServers",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id",
+        "NameServers"
+      ]
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSet",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::S3::Bucket",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "DomainName",
+        "DualStackDomainName",
+        "RegionalDomainName",
+        "WebsiteURL"
+      ],
+      "enrichedKeys": [
+        "Arn"
+      ],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "enriched"
+        },
+        {
+          "name": "DomainName",
+          "status": "gap"
+        },
+        {
+          "name": "DualStackDomainName",
+          "status": "gap"
+        },
+        {
+          "name": "RegionalDomainName",
+          "status": "gap"
+        },
+        {
+          "name": "WebsiteURL",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DomainName",
+        "DualStackDomainName",
+        "RegionalDomainName",
+        "WebsiteURL"
+      ]
+    },
+    {
+      "resourceType": "AWS::S3::BucketPolicy",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3Express::DirectoryBucket",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "AvailabilityZoneName"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "AvailabilityZoneName",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "AvailabilityZoneName"
+      ]
+    },
+    {
+      "resourceType": "AWS::S3Tables::Namespace",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::Table",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "TableARN",
+        "VersionToken",
+        "WarehouseLocation"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "TableARN",
+          "status": "gap"
+        },
+        {
+          "name": "VersionToken",
+          "status": "gap"
+        },
+        {
+          "name": "WarehouseLocation",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "TableARN",
+        "VersionToken",
+        "WarehouseLocation"
+      ]
+    },
+    {
+      "resourceType": "AWS::S3Tables::TableBucket",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "TableBucketARN"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "TableBucketARN",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "TableBucketARN"
+      ]
+    },
+    {
+      "resourceType": "AWS::S3Vectors::VectorBucket",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CreationTime",
+        "VectorBucketArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CreationTime",
+          "status": "gap"
+        },
+        {
+          "name": "VectorBucketArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CreationTime",
+        "VectorBucketArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::SecretsManager::Secret",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "HostedZoneId",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "HostedZoneId",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "HostedZoneId",
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::Service",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::SNS::Subscription",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::SNS::Topic",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "TopicArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "TopicArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "TopicArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::SNS::TopicPolicy",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::SQS::Queue",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "QueueUrl"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "QueueUrl",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "QueueUrl"
+      ]
+    },
+    {
+      "resourceType": "AWS::SQS::QueuePolicy",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::SSM::Parameter",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::StepFunctions::StateMachine",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "Name",
+        "StateMachineRevisionId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "Name",
+          "status": "gap"
+        },
+        {
+          "name": "StateMachineRevisionId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "Name",
+        "StateMachineRevisionId"
+      ]
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACL",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "Capacity",
+        "Id",
+        "LabelNamespace"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "Capacity",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        },
+        {
+          "name": "LabelNamespace",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "Capacity",
+        "Id",
+        "LabelNamespace"
+      ]
+    }
+  ],
+  "enrichedWithoutCachedSchema": [
+    "AWS::ApiGateway::RestApi",
+    "AWS::CloudFront::OriginAccessControl",
+    "AWS::EC2::EIP",
+    "AWS::ElastiCache::ReplicationGroup",
+    "AWS::Lambda::Version",
+    "AWS::OpenSearchService::Domain",
+    "AWS::Redshift::Cluster",
+    "AWS::Route53::HealthCheck"
+  ]
+}
