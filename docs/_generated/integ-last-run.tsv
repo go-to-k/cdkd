@@ -32,7 +32,6 @@ s3-directory-bucket	2026-06-02T09:40:41Z	PASS		standard	clean after deleting a P
 wafv2	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (WebACL + APIGW WebACLAssociation via CC-API, slow ~3min assoc), 7 deleted 2 retained 0 errors
 context-test	2026-06-02T09:57:55Z	PASS		standard	FIXED by SSM Tags map handling (was FAIL: properties.Tags.map is not a function); deploy+destroy clean, 2 deleted 0 errors
 infra-security	2026-06-02T09:57:55Z	PASS		standard	FIXED by SSM Tags map handling (was FAIL: same SSM crash); VPC+NAT+IAM+KMS+SSM stack deploy+destroy clean, 31 deleted 0 errors
-alb	2026-06-02T11:37:34Z	PASS	58	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 alb-advanced	2026-06-02T11:37:34Z	PASS	59	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 api-cognito	2026-06-02T11:37:34Z	PASS	49	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 appsync	2026-06-02T11:37:34Z	PASS	27	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -138,3 +137,4 @@ multi-stack-deps	2026-06-15T05:18:06Z	PASS		standard	rc ok, orph clean; #875 bro
 outputs-only-export	2026-06-15T05:44:20Z	PASS		verify.sh	rc ok, orph clean; #875 nits PR
 lambda	2026-06-15T05:46:21Z	PASS		verify.sh	rc ok, orph clean; #875 nits broad gate
 import-value-strong-ref	2026-06-15T05:48:41Z	PASS		verify.sh	rc ok, orph clean; hygiene (was 13d)
+alb	2026-06-15T06:14:28Z	PASS		verify.sh	rc ok, orph clean; #609 ListenerAttributes assert

@@ -5,6 +5,7 @@ import {
   DescribeTagsCommand,
   DescribeTargetGroupsCommand,
   DescribeListenersCommand,
+  DescribeListenerAttributesCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 
 const mockSend = vi.fn();
@@ -184,6 +185,14 @@ describe('ELBv2Provider.readCurrentState', () => {
             },
           ],
         })
+        // DescribeListenerAttributes — AWS returns the full set unsorted; the
+        // provider sorts by Key.
+        .mockResolvedValueOnce({
+          Attributes: [
+            { Key: 'tcp.idle_timeout.seconds', Value: '350' },
+            { Key: 'routing.http.response.server.enabled', Value: 'true' },
+          ],
+        })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
       const result = await provider.readCurrentState(
@@ -193,6 +202,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeListenersCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeListenerAttributesCommand);
       expect(result).toEqual({
         LoadBalancerArn: 'arn:lb',
         Port: 443,
@@ -202,6 +212,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
         AlpnPolicy: [],
         MutualAuthentication: {},
+        // Sorted by Key for stable positional compare.
+        ListenerAttributes: [
+          { Key: 'routing.http.response.server.enabled', Value: 'true' },
+          { Key: 'tcp.idle_timeout.seconds', Value: '350' },
+        ],
         Tags: [],
       });
     });
@@ -221,6 +236,7 @@ describe('ELBv2Provider.readCurrentState', () => {
             },
           ],
         })
+        .mockResolvedValueOnce({ Attributes: [] })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
       const result = await provider.readCurrentState(
@@ -232,6 +248,65 @@ describe('ELBv2Provider.readCurrentState', () => {
         AlpnPolicy: ['HTTP2Preferred'],
         MutualAuthentication: { Mode: 'verify', TrustStoreArn: 'arn:ts' },
       });
+    });
+
+    it('emits ListenerAttributes sorted by Key from DescribeListenerAttributes', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Listeners: [
+            {
+              ListenerArn: 'arn:listener',
+              LoadBalancerArn: 'arn:lb',
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          Attributes: [
+            { Key: 'tcp.idle_timeout.seconds', Value: '3600' },
+            { Key: 'routing.http.response.server.enabled', Value: 'false' },
+          ],
+        })
+        .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
+
+      const result = await provider.readCurrentState(
+        'arn:listener',
+        'L',
+        'AWS::ElasticLoadBalancingV2::Listener'
+      );
+      expect(result).toMatchObject({
+        ListenerAttributes: [
+          { Key: 'routing.http.response.server.enabled', Value: 'false' },
+          { Key: 'tcp.idle_timeout.seconds', Value: '3600' },
+        ],
+      });
+    });
+
+    it('leaves ListenerAttributes absent when DescribeListenerAttributes errors (no false drift)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Listeners: [
+            {
+              ListenerArn: 'arn:listener',
+              LoadBalancerArn: 'arn:lb',
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(new Error('AccessDenied'))
+        .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
+
+      const result = await provider.readCurrentState(
+        'arn:listener',
+        'L',
+        'AWS::ElasticLoadBalancingV2::Listener'
+      );
+      expect(result).toBeDefined();
+      expect(result).not.toHaveProperty('ListenerAttributes');
     });
 
     it('returns undefined when listener is gone', async () => {

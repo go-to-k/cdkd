@@ -19,6 +19,8 @@ import {
   DeleteListenerCommand,
   ModifyListenerCommand,
   DescribeListenersCommand,
+  ModifyListenerAttributesCommand,
+  DescribeListenerAttributesCommand,
   type Tag,
   type Action,
   type Certificate,
@@ -31,6 +33,7 @@ import {
   type MutualAuthenticationAttributes,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
+import { withRetry } from '../../deployment/retry.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -107,6 +110,7 @@ export class ELBv2Provider implements ResourceProvider {
         'SslPolicy',
         'AlpnPolicy',
         'MutualAuthentication',
+        'ListenerAttributes',
       ]),
     ],
   ]);
@@ -772,13 +776,57 @@ export class ELBv2Provider implements ResourceProvider {
       if (!listener || !listener.ListenerArn) {
         throw new Error('CreateListener did not return Listener ARN');
       }
+      const listenerArn = listener.ListenerArn;
 
-      this.logger.debug(`Successfully created Listener ${logicalId}: ${listener.ListenerArn}`);
+      this.logger.debug(`Successfully created Listener ${logicalId}: ${listenerArn}`);
+
+      // CreateListener does NOT accept ListenerAttributes (e.g.
+      // `tcp.idle_timeout.seconds`, `routing.http.response.server.enabled`) —
+      // they ride on a separate post-create `ModifyListenerAttributes`
+      // control-plane call. CreateListener has already committed the listener
+      // on AWS, so a failure here would strand a half-configured listener (the
+      // throw aborts before the success-return, cdkd state is NOT written, and
+      // the next deploy plans CREATE again — but the LB already has a listener
+      // on this port, which AWS rejects with `DuplicateListener`). Wrap the
+      // attributes call in an inner try/catch that issues a best-effort
+      // `DeleteListener` before re-throwing the original error (atomicity),
+      // mirroring the LoadBalancer create path above.
+      try {
+        const listenerAttributes = this.normalizeAttributes(properties['ListenerAttributes']);
+        if (listenerAttributes.length > 0) {
+          await withRetry(
+            () =>
+              this.getClient().send(
+                new ModifyListenerAttributesCommand({
+                  ListenerArn: listenerArn,
+                  Attributes: listenerAttributes,
+                })
+              ),
+            logicalId,
+            { logger: this.logger }
+          );
+          this.logger.debug(
+            `Applied ${listenerAttributes.length} ListenerAttribute(s) for ${logicalId}`
+          );
+        }
+      } catch (innerError) {
+        try {
+          await this.getClient().send(new DeleteListenerCommand({ ListenerArn: listenerArn }));
+          this.logger.debug(
+            `Cleaned up partially-created Listener ${logicalId} (${listenerArn}) after attributes-wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws elbv2 delete-listener --listener-arn ${listenerArn}`
+          );
+        }
+        throw innerError;
+      }
 
       return {
-        physicalId: listener.ListenerArn,
+        physicalId: listenerArn,
         attributes: {
-          ListenerArn: listener.ListenerArn,
+          ListenerArn: listenerArn,
         },
       };
     } catch (error) {
@@ -833,6 +881,43 @@ export class ELBv2Provider implements ResourceProvider {
           ...(mutualAuth !== undefined && { MutualAuthentication: mutualAuth }),
         })
       );
+
+      // ─── ListenerAttributes ──────────────────────────────────────────
+      // ModifyListenerAttributes replaces ONLY the listed attrs — keys not
+      // in the request are left untouched. Build the diff: changed values
+      // from newAttrs win; keys present only in oldAttrs are pushed back to
+      // AWS's documented default (the empty string), which clears the
+      // override. Skip the call entirely when nothing changed so the
+      // no-drift round-trip is a clean no-op. A failure here THROWS (caught
+      // by the outer try/catch and re-wrapped as a ProvisioningError) so
+      // cdkd state is not written as-if-applied — the next deploy retries.
+      const newAttrs = this.normalizeAttributes(properties['ListenerAttributes']);
+      const oldAttrs = this.normalizeAttributes(previousProperties['ListenerAttributes']);
+      const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
+      const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
+      const submittedAttrs: Array<{ Key: string; Value: string }> = [];
+      for (const [k, v] of newAttrMap) {
+        if (oldAttrMap.get(k) !== v) submittedAttrs.push({ Key: k, Value: v });
+      }
+      for (const [k] of oldAttrMap) {
+        if (!newAttrMap.has(k)) submittedAttrs.push({ Key: k, Value: '' });
+      }
+      if (submittedAttrs.length > 0) {
+        await withRetry(
+          () =>
+            this.getClient().send(
+              new ModifyListenerAttributesCommand({
+                ListenerArn: physicalId,
+                Attributes: submittedAttrs,
+              })
+            ),
+          logicalId,
+          { logger: this.logger }
+        );
+        this.logger.debug(
+          `Applied ${submittedAttrs.length} ListenerAttributes change(s) for ${logicalId}`
+        );
+      }
 
       // Apply tag diff. Listener `handledProperties` doesn't currently
       // include Tags but AWS allows tags on listeners; previous state may
@@ -909,6 +994,45 @@ export class ELBv2Provider implements ResourceProvider {
   private extractTags(properties: Record<string, unknown>): Tag[] {
     if (!properties['Tags']) return [];
     return properties['Tags'] as Tag[];
+  }
+
+  /**
+   * Normalize a CFn `ListenerAttributes` value (an array of `{ Key, Value }`
+   * objects) into the SDK's `Attributes` shape. CFn emits the `Value` as a
+   * string (e.g. `"3600"`, `"false"`) — pass it through verbatim; the
+   * `ModifyListenerAttributes` API takes string Key/Value pairs. Entries
+   * missing a `Key` are dropped (an empty `Value` is a valid "clear the
+   * override" signal, so only `Key` is required). Returns `[]` for an
+   * absent / non-array value so callers can branch on `.length`.
+   *
+   * Values are coerced only from `string` / `number` / `boolean` — never
+   * `String()`-coerced from an arbitrary object (which would yield
+   * `[object Object]`); CFn emits these as strings already, so a non-scalar
+   * value is malformed input and is dropped rather than silently stringified.
+   */
+  private normalizeAttributes(raw: unknown): Array<{ Key: string; Value: string }> {
+    if (!Array.isArray(raw)) return [];
+    const out: Array<{ Key: string; Value: string }> = [];
+    for (const entry of raw) {
+      if (entry === null || typeof entry !== 'object') continue;
+      const e = entry as { Key?: unknown; Value?: unknown };
+      if (typeof e.Key !== 'string') continue;
+      let value: string;
+      if (e.Value === undefined || e.Value === null) {
+        value = '';
+      } else if (
+        typeof e.Value === 'string' ||
+        typeof e.Value === 'number' ||
+        typeof e.Value === 'boolean'
+      ) {
+        value = String(e.Value);
+      } else {
+        // Non-scalar value — malformed; skip rather than emit [object Object].
+        continue;
+      }
+      out.push({ Key: e.Key, Value: value });
+    }
+    return out;
   }
 
   /**
@@ -1159,6 +1283,32 @@ export class ELBv2Provider implements ResourceProvider {
     // returns when a user toggles it on.
     result['AlpnPolicy'] = listener.AlpnPolicy ?? [];
     result['MutualAuthentication'] = listener.MutualAuthentication ?? {};
+
+    // ListenerAttributes via DescribeListenerAttributes. AWS returns the FULL
+    // attribute set (every key valid for this listener type, including
+    // AWS-defaulted values the user did not template). Sort by Key for a
+    // stable positional compare and emit the whole list, so a console-side
+    // change to any attribute surfaces as drift on the v3 observedProperties
+    // baseline (which captures the same full set at deploy time) — the same
+    // model as LoadBalancerAttributes above.
+    try {
+      const attrsResp = await this.getClient().send(
+        new DescribeListenerAttributesCommand({ ListenerArn: physicalId })
+      );
+      const attrs = (attrsResp.Attributes ?? [])
+        .filter(
+          (a): a is { Key: string; Value: string } =>
+            typeof a.Key === 'string' && typeof a.Value === 'string'
+        )
+        .map((a) => ({ Key: a.Key, Value: a.Value }))
+        .sort((a, b) => a.Key.localeCompare(b.Key));
+      result['ListenerAttributes'] = attrs;
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      // Permission errors etc — leave key absent rather than firing
+      // false drift on every run.
+    }
+
     await this.attachTags(result, physicalId);
     return result;
   }

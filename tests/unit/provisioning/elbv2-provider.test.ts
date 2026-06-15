@@ -442,6 +442,141 @@ describe('ELBv2Provider', () => {
           })
         ).rejects.toThrow('Failed to create Listener MyListener');
       });
+
+      it('should issue ModifyListenerAttributes after create when ListenerAttributes is set', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        // 1) CreateListener  2) ModifyListenerAttributes
+        mockSend.mockResolvedValueOnce({ Listeners: [{ ListenerArn: listenerArn }] });
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.create(
+          'MyListener',
+          'AWS::ElasticLoadBalancingV2::Listener',
+          {
+            LoadBalancerArn:
+              'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1234567890abcdef',
+            Port: 80,
+            Protocol: 'HTTP',
+            DefaultActions: [{ Type: 'forward' }],
+            ListenerAttributes: [
+              { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            ],
+          }
+        );
+
+        expect(result.physicalId).toBe(listenerArn);
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateListenerCommand');
+        const modifyAttrsCall = mockSend.mock.calls[1][0];
+        expect(modifyAttrsCall.constructor.name).toBe('ModifyListenerAttributesCommand');
+        expect(modifyAttrsCall.input.ListenerArn).toBe(listenerArn);
+        expect(modifyAttrsCall.input.Attributes).toEqual([
+          { Key: 'routing.http.response.server.enabled', Value: 'false' },
+        ]);
+      });
+
+      it('should NOT issue ModifyListenerAttributes when ListenerAttributes is absent / empty', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        mockSend.mockResolvedValueOnce({ Listeners: [{ ListenerArn: listenerArn }] });
+
+        await provider.create('MyListener', 'AWS::ElasticLoadBalancingV2::Listener', {
+          LoadBalancerArn:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1234567890abcdef',
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'forward' }],
+          ListenerAttributes: [],
+        });
+
+        // Only CreateListener — no attributes call.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateListenerCommand');
+      });
+
+      it('should pass string Values through to ModifyListenerAttributes (no [object Object])', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-nlb/1234567890abcdef/abcdef1234567890';
+        mockSend.mockResolvedValueOnce({ Listeners: [{ ListenerArn: listenerArn }] });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyListener', 'AWS::ElasticLoadBalancingV2::Listener', {
+          LoadBalancerArn:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-nlb/1234567890abcdef',
+          Port: 443,
+          Protocol: 'TCP',
+          DefaultActions: [{ Type: 'forward' }],
+          // CDK emits the numeric attribute as a STRING; verify it rides
+          // through verbatim as a string.
+          ListenerAttributes: [{ Key: 'tcp.idle_timeout.seconds', Value: '3600' }],
+        });
+
+        const modifyAttrsCall = mockSend.mock.calls[1][0];
+        expect(modifyAttrsCall.input.Attributes).toEqual([
+          { Key: 'tcp.idle_timeout.seconds', Value: '3600' },
+        ]);
+        expect(typeof modifyAttrsCall.input.Attributes[0].Value).toBe('string');
+      });
+
+      it('should drop malformed ListenerAttributes entries (non-scalar Value / missing Key) instead of emitting [object Object]', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        mockSend.mockResolvedValueOnce({ Listeners: [{ ListenerArn: listenerArn }] });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyListener', 'AWS::ElasticLoadBalancingV2::Listener', {
+          LoadBalancerArn:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1234567890abcdef',
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'forward' }],
+          ListenerAttributes: [
+            { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            // Non-scalar Value must be dropped (never String()-coerced to "[object Object]").
+            { Key: 'routing.http.bad', Value: { nested: 'object' } },
+            // Missing Key must be dropped.
+            { Value: 'orphan-value' },
+          ],
+        });
+
+        const modifyAttrsCall = mockSend.mock.calls[1][0];
+        // Only the well-formed scalar entry survives.
+        expect(modifyAttrsCall.input.Attributes).toEqual([
+          { Key: 'routing.http.response.server.enabled', Value: 'false' },
+        ]);
+        // Defensive: no value was ever coerced to the object-stringification artifact.
+        for (const attr of modifyAttrsCall.input.Attributes) {
+          expect(attr.Value).not.toBe('[object Object]');
+        }
+      });
+
+      it('should delete the just-created Listener and rethrow when ModifyListenerAttributes fails (atomicity)', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        // 1) CreateListener succeeds  2) ModifyListenerAttributes fails  3) DeleteListener cleanup
+        mockSend.mockResolvedValueOnce({ Listeners: [{ ListenerArn: listenerArn }] });
+        mockSend.mockRejectedValueOnce(new Error('attribute key is invalid'));
+        mockSend.mockResolvedValueOnce({});
+
+        await expect(
+          provider.create('MyListener', 'AWS::ElasticLoadBalancingV2::Listener', {
+            LoadBalancerArn:
+              'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1234567890abcdef',
+            Port: 80,
+            Protocol: 'HTTP',
+            DefaultActions: [{ Type: 'forward' }],
+            ListenerAttributes: [{ Key: 'routing.http.response.server.enabled', Value: 'false' }],
+          })
+        ).rejects.toThrow('Failed to create Listener MyListener');
+
+        // Create + Modify (fail) + Delete (cleanup) = 3 calls.
+        expect(mockSend).toHaveBeenCalledTimes(3);
+        const cleanupCall = mockSend.mock.calls[2][0];
+        expect(cleanupCall.constructor.name).toBe('DeleteListenerCommand');
+        expect(cleanupCall.input.ListenerArn).toBe(listenerArn);
+      });
     });
 
     describe('update', () => {
@@ -473,6 +608,116 @@ describe('ELBv2Provider', () => {
         const modifyCall = mockSend.mock.calls[0][0];
         expect(modifyCall.constructor.name).toBe('ModifyListenerCommand');
         expect(modifyCall.input.Port).toBe(8080);
+      });
+
+      it('should issue ModifyListenerAttributes when ListenerAttributes changed', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        // 1) ModifyListener  2) ModifyListenerAttributes
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyListener',
+          listenerArn,
+          'AWS::ElasticLoadBalancingV2::Listener',
+          {
+            Port: 80,
+            Protocol: 'HTTP',
+            ListenerAttributes: [
+              { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            ],
+          },
+          {
+            Port: 80,
+            Protocol: 'HTTP',
+            ListenerAttributes: [
+              { Key: 'routing.http.response.server.enabled', Value: 'true' },
+            ],
+          }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const modifyAttrsCall = mockSend.mock.calls[1][0];
+        expect(modifyAttrsCall.constructor.name).toBe('ModifyListenerAttributesCommand');
+        expect(modifyAttrsCall.input.Attributes).toEqual([
+          { Key: 'routing.http.response.server.enabled', Value: 'false' },
+        ]);
+      });
+
+      it('should clear a removed ListenerAttribute by pushing the empty-string default', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyListener',
+          listenerArn,
+          'AWS::ElasticLoadBalancingV2::Listener',
+          { Port: 80, ListenerAttributes: [] },
+          {
+            Port: 80,
+            ListenerAttributes: [
+              { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            ],
+          }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const modifyAttrsCall = mockSend.mock.calls[1][0];
+        expect(modifyAttrsCall.input.Attributes).toEqual([
+          { Key: 'routing.http.response.server.enabled', Value: '' },
+        ]);
+      });
+
+      it('should NOT issue ModifyListenerAttributes when ListenerAttributes is unchanged', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyListener',
+          listenerArn,
+          'AWS::ElasticLoadBalancingV2::Listener',
+          {
+            Port: 80,
+            ListenerAttributes: [
+              { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            ],
+          },
+          {
+            Port: 80,
+            ListenerAttributes: [
+              { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            ],
+          }
+        );
+
+        // Only ModifyListener — no attributes call since nothing changed.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('ModifyListenerCommand');
+      });
+
+      it('should throw ProvisioningError when ModifyListenerAttributes fails on update', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/123/456';
+        // 1) ModifyListener succeeds  2) ModifyListenerAttributes fails
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockRejectedValueOnce(new Error('attribute key is invalid'));
+
+        await expect(
+          provider.update(
+            'MyListener',
+            listenerArn,
+            'AWS::ElasticLoadBalancingV2::Listener',
+            {
+              Port: 80,
+              ListenerAttributes: [{ Key: 'routing.http.response.server.enabled', Value: 'false' }],
+            },
+            { Port: 80, ListenerAttributes: [] }
+          )
+        ).rejects.toThrow('Failed to update Listener MyListener');
       });
 
       it('should throw ProvisioningError on failure', async () => {
