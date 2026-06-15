@@ -539,13 +539,14 @@ export function buildReadCurrentStateContext(
   state: StackState,
   excludedLogicalId: string
 ): ReadCurrentStateContext {
-  const siblings: Record<string, { resourceType: string; properties: Record<string, unknown> }> =
-    {};
+  const siblings: NonNullable<ReadCurrentStateContext['siblings']> = {};
   for (const [lid, res] of Object.entries(state.resources ?? {})) {
     if (lid === excludedLogicalId) continue;
     siblings[lid] = {
       resourceType: res.resourceType,
+      physicalId: res.physicalId,
       properties: res.properties ?? {},
+      attributes: res.attributes ?? {},
     };
   }
   return { siblings };

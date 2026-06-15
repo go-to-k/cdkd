@@ -177,12 +177,23 @@ import type { DeleteContext } from '../provisioning/region-check.js';
 export interface ReadCurrentStateContext {
   /**
    * All resources in the same stack EXCEPT the one being read.
-   * Keyed by logicalId. `resourceType` and `properties` come from
-   * cdkd state (`ResourceState`); `properties` may carry intrinsics
-   * unresolved for resources written by older binaries — providers
-   * that consume this should match by literal values only.
+   * Keyed by logicalId. `resourceType`, `physicalId`, `properties`, and
+   * `attributes` come from cdkd state (`ResourceState`); `properties` may
+   * carry intrinsics unresolved for resources written by older binaries —
+   * providers that consume this should match by literal values only.
+   * `attributes` carries the deploy-time-resolved `Fn::GetAtt` values (e.g.
+   * a CloudFront OAI's `S3CanonicalUserId`), so a provider can reconcile a
+   * sibling's computed identity without an extra AWS call.
    */
-  siblings?: Record<string, { resourceType: string; properties: Record<string, unknown> }>;
+  siblings?: Record<
+    string,
+    {
+      resourceType: string;
+      physicalId?: string;
+      properties: Record<string, unknown>;
+      attributes?: Record<string, unknown>;
+    }
+  >;
 }
 
 /**

@@ -133,16 +133,15 @@ echo "    OK: CloudFront::Distribution Tags silent-drop CLOSED by #609"
 # surfaced phantom drift. The new readCurrentState inverts convertToSdkFormat
 # so a no-change distribution reports NO drift.
 #
-# The assertion is SCOPED to the AWS::CloudFront::Distribution resource (via
-# --json + jq) rather than whole-stack-clean, because the fixture's S3
-# BucketPolicy granting the OAI carries a SEPARATE, pre-existing latent
-# false-positive: cdkd stores the OAI principal as the S3 canonical user id at
-# deploy time but GetBucketPolicy returns it as
-# `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity <id>`, so the
-# two equivalent principal forms compare unequal. That is an S3 BucketPolicy
-# provider gap unrelated to this PR (tracked separately); asserting only the
-# distribution keeps this PR's drift test honest about what it actually fixes.
-echo "==> Asserting cdkd drift reports NO false-positive on the fresh DISTRIBUTION"
+# This fixture also exercises the S3 BucketPolicy OAI-principal drift
+# normalization (issue #872): cdkd stores the OAI grant principal as the S3
+# canonical user id at deploy time, but GetBucketPolicy returns it as a
+# transient IAM-unique-id and then the settled
+# `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity <id>` form.
+# S3BucketPolicyProvider.readCurrentState now canonicalizes all three forms
+# back to the canonical user id, so BOTH the distribution AND the bucket policy
+# must report clean on a fresh deploy.
+echo "==> Asserting cdkd drift reports NO false-positive on the fresh DISTRIBUTION + BucketPolicy"
 set +e
 DRIFT_JSON=$(node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -158,6 +157,17 @@ if [ "${DIST_CLEAN}" != "1" ] || [ "${DIST_DRIFTED}" != "0" ]; then
   exit 1
 fi
 echo "    OK: CloudFront::Distribution reports clean on a fresh deploy — no phantom drift"
+
+# The S3 BucketPolicy granting the OAI must ALSO report clean now (issue #872):
+# the OAI-principal forms are canonicalized in readCurrentState.
+BP_CLEAN=$(echo "${DRIFT_JSON}" | jq '[.[].clean[] | select(.type == "AWS::S3::BucketPolicy")] | length')
+BP_DRIFTED=$(echo "${DRIFT_JSON}" | jq '[.[].drifted[] | select(.type == "AWS::S3::BucketPolicy")] | length')
+if [ "${BP_CLEAN}" != "1" ] || [ "${BP_DRIFTED}" != "0" ]; then
+  echo "FAIL: S3::BucketPolicy drift not clean on a fresh deploy (clean=${BP_CLEAN}, drifted=${BP_DRIFTED}) — OAI principal canonicalization (#872) regressed" >&2
+  echo "${DRIFT_JSON}" | jq '.[].drifted[] | select(.type == "AWS::S3::BucketPolicy")' >&2
+  exit 1
+fi
+echo "    OK: S3::BucketPolicy reports clean on a fresh deploy — OAI principal phantom drift (#872) CLOSED"
 
 # --- Assertion: cdkd drift DETECTS an out-of-band console-style change ---
 # Mutate the distribution Comment via update-distribution (the console path)

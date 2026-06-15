@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { GetBucketPolicyCommand, NoSuchBucket } from '@aws-sdk/client-s3';
 
 const mockSend = vi.fn();
+const mockCloudFrontSend = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     s3: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    cloudFront: { send: mockCloudFrontSend },
   }),
 }));
 
@@ -28,13 +30,17 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { S3BucketPolicyProvider } from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
+import {
+  S3BucketPolicyProvider,
+  clearOaiCanonicalUserIdCacheForTest,
+} from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
 
 describe('S3BucketPolicyProvider.readCurrentState', () => {
   let provider: S3BucketPolicyProvider;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    clearOaiCanonicalUserIdCacheForTest();
     provider = new S3BucketPolicyProvider();
   });
 
@@ -82,5 +88,158 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       'AWS::S3::BucketPolicy'
     );
     expect(result).toBeUndefined();
+  });
+
+  // --- OAI principal canonicalization (issue #872) ----------------------
+  const CANONICAL = '4ef329915fc94a782e00066d250553084f96cb485fe05cd0623a736956206c0c';
+  const OAI_ARN =
+    'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity E1UREC9EUJDVG5';
+
+  function oaiPolicy(principal: Record<string, unknown>): string {
+    return JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [
+        { Effect: 'Allow', Principal: principal, Action: 's3:GetObject', Resource: 'arn:aws:s3:::b/*' },
+      ],
+    });
+  }
+
+  const templateProps = {
+    Bucket: 'my-bucket',
+    PolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: { CanonicalUser: CANONICAL },
+          Action: 's3:GetObject',
+          Resource: 'arn:aws:s3:::b/*',
+        },
+      ],
+    },
+  };
+
+  it('normalizes the settled OAI ARN principal via the sibling OAI state attribute (zero AWS call)', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: OAI_ARN }) });
+
+    const context = {
+      siblings: {
+        TheOai: {
+          resourceType: 'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+          physicalId: 'E1UREC9EUJDVG5',
+          properties: {},
+          attributes: { S3CanonicalUserId: CANONICAL },
+        },
+      },
+    };
+
+    const result = await provider.readCurrentState(
+      'my-bucket',
+      'L',
+      'AWS::S3::BucketPolicy',
+      undefined,
+      context
+    );
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
+    // Resolved from sibling state — no CloudFront call needed.
+    expect(mockCloudFrontSend).not.toHaveBeenCalled();
+  });
+
+  it('falls back to GetCloudFrontOriginAccessIdentity when the OAI is not a same-stack sibling', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: OAI_ARN }) });
+    mockCloudFrontSend.mockResolvedValueOnce({
+      CloudFrontOriginAccessIdentity: { Id: 'E1UREC9EUJDVG5', S3CanonicalUserId: CANONICAL },
+    });
+
+    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
+    // The OAI id from the ARN was the GetCloudFrontOriginAccessIdentity input.
+    const cfInput = mockCloudFrontSend.mock.calls[0]?.[0] as { input: { Id: string } };
+    expect(cfInput.input.Id).toBe('E1UREC9EUJDVG5');
+  });
+
+  it('normalizes the transient bare IAM-unique-id principal via the matching template statement', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+
+    const result = await provider.readCurrentState(
+      'my-bucket',
+      'L',
+      'AWS::S3::BucketPolicy',
+      templateProps
+    );
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
+    // No CloudFront call needed for the template-match path.
+    expect(mockCloudFrontSend).not.toHaveBeenCalled();
+  });
+
+  it('leaves the bare IAM-unique-id principal unchanged when no matching template statement exists', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+
+    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ AWS: 'AIDAIBJOSOJSBZ753XCAW' });
+  });
+
+  it('leaves the principal unchanged when the OAI ARN lookup fails (best-effort)', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: OAI_ARN }) });
+    mockCloudFrontSend.mockRejectedValueOnce(new Error('NoSuchCloudFrontOriginAccessIdentity'));
+
+    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ AWS: OAI_ARN });
+  });
+
+  it('does not touch non-OAI principals (wildcard, service, normal role ARN)', async () => {
+    const policy = {
+      Version: '2012-10-17',
+      Statement: [
+        { Effect: 'Allow', Principal: '*', Action: 's3:GetObject', Resource: 'arn:aws:s3:::b/*' },
+        {
+          Effect: 'Allow',
+          Principal: { Service: 'cloudfront.amazonaws.com' },
+          Action: 's3:GetObject',
+          Resource: 'arn:aws:s3:::b/*',
+        },
+        {
+          Effect: 'Allow',
+          Principal: { AWS: 'arn:aws:iam::123456789012:role/MyRole' },
+          Action: 's3:GetObject',
+          Resource: 'arn:aws:s3:::b/*',
+        },
+      ],
+    };
+    mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(policy) });
+
+    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+
+    expect(result!['PolicyDocument']).toEqual(policy);
+    expect(mockCloudFrontSend).not.toHaveBeenCalled();
+  });
+
+  it('caches the OAI canonical-user-id lookup across statements / reads', async () => {
+    const twoStmt = JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [
+        { Effect: 'Allow', Principal: { AWS: OAI_ARN }, Action: 's3:GetObject', Resource: 'arn:aws:s3:::b/*' },
+        { Effect: 'Allow', Principal: { AWS: OAI_ARN }, Action: 's3:ListBucket', Resource: 'arn:aws:s3:::b' },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({ Policy: twoStmt });
+    mockCloudFrontSend.mockResolvedValueOnce({
+      CloudFrontOriginAccessIdentity: { Id: 'E1UREC9EUJDVG5', S3CanonicalUserId: CANONICAL },
+    });
+
+    await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+
+    // Two statements, same OAI -> exactly one GetCloudFrontOriginAccessIdentity.
+    expect(mockCloudFrontSend).toHaveBeenCalledTimes(1);
   });
 });
