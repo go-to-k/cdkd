@@ -1,3 +1,10 @@
+## [0.222.1](https://github.com/go-to-k/cdkd/compare/v0.222.0...v0.222.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **provisioning:** harden Glue Job/Crawler/Trigger/Workflow update + delete (5 bugs) ([#870](https://github.com/go-to-k/cdkd/issues/870)) ([09ab675](https://github.com/go-to-k/cdkd/commit/09ab675721485499b39f9d2c83bc21ad13a76a8d))
+
 # [0.222.0](https://github.com/go-to-k/cdkd/compare/v0.221.16...v0.222.0) (2026-06-15)
 
 
