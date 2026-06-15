@@ -147,6 +147,66 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
     expect(mockCloudFrontSend).not.toHaveBeenCalled();
   });
 
+  it('STRICT RECONCILE: a different OAI resolves to a different canonical id, so real drift is NOT suppressed', async () => {
+    // The AWS-side policy points at a DIFFERENT OAI than the template. The
+    // normalization must surface the RESOLVED (AWS-side) canonical id, not the
+    // template's — so the downstream comparator still reports the drift.
+    const OTHER_OAI_ARN =
+      'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity EDIFFERENTOAI9';
+    const OTHER_CANONICAL = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: OTHER_OAI_ARN }) });
+    mockCloudFrontSend.mockResolvedValueOnce({
+      CloudFrontOriginAccessIdentity: { Id: 'EDIFFERENTOAI9', S3CanonicalUserId: OTHER_CANONICAL },
+    });
+
+    const result = await provider.readCurrentState(
+      'my-bucket',
+      'L',
+      'AWS::S3::BucketPolicy',
+      templateProps // template carries the ORIGINAL CANONICAL
+    );
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    // Resolved to the OTHER OAI's canonical id (not the template's) -> drift stands.
+    expect(stmt['Principal']).toEqual({ CanonicalUser: OTHER_CANONICAL });
+    expect(stmt['Principal']).not.toEqual({ CanonicalUser: CANONICAL });
+  });
+
+  it('leaves an `AWS` ARRAY-of-principals statement untouched (single-OAI grant uses the string form)', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: [OAI_ARN, 'arn:aws:iam::123:role/R'] }) });
+
+    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ AWS: [OAI_ARN, 'arn:aws:iam::123:role/R'] });
+    expect(mockCloudFrontSend).not.toHaveBeenCalled();
+  });
+
+  it('leaves a bare-unique-id principal unchanged when >1 template statement shares the same Effect/Action/Resource (ambiguous match)', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    const ambiguousTemplate = {
+      Bucket: 'my-bucket',
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          { Effect: 'Allow', Principal: { CanonicalUser: CANONICAL }, Action: 's3:GetObject', Resource: 'arn:aws:s3:::b/*' },
+          { Effect: 'Allow', Principal: { CanonicalUser: 'other' }, Action: 's3:GetObject', Resource: 'arn:aws:s3:::b/*' },
+        ],
+      },
+    };
+
+    const result = await provider.readCurrentState(
+      'my-bucket',
+      'L',
+      'AWS::S3::BucketPolicy',
+      ambiguousTemplate
+    );
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    // Ambiguous -> do not adopt either; left unchanged.
+    expect(stmt['Principal']).toEqual({ AWS: 'AIDAIBJOSOJSBZ753XCAW' });
+  });
+
   it('falls back to GetCloudFrontOriginAccessIdentity when the OAI is not a same-stack sibling', async () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: OAI_ARN }) });
     mockCloudFrontSend.mockResolvedValueOnce({

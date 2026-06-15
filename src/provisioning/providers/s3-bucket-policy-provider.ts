@@ -385,9 +385,15 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    *     Action / Resource) carrying a `{ CanonicalUser }` principal. A user
    *     cannot author a bare IAM unique id as a bucket-policy principal, so
    *     adopting the template form here only fires for AWS's transient
-   *     rendering — it cannot mask a real principal change.
-   * Statements whose principal is not a single-string `AWS` OAI form are left
-   * untouched.
+   *     rendering. NOTE: once the principal settles to the ARN form (seconds
+   *     to minutes), a genuine out-of-band OAI repoint IS detected via the ARN
+   *     path above; the only masking window is a repoint observed during the
+   *     transient bare-id phase, which the next drift run (ARN form) reports.
+   * Statements whose principal is not a single-string `AWS` OAI form (e.g. a
+   * wildcard, a service principal, a normal role ARN, or an `AWS` ARRAY of
+   * principals) are left untouched — skipping is safe (it can only leave a
+   * residual false positive, never hide real drift). CDK's single-OAI grant
+   * emits the single-string form.
    */
   private async normalizeOaiPrincipals(
     policyDoc: unknown,
