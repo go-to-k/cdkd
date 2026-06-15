@@ -3270,6 +3270,7 @@
         "multi-stack-deps",
         "nested-stack",
         "orphan-resource",
+        "outputs-only-export",
         "propagation-races-2",
         "recreate-via-cc-api",
         "s3-cloudfront",
@@ -3369,6 +3370,9 @@
         "orphan-resource": [
           "l2",
           "literal"
+        ],
+        "outputs-only-export": [
+          "l2"
         ],
         "propagation-races-2": [
           "l2"
@@ -3755,6 +3759,7 @@
         "nested-stack-3level",
         "nested-stack-deep",
         "opensearch-domain-getatt",
+        "outputs-only-export",
         "rds-full-stack",
         "redshift-cluster-getatt",
         "replacement-fanout",
@@ -3868,6 +3873,9 @@
         ],
         "opensearch-domain-getatt": [
           "l1"
+        ],
+        "outputs-only-export": [
+          "l2"
         ],
         "rds-full-stack": [
           "l2"

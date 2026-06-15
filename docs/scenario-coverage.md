@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**70 / 70 canonical scenarios** have at least one integ fixture exercising them. **139 / 158 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**71 / 71 canonical scenarios** have at least one integ fixture exercising them. **140 / 159 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (70 scenarios)
+## Per-scenario coverage (71 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -81,6 +81,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `multi-region-state-key` | Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout). | [`multi-region-same-stack`](../tests/integration/multi-region-same-stack/) |
 | `multi-stack-getstackoutput` | Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export). | [`composite-stack`](../tests/integration/composite-stack/)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/)<br>[`getstackoutput-crossregion`](../tests/integration/getstackoutput-crossregion/)<br>[`multi-stack-deps`](../tests/integration/multi-stack-deps/) |
 | `multi-stack-importvalue-strong-ref` | Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]). | [`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`importvalue-chain`](../tests/integration/importvalue-chain/) |
+| `multi-stack-outputs-only-export` | Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue. | [`outputs-only-export`](../tests/integration/outputs-only-export/) |
 | `nat-gateway-cleanup` | NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`vpc-nat-gateway`](../tests/integration/vpc-nat-gateway/) |
 | `nested-stack-deep-deploy-cascade` | Recursive `cdk.NestedStack` deploy + destroy at depth >= 3 (root → child → grandchild → great-grandchild): per-level `<parent>~<logicalId>` v6 state-key derivation with populated `parentStack` / `parentLogicalId`, bidirectional cross-level refs (bottom-up `Fn::GetAtt` outputs AND top-down `Parameters` forwarding), `state list --tree` hierarchy rendering, and the full reverse-DAG destroy cascade that removes every level's resources + state files. | [`nested-stack-3level`](../tests/integration/nested-stack-3level/) |
 | `nested-stack-migrate-from-cfn` | CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A. | [`import-nested-stack`](../tests/integration/import-nested-stack/) |
