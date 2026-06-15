@@ -1,3 +1,10 @@
+# [0.227.0](https://github.com/go-to-k/cdkd/compare/v0.226.0...v0.227.0) (2026-06-15)
+
+
+### Features
+
+* **provisioning:** backfill AWS::StepFunctions::StateMachine DefinitionS3Location ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#884](https://github.com/go-to-k/cdkd/issues/884)) ([ef4da12](https://github.com/go-to-k/cdkd/commit/ef4da1210047a7ae4a86092d8341ca146ec75fff))
+
 # [0.226.0](https://github.com/go-to-k/cdkd/compare/v0.225.0...v0.226.0) (2026-06-15)
 
 
