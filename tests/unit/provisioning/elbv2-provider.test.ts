@@ -520,6 +520,38 @@ describe('ELBv2Provider', () => {
         expect(typeof modifyAttrsCall.input.Attributes[0].Value).toBe('string');
       });
 
+      it('should drop malformed ListenerAttributes entries (non-scalar Value / missing Key) instead of emitting [object Object]', async () => {
+        const listenerArn =
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
+        mockSend.mockResolvedValueOnce({ Listeners: [{ ListenerArn: listenerArn }] });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyListener', 'AWS::ElasticLoadBalancingV2::Listener', {
+          LoadBalancerArn:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1234567890abcdef',
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'forward' }],
+          ListenerAttributes: [
+            { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            // Non-scalar Value must be dropped (never String()-coerced to "[object Object]").
+            { Key: 'routing.http.bad', Value: { nested: 'object' } },
+            // Missing Key must be dropped.
+            { Value: 'orphan-value' },
+          ],
+        });
+
+        const modifyAttrsCall = mockSend.mock.calls[1][0];
+        // Only the well-formed scalar entry survives.
+        expect(modifyAttrsCall.input.Attributes).toEqual([
+          { Key: 'routing.http.response.server.enabled', Value: 'false' },
+        ]);
+        // Defensive: no value was ever coerced to the object-stringification artifact.
+        for (const attr of modifyAttrsCall.input.Attributes) {
+          expect(attr.Value).not.toBe('[object Object]');
+        }
+      });
+
       it('should delete the just-created Listener and rethrow when ModifyListenerAttributes fails (atomicity)', async () => {
         const listenerArn =
           'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
