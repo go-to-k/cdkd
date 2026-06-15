@@ -1194,6 +1194,11 @@
       "scenarios": []
     },
     {
+      "name": "servicediscovery",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sg-circular-dependency",
       "annotated": true,
       "scenarios": [
@@ -1849,6 +1854,7 @@
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "schema-v6-to-v7-migration",
-    "schema-v7-to-v8-migration"
+    "schema-v7-to-v8-migration",
+    "servicediscovery"
   ]
 }

@@ -2211,10 +2211,11 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'HealthCheckCustomConfig',
         'Name',
         'NamespaceId',
+        'ServiceAttributes',
         'Tags',
         'Type',
       ]),
-      silentDrop: new Map<string, string>([['ServiceAttributes', 'not yet implemented by cdkd']]),
+      silentDrop: new Map<string, string>(),
     },
   ],
   [

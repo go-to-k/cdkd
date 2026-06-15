@@ -1703,6 +1703,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
+        "servicediscovery",
         "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1788,6 +1789,9 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "servicediscovery": [
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -3964,7 +3968,8 @@
       "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
       "integs": [
         "drift-revert-vpc",
-        "local-ecs-service-connect"
+        "local-ecs-service-connect",
+        "servicediscovery"
       ],
       "signals": {
         "drift-revert-vpc": [
@@ -3973,16 +3978,24 @@
         ],
         "local-ecs-service-connect": [
           "literal"
+        ],
+        "servicediscovery": [
+          "l1"
         ]
       }
     },
     {
       "resourceType": "AWS::ServiceDiscovery::Service",
       "integs": [
-        "local-ecs-service-connect"
+        "local-ecs-service-connect",
+        "servicediscovery"
       ],
       "signals": {
         "local-ecs-service-connect": [
+          "literal"
+        ],
+        "servicediscovery": [
+          "l1",
           "literal"
         ]
       }
