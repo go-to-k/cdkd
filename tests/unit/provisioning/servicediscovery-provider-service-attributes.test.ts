@@ -84,6 +84,29 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       });
     });
 
+    it('coerces number/boolean attribute values to strings and drops non-scalar values', async () => {
+      mockSend
+        .mockResolvedValueOnce({ Service: { Id: 'srv-1', Arn: 'arn:srv-1', Name: 'mysvc' } })
+        .mockResolvedValueOnce({}); // UpdateServiceAttributes
+
+      await provider.create('Svc', TYPE, {
+        Name: 'mysvc',
+        NamespaceId: 'ns-1',
+        // CFn can surface stringly-typed numerics / booleans; a non-scalar
+        // value is malformed and must be dropped (never String()'d into
+        // "[object Object]") — the trap class from
+        // feedback_ssm_parameter_tags_is_a_map / feedback_cfn_stringly_typed_numerics_need_coerce.
+        ServiceAttributes: { count: 3, enabled: true, bad: { nested: 1 } },
+      });
+
+      const updateAttrs = callOf(UpdateServiceAttributesCommand);
+      expect(updateAttrs).toBeDefined();
+      expect(updateAttrs!.input).toEqual({
+        ServiceId: 'srv-1',
+        Attributes: { count: '3', enabled: 'true' },
+      });
+    });
+
     it('does NOT call UpdateServiceAttributes when ServiceAttributes is absent', async () => {
       mockSend.mockResolvedValueOnce({ Service: { Id: 'srv-1', Arn: 'arn:srv-1', Name: 'mysvc' } });
 
