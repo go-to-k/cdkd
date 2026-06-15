@@ -1,3 +1,10 @@
+## [0.223.2](https://github.com/go-to-k/cdkd/compare/v0.223.1...v0.223.2) (2026-06-15)
+
+
+### Bug Fixes
+
+* **provisioning:** stop unwrapping CloudFront OriginGroups in drift readback ([#876](https://github.com/go-to-k/cdkd/issues/876)) ([95a4614](https://github.com/go-to-k/cdkd/commit/95a46149ba5fc9a71de50b9f54d2a605b2efd505))
+
 ## [0.223.1](https://github.com/go-to-k/cdkd/compare/v0.223.0...v0.223.1) (2026-06-15)
 
 
