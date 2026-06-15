@@ -72,8 +72,11 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
+# Force the base (non-update) synth even if the caller exported
+# CDKD_TEST_UPDATE=true — the update path is exercised unconditionally in
+# Phase 2 below, so Phase 1 must always create the base shape (Job.Timeout 60).
 echo "==> Phase 1: deploy with the local binary"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -155,21 +158,25 @@ else
   exit 1
 fi
 
-# --- Phase 2 (optional): UPDATE ---------------------------------------
-if [ "${CDKD_TEST_UPDATE:-}" = "true" ]; then
-  echo "==> Phase 2: re-deploy under CDKD_TEST_UPDATE (trigger desc + job timeout)"
-  node "${LOCAL_DIST}" deploy "${STACK}" \
-    --state-bucket "${STATE_BUCKET}" \
-    --region "${REGION}" \
-    --yes
-  NEW_TIMEOUT=$(aws glue get-job --job-name "${JOB_NAME}" --region "${REGION}" \
-    --query 'Job.Timeout' --output text 2>/dev/null || echo "")
-  if [ "${NEW_TIMEOUT}" != "90" ]; then
-    echo "FAIL: Job.Timeout after update is '${NEW_TIMEOUT}', expected 90 (update numeric coercion failed)" >&2
-    exit 1
-  fi
-  echo "    OK: Job.Timeout updated to 90 (number)"
+# --- Phase 2: UPDATE --------------------------------------------------
+# Always exercise the update path (the whole point of "update hardening") by
+# inlining CDKD_TEST_UPDATE=true on THIS deploy only — matching the
+# dynamodb-ondemand Phase 1.5 convention. Gating the phase on a caller-set env
+# would (a) skip the update test on a plain `bash verify.sh` run and (b) make
+# Phase 1's base-shape deploy synth the updated values, so the env must be
+# controlled per-phase, not globally.
+echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (trigger desc + job timeout)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+NEW_TIMEOUT=$(aws glue get-job --job-name "${JOB_NAME}" --region "${REGION}" \
+  --query 'Job.Timeout' --output text 2>/dev/null || echo "")
+if [ "${NEW_TIMEOUT}" != "90" ]; then
+  echo "FAIL: Job.Timeout after update is '${NEW_TIMEOUT}', expected 90 (update numeric coercion failed)" >&2
+  exit 1
 fi
+echo "    OK: Job.Timeout updated to 90 (number)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
