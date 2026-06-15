@@ -582,9 +582,16 @@ export class StepFunctionsProvider implements ResourceProvider {
       new GetObjectCommand({ Bucket: bucket, Key: key, ...(version && { VersionId: version }) })
     );
     if (!resp.Body) {
+      throw new Error(`DefinitionS3Location object s3://${bucket}/${key} returned no body`);
+    }
+    const body = await resp.Body.transformToString();
+    if (body.length === 0) {
+      // A zero-byte object has a present Body whose transformToString() is ''.
+      // Fail here with a clear message rather than send '' to CreateStateMachine
+      // (which AWS rejects with a generic validation error).
       throw new Error(`DefinitionS3Location object s3://${bucket}/${key} returned an empty body`);
     }
-    return resp.Body.transformToString();
+    return body;
   }
 
   /**

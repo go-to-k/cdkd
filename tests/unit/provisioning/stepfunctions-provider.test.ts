@@ -513,6 +513,28 @@ describe('StepFunctionsProvider', () => {
       expect(def).not.toContain('${Timeout}');
     });
 
+    it('skips a non-scalar DefinitionSubstitutions value (leaves the token untouched)', async () => {
+      // Substitution values are scalars (CFn resolves intrinsics before passing
+      // them in). A non-scalar value is malformed; it must be skipped, never
+      // String()'d into "[object Object]". The token stays literal.
+      mockS3Body(
+        '{"StartAt":"Call","States":{"Call":{"Type":"Task","Resource":"${Good}","Comment":"${Bad}","End":true}}}'
+      );
+      mockCreateOk();
+
+      await provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+        RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+        DefinitionS3Location: { Bucket: 'b', Key: 'k' },
+        DefinitionSubstitutions: { Good: 'resolved', Bad: { nested: 1 } },
+      });
+
+      const def = mockSend.mock.calls[0][0].input.definition as string;
+      expect(def).toContain('"Resource":"resolved"');
+      // The non-scalar substitution was skipped — token left untouched, no "[object Object]".
+      expect(def).toContain('"Comment":"${Bad}"');
+      expect(def).not.toContain('[object Object]');
+    });
+
     it('prefers an inline DefinitionString over DefinitionS3Location (no S3 fetch)', async () => {
       mockCreateOk();
       const inline = '{"StartAt":"Inline","States":{"Inline":{"Type":"Pass","End":true}}}';
@@ -527,8 +549,24 @@ describe('StepFunctionsProvider', () => {
       expect(mockSend.mock.calls[0][0].input.definition).toBe(inline);
     });
 
-    it('throws (and does not create) when the S3 object body is empty', async () => {
+    it('throws (and does not create) when the S3 object has no body', async () => {
       mockS3Send.mockResolvedValueOnce({ Body: undefined });
+
+      await expect(
+        provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
+          RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+          DefinitionS3Location: { Bucket: 'b', Key: 'k' },
+        })
+      ).rejects.toThrow(/no body/);
+
+      // CreateStateMachine was never reached.
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('throws (and does not create) when the S3 object body is a zero-byte string', async () => {
+      // A present Body whose transformToString() yields '' must be caught here,
+      // not sent as an empty definition to CreateStateMachine.
+      mockS3Body('');
 
       await expect(
         provider.create('S3Sm', 'AWS::StepFunctions::StateMachine', {
@@ -537,7 +575,6 @@ describe('StepFunctionsProvider', () => {
         })
       ).rejects.toThrow(/empty body/);
 
-      // CreateStateMachine was never reached.
       expect(mockSend).not.toHaveBeenCalled();
     });
   });

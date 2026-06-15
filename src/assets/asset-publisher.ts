@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
 import { FileAssetPublisher } from './file-asset-publisher.js';
 import { DockerAssetPublisher } from './docker-asset-publisher.js';
 import type { AssetManifest, FileAsset, DockerImageAsset } from '../types/assets.js';
@@ -92,16 +93,12 @@ export class AssetPublisher {
     const nodeIds: string[] = [];
 
     // File assets: single publish node
-    // Exclude ONLY the CloudFormation template asset(s). The template's source
-    // path is always `<Stack>.template.json` (and nested-stack templates
-    // `<Stack>.nested.template.json`), so `.template.json` is the reliable
-    // discriminator — cdkd deploys templates itself and never needs them in
-    // the bootstrap bucket. A plain `.json` exclusion is WRONG: a legitimate
-    // user file asset can be a `.json` file (e.g. a Step Functions
-    // `DefinitionS3Location` ASL document, or an app config), whose source path
-    // is `asset.<hash>.json` — those MUST be published.
+    // Exclude ONLY the CloudFormation template asset(s) — cdkd deploys
+    // templates itself. Shared predicate with AssetManifestLoader.getFileAssets
+    // so the two file-asset-selection sites cannot drift (see
+    // isCfnTemplateAssetPath for why `.template.json`, not a plain `.json`).
     const fileAssets = Object.entries(manifest.files || {}).filter(
-      ([, asset]) => !asset.source.path.endsWith('.template.json')
+      ([, asset]) => !isCfnTemplateAssetPath(asset.source.path)
     );
     for (const [hash, asset] of fileAssets) {
       const nodeId = `asset-publish:${prefix}file:${hash}`;

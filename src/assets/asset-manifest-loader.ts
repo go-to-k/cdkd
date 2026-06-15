@@ -4,6 +4,24 @@ import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets
 import { getLogger } from '../utils/logger.js';
 
 /**
+ * Whether a file asset's `source.path` is a CloudFormation template asset
+ * (the stack template `<Stack>.template.json` or a nested-stack template
+ * `<Stack>.<Nested>.nested.template.json`). cdkd deploys templates itself and
+ * never needs them in the bootstrap bucket, so they are the ONLY file assets
+ * excluded from publishing.
+ *
+ * `.template.json` is the reliable discriminator: a plain `.json` exclusion is
+ * WRONG because a legitimate user file asset can be a `.json` file (e.g. a Step
+ * Functions `DefinitionS3Location` ASL document, or an app config) whose source
+ * path is `asset.<hash>.json` — those MUST be published. Shared by both file-
+ * asset-selection sites ({@link AssetManifestLoader.getFileAssets} and
+ * `AssetPublisher.addAssetsToGraph`) so they cannot drift.
+ */
+export function isCfnTemplateAssetPath(sourcePath: string): boolean {
+  return sourcePath.endsWith('.template.json');
+}
+
+/**
  * Asset manifest loader
  *
  * Loads and parses CDK asset manifests from the CDK output directory
@@ -54,8 +72,11 @@ export class AssetManifestLoader {
     const fileAssets = new Map<string, FileAsset>();
 
     for (const [assetHash, asset] of Object.entries(manifest.files)) {
-      // Skip CloudFormation templates (they have .json extension)
-      if (asset.source.path.endsWith('.json') || asset.source.path.endsWith('.template.json')) {
+      // Skip ONLY CloudFormation template assets (cdkd deploys templates
+      // itself). A plain `.json` exclusion would wrongly drop legitimate user
+      // `.json` file assets (e.g. a Step Functions DefinitionS3Location ASL
+      // document) — see isCfnTemplateAssetPath.
+      if (isCfnTemplateAssetPath(asset.source.path)) {
         this.logger.debug(`Skipping CloudFormation template asset: ${asset.displayName}`);
         continue;
       }
