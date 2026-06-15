@@ -113,7 +113,6 @@ ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfigurat
 cross-region-state-bucket	2026-06-13T07:10:46Z	PASS	34	verify.sh	#827 shared bucket-region helper; behavior preserved; 1 deleted 0 err, temp bucket cleaned
 bench-cdk-sample	2026-06-13T09:16:21Z	PASS	529	standard	regression sweep; 0 err 0 orphan
 multi-resource	2026-06-13T09:16:21Z	PASS	75	standard	regression sweep; 0 err 0 orphan
-multi-stack-deps	2026-06-13T09:16:21Z	PASS	63	standard	regression sweep 3-stack; 0 err 0 orphan
 drift-revert	2026-06-13T09:16:21Z	PASS	89	verify.sh	regression sweep; 0 err 0 orphan
 drift-revert-vpc	2026-06-13T09:16:21Z	PASS	228	verify.sh	regression sweep; 0 err 0 orphan
 remove-protection	2026-06-13T09:16:21Z	PASS	1267	verify.sh	regression sweep; 0 err 0 orphan
@@ -138,3 +137,4 @@ dynamodb-ondemand	2026-06-14T14:54:16Z	PASS	120	verify.sh	BillingMode/Provisione
 glue-update-hardening	2026-06-15T01:57:37Z	PASS		verify.sh	rc ok, orph clean (re-run after review fix; deploy+update+destroy clean)
 s3-cloudfront	2026-06-15T04:27:23Z	PASS		verify.sh	rc ok, orph clean (#873 OriginGroups drift clean + distribution/bucket-policy clean; clean destroy)
 outputs-only-export	2026-06-15T05:10:33Z	PASS		verify.sh	rc ok, orph clean; #875 no-op-deploy export persist
+multi-stack-deps	2026-06-15T05:18:06Z	PASS		standard	rc ok, orph clean; #875 broad gate
