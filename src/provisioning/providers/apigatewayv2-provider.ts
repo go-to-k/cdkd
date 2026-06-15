@@ -128,6 +128,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'IdentitySource',
         'JwtConfiguration',
         'AuthorizerUri',
+        'AuthorizerCredentialsArn',
         'AuthorizerPayloadFormatVersion',
         'AuthorizerResultTtlInSeconds',
         'EnableSimpleResponses',
@@ -797,6 +798,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
             | { Audience?: string[]; Issuer?: string }
             | undefined,
           AuthorizerUri: properties['AuthorizerUri'] as string | undefined,
+          // REQUEST-only create-time scalar (IAM role ARN API Gateway assumes
+          // to invoke the REQUEST Lambda authorizer). AWS rejects it on JWT
+          // authorizers and CDK only emits it for REQUEST; passing undefined
+          // when absent is a no-op, so no AuthorizerType gate is needed here.
+          AuthorizerCredentialsArn: properties['AuthorizerCredentialsArn'] as string | undefined,
           AuthorizerPayloadFormatVersion: properties['AuthorizerPayloadFormatVersion'] as
             | string
             | undefined,
@@ -1124,12 +1130,14 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['AuthorizerUri'] = resp.AuthorizerUri ?? '';
         result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion ?? '';
 
-        // AuthorizerResultTtlInSeconds / EnableSimpleResponses /
-        // IdentityValidationExpression are valid only for REQUEST
-        // authorizers. Emit-when-present (gate each on `!== undefined`)
-        // so a REQUEST authorizer that never set them does not grow a
-        // phantom-drift key, and a JWT authorizer never surfaces them
-        // at all.
+        // AuthorizerCredentialsArn / AuthorizerResultTtlInSeconds /
+        // EnableSimpleResponses / IdentityValidationExpression are valid
+        // only for REQUEST authorizers. Emit-when-present (gate each on
+        // `!== undefined`) so a REQUEST authorizer that never set them
+        // does not grow a phantom-drift key, and a JWT authorizer never
+        // surfaces them at all.
+        if (resp.AuthorizerCredentialsArn !== undefined)
+          result['AuthorizerCredentialsArn'] = resp.AuthorizerCredentialsArn;
         if (resp.AuthorizerResultTtlInSeconds !== undefined)
           result['AuthorizerResultTtlInSeconds'] = resp.AuthorizerResultTtlInSeconds;
         if (resp.EnableSimpleResponses !== undefined)
@@ -1630,7 +1638,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * `UpdateAuthorizer` keys on `(ApiId, AuthorizerId)`. Mutable fields
    * cdkd manages: `AuthorizerType` / `Name` / `IdentitySource` /
-   * `JwtConfiguration` / `AuthorizerUri` /
+   * `JwtConfiguration` / `AuthorizerUri` / `AuthorizerCredentialsArn` /
    * `AuthorizerPayloadFormatVersion` / `AuthorizerResultTtlInSeconds` /
    * `EnableSimpleResponses`.
    */
@@ -1705,6 +1713,13 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['AuthorizerUri'] !== previousProperties['AuthorizerUri']
     ) {
       input.AuthorizerUri = properties['AuthorizerUri'] as string;
+      changed = true;
+    }
+    if (
+      properties['AuthorizerCredentialsArn'] !== undefined &&
+      properties['AuthorizerCredentialsArn'] !== previousProperties['AuthorizerCredentialsArn']
+    ) {
+      input.AuthorizerCredentialsArn = properties['AuthorizerCredentialsArn'] as string;
       changed = true;
     }
     if (
