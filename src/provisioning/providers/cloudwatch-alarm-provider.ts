@@ -69,6 +69,36 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Properties this provider deliberately does NOT wire through to the SDK,
+   * with a one-line rationale per entry (consumed by the property-coverage
+   * check, issue #391).
+   *
+   * `EvaluationCriteria` / `EvaluationInterval` appear in the CloudFormation
+   * `AWS::CloudWatch::Alarm` registry schema but are absent from BOTH the AWS
+   * SDK `PutMetricAlarm` input (`@aws-sdk/client-cloudwatch`) AND the
+   * aws-cdk-lib `CfnAlarm` L1 — a newer CFn-schema surface ahead of SDK / CDK
+   * support, so there is no wire path to forward them and no CDK app can emit
+   * them. Per the #609 backfillability rule (a property absent from EITHER the
+   * SDK create input OR the CDK L1 is not backfillable), they are classified
+   * unhandled-by-design rather than left as a "not yet implemented" TODO.
+   */
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::CloudWatch::Alarm',
+      new Map([
+        [
+          'EvaluationCriteria',
+          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
+        ],
+        [
+          'EvaluationInterval',
+          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
+        ],
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.cloudWatchClient = awsClients.cloudWatch;
