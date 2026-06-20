@@ -589,14 +589,17 @@ cdkd events MyStack                 # list runs, newest first
 cdkd events MyStack --run <runId>   # one run's full event stream
 cdkd events MyStack --format json   # machine-readable (AI-agent hand-off)
 cdkd events prune MyStack --all     # purge event history (reclaim S3 space)
+cdkd destroy MyStack --purge-events # destroy + purge events in one command
 ```
 
 Events are persisted as JSONL under a `deployments/` key family separate
 from `state.json` (no state schema bump), so a destroyed stack's failure
 history stays readable. Recording is best-effort and never blocks the
 run; events carry error + metadata only (never resource properties). The
-store self-bounds to the last 20 runs, and `cdkd events prune` purges old
-history on demand (`--keep N` / `--older-than <dur>` / `--all`). See
+store self-bounds to the last 20 runs, `cdkd events prune` purges old
+history on demand (`--keep N` / `--older-than <dur>` / `--all`), and
+`cdkd destroy --purge-events` deletes a stack's history right after a clean
+destroy so the bucket returns fully empty. See
 **[docs/deployment-events.md](docs/deployment-events.md)** for the full
 reference.
 
