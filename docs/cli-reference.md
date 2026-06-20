@@ -1730,8 +1730,28 @@ cdkd events MyStack --format json         # machine-readable JSON (or --json)
 cdkd events MyStack --stack-region <r>    # disambiguate multi-region history
 ```
 
+### `events prune` (purge old event history)
+
+The store self-bounds to the last 20 runs at write time, but `cdkd destroy`
+deliberately keeps event history as post-mortem context, so it never returns
+the bucket to empty on its own. `cdkd events prune <stack>` is the explicit
+purge (issue [#885](https://github.com/go-to-k/cdkd/issues/885)):
+
+```bash
+cdkd events prune MyStack                 # keep the newest 20 (default)
+cdkd events prune MyStack --keep 5        # keep the newest 5
+cdkd events prune MyStack --older-than 24h# delete runs older than 24h
+cdkd events prune MyStack --all           # purge everything (+ the index)
+cdkd events prune MyStack --all --yes     # skip the confirmation (CI)
+```
+
+`--all` is mutually exclusive with `--keep` / `--older-than`. With both
+`--keep` and `--older-than`, a run is deleted only when it is BOTH beyond the
+newest-N window AND older than the cutoff. Prompts for confirmation unless
+`-y` / `--yes`; `--stack-region` disambiguates a multi-region stack.
+
 State-driven (no synth, no lock). See
 **[docs/deployment-events.md](deployment-events.md)** for the full
-reference: event types, S3 key layout, flush strategy, and `index.json`
-semantics.
+reference: event types, S3 key layout, flush strategy, `index.json`
+semantics, and the retention model.
 

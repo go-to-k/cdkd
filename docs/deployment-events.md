@@ -55,6 +55,22 @@ s3://{bucket}/{prefix}/{stackName}/{region}/deployments/index.json      # last N
   survive `cdkd destroy`** — a destroyed stack's failure history stays
   readable.
 
+### Bounded growth (issue [#885](https://github.com/go-to-k/cdkd/issues/885))
+
+Two mechanisms keep the `deployments/` prefix from growing without bound:
+
+- **Self-bounding at write time.** When a run finalizes, the writer prunes
+  `{runId}.jsonl` streams that have fallen out of the 20-run index window —
+  so the per-run files stay bounded to the same window as `index.json`, not
+  just the index. The prune is best-effort (a failure warns once and never
+  blocks the run) and concurrency-safe: only streams strictly older than the
+  oldest retained run id are deleted, and run ids are time-sortable, so a
+  concurrent newer run can never be pruned out from under its writer.
+- **Explicit purge: `cdkd events prune`.** `cdkd destroy` deliberately keeps
+  event history (post-mortem context), so it never returns the state bucket
+  to empty on its own. `cdkd events prune <stack>` is the way to reclaim that
+  space — see [Pruning event history](#pruning-event-history-cdkd-events-prune).
+
 ### Best-effort, never blocking
 
 Event recording can **never fail or block** a deploy / destroy:
@@ -108,6 +124,50 @@ cdkd events MyStack --stack-region us-east-1
 The command is **state-driven** — it only reads the S3 state bucket and
 does not need the CDK app (no synth). It does not take a lock (the keys are
 per-run unique and the index is last-writer-wins).
+
+## Pruning event history (`cdkd events prune`)
+
+```bash
+# Keep the newest 20 runs (default), delete the rest
+cdkd events prune MyStack
+
+# Keep only the newest 5 runs
+cdkd events prune MyStack --keep 5
+
+# Delete runs older than 24 hours
+cdkd events prune MyStack --older-than 24h
+
+# Purge ALL event history for the stack (and remove the index)
+cdkd events prune MyStack --all
+
+# Skip the confirmation prompt (CI)
+cdkd events prune MyStack --all --yes
+```
+
+Retention selection:
+
+- `--all` — delete every recorded run **and** the `index.json` (full purge).
+  Mutually exclusive with `--keep` / `--older-than`.
+- `--keep <N>` — retain the newest N runs, delete the rest.
+- `--older-than <duration>` — delete runs whose run-id timestamp is older
+  than the duration (`<n>s` / `<n>m` / `<n>h`). A run id without a parseable
+  timestamp is kept (the safe direction).
+- `--keep <N>` **and** `--older-than <dur>` together — a run is deleted only
+  when it is **both** beyond the newest-N window **and** older than the
+  cutoff (the most conservative combination).
+- No retention flag — defaults to keeping the newest 20 runs (matching the
+  index window the writer self-bounds to).
+
+Prompts for confirmation unless `-y` / `--yes` is passed; `--stack-region`
+disambiguates a stack with history in more than one region. Like `cdkd
+events`, it is **state-driven** (no synth) and does not take a lock — but
+unlike the writer's best-effort auto-prune, errors surface to the caller.
+
+After deleting the matching `{runId}.jsonl` streams it rewrites `index.json`
+to drop the pruned runs, or removes the index entirely when no runs remain —
+so a full `--all` purge (or a destroy followed by `prune --all`) returns the
+stack's `deployments/` prefix to empty, satisfying the "state bucket empty
+after teardown" convention.
 
 ## Out of scope (follow-ups)
 

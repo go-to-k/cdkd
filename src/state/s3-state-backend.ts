@@ -3,6 +3,7 @@ import {
   GetObjectCommand,
   PutObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   HeadBucketCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -573,6 +574,43 @@ export class S3StateBackend {
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);
     return keys;
+  }
+
+  /**
+   * Raw sidecar-object batch delete under the state bucket. Used by the
+   * deployment-events pruner (issue #885) to drop superseded `{runId}.jsonl`
+   * streams + their index. Chunked to the 1,000-key `DeleteObjects` ceiling.
+   * S3 `DeleteObjects` is idempotent — deleting a key that does not exist is
+   * not an error — so callers do not need to pre-filter for existence.
+   *
+   * `DeleteObjects` reports per-key failures (e.g. partial `AccessDenied`,
+   * `SlowDown`) in `response.Errors` rather than throwing — with `Quiet:
+   * true` only those error entries come back. We aggregate them across
+   * chunks and throw, so the explicit `cdkd events prune` purge does NOT
+   * report success while leaving orphaned streams behind (the writer's
+   * best-effort auto-prune swallows the throw via its write-chain catch).
+   */
+  async deleteRawObjects(keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
+    await this.ensureClientForBucket();
+    const failures: string[] = [];
+    for (let i = 0; i < keys.length; i += 1000) {
+      const chunk = keys.slice(i, i + 1000);
+      const response = await this.s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: this.config.bucket,
+          Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true },
+        })
+      );
+      for (const err of response.Errors ?? []) {
+        failures.push(`${err.Key ?? '<unknown>'} (${err.Code ?? 'Error'}: ${err.Message ?? ''})`);
+      }
+    }
+    if (failures.length > 0) {
+      throw new StateError(
+        `Failed to delete ${failures.length} object(s) from bucket '${this.config.bucket}': ${failures.join('; ')}`
+      );
+    }
   }
 
   /**

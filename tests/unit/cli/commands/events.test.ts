@@ -18,9 +18,15 @@ vi.mock('../../../../src/state/s3-state-backend.js', () => ({
     prefix: 'cdkd',
     verifyBucketExists: vi.fn().mockResolvedValue(undefined),
     getRawObject: vi.fn(async (key: string) => objects.get(key) ?? null),
+    putRawObject: vi.fn(async (key: string, body: string) => {
+      objects.set(key, body);
+    }),
     listRawKeys: vi.fn(async (keyPrefix: string) =>
       [...objects.keys()].filter((k) => k.startsWith(keyPrefix))
     ),
+    deleteRawObjects: vi.fn(async (keys: string[]) => {
+      for (const k of keys) objects.delete(k);
+    }),
   })),
 }));
 
@@ -41,7 +47,7 @@ vi.mock('../../../../src/utils/colors.js', () => {
   return { bold: id, cyan: id, gray: id, green: id, red: id, yellow: id };
 });
 
-import { eventsCommand } from '../../../../src/cli/commands/events.js';
+import { eventsCommand, eventsPruneCommand } from '../../../../src/cli/commands/events.js';
 
 interface RunOpts {
   json?: boolean;
@@ -164,5 +170,97 @@ describe('cdkd events command', () => {
     seedIndex('eu-west-1');
     await runEvents('MyStack', { stackRegion: 'eu-west-1' });
     expect(logLines.join('\n')).toContain('run-b');
+  });
+});
+
+describe('cdkd events prune command', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    objects.clear();
+    logLines.length = 0;
+  });
+
+  /** Seed `.jsonl` streams + an index.json for the given run ids. */
+  function seedJsonlRuns(region: string, ids: string[]): void {
+    for (const runId of ids) {
+      objects.set(`cdkd/MyStack/${region}/deployments/${runId}.jsonl`, '{}\n');
+    }
+    objects.set(
+      `cdkd/MyStack/${region}/deployments/index.json`,
+      JSON.stringify({
+        indexVersion: 1,
+        stackName: 'MyStack',
+        region,
+        runs: [...ids]
+          .sort()
+          .reverse()
+          .map((runId) => ({
+            runId,
+            command: 'deploy',
+            cdkdVersion: '1.0.0',
+            startedAt: '',
+            finishedAt: '',
+            result: 'SUCCEEDED',
+            eventCount: 1,
+          })),
+        lastModified: 1,
+      })
+    );
+  }
+
+  const id = (i: number): string => `20260101T000000${String(i).padStart(3, '0')}Z-aa`;
+
+  it('--all purges every run and the index (with --yes)', async () => {
+    seedJsonlRuns('us-east-1', [id(0), id(1), id(2)]);
+    await eventsPruneCommand('MyStack', { all: true, yes: true });
+    expect([...objects.keys()].filter((k) => k.includes('/deployments/'))).toEqual([]);
+    expect(logLines.join('\n')).toContain('Pruned 3');
+  });
+
+  it('--keep retains the newest N (with --yes)', async () => {
+    seedJsonlRuns('us-east-1', [id(0), id(1), id(2), id(3)]);
+    await eventsPruneCommand('MyStack', { keep: 2, yes: true });
+    expect(objects.has(`cdkd/MyStack/us-east-1/deployments/${id(0)}.jsonl`)).toBe(false);
+    expect(objects.has(`cdkd/MyStack/us-east-1/deployments/${id(3)}.jsonl`)).toBe(true);
+    expect(logLines.join('\n')).toContain('2 retained');
+  });
+
+  it('rejects --all combined with --keep', async () => {
+    seedJsonlRuns('us-east-1', [id(0)]);
+    await expect(eventsPruneCommand('MyStack', { all: true, keep: 2, yes: true })).rejects.toThrow(
+      /cannot be combined/
+    );
+  });
+
+  it('reports when no runs match the criteria', async () => {
+    seedJsonlRuns('us-east-1', [id(0), id(1)]);
+    await eventsPruneCommand('MyStack', { keep: 5, yes: true });
+    expect(logLines.join('\n')).toContain('No runs matched');
+  });
+
+  it('refuses to prune without --yes on a non-interactive terminal (no hang)', async () => {
+    seedJsonlRuns('us-east-1', [id(0), id(1)]);
+    const prev = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      await eventsPruneCommand('MyStack', { keep: 1 }); // no yes, non-TTY
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: prev, configurable: true });
+    }
+    // Nothing deleted; clear hint emitted.
+    expect(objects.has(`cdkd/MyStack/us-east-1/deployments/${id(0)}.jsonl`)).toBe(true);
+    expect(logLines.join('\n')).toMatch(/Refusing to prune.*Re-run with --yes/s);
+  });
+
+  it('--all on an index-only store removes the index and reports it accurately', async () => {
+    // Only index.json exists (no .jsonl streams) — a destroyed stack whose
+    // streams were already pruned but the index lingered.
+    objects.set(
+      'cdkd/MyStack/us-east-1/deployments/index.json',
+      JSON.stringify({ indexVersion: 1, stackName: 'MyStack', region: 'us-east-1', runs: [], lastModified: 1 })
+    );
+    await eventsPruneCommand('MyStack', { all: true, yes: true });
+    expect(objects.has('cdkd/MyStack/us-east-1/deployments/index.json')).toBe(false);
+    expect(logLines.join('\n')).toContain('Removed the empty deployment-event index');
   });
 });

@@ -23,6 +23,10 @@
  * - **Separate keys from state.json** — no state schema bump; event
  *   files survive `cdkd destroy` (state deletion does not touch
  *   `deployments/`), preserving post-mortem context.
+ * - **Bounded growth** (issue #885): `finalize()` prunes `{runId}.jsonl`
+ *   streams that fell out of the index window so the `deployments/`
+ *   prefix stays bounded; `cdkd events prune` (via
+ *   {@link DeploymentEventsReader.pruneRuns}) is the explicit purge.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -85,6 +89,54 @@ export function deploymentEventsIndexKey(
   region: string
 ): string {
   return `${prefix}/${stackName}/${region}/deployments/index.json`;
+}
+
+/** S3 key prefix under which a stack's `deployments/` artifacts live. */
+function deploymentsDirPrefix(prefix: string, stackName: string, region: string): string {
+  return `${prefix}/${stackName}/${region}/deployments/`;
+}
+
+/**
+ * Parse the wall-clock time encoded in a run id's leading timestamp
+ * (e.g. `20260613T012345678Z-1a2b3c4d`) back to epoch milliseconds.
+ * Returns `null` for any id that does not start with the canonical
+ * compact-ISO prefix — the age-based pruner treats an unparseable id as
+ * "do not delete on age grounds", which is the safe direction.
+ */
+export function runIdTimestampMs(runId: string): number | null {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z/.exec(runId);
+  if (!m) return null;
+  const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.${m[7]}Z`;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** Extract the `{runId}` from a `.../{runId}.jsonl` event-stream key. */
+function runIdFromJsonlKey(key: string, dirPrefix: string): string | null {
+  if (!key.startsWith(dirPrefix) || !key.endsWith('.jsonl')) return null;
+  return key.slice(dirPrefix.length, -'.jsonl'.length);
+}
+
+/** Result of a {@link DeploymentEventsReader.pruneRuns} call. */
+export interface DeploymentEventsPruneResult {
+  /** Run ids whose `{runId}.jsonl` object was deleted. */
+  deletedRunIds: string[];
+  /** Run ids whose `{runId}.jsonl` object survived the prune. */
+  remainingRunIds: string[];
+  /** Whether `index.json` was deleted (true only when no runs remain). */
+  indexDeleted: boolean;
+}
+
+/** Options for {@link DeploymentEventsReader.pruneRuns}. */
+export interface DeploymentEventsPruneOptions {
+  /** Retain only the newest N runs (newest-first by run id). */
+  keep?: number;
+  /** Delete runs older than this many milliseconds. */
+  olderThanMs?: number;
+  /** Delete EVERY run + the index (full purge). */
+  all?: boolean;
+  /** Clock injection for the age cutoff (tests); defaults to `new Date()`. */
+  now?: Date;
 }
 
 export interface DeploymentEventsStoreOptions {
@@ -168,7 +220,8 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
     if (this.events.length === 0) return;
     await this.enqueueWrite(async () => {
       await this.doFlush();
-      await this.updateIndex(result);
+      const keptRunIds = await this.updateIndex(result);
+      await this.pruneSupersededRunFiles(keptRunIds);
     });
   }
 
@@ -222,8 +275,12 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
    * the last {@link DEPLOYMENT_EVENTS_MAX_INDEX_RUNS} runs. Read-modify-
    * write WITHOUT optimistic locking — last-writer-wins (documented
    * trade-off; the per-run `.jsonl` files are the source of truth).
+   *
+   * Returns the run ids retained in the index (newest-first), which the
+   * caller feeds to {@link pruneSupersededRunFiles} so the `.jsonl` files
+   * stay bounded to the same window as the index.
    */
-  private async updateIndex(result: DeploymentRunResult): Promise<void> {
+  private async updateIndex(result: DeploymentRunResult): Promise<string[]> {
     const key = deploymentEventsIndexKey(this.backend.prefix, this.stackName, this.region);
     let existingRuns: DeploymentRunSummary[] = [];
     try {
@@ -261,6 +318,41 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
       lastModified: Date.now(),
     };
     await this.backend.putRawObject(key, JSON.stringify(file, null, 2));
+    return runs.map((r) => r.runId);
+  }
+
+  /**
+   * Self-bounding prune (issue #885): delete `{runId}.jsonl` streams that
+   * have fallen out of the index window so the `deployments/` prefix does
+   * not grow without bound. Best-effort — runs inside the same write-chain
+   * link as the flush + index write, so a failure here is caught + warned
+   * once by {@link enqueueWrite} and never blocks the deploy / destroy.
+   *
+   * Concurrency-tolerant by construction: the cutoff is the OLDEST retained
+   * run id, and only `.jsonl` files strictly below it are deleted. Run ids
+   * are time-sortable, so a concurrent NEWER run's id sorts ABOVE every
+   * retained id and is never touched. A concurrent run that STARTED earlier
+   * but is still writing could in theory fall below the cutoff if 20+ newer
+   * runs finalized while it ran — an extreme edge that self-heals anyway,
+   * since the whole JSONL body is re-PUT on that run's next flush / finalize
+   * (S3 has no append; each flush rewrites the full stream).
+   */
+  private async pruneSupersededRunFiles(keptRunIds: string[]): Promise<void> {
+    // Below the cap nothing has been superseded yet.
+    if (keptRunIds.length < DEPLOYMENT_EVENTS_MAX_INDEX_RUNS) return;
+    const cutoff = keptRunIds.reduce((min, id) => (id < min ? id : min), keptRunIds[0]!);
+    const dirPrefix = deploymentsDirPrefix(this.backend.prefix, this.stackName, this.region);
+    const keys = await this.backend.listRawKeys(dirPrefix);
+    const stale = keys.filter((k) => {
+      const runId = runIdFromJsonlKey(k, dirPrefix);
+      return runId !== null && runId < cutoff;
+    });
+    if (stale.length === 0) return;
+    await this.backend.deleteRawObjects(stale);
+    this.logger.debug(
+      `Pruned ${stale.length} superseded deployment-event stream(s) for ` +
+        `${this.stackName} (${this.region})`
+    );
   }
 
   private warnOnce(message: string): void {
@@ -412,5 +504,133 @@ export class DeploymentEventsReader {
       }
     }
     return events;
+  }
+
+  /**
+   * Prune a stack's recorded deployment-event runs (issue #885 — `cdkd
+   * events prune`). Deletes `{runId}.jsonl` streams beyond a retention
+   * window and rewrites (or removes) `index.json` to match.
+   *
+   * Retention semantics (see {@link DeploymentEventsPruneOptions}):
+   *   - `all`        — delete every run + the index (full purge).
+   *   - `keep N`     — retain the newest N runs, delete the rest.
+   *   - `olderThanMs`— delete runs whose run-id timestamp is older than the
+   *                    cutoff; a run id with no parseable timestamp is kept.
+   *   - `keep` + `olderThanMs` — a run is deleted only when it is BOTH
+   *                    beyond the newest-N window AND older than the cutoff
+   *                    (the most conservative combination).
+   *   - none of the above — defaults to `keep DEPLOYMENT_EVENTS_MAX_INDEX_RUNS`
+   *                    (matches the index window the writer self-bounds to).
+   *
+   * Unlike the writer's best-effort auto-prune, this is user-initiated and
+   * surfaces errors to the caller (the command reports / exits non-zero).
+   */
+  async pruneRuns(
+    stackName: string,
+    region: string,
+    opts: DeploymentEventsPruneOptions = {}
+  ): Promise<DeploymentEventsPruneResult> {
+    const dirPrefix = deploymentsDirPrefix(this.backend.prefix, stackName, region);
+    const keys = await this.backend.listRawKeys(dirPrefix);
+    // Newest-first by run id (time-sortable prefix).
+    const runIdsDesc = keys
+      .map((k) => runIdFromJsonlKey(k, dirPrefix))
+      .filter((id): id is string => id !== null)
+      .sort()
+      .reverse();
+    const indexKey = deploymentEventsIndexKey(this.backend.prefix, stackName, region);
+
+    if (opts.all === true) {
+      const toDelete = runIdsDesc.map((id) =>
+        deploymentEventsKey(this.backend.prefix, stackName, region, id)
+      );
+      await this.backend.deleteRawObjects([...toDelete, indexKey]);
+      return { deletedRunIds: runIdsDesc, remainingRunIds: [], indexDeleted: true };
+    }
+
+    // Resolve the count window. When neither keep nor olderThan is given,
+    // fall back to the index-window default so a bare prune still bounds.
+    const noGuards = opts.keep === undefined && opts.olderThanMs === undefined;
+    const keep = opts.keep ?? (noGuards ? DEPLOYMENT_EVENTS_MAX_INDEX_RUNS : undefined);
+    const protectedByCount =
+      keep === undefined ? new Set<string>() : new Set(runIdsDesc.slice(0, keep));
+
+    let candidates = runIdsDesc.filter((id) => !protectedByCount.has(id));
+    if (opts.olderThanMs !== undefined) {
+      const cutoff = (opts.now ?? new Date()).getTime() - opts.olderThanMs;
+      candidates = candidates.filter((id) => {
+        const t = runIdTimestampMs(id);
+        return t !== null && t < cutoff; // unparseable id => keep (safe)
+      });
+    }
+
+    if (candidates.length === 0) {
+      return { deletedRunIds: [], remainingRunIds: runIdsDesc, indexDeleted: false };
+    }
+
+    const deletedSet = new Set(candidates);
+    const deleteKeys = candidates.map((id) =>
+      deploymentEventsKey(this.backend.prefix, stackName, region, id)
+    );
+    const remainingRunIds = runIdsDesc.filter((id) => !deletedSet.has(id));
+    // Rewrite the index BEFORE deleting the streams: if the delete fails
+    // mid-way (and throws), the index already points only at survivors, so
+    // a partial delete leaves the index over-pruned rather than dangling at
+    // gone streams. The reverse order would risk the index naming deleted
+    // streams; either way the reader tolerates the transient skew (it falls
+    // back to key enumeration), and the next prune re-converges.
+    const indexDeleted = await this.rewriteIndexAfterPrune(
+      indexKey,
+      stackName,
+      region,
+      deletedSet,
+      remainingRunIds.length === 0
+    );
+    await this.backend.deleteRawObjects(deleteKeys);
+    return { deletedRunIds: candidates, remainingRunIds, indexDeleted };
+  }
+
+  /**
+   * Drop the pruned run ids from `index.json`, or delete the index entirely
+   * when no `.jsonl` streams remain. A corrupt / unreadable index is left
+   * untouched (the `.jsonl` files are the source of truth; `cdkd events`
+   * falls back to key enumeration). Returns whether the index was deleted.
+   */
+  private async rewriteIndexAfterPrune(
+    indexKey: string,
+    stackName: string,
+    region: string,
+    deletedRunIds: Set<string>,
+    noRunsRemain: boolean
+  ): Promise<boolean> {
+    if (noRunsRemain) {
+      await this.backend.deleteRawObjects([indexKey]);
+      return true;
+    }
+    let raw: string | null;
+    try {
+      raw = await this.backend.getRawObject(indexKey);
+    } catch {
+      return false;
+    }
+    if (raw === null) return false;
+    let parsed: Partial<DeploymentRunIndexFile>;
+    try {
+      parsed = JSON.parse(raw) as Partial<DeploymentRunIndexFile>;
+    } catch {
+      return false; // corrupt index — leave as-is
+    }
+    if (!Array.isArray(parsed.runs)) return false;
+    const remaining = parsed.runs.filter((r) => !deletedRunIds.has(r.runId));
+    if (remaining.length === parsed.runs.length) return false; // nothing to rewrite
+    const file: DeploymentRunIndexFile = {
+      indexVersion: DEPLOYMENT_EVENTS_INDEX_VERSION,
+      stackName,
+      region,
+      runs: remaining,
+      lastModified: Date.now(),
+    };
+    await this.backend.putRawObject(indexKey, JSON.stringify(file, null, 2));
+    return false;
   }
 }
