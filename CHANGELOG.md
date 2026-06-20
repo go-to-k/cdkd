@@ -1,3 +1,10 @@
+## [0.227.1](https://github.com/go-to-k/cdkd/compare/v0.227.0...v0.227.1) (2026-06-20)
+
+
+### Bug Fixes
+
+* **provisioning:** add a DynamoDB GSI in place instead of replacing the table ([#887](https://github.com/go-to-k/cdkd/issues/887)) ([b3bf492](https://github.com/go-to-k/cdkd/commit/b3bf4928a2c04745df21d28a22d37005d981b5ca))
+
 # [0.227.0](https://github.com/go-to-k/cdkd/compare/v0.226.0...v0.227.0) (2026-06-15)
 
 
