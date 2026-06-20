@@ -13,7 +13,6 @@ iam-managed-policy	2026-06-01T21:12:13Z	PASS	20	standard	rc ok, orph clean
 eventbridge	2026-06-01T21:12:13Z	PASS	67	verify.sh	rc ok, orph clean
 migrate-from-cfn	2026-06-01T21:12:13Z	PASS	89	standard	rc ok, orph clean
 nested-stack-deep	2026-06-01T21:12:13Z	PASS	48	verify.sh	rc ok, orph clean
-apigateway	2026-06-01T21:12:13Z	PASS	45	verify.sh	rc ok, orph clean
 vpc-lambda-cr-race	2026-06-02T07:34:17Z	PASS		standard	coverage batch: VPC+Lambda+CR; withRetry handled role-assume propagation, deploy ok, 9 deleted 0 errors 0 orphans
 event-driven	2026-06-02T07:36:47Z	PASS		standard	coverage batch: 19 deleted 0 errors 0 orphans
 deletion-policy-retain	2026-06-02T07:36:47Z	PASS		verify.sh	coverage batch: all retain checks passed, AWS clean
@@ -141,3 +140,7 @@ cloudwatch	2026-06-15T07:39:23Z	PASS	47	standard	Alarm create+destroy clean 0 or
 stepfunctions-s3-definition	2026-06-15T08:44:00Z	PASS	55	verify.sh	post-review re-run; DefinitionS3Location+asset fix; destroy clean
 dynamodb-gsi-update	2026-06-20T17:39:41Z	PASS		verify.sh	add-GSI in-place UPDATE (no replacement); 3 phases pass, clean destroy, 0 orphans
 multi-resource	2026-06-20T18:21:05Z	PASS		standard	destroy --purge-events: 17 deleted 0 err, deployments/ purged empty (#885)
+apigateway	2026-06-20T18:40:52Z	PASS		verify.sh	added {proxy+} ANY method; proxy route reached Lambda; 0 err 0 orphan
+s3-event-notification	2026-06-20T18:40:52Z	PASS		verify.sh	S3->Lambda notification fired (DynamoDB record); 3 phases pass, clean destroy, 0 orphan
+lambda-log-retention	2026-06-20T18:40:52Z	PASS		verify.sh	logRetention 7 + in-place UPDATE to 14 (Custom::LogRetention); clean destroy, 0 orphan
+bucket-deployment	2026-06-20T18:40:52Z	PASS		verify.sh	Custom::CDKBucketDeployment synced asset; clean destroy, 0 orphan

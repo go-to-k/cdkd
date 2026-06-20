@@ -26,6 +26,14 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  *   CreateStage / UpdateStage API call (NOT a separate control-plane call),
  *   and verify.sh asserts both reached AWS via `aws apigateway get-stage`.
  *
+ * - Greedy `{proxy+}` resource with an ANY method (the LambdaRestApi proxy
+ *   pattern). This is the most common API Gateway shape in real CDK apps, and
+ *   it exercises a path the explicit `GET /hello` method does not: a greedy
+ *   proxy Resource + an ANY Method + the implicit
+ *   Deployment-depends-on-the-proxy-Method DAG edge (getting that order wrong
+ *   makes the Deployment snapshot miss the new method). verify.sh curls an
+ *   arbitrary sub-path and asserts it reaches the Lambda.
+ *
  * covers: AWS::ApiGateway::Method
  * covers: AWS::ApiGateway::Resource
  * covers: AWS::ApiGateway::Stage
@@ -92,6 +100,15 @@ exports.handler = async (event) => {
     // Add GET /hello endpoint with Lambda integration
     const helloResource = api.root.addResource('hello');
     helloResource.addMethod('GET', new apigateway.LambdaIntegration(handler));
+
+    // Greedy {proxy+} resource with an ANY method — the LambdaRestApi proxy
+    // pattern. Exercises the greedy proxy Resource + ANY Method + the implicit
+    // Deployment-depends-on-the-proxy-Method DAG edge. verify.sh curls an
+    // arbitrary sub-path to prove the proxy route reaches the Lambda.
+    api.root.addProxy({
+      defaultIntegration: new apigateway.LambdaIntegration(handler),
+      anyMethod: true,
+    });
 
     // Standalone REQUEST authorizer (not attached to any method - no IAM
     // role / lambda permission needed since it is never invoked). It exists
