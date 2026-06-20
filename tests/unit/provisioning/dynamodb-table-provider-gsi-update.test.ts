@@ -258,6 +258,107 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
     expect(findCalls(UpdateTableCommand)).toHaveLength(0);
   });
 
+  it('waits through a BACKFILLING index before completing the GSI create', async () => {
+    // DescribeTable(ARN) -> UpdateTable(create) -> wait poll #1 (index still
+    // BACKFILLING / table ACTIVE -> keep waiting) -> wait poll #2 (index ACTIVE)
+    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableStatus: 'ACTIVE',
+        GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'CREATING' }],
+      },
+    });
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableStatus: 'ACTIVE',
+        GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      TYPE,
+      {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: ATTRS_WITH_GSI,
+        GlobalSecondaryIndexes: [GSI],
+      },
+      {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: ATTRS_BASE,
+        GlobalSecondaryIndexes: undefined,
+      }
+    );
+
+    // The wait loop re-polled DescribeTable until the index reached ACTIVE:
+    // 1 initial (ARN) + 2 wait polls = 3 DescribeTable calls.
+    expect(findCalls(DescribeTableCommand)).toHaveLength(3);
+    expect(findCalls(UpdateTableCommand)).toHaveLength(1);
+  });
+
+  it('throws when a created GSI is missing KeySchema', async () => {
+    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
+
+    await expect(
+      provider.update(
+        'L',
+        TABLE_NAME,
+        TYPE,
+        {
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          AttributeDefinitions: ATTRS_WITH_GSI,
+          GlobalSecondaryIndexes: [{ IndexName: 'gsiNoKey', Projection: { ProjectionType: 'ALL' } }],
+        },
+        {
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          AttributeDefinitions: ATTRS_BASE,
+          GlobalSecondaryIndexes: undefined,
+        }
+      )
+    ).rejects.toThrow(/missing KeySchema/);
+    expect(findCalls(UpdateTableCommand)).toHaveLength(0);
+  });
+
+  it('forwards OnDemandThroughput on a GSI create when present', async () => {
+    const gsiOnDemand = {
+      ...GSI,
+      OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 },
+    };
+    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableStatus: 'ACTIVE',
+        GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      TYPE,
+      {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: ATTRS_WITH_GSI,
+        GlobalSecondaryIndexes: [gsiOnDemand],
+      },
+      {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: ATTRS_BASE,
+        GlobalSecondaryIndexes: undefined,
+      }
+    );
+
+    const updates = findCalls(UpdateTableCommand);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.input.GlobalSecondaryIndexUpdates![0]!.Create!.OnDemandThroughput).toEqual({
+      MaxReadRequestUnits: 10,
+      MaxWriteRequestUnits: 5,
+    });
+  });
+
   it('does not issue any UpdateTable when GSIs are unchanged', async () => {
     mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
 
