@@ -25,6 +25,10 @@ import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
 import { startRunRecorder, recordRunFailed } from './deployment-events-run.js';
+import {
+  DeploymentEventsReader,
+  type DeploymentEventsPruneResult,
+} from '../../state/deployment-events-store.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -93,6 +97,51 @@ export function orderConsumersBeforeProducers(
 }
 
 /**
+ * Issue [#885] — apply `cdkd destroy --purge-events` for one stack.
+ *
+ * Purges the stack's deployment-event history (the post-mortem `deployments/`
+ * store cdkd keeps by default) ONLY after a clean, non-interrupted destroy, so
+ * the state bucket returns fully empty. Deliberately skipped on a failed /
+ * interrupted destroy — those events ARE the post-mortem the user wants on the
+ * retry — and a no-op when `--purge-events` was not passed.
+ *
+ * MUST be called AFTER the run's `eventRecorder.finalize()` (which writes this
+ * run's own events + index): purging first would just be re-created by the
+ * finalize. Best-effort — a purge failure warns but never fails the
+ * already-successful destroy (the resources are gone regardless). The
+ * equivalent for an already-destroyed stack is `cdkd events prune <stack> --all`.
+ *
+ * Returns the prune result when a purge ran, or `null` when it was skipped
+ * (flag off / failed / interrupted) or the purge itself errored. Extracted
+ * from the destroy loop so the gating is unit-testable without the full
+ * synth / AWS-client harness.
+ */
+export async function purgeEventsAfterDestroy(
+  reader: Pick<DeploymentEventsReader, 'pruneRuns'>,
+  stackName: string,
+  region: string,
+  opts: { purgeEvents: boolean | undefined; runResult: DeploymentRunResult; interrupted: boolean },
+  logger: { info: (message: string) => void; warn: (message: string) => void }
+): Promise<DeploymentEventsPruneResult | null> {
+  if (opts.purgeEvents !== true || opts.runResult !== 'SUCCEEDED' || opts.interrupted) {
+    return null;
+  }
+  try {
+    const purge = await reader.pruneRuns(stackName, region, { all: true });
+    if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
+      logger.info(`  Purged deployment-event history for ${stackName} (${region}).`);
+    }
+    return purge;
+  } catch (purgeError) {
+    logger.warn(
+      `  Failed to purge deployment-event history for ${stackName}: ` +
+        `${purgeError instanceof Error ? purgeError.message : String(purgeError)}`
+    );
+    return null;
+  }
+}
+
+/**
  * Destroy command implementation
  */
 async function destroyCommand(
@@ -110,6 +159,7 @@ async function destroyCommand(
     yes: boolean;
     force: boolean;
     removeProtection?: boolean;
+    purgeEvents?: boolean;
     verbose: boolean;
     context?: string[];
     allowUnsupportedTypes?: string[];
@@ -589,6 +639,17 @@ async function destroyCommand(
         await eventRecorder.finalize(destroyRunResult);
       }
 
+      // Issue [#885] — --purge-events: after a CLEAN destroy, also delete this
+      // stack's deployment-event history so the state bucket returns fully
+      // empty. Runs AFTER the recorder finalizes (see the helper's contract).
+      await purgeEventsAfterDestroy(
+        new DeploymentEventsReader(stateBackend),
+        stackName,
+        stackTargetRegion,
+        { purgeEvents: options.purgeEvents, runResult: destroyRunResult, interrupted },
+        logger
+      );
+
       // Graceful SIGINT (issue #816): do not start destroying further stacks
       // once the user has asked to stop. The interrupted stack already
       // finished its in-flight deletes, preserved state, and released its lock.
@@ -631,6 +692,15 @@ export function createDestroyCommand(): Command {
       "Stack name(s) to destroy. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
     )
     .option('--all', 'Destroy all stacks', false)
+    .option(
+      '--purge-events',
+      "After a clean destroy, also delete the stack's deployment-event history " +
+        '(issue #808 store) so the state bucket returns fully empty. By default events ' +
+        'survive destroy as post-mortem context. Skipped when the destroy fails or is ' +
+        'interrupted (those events aid the retry). Equivalent for an already-destroyed ' +
+        "stack: 'cdkd events prune <stack> --all'.",
+      false
+    )
     .action(withErrorHandling(destroyCommand));
 
   // Add options (appOptions accepted for CDK CLI compatibility, but not used)

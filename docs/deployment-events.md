@@ -70,6 +70,11 @@ Two mechanisms keep the `deployments/` prefix from growing without bound:
   event history (post-mortem context), so it never returns the state bucket
   to empty on its own. `cdkd events prune <stack>` is the way to reclaim that
   space — see [Pruning event history](#pruning-event-history-cdkd-events-prune).
+- **Purge as part of destroy: `cdkd destroy --purge-events`.** Opts into
+  deleting the stack's event history immediately after a *clean* destroy, so
+  the bucket returns fully empty in one command. Kept on a failed /
+  interrupted destroy (those events aid the retry); equivalent for an
+  already-destroyed stack is `cdkd events prune <stack> --all`.
 
 ### Best-effort, never blocking
 

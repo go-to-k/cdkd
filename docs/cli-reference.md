@@ -1294,6 +1294,29 @@ cdkd destroy --all --remove-protection -y
 cdkd state destroy MyStack --remove-protection -y
 ```
 
+## `--purge-events`: also delete deployment-event history on destroy
+
+By default `cdkd destroy` removes `state.json` / `lock.json` but **keeps** the
+stack's deployment-event history (the issue #808 `deployments/` store) as
+post-mortem context — so the state bucket does not return fully empty after a
+teardown. `cdkd destroy <stack> --purge-events` (issue
+[#885](https://github.com/go-to-k/cdkd/issues/885)) opts into purging that
+history too, so the bucket returns to empty:
+
+```bash
+cdkd destroy MyStack --purge-events -y
+```
+
+- The purge runs **only after a clean, non-interrupted destroy** of that
+  stack. On a failed / interrupted destroy the events are kept — they are
+  exactly the post-mortem you want when retrying.
+- Best-effort: a purge failure logs a warning but never fails the
+  already-successful destroy.
+- `state destroy` does NOT take this flag; for an already-destroyed stack (or
+  the CDK-app-free path) use the equivalent `cdkd events prune <stack> --all`.
+- Per-stack: when destroying multiple stacks, each clean stack's history is
+  purged independently.
+
 ## Exit codes
 
 cdkd commands distinguish three outcomes via the process exit code so
