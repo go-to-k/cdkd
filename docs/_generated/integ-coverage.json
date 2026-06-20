@@ -654,6 +654,7 @@
         "bench-sdk",
         "composite-stack",
         "data-pipeline",
+        "dynamodb-gsi-update",
         "dynamodb-ondemand",
         "dynamodb-streams",
         "full-stack-demo",
@@ -678,6 +679,9 @@
           "literal"
         ],
         "data-pipeline": [
+          "l2"
+        ],
+        "dynamodb-gsi-update": [
           "l2"
         ],
         "dynamodb-ondemand": [

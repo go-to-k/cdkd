@@ -549,6 +549,11 @@
       ]
     },
     {
+      "name": "dynamodb-gsi-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-ondemand",
       "annotated": false,
       "scenarios": []
@@ -1844,6 +1849,7 @@
     "acm-certificate",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "dynamodb-gsi-update",
     "dynamodb-ondemand",
     "export-nested-stack",
     "iam-managed-policy",

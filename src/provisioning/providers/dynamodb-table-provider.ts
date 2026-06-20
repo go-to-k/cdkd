@@ -29,6 +29,7 @@ import {
   type KeySchemaElement,
   type AttributeDefinition,
   type GlobalSecondaryIndex,
+  type GlobalSecondaryIndexUpdate,
   type LocalSecondaryIndex,
   type StreamSpecification,
   type OnDemandThroughput,
@@ -450,6 +451,27 @@ export class DynamoDBTableProvider implements ResourceProvider {
           );
           this.logger.debug(`Updated WarmThroughput on DynamoDB table ${physicalId}`);
         }
+      }
+
+      // GlobalSecondaryIndexes — add / remove / per-index throughput change via
+      // UpdateTable's GlobalSecondaryIndexUpdates. AWS permits only ONE GSI
+      // create or delete per UpdateTable and rejects a concurrent update while
+      // the table (or another index) is still mutating, so applyGsiUpdates
+      // serializes the operations and waits for ACTIVE between each. A GSI
+      // create must carry the new index's key AttributeDefinitions in the same
+      // call — the full desired AttributeDefinitions array is forwarded.
+      if (
+        JSON.stringify(properties['GlobalSecondaryIndexes']) !==
+        JSON.stringify(previousProperties['GlobalSecondaryIndexes'])
+      ) {
+        await this.applyGsiUpdates(
+          physicalId,
+          resourceType,
+          logicalId,
+          previousProperties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
+          properties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
+          properties['AttributeDefinitions'] as AttributeDefinition[] | undefined
+        );
       }
 
       // PointInTimeRecoverySpecification — separate UpdateContinuousBackups
@@ -1098,6 +1120,161 @@ export class DynamoDBTableProvider implements ResourceProvider {
     throw new Error(
       `Table ${tableName} did not reach ACTIVE status within ${maxAttempts} seconds after UpdateTable`
     );
+  }
+
+  /**
+   * Poll DescribeTable until the table is ACTIVE AND every Global Secondary
+   * Index is ACTIVE (not CREATING / UPDATING / DELETING / BACKFILLING). Used
+   * between GSI mutations because a freshly-created index keeps backfilling
+   * after the table itself returns to ACTIVE, and AWS rejects the next GSI op
+   * until the prior index settles.
+   */
+  private async waitForTableAndIndexesActive(tableName: string, maxAttempts = 1800): Promise<void> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: tableName })
+      );
+      const table = response.Table;
+      const tableActive = table?.TableStatus === 'ACTIVE';
+      const indexesActive = (table?.GlobalSecondaryIndexes ?? []).every(
+        (gsi) => gsi.IndexStatus === 'ACTIVE'
+      );
+      if (tableActive && indexesActive) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error(
+      `Table ${tableName} and its global secondary indexes did not reach ACTIVE within ${maxAttempts} seconds after UpdateTable`
+    );
+  }
+
+  /**
+   * Apply Global Secondary Index add / remove / per-index throughput changes
+   * via UpdateTable's `GlobalSecondaryIndexUpdates`.
+   *
+   * AWS constraints mirrored here:
+   *  - At most ONE GSI Create or Delete per UpdateTable call; a second
+   *    mutation while the table / an index is still building is rejected. Each
+   *    op therefore runs in its own UpdateTable and waits for ACTIVE before the
+   *    next (creating GSIs also go through a BACKFILLING phase that ACTIVE
+   *    covers).
+   *  - A GSI `Create` must carry the AttributeDefinitions for the new index's
+   *    key attributes — the full desired AttributeDefinitions array is passed
+   *    so every newly-referenced attribute is defined.
+   *  - On an existing same-name index, only a PROVISIONED `ProvisionedThroughput`
+   *    (RCU/WCU) change is mutable in place and is issued as an `Update`. A
+   *    `KeySchema` / `Projection` change is immutable in place (AWS models it as
+   *    a delete + re-create); since the diff keys GSIs by name it would not emit
+   *    a remove-then-add pair, so this method throws on such a change rather than
+   *    silently dropping it.
+   */
+  private async applyGsiUpdates(
+    physicalId: string,
+    resourceType: string,
+    logicalId: string,
+    previousGsis: GlobalSecondaryIndex[] | undefined,
+    desiredGsis: GlobalSecondaryIndex[] | undefined,
+    desiredAttributeDefinitions: AttributeDefinition[] | undefined
+  ): Promise<void> {
+    const prev = previousGsis ?? [];
+    const desired = desiredGsis ?? [];
+    const prevByName = new Map(prev.filter((g) => g.IndexName).map((g) => [g.IndexName!, g]));
+    const desiredByName = new Map(desired.filter((g) => g.IndexName).map((g) => [g.IndexName!, g]));
+
+    // Each entry is a single GlobalSecondaryIndexUpdates op applied in its own
+    // UpdateTable call. Deletes first (free up the one-op-per-call budget and
+    // any attribute no longer needed), then creates, then throughput updates.
+    const ops: GlobalSecondaryIndexUpdate[] = [];
+
+    for (const name of prevByName.keys()) {
+      if (!desiredByName.has(name)) {
+        ops.push({ Delete: { IndexName: name } });
+      }
+    }
+
+    for (const [name, gsi] of desiredByName) {
+      if (!prevByName.has(name)) {
+        if (!gsi.KeySchema) {
+          throw new ProvisioningError(
+            `GlobalSecondaryIndex ${name} on DynamoDB table ${logicalId} is missing KeySchema`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        ops.push({
+          Create: {
+            IndexName: name,
+            KeySchema: gsi.KeySchema,
+            Projection: gsi.Projection,
+            ...(gsi.ProvisionedThroughput
+              ? { ProvisionedThroughput: gsi.ProvisionedThroughput }
+              : {}),
+            ...(gsi.OnDemandThroughput ? { OnDemandThroughput: gsi.OnDemandThroughput } : {}),
+          },
+        });
+      } else {
+        const before = prevByName.get(name)!;
+        // A same-name index's KeySchema / Projection are immutable in place —
+        // AWS models such a change as a delete + re-create of the index. cdkd's
+        // diff keys GSIs by name, so it would NOT emit a remove-then-add pair
+        // for an in-place key/projection edit; applying only a throughput Update
+        // (or nothing) would silently drop the change and record state as if it
+        // applied. Fail loud instead (the no-silent-drop rule) so the user
+        // renames the index (forcing remove + add) or accepts a table replace.
+        if (
+          JSON.stringify(before.KeySchema) !== JSON.stringify(gsi.KeySchema) ||
+          JSON.stringify(before.Projection) !== JSON.stringify(gsi.Projection)
+        ) {
+          throw new ProvisioningError(
+            `GlobalSecondaryIndex ${name} on DynamoDB table ${logicalId} changed its ` +
+              `KeySchema or Projection, which DynamoDB cannot modify in place. Rename the ` +
+              `index (so it is dropped and re-created) or replace the table.`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        // Only ProvisionedThroughput is mutable in place on an existing index.
+        // A numeric RCU/WCU change on a PROVISIONED GSI is issued as an Update;
+        // a PROVISIONED->on-demand per-index drop is driven by the table-wide
+        // BillingMode switch (handled above), not here.
+        if (
+          gsi.ProvisionedThroughput &&
+          JSON.stringify(before.ProvisionedThroughput) !== JSON.stringify(gsi.ProvisionedThroughput)
+        ) {
+          ops.push({
+            Update: { IndexName: name, ProvisionedThroughput: gsi.ProvisionedThroughput },
+          });
+        }
+      }
+    }
+
+    for (const op of ops) {
+      const input: UpdateTableCommandInput = {
+        TableName: physicalId,
+        GlobalSecondaryIndexUpdates: [op],
+      };
+      // A Create references new key attributes, so it must include their
+      // definitions. Forward the full desired set (AWS ignores already-known
+      // attribute definitions and validates that every indexed attribute is
+      // present).
+      if (op.Create && desiredAttributeDefinitions) {
+        input.AttributeDefinitions = desiredAttributeDefinitions;
+      }
+      await this.dynamoDBClient.send(new UpdateTableCommand(input));
+      // GSI create/delete is async: the table returns to ACTIVE quickly while a
+      // new index is still CREATING -> BACKFILLING. AWS rejects the next GSI op
+      // until every index is fully ACTIVE, and CloudFormation likewise waits for
+      // the index to finish before completing — so wait on BOTH the table and
+      // every GSI status, not just the table.
+      await this.waitForTableAndIndexesActive(physicalId);
+      const verb = op.Create ? 'created' : op.Delete ? 'deleted' : 'updated';
+      this.logger.debug(
+        `${verb} GSI ${op.Create?.IndexName ?? op.Delete?.IndexName ?? op.Update?.IndexName} on DynamoDB table ${physicalId}`
+      );
+    }
   }
 
   /**
