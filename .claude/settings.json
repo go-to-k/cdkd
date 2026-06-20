@@ -187,6 +187,17 @@
             "statusMessage": "Checking staged verify.sh for state destroy --force..."
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/main-tree-edit-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking main-tree tracked-file edit policy..."
+          }
+        ]
       }
     ],
     "PostToolUse": [
