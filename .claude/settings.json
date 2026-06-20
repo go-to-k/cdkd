@@ -90,6 +90,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/bughunt-clean-gate.sh",
+            "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*) or Bash(gh pr create*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr merge*)",
+            "timeout": 10,
+            "statusMessage": "Checking for un-destroyed bug-hunt resources..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/commit-msg-heredoc-gate.sh",
             "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
