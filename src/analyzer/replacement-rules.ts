@@ -23,6 +23,46 @@ interface ReplacementRule {
 }
 
 /**
+ * Conditional-replacement predicate for `AWS::DynamoDB::Table.AttributeDefinitions`.
+ *
+ * Returns true only when an attribute present in BOTH the old and new definition
+ * lists changed its `AttributeType` (e.g. `S` -> `N`). Adding a brand-new attribute
+ * (to back a new GSI) or removing one (when a GSI is dropped) returns false — those
+ * are in-place `UpdateTable` operations, matching CloudFormation's "No interruption"
+ * update behavior for this property.
+ */
+export function attributeTypeChangedForSharedAttribute(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  const toTypeMap = (value: unknown): Map<string, string> => {
+    const map = new Map<string, string>();
+    if (Array.isArray(value)) {
+      for (const def of value) {
+        if (def && typeof def === 'object') {
+          const name = (def as Record<string, unknown>)['AttributeName'];
+          const type = (def as Record<string, unknown>)['AttributeType'];
+          if (typeof name === 'string' && typeof type === 'string') {
+            map.set(name, type);
+          }
+        }
+      }
+    }
+    return map;
+  };
+
+  const oldTypes = toTypeMap(oldValue);
+  const newTypes = toTypeMap(newValue);
+  for (const [name, oldType] of oldTypes) {
+    const newType = newTypes.get(name);
+    if (newType !== undefined && newType !== oldType) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Replacement rules registry
  *
  * Maps resource types to their replacement rules
@@ -131,12 +171,14 @@ export class ReplacementRulesRegistry {
     this.rules.set('AWS::DynamoDB::Table', {
       replacementProperties: new Set([
         'TableName', // Changing table name requires replacement
-        'KeySchema', // Changing key schema requires replacement
-        'AttributeDefinitions', // Changing attributes (in key) requires replacement
+        'KeySchema', // Changing the table's primary key requires replacement
       ]),
       updateableProperties: new Set([
         'BillingMode',
         'ProvisionedThroughput',
+        // Adding / removing a Global Secondary Index is an in-place UpdateTable
+        // (one GSI per call, async) — NOT a replacement. The provider's update()
+        // applies these via GlobalSecondaryIndexUpdates.
         'GlobalSecondaryIndexes',
         'LocalSecondaryIndexes',
         'StreamSpecification',
@@ -144,6 +186,16 @@ export class ReplacementRulesRegistry {
         'Tags',
         'TimeToLiveSpecification',
         'PointInTimeRecoverySpecification',
+      ]),
+      conditionalReplacements: new Map([
+        // AttributeDefinitions is NOT a blanket replacement trigger. CloudFormation's
+        // update behavior for it is "No interruption": adding an attribute (to back a
+        // new GSI) or removing one (when a GSI is dropped) is an in-place update. The
+        // ONLY case needing replacement is changing the TYPE of an attribute that
+        // exists on both sides — DynamoDB rejects an in-place type change on an
+        // attribute that participates in the table key or an index. A key attribute
+        // NAME change instead surfaces as a KeySchema diff (handled above).
+        ['AttributeDefinitions', attributeTypeChangedForSharedAttribute],
       ]),
     });
 
