@@ -107,7 +107,6 @@ vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order
 ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfiguration camelCase reached AWS; 23 deleted 0 err
 cross-region-state-bucket	2026-06-13T07:10:46Z	PASS	34	verify.sh	#827 shared bucket-region helper; behavior preserved; 1 deleted 0 err, temp bucket cleaned
 bench-cdk-sample	2026-06-13T09:16:21Z	PASS	529	standard	regression sweep; 0 err 0 orphan
-multi-resource	2026-06-13T09:16:21Z	PASS	75	standard	regression sweep; 0 err 0 orphan
 drift-revert	2026-06-13T09:16:21Z	PASS	89	verify.sh	regression sweep; 0 err 0 orphan
 drift-revert-vpc	2026-06-13T09:16:21Z	PASS	228	verify.sh	regression sweep; 0 err 0 orphan
 remove-protection	2026-06-13T09:16:21Z	PASS	1267	verify.sh	regression sweep; 0 err 0 orphan
@@ -141,3 +140,4 @@ servicediscovery	2026-06-15T07:22:22Z	PASS	108	verify.sh	ServiceAttributes reach
 cloudwatch	2026-06-15T07:39:23Z	PASS	47	standard	Alarm create+destroy clean 0 orphans (#609 unhandledByDesign cleanup)
 stepfunctions-s3-definition	2026-06-15T08:44:00Z	PASS	55	verify.sh	post-review re-run; DefinitionS3Location+asset fix; destroy clean
 dynamodb-gsi-update	2026-06-20T17:39:41Z	PASS		verify.sh	add-GSI in-place UPDATE (no replacement); 3 phases pass, clean destroy, 0 orphans
+multi-resource	2026-06-20T18:21:05Z	PASS		standard	destroy --purge-events: 17 deleted 0 err, deployments/ purged empty (#885)
