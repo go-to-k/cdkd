@@ -1,3 +1,10 @@
+# [0.229.0](https://github.com/go-to-k/cdkd/compare/v0.228.0...v0.229.0) (2026-06-20)
+
+
+### Features
+
+* **destroy:** add --purge-events to delete event history on clean destroy ([#885](https://github.com/go-to-k/cdkd/issues/885)) ([#890](https://github.com/go-to-k/cdkd/issues/890)) ([2256814](https://github.com/go-to-k/cdkd/commit/2256814869103255d917bc0c5218393a1c6cadb5))
+
 # [0.228.0](https://github.com/go-to-k/cdkd/compare/v0.227.1...v0.228.0) (2026-06-20)
 
 
