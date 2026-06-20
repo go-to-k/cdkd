@@ -6,6 +6,7 @@ import {
   deploymentEventsKey,
   deploymentEventsIndexKey,
   newDeploymentRunId,
+  runIdTimestampMs,
 } from '../../../src/state/deployment-events-store.js';
 import { DEPLOYMENT_EVENTS_INDEX_VERSION } from '../../../src/types/deployment-events.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -34,6 +35,9 @@ function makeFakeBackend(opts?: { failPut?: boolean }): {
     listRawKeys: vi.fn(async (keyPrefix: string) =>
       [...objects.keys()].filter((k) => k.startsWith(keyPrefix))
     ),
+    deleteRawObjects: vi.fn(async (keys: string[]) => {
+      for (const k of keys) objects.delete(k);
+    }),
   } as unknown as S3StateBackend;
   return {
     backend,
@@ -42,6 +46,40 @@ function makeFakeBackend(opts?: { failPut?: boolean }): {
       return state.putCalls;
     },
   };
+}
+
+/** Time-sortable run id differing only in the millisecond field. */
+function id(i: number): string {
+  return `20260101T000000${String(i).padStart(3, '0')}Z-aa`;
+}
+
+/** Seed `objects` with a `.jsonl` per run id + a matching index.json. */
+function seedRuns(objects: Map<string, string>, region: string, ids: string[]): void {
+  const runs = [...ids]
+    .sort()
+    .reverse()
+    .map((runId) => ({
+      runId,
+      command: 'deploy' as const,
+      cdkdVersion: '0',
+      startedAt: '',
+      finishedAt: '',
+      result: 'SUCCEEDED' as const,
+      eventCount: 1,
+    }));
+  for (const runId of ids) {
+    objects.set(`cdkd/S/${region}/deployments/${runId}.jsonl`, '{}\n');
+  }
+  objects.set(
+    `cdkd/S/${region}/deployments/index.json`,
+    JSON.stringify({
+      indexVersion: DEPLOYMENT_EVENTS_INDEX_VERSION,
+      stackName: 'S',
+      region,
+      runs,
+      lastModified: 1,
+    })
+  );
 }
 
 describe('deployment-events-store key helpers', () => {
@@ -59,6 +97,16 @@ describe('deployment-events-store key helpers', () => {
     expect(a).toMatch(/^20260613T012345678Z-[0-9a-f]{8}$/);
     const b = newDeploymentRunId(new Date('2026-06-13T01:23:45.678Z'));
     expect(a).not.toBe(b); // random suffix differs even at the same instant
+  });
+
+  it('parses a run id timestamp back to epoch ms (round-trip with newDeploymentRunId)', () => {
+    const runId = newDeploymentRunId(new Date('2026-06-13T01:23:45.678Z'));
+    expect(runIdTimestampMs(runId)).toBe(Date.parse('2026-06-13T01:23:45.678Z'));
+  });
+
+  it('returns null for a run id without the canonical compact-ISO prefix', () => {
+    expect(runIdTimestampMs('old-3')).toBeNull();
+    expect(runIdTimestampMs('')).toBeNull();
   });
 });
 
@@ -251,6 +299,49 @@ describe('DeploymentEventsStore', () => {
     ); // oldest dropped
   });
 
+  it('auto-prunes superseded .jsonl streams beyond the index window on finalize', async () => {
+    const { backend, objects } = makeFakeBackend();
+    const N = DEPLOYMENT_EVENTS_MAX_INDEX_RUNS;
+    // Pre-seed N existing runs (ids 000..N-1), each with a .jsonl + index.
+    seedRuns(
+      objects,
+      'us-east-1',
+      Array.from({ length: N }, (_, i) => id(i))
+    );
+
+    // A new run whose id sorts newest forces the oldest out of the window.
+    const newId = id(N);
+    const store = new DeploymentEventsStore(backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: newId,
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    await store.finalize('SUCCEEDED');
+
+    // Kept window = [newId, id(N-1)..id(1)] -> oldest retained is id(1).
+    // id(0) is superseded and its .jsonl is deleted; id(1).. survive.
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(0)}.jsonl`)).toBe(false);
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(1)}.jsonl`)).toBe(true);
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${newId}.jsonl`)).toBe(true);
+  });
+
+  it('does not prune .jsonl streams while below the index window', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0), id(1)]);
+    const store = new DeploymentEventsStore(backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: id(2),
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    await store.finalize('SUCCEEDED');
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(0)}.jsonl`)).toBe(true);
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(1)}.jsonl`)).toBe(true);
+  });
+
   it('rebuilds the index from this run alone when the existing index is corrupt', async () => {
     const { backend, objects } = makeFakeBackend();
     objects.set('cdkd/S/us-east-1/deployments/index.json', '{not valid json');
@@ -418,5 +509,118 @@ describe('DeploymentEventsReader', () => {
     objects.set('cdkd/S/us-east-1/state.json', '{}');
     const reader = new DeploymentEventsReader(backend);
     expect(await reader.listRegions('S')).toEqual(['eu-west-1', 'us-east-1']);
+  });
+});
+
+describe('DeploymentEventsReader.pruneRuns', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  beforeEach(() => vi.clearAllMocks());
+
+  it('--all deletes every run and the index', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0), id(1), id(2)]);
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', { all: true });
+    expect([...r.deletedRunIds].sort()).toEqual([id(0), id(1), id(2)]);
+    expect(r.remainingRunIds).toEqual([]);
+    expect(r.indexDeleted).toBe(true);
+    expect([...objects.keys()].filter((k) => k.includes('/deployments/'))).toEqual([]);
+  });
+
+  it('--keep retains the newest N and rewrites the index', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0), id(1), id(2), id(3)]);
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', { keep: 2 });
+    expect([...r.deletedRunIds].sort()).toEqual([id(0), id(1)]);
+    expect(r.remainingRunIds).toEqual([id(3), id(2)]); // newest-first
+    expect(r.indexDeleted).toBe(false);
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(0)}.jsonl`)).toBe(false);
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(2)}.jsonl`)).toBe(true);
+    const idx = JSON.parse(objects.get('cdkd/S/us-east-1/deployments/index.json')!);
+    expect(idx.runs.map((x: { runId: string }) => x.runId)).toEqual([id(3), id(2)]);
+  });
+
+  it('with no flags defaults to keeping the index window', async () => {
+    const { backend, objects } = makeFakeBackend();
+    const ids = Array.from({ length: DEPLOYMENT_EVENTS_MAX_INDEX_RUNS + 3 }, (_, i) => id(i));
+    seedRuns(objects, 'us-east-1', ids);
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', {});
+    expect(r.deletedRunIds).toHaveLength(3);
+    expect(r.remainingRunIds).toHaveLength(DEPLOYMENT_EVENTS_MAX_INDEX_RUNS);
+  });
+
+  it('--older-than deletes by run-id timestamp and keeps unparseable / recent runs', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [
+      '20260101T000000000Z-a',
+      '20260103T000000000Z-b',
+      '20260105T000000000Z-c',
+      'weird-run',
+    ]);
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', {
+      olderThanMs: 2 * DAY,
+      now: new Date('2026-01-06T00:00:00.000Z'),
+    });
+    expect([...r.deletedRunIds].sort()).toEqual(['20260101T000000000Z-a', '20260103T000000000Z-b']);
+    expect(objects.has('cdkd/S/us-east-1/deployments/weird-run.jsonl')).toBe(true);
+    expect(objects.has('cdkd/S/us-east-1/deployments/20260105T000000000Z-c.jsonl')).toBe(true);
+  });
+
+  it('--keep + --older-than only deletes runs that are BOTH beyond keep AND older', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [
+      '20260101T000000000Z-a',
+      '20260102T000000000Z-b',
+      '20260103T000000000Z-c',
+      '20260104T000000000Z-d',
+    ]);
+    const reader = new DeploymentEventsReader(backend);
+    // keep 2 -> protect Jan4, Jan3. cutoff = now - 1.5d = Jan2 12:00 -> Jan1,Jan2 old.
+    // Intersection (beyond-keep = Jan2,Jan1) AND (older = Jan2,Jan1) = Jan1,Jan2.
+    const r = await reader.pruneRuns('S', 'us-east-1', {
+      keep: 2,
+      olderThanMs: 1.5 * DAY,
+      now: new Date('2026-01-04T00:00:00.000Z'),
+    });
+    expect([...r.deletedRunIds].sort()).toEqual(['20260101T000000000Z-a', '20260102T000000000Z-b']);
+  });
+
+  it('returns an empty deletion set (and leaves the index) when nothing matches', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0), id(1)]);
+    const reader = new DeploymentEventsReader(backend);
+    const r = await reader.pruneRuns('S', 'us-east-1', { keep: 5 });
+    expect(r.deletedRunIds).toEqual([]);
+    expect([...r.remainingRunIds].sort()).toEqual([id(0), id(1)]);
+    expect(objects.has('cdkd/S/us-east-1/deployments/index.json')).toBe(true);
+  });
+
+  it('--keep 0 deletes every run and removes the index (noRunsRemain via the count path)', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0), id(1), id(2)]);
+    const reader = new DeploymentEventsReader(backend);
+    // keep 0 protects nothing — distinct from --all but reaches the same
+    // empty-remainder index-delete branch in rewriteIndexAfterPrune.
+    const r = await reader.pruneRuns('S', 'us-east-1', { keep: 0 });
+    expect([...r.deletedRunIds].sort()).toEqual([id(0), id(1), id(2)]);
+    expect(r.remainingRunIds).toEqual([]);
+    expect(r.indexDeleted).toBe(true);
+    expect(objects.has('cdkd/S/us-east-1/deployments/index.json')).toBe(false);
+  });
+
+  it('surfaces a delete failure to the caller (does not silently report success)', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0), id(1), id(2)]);
+    // The explicit-purge path must NOT swallow a delete error — unlike the
+    // writer's best-effort auto-prune, it propagates so the command exits
+    // non-zero rather than reporting success while orphans remain.
+    (backend.deleteRawObjects as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('AccessDenied: delete failed')
+    );
+    const reader = new DeploymentEventsReader(backend);
+    await expect(reader.pruneRuns('S', 'us-east-1', { keep: 1 })).rejects.toThrow(/delete failed/);
   });
 });

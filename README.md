@@ -588,12 +588,15 @@ stream to S3 — cdkd's local equivalent of CloudFormation's
 cdkd events MyStack                 # list runs, newest first
 cdkd events MyStack --run <runId>   # one run's full event stream
 cdkd events MyStack --format json   # machine-readable (AI-agent hand-off)
+cdkd events prune MyStack --all     # purge event history (reclaim S3 space)
 ```
 
 Events are persisted as JSONL under a `deployments/` key family separate
 from `state.json` (no state schema bump), so a destroyed stack's failure
 history stays readable. Recording is best-effort and never blocks the
-run; events carry error + metadata only (never resource properties). See
+run; events carry error + metadata only (never resource properties). The
+store self-bounds to the last 20 runs, and `cdkd events prune` purges old
+history on demand (`--keep N` / `--older-than <dur>` / `--all`). See
 **[docs/deployment-events.md](docs/deployment-events.md)** for the full
 reference.
 
