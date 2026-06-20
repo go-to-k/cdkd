@@ -664,6 +664,7 @@
         "multi-resource",
         "multi-stack-deps",
         "remove-protection",
+        "s3-event-notification",
         "serverless-api",
         "tags-propagation"
       ],
@@ -711,6 +712,9 @@
         "remove-protection": [
           "l2",
           "literal"
+        ],
+        "s3-event-notification": [
+          "l2"
         ],
         "serverless-api": [
           "l2"
@@ -2771,6 +2775,7 @@
         "full-stack-demo",
         "iam-propagation-stress",
         "lambda",
+        "lambda-log-retention",
         "lambda-versioning",
         "local-invoke",
         "local-invoke-buildkit",
@@ -2803,6 +2808,7 @@
         "recreate-via-sdk-provider",
         "rollback-failure-injection",
         "s3-asset-deploy",
+        "s3-event-notification",
         "scheduled-task",
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
@@ -2889,6 +2895,9 @@
           "l2"
         ],
         "lambda": [
+          "l2"
+        ],
+        "lambda-log-retention": [
           "l2"
         ],
         "lambda-versioning": [
@@ -2994,6 +3003,9 @@
         "s3-asset-deploy": [
           "l2"
         ],
+        "s3-event-notification": [
+          "l2"
+        ],
         "scheduled-task": [
           "l2"
         ],
@@ -3050,6 +3062,7 @@
         "export",
         "migrate-from-cfn",
         "propagation-races-2",
+        "s3-event-notification",
         "serverless-api"
       ],
       "signals": {
@@ -3065,6 +3078,9 @@
         ],
         "propagation-races-2": [
           "l1",
+          "literal"
+        ],
+        "s3-event-notification": [
           "literal"
         ],
         "serverless-api": [
@@ -3260,6 +3276,7 @@
       "integs": [
         "basic",
         "bench-sdk",
+        "bucket-deployment",
         "ci-cd",
         "composite-stack",
         "conditions",
@@ -3290,6 +3307,7 @@
         "propagation-races-2",
         "recreate-via-cc-api",
         "s3-cloudfront",
+        "s3-event-notification",
         "state-destroy",
         "tags-propagation",
         "update-policy-mutations",
@@ -3300,6 +3318,9 @@
           "l2"
         ],
         "bench-sdk": [
+          "l2"
+        ],
+        "bucket-deployment": [
           "l2"
         ],
         "ci-cd": [
@@ -3397,6 +3418,9 @@
           "l1"
         ],
         "s3-cloudfront": [
+          "l2"
+        ],
+        "s3-event-notification": [
           "l2"
         ],
         "state-destroy": [

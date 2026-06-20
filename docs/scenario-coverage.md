@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**71 / 71 canonical scenarios** have at least one integ fixture exercising them. **140 / 162 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**71 / 71 canonical scenarios** have at least one integ fixture exercising them. **140 / 165 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -102,17 +102,19 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`destroy-interrupt`](../tests/integration/destroy-interrupt/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](../tests/integration/throttle-wide-dag/) |
 
-## Un-annotated fixtures (22)
+## Un-annotated fixtures (25)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
 - [`acm-certificate`](../tests/integration/acm-certificate/)
+- [`bucket-deployment`](../tests/integration/bucket-deployment/)
 - [`cc-api-fallback`](../tests/integration/cc-api-fallback/)
 - [`cc-api-fallback-transitions`](../tests/integration/cc-api-fallback-transitions/)
 - [`dynamodb-gsi-update`](../tests/integration/dynamodb-gsi-update/)
 - [`dynamodb-ondemand`](../tests/integration/dynamodb-ondemand/)
 - [`export-nested-stack`](../tests/integration/export-nested-stack/)
 - [`iam-managed-policy`](../tests/integration/iam-managed-policy/)
+- [`lambda-log-retention`](../tests/integration/lambda-log-retention/)
 - [`local-start-agentcore`](../tests/integration/local-start-agentcore/)
 - [`local-start-alb`](../tests/integration/local-start-alb/)
 - [`local-start-alb-from-state`](../tests/integration/local-start-alb-from-state/)
@@ -124,6 +126,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`recreate-mixed-direction`](../tests/integration/recreate-mixed-direction/)
 - [`recreate-via-cc-api`](../tests/integration/recreate-via-cc-api/)
 - [`recreate-via-sdk-provider`](../tests/integration/recreate-via-sdk-provider/)
+- [`s3-event-notification`](../tests/integration/s3-event-notification/)
 - [`schema-v6-to-v7-migration`](../tests/integration/schema-v6-to-v7-migration/)
 - [`schema-v7-to-v8-migration`](../tests/integration/schema-v7-to-v8-migration/)
 - [`servicediscovery`](../tests/integration/servicediscovery/)

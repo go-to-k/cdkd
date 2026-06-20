@@ -36,6 +36,14 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
+  # The {proxy+} ANY curl in Assertion 4 invokes the Lambda, which auto-creates a
+  # /aws/lambda/${STACK}* log group that is not stack-managed (CFn leaves it too).
+  # Sweep it so the run is orphan-zero.
+  for lg in $(aws logs describe-log-groups \
+    --log-group-name-prefix "/aws/lambda/${STACK}" --region "${REGION}" \
+    --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+    aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -124,6 +132,19 @@ if [ "${AUTHORIZER_AUTH_TYPE}" != "custom" ]; then
   exit 1
 fi
 echo "    OK: Authorizer authType == 'custom' on AWS (AuthType backfill CLOSED)"
+
+# --- Assertion 4: {proxy+} ANY method routes to the Lambda ------------
+# The greedy proxy resource + ANY method (the LambdaRestApi proxy pattern). A
+# curl to an arbitrary sub-path must reach the Lambda — proving the {proxy+}
+# Resource, the ANY Method, and the Deployment-depends-on-Method DAG all
+# deployed (a missed DAG edge would leave the proxy route out of the snapshot).
+API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
+PROXY_BODY="$(curl -fsS "${API_URL}/some/arbitrary/proxy/path" || echo "")"
+if ! echo "${PROXY_BODY}" | grep -q "Hello from cdkd!"; then
+  echo "FAIL: {proxy+} ANY route did not return the Lambda body; got: ${PROXY_BODY}" >&2
+  exit 1
+fi
+echo "    OK: {proxy+} ANY method routed to the Lambda (proxy path)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

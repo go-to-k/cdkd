@@ -359,6 +359,11 @@
       ]
     },
     {
+      "name": "bucket-deployment",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cache-streaming",
       "annotated": true,
       "scenarios": []
@@ -720,6 +725,11 @@
         "lambda-vpc-subnet-sg-deletion-order",
         "vpc-lambda-eni-release"
       ]
+    },
+    {
+      "name": "lambda-log-retention",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "lambda-versioning",
@@ -1145,6 +1155,11 @@
     {
       "name": "s3-directory-bucket",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "s3-event-notification",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -1847,12 +1862,14 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "acm-certificate",
+    "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
     "export-nested-stack",
     "iam-managed-policy",
+    "lambda-log-retention",
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",
@@ -1864,6 +1881,7 @@
     "recreate-mixed-direction",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
+    "s3-event-notification",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
     "servicediscovery",
