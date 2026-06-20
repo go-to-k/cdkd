@@ -1,3 +1,10 @@
+# [0.228.0](https://github.com/go-to-k/cdkd/compare/v0.227.1...v0.228.0) (2026-06-20)
+
+
+### Features
+
+* **events:** bound + purge the deployment-events store ([#885](https://github.com/go-to-k/cdkd/issues/885)) ([#888](https://github.com/go-to-k/cdkd/issues/888)) ([25fa956](https://github.com/go-to-k/cdkd/commit/25fa956c1fef1c6001e1aca86d03bec05afdd85c))
+
 ## [0.227.1](https://github.com/go-to-k/cdkd/compare/v0.227.0...v0.227.1) (2026-06-20)
 
 
