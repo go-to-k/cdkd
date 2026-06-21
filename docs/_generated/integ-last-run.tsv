@@ -158,7 +158,6 @@ kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy
 ec2-instance	2026-06-21T17:00:38Z	PASS	91	verify.sh	stale-real re-run; clean destroy
 vpc-nat-gateway	2026-06-21T17:00:38Z	PASS	145	verify.sh	stale-real re-run; deploy 21 + destroy 21 (split by subshell-death, re-destroyed clean); NAT GW gone
 rds-aurora	2026-06-21T17:00:38Z	PASS	2088	verify.sh	stale-real re-run; clean destroy (~35min)
-rds-dbinstance-backfill	2026-06-21T17:00:38Z	FAIL	30	verify.sh	FIXTURE STALE not cdkd bug: AWS retired postgres 17.4 (Cannot find version 17.4); rollback clean 0 orphan; needs engine-version bump
 elasticache-replicationgroup-getatt	2026-06-21T18:03:30Z	PASS	649	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
 s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
 opensearch-domain-getatt	2026-06-21T18:03:30Z	PASS	1671	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
@@ -177,3 +176,4 @@ iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-r
 getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (never-run); cross-region Fn::GetStackOutput (us-west-2 producer -> us-east-1 consumer); both regions clean
 rds-full-stack	2026-06-21T18:53:07Z	PASS	600	verify.sh	first run (never-run); RDS L2 + custom subnet/param groups + GetAtt computed endpoint via SSM; 15 deleted 0 err state gone
 sg-circular-dependency	2026-06-21T18:54:29Z	PASS	180	verify.sh	first run (never-run); circular SG cross-ref via standalone ingress; revoke-before-delete destroy order; 11 deleted 0 err
+rds-dbinstance-backfill	2026-06-21T19:05:04Z	PASS	560	verify.sh	re-run after pg 17.4->17.6 fixture fix (AWS retired 17.4); all #609 backfill props verified incl EngineVersion==17.6; 11 deleted 0 err
