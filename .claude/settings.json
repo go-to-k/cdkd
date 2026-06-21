@@ -220,6 +220,12 @@
             "command": ".claude/hooks/post-merge-sync-reminder.sh",
             "timeout": 5,
             "statusMessage": "Post-merge sync reminder check"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/main-tree-dirty-detector.sh",
+            "timeout": 10,
+            "statusMessage": "Checking main-tree tracked-file dirtiness..."
           }
         ]
       }
