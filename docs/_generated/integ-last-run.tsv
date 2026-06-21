@@ -120,7 +120,6 @@ serverless-api	2026-06-15T06:49:27Z	PASS	48	verify.sh	AuthorizerCredentialsArn r
 servicediscovery	2026-06-15T07:22:22Z	PASS	108	verify.sh	ServiceAttributes reached AWS; clean destroy 0 orphans
 cloudwatch	2026-06-15T07:39:23Z	PASS	47	standard	Alarm create+destroy clean 0 orphans (#609 unhandledByDesign cleanup)
 stepfunctions-s3-definition	2026-06-15T08:44:00Z	PASS	55	verify.sh	post-review re-run; DefinitionS3Location+asset fix; destroy clean
-apigateway	2026-06-20T18:40:52Z	PASS		verify.sh	added {proxy+} ANY method; proxy route reached Lambda; 0 err 0 orphan
 s3-event-notification	2026-06-20T18:40:52Z	PASS		verify.sh	S3->Lambda notification fired (DynamoDB record); 3 phases pass, clean destroy, 0 orphan
 lambda-log-retention	2026-06-20T18:40:52Z	PASS		verify.sh	logRetention 7 + in-place UPDATE to 14 (Custom::LogRetention); clean destroy, 0 orphan
 bucket-deployment	2026-06-20T18:40:52Z	PASS		verify.sh	Custom::CDKBucketDeployment synced asset; clean destroy, 0 orphan
@@ -129,7 +128,6 @@ dynamodb-globaltable	2026-06-20T17:59:38Z	PASS		verify.sh	BillingMode/autoscalin
 dynamodb-gsi-update	2026-06-20T18:10:27Z	PASS		verify.sh	#887 add-GSI in-place UPDATE (no replacement); 3 phases pass, clean destroy
 dynamodb-ondemand	2026-06-20T18:12:58Z	PASS		verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE (#887 regression); 3 deleted 0 errors
 bench-cdk-sample	2026-06-20T18:28:56Z	PASS		standard	39 created; destroy 37 del +2 retain-policy LogGroups (swept); 0 errors
-lambda	2026-06-20T18:33:28Z	PASS		verify.sh	RecursiveLoop+ReservedConcurrentExecutions backfills; 9 deleted 0 errors, clean
 microservices	2026-06-20T18:47:03Z	PASS		standard	19 created; 19 deleted 0 errors; state+SNS+SQS+ESM clean (broad)
 multi-resource	2026-06-20T18:50:10Z	PASS		standard	17 created; 17 deleted 0 errors; 3 Lambda LogGroups swept (broad)
 export	2026-06-20T18:58:28Z	PASS		verify.sh	export->CFn migration + no-replacement diff guard (#319) + CFn stack cleanup; clean (broad)
@@ -153,3 +151,5 @@ monitoring	2026-06-21T04:34:50Z	PASS	40	standard	CW alarms/dashboard deploy 7 / 
 data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
 schema-v7-to-v8-migration	2026-06-21T04:48:25Z	PASS	89	verify.sh	FIXED #751: consumer-only deploy no longer pulls weak GetStackOutput producer into closure
 multi-stack-deps	2026-06-21T04:50:36Z	PASS	60	standard	3-stack deploy order Network->Data->App, destroy reverse, 0 err (post-#751-fix non-regression)
+apigateway	2026-06-21T05:45:25Z	PASS	51	verify.sh	Model/RequestValidator Ref fix; 200/400 asserted; 0 orph
+lambda	2026-06-21T05:48:06Z	PASS	84	verify.sh	broad integ for intrinsic-resolver Ref fix; 0 orph
