@@ -609,6 +609,11 @@
       "scenarios": []
     },
     {
+      "name": "ecr-scanning",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ecs-fargate",
       "annotated": true,
       "scenarios": []
@@ -1942,6 +1947,7 @@
     "dynamodb-ondemand",
     "dynamodb-sse",
     "dynamodb-stream-filter",
+    "ecr-scanning",
     "eventbridge-input-transformer",
     "export-nested-stack",
     "fifo-sqs-event-source",

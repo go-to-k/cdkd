@@ -73,6 +73,42 @@ export class ECRProvider implements ResourceProvider {
   }
 
   /**
+   * Map CFn `ImageScanningConfiguration` (PascalCase `{ ScanOnPush }`) to the
+   * SDK shape (camelCase `{ scanOnPush }`). The SDK input keys are camelCase;
+   * forwarding the CFn-cased object verbatim makes the SDK ignore the unknown
+   * `ScanOnPush` key and silently default `scanOnPush` to `false` — so
+   * `imageScanOnPush: true` never reached AWS. Returns `undefined` for an
+   * absent config so the caller can omit the field.
+   */
+  private toSdkScanningConfig(
+    cfn: Record<string, unknown> | undefined
+  ): ImageScanningConfiguration | undefined {
+    if (!cfn) return undefined;
+    return { scanOnPush: Boolean(cfn['ScanOnPush']) };
+  }
+
+  /**
+   * Map CFn `EncryptionConfiguration` (PascalCase `{ EncryptionType, KmsKey }`)
+   * to the SDK shape (camelCase `{ encryptionType, kmsKey }`). Same casing trap
+   * as scanning config — a KMS repo's `KmsKey` would be silently dropped (and
+   * the type would fall back to AES256) without this mapping.
+   */
+  private toSdkEncryptionConfig(
+    cfn: Record<string, unknown> | undefined
+  ): EncryptionConfiguration | undefined {
+    if (!cfn) return undefined;
+    const encryptionType = cfn['EncryptionType'] as string | undefined;
+    if (!encryptionType) return undefined;
+    const out: EncryptionConfiguration = {
+      encryptionType: encryptionType as EncryptionConfiguration['encryptionType'],
+    };
+    if (encryptionType === 'KMS' && cfn['KmsKey']) {
+      out.kmsKey = cfn['KmsKey'] as string;
+    }
+    return out;
+  }
+
+  /**
    * Create an ECR Repository
    */
   async create(
@@ -90,28 +126,23 @@ export class ECRProvider implements ResourceProvider {
       // Convert CFn Tags format to SDK tags format
       const tags = properties['Tags'] as Tag[] | undefined;
 
+      const scanningConfig = this.toSdkScanningConfig(
+        properties['ImageScanningConfiguration'] as Record<string, unknown> | undefined
+      );
+      const encryptionConfig = this.toSdkEncryptionConfig(
+        properties['EncryptionConfiguration'] as Record<string, unknown> | undefined
+      );
+
       const response = await this.getClient().send(
         new CreateRepositoryCommand({
           repositoryName,
-          ...(properties['ImageScanningConfiguration']
-            ? {
-                imageScanningConfiguration: properties[
-                  'ImageScanningConfiguration'
-                ] as ImageScanningConfiguration,
-              }
-            : {}),
+          ...(scanningConfig ? { imageScanningConfiguration: scanningConfig } : {}),
           ...(properties['ImageTagMutability']
             ? {
                 imageTagMutability: properties['ImageTagMutability'] as ImageTagMutability,
               }
             : {}),
-          ...(properties['EncryptionConfiguration']
-            ? {
-                encryptionConfiguration: properties[
-                  'EncryptionConfiguration'
-                ] as EncryptionConfiguration,
-              }
-            : {}),
+          ...(encryptionConfig ? { encryptionConfiguration: encryptionConfig } : {}),
           ...(tags ? { tags } : {}),
         })
       );
@@ -192,18 +223,23 @@ export class ECRProvider implements ResourceProvider {
     this.logger.debug(`Updating ECR Repository ${logicalId} (${physicalId})`);
 
     try {
-      // Update ImageScanningConfiguration if changed
+      // Update ImageScanningConfiguration if changed. CFn properties are
+      // PascalCase (`{ ScanOnPush }`); map to the SDK's camelCase
+      // (`{ scanOnPush }`) — forwarding the CFn-cased object verbatim would
+      // make the SDK ignore `ScanOnPush` and reset scanOnPush to false.
       const newScanConfig = properties['ImageScanningConfiguration'] as
-        | ImageScanningConfiguration
+        | Record<string, unknown>
         | undefined;
       const oldScanConfig = previousProperties['ImageScanningConfiguration'] as
-        | ImageScanningConfiguration
+        | Record<string, unknown>
         | undefined;
       if (JSON.stringify(newScanConfig) !== JSON.stringify(oldScanConfig)) {
         await this.getClient().send(
           new PutImageScanningConfigurationCommand({
             repositoryName: physicalId,
-            imageScanningConfiguration: newScanConfig ?? { scanOnPush: false },
+            imageScanningConfiguration: this.toSdkScanningConfig(newScanConfig) ?? {
+              scanOnPush: false,
+            },
           })
         );
         this.logger.debug(`Updated image scanning configuration for ${physicalId}`);

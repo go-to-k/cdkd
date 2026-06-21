@@ -1971,6 +1971,7 @@
       "resourceType": "AWS::ECR::Repository",
       "integs": [
         "ecr",
+        "ecr-scanning",
         "local-run-task-from-state",
         "migrate-from-cfn"
       ],
@@ -1978,6 +1979,9 @@
         "ecr": [
           "l2",
           "literal"
+        ],
+        "ecr-scanning": [
+          "l2"
         ],
         "local-run-task-from-state": [
           "l2",
@@ -2717,6 +2721,7 @@
         "composite-stack",
         "drift-revert",
         "dynamodb-streams",
+        "ecr-scanning",
         "infra-security",
         "kms-encryption",
         "propagation-races-2"
@@ -2729,6 +2734,9 @@
           "l2"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "ecr-scanning": [
           "l2"
         ],
         "infra-security": [
