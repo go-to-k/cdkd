@@ -132,16 +132,27 @@ verification gotcha) so the next sweep starts smarter.
 Forgetting to destroy bug-hunt resources is the one unacceptable outcome, so it
 is enforced structurally rather than by discipline:
 
-- `bughunt-track.sh add <stacks...>` writes the deployed stack names to the
-  gitignored sentinel `.markgate-bughunt-pending`.
+- `bughunt-track.sh add <stacks...>` records the deployed stack names in the
+  gitignored sentinel under `.markgate-bughunt-pending.d/` (one file per owner).
 - The `bughunt-clean` markgate gate (PreToolUse hook
   `.claude/hooks/bughunt-clean-gate.sh`) **blocks `git commit`, `gh pr create`,
-  and `gh pr merge` while that sentinel is non-empty** — so you physically
+  and `gh pr merge` while any tracked stack remains** — so you physically
   cannot land the fix PR (or any commit) until the bug-hunt resources are
   destroyed and verified gone.
 - `bughunt-track.sh verify` confirms each tracked stack's `state.json` is gone
-  from S3; `bughunt-track.sh clear` empties the sentinel (releasing the gate)
-  and is meant to be run ONLY after orphan-zero is verified.
+  from S3; `bughunt-track.sh clear` removes your stacks (releasing the gate once
+  no owner has pending stacks) and is meant to be run ONLY after orphan-zero is
+  verified.
+
+**Parallel-safe by design.** The sentinel is per-owner, not a single shared
+file, so multiple bug hunts can run concurrently (one agent per
+`.claude/worktrees/<branch>/` worktree) without stepping on each other:
+`add` / `verify` / `clear` touch only the caller's own owner file (owner key =
+`$CDKD_BUGHUNT_OWNER` if set, else the per-worktree `git rev-parse
+--show-toplevel`), so your `clear` can never release another hunt's still-live
+resources. The gate aggregates across all owners (blocks while ANYONE is
+pending) — the safe direction. Run all of one hunt's add/verify/clear from the
+same worktree (or pin `CDKD_BUGHUNT_OWNER`) so they agree on the owner.
 
 This mirrors the project's other "absolutely must happen" guarantees
 (`integ-destroy`, `verify-pr`): the must-do is bound to a marker a gate checks,

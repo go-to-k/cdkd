@@ -61,8 +61,11 @@ tests/benchmark/results-*.md
 # to real AWS; the bughunt-clean-gate.sh PreToolUse hook blocks git commit /
 # gh pr create / gh pr merge while it is non-empty, so bug-hunt resources
 # cannot be forgotten. Written by bughunt-track.sh add, cleared by
-# bughunt-track.sh clear after destroy + orphan-zero verification)
+# bughunt-track.sh clear after destroy + orphan-zero verification).
+# `.d/` is the per-owner directory variant (one file per concurrent hunt
+# owner — parallel-safe); the flat file is the legacy single-owner sentinel.
 .markgate-bughunt-pending
+.markgate-bughunt-pending.d/
 
 # Worktree-local scratch files used by sub-agents for `git commit -F` /
 # `gh --body-file` / `gh api --field body=@<file>` payloads. The
