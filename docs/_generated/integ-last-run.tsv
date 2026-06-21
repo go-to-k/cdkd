@@ -69,12 +69,10 @@ local-start-api-websocket	2026-06-02T15:46:16Z	PASS	102	verify.sh	local integ se
 local-start-service	2026-06-02T15:46:16Z	PASS	21	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-start-service-watch-fast	2026-06-02T15:46:16Z	PASS	196	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-ecs-service-connect	2026-06-02T15:46:16Z	PASS	22	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-invoke-agentcore	2026-06-02T15:46:16Z	PASS	93	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-state	2026-06-02T15:46:16Z	PASS	57	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-run-task-from-state	2026-06-02T15:46:16Z	PASS	98	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-cfn-stack	2026-06-02T15:46:16Z	PASS	92	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-container	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-provided	2026-06-05T07:36:40Z	PASS		verify.sh	#768 cross-arch invoke path; 4/4; docker clean
 local-start-api	2026-06-05T07:36:40Z	PASS		verify.sh	#768 warm container-pool platform threading + watch reload; docker clean
@@ -162,3 +160,5 @@ appconfig	2026-06-21T08:22:45Z	PASS	61	verify.sh	AppConfig compound-id Ref fix: 
 lambda	2026-06-21T08:22:45Z	PASS	92	verify.sh	broad integ for intrinsic-resolver compound-Ref fix; 9 deleted 0 err
 dynamodb-sse	2026-06-21T08:22:45Z	PASS	43	verify.sh	SSESpecification SSEEnabled->Enabled mapping; SSE reaches AWS as KMS; destroy clean
 local-start-alb-from-state	2026-06-21T10:44:49Z	PASS	88	verify.sh	fixed verify.sh assertion (state.json only, ignore #885 deployments/); deploy+destroy clean 29 del 0 err
+local-invoke-agentcore	2026-06-21T10:51:48Z	PASS	103	verify.sh	creds materialized (export-credentials); 21 tests; arm64-native container (no qemu); docker clean
+local-invoke-agentcore-from-state	2026-06-21T10:51:48Z	PASS	55	verify.sh	creds materialized; 8 del 0 err; --from-state intrinsic env-var substitution; docker clean
