@@ -2605,3 +2605,115 @@ describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live Descri
     expect(result).toBe('i-0123456789abcdef0');
   });
 });
+
+describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+  });
+
+  // CFn `Ref` of an AWS::ApiGateway::Model returns the model NAME, but the model
+  // is provisioned via Cloud Control whose primary identifier (cdkd's physical
+  // id) is the compound `<restApiId>|<modelName>`. A method's RequestModels
+  // wiring `{ "application/json": { "Ref": <Model> } }` would otherwise receive
+  // `<restApiId>|<modelName>` and API Gateway rejects it with "Invalid model
+  // identifier specified". The resolver must return just the model name.
+  it('Ref returns the model name, not the compound <restApiId>|<modelName> physical id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        PetModel: { Type: 'AWS::ApiGateway::Model', Properties: { Name: 'Pet' } },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        PetModel: {
+          physicalId: 'tdo7p9w58k|Pet',
+          resourceType: 'AWS::ApiGateway::Model',
+          properties: { Name: 'Pet' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'PetModel' }, context);
+    expect(result).toBe('Pet');
+  });
+
+  // Same bug class for AWS::ApiGateway::RequestValidator: CFn `Ref` returns the
+  // RequestValidatorId, but the Cloud Control physical id is the compound
+  // `<restApiId>|<requestValidatorId>`. A method wiring
+  // `RequestValidatorId: { "Ref": <Validator> }` would otherwise get the
+  // compound id and API Gateway rejects it with "Invalid Request Validator
+  // identifier specified".
+  it('Ref to AWS::ApiGateway::RequestValidator returns the validator id, not the compound physical id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        BodyValidator: { Type: 'AWS::ApiGateway::RequestValidator', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        BodyValidator: {
+          physicalId: 'tdo7p9w58k|abc123',
+          resourceType: 'AWS::ApiGateway::RequestValidator',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'BodyValidator' }, context);
+    expect(result).toBe('abc123');
+  });
+
+  it('Ref falls back to the raw physical id when there is no pipe separator', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        PetModel: { Type: 'AWS::ApiGateway::Model', Properties: { Name: 'Pet' } },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        PetModel: {
+          physicalId: 'Pet',
+          resourceType: 'AWS::ApiGateway::Model',
+          properties: { Name: 'Pet' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'PetModel' }, context);
+    expect(result).toBe('Pet');
+  });
+
+  it('Ref to a non-Model resource still returns the full physical id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Q: { Type: 'AWS::SQS::Queue', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Q: {
+          physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/my-queue',
+          resourceType: 'AWS::SQS::Queue',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'Q' }, context);
+    expect(result).toBe('https://sqs.us-east-1.amazonaws.com/123456789012/my-queue');
+  });
+});

@@ -26,6 +26,16 @@ import type { ExportIndexStore } from '../state/export-index-store.js';
 export const AWS_NO_VALUE = Symbol('AWS::NoValue');
 
 /**
+ * Resource types whose CloudFormation `Ref` returns the segment AFTER the pipe
+ * in cdkd's compound Cloud Control physical id `<restApiId>|<ref>` (rather than
+ * the whole physical id). See {@link IntrinsicFunctionResolver.resolveRefValue}.
+ */
+const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
+  'AWS::ApiGateway::Model',
+  'AWS::ApiGateway::RequestValidator',
+]);
+
+/**
  * Intrinsic-function keys the resolver knows how to handle.
  *
  * A CloudFormation intrinsic is ALWAYS a single-key object — `{ "Ref": ... }`
@@ -640,8 +650,9 @@ export class IntrinsicFunctionResolver {
     // Check if it's a resource
     const resource = context.resources[logicalId];
     if (resource) {
-      this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${resource.physicalId}`);
-      return resource.physicalId;
+      const refValue = this.resolveRefValue(resource);
+      this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${refValue}`);
+      return refValue;
     }
 
     // Check if it's a parameter
@@ -663,6 +674,41 @@ export class IntrinsicFunctionResolver {
     // Not found
     this.logger.warn(`Ref ${logicalId} not found (not a resource, parameter, or pseudo parameter)`);
     throw new Error(`Ref ${logicalId} not found`);
+  }
+
+  /**
+   * Resolve the value a CloudFormation `Ref` returns for a resource.
+   *
+   * For most resource types `Ref` returns the physical id, which is what cdkd
+   * stores. But for a few types CFn's `Ref` returns a sub-component of the
+   * physical id, and returning the raw physical id breaks downstream consumers.
+   *
+   * Two API Gateway child types are provisioned via Cloud Control (no SDK
+   * provider), whose primary identifier — and thus cdkd's physical id — is the
+   * compound `<restApiId>|<ref>`, while CFn's `Ref` returns only the `<ref>`
+   * segment:
+   *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
+   *     `<restApiId>|<modelName>`. A method wiring
+   *     `RequestModels: { "application/json": { "Ref": <Model> } }` would
+   *     otherwise get the compound id and API Gateway rejects it with
+   *     "Invalid model identifier specified".
+   *   - `AWS::ApiGateway::RequestValidator` → Ref is the RequestValidatorId;
+   *     physical id is `<restApiId>|<requestValidatorId>`. A method wiring
+   *     `RequestValidatorId: { "Ref": <Validator> }` would otherwise get the
+   *     compound id and API Gateway rejects it with
+   *     "Invalid Request Validator identifier specified".
+   * In both cases the `Ref` value is the segment after the pipe (RestApiId is
+   * the first identifier component).
+   */
+  private resolveRefValue(resource: ResourceState): string {
+    const physicalId = resource.physicalId;
+    if (REF_RETURNS_SEGMENT_AFTER_PIPE.has(resource.resourceType)) {
+      const pipeIdx = physicalId.indexOf('|');
+      if (pipeIdx >= 0) {
+        return physicalId.substring(pipeIdx + 1);
+      }
+    }
+    return physicalId;
   }
 
   /**

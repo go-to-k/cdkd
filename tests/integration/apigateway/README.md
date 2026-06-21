@@ -23,6 +23,15 @@ This stack includes the following resources:
 7. **Stage config props (#609)**: `tracingEnabled` (X-Ray) + stage `variables` set
    via `deployOptions` ride on the Stage's own CreateStage / UpdateStage call.
    `verify.sh` asserts both reached AWS via `aws apigateway get-stage`.
+8. **Request validation (`Ref` resolution fix)**: a Model (JSON schema) +
+   RequestValidator + a POST /pets method referencing both. Regression-covers
+   the `Ref` fix for `AWS::ApiGateway::Model` / `::RequestValidator` — both are
+   Cloud-Control-provisioned, so cdkd's physical id is the compound
+   `<restApiId>|<ref>` while CFn's `Ref` returns only the `<ref>` segment;
+   passing the compound id made API Gateway reject the method with "Invalid
+   model identifier specified" / "Invalid Request Validator identifier
+   specified". `verify.sh` curls a valid body (-> 200) and an invalid body
+   missing the required `name` (-> 400, rejected by the validator).
 
 ## Deploy
 
