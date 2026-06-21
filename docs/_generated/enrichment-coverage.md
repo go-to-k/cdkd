@@ -11,9 +11,9 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **114**
+- Classified types (cached schema): **115**
 - Fully enriched: **3**
-- No computed attribute (Ref == physicalId is correct): **13**
+- No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **98**
 - Types with allow-listed (not-a-gap) attributes: **0**
@@ -210,6 +210,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::KinesisFirehose::DeliveryStream` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::KMS::Alias` | yes | no-computed-attr | _(none)_ |
 | `AWS::KMS::Key` | yes | enriched | `Arn` (OK), `KeyId` (OK) |
+| `AWS::Lambda::EventInvokeConfig` | yes | no-computed-attr | _(none)_ |
 | `AWS::Lambda::EventSourceMapping` | yes | sdk-fallback-gap | `EventSourceMappingArn` (GAP), `Id` (GAP) |
 | `AWS::Lambda::Function` | yes | sdk-fallback-gap | `Arn` (GAP), `SnapStartResponse` (GAP) |
 | `AWS::Lambda::LayerVersion` | yes | sdk-fallback-gap | `LayerVersionArn` (GAP) |

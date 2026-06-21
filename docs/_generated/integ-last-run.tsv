@@ -163,5 +163,6 @@ vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-veri
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 wafv2	2026-06-21T11:19:37Z	PASS	113	standard	sweep-F staleness re-run (rc=0)
 glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
-lambda	2026-06-21T15:49:54Z	PASS	75	verify.sh	broad integ for --replace deploy-engine/deploy.ts change; 0 orphans
+lambda	2026-06-21T16:09:18Z	PASS		verify.sh	broad integ for register-providers.ts change; 9 deleted 0 errors 0 orphans
 ecr-scanning	2026-06-21T17:00:53Z	PASS		verify.sh	ECR scanOnPush + KMS encryption CFn->SDK casing; create+update reach AWS; 0 orphans
+lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans

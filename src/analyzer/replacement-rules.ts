@@ -210,6 +210,26 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // Lambda EventInvokeConfig — the async-invoke configuration is keyed by
+    // (FunctionName, Qualifier), both CREATE-ONLY in CloudFormation ("Update
+    // requires: Replacement"): a change to either targets a different
+    // function/alias, so it must DELETE the old config + CREATE the new one
+    // rather than an in-place Put (which would attach a config to the new
+    // target while orphaning the old function's config). The remaining three
+    // properties (`MaximumEventAgeInSeconds` / `MaximumRetryAttempts` /
+    // `DestinationConfig`) are updated in place via PutFunctionEventInvokeConfig
+    // (a full-replace write). Without this rule the registry defaults the type
+    // to fully-updateable, which is correct for the three mutable props but
+    // would silently in-place-update an immutable FunctionName/Qualifier change.
+    this.rules.set('AWS::Lambda::EventInvokeConfig', {
+      replacementProperties: new Set(['FunctionName', 'Qualifier']),
+      updateableProperties: new Set([
+        'MaximumEventAgeInSeconds',
+        'MaximumRetryAttempts',
+        'DestinationConfig',
+      ]),
+    });
+
     // DynamoDB Table
     this.rules.set('AWS::DynamoDB::Table', {
       replacementProperties: new Set([
