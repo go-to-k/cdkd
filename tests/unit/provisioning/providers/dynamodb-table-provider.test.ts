@@ -14,6 +14,7 @@ import {
   DescribeTimeToLiveCommand,
   ListTagsOfResourceCommand,
   ResourceNotFoundException,
+  UpdateTableCommand,
 } from '@aws-sdk/client-dynamodb';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -333,6 +334,65 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(mapSSESpecification(undefined)).toBeUndefined();
       expect(mapSSESpecification(null)).toBeUndefined();
       expect(mapSSESpecification('nope')).toBeUndefined();
+    });
+
+    it('applies an SSESpecification change on update via its own UpdateTable (mapped Enabled)', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable (update reads current)
+        .mockResolvedValueOnce({}) // UpdateTable (SSE)
+        .mockResolvedValueOnce(activeTable()); // waitForTableActiveAfterUpdate
+
+      // Only SSESpecification differs between prev and new, so only the SSE
+      // branch fires (no billing/throughput/GSI UpdateTable).
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        {
+          ...baseCreateProps,
+          SSESpecification: {
+            SSEEnabled: true,
+            SSEType: 'KMS',
+            KMSMasterKeyId: 'arn:aws:kms:us-east-1:123456789012:key/new',
+          },
+        },
+        { ...baseCreateProps, SSESpecification: { SSEEnabled: true } }
+      );
+
+      const sseUpdate = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (cmd) =>
+            cmd instanceof UpdateTableCommand &&
+            (cmd as { input?: { SSESpecification?: unknown } }).input?.SSESpecification
+        ) as { input: { SSESpecification: Record<string, unknown> } } | undefined;
+      expect(sseUpdate).toBeDefined();
+      expect(sseUpdate!.input.SSESpecification).toEqual({
+        Enabled: true,
+        SSEType: 'KMS',
+        KMSMasterKeyId: 'arn:aws:kms:us-east-1:123456789012:key/new',
+      });
+    });
+
+    it('does NOT fire an UpdateTable when SSESpecification is unchanged', async () => {
+      mockSend.mockResolvedValueOnce(activeTable()); // DescribeTable only
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, SSESpecification: { SSEEnabled: true } },
+        { ...baseCreateProps, SSESpecification: { SSEEnabled: true } }
+      );
+
+      const sseUpdate = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (cmd) =>
+            cmd instanceof UpdateTableCommand &&
+            (cmd as { input?: { SSESpecification?: unknown } }).input?.SSESpecification
+        );
+      expect(sseUpdate).toBeUndefined();
     });
   });
 
