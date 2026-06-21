@@ -38,6 +38,11 @@ vi.mock('@aws-sdk/client-elasticache', () => ({
 // reliably hoisted, leaving the real client in place and the mock a no-op).
 const mockRedshiftSend = vi.hoisted(() => vi.fn());
 const mockOpenSearchSend = vi.hoisted(() => vi.fn());
+// EventBridge client is reached via the mocked getAwsClients() factory
+// (getAwsClients().eventBridge), so its send() is controllable through this
+// hoisted spy injected into the factory mock below — used by the
+// AWS::Events::Connection / AWS::Events::ApiDestination enrichment branches.
+const mockEventBridgeSend = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-redshift', () => ({
   RedshiftClient: vi.fn(() => ({ send: mockRedshiftSend })),
@@ -63,6 +68,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     apiGateway: { send: vi.fn() },
     cloudFront: { send: vi.fn() },
     lambda: { send: vi.fn() },
+    eventBridge: { send: mockEventBridgeSend },
   }),
 }));
 
@@ -928,6 +934,158 @@ describe('CloudControlProvider OpenSearch Domain attribute enrichment (CC-API ro
     const enriched = await enrich('mydomain', {});
 
     expect(enriched['DomainEndpoint']).toBeUndefined();
+    expect(enriched['Arn']).toBeUndefined();
+  });
+});
+
+describe('CloudControlProvider Events Connection attribute enrichment (CC-API routing)', () => {
+  let provider: CloudControlProvider;
+
+  const enrich = (physicalId: string, attributes: Record<string, unknown>) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes('AWS::Events::Connection', physicalId, attributes);
+
+  beforeEach(() => {
+    mockEventBridgeSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('overlays Arn / SecretArn / ArnForPolicy from DescribeConnection (the canonical ApiDestination ConnectionArn source)', async () => {
+    mockEventBridgeSend.mockResolvedValueOnce({
+      ConnectionArn:
+        'arn:aws:events:us-east-1:123456789012:connection/my-conn/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      SecretArn:
+        'arn:aws:secretsmanager:us-east-1:123456789012:secret:events!connection/my-conn/abc-AbCdEf',
+    });
+
+    // The CC physicalId is the connection NAME (primaryIdentifier), not the ARN.
+    const enriched = await enrich('my-conn', {});
+
+    expect(enriched['Arn']).toBe(
+      'arn:aws:events:us-east-1:123456789012:connection/my-conn/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    );
+    expect(enriched['SecretArn']).toBe(
+      'arn:aws:secretsmanager:us-east-1:123456789012:secret:events!connection/my-conn/abc-AbCdEf'
+    );
+    // ArnForPolicy is the full ARN with the trailing unique suffix stripped.
+    expect(enriched['ArnForPolicy']).toBe(
+      'arn:aws:events:us-east-1:123456789012:connection/my-conn'
+    );
+    // DescribeConnection must be issued for the physicalId (the connection name).
+    expect(mockEventBridgeSend).toHaveBeenCalledTimes(1);
+    const sentCommand = mockEventBridgeSend.mock.calls[0]![0] as { input: { Name: string } };
+    expect(sentCommand.input).toEqual({ Name: 'my-conn' });
+  });
+
+  it('does not overwrite an Arn the CC API already returned', async () => {
+    mockEventBridgeSend.mockResolvedValueOnce({
+      ConnectionArn: 'arn:aws:events:us-east-1:123456789012:connection/my-conn/should-not-win',
+    });
+
+    const enriched = await enrich('my-conn', {
+      Arn: 'arn:aws:events:us-east-1:123456789012:connection/my-conn/already-set',
+      SecretArn: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:already-set',
+      ArnForPolicy: 'arn:aws:events:us-east-1:123456789012:connection/my-conn',
+    });
+
+    // All three present already -> no DescribeConnection call, originals kept.
+    expect(mockEventBridgeSend).not.toHaveBeenCalled();
+    expect(enriched['Arn']).toBe(
+      'arn:aws:events:us-east-1:123456789012:connection/my-conn/already-set'
+    );
+  });
+
+  it('fills only the missing attrs when CC already returned some (per-field independence)', async () => {
+    mockEventBridgeSend.mockResolvedValueOnce({
+      ConnectionArn:
+        'arn:aws:events:us-east-1:123456789012:connection/my-conn/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      SecretArn: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:from-describe',
+    });
+
+    // CC already surfaced SecretArn but NOT Arn / ArnForPolicy — the outer guard
+    // still fires (Arn is missing), and the per-field `!enriched[x]` guards must
+    // keep the existing SecretArn while filling Arn + ArnForPolicy.
+    const enriched = await enrich('my-conn', {
+      SecretArn: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:already-from-cc',
+    });
+
+    expect(mockEventBridgeSend).toHaveBeenCalledTimes(1);
+    expect(enriched['Arn']).toBe(
+      'arn:aws:events:us-east-1:123456789012:connection/my-conn/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    );
+    expect(enriched['ArnForPolicy']).toBe(
+      'arn:aws:events:us-east-1:123456789012:connection/my-conn'
+    );
+    // The CC-returned SecretArn is preserved (not overwritten by DescribeConnection).
+    expect(enriched['SecretArn']).toBe(
+      'arn:aws:secretsmanager:us-east-1:123456789012:secret:already-from-cc'
+    );
+  });
+
+  it('is best-effort: a failed DescribeConnection does not throw and leaves attributes unchanged', async () => {
+    mockEventBridgeSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const enriched = await enrich('my-conn', { ExistingAttr: 'keep-me' });
+
+    expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
+    expect(enriched['Arn']).toBeUndefined();
+  });
+});
+
+describe('CloudControlProvider Events ApiDestination attribute enrichment (CC-API routing)', () => {
+  let provider: CloudControlProvider;
+
+  const enrich = (physicalId: string, attributes: Record<string, unknown>) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes('AWS::Events::ApiDestination', physicalId, attributes);
+
+  beforeEach(() => {
+    mockEventBridgeSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('overlays Arn / ArnForPolicy from DescribeApiDestination', async () => {
+    mockEventBridgeSend.mockResolvedValueOnce({
+      ApiDestinationArn:
+        'arn:aws:events:us-east-1:123456789012:api-destination/my-dest/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    });
+
+    const enriched = await enrich('my-dest', {});
+
+    expect(enriched['Arn']).toBe(
+      'arn:aws:events:us-east-1:123456789012:api-destination/my-dest/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    );
+    expect(enriched['ArnForPolicy']).toBe(
+      'arn:aws:events:us-east-1:123456789012:api-destination/my-dest'
+    );
+    const sentCommand = mockEventBridgeSend.mock.calls[0]![0] as { input: { Name: string } };
+    expect(sentCommand.input).toEqual({ Name: 'my-dest' });
+  });
+
+  it('is best-effort: a failed DescribeApiDestination does not throw and leaves attributes unchanged', async () => {
+    mockEventBridgeSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const enriched = await enrich('my-dest', { ExistingAttr: 'keep-me' });
+
+    expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
     expect(enriched['Arn']).toBeUndefined();
   });
 });

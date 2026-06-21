@@ -2323,12 +2323,16 @@
       "resourceType": "AWS::Events::Rule",
       "integs": [
         "eventbridge",
+        "eventbridge-api-destination",
         "eventbridge-input-transformer",
         "iam-propagation-stress",
         "scheduled-task"
       ],
       "signals": {
         "eventbridge": [
+          "l2"
+        ],
+        "eventbridge-api-destination": [
           "l2"
         ],
         "eventbridge-input-transformer": [
@@ -4276,6 +4280,8 @@
     "AWS::ELBv2::LoadBalancer",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
+    "AWS::Events::ApiDestination",
+    "AWS::Events::Connection",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::Version",
