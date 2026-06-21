@@ -666,6 +666,7 @@
         "remove-protection",
         "s3-event-notification",
         "serverless-api",
+        "sns-event-source",
         "tags-propagation"
       ],
       "signals": {
@@ -717,6 +718,9 @@
           "l2"
         ],
         "serverless-api": [
+          "l2"
+        ],
+        "sns-event-source": [
           "l2"
         ],
         "tags-propagation": [
@@ -2801,6 +2805,7 @@
         "multi-asset",
         "multi-resource",
         "multi-stack-deps",
+        "nodejs-function",
         "orphan-resource",
         "propagation-races-2",
         "recreate-mixed-direction",
@@ -2813,6 +2818,7 @@
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
         "serverless-api",
+        "sns-event-source",
         "sns-sqs-event",
         "stepfunctions",
         "tags-propagation",
@@ -2981,6 +2987,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "nodejs-function": [
+          "literal"
+        ],
         "orphan-resource": [
           "l2",
           "literal"
@@ -3017,6 +3026,9 @@
           "l2"
         ],
         "serverless-api": [
+          "l2"
+        ],
+        "sns-event-source": [
           "l2"
         ],
         "sns-sqs-event": [
@@ -3063,7 +3075,8 @@
         "migrate-from-cfn",
         "propagation-races-2",
         "s3-event-notification",
-        "serverless-api"
+        "serverless-api",
+        "sns-event-source"
       ],
       "signals": {
         "cloudfront-function-url": [
@@ -3085,6 +3098,9 @@
         ],
         "serverless-api": [
           "l1"
+        ],
+        "sns-event-source": [
+          "literal"
         ]
       }
     },
@@ -3515,10 +3531,14 @@
       "resourceType": "AWS::SNS::Subscription",
       "integs": [
         "composite-stack",
+        "sns-event-source",
         "sns-sqs-event"
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "sns-event-source": [
           "literal"
         ],
         "sns-sqs-event": [
@@ -3551,6 +3571,7 @@
         "replacement-fanout",
         "scheduled-task",
         "serverless-api",
+        "sns-event-source",
         "sns-sqs-event",
         "tags-propagation",
         "throttle-wide-dag",
@@ -3624,6 +3645,9 @@
           "l2"
         ],
         "serverless-api": [
+          "l2"
+        ],
+        "sns-event-source": [
           "l2"
         ],
         "sns-sqs-event": [
