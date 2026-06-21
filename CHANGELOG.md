@@ -1,3 +1,10 @@
+## [0.229.1](https://github.com/go-to-k/cdkd/compare/v0.229.0...v0.229.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* **deploy:** do not pull weak Fn::GetStackOutput producers into the deploy closure ([#896](https://github.com/go-to-k/cdkd/issues/896)) ([6db2ef9](https://github.com/go-to-k/cdkd/commit/6db2ef903ccb6194047f2ba2f32c84f884479658))
+
 # [0.229.0](https://github.com/go-to-k/cdkd/compare/v0.228.0...v0.229.0) (2026-06-20)
 
 
