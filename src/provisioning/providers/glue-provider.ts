@@ -1303,8 +1303,9 @@ export class GlueWorkflowProvider implements ResourceProvider {
 // `ResourceUpdateNotSupportedError` so `cdkd drift --revert` reports a
 // clean "use cdkd deploy --replace" outcome instead of silently no-op'ing.
 //
-// `EncryptionConfiguration` carries three sub-configs:
-//   - `S3Encryption[]` — array of `{S3EncryptionMode, KmsKeyArn}`
+// `EncryptionConfiguration` carries three sub-configs (CFn names):
+//   - `S3Encryptions[]` (plural in CFn; maps to the SDK `S3Encryption` singular
+//     field) — array of `{S3EncryptionMode, KmsKeyArn}`
 //   - `CloudWatchEncryption` — `{CloudWatchEncryptionMode, KmsKeyArn}`
 //   - `JobBookmarksEncryption` — `{JobBookmarksEncryptionMode, KmsKeyArn}`
 // AWS docs also surface `DataQualityEncryption` on the SDK shape but

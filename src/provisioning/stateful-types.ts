@@ -133,6 +133,34 @@ export function isStatefulRecreateTargetSync(
 }
 
 /**
+ * Conservative variant for the `cdkd deploy --replace` mid-deploy guard.
+ *
+ * `--replace` catches a provider's immutable-update rejection while the deploy
+ * is already in flight, so — unlike the `--recreate-via-*` pre-flight, which
+ * runs {@link probeStatefulRecreateTargetsAsync} (`s3:ListObjectVersions`) —
+ * there is no opportunity to probe an `AWS::S3::Bucket`'s object count. The
+ * sync check returns `null` for S3 (it defers to that async probe), which would
+ * let a NON-EMPTY bucket be DELETE + CREATEd (data loss) without
+ * `--force-stateful-recreation`. To stay fail-safe, treat a deferred S3 bucket
+ * as stateful here: the user must pass `--force-stateful-recreation` to replace
+ * ANY S3 bucket via `--replace`, empty or not. Every other type matches
+ * {@link isStatefulRecreateTargetSync} exactly (the LogGroup retention check is
+ * fully resolvable from recorded properties, so no conservatism is needed there).
+ */
+export function isStatefulRecreateTargetForReplace(
+  resourceType: string,
+  recordedProperties: Record<string, unknown> | undefined
+): StatefulReason {
+  const sync = isStatefulRecreateTargetSync(resourceType, recordedProperties);
+  if (sync) return sync;
+  if (resourceType === 'AWS::S3::Bucket') {
+    // Cannot prove the bucket is empty mid-deploy — assume it has data.
+    return 'has-objects';
+  }
+  return null;
+}
+
+/**
  * Human-readable rendering of {@link StatefulReason} for error
  * messages. Used by the pre-flight guard's "X resources require
  * --force-stateful-recreation" listing.

@@ -9,7 +9,7 @@ import {
   CdkdError,
 } from '../utils/error-handler.js';
 import {
-  isStatefulRecreateTargetSync,
+  isStatefulRecreateTargetForReplace,
   renderStatefulReason,
 } from '../provisioning/stateful-types.js';
 import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -2392,7 +2392,13 @@ export class DeployEngine {
               // A stateful type (RDS / DynamoDB / EFS / etc.) must not be
               // silently DELETE+CREATEd — require --force-stateful-recreation.
               if (replaceOptIn) {
-                const statefulReason = isStatefulRecreateTargetSync(resourceType, currentProps);
+                // Conservative variant: --replace fires mid-deploy with no
+                // chance to run the async S3 object-count probe, so a deferred
+                // S3 bucket is treated as stateful (block unless forced).
+                const statefulReason = isStatefulRecreateTargetForReplace(
+                  resourceType,
+                  currentProps
+                );
                 if (statefulReason && this.options.forceStatefulRecreation !== true) {
                   throw new CdkdError(
                     `--replace would DELETE + CREATE the stateful resource ${logicalId} ` +

@@ -216,4 +216,17 @@ describe('DeployEngine — --replace wire-through', () => {
     await invokeProvision(engine, 'AWS::DynamoDB::Table');
     expect(callOrder).toEqual(['update', 'delete', 'create']);
   });
+
+  it('replace=true on an S3 bucket is blocked without --force-stateful-recreation (no mid-deploy probe)', async () => {
+    // The --replace guard cannot run the async ListObjectVersions probe, so a
+    // deferred S3 bucket is treated conservatively as data-bearing.
+    const engine = makeEngine({ replace: true });
+    const err = await invokeProvision(engine, 'AWS::S3::Bucket').then(
+      () => null,
+      (e) => e as Error & { cause?: { message?: string } }
+    );
+    expect(err).not.toBeNull();
+    expect(err!.cause?.message).toMatch(/--force-stateful-recreation/);
+    expect(callOrder).toEqual(['update']);
+  });
 });
