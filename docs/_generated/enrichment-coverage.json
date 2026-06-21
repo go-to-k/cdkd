@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 114,
+    "classifiedCount": 115,
     "enriched": 3,
-    "noComputedAttr": 13,
+    "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 98,
     "allowListedTypes": 0
@@ -1840,6 +1840,15 @@
           "status": "enriched"
         }
       ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "bucket": "no-computed-attr",
+      "sdkBacked": false,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
       "gaps": []
     },
     {

@@ -79,6 +79,7 @@
     "AWS::Kinesis::Stream",
     "AWS::Kinesis::StreamConsumer",
     "AWS::KinesisFirehose::DeliveryStream",
+    "AWS::Lambda::EventInvokeConfig",
     "AWS::Lambda::EventSourceMapping",
     "AWS::Lambda::Function",
     "AWS::Lambda::LayerVersion",
@@ -2788,6 +2789,21 @@
       }
     },
     {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "integs": [
+        "lambda-destinations",
+        "lambda-event-invoke-config-update"
+      ],
+      "signals": {
+        "lambda-destinations": [
+          "literal"
+        ],
+        "lambda-event-invoke-config-update": [
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Lambda::EventSourceMapping",
       "integs": [
         "dynamodb-stream-filter",
@@ -2841,6 +2857,7 @@
         "iam-propagation-stress",
         "lambda",
         "lambda-destinations",
+        "lambda-event-invoke-config-update",
         "lambda-layer-version-update",
         "lambda-log-retention",
         "lambda-versioning",
@@ -2979,6 +2996,9 @@
         "lambda-destinations": [
           "l2",
           "literal"
+        ],
+        "lambda-event-invoke-config-update": [
+          "l2"
         ],
         "lambda-layer-version-update": [
           "l2"
@@ -3806,6 +3826,7 @@
         "iam-propagation-stress",
         "intrinsics-torture",
         "lambda-destinations",
+        "lambda-event-invoke-config-update",
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
@@ -3867,6 +3888,9 @@
         "lambda-destinations": [
           "l2",
           "literal"
+        ],
+        "lambda-event-invoke-config-update": [
+          "l2"
         ],
         "microservices": [
           "l2"
@@ -4254,7 +4278,6 @@
     "AWS::ElasticLoadBalancingV2::ListenerRule",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
-    "AWS::Lambda::EventInvokeConfig",
     "AWS::Lambda::Version",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",

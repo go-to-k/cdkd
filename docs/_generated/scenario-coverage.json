@@ -782,6 +782,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-event-invoke-config-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-layer-version-update",
       "annotated": false,
       "scenarios": []
@@ -1955,6 +1960,7 @@
     "iam-managed-policy",
     "iam-role-prefixed-name-update",
     "lambda-destinations",
+    "lambda-event-invoke-config-update",
     "lambda-layer-version-update",
     "lambda-log-retention",
     "local-start-agentcore",
