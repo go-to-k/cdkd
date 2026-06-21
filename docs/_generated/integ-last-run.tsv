@@ -171,3 +171,7 @@ custom-resource-getatt-data	2026-06-21T18:25:10Z	PASS	61	verify.sh	first run (ne
 drift-revert-arrays	2026-06-21T18:25:10Z	PASS	115	verify.sh	first run (never-run); array-property drift detect+revert; 16 deleted 0 err
 secrets-dynamic-ref	2026-06-21T18:25:10Z	PASS	52	verify.sh	first run (never-run); SecretsManager dynamic-reference resolution; clean destroy state gone
 sdk-ccapi-crossref	2026-06-21T18:25:10Z	PASS	80	verify.sh	first run (never-run); heterogeneous SDK/CC routing + bidirectional cross-ref; clean CC-path destroy
+eventsourcemapping-race	2026-06-21T18:33:45Z	PASS	88	verify.sh	first run (never-run); fresh-source/role ESM create + message processing + no-orphan-ESM destroy
+propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run); 4 fresh-principal/consumer race edges; clean destroy
+iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
+getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (never-run); cross-region Fn::GetStackOutput (us-west-2 producer -> us-east-1 consumer); both regions clean
