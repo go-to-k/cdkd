@@ -103,6 +103,22 @@ case "${ONFAIL_P1}" in
 esac
 echo "    Phase 1 config reached AWS"
 
+# --- Phase 1.5: the EventInvokeConfig must NOT show phantom drift -----------
+# CDK always synthesizes `Qualifier: '$LATEST'` into the EventInvokeConfig, so
+# cdkd state stores it; the provider's readCurrentState must emit it back or
+# `cdkd drift` reports a false positive on every base async Lambda. We assert
+# only that the EventInvokeConfig resource is drift-clean (the assertion is
+# scoped to this type — an unrelated drift false-positive elsewhere in the
+# stack is out of scope for this fixture).
+echo "==> Phase 1.5: EventInvokeConfig shows no drift"
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
+if printf '%s' "${DRIFT_OUT}" | grep -q 'AWS::Lambda::EventInvokeConfig'; then
+  echo "FAIL: cdkd drift reported phantom drift on the EventInvokeConfig:" >&2
+  printf '%s\n' "${DRIFT_OUT}" | grep -A4 'EventInvokeConfig' >&2
+  exit 1
+fi
+echo "    EventInvokeConfig is drift-clean"
+
 # --- Phase 2: UPDATE (MaxAge 300 / Retries 2) — undeployable pre-fix ---
 echo "==> Phase 2: re-deploy with maxEventAge 5 min / retryAttempts 2 (UPDATE)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \

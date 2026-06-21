@@ -73,6 +73,9 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   /**
    * Split a `<FunctionName>|<Qualifier>` physical id back into its parts.
    * Tolerates a bare function name (defaults the qualifier to `$LATEST`).
+   * Splits on the FIRST `|`, which is unambiguous: a Lambda function name is
+   * `[a-zA-Z0-9-_]+` and a function ARN contains no `|`, so the separator can
+   * never appear inside the FunctionName segment.
    */
   private parsePhysicalId(physicalId: string): { functionName: string; qualifier: string } {
     const sep = physicalId.indexOf('|');
@@ -299,8 +302,14 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       throw err;
     }
 
-    const result: Record<string, unknown> = { FunctionName: functionName };
-    if (qualifier !== '$LATEST') result['Qualifier'] = qualifier;
+    // Emit Qualifier UNCONDITIONALLY (even the default '$LATEST'). CDK always
+    // synthesizes `Qualifier: '$LATEST'` into the template for a base function,
+    // so cdkd state stores it; the drift comparator walks state keys, so a
+    // snapshot that omitted Qualifier would report phantom drift
+    // (`'$LATEST'` vs undefined) on every `cdkd drift` for the most common
+    // (base-function) async-invoke case. The qualifier is authoritative from
+    // the physical id, so always surface it.
+    const result: Record<string, unknown> = { FunctionName: functionName, Qualifier: qualifier };
     if (resp.MaximumEventAgeInSeconds !== undefined) {
       result['MaximumEventAgeInSeconds'] = resp.MaximumEventAgeInSeconds;
     }

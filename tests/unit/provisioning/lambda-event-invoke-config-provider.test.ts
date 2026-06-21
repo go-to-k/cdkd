@@ -182,11 +182,29 @@ describe('LambdaEventInvokeConfigProvider', () => {
         'Cfg',
         'AWS::Lambda::EventInvokeConfig'
       );
+      // Qualifier MUST be emitted even for the default '$LATEST' — CDK always
+      // synthesizes it into state, so omitting it here would surface phantom
+      // drift on every `cdkd drift` for a base async Lambda.
       expect(state).toEqual({
         FunctionName: 'my-fn',
+        Qualifier: '$LATEST',
         MaximumEventAgeInSeconds: 120,
         MaximumRetryAttempts: 1,
         DestinationConfig: { OnFailure: { Destination: DLQ_ARN } },
+      });
+    });
+
+    it('emits a non-default Qualifier from the physical id', async () => {
+      mockSend.mockResolvedValueOnce({ MaximumRetryAttempts: 0 });
+      const state = await provider.readCurrentState(
+        'my-fn|2',
+        'Cfg',
+        'AWS::Lambda::EventInvokeConfig'
+      );
+      expect(state).toEqual({
+        FunctionName: 'my-fn',
+        Qualifier: '2',
+        MaximumRetryAttempts: 0,
       });
     });
 
