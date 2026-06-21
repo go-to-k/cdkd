@@ -20,7 +20,6 @@ cc-api-fallback-transitions	2026-06-21T11:11:03Z	PASS	128	verify.sh	sweep-F stal
 ci-cd	2026-06-21T11:00:28Z	PASS	54	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 cloudfront-function-url	2026-06-21T11:00:28Z	PASS	372	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 cloudwatch	2026-06-15T07:39:23Z	PASS	47	standard	Alarm create+destroy clean 0 orphans (#609 unhandledByDesign cleanup)
-cognito	2026-06-09T16:50:23Z	PASS	54	verify.sh	#609 UserPoolTier/SOFTWARE_TOKEN_MFA/WebAuthn asserted; EMAIL_OTP unit-only (SES); destroy 0 err
 cognito-lambda-triggers	2026-06-21T06:31:35Z	PASS	60	verify.sh	triggers wired+fired; UserPoolClient Ref fix; 0 orph
 composite-stack	2026-06-21T11:11:40Z	PASS	35	standard	sweep-F staleness re-run (rc=0)
 conditions	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -51,7 +50,6 @@ ec2-vpc	2026-06-21T11:12:35Z	PASS	53	standard	sweep-F staleness re-run (rc=0)
 ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfiguration camelCase reached AWS; 23 deleted 0 err
 efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
-efs-standalone	2026-06-09T16:34:55Z	PASS	134	verify.sh	#609 EFS backfill: 4 control-plane props asserted, destroy 0 err 0 orphan
 elasticache-replicationgroup-getatt	2026-06-14T09:11:22Z	PASS		verify.sh	CC-API GetAtt enrichment for ElastiCache RG; PrimaryEndPoint resolved real endpoint; 0 orphans
 event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 eventbridge	2026-06-21T11:13:40Z	PASS	63	verify.sh	sweep-F staleness re-run (rc=0)
@@ -69,7 +67,6 @@ importvalue-chain	2026-06-14T04:47:40Z	PASS		verify.sh	fixture-fix: deploy C wit
 infra-security	2026-06-21T11:00:28Z	PASS	307	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 intrinsic-functions	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 intrinsics-torture	2026-06-20T19:30:47Z	PASS		verify.sh	first run; all intrinsic assertions pass; 12 deleted 0 errors; no orphan SSM
-kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 errors
 lambda	2026-06-21T08:22:45Z	PASS	92	verify.sh	broad integ for intrinsic-resolver compound-Ref fix; 9 deleted 0 err
 lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
 lambda-layer-version-update	2026-06-21T14:58:48Z	PASS	69	verify.sh	LayerVersion content-change replacement + dependent re-point; 0 orphans
@@ -134,7 +131,6 @@ redshift-cluster-getatt	2026-06-14T10:05:32Z	PASS	220	verify.sh	CC-API GetAtt En
 remove-protection	2026-06-20T19:28:52Z	PASS		verify.sh	normal destroy fails on protected (expected) -> --remove-protection retry clean; DDB/Cognito/VPC/ASG-instance gone; 0 orphans (broad)
 replacement-fanout	2026-06-20T19:35:04Z	PASS		verify.sh	first run; SNS replacement fanout to 10 SSM deps + TopicPolicy; 12 deleted 0 errors
 rollback-failure-injection	2026-06-13T11:11:55Z	PASS	418	verify.sh	deploy-engine rollback on rich VPC+Lambda + #808 fail events; 17 deleted 0 orphan
-route53	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 6 deleted 0 errors
 s3-asset-deploy	2026-06-13T10:51:36Z	PASS	44	verify.sh	S3 zip asset upload + Lambda runs from it + generic Asset read-back; 0 err
 s3-cloudfront	2026-06-15T04:27:23Z	PASS		verify.sh	rc ok, orph clean (#873 OriginGroups drift clean + distribution/bucket-policy clean; clean destroy)
 s3-directory-bucket	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -148,7 +144,6 @@ schema-v7-to-v8-migration	2026-06-21T04:48:25Z	PASS	89	verify.sh	FIXED #751: con
 serverless-api	2026-06-15T06:49:27Z	PASS	48	verify.sh	AuthorizerCredentialsArn reached AWS; clean destroy 0 orphans
 servicediscovery	2026-06-15T07:22:22Z	PASS	108	verify.sh	ServiceAttributes reached AWS; clean destroy 0 orphans
 sns-event-source	2026-06-21T03:52:27Z	PASS		verify.sh	SnsEventSource: publish->Lambda->DynamoDB delivered; clean destroy 0 orphan
-sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
 sns-subscription-filter	2026-06-21T06:31:35Z	PASS	38	verify.sh	FilterPolicy intact; 0 orph
 sqs-cloudwatch	2026-06-21T11:00:28Z	PASS	41	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 state-destroy	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -158,8 +153,13 @@ stepfunctions-s3-definition	2026-06-15T08:44:00Z	PASS	55	verify.sh	post-review r
 throttle-wide-dag	2026-06-14T04:35:46Z	PASS		verify.sh	bug15 throttle-retry validated deploy+destroy clean
 update-policy-mutations	2026-06-20T19:39:38Z	PASS		verify.sh	first run; DeletionPolicy/UpdateReplacePolicy mutations + retain-on-replace; 5 del +2 retain; step6 cleanup -> 0 leftover
 update-replace	2026-06-13T11:42:29Z	PASS	71	verify.sh	#831 +Lambda/IAM/SG not-found post-destroy; 0 err
-vpc-lambda	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 16 deleted 0 errors, VPC/ENI clean
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 wafv2	2026-06-21T11:19:37Z	PASS	113	standard	sweep-F staleness re-run (rc=0)
+vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
+cognito	2026-06-21T16:16:44Z	PASS	56	verify.sh	stale-real re-run; 3 deleted 0 err; clean
+route53	2026-06-21T16:16:44Z	PASS	384	verify.sh	stale-real re-run; 6 deleted 0 err; clean
+sns-sqs-event	2026-06-21T16:16:44Z	PASS	56	verify.sh	stale-real re-run; 19 deleted 0 err; clean
+efs-standalone	2026-06-21T16:16:44Z	PASS	135	verify.sh	stale-real re-run; 11 deleted 0 err; clean
+kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy ok+destroy 3 del 0 err (split across subshell-death; re-destroyed clean); KMS key PendingDeletion
