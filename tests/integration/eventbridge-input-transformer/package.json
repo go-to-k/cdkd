@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-eventbridge-input-transformer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd EventBridge Rule with target InputTransformer (RuleTargetInput.fromObject) deploy + UPDATE + destroy integ",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

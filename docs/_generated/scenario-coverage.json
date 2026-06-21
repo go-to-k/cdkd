@@ -631,6 +631,11 @@
       "scenarios": []
     },
     {
+      "name": "eventbridge-input-transformer",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "eventsourcemapping-race",
       "annotated": true,
       "scenarios": [
@@ -646,6 +651,11 @@
     },
     {
       "name": "export-nested-stack",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "fifo-sqs-event-source",
       "annotated": false,
       "scenarios": []
     },
@@ -1905,7 +1915,9 @@
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
     "dynamodb-stream-filter",
+    "eventbridge-input-transformer",
     "export-nested-stack",
+    "fifo-sqs-event-source",
     "iam-managed-policy",
     "lambda-destinations",
     "lambda-log-retention",
