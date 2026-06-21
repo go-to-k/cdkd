@@ -36,7 +36,7 @@ deletion-policy-retain	2026-06-21T11:00:28Z	PASS	24	verify.sh	sweep-4..8 stalene
 deployment-events	2026-06-13T11:42:29Z	PASS	37	verify.sh	#831 +SNS/SSM not-found post-destroy; 0 err
 destroy-interrupt	2026-06-13T11:42:29Z	PASS	581	verify.sh	#831 +SG/IAM not-found post-destroy; #816+#804 verified; 0 orphan
 diff-intrinsic-target-change	2026-06-21T11:00:28Z	PASS	47	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-docdb-neptune	2026-06-02T11:37:34Z	PASS	1402	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
+docdb-neptune	2026-06-21T15:21:39Z	PASS	1512	verify.sh	sweep-G verify.sh re-run (rc=0)
 docker-image-asset	2026-06-13T11:02:44Z	PASS	60	verify.sh	ECR build+push (ARM_64 pinned); image by tag + Lambda runs; 0 err
 drift-revert	2026-06-20T19:01:24Z	PASS		verify.sh	drift inject+revert; 13 deleted 0 errors; clean (broad)
 drift-revert-vpc	2026-06-20T19:06:38Z	PASS		verify.sh	VPC+EFS drift revert; 21 deleted 0 errors; no VPC orphan (broad)
@@ -50,7 +50,7 @@ ec2-instance	2026-06-09T17:10:25Z	PASS	105	verify.sh	#609 security slice: Disabl
 ec2-vpc	2026-06-21T11:12:35Z	PASS	53	standard	sweep-F staleness re-run (rc=0)
 ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfiguration camelCase reached AWS; 23 deleted 0 err
-efs-lambda	2026-06-02T11:37:34Z	PASS	544	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
+efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
 efs-standalone	2026-06-09T16:34:55Z	PASS	134	verify.sh	#609 EFS backfill: 4 control-plane props asserted, destroy 0 err 0 orphan
 elasticache-replicationgroup-getatt	2026-06-14T09:11:22Z	PASS		verify.sh	CC-API GetAtt enrichment for ElastiCache RG; PrimaryEndPoint resolved real endpoint; 0 orphans
 event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -72,6 +72,7 @@ intrinsics-torture	2026-06-20T19:30:47Z	PASS		verify.sh	first run; all intrinsic
 kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 errors
 lambda	2026-06-21T08:22:45Z	PASS	92	verify.sh	broad integ for intrinsic-resolver compound-Ref fix; 9 deleted 0 err
 lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
+lambda-layer-version-update	2026-06-21T14:58:48Z	PASS	69	verify.sh	LayerVersion content-change replacement + dependent re-point; 0 orphans
 lambda-log-retention	2026-06-20T18:40:52Z	PASS		verify.sh	logRetention 7 + in-place UPDATE to 14 (Custom::LogRetention); clean destroy, 0 orphan
 lambda-versioning	2026-06-21T11:00:28Z	PASS	48	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 legacy-bucket-name-fallback	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -99,12 +100,12 @@ local-start-agentcore	2026-06-06T17:03:21Z	PASS	13	verify.sh	cdk-local 0.139.0 w
 local-start-alb	2026-06-21T11:00:28Z	PASS	21	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-start-alb-from-state	2026-06-21T10:44:49Z	PASS	88	verify.sh	fixed verify.sh assertion (state.json only, ignore #885 deployments/); deploy+destroy clean 29 del 0 err
 local-start-api	2026-06-21T11:00:28Z	FAIL	27	verify.sh	sweep staleness re-run: env-limited FAIL not cdkd bug (ledger-restore)
-local-start-api-container	2026-06-02T15:46:16Z	PASS	11	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-start-api-rest-v1-non-proxy	2026-06-02T15:46:16Z	PASS	15	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-start-api-websocket	2026-06-02T15:46:16Z	PASS	102	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-api-container	2026-06-21T14:49:02Z	PASS	14	verify.sh	sweep-G local re-run (rc=0)
+local-start-api-rest-v1-non-proxy	2026-06-21T14:49:21Z	PASS	17	verify.sh	sweep-G local re-run (rc=0)
+local-start-api-websocket	2026-06-21T14:52:36Z	PASS	193	verify.sh	sweep-G; retry rc=0 (arm64 qemu multi-container RIE; env-limited not cdkd bug if FAIL)
 local-start-cloudfront	2026-06-07T17:03:27Z	PASS	4	verify.sh	0.142.0 bump; cache-origin WARN follow; rc ok, no docker/aws orphans
-local-start-service	2026-06-02T15:46:16Z	PASS	21	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-start-service-watch-fast	2026-06-02T15:46:16Z	PASS	196	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
+local-start-service	2026-06-21T14:52:59Z	PASS	21	verify.sh	sweep-G local re-run (rc=0)
+local-start-service-watch-fast	2026-06-21T14:56:24Z	PASS	203	verify.sh	sweep-G local re-run (rc=0)
 log-pipeline	2026-06-21T11:00:28Z	PASS	62	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 macro-expansion	2026-06-21T11:15:51Z	PASS	105	verify.sh	sweep-F staleness re-run (rc=0)
 microservices	2026-06-20T18:47:03Z	PASS		standard	19 created; 19 deleted 0 errors; state+SNS+SQS+ESM clean (broad)
@@ -141,8 +142,8 @@ s3-event-notification	2026-06-20T18:40:52Z	PASS		verify.sh	S3->Lambda notificati
 s3-tables	2026-06-21T11:17:42Z	PASS	32	verify.sh	sweep-F staleness re-run (rc=0)
 s3-vectors	2026-06-14T13:39:25Z	PASS	60	verify.sh	Tags backfill + in-place Tags update() (TagResource/UntagResource) re-run after create dedup; 0 orphans
 scheduled-task	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-schema-v5-to-v6-migration	2026-06-02T14:31:31Z	PASS	175	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 6; v5->v8 transparent auto-migration verified, clean destroy
-schema-v6-to-v7-migration	2026-06-02T14:31:31Z	PASS	180	verify.sh	FIXED: assertion now reads STATE_SCHEMA_VERSION_CURRENT (v8) instead of hardcoded 7; v6->v8 transparent auto-migration verified, clean destroy
+schema-v5-to-v6-migration	2026-06-21T14:38:30Z	PASS	57	verify.sh	sweep-G verify.sh re-run (rc=0)
+schema-v6-to-v7-migration	2026-06-21T14:39:23Z	PASS	51	verify.sh	sweep-G verify.sh re-run (rc=0)
 schema-v7-to-v8-migration	2026-06-21T04:48:25Z	PASS	89	verify.sh	FIXED #751: consumer-only deploy no longer pulls weak GetStackOutput producer into closure
 serverless-api	2026-06-15T06:49:27Z	PASS	48	verify.sh	AuthorizerCredentialsArn reached AWS; clean destroy 0 orphans
 servicediscovery	2026-06-15T07:22:22Z	PASS	108	verify.sh	ServiceAttributes reached AWS; clean destroy 0 orphans
@@ -162,4 +163,3 @@ vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness r
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 wafv2	2026-06-21T11:19:37Z	PASS	113	standard	sweep-F staleness re-run (rc=0)
-lambda-layer-version-update	2026-06-21T14:58:48Z	PASS	69	verify.sh	LayerVersion content-change replacement + dependent re-point; 0 orphans
