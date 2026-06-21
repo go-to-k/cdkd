@@ -163,3 +163,7 @@ elasticache-replicationgroup-getatt	2026-06-21T18:03:30Z	PASS	649	verify.sh	stal
 s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
 opensearch-domain-getatt	2026-06-21T18:03:30Z	PASS	1671	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
 redshift-cluster-getatt	2026-06-21T18:03:30Z	PASS	416	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
+conditions-and-if	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); CFn Conditions + Fn::If 2-phase premium/basic; 14 assertions; clean destroy 0 err
+conditions-update-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); condition-gated resource add/remove across update; 14 assertions; clean destroy 0 err
+intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); intrinsic-function torture; 12 checks; 11 deleted 0 err; SSM cleared
+tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag propagation across 9 resource types; no tag-order false-positive; 9 deleted 0 err
