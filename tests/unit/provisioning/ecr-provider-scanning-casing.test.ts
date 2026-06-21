@@ -103,6 +103,26 @@ describe('ECRProvider — CFn->SDK casing for scanning/encryption config', () =>
     expect(input.encryptionConfiguration).toEqual({ encryptionType: 'AES256' });
   });
 
+  it('create with EncryptionType:KMS but no KmsKey omits kmsKey (AWS-managed key)', async () => {
+    mockSend.mockResolvedValue({ repository: { repositoryName: 'r', repositoryArn: 'a' } });
+    await provider.create('Repo', 'AWS::ECR::Repository', {
+      RepositoryName: 'r',
+      EncryptionConfiguration: { EncryptionType: 'KMS' },
+    });
+    const input = createInput();
+    expect(input.encryptionConfiguration).toEqual({ encryptionType: 'KMS' });
+  });
+
+  it('create with EncryptionConfiguration lacking EncryptionType omits the whole config', async () => {
+    mockSend.mockResolvedValue({ repository: { repositoryName: 'r', repositoryArn: 'a' } });
+    await provider.create('Repo', 'AWS::ECR::Repository', {
+      RepositoryName: 'r',
+      EncryptionConfiguration: { KmsKey: 'arn:aws:kms:...:key/orphan' },
+    });
+    const input = createInput();
+    expect(input.encryptionConfiguration).toBeUndefined();
+  });
+
   it('create with ImageScanningConfiguration:{} (no ScanOnPush) sends scanOnPush:false', async () => {
     mockSend.mockResolvedValue({ repository: { repositoryName: 'r', repositoryArn: 'a' } });
     await provider.create('Repo', 'AWS::ECR::Repository', {
