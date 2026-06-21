@@ -1845,7 +1845,7 @@
     {
       "resourceType": "AWS::Lambda::EventInvokeConfig",
       "bucket": "no-computed-attr",
-      "sdkBacked": false,
+      "sdkBacked": true,
       "readOnlyProperties": [],
       "enrichedKeys": [],
       "attributes": [],

@@ -210,7 +210,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::KinesisFirehose::DeliveryStream` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::KMS::Alias` | yes | no-computed-attr | _(none)_ |
 | `AWS::KMS::Key` | yes | enriched | `Arn` (OK), `KeyId` (OK) |
-| `AWS::Lambda::EventInvokeConfig` | no | no-computed-attr | _(none)_ |
+| `AWS::Lambda::EventInvokeConfig` | yes | no-computed-attr | _(none)_ |
 | `AWS::Lambda::EventSourceMapping` | yes | sdk-fallback-gap | `EventSourceMappingArn` (GAP), `Id` (GAP) |
 | `AWS::Lambda::Function` | yes | sdk-fallback-gap | `Arn` (GAP), `SnapStartResponse` (GAP) |
 | `AWS::Lambda::LayerVersion` | yes | sdk-fallback-gap | `LayerVersionArn` (GAP) |
