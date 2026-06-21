@@ -4112,6 +4112,8 @@
     }
   ],
   "unknownTypesInIntegs": [
+    "AWS::ApiGateway::Model",
+    "AWS::ApiGateway::RequestValidator",
     "AWS::ApiGateway::RestApi",
     "AWS::ApplicationAutoScaling::ScalableTarget",
     "AWS::Athena::NamedQuery",

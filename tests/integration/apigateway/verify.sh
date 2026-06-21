@@ -146,6 +146,31 @@ if ! echo "${PROXY_BODY}" | grep -q "Hello from cdkd!"; then
 fi
 echo "    OK: {proxy+} ANY method routed to the Lambda (proxy path)"
 
+# --- Assertion 5: request validation (Model + RequestValidator Ref) ----
+# POST /pets is wired with a RequestValidator (validateRequestBody) + a Model
+# requiring `name`. This exercises the `Ref` resolution fix: the method's
+# RequestModels `{ Ref: <Model> }` and RequestValidatorId `{ Ref: <Validator> }`
+# must resolve to the model NAME / validator id, NOT cdkd's compound
+# `<restApiId>|<ref>` physical id (which AWS rejects at method-create time).
+# A valid body must reach the Lambda (200); an invalid body (missing required
+# `name`) must be rejected by the validator BEFORE the Lambda (400).
+PETS_URL="${API_URL}/pets"
+VALID_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${PETS_URL}" \
+  -H 'Content-Type: application/json' -d '{"name":"rex","age":3}')
+if [ "${VALID_CODE}" != "200" ]; then
+  echo "FAIL: POST /pets with a valid body returned HTTP ${VALID_CODE}, expected 200" >&2
+  exit 1
+fi
+echo "    OK: POST /pets valid body -> 200 (Model + RequestValidator Ref resolved)"
+
+INVALID_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${PETS_URL}" \
+  -H 'Content-Type: application/json' -d '{"age":3}')
+if [ "${INVALID_CODE}" != "400" ]; then
+  echo "FAIL: POST /pets with an invalid body returned HTTP ${INVALID_CODE}, expected 400" >&2
+  exit 1
+fi
+echo "    OK: POST /pets invalid body -> 400 (request validator enforced)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

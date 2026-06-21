@@ -34,10 +34,21 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  *   makes the Deployment snapshot miss the new method). verify.sh curls an
  *   arbitrary sub-path and asserts it reaches the Lambda.
  *
+ * - Request validation: a Model (JSON schema) + RequestValidator + a POST
+ *   method referencing both. Regression-covers the `Ref` resolution fix for
+ *   AWS::ApiGateway::Model (Ref -> model name) and ::RequestValidator (Ref ->
+ *   validator id) — both Cloud-Control-provisioned, so their physical id is the
+ *   compound `<restApiId>|<ref>` while CFn's Ref returns only `<ref>`. Passing
+ *   the compound id made API Gateway reject the method with "Invalid model
+ *   identifier specified" / "Invalid Request Validator identifier specified".
+ *   verify.sh curls a valid + invalid body and asserts 200 / 400.
+ *
  * covers: AWS::ApiGateway::Method
  * covers: AWS::ApiGateway::Resource
  * covers: AWS::ApiGateway::Stage
  * covers: AWS::ApiGateway::Deployment
+ * covers: AWS::ApiGateway::Model
+ * covers: AWS::ApiGateway::RequestValidator
  */
 export class ApiGatewayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -124,6 +135,43 @@ exports.handler = async (event) => {
       authType: 'custom',
       authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${handler.functionArn}/invocations`,
       identitySource: 'method.request.header.Authorization',
+    });
+
+    // Request validation: a Model (JSON schema) + a RequestValidator + a POST
+    // method that references BOTH. Regression-covers the `Ref` resolution fix
+    // for the two API Gateway child types that are Cloud-Control-provisioned
+    // (no SDK provider), so cdkd's physical id is the compound
+    // `<restApiId>|<ref>` while CFn's `Ref` returns only the `<ref>` segment:
+    //   - AWS::ApiGateway::Model — `RequestModels` value `{ Ref: <Model> }`
+    //     must resolve to the model NAME, not `<restApiId>|<name>`, else AWS
+    //     rejects the method with "Invalid model identifier specified".
+    //   - AWS::ApiGateway::RequestValidator — `RequestValidatorId` value
+    //     `{ Ref: <Validator> }` must resolve to the validator id, not
+    //     `<restApiId>|<id>`, else AWS rejects with "Invalid Request Validator
+    //     identifier specified".
+    // verify.sh curls a valid + an invalid body and asserts 200 / 400.
+    const petModel = api.addModel('PetModel', {
+      contentType: 'application/json',
+      modelName: 'Pet',
+      schema: {
+        schema: apigateway.JsonSchemaVersion.DRAFT4,
+        title: 'Pet',
+        type: apigateway.JsonSchemaType.OBJECT,
+        required: ['name'],
+        properties: {
+          name: { type: apigateway.JsonSchemaType.STRING },
+          age: { type: apigateway.JsonSchemaType.INTEGER },
+        },
+      },
+    });
+    const bodyValidator = api.addRequestValidator('BodyValidator', {
+      validateRequestBody: true,
+      validateRequestParameters: false,
+    });
+    const pets = api.root.addResource('pets');
+    pets.addMethod('POST', new apigateway.LambdaIntegration(handler), {
+      requestValidator: bodyValidator,
+      requestModels: { 'application/json': petModel },
     });
 
     // Outputs
