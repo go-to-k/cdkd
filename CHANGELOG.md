@@ -1,3 +1,10 @@
+# [0.230.0](https://github.com/go-to-k/cdkd/compare/v0.229.8...v0.230.0) (2026-06-21)
+
+
+### Features
+
+* **deploy:** implement the --replace flag + fix Glue S3 encryption silent-drop ([#918](https://github.com/go-to-k/cdkd/issues/918)) ([3c07ab3](https://github.com/go-to-k/cdkd/commit/3c07ab362d2054286404116ec214d128506739c2))
+
 ## [0.229.8](https://github.com/go-to-k/cdkd/compare/v0.229.7...v0.229.8) (2026-06-21)
 
 
