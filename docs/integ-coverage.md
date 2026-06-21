@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**109 / 114 registered SDK Providers** have at least one integ fixture exercising them. 5 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**110 / 114 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -20,19 +20,18 @@ L2 detection is a hand-curated lower bound — a missed L2 wrapper produces a fa
 
 _None._ Every registered SDK Provider has at least one integ fixture or an explicit `// allow-no-integ:` rationale.
 
-## Allow-listed providers (5)
+## Allow-listed providers (4)
 
 Registered without an integ fixture, with an explicit `// allow-no-integ: <rationale>` comment on the register line in [src/provisioning/register-providers.ts](../src/provisioning/register-providers.ts). The hook accepts these — but each is a deliberate verification gap and should be revisited if a real-AWS bug surfaces against the type.
 
 | Resource Type | Rationale |
 |---|---|
 | `AWS::Glue::Connection` | drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise. |
-| `AWS::Glue::SecurityConfiguration` | immutable resource type; unit roundtrip + drift coverage suffice. Add integ if a future bug surfaces a real-AWS-only behavior. |
 | `AWS::Kinesis::StreamConsumer` | immutable type (every property change replaces); unit roundtrip suffices. Add integ if a Lambda EFO consumer pattern bug surfaces. |
 | `AWS::RDS::DBProxy` | rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
 
-## Covered providers (109)
+## Covered providers (110)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -98,6 +97,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::Glue::Crawler` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::Glue::Database` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal)<br>[`drift-revert`](../tests/integration/drift-revert/) (l1) |
 | `AWS::Glue::Job` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
+| `AWS::Glue::SecurityConfiguration` | [`glue-securityconfig-replace`](../tests/integration/glue-securityconfig-replace/) (l1,literal) |
 | `AWS::Glue::Table` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal) |
 | `AWS::Glue::Trigger` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::Glue::Workflow` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |

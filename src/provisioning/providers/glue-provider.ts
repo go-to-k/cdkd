@@ -1462,7 +1462,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
   /**
    * Read AWS-current SecurityConfiguration shape via
    * `GetSecurityConfiguration`. Always emits the three CFn-modeled
-   * sub-configs (`S3Encryption: []`, `CloudWatchEncryption: {}`,
+   * sub-configs (`S3Encryptions: []`, `CloudWatchEncryption: {}`,
    * `JobBookmarksEncryption: {}`) per PR #145 even when AWS reports
    * nothing — closes the "console-side encryption enable on a previously
    * default config" detection gap on the v3 baseline.
@@ -1553,15 +1553,21 @@ function sleep(ms: number): Promise<void> {
 /**
  * Build the SDK `EncryptionConfiguration` from the CFn-shape input
  * (`AWS::Glue::SecurityConfiguration.EncryptionConfiguration`). Each
- * sub-config (`S3Encryption[]` / `CloudWatchEncryption` /
- * `JobBookmarksEncryption`) field-renames are pure pass-through — the
- * CFn property names match the SDK member names verbatim.
+ * sub-config (`S3Encryptions[]` / `CloudWatchEncryption` /
+ * `JobBookmarksEncryption`) maps to the SDK member names — `CloudWatchEncryption`
+ * / `JobBookmarksEncryption` match verbatim, but the CFn `S3Encryptions` (plural)
+ * list maps to the SDK `S3Encryption` (singular) field.
  */
 function buildEncryptionConfiguration(input: Record<string, unknown>): EncryptionConfiguration {
   const result: EncryptionConfiguration = {};
 
-  if (Array.isArray(input['S3Encryption'])) {
-    result.S3Encryption = input['S3Encryption'].map((entry) => {
+  // CFn names this property `S3Encryptions` (PLURAL); the SDK input field is
+  // `S3Encryption` (singular). Reading the singular CFn key silently dropped
+  // S3 encryption on every create (CDK / a hand-authored template always emits
+  // the plural form). CloudWatchEncryption / JobBookmarksEncryption ARE singular
+  // in both CFn and the SDK, so only this one diverges.
+  if (Array.isArray(input['S3Encryptions'])) {
+    result.S3Encryption = input['S3Encryptions'].map((entry) => {
       const e = entry as Record<string, unknown>;
       const item: S3Encryption = {};
       if (typeof e['S3EncryptionMode'] === 'string') {
@@ -1608,7 +1614,7 @@ function buildEncryptionConfiguration(input: Record<string, unknown>): Encryptio
 /**
  * Reverse-map AWS's `EncryptionConfiguration` SDK shape into the CFn
  * shape with always-emit placeholders (PR #145):
- *   - `S3Encryption[]` → `?? []` (so console-side ADD is detectable)
+ *   - `S3Encryptions[]` → `?? []` (so console-side ADD is detectable)
  *   - `CloudWatchEncryption` → `?? {}`
  *   - `JobBookmarksEncryption` → `?? {}`
  *   - `DataQualityEncryption` → silently dropped (not in CFn schema)
@@ -1618,7 +1624,8 @@ function mapEncryptionConfigurationToCfn(
 ): Record<string, unknown> {
   const c = cfg ?? {};
   return {
-    S3Encryption: (c.S3Encryption ?? []).map((entry) => {
+    // CFn shape uses `S3Encryptions` (plural) — see buildEncryptionConfiguration.
+    S3Encryptions: (c.S3Encryption ?? []).map((entry) => {
       const out: Record<string, unknown> = {};
       if (entry.S3EncryptionMode !== undefined) out['S3EncryptionMode'] = entry.S3EncryptionMode;
       if (entry.KmsKeyArn !== undefined) out['KmsKeyArn'] = entry.KmsKeyArn;

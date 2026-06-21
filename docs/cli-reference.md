@@ -744,6 +744,50 @@ every backfill release.
   across replica regions is more involved; cdkd refuses with a clear
   error.
 
+## `--replace` (deploy)
+
+Replace (DELETE + CREATE) a resource whose **in-place update is rejected
+because an immutable property changed and AWS exposes no update API for
+it**. Some resource types are immutable on AWS — there is no
+`Update<Thing>` call, so any property change must publish / register a
+new physical resource. Examples: `AWS::Lambda::LayerVersion` content,
+`AWS::EFS::AccessPoint`, `AWS::ECS::TaskDefinition`,
+`AWS::Glue::SecurityConfiguration`, and several `AWS::ApiGatewayV2::*`
+identity fields.
+
+For a few of these cdkd already has a built-in replacement rule (e.g.
+`AWS::Lambda::LayerVersion` auto-replaces with no flag). For the rest,
+cdkd's diff classifies the change as an in-place UPDATE, the provider's
+`update()` hard-rejects with `ResourceUpdateNotSupportedError`, and —
+without this flag — the deploy fails. `--replace` opts into catching that
+rejection and falling back to a DELETE + CREATE of the resource (the same
+replacement path the Cloud Control `UnsupportedActionException`
+auto-fallback already uses), matching what CloudFormation would do.
+
+Unlike `--recreate-via-cc-api` / `--recreate-via-sdk-provider` (which
+name a specific logical id and force a routing migration), `--replace` is
+a stack-wide opt-in that fires only for resources whose update genuinely
+hard-rejects — a resource whose update succeeds in place is unaffected.
+
+```bash
+# A Glue SecurityConfiguration's EncryptionConfiguration changed (immutable) —
+# fails without the flag, replaces cleanly with it
+cdkd deploy MyStack --replace --yes
+```
+
+### Stateful-resource guard (shared with `--recreate-via-cc-api`)
+
+`--replace` shares the same stateful-resource guard as
+`--recreate-via-cc-api`: when the replacement target is a stateful type
+(see the guard list above — RDS / DynamoDB / EFS / S3-with-data /
+Logs-with-retention / etc.), the DELETE + CREATE loses all data, so
+cdkd refuses unless `--force-stateful-recreation` is ALSO passed. The
+guard is evaluated at the moment the immutable-update rejection is
+caught (mid-deploy), and the error names the resource + the data-loss
+reason. Non-stateful immutable types (LayerVersion, Glue
+SecurityConfiguration, ECS TaskDefinition, ApiGatewayV2 sub-resources,
+etc.) replace with `--replace` alone.
+
 ## `--recreate-via-sdk-provider <LogicalId>` (deploy)
 
 `--recreate-via-sdk-provider <LogicalId>` (repeatable, one flag per

@@ -2377,6 +2377,18 @@
       }
     },
     {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "integs": [
+        "glue-securityconfig-replace"
+      ],
+      "signals": {
+        "glue-securityconfig-replace": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Glue::Table",
       "integs": [
         "data-analytics"
@@ -4194,10 +4206,6 @@
     {
       "resourceType": "AWS::Glue::Connection",
       "rationale": "drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise."
-    },
-    {
-      "resourceType": "AWS::Glue::SecurityConfiguration",
-      "rationale": "immutable resource type; unit roundtrip + drift coverage suffice. Add integ if a future bug surfaces a real-AWS-only behavior."
     },
     {
       "resourceType": "AWS::Kinesis::StreamConsumer",

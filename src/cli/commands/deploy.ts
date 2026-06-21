@@ -87,6 +87,7 @@ async function deployCommand(
     recreateViaCcApi?: string[];
     recreateViaSdkProvider?: string[];
     forceStatefulRecreation?: boolean;
+    replace?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -611,6 +612,8 @@ async function deployCommand(
             recreateViaCcApiTargets.size > 0 && { recreateViaCcApiTargets }),
           ...(recreateViaSdkProviderTargets &&
             recreateViaSdkProviderTargets.size > 0 && { recreateViaSdkProviderTargets }),
+          ...(options.replace && { replace: true }),
+          ...(options.forceStatefulRecreation && { forceStatefulRecreation: true }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,

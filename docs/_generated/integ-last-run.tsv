@@ -70,7 +70,6 @@ infra-security	2026-06-21T11:00:28Z	PASS	307	standard	sweep-4..8 staleness re-ru
 intrinsic-functions	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 intrinsics-torture	2026-06-20T19:30:47Z	PASS		verify.sh	first run; all intrinsic assertions pass; 12 deleted 0 errors; no orphan SSM
 kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 errors
-lambda	2026-06-21T08:22:45Z	PASS	92	verify.sh	broad integ for intrinsic-resolver compound-Ref fix; 9 deleted 0 err
 lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
 lambda-layer-version-update	2026-06-21T14:58:48Z	PASS	69	verify.sh	LayerVersion content-change replacement + dependent re-point; 0 orphans
 lambda-log-retention	2026-06-20T18:40:52Z	PASS		verify.sh	logRetention 7 + in-place UPDATE to 14 (Custom::LogRetention); clean destroy, 0 orphan
@@ -163,3 +162,5 @@ vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness r
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 wafv2	2026-06-21T11:19:37Z	PASS	113	standard	sweep-F staleness re-run (rc=0)
+glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
+lambda	2026-06-21T15:49:54Z	PASS	75	verify.sh	broad integ for --replace deploy-engine/deploy.ts change; 0 orphans
