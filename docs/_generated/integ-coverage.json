@@ -2795,6 +2795,7 @@
         "full-stack-demo",
         "iam-propagation-stress",
         "lambda",
+        "lambda-destinations",
         "lambda-log-retention",
         "lambda-versioning",
         "local-invoke",
@@ -2924,6 +2925,10 @@
         ],
         "lambda": [
           "l2"
+        ],
+        "lambda-destinations": [
+          "l2",
+          "literal"
         ],
         "lambda-log-retention": [
           "l2"
@@ -3741,6 +3746,7 @@
         "full-stack-demo",
         "iam-propagation-stress",
         "intrinsics-torture",
+        "lambda-destinations",
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
@@ -3790,6 +3796,10 @@
         ],
         "intrinsics-torture": [
           "l2"
+        ],
+        "lambda-destinations": [
+          "l2",
+          "literal"
         ],
         "microservices": [
           "l2"
@@ -4175,6 +4185,7 @@
     "AWS::ElasticLoadBalancingV2::ListenerRule",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
+    "AWS::Lambda::EventInvokeConfig",
     "AWS::Lambda::Version",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
