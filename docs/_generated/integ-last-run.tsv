@@ -86,19 +86,13 @@ local-ecs-service-connect	2026-06-02T15:46:16Z	PASS	22	verify.sh	local integ ser
 local-invoke	2026-06-21T08:51:14Z	PASS	32	verify.sh	sweep-5B; flaky-recovered on retry (amd64 RIE qemu heap-corruption on arm64 host); all 5 steps PASS retry
 local-invoke-agentcore	2026-06-02T15:46:16Z	PASS	93	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-invoke-buildkit	2026-06-02T15:46:16Z	PASS	31	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-container	2026-06-21T08:51:14Z	PASS	29	verify.sh	sweep-5B local staleness re-run (rc=0)
-local-invoke-dotnet	2026-06-02T15:46:16Z	PASS	46	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-cfn-stack	2026-06-02T15:46:16Z	PASS	92	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-state	2026-06-02T15:46:16Z	PASS	57	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-invoke-java	2026-06-02T15:46:16Z	PASS	37	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-layers	2026-06-21T08:51:14Z	PASS	23	verify.sh	sweep-5B local staleness re-run (rc=0)
 local-invoke-provided	2026-06-05T07:36:40Z	PASS		verify.sh	#768 cross-arch invoke path; 4/4; docker clean
-local-invoke-python	2026-06-02T15:46:16Z	PASS	28	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-invoke-ruby	2026-06-02T15:46:16Z	PASS	33	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-run-task	2026-06-21T08:51:14Z	PASS	19	verify.sh	sweep-5B local staleness re-run (rc=0)
-local-run-task-awsvpc	2026-06-02T15:46:16Z	PASS	9	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-run-task-from-state	2026-06-02T15:46:16Z	PASS	98	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-run-task-multi-container	2026-06-02T15:46:16Z	PASS	11	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-start-agentcore	2026-06-06T17:03:21Z	PASS	13	verify.sh	cdk-local 0.139.0 warm HTTP serve (#775) + --sigv4 (#777) + CI-fail-loud nit; Docker 0 leaks
@@ -174,3 +168,9 @@ vpc-lambda-cr-race	2026-06-21T08:04:40Z	PASS	343	standard	sweep-4 staleness re-r
 vpc-lookup	2026-06-21T08:42:52Z	PASS	15	standard	sweep-5A standard re-run (runner misflagged as verify.sh); fromLookup default VPC; 1 del 0 err
 vpc-nat-gateway	2026-06-13T05:15:45Z	PASS	328	standard	#817 IGW/NAT delete-order; 21 deleted 0 err 0 orphan (NAT before IGW/EIP)
 wafv2	2026-06-21T06:54:06Z	PASS	60	standard	sweep-3 rerun clean after clearing pre-existing Retain-orphan IAM role (fixture non-idempotent; pre-flight scan needed)
+local-invoke-python	2026-06-21T09:02:32Z	PASS	56	verify.sh	sweep-6; failed first run, retry rc=0 (arm64 qemu RIE flakiness)
+local-invoke-ruby	2026-06-21T09:03:25Z	PASS	51	verify.sh	sweep-6 local staleness re-run (rc=0)
+local-invoke-java	2026-06-21T09:04:18Z	PASS	51	verify.sh	sweep-6 local staleness re-run (rc=0)
+local-invoke-dotnet	2026-06-21T09:05:38Z	PASS	78	verify.sh	sweep-6 local staleness re-run (rc=0)
+local-invoke-buildkit	2026-06-21T09:06:12Z	PASS	32	verify.sh	sweep-6 local staleness re-run (rc=0)
+local-run-task-awsvpc	2026-06-21T09:06:24Z	PASS	9	verify.sh	sweep-6 local staleness re-run (rc=0)
