@@ -1,3 +1,10 @@
+## [0.229.8](https://github.com/go-to-k/cdkd/compare/v0.229.7...v0.229.8) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** replace Lambda LayerVersion on content change instead of failing ([#916](https://github.com/go-to-k/cdkd/issues/916)) ([36b4769](https://github.com/go-to-k/cdkd/commit/36b4769ee0d253175c4a97892009ee7c4e3d90bd))
+
 ## [0.229.7](https://github.com/go-to-k/cdkd/compare/v0.229.6...v0.229.7) (2026-06-21)
 
 
