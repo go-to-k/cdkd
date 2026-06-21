@@ -406,6 +406,11 @@
       "scenarios": []
     },
     {
+      "name": "cognito-lambda-triggers",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "composite-stack",
       "annotated": true,
       "scenarios": [
@@ -565,6 +570,11 @@
     },
     {
       "name": "dynamodb-ondemand",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "dynamodb-stream-filter",
       "annotated": false,
       "scenarios": []
     },
@@ -1246,6 +1256,11 @@
       "scenarios": []
     },
     {
+      "name": "sns-subscription-filter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sqs-cloudwatch",
       "annotated": true,
       "scenarios": []
@@ -1881,8 +1896,10 @@
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "cognito-lambda-triggers",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
+    "dynamodb-stream-filter",
     "export-nested-stack",
     "iam-managed-policy",
     "lambda-log-retention",
@@ -1903,6 +1920,7 @@
     "schema-v7-to-v8-migration",
     "servicediscovery",
     "sns-event-source",
+    "sns-subscription-filter",
     "stepfunctions-s3-definition"
   ]
 }

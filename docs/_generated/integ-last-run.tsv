@@ -152,4 +152,7 @@ data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
 schema-v7-to-v8-migration	2026-06-21T04:48:25Z	PASS	89	verify.sh	FIXED #751: consumer-only deploy no longer pulls weak GetStackOutput producer into closure
 multi-stack-deps	2026-06-21T04:50:36Z	PASS	60	standard	3-stack deploy order Network->Data->App, destroy reverse, 0 err (post-#751-fix non-regression)
 apigateway	2026-06-21T05:45:25Z	PASS	51	verify.sh	Model/RequestValidator Ref fix; 200/400 asserted; 0 orph
-lambda	2026-06-21T05:48:06Z	PASS	84	verify.sh	broad integ for intrinsic-resolver Ref fix; 0 orph
+cognito-lambda-triggers	2026-06-21T06:31:35Z	PASS	60	verify.sh	triggers wired+fired; UserPoolClient Ref fix; 0 orph
+sns-subscription-filter	2026-06-21T06:31:35Z	PASS	38	verify.sh	FilterPolicy intact; 0 orph
+dynamodb-stream-filter	2026-06-21T06:31:35Z	PASS	58	verify.sh	FilterCriteria/bisect/responseTypes; 0 orph
+lambda	2026-06-21T06:31:35Z	PASS	70	verify.sh	broad integ for intrinsic-resolver Ref fix; 0 orph
