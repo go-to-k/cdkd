@@ -168,6 +168,39 @@ describe('LambdaEventInvokeConfigProvider', () => {
         })
       ).resolves.toBeUndefined();
     });
+
+    it('throws on ResourceNotFoundException when expectedRegion does NOT match the client region', async () => {
+      // Client mock reports us-east-1; expectedRegion is eu-west-1 → the
+      // NotFound must NOT be swallowed (it would mask a delete issued against
+      // the wrong region).
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+      );
+      await expect(
+        provider.delete('Cfg', 'my-fn|$LATEST', 'AWS::Lambda::EventInvokeConfig', undefined, {
+          expectedRegion: 'eu-west-1',
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('create with OnSuccess destination', () => {
+    it('emits the OnSuccess sub-key when a Destination is present', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const onSuccessArn = 'arn:aws:sqs:us-east-1:123456789012:success-q';
+      await provider.create('Cfg', 'AWS::Lambda::EventInvokeConfig', {
+        FunctionName: 'my-fn',
+        DestinationConfig: {
+          OnSuccess: { Destination: onSuccessArn },
+          OnFailure: { Destination: DLQ_ARN },
+        },
+      });
+      const input = inputOf();
+      expect(input.DestinationConfig).toEqual({
+        OnSuccess: { Destination: onSuccessArn },
+        OnFailure: { Destination: DLQ_ARN },
+      });
+    });
   });
 
   describe('readCurrentState', () => {
