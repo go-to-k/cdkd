@@ -253,7 +253,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // AWS-owned (default) encryption instead of the requested AWS-managed /
       // customer-managed KMS encryption. Map the field name explicitly.
       const sse = mapSSESpecification(properties['SSESpecification']);
-      if (sse) {
+      if (sse && Object.keys(sse).length > 0) {
         createParams.SSESpecification = sse;
       }
 
@@ -490,6 +490,28 @@ export class DynamoDBTableProvider implements ResourceProvider {
             })
           );
           this.logger.debug(`Updated WarmThroughput on DynamoDB table ${physicalId}`);
+        }
+      }
+
+      // SSESpecification — rides on its OWN UpdateTable (separate from the
+      // billing/throughput call above and the GSI calls below). Fire only when
+      // the value changed, and wait for ACTIVE afterwards so the GSI block does
+      // not race an UPDATING table. The same SSEEnabled->Enabled mapping the
+      // create path needs applies here. A removal (new absent, previous present)
+      // is a deliberate no-op: CFn has no clean "drop SSE back to AWS-owned"
+      // mapping and mapSSESpecification(undefined) returns undefined, so there
+      // is no spec to send (mirrors the WarmThroughput removal stance).
+      if (
+        JSON.stringify(properties['SSESpecification']) !==
+        JSON.stringify(previousProperties['SSESpecification'])
+      ) {
+        const sseUpdate = mapSSESpecification(properties['SSESpecification']);
+        if (sseUpdate && Object.keys(sseUpdate).length > 0) {
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({ TableName: physicalId, SSESpecification: sseUpdate })
+          );
+          await this.waitForTableActiveAfterUpdate(physicalId);
+          this.logger.debug(`Updated SSESpecification on DynamoDB table ${physicalId}`);
         }
       }
 
