@@ -1002,6 +1002,33 @@ describe('CloudControlProvider Events Connection attribute enrichment (CC-API ro
     );
   });
 
+  it('fills only the missing attrs when CC already returned some (per-field independence)', async () => {
+    mockEventBridgeSend.mockResolvedValueOnce({
+      ConnectionArn:
+        'arn:aws:events:us-east-1:123456789012:connection/my-conn/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      SecretArn: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:from-describe',
+    });
+
+    // CC already surfaced SecretArn but NOT Arn / ArnForPolicy — the outer guard
+    // still fires (Arn is missing), and the per-field `!enriched[x]` guards must
+    // keep the existing SecretArn while filling Arn + ArnForPolicy.
+    const enriched = await enrich('my-conn', {
+      SecretArn: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:already-from-cc',
+    });
+
+    expect(mockEventBridgeSend).toHaveBeenCalledTimes(1);
+    expect(enriched['Arn']).toBe(
+      'arn:aws:events:us-east-1:123456789012:connection/my-conn/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    );
+    expect(enriched['ArnForPolicy']).toBe(
+      'arn:aws:events:us-east-1:123456789012:connection/my-conn'
+    );
+    // The CC-returned SecretArn is preserved (not overwritten by DescribeConnection).
+    expect(enriched['SecretArn']).toBe(
+      'arn:aws:secretsmanager:us-east-1:123456789012:secret:already-from-cc'
+    );
+  });
+
   it('is best-effort: a failed DescribeConnection does not throw and leaves attributes unchanged', async () => {
     mockEventBridgeSend.mockRejectedValueOnce(
       Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
