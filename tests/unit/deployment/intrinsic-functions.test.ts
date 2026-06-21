@@ -2671,6 +2671,34 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe('abc123');
   });
 
+  // Same bug class for AWS::Cognito::UserPoolClient: CFn `Ref` returns the
+  // client id, but the Cloud Control physical id is the compound
+  // `<userPoolId>|<clientId>`. A consumer of the client id (CfnOutput, Lambda
+  // env var, cognito-idp API) would otherwise get the compound id, which fails
+  // Cognito's `[\w+]+` client-id validation.
+  it('Ref to AWS::Cognito::UserPoolClient returns the client id, not the compound physical id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Client: { Type: 'AWS::Cognito::UserPoolClient', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Client: {
+          physicalId: 'us-east-1_t1TBpabHO|9fut2hkhdues45051mvms2os5',
+          resourceType: 'AWS::Cognito::UserPoolClient',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'Client' }, context);
+    expect(result).toBe('9fut2hkhdues45051mvms2os5');
+  });
+
   it('Ref falls back to the raw physical id when there is no pipe separator', async () => {
     const template: CloudFormationTemplate = {
       Resources: {

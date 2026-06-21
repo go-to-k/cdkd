@@ -27,12 +27,19 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
 
 /**
  * Resource types whose CloudFormation `Ref` returns the segment AFTER the pipe
- * in cdkd's compound Cloud Control physical id `<restApiId>|<ref>` (rather than
- * the whole physical id). See {@link IntrinsicFunctionResolver.resolveRefValue}.
+ * in cdkd's compound Cloud Control physical id `<parent>|<ref>` (rather than the
+ * whole physical id). These are Cloud-Control-provisioned types whose CC
+ * primaryIdentifier is compound `<parentId>|<ref>` while CFn's `Ref` returns
+ * only the trailing `<ref>` component:
+ *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
+ *   - AWS::ApiGateway::RequestValidator `<restApiId>|<validatorId>`   -> validator id
+ *   - AWS::Cognito::UserPoolClient      `<userPoolId>|<clientId>`     -> client id
+ * See {@link IntrinsicFunctionResolver.resolveRefValue}.
  */
 const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Model',
   'AWS::ApiGateway::RequestValidator',
+  'AWS::Cognito::UserPoolClient',
 ]);
 
 /**
@@ -683,10 +690,10 @@ export class IntrinsicFunctionResolver {
    * stores. But for a few types CFn's `Ref` returns a sub-component of the
    * physical id, and returning the raw physical id breaks downstream consumers.
    *
-   * Two API Gateway child types are provisioned via Cloud Control (no SDK
-   * provider), whose primary identifier — and thus cdkd's physical id — is the
-   * compound `<restApiId>|<ref>`, while CFn's `Ref` returns only the `<ref>`
-   * segment:
+   * The {@link REF_RETURNS_SEGMENT_AFTER_PIPE} types are provisioned via Cloud
+   * Control (no SDK provider), whose primary identifier — and thus cdkd's
+   * physical id — is the compound `<parentId>|<ref>`, while CFn's `Ref` returns
+   * only the trailing `<ref>` segment:
    *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
    *     `<restApiId>|<modelName>`. A method wiring
    *     `RequestModels: { "application/json": { "Ref": <Model> } }` would
@@ -697,8 +704,12 @@ export class IntrinsicFunctionResolver {
    *     `RequestValidatorId: { "Ref": <Validator> }` would otherwise get the
    *     compound id and API Gateway rejects it with
    *     "Invalid Request Validator identifier specified".
-   * In both cases the `Ref` value is the segment after the pipe (RestApiId is
-   * the first identifier component).
+   *   - `AWS::Cognito::UserPoolClient` → Ref is the client id; physical id is
+   *     `<userPoolId>|<clientId>`. Any consumer of the client id (a CfnOutput,
+   *     a Lambda env var, `cognito-idp` API calls) would otherwise get the
+   *     compound id, which fails the `[\w+]+` client-id validation.
+   * In every case the `Ref` value is the segment after the pipe (the parent id
+   * is the first identifier component).
    */
   private resolveRefValue(resource: ResourceState): string {
     const physicalId = resource.physicalId;
