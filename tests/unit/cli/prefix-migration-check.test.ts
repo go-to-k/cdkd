@@ -26,6 +26,7 @@ const NAME_PROPS: Record<string, string> = {
   'AWS::IAM::User': 'UserName',
   'AWS::IAM::Group': 'GroupName',
   'AWS::IAM::InstanceProfile': 'InstanceProfileName',
+  'AWS::IAM::ManagedPolicy': 'ManagedPolicyName',
   'AWS::ElasticLoadBalancingV2::LoadBalancer': 'Name',
   'AWS::ElasticLoadBalancingV2::TargetGroup': 'Name',
 };
@@ -138,6 +139,9 @@ describe('findPendingPrefixRenames', () => {
       Profile: makeResource('MyStack-p', 'AWS::IAM::InstanceProfile', {
         userSuppliedName: 'p',
       }),
+      ManagedPolicy: makeResource('MyStack-mp', 'AWS::IAM::ManagedPolicy', {
+        userSuppliedName: 'mp',
+      }),
       Lb: makeResource('MyStack-lb', 'AWS::ElasticLoadBalancingV2::LoadBalancer', {
         userSuppliedName: 'lb',
       }),
@@ -146,12 +150,13 @@ describe('findPendingPrefixRenames', () => {
       }),
     });
     const pending = findPendingPrefixRenames('MyStack', state);
-    expect(pending).toHaveLength(6);
+    expect(pending).toHaveLength(7);
     expect(pending.map((p) => p.resourceType).sort()).toEqual([
       'AWS::ElasticLoadBalancingV2::LoadBalancer',
       'AWS::ElasticLoadBalancingV2::TargetGroup',
       'AWS::IAM::Group',
       'AWS::IAM::InstanceProfile',
+      'AWS::IAM::ManagedPolicy',
       'AWS::IAM::Role',
       'AWS::IAM::User',
     ]);
@@ -175,6 +180,82 @@ describe('findPendingPrefixRenames', () => {
         newPhysicalId: 'role-a',
       },
     ]);
+  });
+
+  it('does NOT flag a user-supplied name that itself starts with `${stackName}-` (false-positive regression)', () => {
+    // A very common convention is to name resources `${id}-role`, where `id`
+    // is the stack name — e.g. `new iam.Role(this, 'X', { roleName:
+    // `${this.stackName}-role` })`. Deployed fresh post-v0.94, cdkd takes the
+    // name VERBATIM, so the physicalId already equals the user name
+    // (`MyStack-role`). There is NO rename and NO replacement. The old code
+    // blindly stripped the prefix and mis-predicted `MyStack-role` -> `role`,
+    // forcing a spurious REPLACEMENT prompt that blocked routine in-place
+    // updates (e.g. swapping a permissions boundary).
+    const state = makeState({
+      Role: makeResource('MyStack-role', 'AWS::IAM::Role', {
+        userSuppliedName: 'MyStack-role',
+      }),
+    });
+    expect(findPendingPrefixRenames('MyStack', state)).toEqual([]);
+  });
+
+  it('flags a genuine legacy auto-prefixed name even when the user name starts with the stack name', () => {
+    // Discriminator both ways: the legacy auto-prefix produces physicalId
+    // EXACTLY `${stackName}-${userName}`. If a pre-v0.94 stack had
+    // `roleName: 'MyStack-role'`, the recorded physicalId is the doubly-
+    // prefixed `MyStack-MyStack-role`. That IS a real pending rename back to
+    // the verbatim `MyStack-role`, so it must still be flagged.
+    const state = makeState({
+      Role: makeResource('MyStack-MyStack-role', 'AWS::IAM::Role', {
+        userSuppliedName: 'MyStack-role',
+      }),
+    });
+    expect(findPendingPrefixRenames('MyStack', state)).toEqual([
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        oldPhysicalId: 'MyStack-MyStack-role',
+        newPhysicalId: 'MyStack-role',
+      },
+    ]);
+  });
+
+  it('flags a genuine legacy rename whose user name needed sanitization (underscore)', () => {
+    // Pre-v0.94 `roleName: 'my_role'` -> physicalId `MyStack-my-role` (the `_`
+    // is sanitized to `-` by generateResourceName). The recorded
+    // `Properties.RoleName` is the RAW `my_role`. A naive `prefix + userName`
+    // comparison (`MyStack-my_role`) would NOT match the sanitized physicalId
+    // and would silently MISS this genuine rename — the generator-based
+    // comparison matches it and predicts the sanitized unprefixed `my-role`.
+    const state = makeState({
+      Role: makeResource('MyStack-my-role', 'AWS::IAM::Role', {
+        userSuppliedName: 'my_role',
+      }),
+    });
+    expect(findPendingPrefixRenames('MyStack', state)).toEqual([
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        oldPhysicalId: 'MyStack-my-role',
+        newPhysicalId: 'my-role',
+      },
+    ]);
+  });
+
+  it('does NOT flag a verbatim user name that starts with the stack name AND needed sanitization', () => {
+    // `roleName: 'MyStack-my_role'` deployed fresh post-v0.94 -> physicalId is
+    // the sanitized verbatim form `MyStack-my-role`. There is no rename. A
+    // `prefix + userName` exact-concat would compute `MyStack-MyStack-my_role`
+    // (no match → correctly skipped) but a `prefix + sanitize(userName)` would
+    // still differ; the generator-based `physicalId === newName` guard is what
+    // reliably skips it (newName = sanitize('MyStack-my_role') = the same
+    // `MyStack-my-role`).
+    const state = makeState({
+      Role: makeResource('MyStack-my-role', 'AWS::IAM::Role', {
+        userSuppliedName: 'MyStack-my_role',
+      }),
+    });
+    expect(findPendingPrefixRenames('MyStack', state)).toEqual([]);
   });
 
   it('does NOT flag auto-generated names (false-positive regression for #310-class bug)', () => {

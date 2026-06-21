@@ -692,6 +692,11 @@
       ]
     },
     {
+      "name": "iam-role-prefixed-name-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-nested-stack",
       "annotated": true,
       "scenarios": [
@@ -1919,6 +1924,7 @@
     "export-nested-stack",
     "fifo-sqs-event-source",
     "iam-managed-policy",
+    "iam-role-prefixed-name-update",
     "lambda-destinations",
     "lambda-log-retention",
     "local-start-agentcore",
