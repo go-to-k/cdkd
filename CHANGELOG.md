@@ -1,3 +1,10 @@
+## [0.230.3](https://github.com/go-to-k/cdkd/compare/v0.230.2...v0.230.3) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** enrich Events Connection/ApiDestination Arn so ApiDestination deploys ([#922](https://github.com/go-to-k/cdkd/issues/922)) ([f49a154](https://github.com/go-to-k/cdkd/commit/f49a1545aeeede7c99b184fc0a10376415f50fdc))
+
 ## [0.230.2](https://github.com/go-to-k/cdkd/compare/v0.230.1...v0.230.2) (2026-06-21)
 
 
