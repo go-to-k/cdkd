@@ -1,3 +1,10 @@
+## [0.229.5](https://github.com/go-to-k/cdkd/compare/v0.229.4...v0.229.5) (2026-06-21)
+
+
+### Bug Fixes
+
+* **deploy:** resolve Ref of AppConfig compound-id resources to the trailing id segment ([#905](https://github.com/go-to-k/cdkd/issues/905)) ([3a503a2](https://github.com/go-to-k/cdkd/commit/3a503a258a52ee242c94bd63192d6a92d1fc6968))
+
 ## [0.229.4](https://github.com/go-to-k/cdkd/compare/v0.229.3...v0.229.4) (2026-06-21)
 
 
