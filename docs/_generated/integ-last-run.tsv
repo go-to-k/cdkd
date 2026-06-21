@@ -72,7 +72,6 @@ local-ecs-service-connect	2026-06-02T15:46:16Z	PASS	22	verify.sh	local integ ser
 local-invoke-agentcore	2026-06-02T15:46:16Z	PASS	93	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-state	2026-06-02T15:46:16Z	PASS	57	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-run-task-from-state	2026-06-02T15:46:16Z	PASS	98	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-start-alb-from-state	2026-06-02T15:46:16Z	PASS	89	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-cfn-stack	2026-06-02T15:46:16Z	PASS	92	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
@@ -162,3 +161,4 @@ iam-role-prefixed-name-update	2026-06-21T08:38:12Z	PASS	45	verify.sh	prefix-migr
 appconfig	2026-06-21T08:22:45Z	PASS	61	verify.sh	AppConfig compound-id Ref fix: chain creates, UPDATE v2, destroy clean
 lambda	2026-06-21T08:22:45Z	PASS	92	verify.sh	broad integ for intrinsic-resolver compound-Ref fix; 9 deleted 0 err
 dynamodb-sse	2026-06-21T08:22:45Z	PASS	43	verify.sh	SSESpecification SSEEnabled->Enabled mapping; SSE reaches AWS as KMS; destroy clean
+local-start-alb-from-state	2026-06-21T10:44:49Z	PASS	88	verify.sh	fixed verify.sh assertion (state.json only, ignore #885 deployments/); deploy+destroy clean 29 del 0 err

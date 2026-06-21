@@ -241,16 +241,22 @@ ${CDKD} destroy "${STACK_NAME}" --region "${REGION}" --state-bucket "${STATE_BUC
 DEPLOYED=0
 
 echo "==> Verifying state is empty post-destroy"
-# `aws s3 ls` returns exit 1 when the prefix has zero objects (success
-# but empty). Under `set -o pipefail` that would terminate the script
-# BEFORE the final "test passed" echo; wrap the call in `|| true` so the
-# pipeline reports its own intent (number of lines == 0) cleanly.
+# Match ONLY the `state.json` object, not the whole prefix. Since #820/#885
+# the deployment-events store (`cdkd/<stack>/<region>/deployments/...`)
+# survives `destroy` by design, so a bare prefix listing is never empty
+# after teardown and would false-FAIL here. The destroy contract is that
+# `state.json` is gone; the informational events store is swept separately
+# (see /cleanup step 3.5).
+# `aws s3 ls --recursive` returns exit 1 when nothing matches (success but
+# empty). Under `set -o pipefail` that would terminate the script BEFORE the
+# final "test passed" echo; wrap the call in `|| true` so the pipeline
+# reports its own intent (number of matching lines == 0) cleanly.
 STATE_REMAINING=$(
-  (aws s3 ls "s3://${STATE_BUCKET}/cdkd/${STACK_NAME}/" --region "${REGION}" 2>/dev/null || true) \
-    | wc -l | tr -d ' '
+  (aws s3 ls "s3://${STATE_BUCKET}/cdkd/${STACK_NAME}/" --recursive --region "${REGION}" 2>/dev/null || true) \
+    | grep -c 'state\.json' || true
 )
 if [[ "${STATE_REMAINING}" -ne 0 ]]; then
-  echo "FAIL: cdkd state for ${STACK_NAME} still present after destroy"
+  echo "FAIL: cdkd state.json for ${STACK_NAME} still present after destroy"
   exit 1
 fi
 
