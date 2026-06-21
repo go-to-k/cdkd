@@ -93,7 +93,7 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     //   * DeletionProtection: false — explicit user opt-out. Pre-#609
     //     this would have defaulted to false too, so it is the weakest
     //     signal of the 5 readable props — kept for completeness.
-    //   * EngineVersion: '17.4' — pinned so verify.sh can assert the
+    //   * EngineVersion: '17.6' — pinned so verify.sh can assert the
     //     literal string. A silent-drop would have AWS pick the default
     //     for the engine family.
     //   * MasterUsername: 'postgres' — AWS-required; silent-drop would
@@ -128,7 +128,7 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       manageMasterUserPassword: true,
       masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
       port: '5433',
-      engineVersion: '17.4',
+      engineVersion: '17.6',
       deletionProtection: false,
       storageEncrypted: true,
       kmsKeyId: 'alias/aws/rds',
