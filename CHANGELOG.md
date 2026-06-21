@@ -1,3 +1,10 @@
+## [0.229.7](https://github.com/go-to-k/cdkd/compare/v0.229.6...v0.229.7) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** apply DynamoDB SSESpecification changes on update (UpdateTable) ([#914](https://github.com/go-to-k/cdkd/issues/914)) ([71b20f0](https://github.com/go-to-k/cdkd/commit/71b20f05dd673b69a41a41a7b03e8aec97db2659))
+
 ## [0.229.6](https://github.com/go-to-k/cdkd/compare/v0.229.5...v0.229.6) (2026-06-21)
 
 
