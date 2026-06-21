@@ -109,10 +109,13 @@ describe('LambdaLayerVersionProvider read-update round-trip', () => {
     ).toHaveLength(0);
   });
 
-  it('error message names the resource type and points at --replace', async () => {
-    // The user-facing message must direct users to the right escape
-    // hatch (cdkd deploy --replace) rather than leaving them stuck on
-    // an immutable update rejection.
+  it('error message names the resource type and explains the immutability without pointing at a non-existent flag', async () => {
+    // update() is a defensive fallback: the AWS::Lambda::LayerVersion
+    // replacement rule normally drives a DELETE + CREATE before update()
+    // is ever reached. If it IS reached, the message must explain the
+    // immutability and NOT suggest `cdkd deploy --replace` — that flag does
+    // not exist, so directing users to it left them stuck (the bug this
+    // fix addresses).
     const observed = { LayerName: 'my-layer' };
 
     try {
@@ -129,7 +132,11 @@ describe('LambdaLayerVersionProvider read-update round-trip', () => {
       const e = err as ResourceUpdateNotSupportedError;
       expect(e.resourceType).toBe('AWS::Lambda::LayerVersion');
       expect(e.logicalId).toBe('MyLayer');
-      expect(e.message).toContain('--replace');
+      expect(e.message).toContain('immutable');
+      expect(e.message).toContain('replacement');
+      // Regression guard: the message must never reference the
+      // non-existent `--replace` flag again.
+      expect(e.message).not.toContain('--replace');
     }
   });
 });

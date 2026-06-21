@@ -139,9 +139,12 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
    *     which is never what `--revert` should do.
    *   - On the deploy path, content / runtime / arch changes flow
    *     through CDK's hash-based logical naming, which produces a fresh
-   *     logical ID and a CREATE+DELETE in cdkd's diff — `update()` is
-   *     not the path taken in practice. Users who hit this on a non-CDK
-   *     template should re-deploy with `--replace`.
+   *     logical ID and a CREATE+DELETE in cdkd's diff. For a hand-authored
+   *     template that edits the SAME logical id in place, the replacement
+   *     rule for `AWS::Lambda::LayerVersion` (every property is
+   *     "Update requires: Replacement") drives a DELETE+CREATE before
+   *     `update()` is ever reached, so this method is a defensive fallback
+   *     that should not fire in normal use.
    */
   async update(
     logicalId: string,
@@ -154,7 +157,7 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AWS Lambda LayerVersion is immutable on AWS — there is no UpdateLayerVersion API; every change requires PublishLayerVersion (a new version with a new LayerVersionArn). Re-deploy with cdkd deploy --replace, or change the resource definition to publish a new version.'
+        'AWS Lambda LayerVersion is immutable on AWS — there is no UpdateLayerVersion API; every change requires PublishLayerVersion (a new version with a new LayerVersionArn). cdkd normally classifies any LayerVersion property change as a replacement (DELETE + CREATE), so reaching this path is unexpected; re-run the deploy or change the resource definition to publish a new version.'
       )
     );
   }

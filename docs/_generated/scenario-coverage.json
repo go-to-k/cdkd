@@ -772,6 +772,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-layer-version-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-log-retention",
       "annotated": false,
       "scenarios": []
@@ -1938,6 +1943,7 @@
     "iam-managed-policy",
     "iam-role-prefixed-name-update",
     "lambda-destinations",
+    "lambda-layer-version-update",
     "lambda-log-retention",
     "local-start-agentcore",
     "local-start-alb",
