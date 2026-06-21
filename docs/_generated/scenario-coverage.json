@@ -742,6 +742,11 @@
       ]
     },
     {
+      "name": "lambda-destinations",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-log-retention",
       "annotated": false,
       "scenarios": []
@@ -1902,6 +1907,7 @@
     "dynamodb-stream-filter",
     "export-nested-stack",
     "iam-managed-policy",
+    "lambda-destinations",
     "lambda-log-retention",
     "local-start-agentcore",
     "local-start-alb",
