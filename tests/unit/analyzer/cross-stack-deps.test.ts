@@ -184,6 +184,52 @@ describe('inferCrossStackStackDeps', () => {
     expect(deps.get('B')?.size).toBe(0);
   });
 
+  describe('opts.kinds filtering (issue #751 weak-vs-strong split)', () => {
+    // Producer reachable via BOTH a strong ImportValue export AND a weak
+    // GetStackOutput reference, plus a second producer reachable ONLY via a
+    // weak GetStackOutput. The default (both kinds) sees both; the
+    // strong-only set used for deploy-closure expansion must see only the
+    // ImportValue producer.
+    const strongProducer = stack('StrongProducer', {
+      Outputs: { O: { Value: 'x', Export: { Name: 'Strong-Export' } } },
+    });
+    const weakProducer = stack('WeakProducer', {
+      Resources: { T: { Type: 'AWS::DynamoDB::Table' } },
+    });
+    const consumer = stack('Consumer', {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            STRONG: { 'Fn::ImportValue': 'Strong-Export' },
+            WEAK: { 'Fn::GetStackOutput': { StackName: 'WeakProducer', OutputName: 'TableName' } },
+          },
+        },
+      },
+    });
+
+    it('default (no opts) returns BOTH strong and weak producers', () => {
+      const deps = inferCrossStackStackDeps([strongProducer, weakProducer, consumer]);
+      expect([...(deps.get('Consumer') ?? [])].sort()).toEqual(['StrongProducer', 'WeakProducer']);
+    });
+
+    it("kinds: ['ImportValue'] returns ONLY the strong (ImportValue) producer", () => {
+      const deps = inferCrossStackStackDeps([strongProducer, weakProducer, consumer], {
+        kinds: ['ImportValue'],
+      });
+      // The weak GetStackOutput producer must be excluded — deploying the
+      // consumer must not drag WeakProducer into the deploy closure.
+      expect([...(deps.get('Consumer') ?? [])]).toEqual(['StrongProducer']);
+    });
+
+    it("kinds: ['GetStackOutput'] returns ONLY the weak (GetStackOutput) producer", () => {
+      const deps = inferCrossStackStackDeps([strongProducer, weakProducer, consumer], {
+        kinds: ['GetStackOutput'],
+      });
+      expect([...(deps.get('Consumer') ?? [])]).toEqual(['WeakProducer']);
+    });
+  });
+
   it('ignores Export.Name produced by the consumer itself when matching a sibling import', () => {
     // Two stacks each importing the OTHER's export — mutual edges (a cycle the
     // deploy DAG would later reject, but the inference itself must still report

@@ -30,6 +30,42 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
 
 3. **Check S3 state**: `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1`
 
+3.5. **Bulk-sweep orphaned deployment-event stores** (issue #885 follow-up): since the
+   deployment-events feature (#820), `cdkd destroy` / `cdkd state destroy` removes
+   `state.json` but, unless `--purge-events` was passed, INTENTIONALLY leaves the
+   `cdkd/{stack}/{region}/deployments/` event store behind (post-mortem history). After
+   a long integ campaign those orphaned event stores accumulate across dozens of
+   already-destroyed stacks, so `aws s3 ls .../cdkd/` is never empty even when there are
+   no real state / resource leaks. This step bulk-removes them. **Safety: only a prefix
+   that has a `deployments/` child AND NO `state.json` under any region is an orphan** —
+   a prefix that still has a `state.json` is an ACTIVE (deployed, not destroyed) stack
+   and MUST be left untouched (its `deployments/` is live history).
+
+   Resolve the state bucket(s) (`cdkd-state-{accountId}` current default; also the legacy
+   `cdkd-state-{accountId}-{region}` if present), then per bucket:
+
+   ```bash
+   BUCKET="cdkd-state-{accountId}"
+   # List each top-level prefix under cdkd/ (one per stack), skip the exports index.
+   for p in $(aws s3 ls "s3://${BUCKET}/cdkd/" --region us-east-1 | awk '{print $2}' | grep '/$' | grep -v '^_index/'); do
+     listing=$(aws s3 ls "s3://${BUCKET}/cdkd/${p}" --recursive --region us-east-1 2>/dev/null)
+     has_state=$(echo "$listing" | grep -c 'state.json')
+     has_dep=$(echo "$listing" | grep -c 'deployments/')
+     # An ACTIVE stack still has a state.json somewhere under the prefix.
+     if [ "$has_state" -eq 0 ] && [ "$has_dep" -gt 0 ]; then
+       echo "ORPHAN event store (no state.json): cdkd/${p}"
+     fi
+   done
+   ```
+
+   Report the orphan list, confirm via `AskUserQuestion` (unless `--detect-only`), then
+   delete each confirmed orphan prefix with
+   `aws s3 rm "s3://${BUCKET}/cdkd/${p}" --recursive --region us-east-1`. Re-run the
+   `has_state` check immediately before each delete to guard against a concurrent deploy
+   that re-created the stack. The per-stack product-level equivalent (for a user who
+   knows the stack name) is `cdkd events prune <stack> --all`; this skill step is the
+   bucket-wide bulk sweep for integ-test hygiene.
+
 4. **Scan AWS resources** for each stack name prefix. Use both exact case and lowercase variants since some AWS services lowercase names:
    - IAM Roles: `aws iam list-roles --query 'Roles[?contains(RoleName, \`{Prefix}\`)].{Name:RoleName,Arn:Arn}'`
    - IAM Policies: `aws iam list-policies --scope Local --query 'Policies[?contains(PolicyName, \`{Prefix}\`)].{Name:PolicyName,Arn:Arn}'`

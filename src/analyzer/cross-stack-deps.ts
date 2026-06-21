@@ -12,6 +12,36 @@ export interface CrossStackScanStack {
 }
 
 /**
+ * The two raw cross-stack reference kinds this helper recognizes. They have
+ * DIFFERENT strengths and callers care about the distinction:
+ * - `ImportValue` is a STRONG reference — the producer's `Export.Name` must
+ *   exist at deploy time, so the producer is a genuine deploy dependency.
+ * - `GetStackOutput` is a WEAK reference (cdkd-specific) — it reads the
+ *   producer's output opportunistically from cdkd state. It does NOT make the
+ *   producer a deploy dependency; deploying a consumer must not drag an
+ *   unselected producer into the deploy.
+ *
+ * See `docs/cross-stack-references.md` (strong) and
+ * `src/types/state.ts` `outputReads` (weak) for the full semantics.
+ */
+export type CrossStackRefKind = 'ImportValue' | 'GetStackOutput';
+
+/**
+ * Options for {@link inferCrossStackStackDeps}.
+ */
+export interface InferCrossStackStackDepsOptions {
+  /**
+   * Which reference kinds to treat as edges. Defaults to BOTH kinds (used for
+   * ordering, where deploying producer-before-consumer is always beneficial
+   * when both are already in the set). Pass `['ImportValue']` to get
+   * STRONG-only edges — the right set for deploy-closure expansion, which must
+   * not pull a weakly-referenced (`Fn::GetStackOutput`) producer into the
+   * deploy.
+   */
+  kinds?: readonly CrossStackRefKind[];
+}
+
+/**
  * Infer cross-stack ordering edges that CDK's manifest dependency graph
  * (`stack.dependencyNames`, surfaced from `addDependency`) does NOT capture.
  *
@@ -48,12 +78,19 @@ export interface CrossStackScanStack {
  *
  * @param stacks the stacks being deployed / destroyed together (the `--all`
  *   set, or the auto-include-dependency-expanded target set).
+ * @param opts see {@link InferCrossStackStackDepsOptions}. `opts.kinds`
+ *   restricts which reference kinds count as edges (defaults to both). Pass
+ *   `['ImportValue']` for STRONG-only edges (deploy-closure expansion).
  * @returns Map<consumerStackName, Set<producerStackName>>. Consumers with no
  *   inferred cross-stack producer get an empty set entry.
  */
 export function inferCrossStackStackDeps(
-  stacks: readonly CrossStackScanStack[]
+  stacks: readonly CrossStackScanStack[],
+  opts?: InferCrossStackStackDepsOptions
 ): Map<string, Set<string>> {
+  const kinds = opts?.kinds ?? (['ImportValue', 'GetStackOutput'] as const);
+  const wantImportValue = kinds.includes('ImportValue');
+  const wantGetStackOutput = kinds.includes('GetStackOutput');
   // exportName -> producer stackName. Built from every stack's
   // `Outputs[*].Export.Name` literal string.
   const exportOwner = new Map<string, string>();
@@ -82,12 +119,14 @@ export function inferCrossStackStackDeps(
     collectCrossStackRefs(stack.template, (kind, value) => {
       let producer: string | undefined;
       if (kind === 'ImportValue') {
+        if (!wantImportValue) return;
         // Fn::ImportValue arg must be a literal export name to be statically
         // resolvable; nested intrinsics are skipped.
         if (typeof value === 'string') {
           producer = exportOwner.get(value);
         }
       } else {
+        if (!wantGetStackOutput) return;
         // Fn::GetStackOutput arg is an object whose StackName names the
         // producer stack directly.
         if (value && typeof value === 'object' && !Array.isArray(value)) {

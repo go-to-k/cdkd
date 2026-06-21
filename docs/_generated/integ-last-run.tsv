@@ -2,10 +2,6 @@
 composite-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 nested-stack	2026-06-01T21:12:13Z	PASS		standard	rc ok, orph clean
 cc-api-fallback-transitions	2026-06-01T21:12:13Z	PASS	122	verify.sh	rc ok, orph clean
-recreate-via-sdk-provider	2026-06-01T21:12:13Z	PASS	79	verify.sh	rc ok, orph clean
-recreate-via-cc-api	2026-06-01T21:12:13Z	PASS	97	verify.sh	rc ok, orph clean
-recreate-mixed-direction	2026-06-01T21:12:13Z	PASS	92	verify.sh	rc ok, orph clean
-schema-v7-to-v8-migration	2026-06-01T21:12:13Z	PASS	98	verify.sh	rc ok, orph clean
 s3-tables	2026-06-01T21:12:13Z	PASS	31	verify.sh	rc ok, orph clean
 iam-managed-policy	2026-06-01T21:12:13Z	PASS	20	standard	rc ok, orph clean
 eventbridge	2026-06-01T21:12:13Z	PASS	67	verify.sh	rc ok, orph clean
@@ -22,7 +18,6 @@ conditions	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (Fn::If gate
 parameters	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (CFn Parameters -> S3), 1 deleted 0 errors
 ecr	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (ECR repo), 3 deleted 0 errors
 lambda-versioning	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (Lambda Version/Alias), 4 deleted 0 errors
-monitoring	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (CW dashboard/alarms), 7 deleted 0 errors
 s3-directory-bucket	2026-06-02T09:40:41Z	PASS		standard	clean after deleting a PRE-EXISTING orphan directory bucket (not this session); re-run created+deleted clean, 1 deleted 0 errors
 wafv2	2026-06-02T09:40:41Z	PASS		standard	clean deploy+destroy (WebACL + APIGW WebACLAssociation via CC-API, slow ~3min assoc), 7 deleted 2 retained 0 errors
 context-test	2026-06-02T09:57:55Z	PASS		standard	FIXED by SSM Tags map handling (was FAIL: properties.Tags.map is not a function); deploy+destroy clean, 2 deleted 0 errors
@@ -38,7 +33,6 @@ cache-streaming	2026-06-02T11:37:34Z	PASS	467	standard	sweep: deploy+destroy cle
 ci-cd	2026-06-02T11:37:34Z	PASS	58	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 cloudfront-function-url	2026-06-02T11:37:34Z	PASS	440	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 data-analytics	2026-06-02T11:37:34Z	PASS	51	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
-data-pipeline	2026-06-02T11:37:34Z	PASS	51	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
 diff-intrinsic-target-change	2026-06-02T11:37:34Z	PASS	48	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 docdb-neptune	2026-06-02T11:37:34Z	PASS	1402	verify.sh	sweep: deploy+destroy clean, 0 errors/0 orphans
 ec2-vpc	2026-06-02T11:37:34Z	PASS	57	standard	sweep: deploy+destroy clean, 0 errors/0 orphans
@@ -94,7 +88,6 @@ cognito	2026-06-09T16:50:23Z	PASS	54	verify.sh	#609 UserPoolTier/SOFTWARE_TOKEN_
 ec2-instance	2026-06-09T17:10:25Z	PASS	105	verify.sh	#609 security slice: DisableApiTermination/MetadataOptions/Monitoring/EbsOptimized/CreditSpecification asserted; destroy 0 err
 rds-dbinstance-backfill	2026-06-09T18:23:15Z	PASS	561	verify.sh	#609 DBInstance security props (MonitoringRoleArn/Interval/IAMauth/KmsKeyId/MasterUserSecret) asserted; destroy 0 err
 rds-aurora	2026-06-10T01:31:45Z	PASS	3000	verify.sh	#794 verify: MonitoringRoleArn cluster create survived IAM-race via retry; +#609 cluster props; destroy 23/0 err
-stepfunctions	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 5 deleted 0 errors (SM DELETING self-resolved)
 route53	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 6 deleted 0 errors
 kms-encryption	2026-06-10T10:20:55Z	PASS		standard	coverage spread; 3 deleted 0 errors
 sns-sqs-event	2026-06-10T10:20:55Z	PASS		verify.sh	coverage spread; 19 deleted 0 errors
@@ -139,7 +132,6 @@ bench-cdk-sample	2026-06-20T18:28:56Z	PASS		standard	39 created; destroy 37 del 
 lambda	2026-06-20T18:33:28Z	PASS		verify.sh	RecursiveLoop+ReservedConcurrentExecutions backfills; 9 deleted 0 errors, clean
 microservices	2026-06-20T18:47:03Z	PASS		standard	19 created; 19 deleted 0 errors; state+SNS+SQS+ESM clean (broad)
 multi-resource	2026-06-20T18:50:10Z	PASS		standard	17 created; 17 deleted 0 errors; 3 Lambda LogGroups swept (broad)
-multi-stack-deps	2026-06-20T18:52:57Z	PASS		standard	3 stacks Network/Data/App; 13 deleted 0 errors; cross-stack destroy order clean (broad)
 export	2026-06-20T18:58:28Z	PASS		verify.sh	export->CFn migration + no-replacement diff guard (#319) + CFn stack cleanup; clean (broad)
 drift-revert	2026-06-20T19:01:24Z	PASS		verify.sh	drift inject+revert; 13 deleted 0 errors; clean (broad)
 drift-revert-vpc	2026-06-20T19:06:38Z	PASS		verify.sh	VPC+EFS drift revert; 21 deleted 0 errors; no VPC orphan (broad)
@@ -152,3 +144,12 @@ update-policy-mutations	2026-06-20T19:39:38Z	PASS		verify.sh	first run; Deletion
 sns-event-source	2026-06-21T03:52:27Z	PASS		verify.sh	SnsEventSource: publish->Lambda->DynamoDB delivered; clean destroy 0 orphan
 aws-custom-resource	2026-06-21T03:52:27Z	PASS		verify.sh	Custom::AWS onCreate/onUpdate(v1->v2 in-place)/onDelete all fired; clean destroy 0 orphan
 nodejs-function	2026-06-21T03:52:27Z	PASS		verify.sh	NodejsFunction esbuild bundle invoked 200; clean destroy 0 orphan
+recreate-via-cc-api	2026-06-21T04:24:45Z	PASS	98	verify.sh	sdk->cc-api recreate clean, destroy 0 err
+recreate-via-sdk-provider	2026-06-21T04:27:01Z	PASS	79	verify.sh	cc-api->sdk recreate clean, destroy 0 err
+recreate-mixed-direction	2026-06-21T04:29:17Z	PASS	93	verify.sh	bidirectional sdk<->cc recreate clean, destroy 0 err
+multi-asset	2026-06-21T04:31:39Z	PASS	74	verify.sh	1 ECR + 4 S3 assets, each Lambda correct marker, destroy 0 err; swept 4 log groups
+stepfunctions	2026-06-21T04:32:59Z	PASS	30	standard	SFN deploy 5 / destroy 5, 0 err
+monitoring	2026-06-21T04:34:50Z	PASS	40	standard	CW alarms/dashboard deploy 7 / destroy 7, 0 err
+data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
+schema-v7-to-v8-migration	2026-06-21T04:48:25Z	PASS	89	verify.sh	FIXED #751: consumer-only deploy no longer pulls weak GetStackOutput producer into closure
+multi-stack-deps	2026-06-21T04:50:36Z	PASS	60	standard	3-stack deploy order Network->Data->App, destroy reverse, 0 err (post-#751-fix non-regression)

@@ -290,6 +290,27 @@ async function deployCommand(
       return union;
     };
 
+    // STRONG-only edges (CDK manifest deps + `Fn::ImportValue`) for the
+    // auto-include-dependency walk below. `Fn::GetStackOutput` is a WEAK
+    // reference (it reads the producer's output opportunistically from cdkd
+    // state) and must NOT pull an unselected producer into the deploy:
+    // `cdkd deploy <consumer>` should deploy only the consumer, not silently
+    // re-deploy a producer it merely reads from (issue #751 conflated the two,
+    // which re-deployed — and so mutated the state of — the producer). The DAG
+    // ordering further down still uses the full (strong + weak) set, so when a
+    // producer IS in the deploy set it is correctly ordered before its
+    // GetStackOutput consumer.
+    const inferredStrongCrossStackDeps = inferCrossStackStackDeps(allStacks, {
+      kinds: ['ImportValue'],
+    });
+    const effectiveStrongStackDeps = (stackName: string, deps: readonly string[]): Set<string> => {
+      const union = new Set<string>(deps);
+      for (const producer of inferredStrongCrossStackDeps.get(stackName) ?? []) {
+        union.add(producer);
+      }
+      return union;
+    };
+
     // Auto-include dependency stacks (CDK CLI compatible behavior)
     // When deploying StackA that depends on StackB, also deploy StackB first.
     // Use -e / --exclusively to skip this and deploy only the requested stacks.
@@ -300,7 +321,7 @@ async function deployCommand(
       const addDependencies = (stackName: string): void => {
         const stack = allStackMap.get(stackName);
         if (!stack) return;
-        for (const depName of effectiveStackDeps(stackName, stack.dependencyNames)) {
+        for (const depName of effectiveStrongStackDeps(stackName, stack.dependencyNames)) {
           if (!targetNames.has(depName)) {
             const depStack = allStackMap.get(depName);
             if (depStack) {
