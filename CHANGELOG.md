@@ -1,3 +1,10 @@
+## [0.230.2](https://github.com/go-to-k/cdkd/compare/v0.230.1...v0.230.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** add SDK provider for Lambda EventInvokeConfig so async-invoke updates work ([#919](https://github.com/go-to-k/cdkd/issues/919)) ([7d41f24](https://github.com/go-to-k/cdkd/commit/7d41f2416d305fbf0f577b8a38bc6eb2c1c2e74b))
+
 ## [0.230.1](https://github.com/go-to-k/cdkd/compare/v0.230.0...v0.230.1) (2026-06-21)
 
 
