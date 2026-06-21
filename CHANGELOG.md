@@ -1,3 +1,10 @@
+## [0.229.4](https://github.com/go-to-k/cdkd/compare/v0.229.3...v0.229.4) (2026-06-21)
+
+
+### Bug Fixes
+
+* **deploy:** stop --no-prefix-user-supplied-names from flagging a user name that starts with the stack name ([#903](https://github.com/go-to-k/cdkd/issues/903)) ([4f1d40d](https://github.com/go-to-k/cdkd/commit/4f1d40da6758bd2b4695c7dd9873e5338266da68))
+
 ## [0.229.3](https://github.com/go-to-k/cdkd/compare/v0.229.2...v0.229.3) (2026-06-21)
 
 
