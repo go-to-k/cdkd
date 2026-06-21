@@ -63,6 +63,43 @@ import type {
  * intervals, eliminating the CC API intermediary overhead and reducing total
  * wait time.
  */
+/**
+ * Map CloudFormation's `SSESpecification` shape to the DynamoDB SDK's.
+ *
+ * The CFn property names the enable flag `SSEEnabled`, but the SDK
+ * `CreateTableCommandInput.SSESpecification` field is `Enabled`. Passing the
+ * CFn shape verbatim makes the SDK silently ignore the unknown `SSEEnabled`
+ * key, so the table is created with AWS-owned (default) encryption instead of
+ * the requested AWS-managed / customer-managed KMS encryption — a silent
+ * security downgrade with no error. `SSEType` and `KMSMasterKeyId` keep the
+ * same names across CFn and the SDK.
+ *
+ * Returns `undefined` for an absent / non-object value so the caller omits the
+ * field entirely. Exported for unit testing.
+ */
+export function mapSSESpecification(
+  raw: unknown
+): CreateTableCommandInput['SSESpecification'] | undefined {
+  if (raw === null || typeof raw !== 'object') {
+    return undefined;
+  }
+  const cfn = raw as { SSEEnabled?: unknown; SSEType?: unknown; KMSMasterKeyId?: unknown };
+  const out: NonNullable<CreateTableCommandInput['SSESpecification']> = {};
+  if (cfn.SSEEnabled !== undefined) {
+    // CDK synthesizes a real boolean, but tolerate the stringified form.
+    out.Enabled = cfn.SSEEnabled === true || cfn.SSEEnabled === 'true';
+  }
+  if (typeof cfn.SSEType === 'string') {
+    out.SSEType = cfn.SSEType as NonNullable<
+      CreateTableCommandInput['SSESpecification']
+    >['SSEType'];
+  }
+  if (typeof cfn.KMSMasterKeyId === 'string') {
+    out.KMSMasterKeyId = cfn.KMSMasterKeyId;
+  }
+  return out;
+}
+
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBTableProvider');
@@ -210,11 +247,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         ] as LocalSecondaryIndex[];
       }
 
-      // SSE specification
-      if (properties['SSESpecification']) {
-        createParams.SSESpecification = properties[
-          'SSESpecification'
-        ] as CreateTableCommandInput['SSESpecification'];
+      // SSE specification. The CFn property uses `SSEEnabled`, but the SDK
+      // CreateTable field is `Enabled` — passing the CFn shape verbatim makes
+      // the SDK silently ignore the flag, so the table is created with
+      // AWS-owned (default) encryption instead of the requested AWS-managed /
+      // customer-managed KMS encryption. Map the field name explicitly.
+      const sse = mapSSESpecification(properties['SSESpecification']);
+      if (sse) {
+        createParams.SSESpecification = sse;
       }
 
       // Tags
