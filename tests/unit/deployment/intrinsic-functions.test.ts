@@ -2744,4 +2744,104 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     const result = await resolver.resolve({ Ref: 'Q' }, context);
     expect(result).toBe('https://sqs.us-east-1.amazonaws.com/123456789012/my-queue');
   });
+
+  // Same bug class for AppConfig compound-id children. CFn `Ref` returns the
+  // child's own id, but the Cloud Control physical id is the compound
+  // `<appId>|<...>`. A HostedConfigurationVersion wiring
+  // `ConfigurationProfileId: { Ref: <Profile> }` would otherwise receive the
+  // compound and AppConfig rejects it ("Configuration Profile ... could not be
+  // found").
+  it('Ref to AWS::AppConfig::ConfigurationProfile returns the profile id (2-segment compound)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Profile: { Type: 'AWS::AppConfig::ConfigurationProfile', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Profile: {
+          physicalId: 'p15d7pf|93dtcij',
+          resourceType: 'AWS::AppConfig::ConfigurationProfile',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'Profile' }, context);
+    expect(result).toBe('93dtcij');
+  });
+
+  it('Ref to AWS::AppConfig::Environment returns the environment id (2-segment compound)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Env: { Type: 'AWS::AppConfig::Environment', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Env: {
+          physicalId: 'p15d7pf|envabc',
+          resourceType: 'AWS::AppConfig::Environment',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'Env' }, context);
+    expect(result).toBe('envabc');
+  });
+
+  // 3-segment compound: the extraction MUST take the segment after the LAST
+  // pipe (`indexOf` would wrongly return `93dtcij|1`).
+  it('Ref to AWS::AppConfig::HostedConfigurationVersion returns the version number (3-segment compound, last-pipe)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Version: { Type: 'AWS::AppConfig::HostedConfigurationVersion', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Version: {
+          physicalId: 'p15d7pf|93dtcij|1',
+          resourceType: 'AWS::AppConfig::HostedConfigurationVersion',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'Version' }, context);
+    expect(result).toBe('1');
+  });
+
+  it('Ref to AWS::AppConfig::Deployment returns the deployment number (3-segment compound, last-pipe)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Deployment: { Type: 'AWS::AppConfig::Deployment', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Deployment: {
+          physicalId: 'p15d7pf|envabc|3',
+          resourceType: 'AWS::AppConfig::Deployment',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'Deployment' }, context);
+    expect(result).toBe('3');
+  });
 });

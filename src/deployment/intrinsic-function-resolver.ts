@@ -26,20 +26,34 @@ import type { ExportIndexStore } from '../state/export-index-store.js';
 export const AWS_NO_VALUE = Symbol('AWS::NoValue');
 
 /**
- * Resource types whose CloudFormation `Ref` returns the segment AFTER the pipe
- * in cdkd's compound Cloud Control physical id `<parent>|<ref>` (rather than the
- * whole physical id). These are Cloud-Control-provisioned types whose CC
- * primaryIdentifier is compound `<parentId>|<ref>` while CFn's `Ref` returns
- * only the trailing `<ref>` component:
+ * Resource types whose CloudFormation `Ref` returns the segment AFTER the LAST
+ * pipe in cdkd's compound Cloud Control physical id (rather than the whole
+ * physical id). These are Cloud-Control-provisioned types whose CC
+ * primaryIdentifier is compound (`<parentId>|<ref>`, or `<a>|<b>|<ref>` for
+ * triple-segment AppConfig children) while CFn's `Ref` returns only the
+ * trailing `<ref>` component:
  *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
  *   - AWS::ApiGateway::RequestValidator `<restApiId>|<validatorId>`   -> validator id
  *   - AWS::Cognito::UserPoolClient      `<userPoolId>|<clientId>`     -> client id
- * See {@link IntrinsicFunctionResolver.resolveRefValue}.
+ *   - AWS::AppConfig::Environment            `<appId>|<envId>`               -> environment id
+ *   - AWS::AppConfig::ConfigurationProfile   `<appId>|<profileId>`           -> profile id
+ *   - AWS::AppConfig::HostedConfigurationVersion `<appId>|<profileId>|<ver>` -> version number
+ *   - AWS::AppConfig::Deployment             `<appId>|<envId>|<deployNum>`   -> deployment number
+ *
+ * The extraction takes the segment after the LAST pipe (see
+ * {@link IntrinsicFunctionResolver.resolveRefValue}) so it is correct for both
+ * 2-segment (`<parent>|<ref>`) and 3-segment AppConfig compounds; for the
+ * 2-segment types it is identical to after-first-pipe. AppConfig::Application
+ * and ::DeploymentStrategy are NOT here — their Ref is a simple, pipe-free id.
  */
 const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Model',
   'AWS::ApiGateway::RequestValidator',
   'AWS::Cognito::UserPoolClient',
+  'AWS::AppConfig::Environment',
+  'AWS::AppConfig::ConfigurationProfile',
+  'AWS::AppConfig::HostedConfigurationVersion',
+  'AWS::AppConfig::Deployment',
 ]);
 
 /**
@@ -714,7 +728,10 @@ export class IntrinsicFunctionResolver {
   private resolveRefValue(resource: ResourceState): string {
     const physicalId = resource.physicalId;
     if (REF_RETURNS_SEGMENT_AFTER_PIPE.has(resource.resourceType)) {
-      const pipeIdx = physicalId.indexOf('|');
+      // Take the segment after the LAST pipe. For 2-segment compounds
+      // (`<parent>|<ref>`) this equals after-first-pipe; for 3-segment AppConfig
+      // children (`<a>|<b>|<ref>`) it correctly returns only the trailing id.
+      const pipeIdx = physicalId.lastIndexOf('|');
       if (pipeIdx >= 0) {
         return physicalId.substring(pipeIdx + 1);
       }

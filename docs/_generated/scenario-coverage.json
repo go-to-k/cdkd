@@ -314,6 +314,11 @@
       ]
     },
     {
+      "name": "appconfig",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "appsync",
       "annotated": true,
       "scenarios": []
@@ -1912,6 +1917,7 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "acm-certificate",
+    "appconfig",
     "aws-custom-resource",
     "bucket-deployment",
     "cc-api-fallback",
