@@ -189,13 +189,17 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
-    // Lambda Version — also fully immutable on AWS (a published version is a
-    // point-in-time snapshot). Every AWS::Lambda::Version property is
-    // "Update requires: Replacement" in CloudFormation; a change publishes a
-    // new version. CDK normally bumps the Version's logical id on code change
-    // (create-new + delete-old) so this rarely fires, but a hand-authored
-    // template that edits a Version property in place would otherwise be
-    // misclassified as an updateable change.
+    // Lambda Version — a published version is a point-in-time snapshot, so
+    // all five of its CREATE-ONLY properties (`FunctionName` / `Description` /
+    // `CodeSha256` / `ProvisionedConcurrencyConfig` / `RuntimePolicy`) are
+    // "Update requires: Replacement" in CloudFormation; a change to any of
+    // them publishes a new version. (The registry schema also exposes one
+    // in-place-mutable property, `FunctionScalingConfig` — deliberately left
+    // OUT of this set so a change to it is NOT misclassified as a
+    // replacement.) CDK normally bumps the Version's logical id on code change
+    // (create-new + delete-old) so this rule rarely fires, but a hand-authored
+    // template that edits a create-only Version property in place would
+    // otherwise be misclassified as an updateable change.
     this.rules.set('AWS::Lambda::Version', {
       replacementProperties: new Set([
         'CodeSha256',

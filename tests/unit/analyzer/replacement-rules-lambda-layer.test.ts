@@ -9,9 +9,11 @@ import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rule
  * version. Without a replacement rule cdkd misclassified the change as an
  * in-place update and the provider's update() hard-failed — leaving a layer
  * content change undeployable (the suggested `--replace` flag does not even
- * exist). The fix marks every LayerVersion (and sibling Version) property as
- * replacement-triggering so the diff drives a DELETE + CREATE and
- * promoteReplacementDependents re-points the consuming function.
+ * exist). The fix marks every LayerVersion property (and every CREATE-ONLY
+ * Version property — Version's lone in-place-mutable `FunctionScalingConfig`
+ * is intentionally excluded) as replacement-triggering, so the diff drives a
+ * DELETE + CREATE and promoteReplacementDependents re-points the consuming
+ * function.
  */
 const LAYER = 'AWS::Lambda::LayerVersion';
 const VERSION = 'AWS::Lambda::Version';
@@ -37,8 +39,14 @@ describe('ReplacementRulesRegistry — Lambda LayerVersion / Version immutabilit
     }
   );
 
-  it('requires replacement when Version CodeSha256 / ProvisionedConcurrencyConfig changes', () => {
-    expect(registry.requiresReplacement(VERSION, 'CodeSha256', 'aaa', 'bbb')).toBe(true);
+  it.each(['CodeSha256', 'Description', 'FunctionName', 'RuntimePolicy'])(
+    'requires replacement when Version %s changes',
+    (prop) => {
+      expect(registry.requiresReplacement(VERSION, prop, 'old', 'new')).toBe(true);
+    }
+  );
+
+  it('requires replacement when Version ProvisionedConcurrencyConfig changes', () => {
     expect(
       registry.requiresReplacement(
         VERSION,
@@ -47,5 +55,16 @@ describe('ReplacementRulesRegistry — Lambda LayerVersion / Version immutabilit
         { ProvisionedConcurrentExecutions: 2 }
       )
     ).toBe(true);
+  });
+
+  it('does NOT require replacement for the in-place-mutable Version FunctionScalingConfig', () => {
+    expect(
+      registry.requiresReplacement(
+        VERSION,
+        'FunctionScalingConfig',
+        { TrustedAIToolsActions: 'Disabled' },
+        { TrustedAIToolsActions: 'Enabled' }
+      )
+    ).toBe(false);
   });
 });
