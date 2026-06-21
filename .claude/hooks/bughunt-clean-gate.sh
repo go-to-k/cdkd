@@ -57,24 +57,45 @@ if [ -n "$git_common" ]; then
 else
   main_root="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "$target_dir")"
 fi
-sentinel="${main_root}/.markgate-bughunt-pending"
+# Per-owner sentinel files live under this directory (one file per concurrent
+# bug-hunt owner — see bughunt-track.sh's PARALLEL-SAFE DESIGN). The gate
+# AGGREGATES across all owners on purpose: a shared repo must not accept a
+# commit / PR while ANY hunt still has live resources. Only the destructive
+# `clear` side is per-owner (so one agent can never release another's gate);
+# the read-only block decision here is deliberately repo-wide.
+pending_dir="${main_root}/.markgate-bughunt-pending.d"
+# Legacy single-file sentinel (pre per-owner) is still honored so an in-flight
+# upgrade or an older bughunt-track.sh writer is not silently un-gated.
+legacy="${main_root}/.markgate-bughunt-pending"
 
-# Sentinel absent or empty → no pending bug-hunt resources → pass.
-[ -s "$sentinel" ] || exit 0
+# Collect every non-empty sentinel source (per-owner files + legacy flat file).
+sources=()
+if [ -d "$pending_dir" ]; then
+  while IFS= read -r f; do
+    [ -s "$f" ] && sources+=("$f")
+  done < <(find "$pending_dir" -type f 2>/dev/null)
+fi
+[ -s "$legacy" ] && sources+=("$legacy")
 
-pending=$(grep -cvE '^[[:space:]]*$' "$sentinel" 2>/dev/null || echo 0)
+# No sentinel sources → no pending bug-hunt resources → pass.
+[ "${#sources[@]}" -gt 0 ] || exit 0
+
+# Count non-blank stack lines across all sources. cat is guarded by the
+# non-empty `sources` check above so it never reads stdin.
+pending=$(cat "${sources[@]}" 2>/dev/null | grep -cvE '^[[:space:]]*$' || echo 0)
 [ "$pending" -gt 0 ] || exit 0
 
 {
   echo "Blocked by bughunt-clean-gate: a /hunt-bugs session still has"
-  echo "${pending} un-destroyed stack(s) tracked in:"
-  echo "  ${sentinel}"
+  echo "${pending} un-destroyed stack(s) tracked under:"
+  echo "  ${pending_dir}/"
   echo
   echo "Pending stacks:"
-  sed 's/^/  - /' "$sentinel"
+  cat "${sources[@]}" 2>/dev/null | grep -vE '^[[:space:]]*$' | sed 's/^/  - /'
   echo
   echo "Required action — destroy every tracked stack, verify zero orphans,"
-  echo "then release the gate:"
+  echo "then release the gate (run clear from the SAME worktree you armed from,"
+  echo "or set CDKD_BUGHUNT_OWNER to the same value):"
   echo "  node dist/cli.js destroy <Stack> --state-bucket <bucket> --force   # each stack"
   echo "  .claude/skills/hunt-bugs/bughunt-track.sh verify --state-bucket <bucket>"
   echo "  .claude/skills/hunt-bugs/bughunt-track.sh clear"
