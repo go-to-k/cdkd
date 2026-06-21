@@ -82,7 +82,6 @@ lambda-log-retention	2026-06-20T18:40:52Z	PASS		verify.sh	logRetention 7 + in-pl
 lambda-versioning	2026-06-21T07:52:49Z	PASS	48	standard	sweep-4 staleness re-run (rc=0)
 legacy-bucket-name-fallback	2026-06-21T07:53:05Z	PASS	14	standard	sweep-4 staleness re-run (rc=0)
 legacy-state-migration	2026-06-21T07:53:21Z	PASS	14	standard	sweep-4 staleness re-run (rc=0)
-local-ecs-service-connect	2026-06-02T15:46:16Z	PASS	22	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke	2026-06-21T08:51:14Z	PASS	32	verify.sh	sweep-5B; flaky-recovered on retry (amd64 RIE qemu heap-corruption on arm64 host); all 5 steps PASS retry
 local-invoke-agentcore	2026-06-02T15:46:16Z	PASS	93	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-agentcore-from-state	2026-06-02T15:46:16Z	PASS	55	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
@@ -91,10 +90,8 @@ local-invoke-from-cfn-stack	2026-06-02T15:46:16Z	PASS	92	verify.sh	local integ s
 local-invoke-from-cfn-stack-multi-stack	2026-06-02T15:46:16Z	PASS	114	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-from-state	2026-06-02T15:46:16Z	PASS	57	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-invoke-layers	2026-06-21T08:51:14Z	PASS	23	verify.sh	sweep-5B local staleness re-run (rc=0)
-local-invoke-provided	2026-06-05T07:36:40Z	PASS		verify.sh	#768 cross-arch invoke path; 4/4; docker clean
 local-run-task	2026-06-21T08:51:14Z	PASS	19	verify.sh	sweep-5B local staleness re-run (rc=0)
 local-run-task-from-state	2026-06-02T15:46:16Z	PASS	98	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
-local-run-task-multi-container	2026-06-02T15:46:16Z	PASS	11	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
 local-start-agentcore	2026-06-06T17:03:21Z	PASS	13	verify.sh	cdk-local 0.139.0 warm HTTP serve (#775) + --sigv4 (#777) + CI-fail-loud nit; Docker 0 leaks
 local-start-alb	2026-06-21T08:51:14Z	PASS	21	verify.sh	sweep-5B local staleness re-run (rc=0)
 local-start-alb-from-state	2026-06-02T15:46:16Z	PASS	89	verify.sh	local integ serial sweep: Docker clean (0 containers/networks), rc 0
@@ -174,3 +171,6 @@ local-invoke-java	2026-06-21T09:04:18Z	PASS	51	verify.sh	sweep-6 local staleness
 local-invoke-dotnet	2026-06-21T09:05:38Z	PASS	78	verify.sh	sweep-6 local staleness re-run (rc=0)
 local-invoke-buildkit	2026-06-21T09:06:12Z	PASS	32	verify.sh	sweep-6 local staleness re-run (rc=0)
 local-run-task-awsvpc	2026-06-21T09:06:24Z	PASS	9	verify.sh	sweep-6 local staleness re-run (rc=0)
+local-invoke-provided	2026-06-21T09:15:09Z	PASS	36	verify.sh	sweep-7 local staleness re-run (rc=0)
+local-run-task-multi-container	2026-06-21T09:15:21Z	PASS	11	verify.sh	sweep-7 local staleness re-run (rc=0)
+local-ecs-service-connect	2026-06-21T09:15:43Z	PASS	20	verify.sh	sweep-7 local staleness re-run (rc=0)
