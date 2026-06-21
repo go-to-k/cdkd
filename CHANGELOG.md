@@ -1,3 +1,10 @@
+## [0.230.1](https://github.com/go-to-k/cdkd/compare/v0.230.0...v0.230.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** map ECR CFn PascalCase scanning/encryption config to SDK camelCase (imageScanOnPush silently dropped) ([#920](https://github.com/go-to-k/cdkd/issues/920)) ([8eef917](https://github.com/go-to-k/cdkd/commit/8eef91723be834c93395b1a7a51ac2c801bcb671))
+
 # [0.230.0](https://github.com/go-to-k/cdkd/compare/v0.229.8...v0.230.0) (2026-06-21)
 
 
