@@ -49,7 +49,6 @@ ec2-vpc	2026-06-21T11:12:35Z	PASS	53	standard	sweep-F staleness re-run (rc=0)
 ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 ecs-fargate	2026-06-13T06:22:14Z	PASS	369	verify.sh	#815 EFS efsVolumeConfiguration camelCase reached AWS; 23 deleted 0 err
 efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
-elasticache-replicationgroup-getatt	2026-06-14T09:11:22Z	PASS		verify.sh	CC-API GetAtt enrichment for ElastiCache RG; PrimaryEndPoint resolved real endpoint; 0 orphans
 event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 eventbridge	2026-06-21T11:13:40Z	PASS	63	verify.sh	sweep-F staleness re-run (rc=0)
 eventbridge-input-transformer	2026-06-21T07:34:45Z	PASS	53	verify.sh	InputTransformer rewrites payload; UPDATE version reached AWS; destroy clean
@@ -117,14 +116,12 @@ nested-stack	2026-06-21T11:16:17Z	PASS	24	standard	sweep-F staleness re-run (rc=
 nested-stack-3level	2026-06-20T19:37:31Z	PASS		verify.sh	first run; 4-level nested deploy/parent-link/state-tree/destroy-cascade; 9 deleted 0 errors; all state.json gone
 nested-stack-deep	2026-06-21T11:17:08Z	PASS	49	verify.sh	sweep-F staleness re-run (rc=0)
 nodejs-function	2026-06-21T03:52:27Z	PASS		verify.sh	NodejsFunction esbuild bundle invoked 200; clean destroy 0 orphan
-opensearch-domain-getatt	2026-06-14T10:54:56Z	PASS	2000	verify.sh	CC-API GetAtt DomainEndpoint/Arn enrichment; t3.small.search public domain; 0 orphans
 orphan-resource	2026-06-21T11:00:28Z	PASS	30	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 outputs-only-export	2026-06-15T05:44:20Z	PASS		verify.sh	rc ok, orph clean; #875 nits PR
 parameters	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 recreate-mixed-direction	2026-06-21T04:29:17Z	PASS	93	verify.sh	bidirectional sdk<->cc recreate clean, destroy 0 err
 recreate-via-cc-api	2026-06-21T04:24:45Z	PASS	98	verify.sh	sdk->cc-api recreate clean, destroy 0 err
 recreate-via-sdk-provider	2026-06-21T04:27:01Z	PASS	79	verify.sh	cc-api->sdk recreate clean, destroy 0 err
-redshift-cluster-getatt	2026-06-14T10:05:32Z	PASS	220	verify.sh	CC-API GetAtt Endpoint.Address/Port enrichment; ra3.large single-node; 0 orphans
 remove-protection	2026-06-20T19:28:52Z	PASS		verify.sh	normal destroy fails on protected (expected) -> --remove-protection retry clean; DDB/Cognito/VPC/ASG-instance gone; 0 orphans (broad)
 replacement-fanout	2026-06-20T19:35:04Z	PASS		verify.sh	first run; SNS replacement fanout to 10 SSM deps + TopicPolicy; 12 deleted 0 errors
 rollback-failure-injection	2026-06-13T11:11:55Z	PASS	418	verify.sh	deploy-engine rollback on rich VPC+Lambda + #808 fail events; 17 deleted 0 orphan
@@ -133,7 +130,6 @@ s3-cloudfront	2026-06-15T04:27:23Z	PASS		verify.sh	rc ok, orph clean (#873 Origi
 s3-directory-bucket	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 s3-event-notification	2026-06-20T18:40:52Z	PASS		verify.sh	S3->Lambda notification fired (DynamoDB record); 3 phases pass, clean destroy, 0 orphan
 s3-tables	2026-06-21T11:17:42Z	PASS	32	verify.sh	sweep-F staleness re-run (rc=0)
-s3-vectors	2026-06-14T13:39:25Z	PASS	60	verify.sh	Tags backfill + in-place Tags update() (TagResource/UntagResource) re-run after create dedup; 0 orphans
 scheduled-task	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 schema-v5-to-v6-migration	2026-06-21T14:38:30Z	PASS	57	verify.sh	sweep-G verify.sh re-run (rc=0)
 schema-v6-to-v7-migration	2026-06-21T14:39:23Z	PASS	51	verify.sh	sweep-G verify.sh re-run (rc=0)
@@ -163,3 +159,7 @@ ec2-instance	2026-06-21T17:00:38Z	PASS	91	verify.sh	stale-real re-run; clean des
 vpc-nat-gateway	2026-06-21T17:00:38Z	PASS	145	verify.sh	stale-real re-run; deploy 21 + destroy 21 (split by subshell-death, re-destroyed clean); NAT GW gone
 rds-aurora	2026-06-21T17:00:38Z	PASS	2088	verify.sh	stale-real re-run; clean destroy (~35min)
 rds-dbinstance-backfill	2026-06-21T17:00:38Z	FAIL	30	verify.sh	FIXTURE STALE not cdkd bug: AWS retired postgres 17.4 (Cannot find version 17.4); rollback clean 0 orphan; needs engine-version bump
+elasticache-replicationgroup-getatt	2026-06-21T18:03:30Z	PASS	649	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
+s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
+opensearch-domain-getatt	2026-06-21T18:03:30Z	PASS	1671	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
+redshift-cluster-getatt	2026-06-21T18:03:30Z	PASS	416	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
