@@ -149,3 +149,6 @@ deep-getatt-chains	2026-06-20T19:32:52Z	PASS		verify.sh	first run; deep GetAtt c
 replacement-fanout	2026-06-20T19:35:04Z	PASS		verify.sh	first run; SNS replacement fanout to 10 SSM deps + TopicPolicy; 12 deleted 0 errors
 nested-stack-3level	2026-06-20T19:37:31Z	PASS		verify.sh	first run; 4-level nested deploy/parent-link/state-tree/destroy-cascade; 9 deleted 0 errors; all state.json gone
 update-policy-mutations	2026-06-20T19:39:38Z	PASS		verify.sh	first run; DeletionPolicy/UpdateReplacePolicy mutations + retain-on-replace; 5 del +2 retain; step6 cleanup -> 0 leftover
+sns-event-source	2026-06-21T03:52:27Z	PASS		verify.sh	SnsEventSource: publish->Lambda->DynamoDB delivered; clean destroy 0 orphan
+aws-custom-resource	2026-06-21T03:52:27Z	PASS		verify.sh	Custom::AWS onCreate/onUpdate(v1->v2 in-place)/onDelete all fired; clean destroy 0 orphan
+nodejs-function	2026-06-21T03:52:27Z	PASS		verify.sh	NodejsFunction esbuild bundle invoked 200; clean destroy 0 orphan

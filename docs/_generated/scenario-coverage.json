@@ -319,6 +319,11 @@
       "scenarios": []
     },
     {
+      "name": "aws-custom-resource",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "basic",
       "annotated": true,
       "scenarios": []
@@ -1040,6 +1045,11 @@
       "scenarios": []
     },
     {
+      "name": "nodejs-function",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "opensearch-domain-getatt",
       "annotated": true,
       "scenarios": [
@@ -1224,6 +1234,11 @@
       "scenarios": [
         "sg-circular-dependency"
       ]
+    },
+    {
+      "name": "sns-event-source",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "sns-sqs-event",
@@ -1862,6 +1877,7 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "acm-certificate",
+    "aws-custom-resource",
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
@@ -1877,6 +1893,7 @@
     "local-start-service-watch-fast",
     "nested-stack",
     "nested-stack-deep",
+    "nodejs-function",
     "rds-dbinstance-backfill",
     "recreate-mixed-direction",
     "recreate-via-cc-api",
@@ -1885,6 +1902,7 @@
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
     "servicediscovery",
+    "sns-event-source",
     "stepfunctions-s3-definition"
   ]
 }
