@@ -1,3 +1,10 @@
+## [0.229.3](https://github.com/go-to-k/cdkd/compare/v0.229.2...v0.229.3) (2026-06-21)
+
+
+### Bug Fixes
+
+* **deploy:** resolve Ref of Cognito UserPoolClient to client id + add CR-heavy daily-pattern integ fixtures ([#898](https://github.com/go-to-k/cdkd/issues/898)) ([712373b](https://github.com/go-to-k/cdkd/commit/712373b1f340b7a793c19f068c3be53b7d6a08da))
+
 ## [0.229.2](https://github.com/go-to-k/cdkd/compare/v0.229.1...v0.229.2) (2026-06-21)
 
 
