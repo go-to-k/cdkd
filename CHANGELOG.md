@@ -1,3 +1,10 @@
+## [0.229.6](https://github.com/go-to-k/cdkd/compare/v0.229.5...v0.229.6) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** map DynamoDB SSESpecification.SSEEnabled to the SDK Enabled field ([#909](https://github.com/go-to-k/cdkd/issues/909)) ([c05f553](https://github.com/go-to-k/cdkd/commit/c05f55314016a1c4d0939490e7cf1f9e1d592ebb))
+
 ## [0.229.5](https://github.com/go-to-k/cdkd/compare/v0.229.4...v0.229.5) (2026-06-21)
 
 
