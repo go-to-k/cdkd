@@ -63,6 +63,19 @@ echo "    scanOnPush (Phase 1): ${SOP1}"
 [ "${SOP1}" = "True" ] || { echo "FAIL: expected scanOnPush=true to reach AWS, got '${SOP1}'" >&2; exit 1; }
 echo "    scanOnPush=true reached AWS"
 
+# EncryptionConfiguration KMS path (the KmsKey was silently dropped pre-fix).
+ENC1="$(aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
+  --query 'repositories[0].encryptionConfiguration.encryptionType' --output text)"
+echo "    encryptionType (Phase 1): ${ENC1}"
+[ "${ENC1}" = "KMS" ] || { echo "FAIL: expected encryptionType=KMS to reach AWS, got '${ENC1}'" >&2; exit 1; }
+KMSKEY1="$(aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
+  --query 'repositories[0].encryptionConfiguration.kmsKey' --output text)"
+case "${KMSKEY1}" in
+  arn:aws:kms:*) ;;
+  *) echo "FAIL: expected a KMS key ARN in encryptionConfiguration.kmsKey, got '${KMSKEY1}'" >&2; exit 1 ;;
+esac
+echo "    encryptionType=KMS + kmsKey reached AWS"
+
 # --- Phase 2: UPDATE scanOnPush=false ---------------------------------
 echo "==> Phase 2: re-deploy with imageScanOnPush=false (UPDATE)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \

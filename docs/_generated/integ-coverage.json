@@ -2721,6 +2721,7 @@
         "composite-stack",
         "drift-revert",
         "dynamodb-streams",
+        "ecr-scanning",
         "infra-security",
         "kms-encryption",
         "propagation-races-2"
@@ -2733,6 +2734,9 @@
           "l2"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "ecr-scanning": [
           "l2"
         ],
         "infra-security": [

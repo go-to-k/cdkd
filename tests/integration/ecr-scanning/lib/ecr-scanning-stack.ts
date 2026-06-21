@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
  * Integ probe for ECR ImageScanningConfiguration / EncryptionConfiguration
@@ -23,10 +24,21 @@ export class EcrScanningStack extends cdk.Stack {
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
 
+    // A KMS key to exercise the EncryptionConfiguration { EncryptionType: KMS,
+    // KmsKey } CFn->SDK casing path (the KmsKey was silently dropped pre-fix,
+    // falling back to AES256). EncryptionConfiguration is immutable so it is
+    // identical across both phases.
+    const key = new kms.Key(this, 'Key', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
+    });
+
     new ecr.Repository(this, 'Repo', {
       repositoryName: `${this.stackName.toLowerCase()}-repo`,
       imageScanOnPush: !isUpdate,
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
+      encryption: ecr.RepositoryEncryption.KMS,
+      encryptionKey: key,
       lifecycleRules: [{ description: 'keep last 5', maxImageCount: 5 }],
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,

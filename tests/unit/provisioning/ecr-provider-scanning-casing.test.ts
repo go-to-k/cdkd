@@ -93,6 +93,26 @@ describe('ECRProvider — CFn->SDK casing for scanning/encryption config', () =>
     expect(input.encryptionConfiguration).toEqual({ encryptionType: 'AES256' });
   });
 
+  it('create with AES256 + a stray KmsKey drops the kmsKey (KMS-only guard)', async () => {
+    mockSend.mockResolvedValue({ repository: { repositoryName: 'r', repositoryArn: 'a' } });
+    await provider.create('Repo', 'AWS::ECR::Repository', {
+      RepositoryName: 'r',
+      EncryptionConfiguration: { EncryptionType: 'AES256', KmsKey: 'arn:aws:kms:...:key/stray' },
+    });
+    const input = createInput();
+    expect(input.encryptionConfiguration).toEqual({ encryptionType: 'AES256' });
+  });
+
+  it('create with ImageScanningConfiguration:{} (no ScanOnPush) sends scanOnPush:false', async () => {
+    mockSend.mockResolvedValue({ repository: { repositoryName: 'r', repositoryArn: 'a' } });
+    await provider.create('Repo', 'AWS::ECR::Repository', {
+      RepositoryName: 'r',
+      ImageScanningConfiguration: {},
+    });
+    const input = createInput();
+    expect(input.imageScanningConfiguration).toEqual({ scanOnPush: false });
+  });
+
   it('update maps ScanOnPush (Pascal) -> scanOnPush (camel) on PutImageScanningConfiguration', async () => {
     mockSend.mockResolvedValue({ repositories: [{ repositoryArn: 'a', repositoryUri: 'u' }] });
     await provider.update(
