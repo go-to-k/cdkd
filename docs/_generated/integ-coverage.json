@@ -663,6 +663,7 @@
         "dynamodb-ondemand",
         "dynamodb-stream-filter",
         "dynamodb-streams",
+        "fifo-sqs-event-source",
         "full-stack-demo",
         "lambda",
         "local-invoke-from-cfn-stack",
@@ -701,6 +702,10 @@
         ],
         "dynamodb-streams": [
           "l2"
+        ],
+        "fifo-sqs-event-source": [
+          "l2",
+          "literal"
         ],
         "full-stack-demo": [
           "l2"
@@ -2308,12 +2313,17 @@
       "resourceType": "AWS::Events::Rule",
       "integs": [
         "eventbridge",
+        "eventbridge-input-transformer",
         "iam-propagation-stress",
         "scheduled-task"
       ],
       "signals": {
         "eventbridge": [
           "l2"
+        ],
+        "eventbridge-input-transformer": [
+          "l2",
+          "literal"
         ],
         "iam-propagation-stress": [
           "l2"
@@ -2752,7 +2762,8 @@
       "integs": [
         "dynamodb-stream-filter",
         "dynamodb-streams",
-        "eventsourcemapping-race"
+        "eventsourcemapping-race",
+        "fifo-sqs-event-source"
       ],
       "signals": {
         "dynamodb-stream-filter": [
@@ -2762,6 +2773,9 @@
           "literal"
         ],
         "eventsourcemapping-race": [
+          "literal"
+        ],
+        "fifo-sqs-event-source": [
           "literal"
         ]
       }
@@ -2792,6 +2806,7 @@
         "eventbridge",
         "eventsourcemapping-race",
         "export",
+        "fifo-sqs-event-source",
         "full-stack-demo",
         "iam-propagation-stress",
         "lambda",
@@ -2914,6 +2929,10 @@
           "l2"
         ],
         "export": [
+          "l2",
+          "literal"
+        ],
+        "fifo-sqs-event-source": [
           "l2",
           "literal"
         ],
@@ -3742,7 +3761,9 @@
         "drift-revert-arrays",
         "event-driven",
         "eventbridge",
+        "eventbridge-input-transformer",
         "eventsourcemapping-race",
+        "fifo-sqs-event-source",
         "full-stack-demo",
         "iam-propagation-stress",
         "intrinsics-torture",
@@ -3784,7 +3805,15 @@
         "eventbridge": [
           "l2"
         ],
+        "eventbridge-input-transformer": [
+          "l2",
+          "literal"
+        ],
         "eventsourcemapping-race": [
+          "l2",
+          "literal"
+        ],
+        "fifo-sqs-event-source": [
           "l2",
           "literal"
         ],

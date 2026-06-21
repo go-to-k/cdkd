@@ -157,3 +157,5 @@ sns-subscription-filter	2026-06-21T06:31:35Z	PASS	38	verify.sh	FilterPolicy inta
 dynamodb-stream-filter	2026-06-21T06:31:35Z	PASS	58	verify.sh	FilterCriteria/bisect/responseTypes; 0 orph
 lambda	2026-06-21T06:31:35Z	PASS	70	verify.sh	broad integ for intrinsic-resolver Ref fix; 0 orph
 lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
+eventbridge-input-transformer	2026-06-21T07:34:45Z	PASS	53	verify.sh	InputTransformer rewrites payload; UPDATE version reached AWS; destroy clean
+fifo-sqs-event-source	2026-06-21T07:42:41Z	PASS	83	verify.sh	FIFO ESM delivers + both MessageGroupIds (g1,g2) preserved; spaced poll; destroy clean 0 orphan
