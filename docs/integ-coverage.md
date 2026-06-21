@@ -93,7 +93,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | [`alb`](../tests/integration/alb/) (l2)<br>[`alb-advanced`](../tests/integration/alb-advanced/) (l2)<br>[`deletion-ordering-complex`](../tests/integration/deletion-ordering-complex/) (l2,literal)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l2,literal)<br>[`local-start-alb`](../tests/integration/local-start-alb/) (l1,literal)<br>[`local-start-alb-from-state`](../tests/integration/local-start-alb-from-state/) (l2,literal)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | [`alb`](../tests/integration/alb/) (literal)<br>[`deletion-ordering-complex`](../tests/integration/deletion-ordering-complex/) (literal)<br>[`local-start-alb`](../tests/integration/local-start-alb/) (l1,literal)<br>[`local-start-alb-from-state`](../tests/integration/local-start-alb-from-state/) (literal) |
 | `AWS::Events::EventBus` | [`eventbridge`](../tests/integration/eventbridge/) (l2) |
-| `AWS::Events::Rule` | [`eventbridge`](../tests/integration/eventbridge/) (l2)<br>[`eventbridge-input-transformer`](../tests/integration/eventbridge-input-transformer/) (l2,literal)<br>[`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
+| `AWS::Events::Rule` | [`eventbridge`](../tests/integration/eventbridge/) (l2)<br>[`eventbridge-api-destination`](../tests/integration/eventbridge-api-destination/) (l2)<br>[`eventbridge-input-transformer`](../tests/integration/eventbridge-input-transformer/) (l2,literal)<br>[`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
 | `AWS::Glue::Crawler` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::Glue::Database` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal)<br>[`drift-revert`](../tests/integration/drift-revert/) (l1) |
 | `AWS::Glue::Job` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
@@ -147,7 +147,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`stepfunctions`](../tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-s3-definition`](../tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (39)
+## Resource types referenced in integs without an SDK Provider (41)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -174,6 +174,8 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::ELBv2::LoadBalancer`
 - `AWS::ElastiCache::ReplicationGroup`
 - `AWS::ElasticLoadBalancingV2::ListenerRule`
+- `AWS::Events::ApiDestination`
+- `AWS::Events::Connection`
 - `AWS::KMS::Grant`
 - `AWS::Lambda::Alias`
 - `AWS::Lambda::Version`

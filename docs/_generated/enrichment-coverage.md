@@ -255,6 +255,8 @@ These types have an `enrichResourceAttributes` case but no cached CFn schema, so
 - `AWS::CloudFront::OriginAccessControl`
 - `AWS::EC2::EIP`
 - `AWS::ElastiCache::ReplicationGroup`
+- `AWS::Events::ApiDestination`
+- `AWS::Events::Connection`
 - `AWS::Lambda::Version`
 - `AWS::OpenSearchService::Domain`
 - `AWS::Redshift::Cluster`

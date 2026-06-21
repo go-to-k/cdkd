@@ -646,6 +646,11 @@
       "scenarios": []
     },
     {
+      "name": "eventbridge-api-destination",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "eventbridge-input-transformer",
       "annotated": false,
       "scenarios": []
@@ -1953,6 +1958,7 @@
     "dynamodb-sse",
     "dynamodb-stream-filter",
     "ecr-scanning",
+    "eventbridge-api-destination",
     "eventbridge-input-transformer",
     "export-nested-stack",
     "fifo-sqs-event-source",

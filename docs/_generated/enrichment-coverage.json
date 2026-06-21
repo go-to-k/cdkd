@@ -2750,6 +2750,8 @@
     "AWS::CloudFront::OriginAccessControl",
     "AWS::EC2::EIP",
     "AWS::ElastiCache::ReplicationGroup",
+    "AWS::Events::ApiDestination",
+    "AWS::Events::Connection",
     "AWS::Lambda::Version",
     "AWS::OpenSearchService::Domain",
     "AWS::Redshift::Cluster",
