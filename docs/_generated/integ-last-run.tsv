@@ -167,3 +167,7 @@ conditions-and-if	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); CF
 conditions-update-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); condition-gated resource add/remove across update; 14 assertions; clean destroy 0 err
 intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); intrinsic-function torture; 12 checks; 11 deleted 0 err; SSM cleared
 tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag propagation across 9 resource types; no tag-order false-positive; 9 deleted 0 err
+custom-resource-getatt-data	2026-06-21T18:25:10Z	PASS	61	verify.sh	first run (never-run); CR Data GetAtt -> dependent SSM property; 3 params+Lambda gone; clean destroy
+drift-revert-arrays	2026-06-21T18:25:10Z	PASS	115	verify.sh	first run (never-run); array-property drift detect+revert; 16 deleted 0 err
+secrets-dynamic-ref	2026-06-21T18:25:10Z	PASS	52	verify.sh	first run (never-run); SecretsManager dynamic-reference resolution; clean destroy state gone
+sdk-ccapi-crossref	2026-06-21T18:25:10Z	PASS	80	verify.sh	first run (never-run); heterogeneous SDK/CC routing + bidirectional cross-ref; clean CC-path destroy
