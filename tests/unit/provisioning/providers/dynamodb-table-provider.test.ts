@@ -48,7 +48,10 @@ vi.mock('../../../../src/utils/logger.js', () => {
   };
 });
 
-import { DynamoDBTableProvider } from '../../../../src/provisioning/providers/dynamodb-table-provider.js';
+import {
+  DynamoDBTableProvider,
+  mapSSESpecification,
+} from '../../../../src/provisioning/providers/dynamodb-table-provider.js';
 
 // Helper: a minimal ACTIVE DescribeTable response.
 const activeTable = (overrides: Record<string, unknown> = {}) => ({
@@ -286,6 +289,50 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
 
       expect(commandSent(EnableKinesisStreamingDestinationCommand)).toBe(false);
       expect(commandSent(DisableKinesisStreamingDestinationCommand)).toBe(false);
+    });
+  });
+
+  describe('SSESpecification (SSEEnabled -> Enabled mapping)', () => {
+    it('maps CFn SSEEnabled to the SDK Enabled field on CreateTable', async () => {
+      mockSend
+        .mockResolvedValueOnce({}) // CreateTable
+        .mockResolvedValueOnce(activeTable()); // waitForTableActive
+
+      await provider.create('MyTable', 'AWS::DynamoDB::Table', {
+        ...baseCreateProps,
+        SSESpecification: { SSEEnabled: true },
+      });
+
+      const createInput = inputOfCommand(CreateTableCommand) as {
+        SSESpecification?: Record<string, unknown>;
+      };
+      // The SDK field is `Enabled`, not `SSEEnabled` — passing the CFn shape
+      // verbatim (the bug) would leave Enabled undefined and silently create an
+      // AWS-owned-encrypted table.
+      expect(createInput.SSESpecification).toEqual({ Enabled: true });
+      expect(createInput.SSESpecification).not.toHaveProperty('SSEEnabled');
+    });
+
+    it('mapSSESpecification maps SSEEnabled/SSEType/KMSMasterKeyId and tolerates absent/non-object', () => {
+      expect(mapSSESpecification({ SSEEnabled: true })).toEqual({ Enabled: true });
+      expect(
+        mapSSESpecification({
+          SSEEnabled: true,
+          SSEType: 'KMS',
+          KMSMasterKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+        })
+      ).toEqual({
+        Enabled: true,
+        SSEType: 'KMS',
+        KMSMasterKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+      });
+      // Stringified boolean tolerance.
+      expect(mapSSESpecification({ SSEEnabled: 'true' })).toEqual({ Enabled: true });
+      expect(mapSSESpecification({ SSEEnabled: 'false' })).toEqual({ Enabled: false });
+      // Absent / non-object -> undefined (caller omits the field).
+      expect(mapSSESpecification(undefined)).toBeUndefined();
+      expect(mapSSESpecification(null)).toBeUndefined();
+      expect(mapSSESpecification('nope')).toBeUndefined();
     });
   });
 

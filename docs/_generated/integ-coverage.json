@@ -661,6 +661,7 @@
         "data-pipeline",
         "dynamodb-gsi-update",
         "dynamodb-ondemand",
+        "dynamodb-sse",
         "dynamodb-stream-filter",
         "dynamodb-streams",
         "fifo-sqs-event-source",
@@ -695,6 +696,10 @@
         ],
         "dynamodb-ondemand": [
           "l2"
+        ],
+        "dynamodb-sse": [
+          "l2",
+          "literal"
         ],
         "dynamodb-stream-filter": [
           "l2",
