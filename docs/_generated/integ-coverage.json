@@ -2821,6 +2821,7 @@
         "iam-propagation-stress",
         "lambda",
         "lambda-destinations",
+        "lambda-layer-version-update",
         "lambda-log-retention",
         "lambda-versioning",
         "local-invoke",
@@ -2958,6 +2959,9 @@
         "lambda-destinations": [
           "l2",
           "literal"
+        ],
+        "lambda-layer-version-update": [
+          "l2"
         ],
         "lambda-log-retention": [
           "l2"
@@ -3112,10 +3116,14 @@
       "resourceType": "AWS::Lambda::LayerVersion",
       "integs": [
         "lambda",
+        "lambda-layer-version-update",
         "local-invoke-layers"
       ],
       "signals": {
         "lambda": [
+          "l2"
+        ],
+        "lambda-layer-version-update": [
           "l2"
         ],
         "local-invoke-layers": [

@@ -167,6 +167,45 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // Lambda LayerVersion — fully immutable on AWS. There is no
+    // UpdateLayerVersion API; every property change requires a fresh
+    // PublishLayerVersion (a new version with a new LayerVersionArn). In
+    // CloudFormation EVERY property of AWS::Lambda::LayerVersion is
+    // "Update requires: Replacement", so a content/runtime/name change
+    // must drive a replacement (and `promoteReplacementDependents` then
+    // re-points any consuming function at the new version ARN), matching
+    // `cdk deploy`'s transparent layer-version bump. Without this rule the
+    // change is misclassified as an in-place update and the provider's
+    // update() hard-fails with an "immutable" error (issue surfaced by a
+    // LayerVersion content change being undeployable).
+    this.rules.set('AWS::Lambda::LayerVersion', {
+      replacementProperties: new Set([
+        'Content',
+        'LayerName',
+        'Description',
+        'CompatibleRuntimes',
+        'CompatibleArchitectures',
+        'LicenseInfo',
+      ]),
+    });
+
+    // Lambda Version — also fully immutable on AWS (a published version is a
+    // point-in-time snapshot). Every AWS::Lambda::Version property is
+    // "Update requires: Replacement" in CloudFormation; a change publishes a
+    // new version. CDK normally bumps the Version's logical id on code change
+    // (create-new + delete-old) so this rarely fires, but a hand-authored
+    // template that edits a Version property in place would otherwise be
+    // misclassified as an updateable change.
+    this.rules.set('AWS::Lambda::Version', {
+      replacementProperties: new Set([
+        'CodeSha256',
+        'Description',
+        'FunctionName',
+        'ProvisionedConcurrencyConfig',
+        'RuntimePolicy',
+      ]),
+    });
+
     // DynamoDB Table
     this.rules.set('AWS::DynamoDB::Table', {
       replacementProperties: new Set([
