@@ -1,3 +1,10 @@
+## [0.229.2](https://github.com/go-to-k/cdkd/compare/v0.229.1...v0.229.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* **deploy:** resolve Ref of API Gateway Model / RequestValidator to the ref segment, not the compound physical id ([#897](https://github.com/go-to-k/cdkd/issues/897)) ([1761c23](https://github.com/go-to-k/cdkd/commit/1761c23ca5f674b666706ca8d7af7e30fc122b1e))
+
 ## [0.229.1](https://github.com/go-to-k/cdkd/compare/v0.229.0...v0.229.1) (2026-06-21)
 
 
