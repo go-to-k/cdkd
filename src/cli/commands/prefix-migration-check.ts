@@ -1,8 +1,12 @@
 import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
 import {
+  PATTERN_B_NAME_OPTIONS,
   PATTERN_B_NAME_PROPERTIES,
   PATTERN_B_RESOURCE_TYPES,
+  generateResourceName,
+  withSkipPrefix,
+  withStackName,
 } from '../../provisioning/resource-name.js';
 import type { StackState } from '../../types/state.js';
 
@@ -39,17 +43,34 @@ export interface PendingRename {
  * verbatim. So:
  *
  *   - User-supplied name in pre-v0.94 state (`Properties.RoleName: 'foo'`,
- *     physicalId `MyStack-foo`) → next deploy computes `foo` →
- *     REPLACE pending. Flag.
+ *     physicalId `MyStack-foo` = `${stackName}-${userName}`) → next deploy
+ *     computes `foo` → REPLACE pending. Flag.
  *   - Auto-generated name in pre-v0.94 state (no `Properties.RoleName`,
  *     physicalId `MyStack-MyConstructRoleF44D44CF`) → next deploy
  *     STILL computes `MyStack-MyConstructRoleF44D44CF` (`userSupplied:
  *     false` keeps the prefix regardless of the v0.94.0 default flip).
  *     NO REPLACE pending. Do NOT flag.
+ *   - User-supplied name that itself starts with `${stackName}-`
+ *     (`Properties.RoleName: 'MyStack-role'`, physicalId `MyStack-role`,
+ *     a very common `\`${id}-role\`` convention) → post-v0.94 takes the
+ *     name verbatim, so physicalId already equals the post-v0.94 name →
+ *     NO rename, NO REPLACE pending. Do NOT flag.
  *
- * The naive prefix-startsWith check (without the user-supplied gate)
- * surfaces a false-positive WARNING on every auto-generated name in
- * every pre-v0.94 stack. Closes that bug.
+ * The discriminator recomputes BOTH name forms for the recorded
+ * user-supplied name through the SAME `generateResourceName` pipeline the
+ * provider used (sanitize bad chars + collapse hyphens + hash-suffix
+ * truncate past maxLength) — `legacyName` (prefix applied) and `newName`
+ * (`withSkipPrefix(true)`, prefix dropped). It skips when
+ * `physicalId === newName` (already migrated / verbatim), and flags only
+ * when `physicalId === legacyName && legacyName !== newName`. Comparing
+ * generated forms (not a naive `${stackName}-` concat / strip) is
+ * load-bearing for names that needed sanitization (`my_role` ->
+ * `my-role`) or truncation, which a string concat would mis-compare.
+ *
+ * Both the naive prefix-startsWith check (false-positive on every
+ * auto-generated name) AND the blind prefix-strip (false-positive on a
+ * user name that starts with the stack name, blocking routine in-place
+ * updates) are closed here.
  *
  * Pattern A resources are intentionally NOT considered — they never got
  * the prefix on a user-supplied name to begin with, so the flag is a
@@ -88,17 +109,46 @@ export function findPendingPrefixRenames(
     const userSuppliedName = resource.properties?.[nameProperty];
     if (typeof userSuppliedName !== 'string' || userSuppliedName === '') continue;
 
-    const newPhysicalId = resource.physicalId.slice(prefix.length);
-    // Edge case: physicalId is exactly `${stackName}-` (= empty
-    // resource-name suffix). Skip rather than report a `→ ""` rename
-    // entry that the user would not be able to act on.
-    if (newPhysicalId.length === 0) continue;
+    const nameOptions = PATTERN_B_NAME_OPTIONS[resource.resourceType];
+    if (!nameOptions) continue; // defensive: should be set for every Pattern B type
+
+    // Recompute BOTH physical-name forms for the recorded user-supplied name
+    // through the SAME `generateResourceName` pipeline the provider used
+    // (sanitize bad chars + collapse hyphens + hash-suffix truncate past
+    // maxLength), so a name that needed sanitization (`my_role` -> `my-role`)
+    // or truncation is compared EXACTLY — not via a naive prefix concat/strip.
+    //
+    //   - legacyName: pre-v0.94 form (stack-name prefix applied).
+    //   - newName:    post-v0.94 form (`withSkipPrefix(true)` drops the prefix
+    //                 on a user-supplied name) — what the next deploy targets.
+    const legacyName = withStackName(stackName, () =>
+      generateResourceName(userSuppliedName, { ...nameOptions, userSupplied: true })
+    );
+    const newName = withStackName(stackName, () =>
+      withSkipPrefix(true, () =>
+        generateResourceName(userSuppliedName, { ...nameOptions, userSupplied: true })
+      )
+    );
+
+    // No rename pending when the resource is ALREADY in its post-v0.94 form.
+    // This is the load-bearing false-positive guard: a user-supplied name that
+    // merely starts with `${stackName}-` (e.g. `roleName: \`${id}-role\``, a
+    // very common convention) was deployed verbatim, so its physicalId already
+    // equals `newName`. The old code blindly stripped the prefix, mis-predicted
+    // `MyStack-role` -> `role`, and forced a spurious REPLACEMENT prompt that
+    // hard-failed every in-place update in non-interactive runs.
+    if (resource.physicalId === newName) continue;
+
+    // A REPLACE pends only when the recorded physicalId is the genuine legacy
+    // auto-prefixed form AND that differs from the new (unprefixed) form.
+    if (resource.physicalId !== legacyName) continue;
+    if (legacyName === newName) continue; // prefix made no difference — nothing to migrate
 
     out.push({
       logicalId,
       resourceType: resource.resourceType,
       oldPhysicalId: resource.physicalId,
-      newPhysicalId,
+      newPhysicalId: newName,
     });
   }
 

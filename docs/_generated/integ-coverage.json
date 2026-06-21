@@ -2479,6 +2479,7 @@
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-propagation-stress",
+        "iam-role-prefixed-name-update",
         "infra-security",
         "intrinsic-functions",
         "local-invoke-dotnet",
@@ -2553,6 +2554,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "iam-role-prefixed-name-update": [
+          "l2",
+          "literal"
         ],
         "infra-security": [
           "l2"

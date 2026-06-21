@@ -308,9 +308,17 @@ is `my-role`, so the diff classifies the name as an immutable property
 change and the resource is destroyed and re-created. To make this side
 effect visible up front, `cdkd deploy` runs a pre-flight migration
 check: when the flag is on AND the existing state contains one or
-more Pattern B resources whose `physicalId` still starts with
-`${stackName}-`, the command lists them and prompts for confirmation
-before any provider call runs. The prompt defaults to **no** because
+more Pattern B resources whose recorded `physicalId` is EXACTLY the
+legacy auto-prefixed form of the user-supplied name
+(`${stackName}-${userSuppliedName}`), the command lists them and prompts
+for confirmation before any provider call runs. The exact-match test (not
+a bare "starts with `${stackName}-`") is deliberate: a user-supplied name
+that itself starts with the stack name — e.g. setting `roleName` to
+`${this.stackName}-role`, a common convention — is taken verbatim, so its
+`physicalId` already equals the user name. There is no rename and no
+replacement, so it is NOT flagged (a bare prefix-strip would otherwise
+mis-predict `MyStack-role` to `role` and block routine in-place updates).
+The prompt defaults to **no** because
 the side effect is destructive; pass `-y` / `--yes` (the global CDK
 CLI parity flag) to skip the prompt in CI / non-interactive runs. If
 the user declines, the deploy exits cleanly with `no resources

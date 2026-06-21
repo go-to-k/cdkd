@@ -155,6 +155,30 @@ export const PATTERN_B_NAME_PROPERTIES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * For each Pattern B resource type, the `generateResourceName` options each
+ * provider passes at its name call site (maxLength + any lowercase /
+ * allowedPattern). Keep in sync with the provider call sites
+ * (`generateResourceNameWithFallback(...)` in
+ * `src/provisioning/providers/`).
+ *
+ * Used by the prefix-migration check to recompute BOTH the legacy
+ * (prefixed) and the post-v0.94 (unprefixed) physical name for a recorded
+ * user-supplied name through the SAME sanitize / truncate pipeline the
+ * provider used — so a name that needed sanitization (`my_role` ->
+ * `my-role`) or hash-suffix truncation (> maxLength) is compared exactly,
+ * not via a naive prefix concat / strip.
+ */
+export const PATTERN_B_NAME_OPTIONS: Readonly<Record<string, ResourceNameOptions>> = {
+  'AWS::IAM::Role': { maxLength: 64 },
+  'AWS::IAM::User': { maxLength: 64 },
+  'AWS::IAM::Group': { maxLength: 128 },
+  'AWS::IAM::InstanceProfile': { maxLength: 128 },
+  'AWS::IAM::ManagedPolicy': { maxLength: 128 },
+  'AWS::ElasticLoadBalancingV2::LoadBalancer': { maxLength: 32 },
+  'AWS::ElasticLoadBalancingV2::TargetGroup': { maxLength: 32 },
+};
+
+/**
  * Options for generating a resource name.
  */
 export interface ResourceNameOptions {
