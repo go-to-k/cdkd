@@ -1599,6 +1599,19 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Lambda::EventInvokeConfig',
+    {
+      handled: new Set<string>([
+        'DestinationConfig',
+        'FunctionName',
+        'MaximumEventAgeInSeconds',
+        'MaximumRetryAttempts',
+        'Qualifier',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::Lambda::EventSourceMapping',
     {
       handled: new Set<string>([

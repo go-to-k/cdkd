@@ -16,6 +16,7 @@ import { LambdaPermissionProvider } from './providers/lambda-permission-provider
 import { LambdaUrlProvider } from './providers/lambda-url-provider.js';
 import { LambdaEventSourceMappingProvider } from './providers/lambda-eventsource-provider.js';
 import { LambdaLayerVersionProvider } from './providers/lambda-layer-provider.js';
+import { LambdaEventInvokeConfigProvider } from './providers/lambda-event-invoke-config-provider.js';
 import { DynamoDBTableProvider } from './providers/dynamodb-table-provider.js';
 import { DynamoDBGlobalTableProvider } from './providers/dynamodb-globaltable-provider.js';
 import { LogsLogGroupProvider } from './providers/logs-loggroup-provider.js';
@@ -104,6 +105,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::Lambda::Url', new LambdaUrlProvider());
   registry.register('AWS::Lambda::EventSourceMapping', new LambdaEventSourceMappingProvider());
   registry.register('AWS::Lambda::LayerVersion', new LambdaLayerVersionProvider());
+  registry.register('AWS::Lambda::EventInvokeConfig', new LambdaEventInvokeConfigProvider());
 
   // DynamoDB
   registry.register('AWS::DynamoDB::Table', new DynamoDBTableProvider());

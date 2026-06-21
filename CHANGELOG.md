@@ -1,3 +1,31 @@
+## [0.230.3](https://github.com/go-to-k/cdkd/compare/v0.230.2...v0.230.3) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** enrich Events Connection/ApiDestination Arn so ApiDestination deploys ([#922](https://github.com/go-to-k/cdkd/issues/922)) ([f49a154](https://github.com/go-to-k/cdkd/commit/f49a1545aeeede7c99b184fc0a10376415f50fdc))
+
+## [0.230.2](https://github.com/go-to-k/cdkd/compare/v0.230.1...v0.230.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** add SDK provider for Lambda EventInvokeConfig so async-invoke updates work ([#919](https://github.com/go-to-k/cdkd/issues/919)) ([7d41f24](https://github.com/go-to-k/cdkd/commit/7d41f2416d305fbf0f577b8a38bc6eb2c1c2e74b))
+
+## [0.230.1](https://github.com/go-to-k/cdkd/compare/v0.230.0...v0.230.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* **provisioning:** map ECR CFn PascalCase scanning/encryption config to SDK camelCase (imageScanOnPush silently dropped) ([#920](https://github.com/go-to-k/cdkd/issues/920)) ([8eef917](https://github.com/go-to-k/cdkd/commit/8eef91723be834c93395b1a7a51ac2c801bcb671))
+
+# [0.230.0](https://github.com/go-to-k/cdkd/compare/v0.229.8...v0.230.0) (2026-06-21)
+
+
+### Features
+
+* **deploy:** implement the --replace flag + fix Glue S3 encryption silent-drop ([#918](https://github.com/go-to-k/cdkd/issues/918)) ([3c07ab3](https://github.com/go-to-k/cdkd/commit/3c07ab362d2054286404116ec214d128506739c2))
+
 ## [0.229.8](https://github.com/go-to-k/cdkd/compare/v0.229.7...v0.229.8) (2026-06-21)
 
 

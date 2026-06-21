@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   STATEFUL_TYPES,
   isStatefulRecreateTargetSync,
+  isStatefulRecreateTargetForReplace,
   renderStatefulReason,
 } from '../../../src/provisioning/stateful-types.js';
 
@@ -114,5 +115,34 @@ describe('renderStatefulReason', () => {
     expect(renderStatefulReason('has-objects')).toMatch(/non-empty/);
     expect(renderStatefulReason('has-retention')).toMatch(/retains data/);
     expect(renderStatefulReason(null)).toBe('(not stateful)');
+  });
+});
+
+describe('isStatefulRecreateTargetForReplace (--replace mid-deploy, no async probe)', () => {
+  it('treats a deferred S3 bucket as stateful (cannot probe emptiness mid-deploy)', () => {
+    // Unlike the sync variant (which returns null and relies on the async
+    // ListObjectVersions probe), the --replace path has no probe opportunity,
+    // so an S3 bucket must require --force-stateful-recreation regardless.
+    expect(isStatefulRecreateTargetForReplace('AWS::S3::Bucket', { BucketName: 'foo' })).toBe(
+      'has-objects'
+    );
+    expect(isStatefulRecreateTargetForReplace('AWS::S3::Bucket', undefined)).toBe('has-objects');
+  });
+
+  it('matches the sync variant for always-stateful types', () => {
+    expect(isStatefulRecreateTargetForReplace('AWS::DynamoDB::Table', {})).toBe('always');
+    expect(isStatefulRecreateTargetForReplace('AWS::RDS::DBInstance', {})).toBe('always');
+  });
+
+  it('matches the sync variant for LogGroup (retention is resolvable from props, no conservatism)', () => {
+    expect(
+      isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', { RetentionInDays: 30 })
+    ).toBe('has-retention');
+    expect(isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', {})).toBe(null);
+  });
+
+  it('returns null for non-stateful types (replace freely)', () => {
+    expect(isStatefulRecreateTargetForReplace('AWS::Glue::SecurityConfiguration', {})).toBe(null);
+    expect(isStatefulRecreateTargetForReplace('AWS::ECS::TaskDefinition', {})).toBe(null);
   });
 });

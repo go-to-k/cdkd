@@ -16,6 +16,10 @@ import {
 import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
+import {
+  DescribeConnectionCommand,
+  DescribeApiDestinationCommand,
+} from '@aws-sdk/client-eventbridge';
 import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
@@ -902,6 +906,89 @@ export class CloudControlProvider implements ResourceProvider {
           } catch (error) {
             this.logger.debug(
               `Failed to get Lambda URL config for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        break;
+
+      case 'AWS::Events::Connection':
+        // AWS::Events::Connection has NO SDK provider, so it always routes
+        // through Cloud Control. Its primaryIdentifier is `Name`, so the CC API
+        // physicalId is the connection NAME, not the ARN. The readOnly
+        // attributes `Arn` / `SecretArn` / `ArnForPolicy` therefore fall through
+        // the resolver's `constructAttribute` to the physicalId (the name) — and
+        // a downstream `AWS::Events::ApiDestination` whose `ConnectionArn` is
+        // `Fn::GetAtt(<Connection>, 'Arn')` (the canonical CDK shape) gets the
+        // bare name instead of an ARN, so the ApiDestination CREATE fails CC
+        // model validation (`#/ConnectionArn: failed validation constraint for
+        // keyword [pattern]`). The full connection ARN carries a random unique
+        // suffix (`.../connection/<name>/<uuid>`) so it cannot be constructed
+        // from account + region + name; call DescribeConnection to recover it.
+        // Best-effort: a failed Describe leaves the CC-API attribute shape
+        // unchanged and must not fail the deploy. Same enrichment-gap bug class
+        // as #844 / #864 / #865 / #866.
+        if (!enriched['Arn'] || !enriched['SecretArn'] || !enriched['ArnForPolicy']) {
+          try {
+            const eventBridgeClient = getAwsClients().eventBridge;
+            const conn = await eventBridgeClient.send(
+              new DescribeConnectionCommand({ Name: physicalId })
+            );
+            if (conn.ConnectionArn) {
+              if (!enriched['Arn']) enriched['Arn'] = conn.ConnectionArn;
+              // ArnForPolicy is the connection ARN WITHOUT the trailing unique
+              // suffix (`arn:...:connection/<name>`), used in IAM policies.
+              // DescribeConnection does not return it, so derive it from the
+              // full ARN by stripping the last `/<segment>`.
+              if (!enriched['ArnForPolicy']) {
+                const lastSlash = conn.ConnectionArn.lastIndexOf('/');
+                if (lastSlash > 0) {
+                  enriched['ArnForPolicy'] = conn.ConnectionArn.slice(0, lastSlash);
+                }
+              }
+            }
+            if (conn.SecretArn && !enriched['SecretArn']) {
+              enriched['SecretArn'] = conn.SecretArn;
+            }
+            this.logger.debug(
+              `Enriched Events Connection ${physicalId} with Arn/SecretArn/ArnForPolicy from DescribeConnection`
+            );
+          } catch (error) {
+            this.logger.debug(
+              `Failed to enrich Events Connection ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        break;
+
+      case 'AWS::Events::ApiDestination':
+        // Sibling of the Events::Connection case: ApiDestination's
+        // primaryIdentifier is `Name`, so the CC physicalId is the name and the
+        // readOnly `Arn` / `ArnForPolicy` attributes fall through to it. An
+        // `AWS::Events::Rule` target referencing the ApiDestination by
+        // `Fn::GetAtt(<ApiDestination>, 'Arn')` would otherwise get the bare
+        // name. The full ARN carries a unique suffix, so call
+        // DescribeApiDestination to recover it. Best-effort.
+        if (!enriched['Arn'] || !enriched['ArnForPolicy']) {
+          try {
+            const eventBridgeClient = getAwsClients().eventBridge;
+            const dest = await eventBridgeClient.send(
+              new DescribeApiDestinationCommand({ Name: physicalId })
+            );
+            if (dest.ApiDestinationArn) {
+              if (!enriched['Arn']) enriched['Arn'] = dest.ApiDestinationArn;
+              if (!enriched['ArnForPolicy']) {
+                const lastSlash = dest.ApiDestinationArn.lastIndexOf('/');
+                if (lastSlash > 0) {
+                  enriched['ArnForPolicy'] = dest.ApiDestinationArn.slice(0, lastSlash);
+                }
+              }
+            }
+            this.logger.debug(
+              `Enriched Events ApiDestination ${physicalId} with Arn/ArnForPolicy from DescribeApiDestination`
+            );
+          } catch (error) {
+            this.logger.debug(
+              `Failed to enrich Events ApiDestination ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
             );
           }
         }

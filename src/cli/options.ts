@@ -747,6 +747,16 @@ export const forceStatefulRecreationOption = new Option(
     '--recreate-via-cc-api <id> --force-stateful-recreation --yes.'
 ).default(false);
 
+export const replaceOption = new Option(
+  '--replace',
+  'Replace (DELETE + CREATE) a resource whose in-place update is rejected because an ' +
+    'immutable property changed and AWS exposes no update API for it (e.g. Lambda LayerVersion ' +
+    'content, EFS AccessPoint, ECS TaskDefinition, ApiGatewayV2 immutable fields). Without this ' +
+    'flag such a change fails the deploy. Stateful types (RDS / DynamoDB / EFS / S3 with data / ' +
+    'Logs with retention / etc.) ALSO require --force-stateful-recreation since the replacement ' +
+    'is a data-losing DELETE + CREATE.'
+).default(false);
+
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)
@@ -810,6 +820,7 @@ export const deployOptions = [
   recreateViaCcApiOption,
   recreateViaSdkProviderOption,
   forceStatefulRecreationOption,
+  replaceOption,
   ...resourceTimeoutOptions,
 ];
 

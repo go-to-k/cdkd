@@ -54,7 +54,9 @@ describe('GlueSecurityConfigurationProvider', () => {
     const result = await provider.create('L', 'AWS::Glue::SecurityConfiguration', {
       Name: 'my-sec',
       EncryptionConfiguration: {
-        S3Encryption: [
+        // CFn property is `S3Encryptions` (plural); the SDK input below is
+        // `S3Encryption` (singular).
+        S3Encryptions: [
           { S3EncryptionMode: 'SSE-KMS', KmsKeyArn: 'arn:aws:kms:us-east-1:1:key/abc' },
         ],
         CloudWatchEncryption: {
@@ -192,7 +194,7 @@ describe('GlueSecurityConfigurationProvider', () => {
     expect(result).toEqual({
       Name: 'my-sec',
       EncryptionConfiguration: {
-        S3Encryption: [],
+        S3Encryptions: [],
         CloudWatchEncryption: {},
         JobBookmarksEncryption: {},
       },
@@ -227,7 +229,7 @@ describe('GlueSecurityConfigurationProvider', () => {
     expect(result).toEqual({
       Name: 'my-sec',
       EncryptionConfiguration: {
-        S3Encryption: [
+        S3Encryptions: [
           { S3EncryptionMode: 'SSE-KMS', KmsKeyArn: 'arn:aws:kms:us-east-1:1:key/abc' },
         ],
         CloudWatchEncryption: {
@@ -264,7 +266,7 @@ describe('GlueSecurityConfigurationProvider', () => {
       'AWS::Glue::SecurityConfiguration'
     );
     expect((result as Record<string, unknown>)['EncryptionConfiguration']).toEqual({
-      S3Encryption: [],
+      S3Encryptions: [],
       CloudWatchEncryption: {},
       JobBookmarksEncryption: {},
     });

@@ -1,0 +1,20 @@
+{
+  "resourceType": "AWS::Lambda::EventInvokeConfig",
+  "generatedAt": "2026-06-21",
+  "properties": [
+    "DestinationConfig",
+    "FunctionName",
+    "MaximumEventAgeInSeconds",
+    "MaximumRetryAttempts",
+    "Qualifier"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "FunctionName",
+    "Qualifier"
+  ],
+  "primaryIdentifier": [
+    "FunctionName",
+    "Qualifier"
+  ]
+}

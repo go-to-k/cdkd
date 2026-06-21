@@ -2,7 +2,16 @@ import { getLogger } from '../utils/logger.js';
 import { bold, cyan, gray, green, red, yellow } from '../utils/colors.js';
 import { formatResourceLine } from '../utils/resource-line.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
-import { ProvisioningError, ResourceTimeoutError } from '../utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceTimeoutError,
+  ResourceUpdateNotSupportedError,
+  CdkdError,
+} from '../utils/error-handler.js';
+import {
+  isStatefulRecreateTargetForReplace,
+  renderStatefulReason,
+} from '../provisioning/stateful-types.js';
 import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { DagExecutor } from './dag-executor.js';
@@ -216,6 +225,33 @@ export interface DeployEngineOptions {
    * properties (which may contain secrets and already live in state.json).
    */
   eventRecorder?: DeploymentEventRecorder;
+
+  /**
+   * `--replace` — opt into replacing (DELETE + CREATE) a resource whose
+   * in-place `provider.update()` hard-rejects with a typed
+   * `ResourceUpdateNotSupportedError`. This happens when a user changes an
+   * immutable property (same logical id) of a type cdkd has no replacement
+   * rule for — AWS exposes no in-place update API, so CloudFormation would
+   * replace the resource, but cdkd otherwise fails the deploy. With this
+   * flag set, the engine catches the typed error and falls back to the same
+   * destroy-then-create path the CC-API `UnsupportedActionException` fallback
+   * already uses. When `undefined`/`false`, the engine rethrows the error
+   * (the pre-flag behavior — the deploy fails with the provider's message).
+   *
+   * Stateful types (RDS / DynamoDB / EFS / S3-with-data / Logs-with-retention
+   * / etc.) require {@link forceStatefulRecreation} to be ALSO set, since the
+   * replacement is a data-losing DELETE + CREATE.
+   */
+  replace?: boolean;
+
+  /**
+   * `--force-stateful-recreation` — confirm a data-losing replacement of a
+   * stateful resource. Required alongside {@link replace} (and the existing
+   * `--recreate-via-*` flags) whenever the replacement target is a stateful
+   * type. Without it, the engine refuses the replacement and surfaces a clear
+   * error naming the resource + the data-loss reason.
+   */
+  forceStatefulRecreation?: boolean;
 }
 
 /**
@@ -2336,13 +2372,43 @@ export class DeployEngine {
               updateProvider
             );
           } catch (updateError) {
-            // If UPDATE is not supported (e.g., CC API UnsupportedActionException),
-            // fall back to DELETE → CREATE (replacement)
+            // If UPDATE is not supported, fall back to DELETE → CREATE
+            // (replacement). Two triggers:
+            //   1. CC API `UnsupportedActionException` / "does not support
+            //      UPDATE" — auto-fallback, UNCONDITIONAL (pre-existing).
+            //   2. An SDK provider throwing a typed
+            //      `ResourceUpdateNotSupportedError` (an immutable property
+            //      changed on a type with no replacement rule) — gated on the
+            //      user opting in via `--replace`, because for some of these
+            //      types the replacement is a data-losing DELETE + CREATE.
             const msg = updateError instanceof Error ? updateError.message : String(updateError);
-            if (
-              msg.includes('UnsupportedActionException') ||
-              msg.includes('does not support UPDATE')
-            ) {
+            const ccUnsupported =
+              msg.includes('UnsupportedActionException') || msg.includes('does not support UPDATE');
+            const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
+            const replaceOptIn = typedUnsupported && this.options.replace === true;
+            if (ccUnsupported || replaceOptIn) {
+              // Stateful guard for the `--replace` opt-in path only (the CC
+              // auto-fallback keeps its long-standing unconditional behavior).
+              // A stateful type (RDS / DynamoDB / EFS / etc.) must not be
+              // silently DELETE+CREATEd — require --force-stateful-recreation.
+              if (replaceOptIn) {
+                // Conservative variant: --replace fires mid-deploy with no
+                // chance to run the async S3 object-count probe, so a deferred
+                // S3 bucket is treated as stateful (block unless forced).
+                const statefulReason = isStatefulRecreateTargetForReplace(
+                  resourceType,
+                  currentProps
+                );
+                if (statefulReason && this.options.forceStatefulRecreation !== true) {
+                  throw new CdkdError(
+                    `--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
+                      `(${resourceType}) — ${renderStatefulReason(statefulReason)}. Re-run with ` +
+                      `--force-stateful-recreation to confirm the data loss, or change the ` +
+                      `resource definition to avoid the immutable-property change.`,
+                    'STATEFUL_REPLACE_BLOCKED'
+                  );
+                }
+              }
               this.logger.info(
                 `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
               );

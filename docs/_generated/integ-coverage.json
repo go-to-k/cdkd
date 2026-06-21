@@ -79,6 +79,7 @@
     "AWS::Kinesis::Stream",
     "AWS::Kinesis::StreamConsumer",
     "AWS::KinesisFirehose::DeliveryStream",
+    "AWS::Lambda::EventInvokeConfig",
     "AWS::Lambda::EventSourceMapping",
     "AWS::Lambda::Function",
     "AWS::Lambda::LayerVersion",
@@ -1971,6 +1972,7 @@
       "resourceType": "AWS::ECR::Repository",
       "integs": [
         "ecr",
+        "ecr-scanning",
         "local-run-task-from-state",
         "migrate-from-cfn"
       ],
@@ -1978,6 +1980,9 @@
         "ecr": [
           "l2",
           "literal"
+        ],
+        "ecr-scanning": [
+          "l2"
         ],
         "local-run-task-from-state": [
           "l2",
@@ -2318,12 +2323,16 @@
       "resourceType": "AWS::Events::Rule",
       "integs": [
         "eventbridge",
+        "eventbridge-api-destination",
         "eventbridge-input-transformer",
         "iam-propagation-stress",
         "scheduled-task"
       ],
       "signals": {
         "eventbridge": [
+          "l2"
+        ],
+        "eventbridge-api-destination": [
           "l2"
         ],
         "eventbridge-input-transformer": [
@@ -2373,6 +2382,18 @@
       "signals": {
         "glue-update-hardening": [
           "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "integs": [
+        "glue-securityconfig-replace"
+      ],
+      "signals": {
+        "glue-securityconfig-replace": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -2705,6 +2726,7 @@
         "composite-stack",
         "drift-revert",
         "dynamodb-streams",
+        "ecr-scanning",
         "infra-security",
         "kms-encryption",
         "propagation-races-2"
@@ -2717,6 +2739,9 @@
           "l2"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "ecr-scanning": [
           "l2"
         ],
         "infra-security": [
@@ -2763,6 +2788,21 @@
       "signals": {
         "log-pipeline": [
           "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "integs": [
+        "lambda-destinations",
+        "lambda-event-invoke-config-update"
+      ],
+      "signals": {
+        "lambda-destinations": [
+          "literal"
+        ],
+        "lambda-event-invoke-config-update": [
           "literal"
         ]
       }
@@ -2821,6 +2861,7 @@
         "iam-propagation-stress",
         "lambda",
         "lambda-destinations",
+        "lambda-event-invoke-config-update",
         "lambda-layer-version-update",
         "lambda-log-retention",
         "lambda-versioning",
@@ -2959,6 +3000,9 @@
         "lambda-destinations": [
           "l2",
           "literal"
+        ],
+        "lambda-event-invoke-config-update": [
+          "l2"
         ],
         "lambda-layer-version-update": [
           "l2"
@@ -3786,6 +3830,7 @@
         "iam-propagation-stress",
         "intrinsics-torture",
         "lambda-destinations",
+        "lambda-event-invoke-config-update",
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
@@ -3847,6 +3892,9 @@
         "lambda-destinations": [
           "l2",
           "literal"
+        ],
+        "lambda-event-invoke-config-update": [
+          "l2"
         ],
         "microservices": [
           "l2"
@@ -4196,10 +4244,6 @@
       "rationale": "drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise."
     },
     {
-      "resourceType": "AWS::Glue::SecurityConfiguration",
-      "rationale": "immutable resource type; unit roundtrip + drift coverage suffice. Add integ if a future bug surfaces a real-AWS-only behavior."
-    },
-    {
       "resourceType": "AWS::Kinesis::StreamConsumer",
       "rationale": "immutable type (every property change replaces); unit roundtrip suffices. Add integ if a Lambda EFO consumer pattern bug surfaces."
     },
@@ -4236,9 +4280,10 @@
     "AWS::ELBv2::LoadBalancer",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
+    "AWS::Events::ApiDestination",
+    "AWS::Events::Connection",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
-    "AWS::Lambda::EventInvokeConfig",
     "AWS::Lambda::Version",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",

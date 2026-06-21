@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 114,
+    "classifiedCount": 115,
     "enriched": 3,
-    "noComputedAttr": 13,
+    "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 98,
     "allowListedTypes": 0
@@ -1843,6 +1843,15 @@
       "gaps": []
     },
     {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
       "resourceType": "AWS::Lambda::EventSourceMapping",
       "bucket": "sdk-fallback-gap",
       "sdkBacked": true,
@@ -2741,6 +2750,8 @@
     "AWS::CloudFront::OriginAccessControl",
     "AWS::EC2::EIP",
     "AWS::ElastiCache::ReplicationGroup",
+    "AWS::Events::ApiDestination",
+    "AWS::Events::Connection",
     "AWS::Lambda::Version",
     "AWS::OpenSearchService::Domain",
     "AWS::Redshift::Cluster",

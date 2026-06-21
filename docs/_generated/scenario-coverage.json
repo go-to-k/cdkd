@@ -609,6 +609,11 @@
       "scenarios": []
     },
     {
+      "name": "ecr-scanning",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ecs-fargate",
       "annotated": true,
       "scenarios": []
@@ -638,6 +643,11 @@
     {
       "name": "eventbridge",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge-api-destination",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -683,6 +693,11 @@
         "getstackoutput-cross-region",
         "multi-stack-getstackoutput"
       ]
+    },
+    {
+      "name": "glue-securityconfig-replace",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "glue-update-hardening",
@@ -768,6 +783,11 @@
     },
     {
       "name": "lambda-destinations",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-event-invoke-config-update",
       "annotated": false,
       "scenarios": []
     },
@@ -1937,12 +1957,16 @@
     "dynamodb-ondemand",
     "dynamodb-sse",
     "dynamodb-stream-filter",
+    "ecr-scanning",
+    "eventbridge-api-destination",
     "eventbridge-input-transformer",
     "export-nested-stack",
     "fifo-sqs-event-source",
+    "glue-securityconfig-replace",
     "iam-managed-policy",
     "iam-role-prefixed-name-update",
     "lambda-destinations",
+    "lambda-event-invoke-config-update",
     "lambda-layer-version-update",
     "lambda-log-retention",
     "local-start-agentcore",

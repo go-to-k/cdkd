@@ -390,6 +390,7 @@ have no taggable identity either. Provide the physical id via
 - AWS::Lambda::Permission
 - AWS::Lambda::EventSourceMapping
 - AWS::Lambda::Url
+- AWS::Lambda::EventInvokeConfig
 - AWS::CloudFormation::CustomResource
 - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - AWS::BedrockAgentCore::Runtime (has `ListTagsForResource`; could grow auto-lookup later)

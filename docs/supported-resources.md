@@ -103,6 +103,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Compute** | AWS::Lambda::Url | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::EventSourceMapping | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::LayerVersion | SDK Provider | ✅ |
+| **Compute** | AWS::Lambda::EventInvokeConfig | SDK Provider | ✅ |
 | **Database** | AWS::DynamoDB::Table | SDK Provider | ✅ |
 | **Database** | AWS::DynamoDB::GlobalTable | SDK Provider | ✅ |
 | **Monitoring** | AWS::Logs::LogGroup | SDK Provider | ✅ |

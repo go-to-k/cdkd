@@ -85,6 +85,32 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
    Skipped (recently green + untouched): <count> tests — list a few + note the cap.
    ```
 
+## Running a large plan across sessions
+
+A big plan (dozens of `/run-integ` calls) will NOT finish in one session: a single
+session's context degrades after roughly 15-20 deploy/destroy cycles, and the tell-tale
+symptom is garbled / malformed tool calls. Pushing past that point drops orphans and
+misreads results. So treat a large sweep as a **multi-session relay**, and make the
+orchestrator aware of it up front:
+
+- Run in small batches (~4-5 tests). After EACH batch: (a) verify the account is
+  orphan-clean — `aws s3 ls s3://<bucket>/cdkd/ --recursive | grep state.json` returns 0,
+  and no live NAT / RDS / OpenSearch / Redshift / ElastiCache / EC2 — and (b) commit the ledger.
+- A backgrounded batch loop can have a single test's subshell die right after `node deploy`
+  returns but before `node destroy` (intermittent), leaving a full orphan (incl. a NAT GW).
+  The post-batch state.json scan above is what catches it — never skip it. The orphan's
+  stack NAME often differs from the fixture dir name; read it from the deploy log / synth.
+- When context gets heavy (long transcript, ANY garbled tool call, or after ~15 tests this
+  session): **STOP cleanly — do not power through.** Commit the ledger, then hand off:
+  tell the user "ran N more (list), account clean, ~M remain — open a NEW session and say
+  'continue the sweep' to keep going." An in-progress sweep should also leave a project
+  memory with the remaining list + any FAIL / orphan finding so the next session resumes fast.
+- The sweep is DONE only when `/pick-integ` shows no stale tests left. Until then each
+  session runs a slice and passes the baton; the committed ledger is the source of truth.
+- A `FAIL` that is fixture staleness (AWS retired an engine / instance / node tier the
+  fixture hardcodes — e.g. `Cannot find version 17.4 for postgres`) is NOT a cdkd bug;
+  record it as such and queue a fixture version-bump follow-up rather than blocking the sweep.
+
 ## Important
 
 - This skill never runs `/run-integ` itself — it prints the plan; the orchestrator runs the chosen tests
