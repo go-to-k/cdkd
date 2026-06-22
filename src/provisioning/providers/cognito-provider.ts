@@ -52,6 +52,12 @@ import type {
  * `custom:<name>`). Used by the update path to tell which added Schema entries
  * can be added in place via AddCustomAttributes (custom only) versus which
  * require replacement (standard attributes are immutable on update).
+ *
+ * This list is a snapshot of AWS's standard claim set and may lag AWS. If AWS
+ * ever adds a new standard attribute, a user adding it would be misclassified
+ * as custom and routed to AddCustomAttributes — which AWS rejects with a clear
+ * error (surfaced as a ProvisioningError, never a silent drop), so the failure
+ * is loud and the fix is to append the new name here.
  */
 const STANDARD_USER_POOL_ATTRIBUTES: ReadonlySet<string> = new Set([
   'address',
@@ -718,8 +724,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     } catch (error) {
       // Let the typed immutable-update rejection propagate so the deploy
       // engine's --replace fallback can catch it; wrapping it as a generic
-      // ProvisioningError would hide it from that branch.
-      if (error instanceof ResourceUpdateNotSupportedError) {
+      // ProvisioningError would hide it from that branch. Already-wrapped
+      // ProvisioningErrors (e.g. the malformed-Schema guard) pass through
+      // unchanged so they are not double-wrapped.
+      if (error instanceof ResourceUpdateNotSupportedError || error instanceof ProvisioningError) {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -753,6 +761,21 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   ): Promise<void> {
     const newAttrs = newSchema ?? [];
     const oldAttrs = oldSchema ?? [];
+
+    // A Schema entry with no Name is a malformed template — `byName` below
+    // would silently drop it from add/modify/remove detection, so the change
+    // would be neither applied nor rejected. Fail loudly instead (CDK synth
+    // always emits Name; this only fires on a hand-written L1 template).
+    for (const attr of newAttrs) {
+      if (attr.Name === undefined) {
+        throw new ProvisioningError(
+          `Cognito User Pool ${logicalId} has a Schema attribute with no Name — every Schema entry must have a Name`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+    }
 
     const byName = (attrs: SchemaAttributeType[]): Map<string, SchemaAttributeType> => {
       const map = new Map<string, SchemaAttributeType>();
@@ -793,7 +816,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         logicalId,
         `the Schema change (${immutableChanges.join('; ')}) is immutable on AWS — AWS can only ADD ` +
           `custom attributes in place, so removing or modifying an attribute requires recreating the ` +
-          `pool. Re-run with cdkd deploy --replace to recreate it (this deletes all users in the pool)`
+          `pool. AWS::Cognito::UserPool is a stateful type, so re-run with ` +
+          `cdkd deploy --replace --force-stateful-recreation to recreate it (this deletes all users in the pool)`
       );
     }
 
