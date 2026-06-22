@@ -8,6 +8,7 @@ import {
   ListTagsForResourceCommand,
   SetUserPoolMfaConfigCommand,
   GetUserPoolMfaConfigCommand,
+  AddCustomAttributesCommand,
   ResourceNotFoundException,
   type VerifiedAttributeType,
   type UsernameAttributeType,
@@ -33,7 +34,7 @@ import {
   type SetUserPoolMfaConfigCommandInput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG } from '../import-helpers.js';
@@ -44,6 +45,36 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * The standard (OIDC) Cognito User Pool attribute names. A Schema entry whose
+ * Name is NOT in this set is a custom attribute (AWS stores it as
+ * `custom:<name>`). Used by the update path to tell which added Schema entries
+ * can be added in place via AddCustomAttributes (custom only) versus which
+ * require replacement (standard attributes are immutable on update).
+ */
+const STANDARD_USER_POOL_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'address',
+  'birthdate',
+  'email',
+  'email_verified',
+  'family_name',
+  'gender',
+  'given_name',
+  'locale',
+  'middle_name',
+  'name',
+  'nickname',
+  'phone_number',
+  'phone_number_verified',
+  'picture',
+  'preferred_username',
+  'profile',
+  'sub',
+  'updated_at',
+  'website',
+  'zoneinfo',
+]);
 
 /**
  * Class 2 sanitize: empty `{}` placeholders that `readCurrentState` emits
@@ -525,15 +556,18 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   /**
    * Update a Cognito User Pool
    *
-   * Note: PoolName (UserPoolName) and Schema are immutable and cannot be changed after creation.
-   * Changes to these properties require resource replacement.
+   * Note: PoolName (UserPoolName) is immutable and cannot be changed after
+   * creation. The Schema (custom attributes) is partly mutable: AWS supports
+   * ADDING new custom attributes in place via AddCustomAttributes, but cannot
+   * modify or remove an existing attribute — those changes require replacement
+   * and are rejected with ResourceUpdateNotSupportedError.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
 
@@ -638,6 +672,22 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
       await this.getClient().send(new UpdateUserPoolCommand(updateParams));
 
+      // Schema (custom attributes): UpdateUserPool does NOT accept Schema, so a
+      // template that adds a custom attribute on redeploy would otherwise be a
+      // silent drop (the deploy reports success, AWS keeps the old schema, and
+      // the next diff sees the change again with nothing applied). AWS lets you
+      // ADD custom attributes in place via AddCustomAttributes, but it cannot
+      // modify or remove an existing one. Reconcile the added attributes here;
+      // reject a removal / modification of an existing attribute with a typed
+      // error (replacement required).
+      await this.reconcileSchemaCustomAttributes(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties['Schema'] as SchemaAttributeType[] | undefined,
+        previousProperties['Schema'] as SchemaAttributeType[] | undefined
+      );
+
       // EnabledMfas / email-OTP message+subject / WebAuthn config are NOT on
       // UpdateUserPool — apply them via SetUserPoolMfaConfig after the main
       // update (no-op when none are present).
@@ -666,6 +716,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Let the typed immutable-update rejection propagate so the deploy
+      // engine's --replace fallback can catch it; wrapping it as a generic
+      // ProvisioningError would hide it from that branch.
+      if (error instanceof ResourceUpdateNotSupportedError) {
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update Cognito User Pool ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -675,6 +731,87 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Reconcile a user pool's Schema custom attributes on update.
+   *
+   * AWS supports ADDING new custom attributes in place (AddCustomAttributes)
+   * but cannot modify or remove an existing attribute. Standard attributes are
+   * fully immutable. So:
+   *  - attributes present only in the new Schema (and custom) are added;
+   *  - removing or modifying an existing attribute, or adding a standard
+   *    attribute, requires replacement -> ResourceUpdateNotSupportedError.
+   * A byte-identical Schema is a no-op (no AddCustomAttributes call).
+   */
+  private async reconcileSchemaCustomAttributes(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    newSchema: SchemaAttributeType[] | undefined,
+    oldSchema: SchemaAttributeType[] | undefined
+  ): Promise<void> {
+    const newAttrs = newSchema ?? [];
+    const oldAttrs = oldSchema ?? [];
+
+    const byName = (attrs: SchemaAttributeType[]): Map<string, SchemaAttributeType> => {
+      const map = new Map<string, SchemaAttributeType>();
+      for (const attr of attrs) {
+        if (attr.Name !== undefined) map.set(attr.Name, attr);
+      }
+      return map;
+    };
+    const oldByName = byName(oldAttrs);
+    const newByName = byName(newAttrs);
+
+    const added: SchemaAttributeType[] = [];
+    const modified: string[] = [];
+    for (const [name, attr] of newByName) {
+      const prev = oldByName.get(name);
+      if (!prev) {
+        added.push(attr);
+      } else if (JSON.stringify(prev) !== JSON.stringify(attr)) {
+        modified.push(name);
+      }
+    }
+    const removed = [...oldByName.keys()].filter((n) => !newByName.has(n));
+
+    // Adding a STANDARD attribute (or any removal / modification of an existing
+    // one) is not an in-place operation — AddCustomAttributes only adds custom
+    // attributes.
+    const addedStandard = added
+      .filter((a) => a.Name !== undefined && STANDARD_USER_POOL_ATTRIBUTES.has(a.Name))
+      .map((a) => a.Name as string);
+    const immutableChanges = [
+      ...removed.map((n) => `removed attribute '${n}'`),
+      ...modified.map((n) => `modified attribute '${n}'`),
+      ...addedStandard.map((n) => `added standard attribute '${n}'`),
+    ];
+    if (immutableChanges.length > 0) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        `the Schema change (${immutableChanges.join('; ')}) is immutable on AWS — AWS can only ADD ` +
+          `custom attributes in place, so removing or modifying an attribute requires recreating the ` +
+          `pool. Re-run with cdkd deploy --replace to recreate it (this deletes all users in the pool)`
+      );
+    }
+
+    const addedCustom = added.filter(
+      (a) => a.Name !== undefined && !STANDARD_USER_POOL_ATTRIBUTES.has(a.Name)
+    );
+    if (addedCustom.length === 0) return;
+
+    this.logger.debug(
+      `Adding ${addedCustom.length} custom attribute(s) to ${physicalId}: ` +
+        addedCustom.map((a) => a.Name).join(', ')
+    );
+    await this.getClient().send(
+      new AddCustomAttributesCommand({
+        UserPoolId: physicalId,
+        CustomAttributes: addedCustom,
+      })
+    );
   }
 
   /**
