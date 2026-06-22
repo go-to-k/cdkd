@@ -2770,6 +2770,7 @@
       "integs": [
         "cache-streaming",
         "dynamodb-ondemand",
+        "kinesis-stream-mode-switch",
         "log-pipeline",
         "sdk-ccapi-crossref"
       ],
@@ -2778,6 +2779,9 @@
           "l2"
         ],
         "dynamodb-ondemand": [
+          "l2"
+        ],
+        "kinesis-stream-mode-switch": [
           "l2"
         ],
         "log-pipeline": [

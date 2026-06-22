@@ -40,8 +40,10 @@ import {
   CreateStreamCommand,
   DeleteStreamCommand,
   DescribeStreamCommand,
+  DescribeStreamSummaryCommand,
   AddTagsToStreamCommand,
   UpdateShardCountCommand,
+  UpdateStreamModeCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
 import { KinesisStreamProvider } from '../../../../src/provisioning/providers/kinesis-provider.js';
@@ -250,6 +252,128 @@ describe('KinesisStreamProvider', () => {
         TargetShardCount: 4,
         ScalingType: 'UNIFORM_SCALING',
       });
+    });
+
+    it('switches PROVISIONED -> ON_DEMAND via UpdateStreamMode and skips UpdateShardCount', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof UpdateStreamModeCommand) return Promise.resolve({});
+        if (cmd instanceof DescribeStreamSummaryCommand)
+          return Promise.resolve({
+            StreamDescriptionSummary: {
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+              OpenShardCount: 1,
+            },
+          });
+        if (cmd instanceof DescribeStreamCommand)
+          return Promise.resolve({
+            StreamDescription: {
+              StreamStatus: 'ACTIVE',
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+            },
+          });
+        return Promise.resolve({});
+      });
+
+      await provider.update(
+        'MyStream',
+        'test-stream',
+        'AWS::Kinesis::Stream',
+        { StreamModeDetails: { StreamMode: 'ON_DEMAND' } },
+        { ShardCount: 1, StreamModeDetails: { StreamMode: 'PROVISIONED' } }
+      );
+
+      const modeCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UpdateStreamModeCommand
+      );
+      expect(modeCall).toBeDefined();
+      expect(modeCall![0].input).toEqual({
+        StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+        StreamModeDetails: { StreamMode: 'ON_DEMAND' },
+      });
+
+      // ON_DEMAND target => no shard-count reconcile.
+      const shardCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UpdateShardCountCommand
+      );
+      expect(shardCall).toBeUndefined();
+    });
+
+    it('switches ON_DEMAND -> PROVISIONED then reconciles shards against the live open-shard count', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof UpdateStreamModeCommand) return Promise.resolve({});
+        if (cmd instanceof UpdateShardCountCommand) return Promise.resolve({});
+        if (cmd instanceof DescribeStreamSummaryCommand)
+          return Promise.resolve({
+            StreamDescriptionSummary: {
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+              // AWS assigned 4 shards on the on-demand -> provisioned switch.
+              OpenShardCount: 4,
+            },
+          });
+        if (cmd instanceof DescribeStreamCommand)
+          return Promise.resolve({
+            StreamDescription: {
+              StreamStatus: 'ACTIVE',
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+            },
+          });
+        return Promise.resolve({});
+      });
+
+      await provider.update(
+        'MyStream',
+        'test-stream',
+        'AWS::Kinesis::Stream',
+        { ShardCount: 2, StreamModeDetails: { StreamMode: 'PROVISIONED' } },
+        { StreamModeDetails: { StreamMode: 'ON_DEMAND' } }
+      );
+
+      const modeCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UpdateStreamModeCommand
+      );
+      expect(modeCall![0].input).toEqual({
+        StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+        StreamModeDetails: { StreamMode: 'PROVISIONED' },
+      });
+
+      // Reconcile from the live 4 shards down to the desired 2 (NOT from the
+      // previousProperties default of 1, which would have skipped the call
+      // and left the stream at 4 shards).
+      const shardCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UpdateShardCountCommand
+      );
+      expect(shardCall).toBeDefined();
+      expect(shardCall![0].input).toEqual({
+        StreamName: 'test-stream',
+        TargetShardCount: 2,
+        ScalingType: 'UNIFORM_SCALING',
+      });
+    });
+
+    it('does not call UpdateStreamMode when the mode is unchanged', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeStreamCommand)
+          return Promise.resolve({
+            StreamDescription: {
+              StreamStatus: 'ACTIVE',
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+            },
+          });
+        return Promise.resolve({});
+      });
+
+      await provider.update(
+        'MyStream',
+        'test-stream',
+        'AWS::Kinesis::Stream',
+        { ShardCount: 2, StreamModeDetails: { StreamMode: 'PROVISIONED' } },
+        { ShardCount: 2, StreamModeDetails: { StreamMode: 'PROVISIONED' } }
+      );
+
+      const modeCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UpdateStreamModeCommand
+      );
+      expect(modeCall).toBeUndefined();
     });
   });
 
