@@ -772,6 +772,11 @@
       ]
     },
     {
+      "name": "kinesis-stream-mode-switch",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "kms-encryption",
       "annotated": true,
       "scenarios": []
@@ -1971,6 +1976,7 @@
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
+    "kinesis-stream-mode-switch",
     "lambda-destinations",
     "lambda-event-invoke-config-update",
     "lambda-layer-version-update",

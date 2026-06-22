@@ -182,3 +182,4 @@ rds-full-stack	2026-06-21T18:53:07Z	PASS	600	verify.sh	first run (never-run); RD
 sg-circular-dependency	2026-06-21T18:54:29Z	PASS	180	verify.sh	first run (never-run); circular SG cross-ref via standalone ingress; revoke-before-delete destroy order; 11 deleted 0 err
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
 lambda	2026-06-22T02:40:04Z	PASS		verify.sh	broad gate (final digest, post-review lazy-ctx edit); 9 deleted 0 err 0 orphans
+kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit

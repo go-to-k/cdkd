@@ -3,6 +3,8 @@ import {
   CreateStreamCommand,
   DeleteStreamCommand,
   DescribeStreamCommand,
+  DescribeStreamSummaryCommand,
+  UpdateStreamModeCommand,
   UpdateShardCountCommand,
   AddTagsToStreamCommand,
   RemoveTagsFromStreamCommand,
@@ -220,8 +222,10 @@ export class KinesisStreamProvider implements ResourceProvider {
   /**
    * Update a Kinesis stream
    *
-   * Supports updating ShardCount for PROVISIONED mode streams.
-   * StreamMode and Name changes require replacement (handled by deployment layer).
+   * Supports switching StreamMode (PROVISIONED <-> ON_DEMAND, via
+   * UpdateStreamMode), updating ShardCount for PROVISIONED mode streams,
+   * RetentionPeriodHours, StreamEncryption, and Tags. Name changes require
+   * replacement (handled by the deployment layer).
    */
   async update(
     logicalId: string,
@@ -233,15 +237,51 @@ export class KinesisStreamProvider implements ResourceProvider {
     this.logger.debug(`Updating Kinesis stream ${logicalId}: ${physicalId}`);
 
     try {
-      // Update ShardCount if changed (only for PROVISIONED mode)
       const streamModeDetails = properties['StreamModeDetails'] as
         | Record<string, unknown>
         | undefined;
       const streamMode = (streamModeDetails?.['StreamMode'] as string) || 'PROVISIONED';
+      const oldStreamMode =
+        ((previousProperties['StreamModeDetails'] as Record<string, unknown> | undefined)?.[
+          'StreamMode'
+        ] as string) || 'PROVISIONED';
 
+      // Switch StreamMode FIRST (PROVISIONED <-> ON_DEMAND). In CFn,
+      // StreamModeDetails is "Update requires: No interruption", applied via
+      // UpdateStreamMode. cdkd previously had no UpdateStreamMode call, so a
+      // mode switch was silently dropped — the deploy reported success while
+      // AWS kept the old mode and state recorded the new one (and the next
+      // diff saw no change, so it could never self-heal). Doing it before any
+      // ShardCount work means ON_DEMAND -> PROVISIONED lands in provisioned
+      // mode before the (invalid-on-on-demand) UpdateShardCount runs, and
+      // PROVISIONED -> ON_DEMAND skips the ShardCount path entirely.
+      const modeChanged = oldStreamMode !== streamMode;
+      if (modeChanged) {
+        const streamArn = await this.resolveStreamArn(physicalId);
+        this.logger.debug(
+          `Switching stream mode for ${physicalId}: ${oldStreamMode} -> ${streamMode}`
+        );
+        await this.getClient().send(
+          new UpdateStreamModeCommand({
+            StreamARN: streamArn,
+            StreamModeDetails: {
+              StreamMode: streamMode as 'PROVISIONED' | 'ON_DEMAND',
+            },
+          })
+        );
+        await this.waitForStreamActive(physicalId);
+      }
+
+      // Update ShardCount if changed (only for PROVISIONED mode).
       if (streamMode === 'PROVISIONED') {
         const newShardCount = Number(properties['ShardCount'] ?? 1);
-        const oldShardCount = Number(previousProperties['ShardCount'] ?? 1);
+        // When we just switched INTO provisioned mode from on-demand, AWS
+        // assigns a shard count based on the prior on-demand throughput and
+        // previousProperties carries no ShardCount, so read the live count to
+        // know the real base to reconcile against.
+        const oldShardCount = modeChanged
+          ? await this.getOpenShardCount(physicalId)
+          : Number(previousProperties['ShardCount'] ?? 1);
 
         if (newShardCount !== oldShardCount) {
           this.logger.debug(
@@ -631,5 +671,34 @@ export class KinesisStreamProvider implements ResourceProvider {
     throw new Error(
       `Stream ${streamName} did not reach ACTIVE status within ${maxAttempts * 2} seconds`
     );
+  }
+
+  /**
+   * Resolve a stream's ARN from its name. UpdateStreamMode is one of the few
+   * Kinesis APIs that takes a StreamARN rather than a StreamName, so an
+   * update that switches StreamModeDetails needs the ARN.
+   */
+  private async resolveStreamArn(streamName: string): Promise<string> {
+    const response = await this.getClient().send(
+      new DescribeStreamSummaryCommand({ StreamName: streamName })
+    );
+    const arn = response.StreamDescriptionSummary?.StreamARN;
+    if (!arn) {
+      throw new Error(`Unable to resolve StreamARN for stream ${streamName}`);
+    }
+    return arn;
+  }
+
+  /**
+   * Read the stream's current open shard count. Used after an
+   * ON_DEMAND -> PROVISIONED mode switch, where previousProperties carries no
+   * ShardCount and AWS has assigned its own count, so reconciling against the
+   * live count (not the absent state value) is the only correct base.
+   */
+  private async getOpenShardCount(streamName: string): Promise<number> {
+    const response = await this.getClient().send(
+      new DescribeStreamSummaryCommand({ StreamName: streamName })
+    );
+    return Number(response.StreamDescriptionSummary?.OpenShardCount ?? 1);
   }
 }
