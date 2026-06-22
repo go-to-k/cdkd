@@ -1,3 +1,10 @@
+## [0.230.7](https://github.com/go-to-k/cdkd/compare/v0.230.6...v0.230.7) (2026-06-22)
+
+
+### Bug Fixes
+
+* **provisioning:** correct Cognito immutable-Schema error message + 2 hardenings ([#927](https://github.com/go-to-k/cdkd/issues/927)) ([d96fe5d](https://github.com/go-to-k/cdkd/commit/d96fe5da6d8c3aaab1638b4167c64ebaa07db242))
+
 ## [0.230.6](https://github.com/go-to-k/cdkd/compare/v0.230.5...v0.230.6) (2026-06-22)
 
 
