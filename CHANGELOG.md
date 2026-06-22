@@ -1,3 +1,10 @@
+## [0.230.5](https://github.com/go-to-k/cdkd/compare/v0.230.4...v0.230.5) (2026-06-22)
+
+
+### Bug Fixes
+
+* **provisioning:** apply Kinesis StreamMode switch (was silently dropped on update) ([#925](https://github.com/go-to-k/cdkd/issues/925)) ([f50b133](https://github.com/go-to-k/cdkd/commit/f50b13336e5bac07f76995f70a4ecf65487ccce7))
+
 ## [0.230.4](https://github.com/go-to-k/cdkd/compare/v0.230.3...v0.230.4) (2026-06-22)
 
 
