@@ -1,3 +1,10 @@
+## [0.230.4](https://github.com/go-to-k/cdkd/compare/v0.230.3...v0.230.4) (2026-06-22)
+
+
+### Bug Fixes
+
+* **deploy:** stop IAM Role phantom drift from sibling Default Policy capture race ([#924](https://github.com/go-to-k/cdkd/issues/924)) ([1832d10](https://github.com/go-to-k/cdkd/commit/1832d1066aa8d58689b1bf9e28d0715c6c8ea2aa))
+
 ## [0.230.3](https://github.com/go-to-k/cdkd/compare/v0.230.2...v0.230.3) (2026-06-21)
 
 
