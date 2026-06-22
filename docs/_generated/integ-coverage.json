@@ -2473,6 +2473,7 @@
       "integs": [
         "export",
         "iam-propagation-stress",
+        "iam-role-policies-drift-clean",
         "migrate-from-cfn"
       ],
       "signals": {
@@ -2481,6 +2482,9 @@
           "literal"
         ],
         "iam-propagation-stress": [
+          "literal"
+        ],
+        "iam-role-policies-drift-clean": [
           "literal"
         ],
         "migrate-from-cfn": [
@@ -2505,6 +2509,7 @@
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-propagation-stress",
+        "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "infra-security",
         "intrinsic-functions",
@@ -2580,6 +2585,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "iam-role-policies-drift-clean": [
+          "l2",
+          "literal"
         ],
         "iam-role-prefixed-name-update": [
           "l2",
@@ -2859,6 +2868,7 @@
         "fifo-sqs-event-source",
         "full-stack-demo",
         "iam-propagation-stress",
+        "iam-role-policies-drift-clean",
         "lambda",
         "lambda-destinations",
         "lambda-event-invoke-config-update",
@@ -2992,6 +3002,9 @@
           "l2"
         ],
         "iam-propagation-stress": [
+          "l2"
+        ],
+        "iam-role-policies-drift-clean": [
           "l2"
         ],
         "lambda": [
@@ -3828,6 +3841,7 @@
         "fifo-sqs-event-source",
         "full-stack-demo",
         "iam-propagation-stress",
+        "iam-role-policies-drift-clean",
         "intrinsics-torture",
         "lambda-destinations",
         "lambda-event-invoke-config-update",
@@ -3884,6 +3898,9 @@
           "l2"
         ],
         "iam-propagation-stress": [
+          "l2"
+        ],
+        "iam-role-policies-drift-clean": [
           "l2"
         ],
         "intrinsics-torture": [

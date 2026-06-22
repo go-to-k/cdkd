@@ -601,6 +601,118 @@ export class DeployEngine {
   }
 
   /**
+   * Build a sibling context for the deploy-time `observedProperties`
+   * capture of an IAM principal (`AWS::IAM::Role` / `::User` / `::Group`)
+   * so that inline policies managed by a SEPARATE `AWS::IAM::Policy`
+   * resource are filtered OUT of the captured `Policies` baseline —
+   * exactly as the `cdkd drift` read path already does via
+   * `buildReadCurrentStateContext`.
+   *
+   * Without this, the post-CREATE / post-UPDATE capture passes no
+   * context, so `collectInlinePolicyNamesManagedBySiblings` no-ops. The
+   * capture's `ListRolePolicies` then RACES the sibling
+   * `AWS::IAM::Policy`'s `PutRolePolicy`: when the read lands after the
+   * write, the sibling-managed `DefaultPolicy*` leaks into
+   * `observedProperties.Policies`. A later `cdkd drift` (whose AWS-current
+   * side filters it correctly) then reports phantom drift
+   * `- Policies:[DefaultPolicy] / + Policies:[]` — a systemic false
+   * positive that fires for essentially every Lambda / L2 construct whose
+   * grant emits a `Default Policy`.
+   *
+   * The sibling relationship is fully determined by the TEMPLATE (which
+   * `AWS::IAM::Policy` lists this principal in its `Roles`/`Users`/
+   * `Groups`), so this is built from the template — deploy-order-
+   * independent, immune to the race. Each matched sibling is synthesized
+   * into the resolved-property shape
+   * `collectInlinePolicyNamesManagedBySiblings` expects
+   * (`{ [attachmentField]: [thisPrincipalPhysicalId], PolicyName }`).
+   *
+   * Returns `undefined` (no context) for non-IAM-principal types and when
+   * no sibling policy attaches to the captured principal — both leave the
+   * capture behaving exactly as before.
+   */
+  private async buildObservedCaptureSiblings(
+    resourceType: string,
+    capturedLogicalId: string,
+    capturedPhysicalId: string,
+    template: CloudFormationTemplate | undefined,
+    stateResources: Record<string, ResourceState>,
+    stackName: string,
+    parameterValues?: Record<string, unknown>,
+    conditions?: Record<string, boolean>
+  ): Promise<import('../types/resource.js').ReadCurrentStateContext | undefined> {
+    // Capture disabled (kickOffObservedCapture would ignore the context) —
+    // skip the template walk / resolver work entirely.
+    if (this.options.captureObservedState !== true) return undefined;
+    const attachmentField =
+      resourceType === 'AWS::IAM::Role'
+        ? 'Roles'
+        : resourceType === 'AWS::IAM::User'
+          ? 'Users'
+          : resourceType === 'AWS::IAM::Group'
+            ? 'Groups'
+            : undefined;
+    if (!attachmentField) return undefined;
+    const resources = template?.Resources;
+    if (!resources) return undefined;
+
+    // Built lazily — only a non-literal `PolicyName` (rare; e.g. an
+    // Fn::Sub) needs the resolver, and the overwhelmingly common case
+    // (a literal Default-Policy name) never touches it.
+    let resolverContext: import('./intrinsic-function-resolver.js').ResolverContext | undefined;
+
+    const isRefTo = (value: unknown, logicalId: string): boolean =>
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value) &&
+      (value as Record<string, unknown>)['Ref'] === logicalId;
+
+    const siblings: NonNullable<
+      import('../types/resource.js').ReadCurrentStateContext['siblings']
+    > = {};
+    for (const [lid, res] of Object.entries(resources)) {
+      if (lid === capturedLogicalId) continue;
+      if (res.Type !== 'AWS::IAM::Policy') continue;
+      const props = (res.Properties ?? {}) as Record<string, unknown>;
+      const attachments = props[attachmentField];
+      if (!Array.isArray(attachments)) continue;
+      // CDK emits `Roles: [{Ref: <principalLogicalId>}]`; hand-written
+      // templates may use the literal physical name. Match either.
+      const attachesToCaptured = attachments.some(
+        (a) => isRefTo(a, capturedLogicalId) || a === capturedPhysicalId
+      );
+      if (!attachesToCaptured) continue;
+      // PolicyName is almost always a literal string; resolve only when
+      // it carries an intrinsic (e.g. Fn::Sub with a pseudo-parameter).
+      // Best-effort: an unresolvable name just won't be added to the
+      // exclude set (no worse than the pre-fix behavior).
+      let policyName: unknown = props['PolicyName'];
+      if (policyName !== undefined && typeof policyName !== 'string') {
+        resolverContext ??= this.buildResolverContext(
+          {
+            template: template!,
+            resources: stateResources,
+            ...(parameterValues && { parameters: parameterValues }),
+            ...(conditions && { conditions }),
+          },
+          stackName
+        );
+        try {
+          policyName = await this.resolver.resolve(policyName, resolverContext);
+        } catch {
+          continue;
+        }
+      }
+      if (typeof policyName !== 'string') continue;
+      siblings[lid] = {
+        resourceType: 'AWS::IAM::Policy',
+        properties: { [attachmentField]: [capturedPhysicalId], PolicyName: policyName },
+      };
+    }
+    return Object.keys(siblings).length > 0 ? { siblings } : undefined;
+  }
+
+  /**
    * Kick off `provider.readCurrentState` for every resource in the
    * loaded state that lacks `observedProperties` (e.g. state written
    * by a pre-v3 binary, or a v3 record where a NO_CHANGE-skipped
@@ -2053,12 +2165,23 @@ export class DeployEngine {
           provisionedBy: createDecision.provisionedBy,
         };
 
+        const createCaptureSiblings = await this.buildObservedCaptureSiblings(
+          resourceType,
+          logicalId,
+          result.physicalId,
+          template,
+          stateResources,
+          stackName,
+          parameterValues,
+          conditions
+        );
         this.kickOffObservedCapture(
           createProvider,
           logicalId,
           result.physicalId,
           resourceType,
-          resolvedProps
+          resolvedProps,
+          createCaptureSiblings
         );
 
         if (counts) counts.created++;
@@ -2480,12 +2603,23 @@ export class DeployEngine {
             provisionedBy: resultProvisionedBy,
           };
 
+          const updateCaptureSiblings = await this.buildObservedCaptureSiblings(
+            resourceType,
+            logicalId,
+            result.physicalId,
+            template,
+            stateResources,
+            stackName,
+            parameterValues,
+            conditions
+          );
           this.kickOffObservedCapture(
             updateProvider,
             logicalId,
             result.physicalId,
             resourceType,
-            resolvedProps
+            resolvedProps,
+            updateCaptureSiblings
           );
 
           if (counts) counts.updated++;

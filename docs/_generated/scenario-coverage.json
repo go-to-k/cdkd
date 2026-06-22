@@ -717,6 +717,11 @@
       ]
     },
     {
+      "name": "iam-role-policies-drift-clean",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-role-prefixed-name-update",
       "annotated": false,
       "scenarios": []
@@ -1964,6 +1969,7 @@
     "fifo-sqs-event-source",
     "glue-securityconfig-replace",
     "iam-managed-policy",
+    "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
     "lambda-destinations",
     "lambda-event-invoke-config-update",
