@@ -1,3 +1,10 @@
+## [0.230.6](https://github.com/go-to-k/cdkd/compare/v0.230.5...v0.230.6) (2026-06-22)
+
+
+### Bug Fixes
+
+* **provisioning:** apply Cognito add-custom-attribute on update (was silently dropped) ([#926](https://github.com/go-to-k/cdkd/issues/926)) ([da513f1](https://github.com/go-to-k/cdkd/commit/da513f1a324f10abc2cc5476f8d3dfd45d522067))
+
 ## [0.230.5](https://github.com/go-to-k/cdkd/compare/v0.230.4...v0.230.5) (2026-06-22)
 
 
