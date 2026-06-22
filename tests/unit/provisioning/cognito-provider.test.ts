@@ -268,6 +268,39 @@ describe('CognitoUserPoolProvider', () => {
       ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
     });
 
+    it('the immutable-Schema rejection points at --replace --force-stateful-recreation (UserPool is stateful)', async () => {
+      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+
+      await expect(
+        provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: true }] },
+          {
+            Schema: [
+              { Name: 'tenantId', AttributeDataType: 'String', Mutable: true },
+              { Name: 'level', AttributeDataType: 'Number', Mutable: false },
+            ],
+          }
+        )
+      ).rejects.toThrow(/--replace --force-stateful-recreation/);
+    });
+
+    it('throws on a Schema entry with no Name (malformed template), not a silent skip', async () => {
+      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+
+      await expect(
+        provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { Schema: [{ AttributeDataType: 'String', Mutable: true }] },
+          { Schema: [] }
+        )
+      ).rejects.toThrow(/Schema attribute with no Name/);
+    });
+
     it('should not pass PoolName in update params (PoolName is immutable)', async () => {
       // UpdateUserPool
       mockSend.mockResolvedValueOnce({});
