@@ -171,6 +171,103 @@ describe('CognitoUserPoolProvider', () => {
       expect(describeCall.constructor.name).toBe('DescribeUserPoolCommand');
     });
 
+    it('adds a new custom attribute via AddCustomAttributes (Schema in-place add)', async () => {
+      // UpdateUserPool
+      mockSend.mockResolvedValueOnce({});
+      // AddCustomAttributes
+      mockSend.mockResolvedValueOnce({});
+      // DescribeUserPool
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+        },
+      });
+
+      await provider.update(
+        'MyUserPool',
+        'us-east-1_abc123',
+        'AWS::Cognito::UserPool',
+        {
+          Schema: [
+            { Name: 'tenantId', AttributeDataType: 'String', Mutable: true },
+            { Name: 'region', AttributeDataType: 'String', Mutable: true },
+          ],
+        },
+        {
+          Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: true }],
+        }
+      );
+
+      const addCall = mockSend.mock.calls.find(
+        (call: unknown[]) =>
+          (call[0] as { constructor: { name: string } }).constructor.name ===
+          'AddCustomAttributesCommand'
+      );
+      expect(addCall).toBeDefined();
+      expect(addCall![0].input.UserPoolId).toBe('us-east-1_abc123');
+      // Only the newly-added attribute is sent, not the pre-existing one.
+      expect(addCall![0].input.CustomAttributes).toEqual([
+        { Name: 'region', AttributeDataType: 'String', Mutable: true },
+      ]);
+    });
+
+    it('does not call AddCustomAttributes when the Schema is unchanged', async () => {
+      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+        },
+      }); // DescribeUserPool
+
+      await provider.update(
+        'MyUserPool',
+        'us-east-1_abc123',
+        'AWS::Cognito::UserPool',
+        { Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: true }] },
+        { Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: true }] }
+      );
+
+      const addCall = mockSend.mock.calls.find(
+        (call: unknown[]) =>
+          (call[0] as { constructor: { name: string } }).constructor.name ===
+          'AddCustomAttributesCommand'
+      );
+      expect(addCall).toBeUndefined();
+    });
+
+    it('throws ResourceUpdateNotSupportedError when an existing custom attribute is removed', async () => {
+      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+
+      await expect(
+        provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: true }] },
+          {
+            Schema: [
+              { Name: 'tenantId', AttributeDataType: 'String', Mutable: true },
+              { Name: 'level', AttributeDataType: 'Number', Mutable: false },
+            ],
+          }
+        )
+      ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+    });
+
+    it('throws ResourceUpdateNotSupportedError when an existing custom attribute is modified', async () => {
+      mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+
+      await expect(
+        provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: false }] },
+          { Schema: [{ Name: 'tenantId', AttributeDataType: 'String', Mutable: true }] }
+        )
+      ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+    });
+
     it('should not pass PoolName in update params (PoolName is immutable)', async () => {
       // UpdateUserPool
       mockSend.mockResolvedValueOnce({});

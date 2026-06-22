@@ -577,6 +577,7 @@
       "integs": [
         "api-cognito",
         "cognito",
+        "cognito-custom-attribute-add",
         "cognito-lambda-triggers",
         "remove-protection",
         "serverless-api"
@@ -589,6 +590,9 @@
           "l1",
           "l2",
           "literal"
+        ],
+        "cognito-custom-attribute-add": [
+          "l2"
         ],
         "cognito-lambda-triggers": [
           "l2",

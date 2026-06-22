@@ -411,6 +411,11 @@
       "scenarios": []
     },
     {
+      "name": "cognito-custom-attribute-add",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cognito-lambda-triggers",
       "annotated": false,
       "scenarios": []
@@ -1962,6 +1967,7 @@
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "cognito-custom-attribute-add",
     "cognito-lambda-triggers",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
