@@ -664,6 +664,7 @@
         "bench-sdk",
         "composite-stack",
         "data-pipeline",
+        "dynamodb-autoscaling",
         "dynamodb-gsi-update",
         "dynamodb-ondemand",
         "dynamodb-sse",
@@ -695,6 +696,10 @@
         ],
         "data-pipeline": [
           "l2"
+        ],
+        "dynamodb-autoscaling": [
+          "l2",
+          "literal"
         ],
         "dynamodb-gsi-update": [
           "l2"
@@ -2919,6 +2924,7 @@
         "scheduled-task",
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
+        "secrets-rotation-schedule",
         "serverless-api",
         "sns-event-source",
         "sns-sqs-event",
@@ -3150,6 +3156,10 @@
         "secrets-dynamic-ref": [
           "l2"
         ],
+        "secrets-rotation-schedule": [
+          "l2",
+          "literal"
+        ],
         "serverless-api": [
           "l2"
         ],
@@ -3205,6 +3215,7 @@
         "migrate-from-cfn",
         "propagation-races-2",
         "s3-event-notification",
+        "secrets-rotation-schedule",
         "serverless-api",
         "sns-event-source"
       ],
@@ -3227,6 +3238,9 @@
           "literal"
         ],
         "s3-event-notification": [
+          "literal"
+        ],
+        "secrets-rotation-schedule": [
           "literal"
         ],
         "serverless-api": [
@@ -3457,6 +3471,7 @@
         "recreate-via-cc-api",
         "s3-cloudfront",
         "s3-event-notification",
+        "s3-object-lock",
         "state-destroy",
         "tags-propagation",
         "update-policy-mutations",
@@ -3571,6 +3586,10 @@
         ],
         "s3-event-notification": [
           "l2"
+        ],
+        "s3-object-lock": [
+          "l1",
+          "literal"
         ],
         "state-destroy": [
           "l2"
@@ -4172,7 +4191,8 @@
         "event-driven",
         "full-stack-demo",
         "local-run-task-from-state",
-        "secrets-dynamic-ref"
+        "secrets-dynamic-ref",
+        "secrets-rotation-schedule"
       ],
       "signals": {
         "composite-stack": [
@@ -4191,6 +4211,10 @@
         ],
         "secrets-dynamic-ref": [
           "l2"
+        ],
+        "secrets-rotation-schedule": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -4292,6 +4316,7 @@
     "AWS::AppConfig::Environment",
     "AWS::AppConfig::HostedConfigurationVersion",
     "AWS::ApplicationAutoScaling::ScalableTarget",
+    "AWS::ApplicationAutoScaling::ScalingPolicy",
     "AWS::Athena::NamedQuery",
     "AWS::Athena::WorkGroup",
     "AWS::CloudFormation::CustomResource",
@@ -4320,6 +4345,7 @@
     "AWS::Route53::HealthCheck",
     "AWS::SSM::Document",
     "AWS::Scheduler::Schedule",
+    "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
     "AWS::WAFv2::IPSet",
     "AWS::WAFv2::WebACLAssociation"

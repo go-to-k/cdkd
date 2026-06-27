@@ -184,3 +184,6 @@ iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role p
 lambda	2026-06-22T02:40:04Z	PASS		verify.sh	broad gate (final digest, post-review lazy-ctx edit); 9 deleted 0 err 0 orphans
 kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
 cognito-custom-attribute-add	2026-06-22T05:14:50Z	PASS	50	verify.sh	add-custom-attr reaches AWS via AddCustomAttributes; re-run on final tree; clean destroy
+dynamodb-autoscaling	2026-06-27T16:08:39Z	PASS	68	verify.sh	CC-API ScalableTarget/Policy create + maxCap 10->20 in-place UPDATE; 0 errors 0 orphans
+s3-object-lock	2026-06-27T16:08:39Z	PASS	46	verify.sh	Object Lock GOVERNANCE create + retention 1->5d in-place UPDATE; 0 errors 0 orphans
+secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
