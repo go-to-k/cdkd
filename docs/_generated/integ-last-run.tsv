@@ -11,7 +11,6 @@ basic	2026-06-21T11:00:28Z	PASS	82	standard	sweep-4..8 staleness re-run (ledger-
 batch	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bedrock-agentcore	2026-06-21T11:00:28Z	PASS	33	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bench-ccapi	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-bench-cdk-sample	2026-06-20T18:28:56Z	PASS		standard	39 created; destroy 37 del +2 retain-policy LogGroups (swept); 0 errors
 bench-sdk	2026-06-21T11:00:28Z	PASS	24	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bucket-deployment	2026-06-20T18:40:52Z	PASS		verify.sh	Custom::CDKBucketDeployment synced asset; clean destroy, 0 orphan
 cache-streaming	2026-06-21T11:00:28Z	PASS	509	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -27,7 +26,6 @@ conditions	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (le
 context-test	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 cross-region-state-bucket	2026-06-13T07:10:46Z	PASS	34	verify.sh	#827 shared bucket-region helper; behavior preserved; 1 deleted 0 err, temp bucket cleaned
 cross-stack-references	2026-06-13T09:16:21Z	PASS	26	standard	regression sweep 2-stack; 0 err 0 orphan
-custom-resource-provider	2026-06-13T09:16:21Z	PASS	290	standard	regression sweep; 0 err 0 orphan
 data-analytics	2026-06-21T11:00:28Z	PASS	43	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
 deep-getatt-chains	2026-06-20T19:32:52Z	PASS		verify.sh	first run; deep GetAtt chain SDK+CC-API resolved; 6 deleted 0 errors; clean
@@ -102,7 +100,6 @@ local-start-api	2026-06-21T19:10:37Z	PASS	29	verify.sh	fresh re-run with Docker 
 local-start-api-container	2026-06-21T14:49:02Z	PASS	14	verify.sh	sweep-G local re-run (rc=0)
 local-start-api-rest-v1-non-proxy	2026-06-21T14:49:21Z	PASS	17	verify.sh	sweep-G local re-run (rc=0)
 local-start-api-websocket	2026-06-21T14:52:36Z	PASS	193	verify.sh	sweep-G; retry rc=0 (arm64 qemu multi-container RIE; env-limited not cdkd bug if FAIL)
-local-start-cloudfront	2026-06-07T17:03:27Z	PASS	4	verify.sh	0.142.0 bump; cache-origin WARN follow; rc ok, no docker/aws orphans
 local-start-service	2026-06-21T14:52:59Z	PASS	21	verify.sh	sweep-G local re-run (rc=0)
 local-start-service-watch-fast	2026-06-21T14:56:24Z	PASS	203	verify.sh	sweep-G local re-run (rc=0)
 log-pipeline	2026-06-21T11:00:28Z	PASS	62	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -181,9 +178,12 @@ getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (nev
 rds-full-stack	2026-06-21T18:53:07Z	PASS	600	verify.sh	first run (never-run); RDS L2 + custom subnet/param groups + GetAtt computed endpoint via SSM; 15 deleted 0 err state gone
 sg-circular-dependency	2026-06-21T18:54:29Z	PASS	180	verify.sh	first run (never-run); circular SG cross-ref via standalone ingress; revoke-before-delete destroy order; 11 deleted 0 err
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
-lambda	2026-06-22T02:40:04Z	PASS		verify.sh	broad gate (final digest, post-review lazy-ctx edit); 9 deleted 0 err 0 orphans
 kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
 cognito-custom-attribute-add	2026-06-22T05:14:50Z	PASS	50	verify.sh	add-custom-attr reaches AWS via AddCustomAttributes; re-run on final tree; clean destroy
 dynamodb-autoscaling	2026-06-27T16:08:39Z	PASS	68	verify.sh	CC-API ScalableTarget/Policy create + maxCap 10->20 in-place UPDATE; 0 errors 0 orphans
 s3-object-lock	2026-06-27T16:08:39Z	PASS	46	verify.sh	Object Lock GOVERNANCE create + retention 1->5d in-place UPDATE; 0 errors 0 orphans
 secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
+local-start-cloudfront	2026-06-27T16:36:59Z	PASS	5	verify.sh	local serve pipeline + watch + SPA fallback, no AWS
+bench-cdk-sample	2026-06-27T16:48:13Z	PASS	547	standard	39 res VPC/Lambda/CF; destroy 37 del 2 retain 0 err; swept loggroups+events
+lambda	2026-06-27T16:50:33Z	PASS	76	verify.sh	RecursiveLoop+ReservedConcurrency backfills; destroy 9 del 0 err
+custom-resource-provider	2026-06-27T16:56:19Z	PASS	293	standard	CR framework (onEvent/isComplete/waiter SFN); destroy 17 del 0 err
