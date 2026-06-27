@@ -146,6 +146,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/ref-segment-audit-gate.sh",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking new REF_RETURNS_SEGMENT_AFTER_PIPE entries have unit tests..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/integ-coverage-matrix-gate.sh",
             "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 15,
