@@ -557,6 +557,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['TimeToLiveSpecification']) !==
         JSON.stringify(previousProperties['TimeToLiveSpecification'])
       ) {
+        this.assertNoActiveTtlAttributeNameChange(
+          logicalId,
+          resourceType,
+          physicalId,
+          properties['TimeToLiveSpecification'],
+          previousProperties['TimeToLiveSpecification']
+        );
         await this.applyTimeToLive(
           physicalId,
           properties['TimeToLiveSpecification'],
@@ -629,6 +636,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Preserve already-actionable ProvisioningErrors (e.g. the TTL
+      // attribute-name-change guard, the ResourcePolicy-ARN guard) verbatim
+      // instead of double-wrapping them behind a generic "Failed to update"
+      // prefix. Mirrors the create() catch.
+      if (error instanceof ProvisioningError) {
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -860,16 +874,77 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * block but it was present before — we disable TTL using the PREVIOUS
    * `AttributeName` (AWS requires the attribute name even to disable TTL).
    */
+  /**
+   * Pre-emptively reject a TTL `AttributeName` change between two enabled
+   * specs with a clear, actionable message.
+   *
+   * AWS allows TTL on only ONE attribute per table, so enabling TTL on a new
+   * attribute while TTL is still active on the old one fails with the opaque
+   * `TimeToLive is active on a different AttributeName: <old>`; and because
+   * DynamoDB rate-limits `UpdateTimeToLive` to one modification per table per
+   * ~1 hour, the user cannot disable-then-re-enable within a single deploy
+   * either. CloudFormation hits the same wall (UPDATE_ROLLBACK). Surfacing the
+   * two-deploy remediation up front beats letting the raw AWS error bubble.
+   *
+   * Only fires when BOTH the old and new specs are present and enabled with a
+   * DIFFERENT `AttributeName`. Enable-from-disabled, disable, and same-name
+   * Enabled toggles all pass through to {@link applyTimeToLive}.
+   */
+  private assertNoActiveTtlAttributeNameChange(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    spec: unknown,
+    previousSpec: unknown
+  ): void {
+    const cur = this.readTtlSpec(spec);
+    const prev = this.readTtlSpec(previousSpec);
+    if (
+      cur.enabled &&
+      prev.enabled &&
+      cur.attributeName !== undefined &&
+      prev.attributeName !== undefined &&
+      cur.attributeName !== prev.attributeName
+    ) {
+      throw new ProvisioningError(
+        `DynamoDB table ${logicalId}: cannot change the TimeToLive AttributeName ` +
+          `from '${prev.attributeName}' to '${cur.attributeName}' in a single deploy. ` +
+          `AWS allows TTL on only one attribute and rejects enabling it on a new ` +
+          `attribute while TTL is still active on '${prev.attributeName}' ` +
+          `("TimeToLive is active on a different AttributeName"); DynamoDB also limits ` +
+          `UpdateTimeToLive to one change per table per ~1 hour. To change the TTL ` +
+          `attribute, do it in two deploys: (1) remove TimeToLiveSpecification (or set ` +
+          `Enabled: false) to disable TTL on '${prev.attributeName}', then (2) after the ` +
+          `disable settles (~1h), deploy again enabling TTL on '${cur.attributeName}'.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+  }
+
+  /**
+   * Normalize a `TimeToLiveSpecification` value into `{ enabled, attributeName }`.
+   * Mirrors {@link applyTimeToLive}'s default (`Enabled` absent => true).
+   */
+  private readTtlSpec(spec: unknown): { enabled: boolean; attributeName: string | undefined } {
+    if (spec === undefined || spec === null) {
+      return { enabled: false, attributeName: undefined };
+    }
+    const s = spec as Record<string, unknown>;
+    const attributeName = s['AttributeName'] as string | undefined;
+    const enabled = s['Enabled'] !== undefined ? Boolean(s['Enabled']) : true;
+    return { enabled, attributeName };
+  }
+
   private async applyTimeToLive(
     tableName: string,
     spec: unknown,
     previousSpec?: unknown
   ): Promise<void> {
     if (spec !== undefined && spec !== null) {
-      const s = spec as Record<string, unknown>;
-      const attributeName = s['AttributeName'] as string | undefined;
+      const { enabled, attributeName } = this.readTtlSpec(spec);
       if (!attributeName) return;
-      const enabled = s['Enabled'] !== undefined ? Boolean(s['Enabled']) : true;
       await this.retryOnTransientControlPlane(
         () =>
           this.dynamoDBClient.send(
