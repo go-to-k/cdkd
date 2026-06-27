@@ -54,7 +54,6 @@ elasticache-replicationgroup-getatt	2026-06-21T18:03:30Z	PASS	649	verify.sh	stal
 event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 eventbridge	2026-06-21T11:13:40Z	PASS	63	verify.sh	sweep-F staleness re-run (rc=0)
 eventbridge-input-transformer	2026-06-21T07:34:45Z	PASS	53	verify.sh	InputTransformer rewrites payload; UPDATE version reached AWS; destroy clean
-export	2026-06-20T18:58:28Z	PASS		verify.sh	export->CFn migration + no-replacement diff guard (#319) + CFn stack cleanup; clean (broad)
 export-nested-stack	2026-06-21T11:00:28Z	PASS	326	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 fifo-sqs-event-source	2026-06-21T07:42:41Z	PASS	83	verify.sh	FIFO ESM delivers + both MessageGroupIds (g1,g2) preserved; spaced poll; destroy clean 0 orphan
 full-stack-demo	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -104,15 +103,12 @@ local-start-service	2026-06-21T14:52:59Z	PASS	21	verify.sh	sweep-G local re-run 
 local-start-service-watch-fast	2026-06-21T14:56:24Z	PASS	203	verify.sh	sweep-G local re-run (rc=0)
 log-pipeline	2026-06-21T11:00:28Z	PASS	62	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 macro-expansion	2026-06-21T11:15:51Z	PASS	105	verify.sh	sweep-F staleness re-run (rc=0)
-microservices	2026-06-20T18:47:03Z	PASS		standard	19 created; 19 deleted 0 errors; state+SNS+SQS+ESM clean (broad)
 migrate-from-bare-cfn	2026-06-21T11:00:28Z	PASS	146	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 migrate-from-bare-cfn-codegen-only	2026-06-21T19:09:34Z	PASS	55	verify.sh	fixed: bumped pinned aws-cdk 2.1112->2.1128 (schema 54 float); 3/3 logical IDs + aws:cdk:path preserved; AWS-free codegen smoke
 migrate-from-cfn	2026-06-21T11:00:28Z	PASS	89	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 monitoring	2026-06-21T04:34:50Z	PASS	40	standard	CW alarms/dashboard deploy 7 / destroy 7, 0 err
 multi-asset	2026-06-21T04:31:39Z	PASS	74	verify.sh	1 ECR + 4 S3 assets, each Lambda correct marker, destroy 0 err; swept 4 log groups
 multi-region-same-stack	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-multi-resource	2026-06-20T18:50:10Z	PASS		standard	17 created; 17 deleted 0 errors; 3 Lambda LogGroups swept (broad)
-multi-stack-deps	2026-06-21T04:50:36Z	PASS	60	standard	3-stack deploy order Network->Data->App, destroy reverse, 0 err (post-#751-fix non-regression)
 nested-stack	2026-06-21T11:16:17Z	PASS	24	standard	sweep-F staleness re-run (rc=0)
 nested-stack-3level	2026-06-20T19:37:31Z	PASS		verify.sh	first run; 4-level nested deploy/parent-link/state-tree/destroy-cascade; 9 deleted 0 errors; all state.json gone
 nested-stack-deep	2026-06-21T11:17:08Z	PASS	49	verify.sh	sweep-F staleness re-run (rc=0)
@@ -187,3 +183,7 @@ local-start-cloudfront	2026-06-27T16:36:59Z	PASS	5	verify.sh	local serve pipelin
 bench-cdk-sample	2026-06-27T16:48:13Z	PASS	547	standard	39 res VPC/Lambda/CF; destroy 37 del 2 retain 0 err; swept loggroups+events
 lambda	2026-06-27T16:50:33Z	PASS	76	verify.sh	RecursiveLoop+ReservedConcurrency backfills; destroy 9 del 0 err
 custom-resource-provider	2026-06-27T16:56:19Z	PASS	293	standard	CR framework (onEvent/isComplete/waiter SFN); destroy 17 del 0 err
+microservices	2026-06-27T16:58:43Z	PASS	53	standard	2 lambda svc + SQS DLQ + SSM params; destroy 19 del 0 err
+multi-resource	2026-06-27T17:00:35Z	PASS	71	standard	Lambda+SQS+SNS+DDB multi-type DAG; destroy 17 del 0 err
+multi-stack-deps	2026-06-27T17:02:31Z	PASS	62	standard	3 stacks Network/Data/App cross-stack refs; destroy 13 del total 0 err
+export	2026-06-27T17:07:23Z	PASS	251	verify.sh	export to CFn stack + no-REPLACE guards + CFn delete clean
