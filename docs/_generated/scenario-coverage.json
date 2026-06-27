@@ -567,6 +567,11 @@
       ]
     },
     {
+      "name": "dynamodb-autoscaling",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-globaltable",
       "annotated": true,
       "scenarios": [
@@ -1253,6 +1258,11 @@
       "scenarios": []
     },
     {
+      "name": "s3-object-lock",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "s3-tables",
       "annotated": true,
       "scenarios": []
@@ -1297,6 +1307,11 @@
       "scenarios": [
         "dynamic-reference-resolution"
       ]
+    },
+    {
+      "name": "secrets-rotation-schedule",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "serverless-api",
@@ -1969,6 +1984,7 @@
     "cc-api-fallback-transitions",
     "cognito-custom-attribute-add",
     "cognito-lambda-triggers",
+    "dynamodb-autoscaling",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
     "dynamodb-sse",
@@ -2000,8 +2016,10 @@
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "s3-event-notification",
+    "s3-object-lock",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
+    "secrets-rotation-schedule",
     "servicediscovery",
     "sns-event-source",
     "sns-subscription-filter",
