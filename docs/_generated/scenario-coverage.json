@@ -314,6 +314,11 @@
       ]
     },
     {
+      "name": "apigw-usage-plan-key",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "appconfig",
       "annotated": false,
       "scenarios": []
@@ -412,6 +417,11 @@
     },
     {
       "name": "cognito-custom-attribute-add",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cognito-identity-pool",
       "annotated": false,
       "scenarios": []
     },
@@ -676,6 +686,16 @@
       "scenarios": []
     },
     {
+      "name": "eventbridge-pipes",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge-scheduler",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "eventsourcemapping-race",
       "annotated": true,
       "scenarios": [
@@ -792,6 +812,11 @@
       ]
     },
     {
+      "name": "kinesis-esm-filter",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "kinesis-stream-mode-switch",
       "annotated": false,
       "scenarios": []
@@ -812,6 +837,11 @@
       ]
     },
     {
+      "name": "lambda-alias-provisioned-concurrency",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-destinations",
       "annotated": false,
       "scenarios": []
@@ -828,6 +858,11 @@
     },
     {
       "name": "lambda-log-retention",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-reserved-concurrency",
       "annotated": false,
       "scenarios": []
     },
@@ -1358,6 +1393,11 @@
     {
       "name": "sqs-cloudwatch",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "sqs-esm-max-concurrency",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -1987,12 +2027,14 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "acm-certificate",
+    "apigw-usage-plan-key",
     "appconfig",
     "aws-custom-resource",
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
     "cognito-custom-attribute-add",
+    "cognito-identity-pool",
     "cognito-lambda-triggers",
     "dynamodb-autoscaling",
     "dynamodb-gsi-update",
@@ -2003,17 +2045,22 @@
     "ecr-scanning",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",
+    "eventbridge-pipes",
+    "eventbridge-scheduler",
     "export-nested-stack",
     "fifo-sqs-event-source",
     "glue-securityconfig-replace",
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
+    "kinesis-esm-filter",
     "kinesis-stream-mode-switch",
+    "lambda-alias-provisioned-concurrency",
     "lambda-destinations",
     "lambda-event-invoke-config-update",
     "lambda-layer-version-update",
     "lambda-log-retention",
+    "lambda-reserved-concurrency",
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",
@@ -2034,6 +2081,7 @@
     "servicediscovery",
     "sns-event-source",
     "sns-subscription-filter",
+    "sqs-esm-max-concurrency",
     "stepfunctions-s3-definition"
   ]
 }

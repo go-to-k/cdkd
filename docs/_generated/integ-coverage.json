@@ -578,6 +578,7 @@
         "api-cognito",
         "cognito",
         "cognito-custom-attribute-add",
+        "cognito-identity-pool",
         "cognito-lambda-triggers",
         "cognito-resource-server",
         "remove-protection",
@@ -593,6 +594,9 @@
           "literal"
         ],
         "cognito-custom-attribute-add": [
+          "l2"
+        ],
+        "cognito-identity-pool": [
           "l2"
         ],
         "cognito-lambda-triggers": [
@@ -2522,6 +2526,8 @@
         "diff-intrinsic-target-change",
         "drift-revert",
         "eventbridge",
+        "eventbridge-pipes",
+        "eventbridge-scheduler",
         "export",
         "glue-update-hardening",
         "iam-managed-policy",
@@ -2588,6 +2594,12 @@
           "l2"
         ],
         "eventbridge": [
+          "l2"
+        ],
+        "eventbridge-pipes": [
+          "l2"
+        ],
+        "eventbridge-scheduler": [
           "l2"
         ],
         "export": [
@@ -2787,6 +2799,7 @@
       "integs": [
         "cache-streaming",
         "dynamodb-ondemand",
+        "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
         "log-pipeline",
         "sdk-ccapi-crossref"
@@ -2796,6 +2809,9 @@
           "l2"
         ],
         "dynamodb-ondemand": [
+          "l2"
+        ],
+        "kinesis-esm-filter": [
           "l2"
         ],
         "kinesis-stream-mode-switch": [
@@ -2884,17 +2900,21 @@
         "efs-lambda",
         "event-driven",
         "eventbridge",
+        "eventbridge-scheduler",
         "eventsourcemapping-race",
         "export",
         "fifo-sqs-event-source",
         "full-stack-demo",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "kinesis-esm-filter",
         "lambda",
+        "lambda-alias-provisioned-concurrency",
         "lambda-destinations",
         "lambda-event-invoke-config-update",
         "lambda-layer-version-update",
         "lambda-log-retention",
+        "lambda-reserved-concurrency",
         "lambda-versioning",
         "local-invoke",
         "local-invoke-buildkit",
@@ -2936,6 +2956,7 @@
         "serverless-api",
         "sns-event-source",
         "sns-sqs-event",
+        "sqs-esm-max-concurrency",
         "stepfunctions",
         "tags-propagation",
         "update-replace",
@@ -3009,6 +3030,9 @@
         "eventbridge": [
           "l2"
         ],
+        "eventbridge-scheduler": [
+          "l2"
+        ],
         "eventsourcemapping-race": [
           "l2"
         ],
@@ -3029,7 +3053,13 @@
         "iam-role-policies-drift-clean": [
           "l2"
         ],
+        "kinesis-esm-filter": [
+          "l2"
+        ],
         "lambda": [
+          "l2"
+        ],
+        "lambda-alias-provisioned-concurrency": [
           "l2"
         ],
         "lambda-destinations": [
@@ -3043,6 +3073,9 @@
           "l2"
         ],
         "lambda-log-retention": [
+          "l2"
+        ],
+        "lambda-reserved-concurrency": [
           "l2"
         ],
         "lambda-versioning": [
@@ -3175,6 +3208,9 @@
           "l2"
         ],
         "sns-sqs-event": [
+          "l2"
+        ],
+        "sqs-esm-max-concurrency": [
           "l2"
         ],
         "stepfunctions": [
@@ -3722,6 +3758,7 @@
         "drift-revert",
         "drift-revert-arrays",
         "event-driven",
+        "eventbridge-pipes",
         "export",
         "full-stack-demo",
         "iam-propagation-stress",
@@ -3769,6 +3806,9 @@
           "l2"
         ],
         "event-driven": [
+          "l2"
+        ],
+        "eventbridge-pipes": [
           "l2"
         ],
         "export": [
@@ -3872,6 +3912,7 @@
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
+        "eventbridge-pipes",
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "full-stack-demo",
@@ -3886,6 +3927,7 @@
         "rollback-failure-injection",
         "sns-sqs-event",
         "sns-subscription-filter",
+        "sqs-esm-max-concurrency",
         "tags-propagation"
       ],
       "signals": {
@@ -3920,6 +3962,9 @@
         "eventbridge-input-transformer": [
           "l2",
           "literal"
+        ],
+        "eventbridge-pipes": [
+          "l2"
         ],
         "eventsourcemapping-race": [
           "l2",
@@ -3966,6 +4011,9 @@
         "sns-subscription-filter": [
           "l2",
           "literal"
+        ],
+        "sqs-esm-max-concurrency": [
+          "l2"
         ],
         "tags-propagation": [
           "l2"
@@ -4314,9 +4362,11 @@
     }
   ],
   "unknownTypesInIntegs": [
+    "AWS::ApiGateway::ApiKey",
     "AWS::ApiGateway::Model",
     "AWS::ApiGateway::RequestValidator",
     "AWS::ApiGateway::RestApi",
+    "AWS::ApiGateway::UsagePlanKey",
     "AWS::AppConfig::Application",
     "AWS::AppConfig::ConfigurationProfile",
     "AWS::AppConfig::Deployment",
@@ -4331,6 +4381,7 @@
     "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CodePipeline::Pipeline",
+    "AWS::Cognito::IdentityPool",
     "AWS::Cognito::UserPoolClient",
     "AWS::Cognito::UserPoolDomain",
     "AWS::Cognito::UserPoolGroup",
