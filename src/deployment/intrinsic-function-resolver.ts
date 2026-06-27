@@ -34,7 +34,11 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * trailing `<ref>` component:
  *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
  *   - AWS::ApiGateway::RequestValidator `<restApiId>|<validatorId>`   -> validator id
- *   - AWS::Cognito::UserPoolClient      `<userPoolId>|<clientId>`     -> client id
+ *   - AWS::Cognito::UserPoolClient           `<userPoolId>|<clientId>`       -> client id
+ *   - AWS::Cognito::UserPoolResourceServer   `<userPoolId>|<identifier>`     -> resource-server identifier
+ *   - AWS::Cognito::UserPoolGroup            `<userPoolId>|<groupName>`      -> group name
+ *   - AWS::Cognito::UserPoolIdentityProvider `<userPoolId>|<providerName>`   -> provider name
+ *   - AWS::Cognito::UserPoolDomain           `<userPoolId>|<domain>`         -> domain
  *   - AWS::AppConfig::Environment            `<appId>|<envId>`               -> environment id
  *   - AWS::AppConfig::ConfigurationProfile   `<appId>|<profileId>`           -> profile id
  *   - AWS::AppConfig::HostedConfigurationVersion `<appId>|<profileId>|<ver>` -> version number
@@ -45,11 +49,30 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * 2-segment (`<parent>|<ref>`) and 3-segment AppConfig compounds; for the
  * 2-segment types it is identical to after-first-pipe. AppConfig::Application
  * and ::DeploymentStrategy are NOT here — their Ref is a simple, pipe-free id.
+ *
+ * MAINTENANCE — when you add a type here, AUDIT THE WHOLE SERVICE FAMILY, not
+ * just the one type a bug surfaced. CC compound-id types cluster by service (the
+ * Cognito UserPool family alone needed 5 entries; AppConfig needed 4) because a
+ * service's child resources share the `<parentId>|<childKey>` id convention. For
+ * each sibling child type:
+ *   1. `aws cloudformation describe-type --type RESOURCE --type-name AWS::<Svc>::<T>`
+ *      -> `Schema.primaryIdentifier` confirms it is compound + the segment order.
+ *   2. Read the type's AWS-docs "Return values / Ref" — add it ONLY if `Ref`
+ *      returns the trailing `<child>` segment.
+ *   3. EXCLUDE types whose `Ref` returns a synthetic / prefixed string rather
+ *      than a bare id segment — e.g. Cognito::UserPoolRiskConfigurationAttachment
+ *      / ::UserPoolUICustomizationAttachment return
+ *      `<TypeName>-<UserPoolId>-<ClientId>`, NOT the after-pipe segment.
+ *   4. Pin each addition with a unit test in intrinsic-functions.test.ts.
  */
 const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Model',
   'AWS::ApiGateway::RequestValidator',
   'AWS::Cognito::UserPoolClient',
+  'AWS::Cognito::UserPoolResourceServer',
+  'AWS::Cognito::UserPoolGroup',
+  'AWS::Cognito::UserPoolIdentityProvider',
+  'AWS::Cognito::UserPoolDomain',
   'AWS::AppConfig::Environment',
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',

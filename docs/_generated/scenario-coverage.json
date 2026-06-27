@@ -421,6 +421,11 @@
       "scenarios": []
     },
     {
+      "name": "cognito-resource-server",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "composite-stack",
       "annotated": true,
       "scenarios": [
