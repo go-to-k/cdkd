@@ -188,3 +188,11 @@ remove-protection	2026-06-27T17:36:30Z	PASS	1273	verify.sh	termination/deletion 
 cross-stack-references	2026-06-27T17:37:40Z	PASS	25	standard	ImportValue strong-ref + Fn::GetStackOutput; 2 stacks destroy 0 err
 bench-cdk-sample	2026-06-27T17:52:19Z	PASS	562	standard	broad integ for fix/cognito-cc-compound-ref; 37 del 0 err, retained LGs swept
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
+apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+eventbridge-pipes	2026-06-27T19:25:47Z	PASS	83	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+eventbridge-scheduler	2026-06-27T19:25:47Z	PASS	53	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+sqs-esm-max-concurrency	2026-06-27T19:25:47Z	PASS	70	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
