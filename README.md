@@ -1,5 +1,9 @@
 # cdkd (CDK Direct)
 
+[![npm version](https://img.shields.io/npm/v/@go-to-k/cdkd.svg)](https://www.npmjs.com/package/@go-to-k/cdkd)
+[![Downloads](https://img.shields.io/npm/dw/@go-to-k/cdkd.svg)](https://www.npmjs.com/package/@go-to-k/cdkd)
+[![License: Apache-2.0](https://img.shields.io/npm/l/@go-to-k/cdkd.svg)](./LICENSE)
+
 Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of CloudFormation, plus local emulation for Lambda, API Gateway, and ECS.
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is.
