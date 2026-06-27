@@ -279,6 +279,25 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(commandSent(UpdateTimeToLiveCommand)).toBe(true);
     });
 
+    it('treats a stringified Enabled:"false" as disabled (no spurious guard fire on a disable+rename)', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable
+        .mockResolvedValueOnce({}); // UpdateTimeToLive (disable on ttlB)
+
+      // New spec renames to ttlB but disables via the stringified "false"
+      // (hand-written L1 shape). Since the new spec is DISABLED, the
+      // attribute-name-change guard must NOT fire.
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, TimeToLiveSpecification: { AttributeName: 'ttlB', Enabled: 'false' } },
+        { ...baseCreateProps, TimeToLiveSpecification: ttl('ttlA') }
+      );
+
+      expect(commandSent(UpdateTimeToLiveCommand)).toBe(true);
+    });
+
     it('allows disabling TTL (removal) without throwing', async () => {
       mockSend
         .mockResolvedValueOnce(activeTable()) // DescribeTable

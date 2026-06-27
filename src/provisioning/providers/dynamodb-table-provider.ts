@@ -933,7 +933,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
     }
     const s = spec as Record<string, unknown>;
     const attributeName = s['AttributeName'] as string | undefined;
-    const enabled = s['Enabled'] !== undefined ? Boolean(s['Enabled']) : true;
+    // CFn `Enabled` is a boolean for CDK L2 synth, but a hand-written L1
+    // template can carry the stringified `"true"` / `"false"`. `Boolean("false")`
+    // is `true`, so coerce strings case-insensitively rather than via the bare
+    // `Boolean()` cast (which would treat `"false"` as enabled and either
+    // re-enable a disabled TTL or fire the rename guard spuriously). Absent
+    // `Enabled` defaults to `true` (CFn default).
+    const rawEnabled = s['Enabled'];
+    const enabled =
+      rawEnabled === undefined
+        ? true
+        : typeof rawEnabled === 'string'
+          ? rawEnabled.toLowerCase() === 'true'
+          : Boolean(rawEnabled);
     return { enabled, attributeName };
   }
 
