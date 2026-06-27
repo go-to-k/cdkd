@@ -4,6 +4,6 @@ import { KinesisEsmFilterStack } from '../lib/kinesis-esm-filter-stack.ts';
 
 const app = new cdk.App();
 new KinesisEsmFilterStack(app, 'CdkdKinesisEsmFilterExample', {
-  description: 'cdkd Lambda Kinesis ESM FilterCriteria + tumbling window integ probe',
+  description: 'cdkd Lambda Kinesis ESM FilterCriteria integ probe',
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 });

@@ -39,11 +39,18 @@ echo "==> Pre-run cleanup"; cleanup
 echo "==> Deploy"
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-# FilterCriteria.Filters[0].Pattern should be present (a non-empty JSON pattern).
+# FilterCriteria.Filters[0].Pattern must be present AND carry the templated
+# filter content (the stack filters on data.type == "order"). Asserting the
+# content (not just non-empty) proves the FilterCriteria was not silently
+# dropped or replaced with a different/empty pattern.
 PATTERN=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
   --query 'EventSourceMappings[0].FilterCriteria.Filters[0].Pattern' --output text 2>/dev/null)
 if [ -z "${PATTERN}" ] || [ "${PATTERN}" = "None" ]; then
   echo "FAIL: ESM FilterCriteria.Filters[0].Pattern is empty (silent-drop?)" >&2
+  exit 1
+fi
+if ! printf '%s' "${PATTERN}" | grep -q 'order'; then
+  echo "FAIL: ESM FilterCriteria pattern does not contain the templated 'order' filter: ${PATTERN}" >&2
   exit 1
 fi
 echo "    OK: ESM FilterCriteria reached AWS (pattern: ${PATTERN})"

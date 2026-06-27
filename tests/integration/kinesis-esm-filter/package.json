@@ -2,7 +2,7 @@
   "name": "cdkd-integ-kinesis-esm-filter",
   "version": "1.0.0",
   "private": true,
-  "description": "cdkd Lambda Kinesis ESM FilterCriteria + tumbling window integ probe",
+  "description": "cdkd Lambda Kinesis ESM FilterCriteria integ probe",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"
