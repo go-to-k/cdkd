@@ -609,6 +609,11 @@
       "scenarios": []
     },
     {
+      "name": "dynamodb-ttl-attr-change",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-instance",
       "annotated": true,
       "scenarios": []
@@ -1994,6 +1999,7 @@
     "dynamodb-ondemand",
     "dynamodb-sse",
     "dynamodb-stream-filter",
+    "dynamodb-ttl-attr-change",
     "ecr-scanning",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",

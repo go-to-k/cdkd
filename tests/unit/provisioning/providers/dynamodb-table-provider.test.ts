@@ -12,6 +12,7 @@ import {
   DescribeContributorInsightsCommand,
   DescribeContinuousBackupsCommand,
   DescribeTimeToLiveCommand,
+  UpdateTimeToLiveCommand,
   ListTagsOfResourceCommand,
   ResourceNotFoundException,
   UpdateTableCommand,
@@ -204,6 +205,116 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       ).rejects.toThrow(/no TableArn/);
 
       expect(commandSent(PutResourcePolicyCommand)).toBe(false);
+    });
+  });
+
+  describe('TimeToLiveSpecification', () => {
+    const ttl = (attr: string, enabled = true) => ({ AttributeName: attr, Enabled: enabled });
+
+    it('throws an actionable error when the TTL AttributeName changes between two enabled specs', async () => {
+      mockSend.mockResolvedValueOnce(activeTable()); // DescribeTable
+
+      await expect(
+        provider.update(
+          'MyTable',
+          'MyTable',
+          'AWS::DynamoDB::Table',
+          { ...baseCreateProps, TimeToLiveSpecification: ttl('newTtl') },
+          { ...baseCreateProps, TimeToLiveSpecification: ttl('oldTtl') }
+        )
+      ).rejects.toThrow(/cannot change the TimeToLive AttributeName from 'oldTtl' to 'newTtl'/);
+
+      // Must NOT have attempted the doomed UpdateTimeToLive call.
+      expect(commandSent(UpdateTimeToLiveCommand)).toBe(false);
+    });
+
+    it('does not double-wrap the actionable error behind "Failed to update"', async () => {
+      mockSend.mockResolvedValueOnce(activeTable()); // DescribeTable
+
+      const err = await provider
+        .update(
+          'MyTable',
+          'MyTable',
+          'AWS::DynamoDB::Table',
+          { ...baseCreateProps, TimeToLiveSpecification: ttl('newTtl') },
+          { ...baseCreateProps, TimeToLiveSpecification: ttl('oldTtl') }
+        )
+        .catch((e: Error) => e);
+      expect((err as Error).message).toMatch(/two deploys/);
+      expect((err as Error).message).not.toMatch(/Failed to update DynamoDB table/);
+    });
+
+    it('allows enabling TTL when previously absent (passes through to UpdateTimeToLive)', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable
+        .mockResolvedValueOnce({}); // UpdateTimeToLive
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, TimeToLiveSpecification: ttl('ttlAttr') },
+        { ...baseCreateProps }
+      );
+
+      const input = inputOfCommand(UpdateTimeToLiveCommand) as {
+        TimeToLiveSpecification?: { Enabled?: boolean; AttributeName?: string };
+      };
+      expect(input.TimeToLiveSpecification).toEqual({ Enabled: true, AttributeName: 'ttlAttr' });
+    });
+
+    it('allows enabling TTL on a new attribute when the previous spec was disabled', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable
+        .mockResolvedValueOnce({}); // UpdateTimeToLive
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, TimeToLiveSpecification: ttl('newTtl') },
+        { ...baseCreateProps, TimeToLiveSpecification: ttl('oldTtl', false) }
+      );
+
+      expect(commandSent(UpdateTimeToLiveCommand)).toBe(true);
+    });
+
+    it('treats a stringified Enabled:"false" as disabled (no spurious guard fire on a disable+rename)', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable
+        .mockResolvedValueOnce({}); // UpdateTimeToLive (disable on ttlB)
+
+      // New spec renames to ttlB but disables via the stringified "false"
+      // (hand-written L1 shape). Since the new spec is DISABLED, the
+      // attribute-name-change guard must NOT fire.
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, TimeToLiveSpecification: { AttributeName: 'ttlB', Enabled: 'false' } },
+        { ...baseCreateProps, TimeToLiveSpecification: ttl('ttlA') }
+      );
+
+      expect(commandSent(UpdateTimeToLiveCommand)).toBe(true);
+    });
+
+    it('allows disabling TTL (removal) without throwing', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable
+        .mockResolvedValueOnce({}); // UpdateTimeToLive (disable)
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps },
+        { ...baseCreateProps, TimeToLiveSpecification: ttl('oldTtl') }
+      );
+
+      const input = inputOfCommand(UpdateTimeToLiveCommand) as {
+        TimeToLiveSpecification?: { Enabled?: boolean; AttributeName?: string };
+      };
+      expect(input.TimeToLiveSpecification).toEqual({ Enabled: false, AttributeName: 'oldTtl' });
     });
   });
 
