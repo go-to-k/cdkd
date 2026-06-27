@@ -1,3 +1,10 @@
+## [0.230.9](https://github.com/go-to-k/cdkd/compare/v0.230.8...v0.230.9) (2026-06-27)
+
+
+### Bug Fixes
+
+* **provisioning:** actionable error on DynamoDB TTL AttributeName change ([#932](https://github.com/go-to-k/cdkd/issues/932)) ([43d6e38](https://github.com/go-to-k/cdkd/commit/43d6e38e1830d0e674ce29b907ec22e090df48e4))
+
 ## [0.230.8](https://github.com/go-to-k/cdkd/compare/v0.230.7...v0.230.8) (2026-06-27)
 
 
