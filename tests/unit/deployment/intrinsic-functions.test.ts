@@ -2699,6 +2699,82 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe('9fut2hkhdues45051mvms2os5');
   });
 
+  // Same bug class for the rest of the Cognito CC-API family whose CC
+  // primaryIdentifier is `<userPoolId>|<child>` while CFn `Ref` returns only the
+  // trailing `<child>` segment. Each of these was missing from the after-pipe
+  // set, so cdkd handed the compound id back to AWS and the deploy failed.
+  it.each([
+    [
+      // The exact bug found by bug-hunt: a UserPoolClient AllowedOAuthScopes
+      // `{Fn::Join: ["", [{Ref: ResourceServer}, "/read"]]}` produced
+      // `us-east-1_xxx|api/read` instead of `api/read` -> "Invalid scope requested".
+      'AWS::Cognito::UserPoolResourceServer',
+      'us-east-1_341UroHjp|api',
+      'api',
+    ],
+    ['AWS::Cognito::UserPoolGroup', 'us-east-1_341UroHjp|Admins', 'Admins'],
+    [
+      'AWS::Cognito::UserPoolIdentityProvider',
+      'us-east-1_341UroHjp|Google',
+      'Google',
+    ],
+    [
+      'AWS::Cognito::UserPoolDomain',
+      'us-east-1_341UroHjp|my-app-domain',
+      'my-app-domain',
+    ],
+  ])(
+    'Ref to %s returns the trailing segment, not the compound <userPoolId>|<child> physical id',
+    async (resourceType, physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          R: { Type: resourceType, Properties: {} },
+        },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: {
+            physicalId,
+            resourceType,
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
+  it('Ref to a UserPoolResourceServer inside an Fn::Join scope yields a bare <identifier>/<scope>', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Rs: { Type: 'AWS::Cognito::UserPoolResourceServer', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Rs: {
+          physicalId: 'us-east-1_341UroHjp|api',
+          resourceType: 'AWS::Cognito::UserPoolResourceServer',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': ['', [{ Ref: 'Rs' }, '/read']] },
+      context
+    );
+    expect(result).toBe('api/read');
+  });
+
   it('Ref falls back to the raw physical id when there is no pipe separator', async () => {
     const template: CloudFormationTemplate = {
       Resources: {

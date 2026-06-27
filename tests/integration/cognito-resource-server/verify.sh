@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# verify.sh — cdkd Cognito resource-server compound-id Ref integ test.
+#
+# Regression guard for the bug-hunt finding (2026-06-28): the Cognito
+# UserPool-child family (UserPoolResourceServer / UserPoolGroup /
+# UserPoolDomain) has no SDK provider and routes through Cloud Control, whose
+# physical id is the compound `<userPoolId>|<child>`. CFn `Ref` of these returns
+# only the trailing `<child>` segment, but cdkd's intrinsic resolver returned
+# the whole compound id until UserPoolResourceServer/Group/IdentityProvider/
+# Domain were added to REF_RETURNS_SEGMENT_AFTER_PIPE.
+#
+# The load-bearing assertion: the UserPoolClient's AllowedOAuthScopes resolves to
+# `api/read` (the resource-server identifier `api` + scope `read`), NOT the
+# compound `<userPoolId>|api/read` which Cognito rejects with
+# "Invalid scope requested" at client-create time. Without the fix this deploy
+# FAILS at the client and never reaches the assertions.
+#
+# Required env vars:
+#   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
+#   AWS_REGION   — defaults to us-east-1
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+STACK="CognitoResourceServerStack"
+REGION="${AWS_REGION:-us-east-1}"
+STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+
+LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+
+cleanup() {
+  echo "==> Cleanup: dropping any leftover state + AWS resources"
+  set +eu
+  local destroy_rc=1
+  if [ -x "${LOCAL_DIST}" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" \
+      --yes \
+      --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" >/dev/null 2>&1
+    destroy_rc=$?
+  fi
+  if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  fi
+  set -eu
+}
+
+trap cleanup EXIT
+
+if [ -z "${STATE_BUCKET:-}" ]; then
+  echo "FAIL: STATE_BUCKET env var is required" >&2
+  exit 1
+fi
+
+if [ ! -f "${LOCAL_DIST}" ]; then
+  echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2
+  exit 1
+fi
+
+echo "==> Installing fixture deps"
+if [ ! -d node_modules ]; then
+  npm install
+fi
+
+echo "==> Pre-run cleanup"
+cleanup
+
+# --- Phase 1: deploy --------------------------------------------------
+echo "==> Phase 1: deploy with the local binary"
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE}" ]; then
+  echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
+  exit 1
+fi
+
+POOL_ID=$(echo "${STATE}" | jq -r '.outputs.UserPoolId // empty')
+CLIENT_ID=$(echo "${STATE}" | jq -r '.outputs.ClientId // empty')
+if [ -z "${POOL_ID}" ] || [ -z "${CLIENT_ID}" ]; then
+  echo "FAIL: UserPoolId / ClientId output missing from state" >&2
+  exit 1
+fi
+echo "    UserPool id: ${POOL_ID}"
+echo "    Client id:   ${CLIENT_ID}"
+
+# --- Assertion 1: AllowedOAuthScopes == api/read (the compound-id Ref fix) ---
+SCOPES=$(aws cognito-idp describe-user-pool-client \
+  --user-pool-id "${POOL_ID}" --client-id "${CLIENT_ID}" --region "${REGION}" \
+  --query 'UserPoolClient.AllowedOAuthScopes' --output json 2>/dev/null || echo "[]")
+SCOPE_COUNT=$(echo "${SCOPES}" | jq 'length')
+SCOPE_VAL=$(echo "${SCOPES}" | jq -r '.[0] // empty')
+if [ "${SCOPE_COUNT}" != "1" ] || [ "${SCOPE_VAL}" != "api/read" ]; then
+  echo "FAIL: AllowedOAuthScopes is '${SCOPES}', expected exactly ['api/read']" >&2
+  echo "      (a compound '<userPoolId>|api/read' here means the resource-server Ref leaked the CC compound id)" >&2
+  exit 1
+fi
+echo "    OK: AllowedOAuthScopes == [\"api/read\"] (resource-server Ref resolved to the bare identifier)"
+
+# --- Assertion 2: the resource server exists with identifier 'api' ----
+RS_ID=$(aws cognito-idp list-resource-servers \
+  --user-pool-id "${POOL_ID}" --max-results 10 --region "${REGION}" \
+  --query "ResourceServers[?Identifier=='api'].Identifier | [0]" --output text 2>/dev/null || echo "")
+if [ "${RS_ID}" != "api" ]; then
+  echo "FAIL: resource server with identifier 'api' not found (got '${RS_ID}')" >&2
+  exit 1
+fi
+echo "    OK: resource server 'api' present"
+
+# --- Assertion 3: the group exists ------------------------------------
+GROUP=$(aws cognito-idp list-groups \
+  --user-pool-id "${POOL_ID}" --region "${REGION}" \
+  --query "Groups[?GroupName=='${STACK}-admins'].GroupName | [0]" --output text 2>/dev/null || echo "")
+if [ "${GROUP}" != "${STACK}-admins" ]; then
+  echo "FAIL: group '${STACK}-admins' not found (got '${GROUP}')" >&2
+  exit 1
+fi
+echo "    OK: group '${STACK}-admins' present"
+
+# --- Phase 2: destroy -------------------------------------------------
+echo "==> Phase 2: destroy"
+node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
+
+if aws cognito-idp describe-user-pool --user-pool-id "${POOL_ID}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: UserPool ${POOL_ID} still exists after destroy" >&2
+  exit 1
+fi
+echo "    OK: UserPool is gone"
+
+if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
+  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
+  exit 1
+fi
+echo "    OK: state file is gone"
+
+echo ""
+echo "==> cognito-resource-server test passed (compound-id Ref -> bare scope + clean destroy)"

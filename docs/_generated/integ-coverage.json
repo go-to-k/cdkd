@@ -579,6 +579,7 @@
         "cognito",
         "cognito-custom-attribute-add",
         "cognito-lambda-triggers",
+        "cognito-resource-server",
         "remove-protection",
         "serverless-api"
       ],
@@ -597,6 +598,9 @@
         "cognito-lambda-triggers": [
           "l2",
           "literal"
+        ],
+        "cognito-resource-server": [
+          "l2"
         ],
         "remove-protection": [
           "l2",
@@ -4325,6 +4329,7 @@
     "AWS::CodePipeline::Pipeline",
     "AWS::Cognito::UserPoolClient",
     "AWS::Cognito::UserPoolDomain",
+    "AWS::Cognito::UserPoolGroup",
     "AWS::EC2::EIP",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::ELBv2::LoadBalancer",

@@ -34,7 +34,11 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * trailing `<ref>` component:
  *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
  *   - AWS::ApiGateway::RequestValidator `<restApiId>|<validatorId>`   -> validator id
- *   - AWS::Cognito::UserPoolClient      `<userPoolId>|<clientId>`     -> client id
+ *   - AWS::Cognito::UserPoolClient           `<userPoolId>|<clientId>`       -> client id
+ *   - AWS::Cognito::UserPoolResourceServer   `<userPoolId>|<identifier>`     -> resource-server identifier
+ *   - AWS::Cognito::UserPoolGroup            `<userPoolId>|<groupName>`      -> group name
+ *   - AWS::Cognito::UserPoolIdentityProvider `<userPoolId>|<providerName>`   -> provider name
+ *   - AWS::Cognito::UserPoolDomain           `<userPoolId>|<domain>`         -> domain
  *   - AWS::AppConfig::Environment            `<appId>|<envId>`               -> environment id
  *   - AWS::AppConfig::ConfigurationProfile   `<appId>|<profileId>`           -> profile id
  *   - AWS::AppConfig::HostedConfigurationVersion `<appId>|<profileId>|<ver>` -> version number
@@ -50,6 +54,10 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Model',
   'AWS::ApiGateway::RequestValidator',
   'AWS::Cognito::UserPoolClient',
+  'AWS::Cognito::UserPoolResourceServer',
+  'AWS::Cognito::UserPoolGroup',
+  'AWS::Cognito::UserPoolIdentityProvider',
+  'AWS::Cognito::UserPoolDomain',
   'AWS::AppConfig::Environment',
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',

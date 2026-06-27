@@ -60,7 +60,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::CloudTrail::Trail` | [`infra-security`](../tests/integration/infra-security/) (l2,literal) |
 | `AWS::CloudWatch::Alarm` | [`cloudwatch`](../tests/integration/cloudwatch/) (l2,literal)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`deep-getatt-chains`](../tests/integration/deep-getatt-chains/) (l1)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
 | `AWS::CodeBuild::Project` | [`ci-cd`](../tests/integration/ci-cd/) (l2,literal) |
-| `AWS::Cognito::UserPool` | [`api-cognito`](../tests/integration/api-cognito/) (l2)<br>[`cognito`](../tests/integration/cognito/) (l1,l2,literal)<br>[`cognito-custom-attribute-add`](../tests/integration/cognito-custom-attribute-add/) (l2)<br>[`cognito-lambda-triggers`](../tests/integration/cognito-lambda-triggers/) (l2,literal)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal)<br>[`serverless-api`](../tests/integration/serverless-api/) (l2) |
+| `AWS::Cognito::UserPool` | [`api-cognito`](../tests/integration/api-cognito/) (l2)<br>[`cognito`](../tests/integration/cognito/) (l1,l2,literal)<br>[`cognito-custom-attribute-add`](../tests/integration/cognito-custom-attribute-add/) (l2)<br>[`cognito-lambda-triggers`](../tests/integration/cognito-lambda-triggers/) (l2,literal)<br>[`cognito-resource-server`](../tests/integration/cognito-resource-server/) (l2)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal)<br>[`serverless-api`](../tests/integration/serverless-api/) (l2) |
 | `AWS::DocDB::DBCluster` | [`docdb-neptune`](../tests/integration/docdb-neptune/) (l1) |
 | `AWS::DocDB::DBInstance` | [`docdb-neptune`](../tests/integration/docdb-neptune/) (l1) |
 | `AWS::DocDB::DBSubnetGroup` | [`docdb-neptune`](../tests/integration/docdb-neptune/) (l1) |
@@ -147,7 +147,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`stepfunctions`](../tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-s3-definition`](../tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (43)
+## Resource types referenced in integs without an SDK Provider (44)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -170,6 +170,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::CodePipeline::Pipeline`
 - `AWS::Cognito::UserPoolClient`
 - `AWS::Cognito::UserPoolDomain`
+- `AWS::Cognito::UserPoolGroup`
 - `AWS::EC2::EIP`
 - `AWS::EC2::SecurityGroupEgress`
 - `AWS::ELBv2::LoadBalancer`
