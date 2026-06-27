@@ -25,7 +25,6 @@ composite-stack	2026-06-21T11:11:40Z	PASS	35	standard	sweep-F staleness re-run (
 conditions	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 context-test	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 cross-region-state-bucket	2026-06-13T07:10:46Z	PASS	34	verify.sh	#827 shared bucket-region helper; behavior preserved; 1 deleted 0 err, temp bucket cleaned
-cross-stack-references	2026-06-13T09:16:21Z	PASS	26	standard	regression sweep 2-stack; 0 err 0 orphan
 data-analytics	2026-06-21T11:00:28Z	PASS	43	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
 deep-getatt-chains	2026-06-20T19:32:52Z	PASS		verify.sh	first run; deep GetAtt chain SDK+CC-API resolved; 6 deleted 0 errors; clean
@@ -36,8 +35,6 @@ destroy-interrupt	2026-06-13T11:42:29Z	PASS	581	verify.sh	#831 +SG/IAM not-found
 diff-intrinsic-target-change	2026-06-21T11:00:28Z	PASS	47	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 docdb-neptune	2026-06-21T15:21:39Z	PASS	1512	verify.sh	sweep-G verify.sh re-run (rc=0)
 docker-image-asset	2026-06-13T11:02:44Z	PASS	60	verify.sh	ECR build+push (ARM_64 pinned); image by tag + Lambda runs; 0 err
-drift-revert	2026-06-20T19:01:24Z	PASS		verify.sh	drift inject+revert; 13 deleted 0 errors; clean (broad)
-drift-revert-vpc	2026-06-20T19:06:38Z	PASS		verify.sh	VPC+EFS drift revert; 21 deleted 0 errors; no VPC orphan (broad)
 dynamodb-globaltable	2026-06-20T17:59:38Z	PASS		verify.sh	BillingMode/autoscaling UPDATE + clean destroy (#887 regression); 1 deleted 0 errors
 dynamodb-gsi-update	2026-06-20T18:10:27Z	PASS		verify.sh	#887 add-GSI in-place UPDATE (no replacement); 3 phases pass, clean destroy
 dynamodb-ondemand	2026-06-20T18:12:58Z	PASS		verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE (#887 regression); 3 deleted 0 errors
@@ -123,7 +120,6 @@ recreate-mixed-direction	2026-06-21T04:29:17Z	PASS	93	verify.sh	bidirectional sd
 recreate-via-cc-api	2026-06-21T04:24:45Z	PASS	98	verify.sh	sdk->cc-api recreate clean, destroy 0 err
 recreate-via-sdk-provider	2026-06-21T04:27:01Z	PASS	79	verify.sh	cc-api->sdk recreate clean, destroy 0 err
 redshift-cluster-getatt	2026-06-21T18:03:30Z	PASS	416	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
-remove-protection	2026-06-20T19:28:52Z	PASS		verify.sh	normal destroy fails on protected (expected) -> --remove-protection retry clean; DDB/Cognito/VPC/ASG-instance gone; 0 orphans (broad)
 replacement-fanout	2026-06-20T19:35:04Z	PASS		verify.sh	first run; SNS replacement fanout to 10 SSM deps + TopicPolicy; 12 deleted 0 errors
 rollback-failure-injection	2026-06-13T11:11:55Z	PASS	418	verify.sh	deploy-engine rollback on rich VPC+Lambda + #808 fail events; 17 deleted 0 orphan
 route53	2026-06-21T16:16:44Z	PASS	384	verify.sh	stale-real re-run; 6 deleted 0 err; clean
@@ -187,3 +183,7 @@ microservices	2026-06-27T16:58:43Z	PASS	53	standard	2 lambda svc + SQS DLQ + SSM
 multi-resource	2026-06-27T17:00:35Z	PASS	71	standard	Lambda+SQS+SNS+DDB multi-type DAG; destroy 17 del 0 err
 multi-stack-deps	2026-06-27T17:02:31Z	PASS	62	standard	3 stacks Network/Data/App cross-stack refs; destroy 13 del total 0 err
 export	2026-06-27T17:07:23Z	PASS	251	verify.sh	export to CFn stack + no-REPLACE guards + CFn delete clean
+drift-revert	2026-06-27T17:09:59Z	PASS	103	verify.sh	drift inject + revert across 10+ types; destroy 13 del 0 err
+drift-revert-vpc	2026-06-27T17:14:26Z	PASS	240	verify.sh	VPC+ASG+ALB+EFS+SvcDiscovery drift revert; destroy 21 del 0 err
+remove-protection	2026-06-27T17:36:30Z	PASS	1273	verify.sh	termination/deletion protection flip-off (RDS/ASG/etc); destroy 11 del 0 err
+cross-stack-references	2026-06-27T17:37:40Z	PASS	25	standard	ImportValue strong-ref + Fn::GetStackOutput; 2 stacks destroy 0 err
