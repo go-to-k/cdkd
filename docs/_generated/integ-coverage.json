@@ -535,6 +535,7 @@
         "deep-getatt-chains",
         "full-stack-demo",
         "log-pipeline",
+        "replacement-immutable-name",
         "scheduled-task"
       ],
       "signals": {
@@ -554,6 +555,10 @@
         ],
         "log-pipeline": [
           "l2"
+        ],
+        "replacement-immutable-name": [
+          "l2",
+          "literal"
         ],
         "scheduled-task": [
           "l2"
@@ -2351,6 +2356,7 @@
         "eventbridge-api-destination",
         "eventbridge-input-transformer",
         "iam-propagation-stress",
+        "replacement-immutable-name",
         "scheduled-task"
       ],
       "signals": {
@@ -2366,6 +2372,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "replacement-immutable-name": [
+          "l2",
+          "literal"
         ],
         "scheduled-task": [
           "l2"
@@ -4090,6 +4100,7 @@
         "rds-full-stack",
         "redshift-cluster-getatt",
         "replacement-fanout",
+        "replacement-immutable-name",
         "rollback-failure-injection",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
@@ -4214,6 +4225,10 @@
           "l2",
           "literal"
         ],
+        "replacement-immutable-name": [
+          "l2",
+          "literal"
+        ],
         "rollback-failure-injection": [
           "l2"
         ],
@@ -4333,12 +4348,17 @@
       "resourceType": "AWS::StepFunctions::StateMachine",
       "integs": [
         "iam-propagation-stress",
+        "replacement-immutable-name",
         "stepfunctions",
         "stepfunctions-s3-definition"
       ],
       "signals": {
         "iam-propagation-stress": [
           "l2"
+        ],
+        "replacement-immutable-name": [
+          "l2",
+          "literal"
         ],
         "stepfunctions": [
           "l2"
