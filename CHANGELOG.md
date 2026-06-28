@@ -1,3 +1,10 @@
+## [0.230.11](https://github.com/go-to-k/cdkd/compare/v0.230.10...v0.230.11) (2026-06-28)
+
+
+### Bug Fixes
+
+* **s3:** normalize lifecycle rules to one V1/V2 form + fold top-level ObjectSize filters ([#936](https://github.com/go-to-k/cdkd/issues/936)) ([43b7fa9](https://github.com/go-to-k/cdkd/commit/43b7fa9dcc34e35bc5b3a995f305d0f0f1700706))
+
 ## [0.230.10](https://github.com/go-to-k/cdkd/compare/v0.230.9...v0.230.10) (2026-06-28)
 
 
