@@ -2806,6 +2806,7 @@
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
         "log-pipeline",
+        "replacement-immutable-name",
         "sdk-ccapi-crossref"
       ],
       "signals": {
@@ -2823,6 +2824,10 @@
         ],
         "log-pipeline": [
           "l2"
+        ],
+        "replacement-immutable-name": [
+          "l2",
+          "literal"
         ],
         "sdk-ccapi-crossref": [
           "l1",
@@ -4256,6 +4261,7 @@
         "event-driven",
         "full-stack-demo",
         "local-run-task-from-state",
+        "replacement-immutable-name",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule"
       ],
@@ -4271,6 +4277,10 @@
           "l2"
         ],
         "local-run-task-from-state": [
+          "l2",
+          "literal"
+        ],
+        "replacement-immutable-name": [
           "l2",
           "literal"
         ],

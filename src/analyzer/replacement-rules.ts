@@ -327,6 +327,43 @@ export class ReplacementRulesRegistry {
       updateableProperties: new Set(['RetentionInDays', 'KmsKeyId']),
     });
 
+    // Kinesis Stream — Name is immutable (CFn "Update requires: Replacement").
+    // Without this rule the registry defaulted the type to updateable, so a
+    // stream rename was attempted as an in-place update: AWS has no rename API,
+    // so the change was silently dropped and cdkd's state diverged (state recorded
+    // the new name while the stream kept the old one). All other Kinesis stream
+    // properties are in-place updatable.
+    this.rules.set('AWS::Kinesis::Stream', {
+      replacementProperties: new Set([
+        'Name', // Renaming a stream requires replacement
+      ]),
+      updateableProperties: new Set([
+        'RetentionPeriodHours',
+        'ShardCount',
+        'StreamModeDetails',
+        'StreamEncryption',
+        'Tags',
+      ]),
+    });
+
+    // SecretsManager Secret — Name is immutable (CFn "Update requires:
+    // Replacement"). Same silent-divergence class as Kinesis::Stream above: a
+    // rename was attempted in-place (no AWS rename API) and dropped. The secret
+    // value / description / replica / KMS key are all in-place updatable.
+    this.rules.set('AWS::SecretsManager::Secret', {
+      replacementProperties: new Set([
+        'Name', // Renaming a secret requires replacement
+      ]),
+      updateableProperties: new Set([
+        'Description',
+        'KmsKeyId',
+        'SecretString',
+        'GenerateSecretString',
+        'ReplicaRegions',
+        'Tags',
+      ]),
+    });
+
     // API Gateway RestApi
     this.rules.set('AWS::ApiGateway::RestApi', {
       replacementProperties: new Set([
