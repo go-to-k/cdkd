@@ -531,6 +531,41 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
     expect(rules.find((r) => r.ID === 'filter-rule').Filter).toEqual({ ObjectSizeGreaterThan: 1024 });
   });
 
+  it('LifecycleConfiguration: prefix rule + tag-only rule -> prefix converted, tag rule emits {Tag}', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [
+            { Id: 'prefix-rule', Status: 'Enabled', Prefix: 'logs/', ExpirationInDays: 365 },
+            {
+              Id: 'tag-rule',
+              Status: 'Enabled',
+              Filter: { TagFilters: [{ Key: 'archive', Value: 'true' }] },
+              ExpirationInDays: 30,
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rules = (
+      callsOf(PutBucketLifecycleConfigurationCommand)[0].input as {
+        LifecycleConfiguration: { Rules: any[] };
+      }
+    ).LifecycleConfiguration.Rules;
+    for (const r of rules) {
+      expect(r.Prefix).toBeUndefined();
+    }
+    expect(rules.find((r) => r.ID === 'prefix-rule').Filter).toEqual({ Prefix: 'logs/' });
+    expect(rules.find((r) => r.ID === 'tag-rule').Filter).toEqual({
+      Tag: { Key: 'archive', Value: 'true' },
+    });
+  });
+
   it('LifecycleConfiguration: top-level ObjectSizeGreaterThan (CDK shape) folds into Filter', async () => {
     // Regression (bug-hunt 2026-06-29): CDK's LifecycleRule.objectSizeGreaterThan
     // synthesizes a TOP-LEVEL `ObjectSizeGreaterThan` on the rule (NOT nested under
