@@ -581,6 +581,7 @@
         "cognito-identity-pool",
         "cognito-lambda-triggers",
         "cognito-resource-server",
+        "cognito-userpool-user-ref",
         "remove-protection",
         "serverless-api"
       ],
@@ -604,6 +605,9 @@
           "literal"
         ],
         "cognito-resource-server": [
+          "l2"
+        ],
+        "cognito-userpool-user-ref": [
           "l2"
         ],
         "remove-protection": [
@@ -4385,6 +4389,8 @@
     "AWS::Cognito::UserPoolClient",
     "AWS::Cognito::UserPoolDomain",
     "AWS::Cognito::UserPoolGroup",
+    "AWS::Cognito::UserPoolUser",
+    "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::EC2::EIP",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::ELBv2::LoadBalancer",

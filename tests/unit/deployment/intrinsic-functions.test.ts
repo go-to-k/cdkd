@@ -2723,6 +2723,14 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       'us-east-1_341UroHjp|my-app-domain',
       'my-app-domain',
     ],
+    [
+      // Found by the compound-id-Ref family audit (the missed Cognito sibling):
+      // CfnUserPoolUserToGroupAttachment.Username = user.ref would otherwise get
+      // `us-east-1_xxx|admin` instead of `admin` -> AWS rejects the username.
+      'AWS::Cognito::UserPoolUser',
+      'us-east-1_341UroHjp|admin',
+      'admin',
+    ],
   ])(
     'Ref to %s returns the trailing segment, not the compound <userPoolId>|<child> physical id',
     async (resourceType, physicalId, expected) => {

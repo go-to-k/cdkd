@@ -436,6 +436,11 @@
       "scenarios": []
     },
     {
+      "name": "cognito-userpool-user-ref",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "composite-stack",
       "annotated": true,
       "scenarios": [
@@ -2036,6 +2041,7 @@
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
     "cognito-lambda-triggers",
+    "cognito-userpool-user-ref",
     "dynamodb-autoscaling",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
