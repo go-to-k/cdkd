@@ -312,13 +312,66 @@ export class S3BucketProvider implements ResourceProvider {
     bucketName: string,
     lifecycleConfig: { Rules: Array<Record<string, unknown>> }
   ): Promise<void> {
+    // Gather a rule's full location scope from EVERY source CFn can express it:
+    // an explicit `Filter` object (Prefix / TagFilters / ObjectSizeGreaterThan /
+    // ObjectSizeLessThan), a top-level `Prefix` (the deprecated V1 form), AND the
+    // top-level `ObjectSizeGreaterThan` / `ObjectSizeLessThan` rule properties —
+    // which is the shape CDK's `LifecycleRule.objectSizeGreaterThan` actually
+    // synthesizes (NOT nested under Filter). Reading only `Filter.*` silently
+    // dropped those top-level size constraints.
+    const gatherScope = (
+      rule: Record<string, unknown>
+    ): {
+      prefix: string | undefined;
+      tagFilters: Array<{ Key: string; Value: string }> | undefined;
+      sizeGt: number | undefined;
+      sizeLt: number | undefined;
+    } => {
+      const filter = rule['Filter'] as Record<string, unknown> | undefined;
+      return {
+        prefix: (filter?.['Prefix'] ?? rule['Prefix']) as string | undefined,
+        tagFilters: filter?.['TagFilters'] as
+          | Array<{ Key: string; Value: string }>
+          | undefined,
+        sizeGt: (filter?.['ObjectSizeGreaterThan'] ?? rule['ObjectSizeGreaterThan']) as
+          | number
+          | undefined,
+        sizeLt: (filter?.['ObjectSizeLessThan'] ?? rule['ObjectSizeLessThan']) as
+          | number
+          | undefined,
+      };
+    };
+
+    // S3 forbids mixing V1 (a top-level `Prefix` on the rule) and V2 (a `Filter`
+    // element) rules within a SINGLE lifecycle configuration — `PutBucketLifecycle-
+    // Configuration` rejects it with "Filter element can only be used in Lifecycle
+    // V2." CloudFormation normalizes this transparently. Decide the form ONCE for
+    // the whole config: a rule can stay V1 ONLY if its scope is EXACTLY a single
+    // top-level `Prefix` (no tags, no size constraint, no explicit `Filter`). If
+    // ANY rule needs a Filter (tags / size / explicit Filter / no scope at all),
+    // emit EVERY rule in V2 Filter form (a bare top-level `Prefix` becomes
+    // `Filter: { Prefix }`).
+    const isPlainPrefixOnly = (rule: Record<string, unknown>): boolean => {
+      if (rule['Filter'] !== undefined) return false;
+      const s = gatherScope(rule);
+      return (
+        s.prefix !== undefined &&
+        (s.tagFilters === undefined || s.tagFilters.length === 0) &&
+        s.sizeGt === undefined &&
+        s.sizeLt === undefined
+      );
+    };
+    const useFilterForm = !lifecycleConfig.Rules.every(isPlainPrefixOnly);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rules = lifecycleConfig.Rules.map((rule): any => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sdkRule: any = {
         ID: rule['Id'] as string | undefined,
         Status: (rule['Status'] as string) || 'Enabled',
-        Prefix: rule['Prefix'] as string | undefined,
+        // In V2-Filter form the location scope lives under `Filter` (set below);
+        // a top-level `Prefix` alongside a `Filter` is exactly the illegal mix.
+        Prefix: useFilterForm ? undefined : (rule['Prefix'] as string | undefined),
       };
 
       // Expiration
@@ -378,49 +431,41 @@ export class S3BucketProvider implements ResourceProvider {
         };
       }
 
-      // S3 requires either Filter or Prefix on each rule.
-      // If neither is specified in CFn, we must provide an empty Filter.
-      // Filter (CFn uses TagFilters, ObjectSizeGreaterThan, ObjectSizeLessThan, Prefix)
-      const filter = rule['Filter'] as Record<string, unknown> | undefined;
-      if (filter) {
-        const tagFilters = filter['TagFilters'] as
-          | Array<{ Key: string; Value: string }>
-          | undefined;
-        const prefix = filter['Prefix'] as string | undefined;
-        const sizeGt = filter['ObjectSizeGreaterThan'] as number | undefined;
-        const sizeLt = filter['ObjectSizeLessThan'] as number | undefined;
+      // Build the SDK `Filter` from the rule's full gathered scope (explicit
+      // Filter + top-level Prefix + top-level ObjectSizeGreaterThan/LessThan).
+      // S3 requires either a top-level Prefix (V1) or a Filter (V2) on each rule;
+      // a rule with no scope at all gets the empty-prefix Filter (matches all).
+      const { prefix, tagFilters, sizeGt, sizeLt } = gatherScope(rule);
+      const hasTags = tagFilters !== undefined && tagFilters.length > 0;
+      const componentCount =
+        (hasTags ? 1 : 0) +
+        (prefix !== undefined ? 1 : 0) +
+        (sizeGt !== undefined ? 1 : 0) +
+        (sizeLt !== undefined ? 1 : 0);
 
-        // If multiple conditions, use And
-        const hasMultiple =
-          (tagFilters && tagFilters.length > 0 ? 1 : 0) +
-            (prefix !== undefined ? 1 : 0) +
-            (sizeGt !== undefined ? 1 : 0) +
-            (sizeLt !== undefined ? 1 : 0) >
-          1;
-
-        if (hasMultiple) {
-          sdkRule.Filter = {
-            And: {
-              Prefix: prefix,
-              Tags: tagFilters,
-              ObjectSizeGreaterThan: sizeGt,
-              ObjectSizeLessThan: sizeLt,
-            },
-          };
-        } else if (tagFilters && tagFilters.length > 0) {
-          sdkRule.Filter = { Tag: tagFilters[0] };
-        } else if (prefix !== undefined) {
-          sdkRule.Filter = { Prefix: prefix };
-        } else if (sizeGt !== undefined) {
-          sdkRule.Filter = { ObjectSizeGreaterThan: sizeGt };
-        } else if (sizeLt !== undefined) {
-          sdkRule.Filter = { ObjectSizeLessThan: sizeLt };
-        }
-      } else if (sdkRule.Prefix === undefined) {
-        // S3 requires either Filter or Prefix on each lifecycle rule.
-        // When neither is specified in CFn template, provide an empty Filter.
-        sdkRule.Filter = { Prefix: '' };
+      if (componentCount > 1) {
+        // Multiple conditions must be combined under And (V2 only).
+        sdkRule.Filter = {
+          And: {
+            Prefix: prefix,
+            Tags: hasTags ? tagFilters : undefined,
+            ObjectSizeGreaterThan: sizeGt,
+            ObjectSizeLessThan: sizeLt,
+          },
+        };
+      } else if (hasTags) {
+        sdkRule.Filter = { Tag: tagFilters![0] };
+      } else if (sizeGt !== undefined) {
+        sdkRule.Filter = { ObjectSizeGreaterThan: sizeGt };
+      } else if (sizeLt !== undefined) {
+        sdkRule.Filter = { ObjectSizeLessThan: sizeLt };
+      } else if (useFilterForm) {
+        // Single Prefix (or no scope) in a V2 config: a bare top-level Prefix
+        // becomes `Filter: { Prefix }`; no scope becomes the empty-prefix Filter.
+        sdkRule.Filter = { Prefix: prefix ?? '' };
       }
+      // else: V1 config, single-Prefix rule — keep the top-level `sdkRule.Prefix`
+      // set above.
 
       return sdkRule;
     });
@@ -979,7 +1024,11 @@ export class S3BucketProvider implements ResourceProvider {
               },
             };
 
-            // Filter
+            // Filter (V2). An empty `Filter: {}` is the valid CFn "replicate every
+            // object" form and MUST be preserved — S3's V2 replication schema
+            // requires a `Filter` on every rule, so dropping the empty object
+            // produces an invalid PutBucketReplication payload (the same element-
+            // wise-transform-drops-a-valid-shape class as the lifecycle V1/V2 bug).
             const filter = rule['Filter'] as Record<string, unknown> | undefined;
             if (filter) {
               const prefix = filter['Prefix'] as string | undefined;
@@ -990,6 +1039,9 @@ export class S3BucketProvider implements ResourceProvider {
                 sdkRule['Filter'] = { Prefix: prefix };
               } else if (tagFilter) {
                 sdkRule['Filter'] = { Tag: tagFilter };
+              } else {
+                // Empty / unrecognized filter object -> empty V2 filter (replicate all).
+                sdkRule['Filter'] = {};
               }
             } else if (rule['Prefix'] !== undefined) {
               sdkRule['Prefix'] = rule['Prefix'] as string;

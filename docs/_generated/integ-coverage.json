@@ -3519,6 +3519,7 @@
         "recreate-via-cc-api",
         "s3-cloudfront",
         "s3-event-notification",
+        "s3-lifecycle",
         "s3-object-lock",
         "state-destroy",
         "tags-propagation",
@@ -3634,6 +3635,10 @@
         ],
         "s3-event-notification": [
           "l2"
+        ],
+        "s3-lifecycle": [
+          "l2",
+          "literal"
         ],
         "s3-object-lock": [
           "l1",

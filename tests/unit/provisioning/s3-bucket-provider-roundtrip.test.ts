@@ -429,6 +429,174 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
   });
 
   // -------------------------------------------------------------------
+  // LifecycleConfiguration V1/V2 normalization (regression: bug-hunt 2026-06-29)
+  // S3 rejects a config mixing a rule with a top-level `Prefix` (V1) and a rule
+  // with a `Filter` (V2): "Filter element can only be used in Lifecycle V2."
+  // -------------------------------------------------------------------
+
+  it('LifecycleConfiguration: prefix-rule + no-scope rule -> all rules use Filter (no V1/V2 mix)', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [
+            { Id: 'archive', Status: 'Enabled', Prefix: 'logs/', ExpirationInDays: 365 },
+            {
+              Id: 'abort-mpu',
+              Status: 'Enabled',
+              AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const puts = callsOf(PutBucketLifecycleConfigurationCommand);
+    expect(puts).toHaveLength(1);
+    const rules = (puts[0].input as { LifecycleConfiguration: { Rules: any[] } })
+      .LifecycleConfiguration.Rules;
+    // Every rule must be V2 (Filter present, no top-level Prefix) so S3 does not
+    // see a mixed config.
+    for (const r of rules) {
+      expect(r.Prefix).toBeUndefined();
+      expect(r.Filter).toBeDefined();
+    }
+    // The prefix-scoped rule carries its prefix under Filter; the scope-less rule
+    // gets the empty-prefix Filter.
+    expect(rules.find((r) => r.ID === 'archive').Filter).toEqual({ Prefix: 'logs/' });
+    expect(rules.find((r) => r.ID === 'abort-mpu').Filter).toEqual({ Prefix: '' });
+  });
+
+  it('LifecycleConfiguration: all rules prefix-scoped -> stays V1 (top-level Prefix, no Filter)', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [
+            { Id: 'a', Status: 'Enabled', Prefix: 'logs/', ExpirationInDays: 365 },
+            { Id: 'b', Status: 'Enabled', Prefix: 'tmp/', ExpirationInDays: 7 },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rules = (
+      callsOf(PutBucketLifecycleConfigurationCommand)[0].input as {
+        LifecycleConfiguration: { Rules: any[] };
+      }
+    ).LifecycleConfiguration.Rules;
+    for (const r of rules) {
+      expect(r.Prefix).toBeDefined();
+      expect(r.Filter).toBeUndefined();
+    }
+  });
+
+  it('LifecycleConfiguration: explicit Filter rule + prefix rule -> prefix rule converted to Filter', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [
+            { Id: 'prefix-rule', Status: 'Enabled', Prefix: 'logs/', ExpirationInDays: 365 },
+            {
+              Id: 'filter-rule',
+              Status: 'Enabled',
+              Filter: { ObjectSizeGreaterThan: 1024 },
+              ExpirationInDays: 30,
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rules = (
+      callsOf(PutBucketLifecycleConfigurationCommand)[0].input as {
+        LifecycleConfiguration: { Rules: any[] };
+      }
+    ).LifecycleConfiguration.Rules;
+    for (const r of rules) {
+      expect(r.Prefix).toBeUndefined();
+      expect(r.Filter).toBeDefined();
+    }
+    expect(rules.find((r) => r.ID === 'prefix-rule').Filter).toEqual({ Prefix: 'logs/' });
+    expect(rules.find((r) => r.ID === 'filter-rule').Filter).toEqual({ ObjectSizeGreaterThan: 1024 });
+  });
+
+  it('LifecycleConfiguration: top-level ObjectSizeGreaterThan (CDK shape) folds into Filter', async () => {
+    // Regression (bug-hunt 2026-06-29): CDK's LifecycleRule.objectSizeGreaterThan
+    // synthesizes a TOP-LEVEL `ObjectSizeGreaterThan` on the rule (NOT nested under
+    // Filter). Reading only `Filter.ObjectSizeGreaterThan` silently dropped it.
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [
+            {
+              Id: 'big',
+              Status: 'Enabled',
+              ObjectSizeGreaterThan: 1048576,
+              ExpirationInDays: 180,
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rules = (
+      callsOf(PutBucketLifecycleConfigurationCommand)[0].input as {
+        LifecycleConfiguration: { Rules: any[] };
+      }
+    ).LifecycleConfiguration.Rules;
+    expect(rules[0].Filter).toEqual({ ObjectSizeGreaterThan: 1048576 });
+    expect(rules[0].Prefix).toBeUndefined();
+  });
+
+  it('LifecycleConfiguration: top-level Prefix + top-level ObjectSizeGreaterThan -> Filter.And', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [
+            {
+              Id: 'both',
+              Status: 'Enabled',
+              Prefix: 'data/',
+              ObjectSizeGreaterThan: 500,
+              ObjectSizeLessThan: 5000,
+              ExpirationInDays: 90,
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rule = (
+      callsOf(PutBucketLifecycleConfigurationCommand)[0].input as {
+        LifecycleConfiguration: { Rules: any[] };
+      }
+    ).LifecycleConfiguration.Rules[0];
+    expect(rule.Prefix).toBeUndefined();
+    expect(rule.Filter).toEqual({
+      And: { Prefix: 'data/', Tags: undefined, ObjectSizeGreaterThan: 500, ObjectSizeLessThan: 5000 },
+    });
+  });
+
+  // -------------------------------------------------------------------
   // CorsConfiguration (Put + Delete)
   // -------------------------------------------------------------------
 
@@ -746,6 +914,41 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
     );
     expect(callsOf(PutBucketReplicationCommand)).toHaveLength(1);
     expect(callsOf(DeleteBucketReplicationCommand)).toHaveLength(0);
+  });
+
+  it('ReplicationConfiguration: empty Filter {} is preserved (V2 replicate-all, not dropped)', async () => {
+    // Regression (bug-hunt 2026-06-29): an empty `Filter: {}` is the valid CFn
+    // "replicate every object" V2 form; element-wise transform must not drop it,
+    // else PutBucketReplication gets a rule with neither Filter nor Prefix.
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Priority: 1,
+              Filter: {},
+              DeleteMarkerReplication: { Status: 'Disabled' },
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rule = (
+      callsOf(PutBucketReplicationCommand)[0].input as {
+        ReplicationConfiguration: { Rules: any[] };
+      }
+    ).ReplicationConfiguration.Rules[0];
+    expect(rule.Filter).toEqual({});
+    expect(rule.Prefix).toBeUndefined();
   });
 
   it('ReplicationConfiguration: present -> absent fires DeleteBucketReplication', async () => {
