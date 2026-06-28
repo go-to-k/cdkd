@@ -1,3 +1,10 @@
+## [0.230.12](https://github.com/go-to-k/cdkd/compare/v0.230.11...v0.230.12) (2026-06-28)
+
+
+### Bug Fixes
+
+* **replacement:** replace on Kinesis Stream / Secret Name change (immutable) ([#937](https://github.com/go-to-k/cdkd/issues/937)) ([d57fdc7](https://github.com/go-to-k/cdkd/commit/d57fdc7c6145fac4bd0832f5c1f8bc455daa6087))
+
 ## [0.230.11](https://github.com/go-to-k/cdkd/compare/v0.230.10...v0.230.11) (2026-06-28)
 
 
