@@ -330,9 +330,7 @@ export class S3BucketProvider implements ResourceProvider {
       const filter = rule['Filter'] as Record<string, unknown> | undefined;
       return {
         prefix: (filter?.['Prefix'] ?? rule['Prefix']) as string | undefined,
-        tagFilters: filter?.['TagFilters'] as
-          | Array<{ Key: string; Value: string }>
-          | undefined,
+        tagFilters: filter?.['TagFilters'] as Array<{ Key: string; Value: string }> | undefined,
         sizeGt: (filter?.['ObjectSizeGreaterThan'] ?? rule['ObjectSizeGreaterThan']) as
           | number
           | undefined,
