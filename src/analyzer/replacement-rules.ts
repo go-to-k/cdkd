@@ -364,6 +364,100 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // Step Functions State Machine — StateMachineName + StateMachineType are
+    // immutable (CFn "Update requires: Replacement"). Same silent-divergence
+    // class as Kinesis/Secret above: a rename was attempted as an in-place
+    // UpdateStateMachine (which has no Name parameter) and dropped. The
+    // definition / role / logging / tracing are all in-place updatable.
+    this.rules.set('AWS::StepFunctions::StateMachine', {
+      replacementProperties: new Set([
+        'StateMachineName', // Renaming requires replacement
+        'StateMachineType', // STANDARD <-> EXPRESS requires replacement
+      ]),
+      updateableProperties: new Set([
+        'DefinitionString',
+        'DefinitionS3Location',
+        'Definition',
+        'DefinitionSubstitutions',
+        'RoleArn',
+        'LoggingConfiguration',
+        'TracingConfiguration',
+        'Tags',
+        'EncryptionConfiguration',
+      ]),
+    });
+
+    // EventBridge Rule — Name + EventBusName are immutable (CFn "Update
+    // requires: Replacement"). A rename was attempted as an in-place PutRule
+    // with the NEW name, which CREATES a second rule and orphans the old one.
+    // Schedule / pattern / targets / state are in-place updatable.
+    this.rules.set('AWS::Events::Rule', {
+      replacementProperties: new Set([
+        'Name', // Renaming requires replacement
+        'EventBusName', // Moving to a different bus requires replacement
+      ]),
+      updateableProperties: new Set([
+        'ScheduleExpression',
+        'EventPattern',
+        'State',
+        'Description',
+        'Targets',
+        'RoleArn',
+      ]),
+    });
+
+    // SSM Parameter — Name is immutable (CFn "Update requires: Replacement").
+    // A rename was attempted in-place and the new-named parameter was never
+    // created (or the old one left untouched), diverging state from AWS.
+    this.rules.set('AWS::SSM::Parameter', {
+      replacementProperties: new Set([
+        'Name', // Renaming requires replacement
+      ]),
+      updateableProperties: new Set([
+        'Value',
+        'Description',
+        'Type',
+        'Tier',
+        'AllowedPattern',
+        'Policies',
+        'DataType',
+        'Tags',
+      ]),
+    });
+
+    // CloudWatch Alarm — AlarmName is immutable (CFn "Update requires:
+    // Replacement"). A rename was attempted as an in-place PutMetricAlarm with
+    // the NEW name, which CREATES a second alarm and orphans the old one.
+    // Everything else about an alarm is in-place updatable.
+    this.rules.set('AWS::CloudWatch::Alarm', {
+      replacementProperties: new Set([
+        'AlarmName', // Renaming requires replacement
+      ]),
+      updateableProperties: new Set([
+        'ComparisonOperator',
+        'EvaluationPeriods',
+        'DatapointsToAlarm',
+        'Threshold',
+        'TreatMissingData',
+        'MetricName',
+        'Namespace',
+        'Period',
+        'Statistic',
+        'ExtendedStatistic',
+        'Dimensions',
+        'Metrics',
+        'AlarmDescription',
+        'ActionsEnabled',
+        'AlarmActions',
+        'OKActions',
+        'InsufficientDataActions',
+        'Unit',
+        'EvaluateLowSampleCountPercentile',
+        'ThresholdMetricId',
+        'Tags',
+      ]),
+    });
+
     // API Gateway RestApi
     this.rules.set('AWS::ApiGateway::RestApi', {
       replacementProperties: new Set([
