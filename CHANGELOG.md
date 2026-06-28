@@ -1,3 +1,10 @@
+## [0.230.10](https://github.com/go-to-k/cdkd/compare/v0.230.9...v0.230.10) (2026-06-28)
+
+
+### Bug Fixes
+
+* **deployment:** resolve Cognito UserPoolUser Ref to its CC compound-id sub-segment ([#935](https://github.com/go-to-k/cdkd/issues/935)) ([61c449b](https://github.com/go-to-k/cdkd/commit/61c449bbfb754c57d2ae05465e75a07a174ae024))
+
 ## [0.230.9](https://github.com/go-to-k/cdkd/compare/v0.230.8...v0.230.9) (2026-06-27)
 
 
