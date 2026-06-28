@@ -1,3 +1,10 @@
+## [0.230.13](https://github.com/go-to-k/cdkd/compare/v0.230.12...v0.230.13) (2026-06-28)
+
+
+### Bug Fixes
+
+* **replacement:** replace on immutable Name change for SFN / Events Rule / SSM Param / CW Alarm ([#938](https://github.com/go-to-k/cdkd/issues/938)) ([3db2ee2](https://github.com/go-to-k/cdkd/commit/3db2ee20529595d3146c91ac571b1e2a8e26753c))
+
 ## [0.230.12](https://github.com/go-to-k/cdkd/compare/v0.230.11...v0.230.12) (2026-06-28)
 
 
