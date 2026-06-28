@@ -39,6 +39,7 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   - AWS::Cognito::UserPoolGroup            `<userPoolId>|<groupName>`      -> group name
  *   - AWS::Cognito::UserPoolIdentityProvider `<userPoolId>|<providerName>`   -> provider name
  *   - AWS::Cognito::UserPoolDomain           `<userPoolId>|<domain>`         -> domain
+ *   - AWS::Cognito::UserPoolUser             `<userPoolId>|<username>`       -> username
  *   - AWS::AppConfig::Environment            `<appId>|<envId>`               -> environment id
  *   - AWS::AppConfig::ConfigurationProfile   `<appId>|<profileId>`           -> profile id
  *   - AWS::AppConfig::HostedConfigurationVersion `<appId>|<profileId>|<ver>` -> version number
@@ -73,6 +74,7 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::Cognito::UserPoolGroup',
   'AWS::Cognito::UserPoolIdentityProvider',
   'AWS::Cognito::UserPoolDomain',
+  'AWS::Cognito::UserPoolUser',
   'AWS::AppConfig::Environment',
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',
