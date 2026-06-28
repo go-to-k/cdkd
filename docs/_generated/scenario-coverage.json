@@ -1272,6 +1272,11 @@
       ]
     },
     {
+      "name": "replacement-immutable-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rollback-failure-injection",
       "annotated": true,
       "scenarios": [
@@ -2084,6 +2089,7 @@
     "recreate-mixed-direction",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
+    "replacement-immutable-name",
     "s3-event-notification",
     "s3-lifecycle",
     "s3-object-lock",
