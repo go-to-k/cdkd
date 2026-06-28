@@ -1308,6 +1308,11 @@
       "scenarios": []
     },
     {
+      "name": "s3-lifecycle",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "s3-object-lock",
       "annotated": false,
       "scenarios": []
@@ -2080,6 +2085,7 @@
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "s3-event-notification",
+    "s3-lifecycle",
     "s3-object-lock",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",

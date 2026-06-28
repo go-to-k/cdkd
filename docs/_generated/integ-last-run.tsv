@@ -197,3 +197,4 @@ sqs-esm-max-concurrency	2026-06-27T19:25:47Z	PASS	70	verify.sh	bughunt-clean reg
 kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
 cognito-userpool-user-ref	2026-06-28T02:53:29Z	PASS	85	verify.sh	UserPoolUser Ref compound-id fix; repro FAIL->PASS; clean destroy
 lambda	2026-06-28T02:53:29Z	PASS	70	verify.sh	broad integ for intrinsic-resolver change; clean destroy
+s3-lifecycle	2026-06-28T17:58:35Z	PASS	51	verify.sh	V1/V2 mix + top-level ObjectSize fold; deploy+update+destroy clean
