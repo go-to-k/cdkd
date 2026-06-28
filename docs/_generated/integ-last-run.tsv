@@ -176,7 +176,6 @@ dynamodb-autoscaling	2026-06-27T16:08:39Z	PASS	68	verify.sh	CC-API ScalableTarge
 s3-object-lock	2026-06-27T16:08:39Z	PASS	46	verify.sh	Object Lock GOVERNANCE create + retention 1->5d in-place UPDATE; 0 errors 0 orphans
 secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
 local-start-cloudfront	2026-06-27T16:36:59Z	PASS	5	verify.sh	local serve pipeline + watch + SPA fallback, no AWS
-lambda	2026-06-27T16:50:33Z	PASS	76	verify.sh	RecursiveLoop+ReservedConcurrency backfills; destroy 9 del 0 err
 custom-resource-provider	2026-06-27T16:56:19Z	PASS	293	standard	CR framework (onEvent/isComplete/waiter SFN); destroy 17 del 0 err
 microservices	2026-06-27T16:58:43Z	PASS	53	standard	2 lambda svc + SQS DLQ + SSM params; destroy 19 del 0 err
 multi-resource	2026-06-27T17:00:35Z	PASS	71	standard	Lambda+SQS+SNS+DDB multi-type DAG; destroy 17 del 0 err
@@ -196,3 +195,5 @@ lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 sqs-esm-max-concurrency	2026-06-27T19:25:47Z	PASS	70	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
+cognito-userpool-user-ref	2026-06-28T02:53:29Z	PASS	85	verify.sh	UserPoolUser Ref compound-id fix; repro FAIL->PASS; clean destroy
+lambda	2026-06-28T02:53:29Z	PASS	70	verify.sh	broad integ for intrinsic-resolver change; clean destroy
