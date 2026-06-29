@@ -980,6 +980,137 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(changes.get('QueueA')?.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(true);
     expect(changes.get('QueueB')?.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(true);
   });
+
+  // --- IN-PLACE attribute propagation (bug-hunt 2026-06-29) ----------------
+
+  it('promotes a NO_CHANGE dependent that reads (via GetAtt) a CHANGED property of an in-place-updated resource', async () => {
+    const state = baseState();
+    state.resources['Base'] = {
+      physicalId: 'base',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'base', Value: 'world' },
+      attributes: { Value: 'world' },
+    };
+    state.resources['Derived'] = {
+      physicalId: 'derived',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'derived', Value: 'world' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        // In-place Value change (Value is updateable for SSM Parameter).
+        Base: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'base', Value: 'world2' } },
+        Derived: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'derived', Value: { 'Fn::GetAtt': ['Base', 'Value'] } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Base')?.changeType).toBe('UPDATE');
+    // Base's Value changed and Derived reads GetAtt[Base, Value] -> promoted.
+    expect(changes.get('Derived')?.changeType).toBe('UPDATE');
+  });
+
+  it('promotes a dependent that reads a changed property via Fn::Sub ${X.Attr}', async () => {
+    const state = baseState();
+    state.resources['Base'] = {
+      physicalId: 'base',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'base', Value: 'world' },
+      attributes: { Value: 'world' },
+    };
+    const subVal = { 'Fn::Sub': ['hello-${Base.Value}', {}] };
+    state.resources['Derived'] = {
+      physicalId: 'derived',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'derived', Value: subVal },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Base: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'base', Value: 'world2' } },
+        Derived: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'derived', Value: subVal } },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Derived')?.changeType).toBe('UPDATE');
+  });
+
+  it('does NOT promote a dependent that only reads the in-place-updated resource via Ref (physical id unchanged)', async () => {
+    const state = baseState();
+    state.resources['Base'] = {
+      physicalId: 'base',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'base', Value: 'world' },
+      attributes: { Value: 'world' },
+    };
+    state.resources['Consumer'] = {
+      physicalId: 'consumer',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'consumer', Value: 'base' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Base: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'base', Value: 'world2' } },
+        // Reads only Base's NAME via Ref (physical id), which an in-place update
+        // does not move.
+        Consumer: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'consumer', Value: { Ref: 'Base' } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Consumer')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('does NOT promote a dependent that reads an UNCHANGED attribute of an in-place-updated resource', async () => {
+    const state = baseState();
+    state.resources['Base'] = {
+      physicalId: 'base',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'base', Value: 'world' },
+      attributes: { Value: 'world', Type: 'String' },
+    };
+    state.resources['Derived'] = {
+      physicalId: 'derived',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'derived', Value: 'String' },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        // Only Value changes.
+        Base: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'base', Value: 'world2' } },
+        // Reads Base.Type (not Value) -> unaffected by the Value change.
+        Derived: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'derived', Value: { 'Fn::GetAtt': ['Base', 'Type'] } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Derived')?.changeType).toBe('NO_CHANGE');
+  });
 });
 
 describe('DiffCalculator - condition-excluded resource (issue #840)', () => {

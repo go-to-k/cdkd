@@ -4085,6 +4085,7 @@
         "import-value-strong-ref",
         "importvalue-chain",
         "infra-security",
+        "inplace-attr-propagation",
         "intrinsics-torture",
         "intrinsics-torture-2",
         "legacy-bucket-name-fallback",
@@ -4176,6 +4177,10 @@
         ],
         "infra-security": [
           "l2"
+        ],
+        "inplace-attr-propagation": [
+          "l2",
+          "literal"
         ],
         "intrinsics-torture": [
           "l1",
