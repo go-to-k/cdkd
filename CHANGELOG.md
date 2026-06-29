@@ -1,3 +1,10 @@
+## [0.230.15](https://github.com/go-to-k/cdkd/compare/v0.230.14...v0.230.15) (2026-06-29)
+
+
+### Bug Fixes
+
+* **diff:** detect nested-map-key removal (symmetric valuesEqual) ([#940](https://github.com/go-to-k/cdkd/issues/940)) ([aac746a](https://github.com/go-to-k/cdkd/commit/aac746a0069374d081f0dbb183c1811bd6a00355))
+
 ## [0.230.14](https://github.com/go-to-k/cdkd/compare/v0.230.13...v0.230.14) (2026-06-29)
 
 
