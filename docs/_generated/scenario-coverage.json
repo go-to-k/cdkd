@@ -654,6 +654,11 @@
       "scenarios": []
     },
     {
+      "name": "efs-immutable-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "efs-lambda",
       "annotated": true,
       "scenarios": []
@@ -2074,6 +2079,7 @@
     "dynamodb-stream-filter",
     "dynamodb-ttl-attr-change",
     "ecr-scanning",
+    "efs-immutable-replacement",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",
     "eventbridge-pipes",
