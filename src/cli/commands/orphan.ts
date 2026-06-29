@@ -12,7 +12,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
-import { Synthesizer } from '../../synthesis/synthesizer.js';
+import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -146,7 +146,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       );
     }
 
-    logger.info('Synthesizing CDK app to read template...');
+    logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app to read template...'));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
     const result = await synthesizer.synthesize({

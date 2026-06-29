@@ -16,7 +16,11 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from 'cdk-local';
 import { resolveSingleTarget } from '../../local/target-picker.js';
-import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  synthesisStatusMessage,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider, resolveCfnFallbackRegion } from './local-state-source.js';
@@ -301,7 +305,7 @@ async function localInvokeAgentCoreCommand(
       );
     }
 
-    logger.info('Synthesizing CDK app...');
+    logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app...'));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {

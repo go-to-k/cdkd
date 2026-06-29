@@ -29,6 +29,24 @@ export function isPreSynthesizedAssembly(app: string): boolean {
 }
 
 /**
+ * Pick the user-facing status line a command prints right before it invokes
+ * {@link Synthesizer.synthesize}. When `--app` is a pre-synthesized assembly
+ * directory, synthesis is skipped, so "Reading cloud assembly..." is accurate;
+ * otherwise the command's own `synthesizingMessage` (e.g. "Synthesizing CDK
+ * app...") is used. `app` may be undefined (the synthesize() call will then
+ * throw the usual "no app specified" error) — that case keeps the synthesizing
+ * message.
+ */
+export function synthesisStatusMessage(
+  app: string | undefined,
+  synthesizingMessage: string
+): string {
+  return app !== undefined && isPreSynthesizedAssembly(app)
+    ? 'Reading cloud assembly...'
+    : synthesizingMessage;
+}
+
+/**
  * Synthesis options
  */
 export interface SynthesisOptions {

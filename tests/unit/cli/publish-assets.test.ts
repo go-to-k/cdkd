@@ -9,6 +9,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
     synthesize: mockSynthesize,
   })),
+  synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
 
 // AssetPublisher — addAssetsToGraph + executeNode are the surface the command
