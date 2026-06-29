@@ -270,4 +270,44 @@ describe('S3BucketProvider.readCurrentState', () => {
       },
     });
   });
+
+  it('reads standalone replication Prefix and Tag filters back into their CFn shapes', async () => {
+    // The non-And readback arms: SDK `Tag` -> CFn `TagFilter`, and a standalone
+    // `Prefix` passes through unchanged. Round-trips the write path's
+    // `{ Prefix }` / `{ Tag }` outputs symmetrically.
+    let call = 0;
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetBucketReplicationCommand) {
+        call++;
+        const filter =
+          call === 1 ? { Prefix: 'logs/' } : { Tag: { Key: 'replicate', Value: 'yes' } };
+        return Promise.resolve({
+          ReplicationConfiguration: {
+            Role: 'arn:aws:iam::1:role/repl',
+            Rules: [
+              {
+                ID: 'r1',
+                Status: 'Enabled',
+                Priority: 1,
+                Filter: filter,
+                DeleteMarkerReplication: { Status: 'Disabled' },
+                Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+              },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const prefixResult = await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket');
+    expect(
+      (prefixResult?.ReplicationConfiguration as { Rules: any[] }).Rules[0].Filter
+    ).toEqual({ Prefix: 'logs/' });
+
+    const tagResult = await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket');
+    expect((tagResult?.ReplicationConfiguration as { Rules: any[] }).Rules[0].Filter).toEqual({
+      TagFilter: { Key: 'replicate', Value: 'yes' },
+    });
+  });
 });
