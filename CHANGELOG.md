@@ -1,3 +1,10 @@
+## [0.230.18](https://github.com/go-to-k/cdkd/compare/v0.230.17...v0.230.18) (2026-06-29)
+
+
+### Bug Fixes
+
+* **deploy:** say "Reading cloud assembly" for pre-synth -a + refresh demo GIF ([#945](https://github.com/go-to-k/cdkd/issues/945)) ([e3e74fc](https://github.com/go-to-k/cdkd/commit/e3e74fcf263ab72be6f9527a9b2c8e32871369e3))
+
 ## [0.230.17](https://github.com/go-to-k/cdkd/compare/v0.230.16...v0.230.17) (2026-06-29)
 
 
