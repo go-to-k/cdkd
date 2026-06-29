@@ -6,6 +6,10 @@
 
 set -e
 
+# Force a UTF-8 locale so tmux renders multibyte glyphs (cdkd's em-dashes,
+# spinner / status markers, and any emoji) instead of substituting `_`.
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
 DEMO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONF="$DEMO_DIR/tmux-clean.conf"
 
