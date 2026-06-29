@@ -1111,6 +1111,57 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
 
     expect(changes.get('Derived')?.changeType).toBe('NO_CHANGE');
   });
+
+  it('does NOT mutate the desired template (resolveBestEffort resolves a clone)', async () => {
+    // The intrinsic resolver mutates its input in place; resolveBestEffort must
+    // clone first so the raw Fn::GetAtt survives for the deploy phase to
+    // re-resolve against the in-flight (new) upstream value.
+    const state = baseState();
+    state.resources['Base'] = {
+      physicalId: 'base',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'base', Value: 'world' },
+      attributes: { Value: 'world' },
+    };
+    state.resources['Derived'] = {
+      physicalId: 'derived',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'derived', Value: 'world' },
+      attributes: {},
+    };
+    const derivedValue: Record<string, unknown> = {
+      'Fn::Sub': ['hello-${V}', { V: { 'Fn::GetAtt': ['Base', 'Value'] } }],
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Base: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'base', Value: 'world2' } },
+        Derived: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'derived', Value: derivedValue } },
+      },
+    };
+
+    // A MUTATING resolver: it rewrites the Fn::Sub variable map's GetAtt in place
+    // (as the real intrinsic resolver does).
+    const mutatingResolver = async (value: unknown): Promise<unknown> => {
+      const walk = (v: unknown): unknown => {
+        if (v === null || typeof v !== 'object') return v;
+        if (Array.isArray(v)) return v.map(walk);
+        const obj = v as Record<string, unknown>;
+        if ('Fn::GetAtt' in obj) return 'world'; // resolved current value
+        for (const k of Object.keys(obj)) obj[k] = walk(obj[k]); // MUTATE in place
+        return obj;
+      };
+      return walk(value);
+    };
+
+    const calc = new DiffCalculator();
+    await calc.calculateDiff(state, template, mutatingResolver);
+
+    // The shared template's raw Fn::GetAtt must be intact (NOT rewritten to 'world').
+    const sub = (template.Resources.Derived.Properties!.Value as { 'Fn::Sub': [string, Record<string, unknown>] })[
+      'Fn::Sub'
+    ];
+    expect(sub[1].V).toEqual({ 'Fn::GetAtt': ['Base', 'Value'] });
+  });
 });
 
 describe('DiffCalculator - condition-excluded resource (issue #840)', () => {

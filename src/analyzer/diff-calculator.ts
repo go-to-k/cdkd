@@ -374,6 +374,13 @@ export class DiffCalculator {
    * Promotion is safe even when speculative: the deploy engine re-resolves the
    * promoted resource against the in-flight state and skips the provider call
    * when nothing actually changed.
+   *
+   * Single-hop by design (unlike {@link promoteReplacementDependents}, which is
+   * fully transitive via a worklist): `changedPropsByUpstream` is frozen at entry,
+   * so a chain `A(in-place) -> B(reads A's changed attr) -> C(reads B's now-changed
+   * attr)` promotes B but not C. Deep GetAtt-of-a-changed-attr chains are rare in
+   * practice; if one ever needs full transitivity, promote to a worklist that
+   * re-derives changed props as dependents are promoted.
    */
   private promoteInPlaceAttributeDependents(
     changes: Map<string, ResourceChange>,
