@@ -202,4 +202,4 @@ s3-replication-and-filter	2026-06-29T05:06:19Z	PASS	55	verify.sh	And filter crea
 replacement-immutable-name	2026-06-29T06:27:27Z	PASS	130	verify.sh	6-type rename w/ --force-stateful-recreation, orph clean
 bench-cdk-sample	2026-06-29T06:27:27Z	PASS	420	standard	broad VPC/NAT/CF/Lambda, 37+2retained 0err, loggroups swept
 efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustness refactor re-verified, orph clean
-lambda	2026-06-29T15:25:17Z	PASS	77	verify.sh	RecursiveLoop+ReservedConcurrency backfill; destroy 9 del 0 err; orph clean
+lambda	2026-06-29T15:57:31Z	PASS	89	verify.sh	synth-label PR revalidation; destroy 9 del 0 err; orph clean

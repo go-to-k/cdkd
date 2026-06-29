@@ -11,7 +11,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
-import { Synthesizer } from '../../synthesis/synthesizer.js';
+import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -112,7 +112,7 @@ async function diffCommand(
 
   try {
     // 1. Synthesize CDK app
-    logger.info('Synthesizing CDK app...');
+    logger.info(synthesisStatusMessage(app, 'Synthesizing CDK app...'));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
     const result = await synthesizer.synthesize({

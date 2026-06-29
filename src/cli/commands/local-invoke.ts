@@ -15,7 +15,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
-import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  synthesisStatusMessage,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider } from './local-state-source.js';
@@ -368,7 +372,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       throw new Error('No CDK app specified. Pass --app, set CDKD_APP, or add "app" to cdk.json.');
     }
 
-    logger.info('Synthesizing CDK app...');
+    logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app...'));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {

@@ -12,7 +12,11 @@ import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
-import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  synthesisStatusMessage,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { resolveApp } from '../config-loader.js';
@@ -81,7 +85,7 @@ async function publishAssetsCommand(
   }
 
   // 1. Synthesize CDK app (or read pre-synthesized assembly when --app is a dir).
-  logger.info('Synthesizing CDK app...');
+  logger.info(synthesisStatusMessage(app, 'Synthesizing CDK app...'));
   const synthesizer = new Synthesizer();
   const context = parseContextOptions(options.context);
   const synthOptions: SynthesisOptions = {

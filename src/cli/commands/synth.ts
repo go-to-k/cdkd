@@ -13,7 +13,11 @@ import { getLogger } from '../../utils/logger.js';
 import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
-import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  synthesisStatusMessage,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import { AssemblyReader } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 import { toYaml } from '../../utils/yaml.js';
@@ -65,7 +69,7 @@ async function synthCommand(options: {
   }
   options.app = app;
 
-  logger.info('Synthesizing CDK app...');
+  logger.info(synthesisStatusMessage(app, 'Synthesizing CDK app...'));
   logger.debug('App command:', options.app);
   logger.debug('Output directory:', options.output);
 
