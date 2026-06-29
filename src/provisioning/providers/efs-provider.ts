@@ -391,18 +391,25 @@ export class EFSProvider implements ResourceProvider {
     // exists; a bare `cdkd-${logicalId}` token collides with the old FS's token
     // and EFS rejects the create with "already exists with creation token ..."
     // because the immutable params differ). Hash ONLY the immutable (createOnly)
-    // inputs, key-sorted so the digest is stable against mutable-prop churn and
-    // object key reordering: identical immutable inputs (a retry) hash to the
-    // same token, while a replacement — which by definition changed an immutable
-    // property — hashes to a different token, so the new FS coexists with the old.
-    const immutableForToken: Record<string, unknown> = {
-      AvailabilityZoneName: properties['AvailabilityZoneName'],
-      Encrypted: properties['Encrypted'],
-      KmsKeyId: properties['KmsKeyId'],
-      PerformanceMode: properties['PerformanceMode'],
-    };
+    // inputs, in a FIXED order, each value serialized independently with
+    // `JSON.stringify`: identical immutable inputs (a retry) hash to the same
+    // token, while a replacement — which by definition changed an immutable
+    // property — hashes to a different token, so the new FS coexists with the
+    // old. Per-value `JSON.stringify` (rather than `JSON.stringify(obj,
+    // allowlist)`, whose array replacer recursively strips nested keys) keeps
+    // the digest faithful for any value shape — defensive even though these
+    // four properties are always intrinsic-resolved scalars by create() time.
     const tokenHash = createHash('sha256')
-      .update(JSON.stringify(immutableForToken, Object.keys(immutableForToken).sort()))
+      .update(
+        [
+          properties['AvailabilityZoneName'],
+          properties['Encrypted'],
+          properties['KmsKeyId'],
+          properties['PerformanceMode'],
+        ]
+          .map((v) => JSON.stringify(v ?? null))
+          .join(' ')
+      )
       .digest('hex')
       .slice(0, 12);
     const creationToken = `cdkd-${logicalId}-${tokenHash}`;

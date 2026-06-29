@@ -123,6 +123,14 @@ describe('EFSProvider', () => {
           FileSystemTags: [{ Key: 'x', Value: 'y' }],
         });
         expect(aWithMutable).toBe(a);
+        // Robustness: two DISTINCT nested-object immutable values (defensive —
+        // intrinsics are resolved to scalars by create() time, but a future leak
+        // must not collapse two different values to one token, as a recursive
+        // key-allowlist serialization would). Per-value JSON.stringify keeps them
+        // distinct.
+        const obj1 = await tokenFor({ KmsKeyId: { Ref: 'KeyOne' } });
+        const obj2 = await tokenFor({ KmsKeyId: { Ref: 'KeyTwo' } });
+        expect(obj1).not.toBe(obj2);
       });
 
       it('should create file system with tags and encryption', async () => {
