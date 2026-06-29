@@ -22,7 +22,7 @@ import {
 } from '../../deployment/recreate-targets.js';
 import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
 import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
-import { Synthesizer } from '../../synthesis/synthesizer.js';
+import { Synthesizer, isPreSynthesizedAssembly } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
@@ -225,8 +225,11 @@ async function deployCommand(
   process.on('SIGINT', topLevelSigintHandler);
 
   try {
-    // 1. Synthesize CDK app
-    logger.info(cyan('Synthesizing CDK app...'));
+    // 1. Synthesize CDK app (or read a pre-synthesized assembly when --app
+    // points at an existing directory — synthesis is skipped in that case).
+    logger.info(
+      cyan(isPreSynthesizedAssembly(app) ? 'Reading cloud assembly...' : 'Synthesizing CDK app...')
+    );
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
     const result = await synthesizer.synthesize({
