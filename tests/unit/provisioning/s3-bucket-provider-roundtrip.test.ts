@@ -986,6 +986,121 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
     expect(rule.Prefix).toBeUndefined();
   });
 
+  it('ReplicationConfiguration: combined And filter (prefix + tags) reaches AWS, not replicate-all', async () => {
+    // Regression (bug-hunt 2026-06-29): CFn/CDK express a combined prefix+tag
+    // replication filter ONLY via `Filter.And { Prefix, TagFilters[] }`. The
+    // provider previously read only top-level `Filter.Prefix` / `Filter.TagFilter`
+    // and never `Filter.And`, so a combined filter silently collapsed to an
+    // empty `Filter: {}` (replicate EVERY object) — a scope-broadening divergence.
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Priority: 1,
+              Filter: {
+                And: {
+                  Prefix: 'logs/',
+                  TagFilters: [
+                    { Key: 'replicate', Value: 'yes' },
+                    { Key: 'tier', Value: 'gold' },
+                  ],
+                },
+              },
+              DeleteMarkerReplication: { Status: 'Disabled' },
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rule = (
+      callsOf(PutBucketReplicationCommand)[0].input as {
+        ReplicationConfiguration: { Rules: any[] };
+      }
+    ).ReplicationConfiguration.Rules[0];
+    // SDK shape: And.TagFilters -> And.Tags, every tag preserved.
+    expect(rule.Filter).toEqual({
+      And: {
+        Prefix: 'logs/',
+        Tags: [
+          { Key: 'replicate', Value: 'yes' },
+          { Key: 'tier', Value: 'gold' },
+        ],
+      },
+    });
+  });
+
+  it('ReplicationConfiguration: And filter with tags only (no prefix) maps to And.Tags', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Priority: 1,
+              Filter: { And: { TagFilters: [{ Key: 'replicate', Value: 'yes' }] } },
+              DeleteMarkerReplication: { Status: 'Disabled' },
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rule = (
+      callsOf(PutBucketReplicationCommand)[0].input as {
+        ReplicationConfiguration: { Rules: any[] };
+      }
+    ).ReplicationConfiguration.Rules[0];
+    expect(rule.Filter).toEqual({ And: { Tags: [{ Key: 'replicate', Value: 'yes' }] } });
+  });
+
+  it('ReplicationConfiguration: single TagFilter maps to SDK Tag (no And wrapper)', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Priority: 1,
+              Filter: { TagFilter: { Key: 'replicate', Value: 'yes' } },
+              DeleteMarkerReplication: { Status: 'Disabled' },
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const rule = (
+      callsOf(PutBucketReplicationCommand)[0].input as {
+        ReplicationConfiguration: { Rules: any[] };
+      }
+    ).ReplicationConfiguration.Rules[0];
+    expect(rule.Filter).toEqual({ Tag: { Key: 'replicate', Value: 'yes' } });
+  });
+
   it('ReplicationConfiguration: present -> absent fires DeleteBucketReplication', async () => {
     await provider.update(
       'L',

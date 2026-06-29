@@ -5,6 +5,7 @@ import {
   GetBucketEncryptionCommand,
   GetPublicAccessBlockCommand,
   GetBucketTaggingCommand,
+  GetBucketReplicationCommand,
   NoSuchBucket,
 } from '@aws-sdk/client-s3';
 
@@ -217,5 +218,56 @@ describe('S3BucketProvider.readCurrentState', () => {
       RestrictPublicBuckets: false,
     });
     expect(result?.Tags).toEqual([]);
+  });
+
+  it('reads an And replication filter back into the CFn-canonical And shape', async () => {
+    // Regression (bug-hunt 2026-06-29): the readback for a combined AWS replication
+    // filter (`And { Prefix, Tags[] }`) previously collapsed to a top-level
+    // `{ Prefix, TagFilter }` (not a valid CFn shape) and dropped every tag past
+    // the first — which would surface as phantom drift against the template's
+    // `Filter.And.TagFilters` and silently lose tags on round-trip. It must
+    // round-trip to `{ And: { Prefix, TagFilters[] } }` (SDK `And.Tags` -> CFn
+    // `And.TagFilters`), preserving all tags.
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetBucketReplicationCommand) {
+        return Promise.resolve({
+          ReplicationConfiguration: {
+            Role: 'arn:aws:iam::1:role/repl',
+            Rules: [
+              {
+                ID: 'r1',
+                Status: 'Enabled',
+                Priority: 1,
+                Filter: {
+                  And: {
+                    Prefix: 'logs/',
+                    Tags: [
+                      { Key: 'replicate', Value: 'yes' },
+                      { Key: 'tier', Value: 'gold' },
+                    ],
+                  },
+                },
+                DeleteMarkerReplication: { Status: 'Disabled' },
+                Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+              },
+            ],
+          },
+        });
+      }
+      // Every other GetBucket* / HeadBucket call: minimal "configured but empty".
+      return Promise.resolve({});
+    });
+
+    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const repl = result?.ReplicationConfiguration as { Rules: any[] };
+    expect(repl.Rules[0].Filter).toEqual({
+      And: {
+        Prefix: 'logs/',
+        TagFilters: [
+          { Key: 'replicate', Value: 'yes' },
+          { Key: 'tier', Value: 'gold' },
+        ],
+      },
+    });
   });
 });
