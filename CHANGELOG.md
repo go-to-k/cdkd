@@ -1,3 +1,10 @@
+## [0.230.17](https://github.com/go-to-k/cdkd/compare/v0.230.16...v0.230.17) (2026-06-29)
+
+
+### Bug Fixes
+
+* **diff:** detect createOnly-property replacements + guard stateful ones ([#943](https://github.com/go-to-k/cdkd/issues/943)) ([ba64134](https://github.com/go-to-k/cdkd/commit/ba64134cf03c0dba69c39530317639d8c6b5fefd))
+
 ## [0.230.16](https://github.com/go-to-k/cdkd/compare/v0.230.15...v0.230.16) (2026-06-29)
 
 
