@@ -200,6 +200,6 @@ s3-lifecycle	2026-06-28T17:58:35Z	PASS	51	verify.sh	V1/V2 mix + top-level Object
 inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 s3-replication-and-filter	2026-06-29T05:06:19Z	PASS	55	verify.sh	And filter create+update+destroy, orph clean
-efs-immutable-replacement	2026-06-29T06:27:27Z	PASS	95	verify.sh	createOnly replacement + stateful guard + EFS token, orph clean
 replacement-immutable-name	2026-06-29T06:27:27Z	PASS	130	verify.sh	6-type rename w/ --force-stateful-recreation, orph clean
 bench-cdk-sample	2026-06-29T06:27:27Z	PASS	420	standard	broad VPC/NAT/CF/Lambda, 37+2retained 0err, loggroups swept
+efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustness refactor re-verified, orph clean
