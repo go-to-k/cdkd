@@ -1,3 +1,10 @@
+## [0.230.14](https://github.com/go-to-k/cdkd/compare/v0.230.13...v0.230.14) (2026-06-29)
+
+
+### Bug Fixes
+
+* **diff:** propagate in-place upstream attribute changes to GetAtt dependents ([#939](https://github.com/go-to-k/cdkd/issues/939)) ([772dd03](https://github.com/go-to-k/cdkd/commit/772dd03f7aed9368670b8fa917f61d019876d5ed))
+
 ## [0.230.13](https://github.com/go-to-k/cdkd/compare/v0.230.12...v0.230.13) (2026-06-28)
 
 
