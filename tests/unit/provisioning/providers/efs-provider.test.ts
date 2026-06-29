@@ -114,6 +114,15 @@ describe('EFSProvider', () => {
         const b = await tokenFor({ PerformanceMode: 'generalPurpose' }); // immutable change
         expect(a).toBe(aAgain); // stable across identical creates (retry-idempotent)
         expect(a).not.toBe(b); // a replacement's new FS gets a fresh token
+        // A MUTABLE-only difference (ThroughputMode / Tags) does NOT change the
+        // token — only the immutable (createOnly) subset is hashed, so mutable
+        // churn or key reordering cannot accidentally fork the idempotency key.
+        const aWithMutable = await tokenFor({
+          PerformanceMode: 'maxIO',
+          ThroughputMode: 'elastic',
+          FileSystemTags: [{ Key: 'x', Value: 'y' }],
+        });
+        expect(aWithMutable).toBe(a);
       });
 
       it('should create file system with tags and encryption', async () => {

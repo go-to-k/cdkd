@@ -64,6 +64,16 @@ describe('getTopLevelCreateOnlyProperties', () => {
     expect([...result].sort()).toEqual(['Baz', 'Foo']);
   });
 
+  it('unescapes RFC 6901 JSON-pointer segments (~1 -> /, ~0 -> ~) in the property name', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce(
+      schemaResponse(['/properties/Foo~1Bar', '/properties/Tilde~0Name'])
+    );
+
+    const result = await getTopLevelCreateOnlyProperties('AWS::Some::Type');
+
+    expect([...result].sort()).toEqual(['Foo/Bar', 'Tilde~Name']);
+  });
+
   it('caches SUCCESSFUL lookups per type (one DescribeType for repeated calls)', async () => {
     mockCloudFormationSend.mockResolvedValueOnce(schemaResponse(['/properties/Engine']));
 

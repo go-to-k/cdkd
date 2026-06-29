@@ -390,14 +390,22 @@ export class EFSProvider implements ResourceProvider {
     // REPLACEMENT (the deploy engine creates the new FS while the old still
     // exists; a bare `cdkd-${logicalId}` token collides with the old FS's token
     // and EFS rejects the create with "already exists with creation token ..."
-    // because the immutable params differ). Hashing the create properties gives
-    // both: identical inputs (a retry) hash to the same token, while a
-    // replacement — which by definition changed an immutable property — hashes
-    // to a different token, so the new FS coexists with the old one.
-    const creationToken = `cdkd-${logicalId}-${createHash('sha256')
-      .update(JSON.stringify(properties))
+    // because the immutable params differ). Hash ONLY the immutable (createOnly)
+    // inputs, key-sorted so the digest is stable against mutable-prop churn and
+    // object key reordering: identical immutable inputs (a retry) hash to the
+    // same token, while a replacement — which by definition changed an immutable
+    // property — hashes to a different token, so the new FS coexists with the old.
+    const immutableForToken: Record<string, unknown> = {
+      AvailabilityZoneName: properties['AvailabilityZoneName'],
+      Encrypted: properties['Encrypted'],
+      KmsKeyId: properties['KmsKeyId'],
+      PerformanceMode: properties['PerformanceMode'],
+    };
+    const tokenHash = createHash('sha256')
+      .update(JSON.stringify(immutableForToken, Object.keys(immutableForToken).sort()))
       .digest('hex')
-      .slice(0, 12)}`;
+      .slice(0, 12);
+    const creationToken = `cdkd-${logicalId}-${tokenHash}`;
 
     const tags = properties['FileSystemTags'] as Array<{ Key: string; Value: string }> | undefined;
 
