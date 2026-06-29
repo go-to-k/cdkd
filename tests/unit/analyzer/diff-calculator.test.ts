@@ -12,6 +12,90 @@ const baseState = (): StackState => ({
   lastModified: 0,
 });
 
+describe('DiffCalculator - nested-map-key removal (bug-hunt 2026-06-29)', () => {
+  // Removing a key from a NESTED map (e.g. a Lambda env var) must be detected.
+  // The prior asymmetric valuesEqual walked only the new-side keys, so an
+  // old-only nested key (a removal) compared equal -> NO_CHANGE -> never reached
+  // AWS (the dropped env var stayed live).
+  it('detects a key removed from a nested map (Lambda Environment.Variables)', async () => {
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: {
+        FunctionName: 'my-fn',
+        Environment: { Variables: { KEEP: 'yes', TOREMOVE: 'bye' } },
+      },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            FunctionName: 'my-fn',
+            Environment: { Variables: { KEEP: 'yes' } }, // TOREMOVE dropped
+          },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+
+    expect(changes.get('Fn')?.changeType).toBe('UPDATE');
+    const envChange = changes.get('Fn')?.propertyChanges?.find((pc) => pc.path === 'Environment');
+    expect(envChange).toBeDefined();
+  });
+
+  it('reports NO_CHANGE when a nested map is unchanged', async () => {
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'my-fn', Environment: { Variables: { KEEP: 'yes' } } },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { FunctionName: 'my-fn', Environment: { Variables: { KEEP: 'yes' } } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    expect(changes.get('Fn')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('detects a key ADDED to a nested map (still works)', async () => {
+    const state = baseState();
+    state.resources['Fn'] = {
+      physicalId: 'my-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: { FunctionName: 'my-fn', Environment: { Variables: { KEEP: 'yes' } } },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            FunctionName: 'my-fn',
+            Environment: { Variables: { KEEP: 'yes', NEW: 'added' } },
+          },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    expect(changes.get('Fn')?.changeType).toBe('UPDATE');
+  });
+});
+
 describe('DiffCalculator - intrinsic-aware diff', () => {
   it('detects literal changes inside Fn::Join when a resolver is provided', async () => {
     // State stores resolved values (as deploy-engine writes them after intrinsic resolution)

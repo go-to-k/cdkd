@@ -857,6 +857,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-env-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-event-invoke-config-update",
       "annotated": false,
       "scenarios": []
@@ -2079,6 +2084,7 @@
     "kinesis-stream-mode-switch",
     "lambda-alias-provisioned-concurrency",
     "lambda-destinations",
+    "lambda-env-removal",
     "lambda-event-invoke-config-update",
     "lambda-layer-version-update",
     "lambda-log-retention",

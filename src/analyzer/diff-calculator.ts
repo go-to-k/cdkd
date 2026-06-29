@@ -747,13 +747,24 @@ export class DiffCalculator {
       const aObj = a as Record<string, unknown>;
       const bObj = b as Record<string, unknown>;
 
+      const aKeys = Object.keys(aObj);
       const bKeys = Object.keys(bObj);
 
-      // Check keys in new (template) side exist in old (state) side with equal values.
-      // Keys only in old side are ignored — they are typically AWS-added defaults
-      // (e.g., IncludeCookies, Enabled, Prefix in CloudFront Logging) that don't
-      // appear in the template but get stored in state after deployment.
-      // Keys only in new side are real additions and will cause inequality.
+      // SYMMETRIC compare: a key present only in the OLD (state) side is a
+      // genuine REMOVAL and must be detected — e.g. a Lambda env var dropped from
+      // `Environment.Variables`, which AWS replaces wholesale (the dropped key
+      // must reach AWS). The prior asymmetric compare (only walking the new-side
+      // keys) silently swallowed nested-map-key removals: top-level property
+      // removal + array-element removal were already caught (by the caller's
+      // key-union + array-length check), but a key removed from a NESTED object
+      // (Environment.Variables, Tags maps, etc.) compared equal and never
+      // re-provisioned. cdkd stores the resolved TEMPLATE properties in
+      // `state.properties` (AWS-observed defaults live in `observedProperties`),
+      // so the old-side keys here are template-derived too — a length mismatch is
+      // a real add or remove, not an AWS-added default.
+      if (aKeys.length !== bKeys.length) {
+        return false; // key added OR removed
+      }
       for (const key of bKeys) {
         if (!(key in aObj)) {
           return false; // New key added in template
