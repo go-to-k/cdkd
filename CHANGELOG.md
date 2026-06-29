@@ -1,3 +1,10 @@
+## [0.230.19](https://github.com/go-to-k/cdkd/compare/v0.230.18...v0.230.19) (2026-06-29)
+
+
+### Bug Fixes
+
+* **cli:** say 'Reading cloud assembly' for pre-synth -a across all commands ([#946](https://github.com/go-to-k/cdkd/issues/946)) ([215ba38](https://github.com/go-to-k/cdkd/commit/215ba3891038bf537b0a9d4ef5f41095b3be5192))
+
 ## [0.230.18](https://github.com/go-to-k/cdkd/compare/v0.230.17...v0.230.18) (2026-06-29)
 
 
