@@ -22,12 +22,20 @@ ln -sf "$CDKD_BIN" "$SHADOW_BIN/cdkd"
 export PATH="$SHADOW_BIN:$PATH"
 trap 'rm -rf "$SHADOW_BIN"' EXIT
 
+# The `cdk` binary used for the RIGHT pane. Defaults to whatever `cdk` is on
+# PATH; override at record time to pin a version, e.g.
+#   CDK_BIN="npx -y aws-cdk@2.1116.0" vhs cdk-vs-cdkd.tape
+# A pinned older CLI is used for the published GIF because newer `cdk deploy`
+# output prints the change-set ARN (which embeds the AWS account id) — see
+# README.md "Reproducing".
+CDK_BIN="${CDK_BIN:-cdk}"
+
 # Pre-synth the CDK app ONCE (cdk synth writes cdk.out/, used by both
 # `cdkd deploy -a cdk.out` and `cdk deploy -a cdk.out`). The recorded
 # `time real` blocks then reflect deploy phase only — matching the
 # README's deploy-only benchmark numbers (the synth cost is identical
 # for both tools and would just add noise to the comparison).
-(cd "$DEMO_DIR" && cdk synth --all >/dev/null 2>&1)
+(cd "$DEMO_DIR" && $CDK_BIN synth --all >/dev/null 2>&1)
 
 # FORCE_COLOR=1 makes cdkd's chalk emit ANSI colors even though tmux's
 # pseudo-TTY would otherwise be detected as non-color. cdk already colors
@@ -39,7 +47,7 @@ ENV='FORCE_COLOR=1 COLORTERM=truecolor'
 # `-a cdk.out` skips synth on both tools, so `time real` reflects deploy
 # phase only.
 LEFT_CMD="echo '\$ time cdkd deploy CdkdDemoCdkd -a cdk.out'; echo; $ENV time cdkd deploy CdkdDemoCdkd -a cdk.out"
-RIGHT_CMD="echo '\$ time cdk deploy CdkdDemoCdk -a cdk.out'; echo; $ENV time cdk deploy CdkdDemoCdk -a cdk.out"
+RIGHT_CMD="echo '\$ time cdk deploy CdkdDemoCdk -a cdk.out'; echo; $ENV time $CDK_BIN deploy CdkdDemoCdk -a cdk.out"
 
 tmux -f "$CONF" new-session  -d -s demo -x 220 -y 40 "bash -c \"$LEFT_CMD; sleep 9999\""
 tmux select-pane -t demo:0.0 -T '#[fg=#a6e3a1,bold]  cdkd ─  cdkd deploy '

@@ -13,6 +13,22 @@ import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
 
 /**
+ * CDK CLI compatibility: a `--app` value pointing at an existing directory is
+ * treated as a pre-synthesized cloud assembly — synthesis (the subprocess
+ * execution) is skipped and the manifest is read directly. A `--app` value that
+ * is a command (e.g. "node app.ts") or any path that is not an existing
+ * directory is synthesized normally.
+ *
+ * Exported so callers can pick an accurate status message
+ * ("Reading cloud assembly..." vs "Synthesizing CDK app...") BEFORE invoking
+ * {@link Synthesizer.synthesize}, which is the single place that branches on it.
+ */
+export function isPreSynthesizedAssembly(app: string): boolean {
+  const appPath = resolve(app);
+  return existsSync(appPath) && statSync(appPath).isDirectory();
+}
+
+/**
  * Synthesis options
  */
 export interface SynthesisOptions {
@@ -96,7 +112,7 @@ export class Synthesizer {
     // as a pre-synthesized cloud assembly and skip subprocess execution.
     // See aws-cdk/lib/cxapp/exec.ts: "bypass 'synth' if app points to a cloud assembly".
     const appPath = resolve(options.app);
-    if (existsSync(appPath) && statSync(appPath).isDirectory()) {
+    if (isPreSynthesizedAssembly(options.app)) {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
       const stacks = this.assemblyReader.getAllStacks(appPath, manifest);
