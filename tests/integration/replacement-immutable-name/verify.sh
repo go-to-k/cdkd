@@ -122,9 +122,15 @@ alarm_exists "${STACK}-alarm-v1"  || { echo "FAIL: alarm-v1 missing after Phase 
 echo "    all 6 v1 resources present"
 
 # --- Phase 2: rename -> v2 (must REPLACE) -----------------------------
+# stream (Kinesis), secret (SecretsManager) and param (SSM) are stateful types,
+# so a property-driven replacement (the immutable Name change) requires
+# --force-stateful-recreation to confirm the data-losing DELETE+CREATE; without
+# it the deploy is correctly blocked (STATEFUL_REPLACE_BLOCKED). The other three
+# (sm=StateMachine, rule=Events::Rule, alarm=CloudWatch::Alarm) are ephemeral
+# and would replace without the flag, but a single deploy uses one flag set.
 echo "==> Phase 2: re-deploy renaming all to -v2 (must replace, not in-place)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force-stateful-recreation --yes
 
 # new -v2 present
 stream_live  "${STACK}-stream-v2" || { echo "FAIL: stream-v2 missing after Phase 2 (rename not applied)" >&2; exit 1; }

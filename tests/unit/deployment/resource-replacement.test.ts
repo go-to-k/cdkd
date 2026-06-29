@@ -185,7 +185,10 @@ describe('DeployEngine - Resource Replacement', () => {
       mockDagBuilder as any,
       mockDiffCalculator as any,
       mockProviderRegistry as any,
-      {},
+      // AWS::S3::Bucket is stateful; property-driven replacement (an immutable
+      // property changed) now requires --force-stateful-recreation to confirm
+      // the data-losing DELETE+CREATE (the stateful-replace guard).
+      { forceStatefulRecreation: true },
       'us-east-1'
     );
 
@@ -267,7 +270,10 @@ describe('DeployEngine - Resource Replacement', () => {
       mockDagBuilder as any,
       mockDiffCalculator as any,
       mockProviderRegistry as any,
-      {},
+      // AWS::S3::Bucket is stateful; property-driven replacement (an immutable
+      // property changed) now requires --force-stateful-recreation to confirm
+      // the data-losing DELETE+CREATE (the stateful-replace guard).
+      { forceStatefulRecreation: true },
       'us-east-1'
     );
 
@@ -311,7 +317,10 @@ describe('DeployEngine - Resource Replacement', () => {
       mockDagBuilder as any,
       mockDiffCalculator as any,
       mockProviderRegistry as any,
-      {},
+      // AWS::S3::Bucket is stateful; property-driven replacement (an immutable
+      // property changed) now requires --force-stateful-recreation to confirm
+      // the data-losing DELETE+CREATE (the stateful-replace guard).
+      { forceStatefulRecreation: true },
       'us-east-1'
     );
 
@@ -368,7 +377,10 @@ describe('DeployEngine - Resource Replacement', () => {
       mockDagBuilder as any,
       mockDiffCalculator as any,
       mockProviderRegistry as any,
-      {},
+      // AWS::S3::Bucket is stateful; property-driven replacement (an immutable
+      // property changed) now requires --force-stateful-recreation to confirm
+      // the data-losing DELETE+CREATE (the stateful-replace guard).
+      { forceStatefulRecreation: true },
       'us-east-1'
     );
 
@@ -412,7 +424,10 @@ describe('DeployEngine - Resource Replacement', () => {
       mockDagBuilder as any,
       mockDiffCalculator as any,
       mockProviderRegistry as any,
-      {},
+      // AWS::S3::Bucket is stateful; property-driven replacement (an immutable
+      // property changed) now requires --force-stateful-recreation to confirm
+      // the data-losing DELETE+CREATE (the stateful-replace guard).
+      { forceStatefulRecreation: true },
       'us-east-1'
     );
 
@@ -420,5 +435,122 @@ describe('DeployEngine - Resource Replacement', () => {
 
     // Lock should still be released
     expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName, 'us-east-1');
+  });
+
+  it('BLOCKS a property-driven replacement of a stateful type without --force-stateful-recreation', async () => {
+    // S3::Bucket is stateful. An immutable-property change (BucketName) drives a
+    // replacement; without --force-stateful-recreation cdkd must refuse the
+    // data-losing DELETE+CREATE rather than silently destroy the bucket
+    // (matching the --replace / --recreate-via-* guard).
+    const changes = new Map<string, ResourceChange>([
+      [
+        'MyBucket',
+        {
+          logicalId: 'MyBucket',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          currentProperties: { BucketName: 'old-bucket-name' },
+          desiredProperties: { BucketName: 'new-bucket-name' },
+          propertyChanges: [
+            {
+              path: 'BucketName',
+              oldValue: 'old-bucket-name',
+              newValue: 'new-bucket-name',
+              requiresReplacement: true,
+            },
+          ],
+        },
+      ],
+    ]);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+
+    const engine = new DeployEngine(
+      mockStateBackend as any,
+      mockLockManager as any,
+      mockDagBuilder as any,
+      mockDiffCalculator as any,
+      mockProviderRegistry as any,
+      {}, // NO forceStatefulRecreation -> the guard must fire
+      'us-east-1'
+    );
+
+    // The deploy fails (the guard throws STATEFUL_REPLACE_BLOCKED, which the
+    // engine aggregates into a per-resource failure). The load-bearing proof is
+    // that the bucket was NOT replaced — create / delete were never called,
+    // i.e. the guard fired BEFORE any destructive op (contrast the parallel
+    // "ALLOWS a non-stateful type" test, which DOES create + delete).
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+    expect(mockProvider.create).not.toHaveBeenCalled();
+    expect(mockProvider.delete).not.toHaveBeenCalled();
+    expect(mockProvider.update).not.toHaveBeenCalled();
+    expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName, 'us-east-1');
+  });
+
+  it('ALLOWS a property-driven replacement of a NON-stateful type without the flag', async () => {
+    // AWS::Lambda::Function is NOT stateful — an immutable-property change
+    // replaces it freely (no --force-stateful-recreation needed), matching the
+    // pre-existing behavior for ephemeral types.
+    const lambdaState: StackState = {
+      version: 1,
+      stackName,
+      resources: {
+        MyFn: {
+          physicalId: 'old-fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { FunctionName: 'old-fn' },
+        },
+      },
+      outputs: {},
+      lastModified: Date.now(),
+    };
+    mockStateBackend.getState.mockResolvedValue({
+      state: { ...lambdaState, resources: { ...lambdaState.resources } },
+      etag: 'etag-123',
+    });
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['MyFn']]);
+    mockProvider.create.mockResolvedValue({ physicalId: 'new-fn', attributes: {} });
+
+    const lambdaTemplate: CloudFormationTemplate = {
+      Resources: {
+        MyFn: { Type: 'AWS::Lambda::Function', Properties: { FunctionName: 'new-fn' } },
+      },
+    };
+    const changes = new Map<string, ResourceChange>([
+      [
+        'MyFn',
+        {
+          logicalId: 'MyFn',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::Lambda::Function',
+          currentProperties: { FunctionName: 'old-fn' },
+          desiredProperties: { FunctionName: 'new-fn' },
+          propertyChanges: [
+            {
+              path: 'FunctionName',
+              oldValue: 'old-fn',
+              newValue: 'new-fn',
+              requiresReplacement: true,
+            },
+          ],
+        },
+      ],
+    ]);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+
+    const engine = new DeployEngine(
+      mockStateBackend as any,
+      mockLockManager as any,
+      mockDagBuilder as any,
+      mockDiffCalculator as any,
+      mockProviderRegistry as any,
+      {}, // no flag — non-stateful types replace freely
+      'us-east-1'
+    );
+
+    await engine.deploy(stackName, lambdaTemplate);
+
+    expect(mockProvider.create).toHaveBeenCalledTimes(1);
+    expect(mockProvider.delete).toHaveBeenCalledTimes(1);
   });
 });

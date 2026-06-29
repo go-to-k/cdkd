@@ -2272,6 +2272,36 @@ export class DeployEngine {
         const dependencies = this.extractAllDependencies(template, logicalId);
 
         if (needsReplacement) {
+          // Stateful guard for PROPERTY-DRIVEN replacement (an immutable /
+          // createOnly property changed in the template). DELETE+CREATEing a
+          // stateful type (RDS / EFS / Secret / SSM Parameter / Kinesis / etc.)
+          // loses all of its data, so — mirroring the `--replace` and
+          // `--recreate-via-*` paths — require `--force-stateful-recreation` to
+          // confirm the data loss. Only the property-driven case is gated here:
+          // the `--recreate-via-*` flags run their own pre-flight stateful probe
+          // (`probeStatefulRecreateTargetsAsync`) before the deploy, so a
+          // recreate-flagged target has already been validated. Uses the
+          // conservative mid-deploy variant (treats a non-probed S3 bucket as
+          // stateful) since the diff loop has no chance to run the async
+          // object-count probe.
+          if (propertyDrivenReplacement && !recreateFlagged) {
+            const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
+            if (statefulReason && this.options.forceStatefulRecreation !== true) {
+              const immutableProps = change.propertyChanges
+                ?.filter((pc) => pc.requiresReplacement)
+                .map((pc) => pc.path)
+                .join(', ');
+              throw new CdkdError(
+                `${logicalId} (${resourceType}) requires replacement (immutable property changed: ` +
+                  `${immutableProps}) but it is a stateful resource — ` +
+                  `${renderStatefulReason(statefulReason)}. Re-run with ` +
+                  `--force-stateful-recreation to confirm the data loss, or change the resource ` +
+                  `definition to avoid the immutable-property change.`,
+                'STATEFUL_REPLACE_BLOCKED'
+              );
+            }
+          }
+
           // Resource replacement: DELETE old → CREATE new
           let replacementReason: string;
           if (recreateViaCcApi) {

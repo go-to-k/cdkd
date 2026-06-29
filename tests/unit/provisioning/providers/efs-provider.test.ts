@@ -89,7 +89,31 @@ describe('EFSProvider', () => {
 
         const cmd = mockSend.mock.calls[0][0];
         expect(cmd).toBeInstanceOf(CreateFileSystemCommand);
-        expect(cmd.input.CreationToken).toBe('cdkd-MyFileSystem');
+        // CreationToken = `cdkd-<logicalId>-<12-hex content hash>`. The content
+        // hash makes a property-driven REPLACEMENT's new FS use a different
+        // token than the still-existing old FS (which would otherwise collide),
+        // while a retry of the SAME create hashes identically (idempotent).
+        expect(cmd.input.CreationToken).toMatch(/^cdkd-MyFileSystem-[0-9a-f]{12}$/);
+      });
+
+      it('derives a STABLE CreationToken for identical inputs but a DIFFERENT one when an immutable property changes', async () => {
+        const tokenFor = async (props: Record<string, unknown>) => {
+          mockSend.mockReset();
+          mockSend
+            .mockResolvedValueOnce({
+              FileSystemId: 'fs-1',
+              FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:1:file-system/fs-1',
+            })
+            .mockResolvedValueOnce({ FileSystems: [{ LifeCycleState: 'available' }] });
+          await provider.create('MyFileSystem', 'AWS::EFS::FileSystem', props);
+          return (mockSend.mock.calls[0][0] as { input: { CreationToken: string } }).input
+            .CreationToken;
+        };
+        const a = await tokenFor({ PerformanceMode: 'maxIO' });
+        const aAgain = await tokenFor({ PerformanceMode: 'maxIO' });
+        const b = await tokenFor({ PerformanceMode: 'generalPurpose' }); // immutable change
+        expect(a).toBe(aAgain); // stable across identical creates (retry-idempotent)
+        expect(a).not.toBe(b); // a replacement's new FS gets a fresh token
       });
 
       it('should create file system with tags and encryption', async () => {

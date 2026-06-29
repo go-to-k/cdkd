@@ -10,6 +10,7 @@ import type {
 import { getLogger } from '../utils/logger.js';
 import { ReplacementRulesRegistry } from './replacement-rules.js';
 import { TemplateParser } from './template-parser.js';
+import { getTopLevelCreateOnlyProperties } from '../provisioning/create-only-properties.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -130,7 +131,7 @@ export class DiffCalculator {
           ? await this.resolveBestEffort(rawDesiredProps, resolveFn)
           : rawDesiredProps;
 
-        const propertyChanges = this.compareProperties(
+        const propertyChanges = await this.compareProperties(
           desiredResource.Type,
           currentResource.properties,
           desiredPropsForCompare
@@ -591,11 +592,11 @@ export class DiffCalculator {
    * Uses ReplacementRulesRegistry to determine which property changes require replacement.
    * Reference: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-update-behaviors.html
    */
-  private compareProperties(
+  private async compareProperties(
     resourceType: string,
     currentProperties: Record<string, unknown>,
     desiredProperties: Record<string, unknown>
-  ): PropertyChange[] {
+  ): Promise<PropertyChange[]> {
     const changes: PropertyChange[] = [];
 
     // Get all property keys
@@ -610,6 +611,17 @@ export class DiffCalculator {
       ignoredProperties.add('Timestamp');
     }
 
+    // CFn-schema `createOnlyProperties` fallback for replacement detection.
+    // The hand-authored `ReplacementRulesRegistry` only covers ~25 types, so an
+    // immutable-property change on any OTHER type was previously mis-classified
+    // as an in-place UPDATE. We consult the type's CFn registry schema (via
+    // DescribeType, cached + graceful-degradation) for any changed property the
+    // registry does not explicitly classify, so a createOnly change drives a
+    // replacement regardless of whether the type has a hand-written rule.
+    // Resolved lazily — only when a changed, registry-unclassified property is
+    // actually found — so a no-change / fully-classified diff makes no AWS call.
+    let createOnlyProps: ReadonlySet<string> | undefined;
+
     for (const key of allKeys) {
       if (ignoredProperties.has(key)) continue;
 
@@ -618,12 +630,27 @@ export class DiffCalculator {
 
       if (!this.valuesEqual(oldValue, newValue)) {
         // Check if this property change requires replacement
-        const requiresReplacement = this.replacementRules.requiresReplacement(
+        let requiresReplacement = this.replacementRules.requiresReplacement(
           resourceType,
           key,
           oldValue,
           newValue
         );
+
+        // Schema fallback: only where the registry has NO explicit opinion (so
+        // a deliberate `updateableProperties` / conditional classification is
+        // never overridden). A createOnly property change IS a replacement.
+        if (!requiresReplacement && !this.replacementRules.isClassified(resourceType, key)) {
+          if (createOnlyProps === undefined) {
+            createOnlyProps = await getTopLevelCreateOnlyProperties(resourceType);
+          }
+          if (createOnlyProps.has(key)) {
+            requiresReplacement = true;
+            this.logger.debug(
+              `Property ${key} of ${resourceType} is createOnly per the CFn schema — requires replacement`
+            );
+          }
+        }
 
         changes.push({
           path: key,

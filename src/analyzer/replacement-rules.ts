@@ -123,6 +123,29 @@ export class ReplacementRulesRegistry {
   }
 
   /**
+   * Whether the registry has an EXPLICIT opinion about a property's
+   * replacement behavior — i.e. the type has a rule AND the property is listed
+   * in its `replacementProperties`, `updateableProperties`, OR
+   * `conditionalReplacements`. Returns false for an unknown type, or for a
+   * known type whose rule does not mention the property (the "default to
+   * updateable" fall-through inside {@link requiresReplacement}).
+   *
+   * The diff calculator uses this to decide whether the CFn-schema
+   * `createOnlyProperties` fallback may apply: the schema only fills the GAP
+   * where the registry has no opinion, so a deliberate `updateableProperties`
+   * (or conditional) classification is never overridden by the fallback.
+   */
+  isClassified(resourceType: string, propertyPath: string): boolean {
+    const rule = this.rules.get(resourceType);
+    if (!rule) return false;
+    return (
+      rule.replacementProperties.has(propertyPath) ||
+      (rule.updateableProperties?.has(propertyPath) ?? false) ||
+      (rule.conditionalReplacements?.has(propertyPath) ?? false)
+    );
+  }
+
+  /**
    * Initialize replacement rules for common AWS resource types
    */
   private initializeRules(): void {

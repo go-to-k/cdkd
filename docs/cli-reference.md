@@ -788,6 +788,17 @@ reason. Non-stateful immutable types (LayerVersion, Glue
 SecurityConfiguration, ECS TaskDefinition, ApiGatewayV2 sub-resources,
 etc.) replace with `--replace` alone.
 
+The same stateful guard ALSO covers **property-driven replacement** — a
+replacement cdkd detects directly from the diff (an immutable / createOnly
+property changed in the template, e.g. `AWS::EFS::FileSystem.PerformanceMode`
+or an S3 `BucketName` rename) rather than from a provider's mid-deploy update
+rejection. A plain `cdkd deploy` (no `--replace` flag) that would DELETE+CREATE
+a **stateful** resource because of such a change now requires
+`--force-stateful-recreation` and throws `STATEFUL_REPLACE_BLOCKED` without it,
+closing the prior footgun where a template immutable-property change silently
+destroyed a stateful resource's data. Non-stateful types still replace freely
+on `cdkd deploy` with no flag.
+
 ## `--recreate-via-sdk-provider <LogicalId>` (deploy)
 
 `--recreate-via-sdk-provider <LogicalId>` (repeatable, one flag per

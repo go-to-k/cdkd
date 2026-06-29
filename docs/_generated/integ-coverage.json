@@ -2174,6 +2174,7 @@
       "integs": [
         "drift-revert-vpc",
         "ecs-fargate",
+        "efs-immutable-replacement",
         "efs-lambda",
         "efs-standalone"
       ],
@@ -2184,6 +2185,10 @@
         ],
         "ecs-fargate": [
           "l2"
+        ],
+        "efs-immutable-replacement": [
+          "l1",
+          "literal"
         ],
         "efs-lambda": [
           "l2",

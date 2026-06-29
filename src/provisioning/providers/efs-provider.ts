@@ -28,6 +28,7 @@ import {
   type Status,
   type ReplicationOverwriteProtection,
 } from '@aws-sdk/client-efs';
+import { createHash } from 'node:crypto';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -381,7 +382,22 @@ export class EFSProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EFS FileSystem ${logicalId}`);
 
-    const creationToken = `cdkd-${logicalId}`;
+    // The CreationToken is EFS's idempotency key: a retried CreateFileSystem
+    // with the SAME token returns the existing file system instead of creating
+    // a duplicate (load-bearing for a lost-response retry). It must therefore be
+    // STABLE across `withRetry` re-invocations of THIS create — but it must also
+    // DIFFER between the old and new file system during a property-driven
+    // REPLACEMENT (the deploy engine creates the new FS while the old still
+    // exists; a bare `cdkd-${logicalId}` token collides with the old FS's token
+    // and EFS rejects the create with "already exists with creation token ..."
+    // because the immutable params differ). Hashing the create properties gives
+    // both: identical inputs (a retry) hash to the same token, while a
+    // replacement — which by definition changed an immutable property — hashes
+    // to a different token, so the new FS coexists with the old one.
+    const creationToken = `cdkd-${logicalId}-${createHash('sha256')
+      .update(JSON.stringify(properties))
+      .digest('hex')
+      .slice(0, 12)}`;
 
     const tags = properties['FileSystemTags'] as Array<{ Key: string; Value: string }> | undefined;
 
