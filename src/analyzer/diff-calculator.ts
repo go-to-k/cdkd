@@ -55,6 +55,23 @@ export class DiffCalculator {
     // Track which resources we've seen
     const processedLogicalIds = new Set<string>();
 
+    // Snapshot each resource's `Fn::GetAtt` / `Fn::Sub`-`${X.Attr}` references
+    // from the RAW template, BEFORE the comparison loop below resolves (and
+    // mutates in place) the desired property intrinsics. Used by
+    // promoteInPlaceAttributeDependents — once `resolveBestEffort` runs, a
+    // GetAtt to an in-place-referenceable resource has been replaced by its
+    // resolved current value and can no longer be detected.
+    const rawGetAttRefs = new Map<string, Map<string, Map<string, Set<string>>>>();
+    for (const [logicalId, desiredResource] of Object.entries(desiredResources)) {
+      if (desiredResource.Type === 'AWS::CDK::Metadata') continue;
+      const perProp = new Map<string, Map<string, Set<string>>>();
+      for (const [propKey, propValue] of Object.entries(desiredResource.Properties ?? {})) {
+        const refs = DiffCalculator.extractGetAttRefs(propValue);
+        if (refs.size > 0) perProp.set(propKey, refs);
+      }
+      if (perProp.size > 0) rawGetAttRefs.set(logicalId, perProp);
+    }
+
     // Check for CREATE and UPDATE
     for (const [logicalId, desiredResource] of Object.entries(desiredResources)) {
       // Skip CDK metadata resources (they don't actually deploy anything)
@@ -174,6 +191,19 @@ export class DiffCalculator {
     // REPLACED resolves against CURRENT state above and lands on NO_CHANGE,
     // even though the reference's value (new physical ID / ARN) WILL change.
     this.promoteReplacementDependents(changes, desiredTemplate);
+
+    // Propagate IN-PLACE attribute changes to dependents (bug-hunt 2026-06-29):
+    // a dependent that embeds `Fn::GetAtt[Up, Attr]` (e.g. an SSM Parameter whose
+    // Value is `Fn::Sub[..., {V: Fn::GetAtt[Base, Value]}]`) resolves against the
+    // CURRENT state above, so when `Up`'s in-place UPDATE changes the property
+    // `Attr` names, the dependent's resolved value DID change but it lands on
+    // NO_CHANGE and never re-provisions -> stale. Unlike a replacement (where the
+    // physical id always changes, so EVERY reference is affected), here only a
+    // GetAtt whose attribute NAME matches a CHANGED property of the upstream is
+    // affected -- a `Ref` (physical id, unchanged in-place) or a GetAtt of an
+    // unchanged / computed attribute (e.g. a Lambda `Arn`, which does not move on
+    // an in-place Description update) is correctly left NO_CHANGE.
+    this.promoteInPlaceAttributeDependents(changes, desiredTemplate, rawGetAttRefs);
 
     const summary = this.getSummary(changes);
     this.logger.debug(
@@ -330,6 +360,170 @@ export class DiffCalculator {
   }
 
   /**
+   * Promote NO_CHANGE dependents of an IN-PLACE update whose referenced ATTRIBUTE
+   * actually changed (bug-hunt 2026-06-29).
+   *
+   * Distinct from {@link promoteReplacementDependents}: a replacement changes the
+   * physical id, so any reference is affected. An in-place update changes only
+   * specific properties, so a dependent is affected ONLY when it reads (via
+   * `Fn::GetAtt[Up, Attr]` or `Fn::Sub`'s `${Up.Attr}`) an attribute whose NAME
+   * matches a property that changed in `Up`'s update. (`Ref` resolves to the
+   * physical id, which an in-place update never moves, so Ref-only dependents are
+   * left NO_CHANGE; likewise a GetAtt of a computed / unchanged attribute.)
+   *
+   * Promotion is safe even when speculative: the deploy engine re-resolves the
+   * promoted resource against the in-flight state and skips the provider call
+   * when nothing actually changed.
+   *
+   * Single-hop by design (unlike {@link promoteReplacementDependents}, which is
+   * fully transitive via a worklist): `changedPropsByUpstream` is frozen at entry,
+   * so a chain `A(in-place) -> B(reads A's changed attr) -> C(reads B's now-changed
+   * attr)` promotes B but not C. Deep GetAtt-of-a-changed-attr chains are rare in
+   * practice; if one ever needs full transitivity, promote to a worklist that
+   * re-derives changed props as dependents are promoted.
+   */
+  private promoteInPlaceAttributeDependents(
+    changes: Map<string, ResourceChange>,
+    desiredTemplate: CloudFormationTemplate,
+    rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>
+  ): void {
+    // Per upstream UPDATE: the set of top-level property names that changed.
+    const changedPropsByUpstream = new Map<string, Set<string>>();
+    for (const [logicalId, change] of changes) {
+      if (change.changeType !== 'UPDATE') continue;
+      const props = (change.propertyChanges ?? [])
+        .map((pc) => pc.path)
+        .filter((p): p is string => typeof p === 'string');
+      if (props.length > 0) changedPropsByUpstream.set(logicalId, new Set(props));
+    }
+    if (changedPropsByUpstream.size === 0) return;
+
+    for (const [dependentId, perProp] of rawGetAttRefs) {
+      const resource = desiredTemplate.Resources[dependentId];
+      if (!resource || resource.Type === 'AWS::CDK::Metadata') continue;
+      const change = changes.get(dependentId);
+      if (!change) continue;
+      // CREATE resolves fresh at provision time; DELETE is going away.
+      if (change.changeType !== 'NO_CHANGE' && change.changeType !== 'UPDATE') continue;
+
+      const existingPaths = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
+      const syntheticChanges: PropertyChange[] = [];
+
+      for (const [propKey, getAttRefs] of perProp) {
+        if (existingPaths.has(propKey)) continue; // already diffed on its own
+        // Which upstreams + attributes does this property read via GetAtt / Sub?
+        let matched = false;
+        for (const [upstreamId, attrs] of getAttRefs) {
+          if (upstreamId === dependentId) continue; // self-reference defense
+          const changedProps = changedPropsByUpstream.get(upstreamId);
+          if (!changedProps) continue;
+          // Affected only when the referenced attribute names a changed property.
+          if ([...attrs].some((attr) => changedProps.has(attr))) {
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) continue;
+
+        syntheticChanges.push({
+          path: propKey,
+          oldValue: change.currentProperties?.[propKey],
+          newValue: change.desiredProperties?.[propKey],
+          // Re-evaluate the dependent's own replacement rules: if the referencing
+          // property is immutable for its type, the dependent is replaced too.
+          requiresReplacement: this.replacementRules.requiresReplacement(
+            change.resourceType,
+            propKey,
+            undefined,
+            undefined
+          ),
+        });
+      }
+
+      if (syntheticChanges.length === 0) continue;
+
+      if (change.changeType === 'NO_CHANGE') {
+        change.changeType = 'UPDATE';
+        change.propertyChanges = syntheticChanges;
+        this.logger.debug(
+          `UPDATE (in-place attr propagated): ${dependentId} reads a changed attribute of an updated resource`
+        );
+      } else {
+        change.propertyChanges = [...(change.propertyChanges ?? []), ...syntheticChanges];
+      }
+    }
+  }
+
+  /**
+   * Extract `Fn::GetAtt` / `Fn::Sub`-`${X.Attr}` references from a property value
+   * as a map of `referencedLogicalId -> set of referenced attribute names`.
+   * Plain `Ref` is intentionally NOT captured: it resolves to the physical id,
+   * which an in-place update never changes. Recurses into arrays / objects so
+   * intrinsics nested inside `Fn::Sub`'s variable map / `Fn::Join` etc. are seen.
+   */
+  private static extractGetAttRefs(value: unknown): Map<string, Set<string>> {
+    const refs = new Map<string, Set<string>>();
+    const add = (id: string, attr: string): void => {
+      if (id.startsWith('AWS::')) return; // pseudo parameter
+      let set = refs.get(id);
+      if (!set) {
+        set = new Set();
+        refs.set(id, set);
+      }
+      set.add(attr);
+    };
+    const walk = (v: unknown): void => {
+      if (v === null || typeof v !== 'object') return;
+      if (Array.isArray(v)) {
+        v.forEach(walk);
+        return;
+      }
+      const obj = v as Record<string, unknown>;
+      if ('Fn::GetAtt' in obj) {
+        const ga = obj['Fn::GetAtt'];
+        if (Array.isArray(ga) && typeof ga[0] === 'string' && typeof ga[1] === 'string') {
+          add(ga[0], ga[1]);
+        }
+        return;
+      }
+      if ('Fn::Sub' in obj) {
+        const sub = obj['Fn::Sub'];
+        let body: string | undefined;
+        let mapKeys: Set<string> | undefined;
+        if (typeof sub === 'string') {
+          body = sub;
+        } else if (Array.isArray(sub) && typeof sub[0] === 'string') {
+          body = sub[0];
+          const vars = sub[1];
+          if (vars && typeof vars === 'object' && !Array.isArray(vars)) {
+            mapKeys = new Set(Object.keys(vars as Record<string, unknown>));
+            Object.values(vars as Record<string, unknown>).forEach(walk);
+          }
+        }
+        if (body !== undefined) {
+          for (const m of body.matchAll(/\$\{(!)?([^}]+)\}/g)) {
+            if (m[1] === '!') continue; // literal escape
+            const placeholder = m[2];
+            if (!placeholder) continue;
+            const dot = placeholder.indexOf('.');
+            if (dot < 0) continue; // `${X}` is a Ref, not a GetAtt
+            const id = placeholder.slice(0, dot);
+            const attr = placeholder.slice(dot + 1);
+            if (!id || mapKeys?.has(id)) continue;
+            add(id, attr);
+          }
+        }
+        return;
+      }
+      // Ref is intentionally skipped (physical id, unchanged in-place).
+      if ('Ref' in obj && Object.keys(obj).length === 1) return;
+      Object.values(obj).forEach(walk);
+    };
+    walk(value);
+    return refs;
+  }
+
+  /**
    * Best-effort resolution of template property intrinsics against current state.
    *
    * Iterates top-level properties and resolves each independently: if resolution
@@ -344,7 +538,15 @@ export class DiffCalculator {
     const resolved: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(properties)) {
       try {
-        resolved[key] = await resolveFn(value);
+        // Resolve a CLONE: the intrinsic resolver mutates its input in place
+        // (e.g. it rewrites an `Fn::Sub` variable map's `Fn::GetAtt` to the
+        // resolved current-state value). Mutating the shared desired template
+        // here would bake the OLD value into the template, so the deploy phase's
+        // later re-resolution (against the in-flight state, where an in-place-
+        // updated upstream now holds its NEW value) would still see the stale
+        // literal and skip a genuinely-changed dependent. Cloning keeps the raw
+        // intrinsics intact for the deploy phase.
+        resolved[key] = await resolveFn(structuredClone(value));
       } catch {
         resolved[key] = value;
       }

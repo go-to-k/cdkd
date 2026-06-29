@@ -185,7 +185,6 @@ drift-revert	2026-06-27T17:09:59Z	PASS	103	verify.sh	drift inject + revert acros
 drift-revert-vpc	2026-06-27T17:14:26Z	PASS	240	verify.sh	VPC+ASG+ALB+EFS+SvcDiscovery drift revert; destroy 21 del 0 err
 remove-protection	2026-06-27T17:36:30Z	PASS	1273	verify.sh	termination/deletion protection flip-off (RDS/ASG/etc); destroy 11 del 0 err
 cross-stack-references	2026-06-27T17:37:40Z	PASS	25	standard	ImportValue strong-ref + Fn::GetStackOutput; 2 stacks destroy 0 err
-bench-cdk-sample	2026-06-27T17:52:19Z	PASS	562	standard	broad integ for fix/cognito-cc-compound-ref; 37 del 0 err, retained LGs swept
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
@@ -199,3 +198,5 @@ cognito-userpool-user-ref	2026-06-28T02:53:29Z	PASS	85	verify.sh	UserPoolUser Re
 lambda	2026-06-28T02:53:29Z	PASS	70	verify.sh	broad integ for intrinsic-resolver change; clean destroy
 s3-lifecycle	2026-06-28T17:58:35Z	PASS	51	verify.sh	V1/V2 mix + top-level ObjectSize fold; deploy+update+destroy clean
 replacement-immutable-name	2026-06-28T19:05:09Z	PASS	90	verify.sh	6 immutable-name types replace cleanly (Kinesis/Secret/SFN/Events/SSM/Alarm)
+inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
+bench-cdk-sample	2026-06-29T02:54:21Z	PASS	420	standard	39-res deploy + noop redeploy + destroy clean (diff-core regression check)

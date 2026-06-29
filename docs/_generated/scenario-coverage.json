@@ -798,6 +798,11 @@
       "scenarios": []
     },
     {
+      "name": "inplace-attr-propagation",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "intrinsic-functions",
       "annotated": true,
       "scenarios": []
@@ -2069,6 +2074,7 @@
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
+    "inplace-attr-propagation",
     "kinesis-esm-filter",
     "kinesis-stream-mode-switch",
     "lambda-alias-provisioned-concurrency",
