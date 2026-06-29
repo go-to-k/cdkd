@@ -2570,6 +2570,7 @@
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "rollback-failure-injection",
+        "s3-replication-and-filter",
         "sdk-ccapi-crossref",
         "serverless-api",
         "stepfunctions-s3-definition",
@@ -2703,6 +2704,10 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "s3-replication-and-filter": [
+          "l2",
+          "literal"
         ],
         "sdk-ccapi-crossref": [
           "l1",
@@ -3541,6 +3546,7 @@
         "s3-event-notification",
         "s3-lifecycle",
         "s3-object-lock",
+        "s3-replication-and-filter",
         "state-destroy",
         "tags-propagation",
         "update-policy-mutations",
@@ -3661,6 +3667,10 @@
           "literal"
         ],
         "s3-object-lock": [
+          "l1",
+          "literal"
+        ],
+        "s3-replication-and-filter": [
           "l1",
           "literal"
         ],

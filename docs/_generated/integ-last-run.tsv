@@ -201,3 +201,4 @@ replacement-immutable-name	2026-06-28T19:05:09Z	PASS	90	verify.sh	6 immutable-na
 inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 bench-cdk-sample	2026-06-29T03:19:26Z	PASS	440	standard	39-res deploy + noop redeploy ZERO phantom drift + destroy clean (symmetric-compare regression)
+s3-replication-and-filter	2026-06-29T05:06:19Z	PASS	55	verify.sh	And filter create+update+destroy, orph clean

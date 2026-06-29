@@ -1029,11 +1029,36 @@ export class S3BucketProvider implements ResourceProvider {
             // wise-transform-drops-a-valid-shape class as the lifecycle V1/V2 bug).
             const filter = rule['Filter'] as Record<string, unknown> | undefined;
             if (filter) {
+              // CFn's ReplicationRuleFilter shapes, faithfully translated to the
+              // S3 SDK shape (which differs only in `TagFilter`->`Tag` and
+              // `And.TagFilters`->`And.Tags`):
+              //   { And: { Prefix?, TagFilters[] } } <- the ONLY way CFn/CDK
+              //       combine a prefix + tags (CDK's L2 emits this when a rule
+              //       sets both `prefix` and `tags`). It was previously NOT read
+              //       at all, so a combined filter silently fell through to the
+              //       empty-filter branch below and replicated EVERY object
+              //       instead of the prefix+tag subset (a silent scope-broadening
+              //       divergence — same class as the lifecycle V1/V2 bug).
+              //   { Prefix }     <- prefix-only
+              //   { TagFilter }  <- single-tag-only
+              //   {}             <- replicate-all (must be preserved; see #936)
+              const and = filter['And'] as Record<string, unknown> | undefined;
               const prefix = filter['Prefix'] as string | undefined;
               const tagFilter = filter['TagFilter'] as { Key: string; Value: string } | undefined;
-              if (prefix && tagFilter) {
+              if (and) {
+                const andPrefix = and['Prefix'] as string | undefined;
+                const andTags = and['TagFilters'] as
+                  | Array<{ Key: string; Value: string }>
+                  | undefined;
+                const sdkAnd: Record<string, unknown> = {};
+                if (andPrefix !== undefined) sdkAnd['Prefix'] = andPrefix;
+                if (andTags !== undefined) sdkAnd['Tags'] = andTags;
+                sdkRule['Filter'] = { And: sdkAnd };
+              } else if (prefix !== undefined && tagFilter) {
+                // Non-canonical template that put both at the top level; CFn
+                // requires `And` to combine, but translate gracefully anyway.
                 sdkRule['Filter'] = { And: { Prefix: prefix, Tags: [tagFilter] } };
-              } else if (prefix) {
+              } else if (prefix !== undefined) {
                 sdkRule['Filter'] = { Prefix: prefix };
               } else if (tagFilter) {
                 sdkRule['Filter'] = { Tag: tagFilter };
@@ -2202,9 +2227,17 @@ export class S3BucketProvider implements ResourceProvider {
             const and = f['And'] as Record<string, unknown> | undefined;
             const tagOnly = f['Tag'] as { Key?: string; Value?: string } | undefined;
             if (and) {
-              if (and['Prefix'] !== undefined) cfnFilter['Prefix'] = and['Prefix'];
+              // Round-trip back to the CFn-canonical combined-filter shape
+              // `{ And: { Prefix?, TagFilters[] } }` (S3 SDK's `And.Tags` ->
+              // CFn `And.TagFilters`) so it matches the template-derived
+              // state.properties exactly and does not surface as phantom drift.
+              // (The old code collapsed it to a top-level `{ Prefix, TagFilter }`
+              // — not a valid CFn shape — and dropped every tag past the first.)
+              const innerAnd: Record<string, unknown> = {};
+              if (and['Prefix'] !== undefined) innerAnd['Prefix'] = and['Prefix'];
               const tags = and['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
-              if (tags && tags.length > 0) cfnFilter['TagFilter'] = tags[0];
+              if (tags && tags.length > 0) innerAnd['TagFilters'] = tags;
+              cfnFilter['And'] = innerAnd;
             } else if (tagOnly) {
               cfnFilter['TagFilter'] = tagOnly;
             } else if (f['Prefix'] !== undefined) {
