@@ -263,6 +263,17 @@ describe('isRetryableTransientError', () => {
         'EntityNotFoundException: Database glueupdatehardeningstack-db not found';
       expect(isRetryableTransientError(new Error(missingDb), missingDb)).toBe(false);
     });
+
+    it('does not retry an SFN error that lacks the assume-role propagation phrase', () => {
+      // Guard the SFN boundary: the pattern is anchored on "authorized to
+      // assume the provided role", so a different permanent SFN role problem
+      // (e.g. the logging-destination access rejection, which says
+      // "authorized to ACCESS", not "authorized to ASSUME") stays
+      // non-retryable and fails fast rather than burning the bounded retries.
+      const logAccess =
+        'AccessDeniedException: The state machine IAM Role is not authorized to access the Log Destination';
+      expect(isRetryableTransientError(new Error(logAccess), logAccess)).toBe(false);
+    });
   });
 
   describe('throttling (name-based, HTTP 400 not 429)', () => {

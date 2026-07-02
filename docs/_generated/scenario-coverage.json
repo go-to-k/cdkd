@@ -1457,8 +1457,10 @@
     },
     {
       "name": "stepfunctions-logging",
-      "annotated": false,
-      "scenarios": []
+      "annotated": true,
+      "scenarios": [
+        "iam-policy-propagation-retry"
+      ]
     },
     {
       "name": "stepfunctions-s3-definition",
@@ -1741,7 +1743,8 @@
       "fixtures": [
         "lambda",
         "microservices",
-        "propagation-races-2"
+        "propagation-races-2",
+        "stepfunctions-logging"
       ]
     },
     {
@@ -2135,7 +2138,6 @@
     "sns-event-source",
     "sns-subscription-filter",
     "sqs-esm-max-concurrency",
-    "stepfunctions-logging",
     "stepfunctions-s3-definition"
   ]
 }

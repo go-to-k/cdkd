@@ -37,10 +37,18 @@ LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # Gate the raw state/lock object removal on a SUCCESSFUL state destroy —
+  # deleting the state file after a failed destroy would strand live AWS
+  # resources with no state pointer left to destroy them from.
+  local destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" \
+      --yes \
+      --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" >/dev/null 2>&1
+    destroy_rc=$?
   fi
-  if [ -n "${STATE_BUCKET:-}" ]; then
+  if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
@@ -126,11 +134,14 @@ for attempt in $(seq 1 15); do
     sm_gone="yes"
     break
   fi
+  # Anything other than DELETING / gone is most likely a transient describe
+  # error (throttle, network) — keep polling instead of hard-failing after a
+  # clean destroy; the 15-attempt bound terminates the loop either way.
   if [ "${STATUS}" != "DELETING" ]; then
-    echo "FAIL: state machine ${SM_ARN} in unexpected status '${STATUS}' after destroy" >&2
-    exit 1
+    echo "    describe returned unexpected output (attempt ${attempt}/15): ${STATUS}"
+  else
+    echo "    state machine still DELETING (attempt ${attempt}/15), waiting..."
   fi
-  echo "    state machine still DELETING (attempt ${attempt}/15), waiting..."
   sleep 4
 done
 if [ -z "${sm_gone}" ]; then
