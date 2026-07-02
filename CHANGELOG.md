@@ -1,3 +1,10 @@
+# [0.231.0](https://github.com/go-to-k/cdkd/compare/v0.230.33...v0.231.0) (2026-07-02)
+
+
+### Features
+
+* **provisioning:** wire ApiGateway Stage MethodSettings into the SDK provider ([#971](https://github.com/go-to-k/cdkd/issues/971)) ([0d9cdd6](https://github.com/go-to-k/cdkd/commit/0d9cdd6b82091314c8e0dc2eb2499387dfcbcdbe))
+
 ## [0.230.33](https://github.com/go-to-k/cdkd/compare/v0.230.32...v0.230.33) (2026-07-02)
 
 
