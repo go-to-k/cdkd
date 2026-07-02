@@ -124,30 +124,30 @@ echo "    table class switched (reached AWS, not just cdkd state)"
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" >/dev/null 2>&1; then
-  # DeleteTable is async: accept DELETING and poll until fully gone.
-  table_gone=""
-  for attempt in $(seq 1 15); do
-    STATUS="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
-      --query 'Table.TableStatus' --output text 2>&1 || true)"
-    if echo "${STATUS}" | grep -q "ResourceNotFoundException"; then
-      table_gone="yes"
-      break
-    fi
-    # Anything other than DELETING / gone is most likely a transient
-    # describe error (throttle, network) — keep polling instead of
-    # hard-failing after a clean destroy; the attempt bound terminates.
-    if [ "${STATUS}" != "DELETING" ]; then
-      echo "    describe returned unexpected output (attempt ${attempt}/15): ${STATUS}"
-    else
-      echo "    table still DELETING (attempt ${attempt}/15), waiting..."
-    fi
-    sleep 4
-  done
-  if [ -z "${table_gone}" ]; then
-    echo "FAIL: table ${TABLE} did not finish deleting within ~60s" >&2
-    exit 1
+# DeleteTable is async: always enter the poll loop (a transient error on the
+# FIRST describe must not be mistaken for NotFound and skip the deletion
+# check), accept DELETING, and poll until fully gone.
+table_gone=""
+for attempt in $(seq 1 15); do
+  STATUS="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1 || true)"
+  if echo "${STATUS}" | grep -q "ResourceNotFoundException"; then
+    table_gone="yes"
+    break
   fi
+  # Anything other than DELETING / gone is most likely a transient
+  # describe error (throttle, network) — keep polling instead of
+  # hard-failing after a clean destroy; the attempt bound terminates.
+  if [ "${STATUS}" != "DELETING" ]; then
+    echo "    describe returned unexpected output (attempt ${attempt}/15): ${STATUS}"
+  else
+    echo "    table still DELETING (attempt ${attempt}/15), waiting..."
+  fi
+  sleep 4
+done
+if [ -z "${table_gone}" ]; then
+  echo "FAIL: table ${TABLE} did not finish deleting within ~60s" >&2
+  exit 1
 fi
 echo "    table deleted"
 

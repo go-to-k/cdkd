@@ -426,9 +426,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // and the next diff saw no change (state recorded the new class), so it
       // could never self-heal. Only send TableClass when it actually changed
       // — AWS rejects an UpdateTable that re-asserts the current class.
+      // Normalize BOTH comparison sides first: an absent property means the
+      // DynamoDB default (STANDARD), so an explicit-STANDARD <-> absent
+      // template edit is NOT a real change and must not issue the doomed
+      // same-class UpdateTable.
+      const normalizeTableClass = (v: unknown): 'STANDARD' | 'STANDARD_INFREQUENT_ACCESS' =>
+        typeof v === 'string' && v.length > 0
+          ? (v as 'STANDARD' | 'STANDARD_INFREQUENT_ACCESS')
+          : 'STANDARD';
       const tableClassChanged =
-        JSON.stringify(properties['TableClass']) !==
-        JSON.stringify(previousProperties['TableClass']);
+        normalizeTableClass(properties['TableClass']) !==
+        normalizeTableClass(previousProperties['TableClass']);
       const billingOrThroughputChanged =
         JSON.stringify(properties['BillingMode']) !==
           JSON.stringify(previousProperties['BillingMode']) ||
@@ -447,9 +455,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // A removed TableClass property reverts to the DynamoDB default
           // (STANDARD) — matches CFn, which reverts an absent property to the
           // type default rather than leaving the old value in place.
-          updateInput.TableClass = (properties['TableClass'] ?? 'STANDARD') as
-            | 'STANDARD'
-            | 'STANDARD_INFREQUENT_ACCESS';
+          updateInput.TableClass = normalizeTableClass(properties['TableClass']);
         }
         // PAY_PER_REQUEST rejects ProvisionedThroughput. When BillingMode is
         // PROVISIONED (or omitted, in which case the table is already

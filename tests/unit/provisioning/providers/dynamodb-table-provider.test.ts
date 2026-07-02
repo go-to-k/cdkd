@@ -615,6 +615,56 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(commandSent(UpdateTableCommand)).toBe(false);
     });
 
+    it('treats an explicit-STANDARD <-> absent transition as no change (no doomed same-class UpdateTable)', async () => {
+      // Both sides mean the DynamoDB default class; a template edit that
+      // merely adds or removes the explicit STANDARD must not issue an
+      // UpdateTable re-asserting the class AWS already has.
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps },
+        { ...baseCreateProps, TableClass: 'STANDARD' }
+      );
+      expect(commandSent(UpdateTableCommand)).toBe(false);
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, TableClass: 'STANDARD' },
+        { ...baseCreateProps }
+      );
+      expect(commandSent(UpdateTableCommand)).toBe(false);
+    });
+
+    it('does not re-assert unchanged PROVISIONED throughput on a class-only change', async () => {
+      // The PT/billing fields are gated on their own change detection —
+      // AWS rejects an UpdateTable whose requested throughput equals the
+      // table's current value, so a class-only change must not carry them.
+      const provisioned = {
+        ...baseCreateProps,
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 2, WriteCapacityUnits: 2 },
+      };
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...provisioned, TableClass: 'STANDARD_INFREQUENT_ACCESS' },
+        { ...provisioned, TableClass: 'STANDARD' }
+      );
+
+      const input = inputOfCommand(UpdateTableCommand) as {
+        TableClass?: string;
+        BillingMode?: string;
+        ProvisionedThroughput?: unknown;
+      };
+      expect(input.TableClass).toBe('STANDARD_INFREQUENT_ACCESS');
+      expect(input.BillingMode).toBeUndefined();
+      expect(input.ProvisionedThroughput).toBeUndefined();
+    });
+
     it('combines TableClass with a real BillingMode switch in one UpdateTable', async () => {
       await provider.update(
         'MyTable',
