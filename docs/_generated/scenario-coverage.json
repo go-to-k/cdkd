@@ -411,6 +411,11 @@
       "scenarios": []
     },
     {
+      "name": "codedeploy-lambda-deployment-group",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cognito",
       "annotated": true,
       "scenarios": []
@@ -2068,6 +2073,7 @@
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "codedeploy-lambda-deployment-group",
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
     "cognito-lambda-triggers",

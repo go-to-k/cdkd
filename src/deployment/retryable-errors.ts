@@ -93,6 +93,21 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // can hit this. CloudFormation tolerates it via deployment latency; cdkd
   // retries. See issue #805.
   'Caught ServiceAccessDeniedException',
+  // CodeDeploy DeploymentGroup: the Cloud Control CreateResource references a
+  // same-stack service IAM role, but cdkd's fast path issues the create before
+  // IAM finishes propagating the just-created role's trust policy, so AWS
+  // rejects it with "AWS CodeDeploy does not have the permissions required to
+  // assume the role arn:..." (Status Code: 400, SDK Attempt Count: 1 — the CC
+  // handler treats it as terminal instead of retrying internally). The
+  // existing 'does not have required permissions' pattern does NOT match this
+  // phrasing (different word order: "the permissions required"). Anchored on
+  // "permissions required to assume the role" so a genuine, permanent trust-
+  // policy misconfiguration only burns the bounded retries before surfacing.
+  // CloudFormation tolerates this via deployment latency; cdkd retries.
+  // Surfaced by a bug-hunt sweep deploying a canonical LambdaDeploymentGroup
+  // (Lambda + Alias + CodeDeploy canary); pinned by
+  // tests/integration/codedeploy-lambda-deployment-group.
+  'permissions required to assume the role',
   // S3 bucket creation/deletion still in progress
   'conflicting conditional operation',
   // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
