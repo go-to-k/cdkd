@@ -2449,15 +2449,82 @@ export class DeployEngine {
             // safe-replacement order — keeps the old alive if CREATE
             // fails so the deploy can roll back to it cleanly).
             this.logger.info(`  Creating new ${logicalId}...`);
-            createResult = await this.withRetry(
-              () => replaceProvider.create(logicalId, resourceType, replaceProps),
-              logicalId,
-              undefined,
-              undefined,
-              replaceProvider
-            );
+            let deletedOldFirst = false;
+            try {
+              createResult = await this.withRetry(
+                () => replaceProvider.create(logicalId, resourceType, replaceProps),
+                logicalId,
+                undefined,
+                undefined,
+                replaceProvider
+              );
+            } catch (createError) {
+              const createMsg =
+                createError instanceof Error ? createError.message : String(createError);
+              // A custom-named resource cannot be safely replaced: the
+              // create-first attempt collides with the old resource still
+              // holding the name. CloudFormation refuses this same shape
+              // ("cannot update a stack when a custom-named resource
+              // requires replacing"); surface an equally clear error —
+              // with a working one-command escape hatch CFn lacks —
+              // instead of the raw AlreadyExists (issue #960 follow-up).
+              const nameCollision =
+                /already exists/i.test(createMsg) || createMsg.includes('AlreadyExists');
+              if (!nameCollision) throw createError;
+              if (updateReplacePolicy === 'Retain') {
+                throw new CdkdError(
+                  `${logicalId} (${resourceType}) requires replacement, but its user-supplied ` +
+                    `physical name is still held by the existing resource AND ` +
+                    `UpdateReplacePolicy: Retain pins that resource in place. Rename the ` +
+                    `resource in your CDK code — with Retain, the old resource keeps the ` +
+                    `name, so a same-name replacement can never proceed.`,
+                  'NAMED_REPLACEMENT_COLLISION'
+                );
+              }
+              if (this.options.replace !== true) {
+                throw new CdkdError(
+                  `${logicalId} (${resourceType}) requires replacement, but the create-first ` +
+                    `attempt collided with the existing resource: ${createMsg}. The resource ` +
+                    `has a user-supplied physical name, so the CloudFormation-style safe ` +
+                    `replacement order (create the new resource before deleting the old) ` +
+                    `cannot reuse the occupied name — CloudFormation refuses this shape with ` +
+                    `"cannot update a stack when a custom-named resource requires replacing". ` +
+                    `Either rename the resource in your CDK code (a fresh name lets the safe ` +
+                    `create-first order proceed), or re-run with \`cdkd deploy --replace\` to ` +
+                    `delete the old resource FIRST and recreate it under the same name (the ` +
+                    `resource is briefly unavailable while it is recreated).`,
+                  'NAMED_REPLACEMENT_COLLISION'
+                );
+              }
+              // --replace opt-in: the user accepts delete-first semantics
+              // (the stateful guard for this property-driven replacement
+              // already ran above). Delete the old holder, then re-create.
+              this.logger.info(
+                `  Create-first collided with the custom-named resource and --replace is set — ` +
+                  `deleting old ${logicalId} (${currentResource.physicalId}) first...`
+              );
+              await oldDeleteProvider.delete(
+                logicalId,
+                currentResource.physicalId,
+                resourceType,
+                currentResource.properties,
+                { expectedRegion: this.stackRegion }
+              );
+              this.logger.info(`  ${green('✓')} Old resource deleted`);
+              deletedOldFirst = true;
+              this.logger.info(`  Re-creating ${logicalId}...`);
+              createResult = await this.withRetry(
+                () => replaceProvider.create(logicalId, resourceType, replaceProps),
+                logicalId,
+                undefined,
+                undefined,
+                replaceProvider
+              );
+            }
 
-            if (updateReplacePolicy === 'Retain') {
+            if (deletedOldFirst) {
+              // Old resource is already gone (delete-first fallback above).
+            } else if (updateReplacePolicy === 'Retain') {
               this.logger.info(
                 `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
               );
