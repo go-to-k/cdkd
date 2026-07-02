@@ -37,7 +37,7 @@ trap cleanup EXIT
 echo "==> Pre-run cleanup"; cleanup
 
 echo "==> Deploy (base: BatchSize 1)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_SOURCE_SWITCH node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # Pipe creation settles async (CREATING -> RUNNING). Accept RUNNING or CREATING
 # as proof it reached AWS; assert the SQS source arn was wired.
@@ -60,7 +60,7 @@ echo "    OK: pipe reached AWS (CurrentState=${STATE}, Source=${SRCARN})"
 
 echo "==> UPDATE (BatchSize 1 -> 2) — must be IN-PLACE, not a replacement (issue #960)"
 UPDATE_LOG="$(mktemp)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+env -u CDKD_TEST_SOURCE_SWITCH CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
   | tee "${UPDATE_LOG}"
 if grep -q "Replacing Pipe" "${UPDATE_LOG}"; then
   echo "FAIL: BatchSize change was classified as a REPLACEMENT (issue #960 regression)" >&2
@@ -70,6 +70,33 @@ BS=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
   --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text 2>/dev/null || true)
 [ "${BS}" = "2" ] || { echo "FAIL: BatchSize after update is '${BS}', expected 2" >&2; exit 1; }
 echo "    OK: in-place UPDATE reached AWS (BatchSize=${BS})"
+
+echo "==> Named-replacement collision (Source switch on the named pipe) — must FAIL without --replace"
+COLLIDE_LOG="$(mktemp)"
+set +e
+env CDKD_TEST_UPDATE=true CDKD_TEST_SOURCE_SWITCH=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${COLLIDE_LOG}" 2>&1
+COLLIDE_RC=$?
+set -e
+[ "${COLLIDE_RC}" -ne 0 ] || { echo "FAIL: same-name replacement deploy unexpectedly succeeded without --replace" >&2; exit 1; }
+grep -q "custom-named resource requires replacing" "${COLLIDE_LOG}" \
+  || { echo "FAIL: collision error is not the actionable NAMED_REPLACEMENT_COLLISION message" >&2; tail -20 "${COLLIDE_LOG}" >&2; exit 1; }
+SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+case "${SRCARN}" in
+  *":${SRC}") : ;;
+  *) echo "FAIL: pipe Source changed despite the refused replacement ('${SRCARN}')" >&2; exit 1 ;;
+esac
+echo "    OK: refused with the actionable message; AWS unchanged (Source still ${SRC})"
+
+echo "==> Same-name replacement WITH --replace (delete-first fallback)"
+env CDKD_TEST_UPDATE=true CDKD_TEST_SOURCE_SWITCH=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --replace
+SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+case "${SRCARN}" in
+  *":${SRC}2") : ;;
+  *) echo "FAIL: pipe Source after --replace is '${SRCARN}', expected to end with ':${SRC}2'" >&2; exit 1 ;;
+esac
+echo "    OK: delete-first replacement succeeded under the SAME pipe name (Source=${SRCARN})"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

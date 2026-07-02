@@ -152,3 +152,49 @@ describe('withRetry', () => {
     expect(op).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('withRetry isRetryable override', () => {
+  it('retries an error shape the shared transient table excludes', async () => {
+    let attempts = 0;
+    const result = await withRetry(
+      async () => {
+        attempts++;
+        if (attempts < 3) throw new Error('thing already exists');
+        return 'ok';
+      },
+      'Res',
+      {
+        maxRetries: 5,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        sleep: async () => {},
+        isRetryable: (message) => /already exists/i.test(message),
+      }
+    );
+    expect(result).toBe('ok');
+    expect(attempts).toBe(3);
+  });
+
+  it('the override REPLACES the default classifier (transient errors are not retried unless matched)', async () => {
+    let attempts = 0;
+    await expect(
+      withRetry(
+        async () => {
+          attempts++;
+          // 'trust policy' is in the shared transient table, but the
+          // override only accepts 'already exists'.
+          throw new Error('trust policy propagation');
+        },
+        'Res',
+        {
+          maxRetries: 5,
+          initialDelayMs: 1,
+          maxDelayMs: 1,
+          sleep: async () => {},
+          isRetryable: (message) => /already exists/i.test(message),
+        }
+      )
+    ).rejects.toThrow(/trust policy/);
+    expect(attempts).toBe(1);
+  });
+});

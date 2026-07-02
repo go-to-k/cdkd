@@ -14,7 +14,6 @@ bench-ccapi	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (l
 bench-sdk	2026-06-21T11:00:28Z	PASS	24	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bucket-deployment	2026-06-20T18:40:52Z	PASS		verify.sh	Custom::CDKBucketDeployment synced asset; clean destroy, 0 orphan
 cache-streaming	2026-06-21T11:00:28Z	PASS	509	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-cc-api-fallback	2026-06-13T09:16:21Z	PASS	57	verify.sh	regression sweep; 0 err 0 orphan
 cc-api-fallback-transitions	2026-06-21T11:11:03Z	PASS	128	verify.sh	sweep-F staleness re-run (rc=0)
 ci-cd	2026-06-21T11:00:28Z	PASS	54	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 cloudfront-function-url	2026-06-21T11:00:28Z	PASS	372	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -120,7 +119,6 @@ recreate-via-cc-api	2026-06-21T04:24:45Z	PASS	98	verify.sh	sdk->cc-api recreate 
 recreate-via-sdk-provider	2026-06-21T04:27:01Z	PASS	79	verify.sh	cc-api->sdk recreate clean, destroy 0 err
 redshift-cluster-getatt	2026-06-21T18:03:30Z	PASS	416	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
 replacement-fanout	2026-06-20T19:35:04Z	PASS		verify.sh	first run; SNS replacement fanout to 10 SSM deps + TopicPolicy; 12 deleted 0 errors
-rollback-failure-injection	2026-06-13T11:11:55Z	PASS	418	verify.sh	deploy-engine rollback on rich VPC+Lambda + #808 fail events; 17 deleted 0 orphan
 route53	2026-06-21T16:16:44Z	PASS	384	verify.sh	stale-real re-run; 6 deleted 0 err; clean
 s3-asset-deploy	2026-06-13T10:51:36Z	PASS	44	verify.sh	S3 zip asset upload + Lambda runs from it + generic Asset read-back; 0 err
 s3-cloudfront	2026-06-15T04:27:23Z	PASS		verify.sh	rc ok, orph clean (#873 OriginGroups drift clean + distribution/bucket-policy clean; clean destroy)
@@ -144,7 +142,6 @@ stepfunctions	2026-06-21T04:32:59Z	PASS	30	standard	SFN deploy 5 / destroy 5, 0 
 stepfunctions-s3-definition	2026-06-15T08:44:00Z	PASS	55	verify.sh	post-review re-run; DefinitionS3Location+asset fix; destroy clean
 throttle-wide-dag	2026-06-14T04:35:46Z	PASS		verify.sh	bug15 throttle-retry validated deploy+destroy clean
 update-policy-mutations	2026-06-20T19:39:38Z	PASS		verify.sh	first run; DeletionPolicy/UpdateReplacePolicy mutations + retain-on-replace; 5 del +2 retain; step6 cleanup -> 0 leftover
-update-replace	2026-06-13T11:42:29Z	PASS	71	verify.sh	#831 +Lambda/IAM/SG not-found post-destroy; 0 err
 vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
@@ -187,7 +184,6 @@ dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change re
 apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 eventbridge-scheduler	2026-06-27T19:25:47Z	PASS	53	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-eventbridge-pipes	2026-06-27T19:25:47Z	PASS	83	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 sqs-esm-max-concurrency	2026-06-27T19:25:47Z	PASS	70	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
@@ -201,15 +197,20 @@ replacement-immutable-name	2026-06-29T06:27:27Z	PASS	130	verify.sh	6-type rename
 bench-cdk-sample	2026-06-29T06:27:27Z	PASS	420	standard	broad VPC/NAT/CF/Lambda, 37+2retained 0err, loggroups swept
 efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustness refactor re-verified, orph clean
 codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
-lambda	2026-07-02T04:57:52Z	PASS	95	verify.sh	broad integ for resolver Ref fix PR; destroy 9 del 0 err; orph clean
 eventbridge	2026-07-02T06:09:46Z	PASS	210	verify.sh	new Phase 1.5 custom-bus rule-drop update (issue 955 fix), destroy 10/0 err
 dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
 lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
 loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard error-path + replace recreate, destroy clean 0 orphans
 loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
 synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
-eventbridge-pipes	2026-07-02T12:49:57Z	PASS	114	verify.sh	new UPDATE phase (issue 960): BatchSize in-place, no spurious replacement
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
 eventbridge-scheduler	2026-07-02T12:35:05Z	PASS	57	verify.sh	regression for new Scheduler SDK provider routing (default group)
 apigw-stage-throttling	2026-07-02T15:53:52Z	PASS	70	verify.sh	new #963 fixture: CC-routed Stage Ref + functional curl + update-deployment-swap, 0 orphans
 multi-resource	2026-07-02T15:57:30Z	PASS	71	standard	broad regression for #963 Ref-resolver change, 0 orphans (CR log groups swept)
+eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
+lambda	2026-07-02T16:12:06Z	PASS	90	verify.sh	broad integ for named-replacement-collision engine change; clean
+update-replace	2026-07-02T16:12:06Z	PASS	585	verify.sh	fixture updated: BucketName replacement now passes --force-stateful-recreation (post-#929 guard)
+cc-api-fallback	2026-07-02T16:12:06Z	PASS	59	verify.sh	post-merge validation batch; clean
+rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
+cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
+stepfunctions-logging	2026-07-02T16:12:06Z	PASS	72	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
