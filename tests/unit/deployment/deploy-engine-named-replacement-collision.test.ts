@@ -206,6 +206,30 @@ describe('DeployEngine — custom-named replacement collision', () => {
     expect(callOrder).toEqual(['create']);
   });
 
+  it('retries the re-create while an async delete releases the name (bounded collision retry)', async () => {
+    // First create: collision (old holds the name). After the delete, the
+    // SECOND create still collides once (async delete not settled), then
+    // succeeds — the bounded collision retry absorbs the release window.
+    createFailures = [alreadyExists(), alreadyExists()];
+
+    await invokeProvision(makeEngine({ replace: true }));
+
+    expect(callOrder).toEqual(['create', 'delete', 'create', 'create']);
+  }, 15_000);
+
+  it('reports that the old resource is already gone when the re-create ultimately fails', async () => {
+    createFailures = [alreadyExists(), new Error('AccessDenied: not authorized')];
+
+    const err = await invokeProvision(makeEngine({ replace: true })).then(
+      () => null,
+      (e) => e as Error & { cause?: { message?: string } }
+    );
+
+    expect(err).not.toBeNull();
+    expect(err!.cause?.message).toMatch(/already deleted the old resource/);
+    expect(err!.cause?.message).toMatch(/AccessDenied/);
+  });
+
   it('passes a NON-collision create failure through unchanged', async () => {
     createFailures = [new Error('AccessDenied: not authorized')];
 

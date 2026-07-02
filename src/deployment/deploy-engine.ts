@@ -2468,9 +2468,22 @@ export class DeployEngine {
               // requires replacing"); surface an equally clear error —
               // with a working one-command escape hatch CFn lacks —
               // instead of the raw AlreadyExists (issue #960 follow-up).
+              //
+              // NOTE: the detection is a message HEURISTIC — an "already
+              // exists" raised by something other than the replaced
+              // resource's own name (e.g. an externally-owned sibling)
+              // also matches. The blast radius is bounded: delete-first
+              // only fires under the explicit --replace opt-in, targets
+              // only the state-recorded old physicalId, and the stateful
+              // guard has already run.
               const nameCollision =
                 /already exists/i.test(createMsg) || createMsg.includes('AlreadyExists');
               if (!nameCollision) throw createError;
+              // Retain pins the old resource (and its name) in place, so a
+              // same-name replacement can never proceed under any flag.
+              // (Snapshot is NOT special-cased — matching the pre-existing
+              // create-then-destroy path, which also plain-deletes under
+              // Snapshot.)
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its user-supplied ` +
@@ -2503,23 +2516,65 @@ export class DeployEngine {
                 `  Create-first collided with the custom-named resource and --replace is set — ` +
                   `deleting old ${logicalId} (${currentResource.physicalId}) first...`
               );
-              await oldDeleteProvider.delete(
-                logicalId,
-                currentResource.physicalId,
-                resourceType,
-                currentResource.properties,
-                { expectedRegion: this.stackRegion }
-              );
+              try {
+                await oldDeleteProvider.delete(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  currentResource.properties,
+                  { expectedRegion: this.stackRegion }
+                );
+              } catch (deleteError) {
+                // Mirror the recreate-flagged path's wrapping: the delete is
+                // load-bearing here (without it the re-create collides again).
+                throw new Error(
+                  `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
+                    `during the --replace delete-first fallback: ` +
+                    `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                );
+              }
               this.logger.info(`  ${green('✓')} Old resource deleted`);
               deletedOldFirst = true;
               this.logger.info(`  Re-creating ${logicalId}...`);
-              createResult = await this.withRetry(
-                () => replaceProvider.create(logicalId, resourceType, replaceProps),
-                logicalId,
-                undefined,
-                undefined,
-                replaceProvider
-              );
+              try {
+                // Some providers return from delete() before the name is
+                // actually released (async deletes: Step Functions, Kinesis,
+                // Pipes DELETING state). "already exists" is deliberately
+                // NOT in the transient-retry patterns, so give the re-create
+                // its own bounded collision retry instead of failing fast
+                // with the old resource already gone.
+                createResult = await withRetry(
+                  () =>
+                    this.withRetry(
+                      () => replaceProvider.create(logicalId, resourceType, replaceProps),
+                      logicalId,
+                      undefined,
+                      undefined,
+                      replaceProvider
+                    ),
+                  logicalId,
+                  {
+                    maxRetries: 5,
+                    initialDelayMs: 2_000,
+                    maxDelayMs: 10_000,
+                    logger: this.logger,
+                    isInterrupted: () => this.interrupted,
+                    onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
+                    isRetryable: (message: string) =>
+                      /already exists/i.test(message) || message.includes('AlreadyExists'),
+                  }
+                );
+              } catch (recreateError) {
+                // The old resource is ALREADY deleted at this point — say so,
+                // because state still records it and the next deploy's UPDATE
+                // would otherwise chase a resource that no longer exists.
+                throw new Error(
+                  `Failed to re-create ${logicalId} after the --replace delete-first fallback ` +
+                    `already deleted the old resource (${currentResource.physicalId}): ` +
+                    `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
+                    `Re-run the deploy to create it fresh.`
+                );
+              }
             }
 
             if (deletedOldFirst) {

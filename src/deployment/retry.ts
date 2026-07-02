@@ -51,6 +51,14 @@ export interface WithRetryOptions {
   onInterrupted?: () => Error;
   /** Override the sleep implementation (used by tests to skip real waits). */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Override the retryable-error classifier. When set, this replaces
+   * {@link isRetryableTransientError} for THIS call — used by callers that
+   * need to retry an error shape the shared transient table deliberately
+   * excludes (e.g. the --replace delete-first fallback retrying
+   * "already exists" while an async delete releases the name).
+   */
+  isRetryable?: (message: string, error: unknown) => boolean;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -85,7 +93,9 @@ export async function withRetry<T>(
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
 
-      const retryable = isRetryableTransientError(error, message);
+      const retryable = opts.isRetryable
+        ? opts.isRetryable(message, error)
+        : isRetryableTransientError(error, message);
       if (!retryable || attempt >= maxRetries) {
         throw error;
       }
