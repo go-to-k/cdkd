@@ -1154,6 +1154,72 @@ describe('LambdaFunctionProvider', () => {
       expect(codeCmd.input.Architectures).toEqual(['x86_64']);
     });
 
+    it('fires UpdateFunctionCode when the arch is added from absent (default x86_64 -> arm64)', async () => {
+      // The most common real-world edit: the template had no explicit
+      // architecture (Lambda default x86_64) and the user adds arm64. Both
+      // comparison sides are normalized, so this must be detected as a
+      // change even though previousProperties carries no Architectures key.
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-add-arch',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-add-arch',
+          },
+        });
+
+      await provider.update(
+        'Fn',
+        'fn-add-arch',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['arm64'],
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+        }
+      );
+
+      const codeCmd = mockLambdaSend.mock.calls[0][0];
+      expect(codeCmd).toBeInstanceOf(UpdateFunctionCodeCommand);
+      expect(codeCmd.input.Architectures).toEqual(['arm64']);
+    });
+
+    it('treats an explicit-x86_64 <-> absent transition as no change (no needless code redeploy)', async () => {
+      // Both sides mean the Lambda default architecture; a template edit
+      // that merely adds or removes the explicit ['x86_64'] must not fire
+      // UpdateFunctionCode when the code is unchanged.
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: {
+          FunctionName: 'fn-noop',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-noop',
+        },
+      }); // final attribute fetch (no config / code mutation expected before it)
+      await provider.update(
+        'Fn',
+        'fn-noop',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['x86_64'],
+        }
+      );
+
+      const codeCall = mockLambdaSend.mock.calls.find(
+        (c) => c[0] instanceof UpdateFunctionCodeCommand
+      );
+      expect(codeCall).toBeUndefined();
+    });
+
     it('throws ProvisioningError when the post-update waiter sees LastUpdateStatus === Failed', async () => {
       mockLambdaSend
         .mockResolvedValueOnce({}) // UpdateFunctionConfiguration

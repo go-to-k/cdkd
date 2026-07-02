@@ -204,3 +204,4 @@ efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustnes
 codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
 eventbridge	2026-07-02T04:55:20Z	PASS	150	verify.sh	LogConfig + new Events::Rule Ref-name assertion, destroy 13/0 err
 lambda	2026-07-02T04:57:52Z	PASS	95	verify.sh	broad integ for resolver Ref fix PR; destroy 9 del 0 err; orph clean
+lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
