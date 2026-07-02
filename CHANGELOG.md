@@ -1,3 +1,10 @@
+## [0.230.27](https://github.com/go-to-k/cdkd/compare/v0.230.26...v0.230.27) (2026-07-02)
+
+
+### Bug Fixes
+
+* **provisioning:** apply LogGroup KmsKeyId change on update (was silently dropped) ([#959](https://github.com/go-to-k/cdkd/issues/959)) ([3a1c408](https://github.com/go-to-k/cdkd/commit/3a1c4082c6e2b959b26fd6ee9ee3fb9ecbc4fa77))
+
 ## [0.230.26](https://github.com/go-to-k/cdkd/compare/v0.230.25...v0.230.26) (2026-07-02)
 
 
