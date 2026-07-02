@@ -28,12 +28,19 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
 /**
  * Resource types whose CloudFormation `Ref` returns the segment AFTER the LAST
  * pipe in cdkd's compound Cloud Control physical id (rather than the whole
- * physical id). These are Cloud-Control-provisioned types whose CC
- * primaryIdentifier is compound (`<parentId>|<ref>`, or `<a>|<b>|<ref>` for
+ * physical id). These are types provisioned via Cloud Control — either because
+ * they have no SDK provider, or because the #614 silent-drop routing sent an
+ * SDK-backed type through CC (e.g. an ApiGateway Stage carrying
+ * `MethodSettings`, which the SDK provider does not wire — issue #963). Their
+ * CC primaryIdentifier is compound (`<parentId>|<ref>`, or `<a>|<b>|<ref>` for
  * triple-segment AppConfig children) while CFn's `Ref` returns only the
- * trailing `<ref>` component:
+ * trailing `<ref>` component. For SDK-provisioned instances of the same types
+ * the stored physical id has no pipe, so the extraction is a no-op:
  *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
  *   - AWS::ApiGateway::RequestValidator `<restApiId>|<validatorId>`   -> validator id
+ *   - AWS::ApiGateway::Stage            `<restApiId>|<stageName>`     -> stage name
+ *   - AWS::ApiGateway::Resource         `<restApiId>|<resourceId>`    -> resource id
+ *   - AWS::ApiGateway::Authorizer       `<restApiId>|<authorizerId>`  -> authorizer id
  *   - AWS::Cognito::UserPoolClient           `<userPoolId>|<clientId>`       -> client id
  *   - AWS::Cognito::UserPoolResourceServer   `<userPoolId>|<identifier>`     -> resource-server identifier
  *   - AWS::Cognito::UserPoolGroup            `<userPoolId>|<groupName>`      -> group name
@@ -63,12 +70,26 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   3. EXCLUDE types whose `Ref` returns a synthetic / prefixed string rather
  *      than a bare id segment — e.g. Cognito::UserPoolRiskConfigurationAttachment
  *      / ::UserPoolUICustomizationAttachment return
- *      `<TypeName>-<UserPoolId>-<ClientId>`, NOT the after-pipe segment.
- *   4. Pin each addition with a unit test in intrinsic-functions.test.ts.
+ *      `<TypeName>-<UserPoolId>-<ClientId>`, NOT the after-pipe segment;
+ *      ApiGateway::Method is in this category too (its documented `Ref` is a
+ *      CFn-generated synthetic id like `mysta-metho-01234b567890example`, not
+ *      reconstructible from the `<apiId>|<resourceId>|<verb>` physical id).
+ *      Also EXCLUDE types whose AWS-docs page documents NO `Ref` return value
+ *      at all (ApiGateway::DocumentationVersion) — with no contract to honor,
+ *      the raw physical id is the least-surprising value.
+ *   4. Types whose primaryIdentifier puts the `Ref` component FIRST
+ *      (`[<refId>, <parentId>]` — e.g. ApiGateway::Deployment /
+ *      ::DocumentationPart) belong in
+ *      {@link REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE} instead of this Set: the
+ *      after-last-pipe extraction would return the PARENT id for them.
+ *   5. Pin each addition with a unit test in intrinsic-functions.test.ts.
  */
 const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Model',
   'AWS::ApiGateway::RequestValidator',
+  'AWS::ApiGateway::Stage',
+  'AWS::ApiGateway::Resource',
+  'AWS::ApiGateway::Authorizer',
   'AWS::Cognito::UserPoolClient',
   'AWS::Cognito::UserPoolResourceServer',
   'AWS::Cognito::UserPoolGroup',
@@ -79,6 +100,27 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',
   'AWS::AppConfig::Deployment',
+]);
+
+/**
+ * Sibling of {@link REF_RETURNS_SEGMENT_AFTER_PIPE} for compound-id types
+ * whose CC primaryIdentifier puts the `Ref` component FIRST
+ * (`[<refId>, <parentId>]` — segment order REVERSED vs the after-pipe family),
+ * so CFn's `Ref` value is the segment BEFORE the FIRST pipe (issue #963
+ * family audit; both confirmed against the AWS-docs "Return values / Ref"
+ * section):
+ *   - AWS::ApiGateway::Deployment        `<deploymentId>|<restApiId>` -> deployment id
+ *   - AWS::ApiGateway::DocumentationPart `<docPartId>|<restApiId>`    -> documentation part id
+ *
+ * Deployment matters in practice: every CDK-generated template wires the
+ * Stage's `DeploymentId` as `{ Ref: <Deployment> }`, so a CC-routed
+ * Deployment would otherwise hand the Stage a compound id AWS rejects. Same
+ * maintenance rules as the after-pipe Set (docs-verified Ref semantics +
+ * a pinning unit test per entry).
+ */
+const REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE = new Set<string>([
+  'AWS::ApiGateway::Deployment',
+  'AWS::ApiGateway::DocumentationPart',
 ]);
 
 /**
@@ -102,8 +144,8 @@ const REF_RETURNS_NAME_FROM_ARN = new Map<string, string>([
  * type and cdkd-stored physical id. Pure function shared by the deploy-time
  * resolver ({@link IntrinsicFunctionResolver.resolveRefValue}) and the
  * `cdkd orphan` rewriter's `{Ref: <orphan>}` substitution, so both derive
- * identical CFn `Ref` semantics (after-pipe compound-id extraction and
- * name-from-ARN extraction included).
+ * identical CFn `Ref` semantics (after-pipe / before-first-pipe compound-id
+ * extraction and name-from-ARN extraction included).
  */
 export function cfnRefValueFromPhysicalId(resourceType: string, physicalId: string): string {
   const nameMarker = REF_RETURNS_NAME_FROM_ARN.get(resourceType);
@@ -136,6 +178,15 @@ export function cfnRefValueFromPhysicalId(resourceType: string, physicalId: stri
     const pipeIdx = physicalId.lastIndexOf('|');
     if (pipeIdx >= 0) {
       return physicalId.substring(pipeIdx + 1);
+    }
+  }
+  if (REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE.has(resourceType)) {
+    // Reversed-order compounds (`<ref>|<parent>`): take the segment before
+    // the FIRST pipe. A pipe-free physical id (the SDK-provisioned case for
+    // these types) falls through and returns unchanged.
+    const pipeIdx = physicalId.indexOf('|');
+    if (pipeIdx >= 0) {
+      return physicalId.substring(0, pipeIdx);
     }
   }
   return physicalId;
@@ -790,9 +841,10 @@ export class IntrinsicFunctionResolver {
    * physical id, and returning the raw physical id breaks downstream consumers.
    *
    * The {@link REF_RETURNS_SEGMENT_AFTER_PIPE} types are provisioned via Cloud
-   * Control (no SDK provider), whose primary identifier — and thus cdkd's
-   * physical id — is the compound `<parentId>|<ref>`, while CFn's `Ref` returns
-   * only the trailing `<ref>` segment:
+   * Control (either they have no SDK provider, or the #614 silent-drop routing
+   * sent an SDK-backed type through CC), whose primary identifier — and thus
+   * cdkd's physical id — is the compound `<parentId>|<ref>`, while CFn's `Ref`
+   * returns only the trailing `<ref>` segment:
    *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
    *     `<restApiId>|<modelName>`. A method wiring
    *     `RequestModels: { "application/json": { "Ref": <Model> } }` would
@@ -809,6 +861,11 @@ export class IntrinsicFunctionResolver {
    *     compound id, which fails the `[\w+]+` client-id validation.
    * In every case the `Ref` value is the segment after the pipe (the parent id
    * is the first identifier component).
+   *
+   * The {@link REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE} types are the mirror
+   * image: their compound primaryIdentifier puts the `Ref` component FIRST
+   * (`<refId>|<parentId>` — e.g. `AWS::ApiGateway::Deployment`), so the value
+   * is the segment before the first pipe.
    *
    * The {@link REF_RETURNS_NAME_FROM_ARN} types are SDK-provisioned with the
    * resource ARN stored as the physical id, while CFn's `Ref` returns the

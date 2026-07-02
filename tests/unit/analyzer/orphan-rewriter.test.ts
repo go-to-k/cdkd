@@ -77,6 +77,9 @@ describe('rewriteResourceReferences', () => {
       'us-east-1_t1TBpabHO|9fut2hkhdues45051mvms2os5',
       '9fut2hkhdues45051mvms2os5',
     ],
+    // Reversed-order compound (issue #963): Ref is the BEFORE-first-pipe
+    // segment for ApiGateway::Deployment (`<deploymentId>|<restApiId>`).
+    ['AWS::ApiGateway::Deployment', 'd5b52m|jkmnpf9ay0', 'd5b52m'],
   ])(
     'rewrites a {Ref: orphan} of %s into the CFn Ref value, not the raw physical id',
     async (resourceType, physicalId, expected) => {

@@ -2783,6 +2783,164 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe('api/read');
   });
 
+  // Issue #963 (hunt-bugs sweep 11): the rest of the ApiGateway compound-id
+  // family. These types HAVE an SDK provider (which stores a simple, pipe-free
+  // physical id), but the #614 silent-drop routing sends them through Cloud
+  // Control whenever the template carries a property the SDK provider does not
+  // wire — e.g. a Stage with `MethodSettings` (CDK `deployOptions.throttling*`
+  // / `metricsEnabled` / `loggingLevel`). The CC path stores the compound
+  // `<restApiId>|<ref>` primaryIdentifier, and without the after-pipe entry the
+  // CDK-generated Lambda Permission SourceArn resolved to
+  // `.../<restApiId>|<stage>/GET/hello`, so API Gateway could not invoke the
+  // Lambda and the deployed API returned 500 on every request.
+  it.each([
+    ['AWS::ApiGateway::Stage', 'jkmnpf9ay0|test', 'test'],
+    ['AWS::ApiGateway::Resource', 'jkmnpf9ay0|92jxxi', '92jxxi'],
+    ['AWS::ApiGateway::Authorizer', 'jkmnpf9ay0|abcde1', 'abcde1'],
+  ])(
+    'Ref to %s returns the trailing segment of a CC-routed compound physical id',
+    async (resourceType, physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: { physicalId, resourceType, properties: {}, attributes: {}, dependencies: [] },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
+  // The SDK-provisioned instances of the same types store a pipe-free physical
+  // id — the extraction must be a no-op for them.
+  it('Ref to an SDK-provisioned AWS::ApiGateway::Stage (pipe-free physical id) passes through unchanged', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { Stage: { Type: 'AWS::ApiGateway::Stage', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Stage: {
+          physicalId: 'prod',
+          resourceType: 'AWS::ApiGateway::Stage',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'Stage' }, context);
+    expect(result).toBe('prod');
+  });
+
+  // The exact #963 consumer shape: CDK's LambdaIntegration permission builds
+  // SourceArn via Fn::Join over `{Ref: <Stage>}` — the resolved ARN must carry
+  // the bare stage name, never the compound id.
+  it('Ref to a CC-routed Stage inside the Lambda Permission SourceArn Fn::Join yields the bare stage segment', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+        Stage: { Type: 'AWS::ApiGateway::Stage', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Api: {
+          physicalId: 'jkmnpf9ay0',
+          resourceType: 'AWS::ApiGateway::RestApi',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+        Stage: {
+          physicalId: 'jkmnpf9ay0|test',
+          resourceType: 'AWS::ApiGateway::Stage',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::Join': [
+          '',
+          [
+            'arn:aws:execute-api:us-east-1:123456789012:',
+            { Ref: 'Api' },
+            '/',
+            { Ref: 'Stage' },
+            '/GET/hello',
+          ],
+        ],
+      },
+      context
+    );
+    expect(result).toBe('arn:aws:execute-api:us-east-1:123456789012:jkmnpf9ay0/test/GET/hello');
+  });
+
+  // AWS::ApiGateway::Method is deliberately in NEITHER compound-id set: its
+  // documented CFn `Ref` is a synthetic CFn-generated id (e.g.
+  // `mysta-metho-01234b567890example`) that cannot be reconstructed from the
+  // `<apiId>|<resourceId>|<verb>` physical id — so the raw physical id must
+  // pass through unchanged.
+  it('Ref to AWS::ApiGateway::Method passes the compound physical id through unchanged', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { M: { Type: 'AWS::ApiGateway::Method', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        M: {
+          physicalId: 'jkmnpf9ay0|92jxxi|GET',
+          resourceType: 'AWS::ApiGateway::Method',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'M' }, context);
+    expect(result).toBe('jkmnpf9ay0|92jxxi|GET');
+  });
+
+  // Reversed-order compounds (issue #963 family audit): Deployment and
+  // DocumentationPart have primaryIdentifier `[<refId>, <restApiId>]` — the
+  // `Ref` component comes FIRST, so the after-last-pipe extraction would
+  // return the PARENT RestApi id for them. They live in the
+  // BEFORE_FIRST_PIPE set instead. Deployment matters in every CDK template:
+  // the Stage's `DeploymentId` is `{ Ref: <Deployment> }`.
+  it.each([
+    ['AWS::ApiGateway::Deployment', 'd5b52m|jkmnpf9ay0', 'd5b52m'],
+    ['AWS::ApiGateway::DocumentationPart', 'abc123|jkmnpf9ay0', 'abc123'],
+    // SDK-provisioned instances store a bare id — pass through unchanged.
+    ['AWS::ApiGateway::Deployment', 'd5b52m', 'd5b52m'],
+  ])(
+    'Ref to %s returns the FIRST segment of the reversed compound physical id',
+    async (resourceType, physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: { physicalId, resourceType, properties: {}, attributes: {}, dependencies: [] },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
   // Same divergence class, different id shape: the SDK providers for these
   // types store the resource ARN as the physical id, but CFn's `Ref` returns
   // the resource NAME. Found by /hunt-bugs (2026-07-02): a CfnOutput

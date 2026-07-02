@@ -314,6 +314,11 @@
       ]
     },
     {
+      "name": "apigw-stage-throttling",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "apigw-usage-plan-key",
       "annotated": false,
       "scenarios": []
@@ -2105,6 +2110,7 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "acm-certificate",
+    "apigw-stage-throttling",
     "apigw-usage-plan-key",
     "appconfig",
     "aws-custom-resource",
