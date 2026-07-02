@@ -108,6 +108,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'DeploymentId',
         'Description',
+        'MethodSettings',
         'RestApiId',
         'StageName',
         'Tags',
@@ -121,7 +122,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['CanarySetting', 'not yet implemented by cdkd'],
         ['ClientCertificateId', 'not yet implemented by cdkd'],
         ['DocumentationVersion', 'not yet implemented by cdkd'],
-        ['MethodSettings', 'not yet implemented by cdkd'],
       ]),
     },
   ],

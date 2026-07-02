@@ -735,6 +735,252 @@ describe('ApiGatewayProvider', () => {
         ]);
       });
 
+      it('applies MethodSettings on create via a post-CreateStage UpdateStage (issue #966)', async () => {
+        mockSend.mockResolvedValueOnce({}); // CreateStage
+        mockSend.mockResolvedValueOnce({}); // UpdateStage (method settings)
+
+        const result = await provider.create('MyStage', resourceType, {
+          RestApiId: 'api-id',
+          StageName: 'prod',
+          DeploymentId: 'deploy-123',
+          MethodSettings: [
+            {
+              ResourcePath: '/*',
+              HttpMethod: '*',
+              ThrottlingRateLimit: 100,
+              ThrottlingBurstLimit: 50,
+              MetricsEnabled: true,
+            },
+          ],
+        });
+
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateStageCommand');
+        const update = mockSend.mock.calls[1][0];
+        expect(update.constructor.name).toBe('UpdateStageCommand');
+        expect(update.input).toEqual({
+          restApiId: 'api-id',
+          stageName: 'prod',
+          patchOperations: [
+            { op: 'replace', path: '/*/*/throttling/rateLimit', value: '100' },
+            { op: 'replace', path: '/*/*/throttling/burstLimit', value: '50' },
+            { op: 'replace', path: '/*/*/metrics/enabled', value: 'true' },
+          ],
+        });
+      });
+
+      it('patches only the changed MethodSettings field on update (issue #966)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            MethodSettings: [
+              { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 50, ThrottlingBurstLimit: 25 },
+            ],
+          },
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            MethodSettings: [
+              { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100, ThrottlingBurstLimit: 25 },
+            ],
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('UpdateStageCommand');
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/*/*/throttling/rateLimit', value: '50' },
+        ]);
+      });
+
+      it('removes the whole key for a dropped entry, and reset-and-rebuilds a kept entry that dropped a field (issue #966)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            // The /~1pets GET entry keeps metrics but drops its rate limit;
+            // the wildcard entry disappears entirely. API Gateway rejects
+            // field-level removes, so the kept entry is cleared and rebuilt
+            // (remove /{key} + replace of every remaining field) in the same
+            // UpdateStage call — live-verified sequential application.
+            MethodSettings: [
+              { ResourcePath: '/~1pets', HttpMethod: 'GET', MetricsEnabled: true },
+            ],
+          },
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            MethodSettings: [
+              { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 },
+              {
+                ResourcePath: '/~1pets',
+                HttpMethod: 'GET',
+                MetricsEnabled: true,
+                ThrottlingRateLimit: 10,
+              },
+            ],
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'remove', path: '/*/*' },
+          { op: 'remove', path: '/~1pets/GET' },
+          { op: 'replace', path: '/~1pets/GET/metrics/enabled', value: 'true' },
+        ]);
+      });
+
+      it('maps every CFn MethodSetting field to its UpdateStage patch path, incl. false/0 values and the root resource path (issue #966)', async () => {
+        mockSend.mockResolvedValueOnce({}); // CreateStage
+        mockSend.mockResolvedValueOnce({}); // UpdateStage
+
+        await provider.create('MyStage', resourceType, {
+          RestApiId: 'api-id',
+          StageName: 'prod',
+          DeploymentId: 'deploy-123',
+          MethodSettings: [
+            {
+              // The ROOT path is the bare '/', which API Gateway keys as
+              // `~1/GET` (live-verified) — plain slash-stripping would build
+              // the malformed `//GET/...` patch path.
+              ResourcePath: '/',
+              HttpMethod: 'GET',
+              ThrottlingRateLimit: 0,
+              ThrottlingBurstLimit: 5,
+              MetricsEnabled: false,
+              LoggingLevel: 'ERROR',
+              DataTraceEnabled: true,
+              CachingEnabled: true,
+              CacheTtlInSeconds: 60,
+              CacheDataEncrypted: false,
+              RequireAuthorizationForCacheControl: true,
+              UnauthorizedCacheControlHeaderStrategy: 'FAIL_WITH_403',
+            },
+          ],
+        });
+
+        const update = mockSend.mock.calls[1][0];
+        expect(update.input.patchOperations).toEqual([
+          { op: 'replace', path: '/~1/GET/throttling/rateLimit', value: '0' },
+          { op: 'replace', path: '/~1/GET/throttling/burstLimit', value: '5' },
+          { op: 'replace', path: '/~1/GET/metrics/enabled', value: 'false' },
+          { op: 'replace', path: '/~1/GET/logging/loglevel', value: 'ERROR' },
+          { op: 'replace', path: '/~1/GET/logging/dataTrace', value: 'true' },
+          { op: 'replace', path: '/~1/GET/caching/enabled', value: 'true' },
+          { op: 'replace', path: '/~1/GET/caching/ttlInSeconds', value: '60' },
+          { op: 'replace', path: '/~1/GET/caching/dataEncrypted', value: 'false' },
+          {
+            op: 'replace',
+            path: '/~1/GET/caching/requireAuthorizationForCacheControl',
+            value: 'true',
+          },
+          {
+            op: 'replace',
+            path: '/~1/GET/caching/unauthorizedCacheControlHeaderStrategy',
+            value: 'FAIL_WITH_403',
+          },
+        ]);
+      });
+
+      it('rides MethodSettings ops on the same UpdateStage call as other stage changes (issue #966)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            Variables: { appVersion: '2.0.0' },
+            MethodSettings: [
+              { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 50 },
+            ],
+          },
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            Variables: { appVersion: '1.0.0' },
+            MethodSettings: [
+              { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 },
+            ],
+          }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/variables/appVersion', value: '2.0.0' },
+          { op: 'replace', path: '/*/*/throttling/rateLimit', value: '50' },
+        ]);
+      });
+
+      it('best-effort deletes the stage and rethrows when the post-create MethodSettings patch fails (issue #966)', async () => {
+        mockSend.mockResolvedValueOnce({}); // CreateStage succeeds
+        mockSend.mockRejectedValueOnce(new Error('BadRequestException: bad patch')); // UpdateStage fails
+        mockSend.mockResolvedValueOnce({}); // DeleteStage cleanup
+
+        await expect(
+          provider.create('MyStage', resourceType, {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            MethodSettings: [{ ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 }],
+          })
+        ).rejects.toThrow('Failed to create API Gateway Stage');
+
+        // Without the cleanup the created stage holds the name and every
+        // retry dies with ConflictException (corpse-blocks-retry class).
+        expect(mockSend).toHaveBeenCalledTimes(3);
+        const cleanup = mockSend.mock.calls[2][0];
+        expect(cleanup.constructor.name).toBe('DeleteStageCommand');
+        expect(cleanup.input).toEqual({ restApiId: 'api-id', stageName: 'prod' });
+      });
+
+      it('emits no UpdateStage call when MethodSettings are unchanged (issue #966)', async () => {
+        const settings = [
+          { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 },
+        ];
+        const result = await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            MethodSettings: settings,
+          },
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+            MethodSettings: [...settings.map((s) => ({ ...s }))],
+          }
+        );
+
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
       it('should add/replace and remove /variables keys when Variables changes (#609 backfill)', async () => {
         mockSend.mockResolvedValueOnce({});
 

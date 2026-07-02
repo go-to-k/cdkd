@@ -3398,6 +3398,7 @@
     {
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
+        "apigw-stage-throttling",
         "cloudwatch",
         "composite-stack",
         "drift-revert",
@@ -3414,6 +3415,10 @@
         "tags-propagation"
       ],
       "signals": {
+        "apigw-stage-throttling": [
+          "l2",
+          "literal"
+        ],
         "cloudwatch": [
           "l2"
         ],

@@ -239,6 +239,71 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     });
   });
 
+  it('rebuilds Stage MethodSettings from the get-stage map in state order, state-declared fields only (issue #966)', async () => {
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+      // get-stage keys method settings by `{resource_path}/{http_method}` and
+      // fills EVERY field with its default — the readback must not leak the
+      // undeclared defaults into the drift baseline comparison.
+      methodSettings: {
+        '*/*': {
+          throttlingRateLimit: 100,
+          throttlingBurstLimit: 50,
+          metricsEnabled: false,
+          dataTraceEnabled: false,
+          cachingEnabled: false,
+          cacheTtlInSeconds: 300,
+        },
+      },
+    });
+
+    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+      MethodSettings: [
+        { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100, ThrottlingBurstLimit: 50 },
+      ],
+    });
+
+    expect(result?.['MethodSettings']).toEqual([
+      { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100, ThrottlingBurstLimit: 50 },
+    ]);
+  });
+
+  it('still emits Stage MethodSettings entries when AWS returns no methodSettings map at all (issue #966)', async () => {
+    // Out-of-band removal of EVERY override: get-stage omits the map. The
+    // readback must still emit the state's entries (with the declared fields
+    // absent) so the drift SURFACES instead of the key dropping out of the
+    // comparison.
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+    });
+
+    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+      MethodSettings: [
+        { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 },
+      ],
+    });
+
+    expect(result?.['MethodSettings']).toEqual([{ ResourcePath: '/*', HttpMethod: '*' }]);
+  });
+
+  it('omits Stage MethodSettings from the readback when the state never declared them (issue #966)', async () => {
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+      methodSettings: { '*/*': { throttlingRateLimit: 100 } },
+    });
+
+    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+    });
+
+    expect(result?.['MethodSettings']).toBeUndefined();
+  });
+
   it('omits Stage TracingEnabled/Variables when GetStage does not return them (#609 backfill)', async () => {
     mockSend.mockResolvedValueOnce({
       stageName: 'prod',
