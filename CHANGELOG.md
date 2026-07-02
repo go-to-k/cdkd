@@ -1,3 +1,10 @@
+## [0.230.21](https://github.com/go-to-k/cdkd/compare/v0.230.20...v0.230.21) (2026-07-02)
+
+
+### Bug Fixes
+
+* **deployment:** Ref on Events::Rule / CloudTrail::Trail returns the resource name, not the ARN ([#949](https://github.com/go-to-k/cdkd/issues/949)) ([a2a4298](https://github.com/go-to-k/cdkd/commit/a2a4298bfb891260620a924ba5276b3b28da9d6f))
+
 ## [0.230.20](https://github.com/go-to-k/cdkd/compare/v0.230.19...v0.230.20) (2026-07-02)
 
 
