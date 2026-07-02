@@ -1,3 +1,10 @@
+## [0.230.32](https://github.com/go-to-k/cdkd/compare/v0.230.31...v0.230.32) (2026-07-02)
+
+
+### Bug Fixes
+
+* **deployment:** actionable error + --replace delete-first for custom-named resource replacement ([#968](https://github.com/go-to-k/cdkd/issues/968)) ([8a0b2d5](https://github.com/go-to-k/cdkd/commit/8a0b2d5f9cc9d78fc9041e4ca2412964e7c751b7))
+
 ## [0.230.31](https://github.com/go-to-k/cdkd/compare/v0.230.30...v0.230.31) (2026-07-02)
 
 
