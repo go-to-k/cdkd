@@ -1,3 +1,10 @@
+## [0.230.23](https://github.com/go-to-k/cdkd/compare/v0.230.22...v0.230.23) (2026-07-02)
+
+
+### Bug Fixes
+
+* **deploy:** retry Step Functions assume-role IAM-propagation race ([#950](https://github.com/go-to-k/cdkd/issues/950)) ([cb3000b](https://github.com/go-to-k/cdkd/commit/cb3000b1f0dc6421574f439e3126aa7bdcd6d7fe))
+
 ## [0.230.22](https://github.com/go-to-k/cdkd/compare/v0.230.21...v0.230.22) (2026-07-02)
 
 
