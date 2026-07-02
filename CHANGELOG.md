@@ -1,3 +1,10 @@
+## [0.230.24](https://github.com/go-to-k/cdkd/compare/v0.230.23...v0.230.24) (2026-07-02)
+
+
+### Bug Fixes
+
+* **provisioning:** apply DynamoDB TableClass switch on update (was silently dropped) ([#951](https://github.com/go-to-k/cdkd/issues/951)) ([8a95ce0](https://github.com/go-to-k/cdkd/commit/8a95ce0129a849f14fa0ff5a809b4ba01d0935e3))
+
 ## [0.230.23](https://github.com/go-to-k/cdkd/compare/v0.230.22...v0.230.23) (2026-07-02)
 
 
