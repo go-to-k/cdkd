@@ -2811,6 +2811,13 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
       'my-trail',
     ],
+    [
+      // Legacy / CC-provisioned state may store a bare name — must pass
+      // through unchanged (the ARN-extraction branch is gated on `arn:`).
+      'AWS::Events::Rule',
+      'my-rule',
+      'my-rule',
+    ],
   ])(
     'Ref to %s returns the resource name extracted from the ARN physical id',
     async (resourceType, physicalId, expected) => {

@@ -115,7 +115,13 @@ export function cfnRefValueFromPhysicalId(resourceType: string, physicalId: stri
       // CloudFormation's physical id for such rules is `<busName>|<ruleName>`
       // (verified against real CloudFormation, 2026-07-02). Rule names cannot
       // contain `/` but partner-bus NAMES can (`aws.partner/foo.com/...`), so
-      // split on the LAST slash to keep the whole bus name intact.
+      // split on the LAST slash to keep the whole bus name intact (the
+      // partner-bus form is inferred from that rule, not CFn-verified —
+      // partner buses need a live SaaS integration to create).
+      // NOTE: this split fires only when the segment contains `/`, which is
+      // safe for types whose names forbid `/` (both current entries). A future
+      // REF_RETURNS_NAME_FROM_ARN entry whose names may contain `/` needs a
+      // per-entry flag instead of this shared split.
       const slashIdx = segment.lastIndexOf('/');
       if (slashIdx >= 0) {
         return `${segment.substring(0, slashIdx)}|${segment.substring(slashIdx + 1)}`;
