@@ -1,3 +1,10 @@
+## [0.230.29](https://github.com/go-to-k/cdkd/compare/v0.230.28...v0.230.29) (2026-07-02)
+
+
+### Bug Fixes
+
+* **analyzer:** compare createOnly properties at path granularity, not top-level reduction ([#965](https://github.com/go-to-k/cdkd/issues/965)) ([0d948df](https://github.com/go-to-k/cdkd/commit/0d948df70c31766a06feeab90743fa1b4babbf91))
+
 ## [0.230.28](https://github.com/go-to-k/cdkd/compare/v0.230.27...v0.230.28) (2026-07-02)
 
 
