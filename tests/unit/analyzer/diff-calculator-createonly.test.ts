@@ -3,9 +3,18 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // Control the CFn-schema createOnly resolver so the diff fallback is exercised
 // without any AWS call.
 const mockGetCreateOnly = vi.fn();
-vi.mock('../../../src/provisioning/create-only-properties.js', () => ({
-  getTopLevelCreateOnlyProperties: (resourceType: string) => mockGetCreateOnly(resourceType),
-}));
+vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/create-only-properties.js')
+  >('../../../src/provisioning/create-only-properties.js');
+  return {
+    ...actual,
+    // Only the DescribeType-backed path lookup is mocked; the pure
+    // createOnlyChangeRequiresReplacement comparison runs for real so the
+    // path-granular semantics (issue #960) are exercised through the diff.
+    getCreateOnlyPropertyPaths: (resourceType: string) => mockGetCreateOnly(resourceType),
+  };
+});
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -29,13 +38,13 @@ const baseState = (): StackState => ({
 describe('DiffCalculator - createOnly replacement fallback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetCreateOnly.mockResolvedValue(new Set<string>());
+    mockGetCreateOnly.mockResolvedValue([]);
   });
 
   it('marks a createOnly property change on an UNREGISTERED type as requiring replacement', async () => {
     // AWS::EFS::FileSystem has no ReplacementRulesRegistry rule; PerformanceMode
     // is createOnly per the CFn schema.
-    mockGetCreateOnly.mockResolvedValue(new Set(['PerformanceMode']));
+    mockGetCreateOnly.mockResolvedValue([['PerformanceMode']]);
 
     const state = baseState();
     state.resources['Fs'] = {
@@ -60,7 +69,7 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
 
   it('does NOT mark a non-createOnly change as replacement (mutable property)', async () => {
     // ThroughputMode is mutable (not in createOnly); only PerformanceMode is.
-    mockGetCreateOnly.mockResolvedValue(new Set(['PerformanceMode']));
+    mockGetCreateOnly.mockResolvedValue([['PerformanceMode']]);
 
     const state = baseState();
     state.resources['Fs'] = {
@@ -99,7 +108,7 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
         },
       },
     };
-    mockGetCreateOnly.mockResolvedValue(new Set(['VersioningConfiguration']));
+    mockGetCreateOnly.mockResolvedValue([['VersioningConfiguration']]);
 
     const changes = await new DiffCalculator().calculateDiff(state, template);
     const pc = changes
@@ -132,9 +141,9 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
     expect(mockGetCreateOnly).not.toHaveBeenCalled();
   });
 
-  it('degrades gracefully when the schema lookup yields an empty set (no replacement)', async () => {
-    // DescribeType failure surfaces as an empty set from the helper.
-    mockGetCreateOnly.mockResolvedValue(new Set<string>());
+  it('degrades gracefully when the schema lookup yields an empty list (no replacement)', async () => {
+    // DescribeType failure surfaces as an empty list from the helper.
+    mockGetCreateOnly.mockResolvedValue([]);
 
     const state = baseState();
     state.resources['Fs'] = {
@@ -154,5 +163,77 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
     // Still an UPDATE, but no replacement (the pre-fix behavior on lookup failure).
     expect(changes.get('Fs')?.changeType).toBe('UPDATE');
     expect(pc?.requiresReplacement).toBe(false);
+  });
+
+  it('does NOT replace when only a NON-createOnly sub-property changes under a nested-createOnly container (issue #960, Pipes BatchSize)', async () => {
+    // AWS::Pipes::Pipe: SourceParameters itself is mutable; only stream-source
+    // sub-paths under it are createOnly. An SQS pipe changing BatchSize must
+    // be an in-place UPDATE (CFn: "No interruption").
+    mockGetCreateOnly.mockResolvedValue([
+      ['Name'],
+      ['Source'],
+      ['SourceParameters', 'KinesisStreamParameters', 'StartingPosition'],
+      ['SourceParameters', 'DynamoDBStreamParameters', 'StartingPosition'],
+    ]);
+
+    const state = baseState();
+    state.resources['Pipe'] = {
+      physicalId: 'my-pipe',
+      resourceType: 'AWS::Pipes::Pipe',
+      properties: {
+        Name: 'my-pipe',
+        Source: 'arn:aws:sqs:us-east-1:123:src',
+        SourceParameters: { SqsQueueParameters: { BatchSize: 1 } },
+      },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Pipe: {
+          Type: 'AWS::Pipes::Pipe',
+          Properties: {
+            Name: 'my-pipe',
+            Source: 'arn:aws:sqs:us-east-1:123:src',
+            SourceParameters: { SqsQueueParameters: { BatchSize: 2 } },
+          },
+        },
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(state, template);
+    const change = changes.get('Pipe');
+    expect(change?.changeType).toBe('UPDATE');
+    const pc = change?.propertyChanges?.find((c) => c.path === 'SourceParameters');
+    expect(pc?.requiresReplacement).toBe(false);
+  });
+
+  it('DOES replace when the value at a nested createOnly path changes (Kinesis StartingPosition)', async () => {
+    mockGetCreateOnly.mockResolvedValue([
+      ['SourceParameters', 'KinesisStreamParameters', 'StartingPosition'],
+    ]);
+
+    const state = baseState();
+    state.resources['Pipe'] = {
+      physicalId: 'my-pipe',
+      resourceType: 'AWS::Pipes::Pipe',
+      properties: {
+        SourceParameters: { KinesisStreamParameters: { StartingPosition: 'LATEST' } },
+      },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Pipe: {
+          Type: 'AWS::Pipes::Pipe',
+          Properties: {
+            SourceParameters: { KinesisStreamParameters: { StartingPosition: 'TRIM_HORIZON' } },
+          },
+        },
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(state, template);
+    const pc = changes.get('Pipe')?.propertyChanges?.find((c) => c.path === 'SourceParameters');
+    expect(pc?.requiresReplacement).toBe(true);
   });
 });

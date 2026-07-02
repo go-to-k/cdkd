@@ -36,8 +36,8 @@ trap cleanup EXIT
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
-echo "==> Deploy"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+echo "==> Deploy (base: BatchSize 1)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # Pipe creation settles async (CREATING -> RUNNING). Accept RUNNING or CREATING
 # as proof it reached AWS; assert the SQS source arn was wired.
@@ -57,6 +57,18 @@ case "${SRCARN}" in
   *) echo "FAIL: pipe Source is '${SRCARN}', expected to end with ':${SRC}'" >&2; exit 1 ;;
 esac
 echo "    OK: pipe reached AWS (CurrentState=${STATE}, Source=${SRCARN})"
+
+echo "==> UPDATE (BatchSize 1 -> 2) — must be IN-PLACE, not a replacement (issue #960)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  | tee /tmp/pipes-update.log
+if grep -q "Replacing Pipe" /tmp/pipes-update.log; then
+  echo "FAIL: BatchSize change was classified as a REPLACEMENT (issue #960 regression)" >&2
+  exit 1
+fi
+BS=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
+  --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text 2>/dev/null || true)
+[ "${BS}" = "2" ] || { echo "FAIL: BatchSize after update is '${BS}', expected 2" >&2; exit 1; }
+echo "    OK: in-place UPDATE reached AWS (BatchSize=${BS})"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

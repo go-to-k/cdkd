@@ -10,7 +10,10 @@ import type {
 import { getLogger } from '../utils/logger.js';
 import { ReplacementRulesRegistry } from './replacement-rules.js';
 import { TemplateParser } from './template-parser.js';
-import { getTopLevelCreateOnlyProperties } from '../provisioning/create-only-properties.js';
+import {
+  getCreateOnlyPropertyPaths,
+  createOnlyChangeRequiresReplacement,
+} from '../provisioning/create-only-properties.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -620,7 +623,10 @@ export class DiffCalculator {
     // replacement regardless of whether the type has a hand-written rule.
     // Resolved lazily — only when a changed, registry-unclassified property is
     // actually found — so a no-change / fully-classified diff makes no AWS call.
-    let createOnlyProps: ReadonlySet<string> | undefined;
+    // Paths (not top-level reductions): a NESTED createOnly entry only forces
+    // replacement when the value AT that path changed — sibling sub-properties
+    // stay in-place-updatable (issue #960, AWS::Pipes::Pipe SourceParameters).
+    let createOnlyPaths: ReadonlyArray<readonly string[]> | undefined;
 
     for (const key of allKeys) {
       if (ignoredProperties.has(key)) continue;
@@ -641,13 +647,17 @@ export class DiffCalculator {
         // a deliberate `updateableProperties` / conditional classification is
         // never overridden). A createOnly property change IS a replacement.
         if (!requiresReplacement && !this.replacementRules.isClassified(resourceType, key)) {
-          if (createOnlyProps === undefined) {
-            createOnlyProps = await getTopLevelCreateOnlyProperties(resourceType);
+          if (createOnlyPaths === undefined) {
+            createOnlyPaths = await getCreateOnlyPropertyPaths(resourceType);
           }
-          if (createOnlyProps.has(key)) {
+          if (
+            createOnlyChangeRequiresReplacement(createOnlyPaths, key, oldValue, newValue, (a, b) =>
+              this.valuesEqual(a, b)
+            )
+          ) {
             requiresReplacement = true;
             this.logger.debug(
-              `Property ${key} of ${resourceType} is createOnly per the CFn schema — requires replacement`
+              `Property ${key} of ${resourceType} changed a createOnly path per the CFn schema — requires replacement`
             );
           }
         }
