@@ -357,13 +357,18 @@ export class EventBridgeRuleProvider implements ResourceProvider {
 
     // Extract rule name from ARN (format: arn:aws:events:region:account:rule/rule-name or rule/bus-name/rule-name)
     const ruleName = this.extractRuleNameFromArn(physicalId);
+    // A custom-bus rule MUST be addressed with its EventBusName — the
+    // Name-only form targets the default bus, so ListTargetsByRule /
+    // DeleteRule would report ResourceNotFound and the delete would
+    // silently no-op, orphaning the rule (issue #955).
+    const busParam = this.busParamFromArn(physicalId);
 
     try {
       // List all targets for this rule
       let targetIds: string[] = [];
       try {
         const targetsResponse = await this.eventBridgeClient.send(
-          new ListTargetsByRuleCommand({ Rule: ruleName })
+          new ListTargetsByRuleCommand({ Rule: ruleName, ...busParam })
         );
         targetIds = (targetsResponse.Targets || [])
           .map((t) => t.Id)
@@ -390,13 +395,14 @@ export class EventBridgeRuleProvider implements ResourceProvider {
           new RemoveTargetsCommand({
             Rule: ruleName,
             Ids: targetIds,
+            ...busParam,
           })
         );
         this.logger.debug(`Removed ${targetIds.length} targets from rule ${ruleName}`);
       }
 
       // Delete the rule
-      await this.eventBridgeClient.send(new DeleteRuleCommand({ Name: ruleName }));
+      await this.eventBridgeClient.send(new DeleteRuleCommand({ Name: ruleName, ...busParam }));
 
       this.logger.debug(`Successfully deleted EventBridge rule ${logicalId}`);
     } catch (error) {
@@ -435,7 +441,10 @@ export class EventBridgeRuleProvider implements ResourceProvider {
 
     if (attributeName === 'Arn') {
       const response = await this.eventBridgeClient.send(
-        new DescribeRuleCommand({ Name: ruleName })
+        new DescribeRuleCommand({
+          Name: ruleName,
+          ...this.busParamFromArn(physicalId),
+        })
       );
       return response.Arn;
     }
@@ -467,7 +476,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     _resourceType: string
   ): Promise<Record<string, unknown> | undefined> {
     const ruleName = this.extractRuleNameFromArn(physicalId);
-    const eventBusName = this.extractBusNameFromArn(physicalId);
+    const busParam = this.busParamFromArn(physicalId);
 
     let resp: {
       Name?: string;
@@ -482,7 +491,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       resp = (await this.eventBridgeClient.send(
         new DescribeRuleCommand({
           Name: ruleName,
-          ...(eventBusName && eventBusName !== 'default' ? { EventBusName: eventBusName } : {}),
+          ...busParam,
         })
       )) as unknown as typeof resp;
     } catch (err) {
@@ -514,7 +523,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       const targetsResp = await this.eventBridgeClient.send(
         new ListTargetsByRuleCommand({
           Rule: ruleName,
-          ...(eventBusName && eventBusName !== 'default' ? { EventBusName: eventBusName } : {}),
+          ...busParam,
         })
       );
       result['Targets'] = targetsResp.Targets ?? [];
@@ -565,10 +574,21 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     if (input.knownPhysicalId) {
       try {
         const ruleName = this.extractRuleNameFromArn(input.knownPhysicalId);
+        // An ARN override already names its bus — derive it from the ARN
+        // (the template property may still be an unresolved intrinsic
+        // object at import time). Bare-name overrides fall back to the
+        // template property when it is a literal string.
+        const arnBusParam = this.busParamFromArn(input.knownPhysicalId);
+        const busParam =
+          'EventBusName' in arnBusParam
+            ? arnBusParam
+            : typeof eventBusName === 'string' && eventBusName
+              ? { EventBusName: eventBusName }
+              : {};
         const resp = await this.eventBridgeClient.send(
           new DescribeRuleCommand({
             Name: ruleName,
-            ...(eventBusName && { EventBusName: eventBusName }),
+            ...busParam,
           })
         );
         // Return the ARN form as physicalId (matches `create`).
@@ -645,12 +665,26 @@ export class EventBridgeRuleProvider implements ResourceProvider {
    *
    * Returns `undefined` when the input is not an ARN (we can't tell which bus).
    */
+  /**
+   * `EventBusName` request parameter derived from a rule ARN — `{}` for
+   * default-bus rules (preserves the Name-only wire shape) and for non-ARN
+   * physical ids (bus unknowable).
+   */
+  private busParamFromArn(arn: string): { EventBusName?: string } {
+    const eventBusName = this.extractBusNameFromArn(arn);
+    return eventBusName && eventBusName !== 'default' ? { EventBusName: eventBusName } : {};
+  }
+
   private extractBusNameFromArn(arn: string): string | undefined {
     if (!arn.startsWith('arn:')) return undefined;
     const parts = arn.split('/');
-    // arn:aws:events:r:a:rule/<rule>           → 2 segments (split by '/')
-    // arn:aws:events:r:a:rule/<bus>/<rule>     → 3 segments
-    if (parts.length === 3) return parts[1];
+    // arn:aws:events:r:a:rule/<rule>              → 2 segments (split by '/')
+    // arn:aws:events:r:a:rule/<bus>/<rule>        → 3 segments
+    // arn:aws:events:r:a:rule/aws.partner/x/y/<r> → 5 segments (partner-bus
+    //   NAMES contain slashes; rule names cannot, so the bus is everything
+    //   between the first and last segment — same last-slash rule as
+    //   cfnRefValueFromPhysicalId in the intrinsic resolver)
+    if (parts.length >= 3) return parts.slice(1, -1).join('/');
     return 'default';
   }
 }

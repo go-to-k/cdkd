@@ -60,29 +60,42 @@ def handler(event, context):
       },
     });
 
-    // Create EventBridge rule on the custom bus with an event pattern
-    const rule = new events.Rule(this, 'EventRule', {
-      eventBus: bus,
-      eventPattern: {
-        source: ['cdkd.test'],
-        detailType: ['TestEvent'],
-      },
-      description: 'Routes cdkd test events to Lambda',
-    });
+    // UPDATE phase (issue #955): drop the rule while KEEPING the bus, so the
+    // re-deploy exercises the standalone diff-driven delete of a custom-bus
+    // rule — the path that silently no-oped against the default bus and
+    // orphaned the rule before the fix.
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
 
-    // Add Lambda function as the rule target
-    // This automatically creates the necessary Lambda invoke permission
-    rule.addTarget(new targets.LambdaFunction(fn));
+    if (!isUpdate) {
+      // Create EventBridge rule on the custom bus with an event pattern
+      const rule = new events.Rule(this, 'EventRule', {
+        eventBus: bus,
+        eventPattern: {
+          source: ['cdkd.test'],
+          detailType: ['TestEvent'],
+        },
+        description: 'Routes cdkd test events to Lambda',
+      });
 
-    // Regression coverage for the Ref-returns-ARN bug (/hunt-bugs 2026-07-02):
-    // CFn `Ref` on AWS::Events::Rule returns the rule NAME — `<bus>|<name>`
-    // for a custom-bus rule — never the ARN. `rule.ruleName` synthesizes to
-    // `{Ref: <Rule>}`, so storing it in a real resource asserts the resolved
-    // value end-to-end (verify.sh compares it against AWS's actual rule name).
-    new ssm.StringParameter(this, 'RuleRefParam', {
-      parameterName: `/${this.stackName}/rule-ref`,
-      stringValue: rule.ruleName,
-    });
+      // Add Lambda function as the rule target
+      // This automatically creates the necessary Lambda invoke permission
+      rule.addTarget(new targets.LambdaFunction(fn));
+
+      // Regression coverage for the Ref-returns-ARN bug (/hunt-bugs 2026-07-02):
+      // CFn `Ref` on AWS::Events::Rule returns the rule NAME — `<bus>|<name>`
+      // for a custom-bus rule — never the ARN. `rule.ruleName` synthesizes to
+      // `{Ref: <Rule>}`, so storing it in a real resource asserts the resolved
+      // value end-to-end (verify.sh compares it against AWS's actual rule name).
+      new ssm.StringParameter(this, 'RuleRefParam', {
+        parameterName: `/${this.stackName}/rule-ref`,
+        stringValue: rule.ruleName,
+      });
+
+      new cdk.CfnOutput(this, 'RuleArn', {
+        value: rule.ruleArn,
+        description: 'EventBridge rule ARN',
+      });
+    }
 
     // EventBridge Scheduler: runs every hour (disabled to avoid costs)
     const schedulerRole = new iam.Role(this, 'SchedulerRole', {
@@ -124,11 +137,6 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'EventBusName', {
       value: bus.eventBusName,
       description: 'Custom EventBridge bus name',
-    });
-
-    new cdk.CfnOutput(this, 'RuleArn', {
-      value: rule.ruleArn,
-      description: 'EventBridge rule ARN',
     });
 
     new cdk.CfnOutput(this, 'FunctionName', {
