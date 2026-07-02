@@ -1,3 +1,10 @@
+## [0.230.28](https://github.com/go-to-k/cdkd/compare/v0.230.27...v0.230.28) (2026-07-02)
+
+
+### Bug Fixes
+
+* **provisioning:** clean up the remnant a failed async Cloud Control CREATE leaves behind ([#957](https://github.com/go-to-k/cdkd/issues/957)) ([b620dfa](https://github.com/go-to-k/cdkd/commit/b620dfa65281e0759889821490a1a2ba9bdffd87))
+
 ## [0.230.27](https://github.com/go-to-k/cdkd/compare/v0.230.26...v0.230.27) (2026-07-02)
 
 
