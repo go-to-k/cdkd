@@ -113,9 +113,14 @@ export function cfnRefValueFromPhysicalId(resourceType: string, physicalId: stri
       const segment = physicalId.substring(markerIdx + nameMarker.length);
       // Custom-bus Events::Rule ARNs carry `rule/<busName>/<ruleName>`;
       // CloudFormation's physical id for such rules is `<busName>|<ruleName>`
-      // (verified against real CloudFormation, 2026-07-02). Names themselves
-      // cannot contain `/`, so at most one separator exists.
-      return segment.replace('/', '|');
+      // (verified against real CloudFormation, 2026-07-02). Rule names cannot
+      // contain `/` but partner-bus NAMES can (`aws.partner/foo.com/...`), so
+      // split on the LAST slash to keep the whole bus name intact.
+      const slashIdx = segment.lastIndexOf('/');
+      if (slashIdx >= 0) {
+        return `${segment.substring(0, slashIdx)}|${segment.substring(slashIdx + 1)}`;
+      }
+      return segment;
     }
   }
   if (REF_RETURNS_SEGMENT_AFTER_PIPE.has(resourceType)) {

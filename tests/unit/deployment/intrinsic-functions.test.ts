@@ -2800,6 +2800,13 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       'my-bus|my-rule',
     ],
     [
+      // Partner-bus rule: the bus NAME itself contains slashes, so the split
+      // must be on the LAST slash (rule names cannot contain `/`).
+      'AWS::Events::Rule',
+      'arn:aws:events:us-east-1:123456789012:rule/aws.partner/foo.com/123/my-rule',
+      'aws.partner/foo.com/123|my-rule',
+    ],
+    [
       'AWS::CloudTrail::Trail',
       'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
       'my-trail',
