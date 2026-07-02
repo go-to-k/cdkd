@@ -103,6 +103,7 @@ import {
   CloudControlOperationFailedError,
 } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 
 describe('CloudControlProvider delete region verification', () => {
   let provider: CloudControlProvider;
@@ -1104,7 +1105,9 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
     errorCode?: string;
     identifier?: string;
     deleteStatus?: 'SUCCESS' | 'FAILED';
+    deleteFailedMessage?: string;
     deleteRejects?: Error;
+    statusRejects?: Error;
   }): void {
     mockCloudControlSend.mockImplementation(
       (cmd: { constructor: { name: string }; input?: { RequestToken?: string } }) => {
@@ -1115,6 +1118,9 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
         if (name === 'DeleteResourceCommand') {
           if (opts.deleteRejects) return Promise.reject(opts.deleteRejects);
           return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-delete' } });
+        }
+        if (name === 'GetResourceRequestStatusCommand' && opts.statusRejects) {
+          return Promise.reject(opts.statusRejects);
         }
         if (name === 'GetResourceRequestStatusCommand') {
           if (cmd.input?.RequestToken === 'tok-create') {
@@ -1135,7 +1141,7 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
                 ? {
                     OperationStatus: 'FAILED',
                     ErrorCode: 'GeneralServiceException',
-                    StatusMessage: 'internal failure',
+                    StatusMessage: opts.deleteFailedMessage ?? 'internal failure',
                   }
                 : { OperationStatus: 'SUCCESS' },
           });
@@ -1234,6 +1240,57 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       expect.stringContaining('Failed to delete the remnant cdkd-bh-syn')
     );
+  });
+
+  it('NEVER deletes when the handler reported ResourceConflict (identifier may belong to another in-flight operation)', async () => {
+    wireFailedCreate({ errorCode: 'ResourceConflict', identifier: 'contested-resource' });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'contested-resource' })
+    ).rejects.toThrow(/CREATE failed for Canary/);
+
+    expect(deleteCallIdentifiers()).toEqual([]);
+  });
+
+  it('the rethrown stabilization failure stays retry-classifiable by the deploy engine classifier', async () => {
+    wireFailedCreate({ identifier: 'cdkd-bh-syn' });
+
+    const error = await provider
+      .create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    // This is the integration point the fix exists for: after the remnant is
+    // cleaned, the deploy engine's outer withRetry must still classify the
+    // original error as transient so the re-create actually happens.
+    expect(isRetryableTransientError(error, error!.message)).toBe(true);
+  });
+
+  it('treats an async FAILED-NotFound remnant delete as a no-op (no warning)', async () => {
+    wireFailedCreate({
+      identifier: 'speculative-id',
+      deleteStatus: 'FAILED',
+      deleteFailedMessage: "Resource of type 'AWS::Foo::Bar' with identifier 'speculative-id' was not found.",
+    });
+
+    await expect(
+      provider.create('Thing', 'AWS::Foo::Bar', { Name: 'speculative-id' })
+    ).rejects.toThrow(/CREATE failed for Thing/);
+
+    expect(deleteCallIdentifiers()).toEqual(['speculative-id']);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('does not fire cleanup for a non-progress-event error (status polling network failure)', async () => {
+    wireFailedCreate({ statusRejects: new Error('socket hang up') });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+    ).rejects.toThrow(/socket hang up/);
+
+    expect(deleteCallIdentifiers()).toEqual([]);
   });
 
   it('does not fire remnant cleanup for a FAILED UPDATE (existing resource must survive)', async () => {

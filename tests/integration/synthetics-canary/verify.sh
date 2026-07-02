@@ -56,7 +56,7 @@ echo "==> Deploy (base: rate(30 minutes))"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 STATE=$(aws synthetics get-canary --name "${CANARY}" --region "${REGION}" \
-  --query 'Canary.Status.State' --output text 2>/dev/null)
+  --query 'Canary.Status.State' --output text 2>/dev/null || true)
 if [ "${STATE}" != "READY" ] && [ "${STATE}" != "STOPPED" ]; then
   echo "FAIL: canary state is '${STATE}', expected READY/STOPPED" >&2
   exit 1

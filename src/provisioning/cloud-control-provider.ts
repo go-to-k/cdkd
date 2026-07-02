@@ -266,8 +266,12 @@ export class CloudControlProvider implements ResourceProvider {
     if (!(error instanceof CloudControlOperationFailedError)) return;
     if (error.ccOperation !== 'CREATE' || !error.physicalId) return;
     if (error.ccErrorCode === 'AlreadyExists') return;
+    // ResourceConflict means the identifier is undergoing ANOTHER in-flight
+    // operation — the identifier may name a resource this request did not
+    // materialize, so deleting it is not ours to do either.
+    if (error.ccErrorCode === 'ResourceConflict') return;
 
-    this.logger.debug(
+    this.logger.info(
       `CREATE of ${logicalId} failed after materializing ${error.physicalId}; deleting the remnant so a retry can re-create it`
     );
     try {
@@ -622,6 +626,11 @@ export class CloudControlProvider implements ResourceProvider {
           );
 
         case 'CANCEL_COMPLETE':
+          // NOTE: a CREATE cancelled after materialization (external
+          // CancelResourceRequest mid-create) can also leave a remnant, but
+          // it throws a plain ProvisioningError so cleanupFailedCreateRemnant
+          // deliberately does not fire — cancellation is an explicit external
+          // action, not a transient failure a retry should paper over.
           throw new ProvisioningError(
             `${operation} cancelled for ${logicalId}`,
             progressEvent.TypeName || 'Unknown',
