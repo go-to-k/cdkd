@@ -3355,6 +3355,7 @@
         "full-stack-demo",
         "local-start-alb-from-state",
         "log-pipeline",
+        "loggroup-class-guard",
         "monitoring",
         "remove-protection",
         "scheduled-task",
@@ -3382,6 +3383,9 @@
           "literal"
         ],
         "log-pipeline": [
+          "l2"
+        ],
+        "loggroup-class-guard": [
           "l2"
         ],
         "monitoring": [

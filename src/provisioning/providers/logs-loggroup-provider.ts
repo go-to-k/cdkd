@@ -22,7 +22,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -243,8 +243,12 @@ export class LogsLogGroupProvider implements ResourceProvider {
    *
    * Mutable: `RetentionInDays`, `DataProtectionPolicy`, `Tags`,
    * `DeletionProtectionEnabled`, `BearerTokenAuthenticationEnabled`,
-   * `FieldIndexPolicies`. `LogGroupName` / `KmsKeyId` / `LogGroupClass`
-   * are immutable on AWS-side and require replacement.
+   * `FieldIndexPolicies`. `LogGroupName` requires replacement.
+   * `LogGroupClass` cannot be changed at all (CFn: "Updates are not
+   * supported" — there is no CloudWatch Logs API to change a log group's
+   * class after creation), so a class change throws
+   * {@link ResourceUpdateNotSupportedError} instead of being silently
+   * dropped; `--replace` recreates the log group under the new class.
    */
   async update(
     logicalId: string,
@@ -254,6 +258,27 @@ export class LogsLogGroupProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating log group ${logicalId}: ${physicalId}`);
+
+    // LogGroupClass is unchangeable after creation (no AWS API exists;
+    // CloudFormation documents the property as "Update requires: Updates
+    // are not supported" and fails the stack update). Guard BEFORE any
+    // other mutation so a doomed deploy fails without partially applying
+    // the rest of the diff — silently dropping the change would poison
+    // state (state records the new class while AWS keeps the old one, and
+    // the next diff sees no change, so it can never self-heal). An absent
+    // property means the CloudWatch Logs default class (STANDARD), so an
+    // explicit-STANDARD <-> absent transition is NOT a real change.
+    const normalizeClass = (v: unknown): string =>
+      typeof v === 'string' && v.length > 0 ? v : 'STANDARD';
+    const prevClass = normalizeClass(previousProperties['LogGroupClass']);
+    const nextClass = normalizeClass(properties['LogGroupClass']);
+    if (prevClass !== nextClass) {
+      throw new ResourceUpdateNotSupportedError(
+        'AWS::Logs::LogGroup',
+        logicalId,
+        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. Re-deploy with --replace to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change`
+      );
+    }
 
     // Update retention policy if changed
     const retentionInDays = properties['RetentionInDays'] as number | undefined;
