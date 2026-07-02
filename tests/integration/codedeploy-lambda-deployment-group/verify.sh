@@ -156,6 +156,13 @@ if aws deploy get-application --application-name "${APP_NAME}" --region "${REGIO
   echo "FAIL: CodeDeploy application still exists after destroy" >&2
   exit 1
 fi
+# Errors with ApplicationDoesNotExistException / DeploymentGroupDoesNotExist-
+# Exception once either level is gone — both count as "deployment group gone".
+if aws deploy get-deployment-group --application-name "${APP_NAME}" \
+  --deployment-group-name "${DG_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: CodeDeploy deployment group still exists after destroy" >&2
+  exit 1
+fi
 if aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "FAIL: Lambda function still exists after destroy" >&2
   exit 1
