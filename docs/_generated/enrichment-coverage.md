@@ -14,17 +14,13 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 - Classified types (cached schema): **116**
 - Fully enriched: **3**
 - No computed attribute (Ref == physicalId is correct): **14**
-- **Pure-CC latent gaps (unenriched-computed, blocks CI): 1**
-- SDK-fallback gaps (informational, #614 path only): **98**
+- **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
+- SDK-fallback gaps (informational, #614 path only): **99**
 - Types with allow-listed (not-a-gap) attributes: **0**
 
-## Pure-CC latent gaps (UNENRICHED-WITH-COMPUTED-ATTR) — BLOCKS CI
+## Pure-CC latent gaps
 
-These computed attributes on pure-CC types are neither enriched nor allow-listed. Add an enrichment case OR an `ENRICHMENT_ALLOW_LIST` entry with a rationale.
-
-| Resource type | Unenriched computed attributes |
-| --- | --- |
-| `AWS::Scheduler::Schedule` | `Arn` |
+None. Every computed `readOnly` attribute on a cached pure-CC type is either enriched or explicitly allow-listed.
 
 ## SDK-fallback gaps (informational)
 
@@ -120,6 +116,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::S3Tables::Table` | `TableARN`, `VersionToken`, `WarehouseLocation` |
 | `AWS::S3Tables::TableBucket` | `TableBucketARN` |
 | `AWS::S3Vectors::VectorBucket` | `CreationTime`, `VectorBucketArn` |
+| `AWS::Scheduler::Schedule` | `Arn` |
 | `AWS::SecretsManager::Secret` | `Id` |
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | `Arn`, `HostedZoneId`, `Id` |
 | `AWS::ServiceDiscovery::Service` | `Arn`, `Id` |
@@ -239,7 +236,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::S3Tables::Table` | yes | sdk-fallback-gap | `TableARN` (GAP), `VersionToken` (GAP), `WarehouseLocation` (GAP) |
 | `AWS::S3Tables::TableBucket` | yes | sdk-fallback-gap | `TableBucketARN` (GAP) |
 | `AWS::S3Vectors::VectorBucket` | yes | sdk-fallback-gap | `CreationTime` (GAP), `VectorBucketArn` (GAP) |
-| `AWS::Scheduler::Schedule` | no | unenriched-computed | `Arn` (GAP) |
+| `AWS::Scheduler::Schedule` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::SecretsManager::Secret` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `HostedZoneId` (GAP), `Id` (GAP) |
 | `AWS::ServiceDiscovery::Service` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |

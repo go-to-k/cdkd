@@ -4,8 +4,8 @@
     "classifiedCount": 116,
     "enriched": 3,
     "noComputedAttr": 14,
-    "unenrichedGap": 1,
-    "sdkFallbackGap": 98,
+    "unenrichedGap": 0,
+    "sdkFallbackGap": 99,
     "allowListedTypes": 0
   },
   "types": [
@@ -2503,8 +2503,8 @@
     },
     {
       "resourceType": "AWS::Scheduler::Schedule",
-      "bucket": "unenriched-computed",
-      "sdkBacked": false,
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
       "readOnlyProperties": [
         "Arn"
       ],
