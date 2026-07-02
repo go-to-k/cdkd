@@ -39,6 +39,12 @@ gate, not just trust.
    global resource) can deploy/destroy concurrently as background tasks, but cap
    at ~4-5 in flight to avoid overloading the machine. One CDK app with several
    stacks (`cdkd deploy <StackName>` per stack) is the cleanest shape.
+   **Pre-synth once, then deploy from the assembly** — parallel deploys that
+   each re-synth collide on the shared `cdk.out` lock ("Another CLI is
+   currently synthing to cdk.out"). Run `npx cdk synth --all -q` once, then
+   `node dist/cli.js deploy <Stack> -a /tmp/cdkd-bughunt/cdk.out ...` per
+   stack: no synth happens at deploy time, so parallel is safe. (Without `-a`,
+   deploy stacks SERIALLY.)
 
 ## Workflow
 
@@ -67,7 +73,8 @@ is what arms the cleanup gate — see below):
 
 ### 3. Deploy (parallel, capped)
 
-Deploy each stack with `node dist/cli.js deploy <Stack> --state-bucket <bucket>`,
+Deploy each stack with `node dist/cli.js deploy <Stack> -a <path-to-cdk.out> --state-bucket <bucket>`
+(the pre-synthed assembly — see principle 4),
 up to ~4-5 concurrently as background tasks, each to its own log. Watch for:
 deploy-time errors, wrong replacement decisions (`Replacing X — immutable
 properties changed`), silent drops, custom-resource hangs. For each stack also

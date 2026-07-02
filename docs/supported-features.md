@@ -74,6 +74,7 @@ top-level features rather than table rows.
 | Custom Resources (CDK Provider) | ✅ | `isCompleteHandler` / `onEventHandler` async pattern detection |
 | DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
 | UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
+| UpdatePolicy | ⚠️ Ignored | `CodeDeployLambdaAliasUpdate` / ASG rolling-update policies are not processed — updates apply directly in one step (e.g. a Lambda alias flips instantly instead of CFn's gradual CodeDeploy canary shift). Intentional for dev/test iteration speed; the CodeDeploy application/deployment group resources themselves deploy fine (see `tests/integration/codedeploy-lambda-deployment-group`) |
 | Implicit delete dependencies | ✅ | VPC / IGW / EventBus / Subnet / RouteTable ordering |
 | Stack dependency resolution | ✅ | Auto-deploy dependency stacks, `-e` to skip |
 | Multi-stack parallel deploy | ✅ | Independent stacks deployed in parallel |
