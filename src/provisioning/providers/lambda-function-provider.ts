@@ -473,11 +473,25 @@ export class LambdaFunctionProvider implements ResourceProvider {
         await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
       }
 
-      // Update function code if changed
+      // Update function code if changed. Architectures rides on
+      // UpdateFunctionCode (NOT UpdateFunctionConfiguration — the Lambda API
+      // ties the instruction set to a code deployment), so an x86_64 <->
+      // arm64 switch must ALSO fire this branch even when the code itself is
+      // byte-identical; it was previously silently dropped (deploy reported
+      // success while AWS kept the old architecture, and the next diff saw no
+      // change since state recorded the new value). CFn applies it in place
+      // ("Update requires: No interruption") by re-sending the code with the
+      // new Architectures.
       const newCode = properties['Code'] as Record<string, unknown> | undefined;
       const oldCode = previousProperties['Code'] as Record<string, unknown> | undefined;
+      const architecturesChanged =
+        JSON.stringify(properties['Architectures']) !==
+        JSON.stringify(previousProperties['Architectures']);
 
-      if (newCode && JSON.stringify(newCode) !== JSON.stringify(oldCode)) {
+      if (
+        newCode &&
+        (architecturesChanged || JSON.stringify(newCode) !== JSON.stringify(oldCode))
+      ) {
         const builtCode = this.buildCode(newCode, properties['Runtime'] as string | undefined);
         const codeParams: UpdateFunctionCodeCommandInput = {
           FunctionName: physicalId,
@@ -486,6 +500,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
           S3ObjectVersion: builtCode.S3ObjectVersion,
           ZipFile: builtCode.ZipFile,
           ImageUri: builtCode.ImageUri,
+          // A removed Architectures property reverts to the Lambda default
+          // (x86_64) — matches CFn's absent-property default semantics.
+          Architectures: architecturesChanged
+            ? ((properties['Architectures'] ?? ['x86_64']) as Architecture[])
+            : undefined,
         };
 
         await this.lambdaClient.send(new UpdateFunctionCodeCommand(codeParams));

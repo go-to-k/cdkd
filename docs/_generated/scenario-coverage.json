@@ -862,6 +862,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-arch-switch",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-destinations",
       "annotated": false,
       "scenarios": []
@@ -2100,6 +2105,7 @@
     "kinesis-esm-filter",
     "kinesis-stream-mode-switch",
     "lambda-alias-provisioned-concurrency",
+    "lambda-arch-switch",
     "lambda-destinations",
     "lambda-env-removal",
     "lambda-event-invoke-config-update",

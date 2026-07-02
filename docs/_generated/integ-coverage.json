@@ -2941,6 +2941,7 @@
         "kinesis-esm-filter",
         "lambda",
         "lambda-alias-provisioned-concurrency",
+        "lambda-arch-switch",
         "lambda-destinations",
         "lambda-env-removal",
         "lambda-event-invoke-config-update",
@@ -3095,6 +3096,9 @@
           "l2"
         ],
         "lambda-alias-provisioned-concurrency": [
+          "l2"
+        ],
+        "lambda-arch-switch": [
           "l2"
         ],
         "lambda-destinations": [
