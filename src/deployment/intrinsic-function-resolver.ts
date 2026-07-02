@@ -41,6 +41,13 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   - AWS::ApiGateway::Stage            `<restApiId>|<stageName>`     -> stage name
  *   - AWS::ApiGateway::Resource         `<restApiId>|<resourceId>`    -> resource id
  *   - AWS::ApiGateway::Authorizer       `<restApiId>|<authorizerId>`  -> authorizer id
+ *   - AWS::ApiGatewayV2::Stage          `<apiId>|<stageName>`         -> stage name
+ *   - AWS::ApiGatewayV2::Route          `<apiId>|<routeId>`           -> route id
+ *   - AWS::ApiGatewayV2::Integration    `<apiId>|<integrationId>`     -> integration id
+ *   - AWS::ApiGatewayV2::Model          `<apiId>|<modelId>`           -> model id
+ *   - AWS::ApiGatewayV2::Deployment     `<apiId>|<deploymentId>`      -> deployment id
+ *   - AWS::ApiGatewayV2::RouteResponse       `<apiId>|<routeId>|<respId>` -> route response id
+ *   - AWS::ApiGatewayV2::IntegrationResponse `<apiId>|<intId>|<respId>`   -> integration response id
  *   - AWS::Cognito::UserPoolClient           `<userPoolId>|<clientId>`       -> client id
  *   - AWS::Cognito::UserPoolResourceServer   `<userPoolId>|<identifier>`     -> resource-server identifier
  *   - AWS::Cognito::UserPoolGroup            `<userPoolId>|<groupName>`      -> group name
@@ -90,6 +97,13 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Stage',
   'AWS::ApiGateway::Resource',
   'AWS::ApiGateway::Authorizer',
+  'AWS::ApiGatewayV2::Stage',
+  'AWS::ApiGatewayV2::Route',
+  'AWS::ApiGatewayV2::Integration',
+  'AWS::ApiGatewayV2::Model',
+  'AWS::ApiGatewayV2::Deployment',
+  'AWS::ApiGatewayV2::RouteResponse',
+  'AWS::ApiGatewayV2::IntegrationResponse',
   'AWS::Cognito::UserPoolClient',
   'AWS::Cognito::UserPoolResourceServer',
   'AWS::Cognito::UserPoolGroup',
@@ -111,16 +125,29 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
  * section):
  *   - AWS::ApiGateway::Deployment        `<deploymentId>|<restApiId>` -> deployment id
  *   - AWS::ApiGateway::DocumentationPart `<docPartId>|<restApiId>`    -> documentation part id
+ *   - AWS::ApiGatewayV2::Authorizer      `<authorizerId>|<apiId>`     -> authorizer id
+ *   - AWS::ApiGatewayV2::ApiMapping      `<apiMappingId>|<domainName>` -> api mapping id
  *
  * Deployment matters in practice: every CDK-generated template wires the
  * Stage's `DeploymentId` as `{ Ref: <Deployment> }`, so a CC-routed
- * Deployment would otherwise hand the Stage a compound id AWS rejects. Same
- * maintenance rules as the after-pipe Set (docs-verified Ref semantics +
+ * Deployment would otherwise hand the Stage a compound id AWS rejects; the V2
+ * Authorizer matters the same way (a Route's `AuthorizerId` is
+ * `{ Ref: <Authorizer> }` in every CDK HTTP-API-with-authorizer template).
+ * Same maintenance rules as the after-pipe Set (docs-verified Ref semantics +
  * a pinning unit test per entry).
+ *
+ * WARNING — the V1 and V2 families are CROSS-WIRED, do not pattern-match one
+ * from the other: V1 Authorizer is `[RestApiId, AuthorizerId]` (after-pipe)
+ * while V2 Authorizer is `[AuthorizerId, ApiId]` (before-first-pipe), and V1
+ * Deployment is `[DeploymentId, RestApiId]` (before-first-pipe) while V2
+ * Deployment is `[ApiId, DeploymentId]` (after-pipe). Always re-check the
+ * type's own `describe-type` primaryIdentifier.
  */
 const REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE = new Set<string>([
   'AWS::ApiGateway::Deployment',
   'AWS::ApiGateway::DocumentationPart',
+  'AWS::ApiGatewayV2::Authorizer',
+  'AWS::ApiGatewayV2::ApiMapping',
 ]);
 
 /**

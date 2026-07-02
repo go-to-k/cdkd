@@ -214,3 +214,4 @@ cc-api-fallback	2026-07-02T16:12:06Z	PASS	59	verify.sh	post-merge validation bat
 rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
 cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
 stepfunctions-logging	2026-07-02T16:12:06Z	PASS	72	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
+multi-resource	2026-07-02T16:33:43Z	PASS	59	standard	broad regression for V2 compound-Ref resolver change, 0 orphans (CR log groups swept)
