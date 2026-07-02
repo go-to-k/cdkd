@@ -59,9 +59,10 @@ esac
 echo "    OK: pipe reached AWS (CurrentState=${STATE}, Source=${SRCARN})"
 
 echo "==> UPDATE (BatchSize 1 -> 2) — must be IN-PLACE, not a replacement (issue #960)"
+UPDATE_LOG="$(mktemp)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
-  | tee /tmp/pipes-update.log
-if grep -q "Replacing Pipe" /tmp/pipes-update.log; then
+  | tee "${UPDATE_LOG}"
+if grep -q "Replacing Pipe" "${UPDATE_LOG}"; then
   echo "FAIL: BatchSize change was classified as a REPLACEMENT (issue #960 regression)" >&2
   exit 1
 fi

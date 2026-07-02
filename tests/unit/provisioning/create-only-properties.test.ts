@@ -187,6 +187,23 @@ describe('createOnlyChangeRequiresReplacement (pure path-granular comparison, is
     ).toBe(true);
   });
 
+  it('unresolved intrinsics along the path are conservative (fails-safe toward replacement)', () => {
+    // {'Fn::If': ...} is not a plain container — descending into it would
+    // compare undefined === undefined and let the change slip through
+    // in-place where CloudFormation would replace.
+    const oldV = { 'Fn::If': ['Cond', { KinesisStreamParameters: { StartingPosition: 'LATEST' } }, {}] };
+    const newV = { SqsQueueParameters: { BatchSize: 1 } };
+    expect(
+      createOnlyChangeRequiresReplacement(
+        [['SourceParameters', 'KinesisStreamParameters', 'StartingPosition']],
+        'SourceParameters',
+        oldV,
+        newV,
+        eq
+      )
+    ).toBe(true);
+  });
+
   it('paths for OTHER top-level keys are ignored', () => {
     expect(createOnlyChangeRequiresReplacement(PIPE_PATHS, 'Target', 'arn:a', 'arn:b', eq)).toBe(
       false

@@ -155,9 +155,24 @@ function valueAtPath(
     if (segment === '*') return { resolved: false };
     if (current === undefined || current === null) return { resolved: true, value: undefined };
     if (typeof current !== 'object' || Array.isArray(current)) return { resolved: false };
+    // An unresolved intrinsic ({'Fn::If': ...} / {Ref: ...}) is NOT a plain
+    // container — descending into it would compare `undefined === undefined`
+    // and let a change slip through IN-PLACE where CloudFormation would
+    // replace (the one fails-unsafe direction). Report unresolved so the
+    // caller stays conservative.
+    if (isIntrinsicShaped(current)) return { resolved: false };
     current = (current as Record<string, unknown>)[segment];
   }
   return { resolved: true, value: current };
+}
+
+/**
+ * True for a single-key object whose key is `Ref` or `Fn::*` — the shape of
+ * an unresolved CloudFormation intrinsic.
+ */
+function isIntrinsicShaped(value: object): boolean {
+  const keys = Object.keys(value);
+  return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
 }
 
 /**
@@ -188,6 +203,10 @@ async function fetchCreateOnlyPropertyPaths(
         // "/properties/Foo/Bar" — keep the FULL segment path so the diff can
         // compare at the schema's actual granularity (issue #960).
         if (!path.startsWith('/properties/')) continue;
+        // Empty segments are dropped: a trailing slash degrades to the
+        // (more conservative) whole-property path, and no real registry
+        // schema names a property literally "" via an RFC 6901 empty
+        // segment.
         const segments = path
           .slice('/properties/'.length)
           .split('/')
