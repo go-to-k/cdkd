@@ -83,6 +83,19 @@ if [ "${INCLUDE_DETAIL}" != "FULL" ]; then
 fi
 echo "    OK: EventBus LogConfig.Level == 'INFO' + IncludeDetail == 'FULL' on AWS (LogConfig backfill CLOSED)"
 
+# --- Assertion: Ref on AWS::Events::Rule resolves to the rule name ----
+# (bug found by /hunt-bugs 2026-07-02: cdkd returned the rule ARN; CFn's Ref
+# returns the rule name — `<busName>|<ruleName>` for a custom-bus rule.)
+RULE_NAME=$(aws events list-rules --event-bus-name "${BUS_NAME}" --region "${REGION}" \
+  --query "Rules[0].Name" --output text)
+RULE_REF=$(aws ssm get-parameter --name "/${STACK}/rule-ref" --region "${REGION}" \
+  --query Parameter.Value --output text)
+if [ "${RULE_REF}" != "${BUS_NAME}|${RULE_NAME}" ]; then
+  echo "FAIL: Ref on AWS::Events::Rule resolved to '${RULE_REF}', expected '${BUS_NAME}|${RULE_NAME}'" >&2
+  exit 1
+fi
+echo "    OK: Ref on AWS::Events::Rule == '${BUS_NAME}|${RULE_NAME}' (rule name, not ARN)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

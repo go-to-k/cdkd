@@ -2783,6 +2783,92 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe('api/read');
   });
 
+  // Same divergence class, different id shape: the SDK providers for these
+  // types store the resource ARN as the physical id, but CFn's `Ref` returns
+  // the resource NAME. Found by /hunt-bugs (2026-07-02): a CfnOutput
+  // `{Ref: <Rule>}` printed the full rule ARN instead of the rule name.
+  it.each([
+    [
+      'AWS::Events::Rule',
+      'arn:aws:events:us-east-1:123456789012:rule/CdkdBughunt2EvbChurn-rule',
+      'CdkdBughunt2EvbChurn-rule',
+    ],
+    [
+      // Custom-bus rule: CFn's physical id (and thus Ref) is `<bus>|<name>`.
+      'AWS::Events::Rule',
+      'arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule',
+      'my-bus|my-rule',
+    ],
+    [
+      'AWS::CloudTrail::Trail',
+      'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+      'my-trail',
+    ],
+  ])(
+    'Ref to %s returns the resource name extracted from the ARN physical id',
+    async (resourceType, physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          R: { Type: resourceType, Properties: {} },
+        },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: {
+            physicalId,
+            resourceType,
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
+  // The constructed-attribute fallback for these types assumed the physical id
+  // is a bare name and prefixed it into an ARN — with the ARN stored as the
+  // physical id that produced a corrupted double ARN. GetAtt Arn must return
+  // the stored ARN verbatim (attributes map left empty to force the fallback).
+  it.each([
+    [
+      'AWS::Events::Rule',
+      'arn:aws:events:us-east-1:123456789012:rule/my-rule',
+    ],
+    [
+      'AWS::CloudTrail::Trail',
+      'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+    ],
+  ])(
+    'Fn::GetAtt Arn on %s returns the ARN physical id verbatim (no double-ARN)',
+    async (resourceType, physicalId) => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          R: { Type: resourceType, Properties: {} },
+        },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: {
+            physicalId,
+            resourceType,
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      };
+
+      const result = await resolver.resolve({ 'Fn::GetAtt': [ 'R', 'Arn' ] }, context);
+      expect(result).toBe(physicalId);
+    }
+  );
+
   it('Ref falls back to the raw physical id when there is no pipe separator', async () => {
     const template: CloudFormationTemplate = {
       Resources: {

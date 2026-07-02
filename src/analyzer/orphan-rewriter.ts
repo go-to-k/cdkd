@@ -1,3 +1,4 @@
+import { cfnRefValueFromPhysicalId } from '../deployment/intrinsic-function-resolver.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
@@ -7,7 +8,9 @@ import { getLogger } from '../utils/logger.js';
  * couldn't). Rendered as the audit table that `cdkd orphan` prints before
  * (and during) state save.
  *
- * - `kind: 'ref'` — a `{Ref: O}` was replaced with `O.physicalId`.
+ * - `kind: 'ref'` — a `{Ref: O}` was replaced with the value CFn's `Ref`
+ *   returns for O (its physicalId for most types; see
+ *   {@link cfnRefValueFromPhysicalId} for the exceptions).
  * - `kind: 'getAtt'` — a `{Fn::GetAtt: [O, attr]}` (array OR string form)
  *   was replaced with the live attribute value.
  * - `kind: 'sub'` — an `${O}` or `${O.attr}` placeholder inside an
@@ -114,8 +117,11 @@ class AttributeFetcher {
   }
 
   /**
-   * Return the orphan's resolved value for `Ref` (its physicalId) — never
-   * needs an AWS call.
+   * Return the orphan's resolved value for `Ref` — never needs an AWS call.
+   * Uses the shared {@link cfnRefValueFromPhysicalId} so types whose CFn `Ref`
+   * is NOT the raw physical id (compound `<parent>|<child>` CC ids, ARN-stored
+   * SDK ids like `AWS::Events::Rule`) substitute the same value CloudFormation
+   * would have resolved.
    */
   ref(orphanLogicalId: string): string {
     const o = this.orphans[orphanLogicalId];
@@ -124,7 +130,7 @@ class AttributeFetcher {
         `Internal: Ref to '${orphanLogicalId}' has no orphan entry — should have been filtered out`
       );
     }
-    return o.physicalId;
+    return cfnRefValueFromPhysicalId(o.resourceType, o.physicalId);
   }
 
   /**

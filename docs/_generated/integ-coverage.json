@@ -2366,7 +2366,8 @@
       ],
       "signals": {
         "eventbridge": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "eventbridge-api-destination": [
           "l2"
@@ -4103,6 +4104,7 @@
         "deployment-events",
         "destroy-interrupt",
         "elasticache-replicationgroup-getatt",
+        "eventbridge",
         "export-nested-stack",
         "getstackoutput-crossregion",
         "import-nested-stack",
@@ -4180,6 +4182,9 @@
         ],
         "elasticache-replicationgroup-getatt": [
           "l1"
+        ],
+        "eventbridge": [
+          "l2"
         ],
         "export-nested-stack": [
           "l2",

@@ -7,6 +7,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as pipes from 'aws-cdk-lib/aws-pipes';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * EventBridge example stack
@@ -72,6 +73,16 @@ def handler(event, context):
     // Add Lambda function as the rule target
     // This automatically creates the necessary Lambda invoke permission
     rule.addTarget(new targets.LambdaFunction(fn));
+
+    // Regression coverage for the Ref-returns-ARN bug (/hunt-bugs 2026-07-02):
+    // CFn `Ref` on AWS::Events::Rule returns the rule NAME — `<bus>|<name>`
+    // for a custom-bus rule — never the ARN. `rule.ruleName` synthesizes to
+    // `{Ref: <Rule>}`, so storing it in a real resource asserts the resolved
+    // value end-to-end (verify.sh compares it against AWS's actual rule name).
+    new ssm.StringParameter(this, 'RuleRefParam', {
+      parameterName: `/${this.stackName}/rule-ref`,
+      stringValue: rule.ruleName,
+    });
 
     // EventBridge Scheduler: runs every hour (disabled to avoid costs)
     const schedulerRole = new iam.Role(this, 'SchedulerRole', {

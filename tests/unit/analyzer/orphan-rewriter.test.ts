@@ -60,6 +60,42 @@ describe('rewriteResourceReferences', () => {
     });
   });
 
+  // The `{Ref: orphan}` substitution must use CFn `Ref` semantics, not the raw
+  // physical id — shared with the deploy-time resolver via
+  // cfnRefValueFromPhysicalId. Two exception families:
+  //  - ARN-stored SDK ids (AWS::Events::Rule): Ref is the rule NAME.
+  //  - Compound CC ids (Cognito `<userPoolId>|<clientId>`): Ref is the
+  //    after-pipe segment.
+  it.each([
+    [
+      'AWS::Events::Rule',
+      'arn:aws:events:us-east-1:123456789012:rule/my-rule',
+      'my-rule',
+    ],
+    [
+      'AWS::Cognito::UserPoolClient',
+      'us-east-1_t1TBpabHO|9fut2hkhdues45051mvms2os5',
+      '9fut2hkhdues45051mvms2os5',
+    ],
+  ])(
+    'rewrites a {Ref: orphan} of %s into the CFn Ref value, not the raw physical id',
+    async (resourceType, physicalId, expected) => {
+      const state = baseState({
+        Target: { physicalId, resourceType, properties: {} },
+        Other: {
+          physicalId: 'o-phys',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { SomeRef: { Ref: 'Target' } },
+        },
+      });
+
+      const result = await rewriteResourceReferences(state, ['Target'], fakeRegistry());
+
+      expect(result.unresolvable).toEqual([]);
+      expect(result.state.resources['Other']?.properties).toEqual({ SomeRef: expected });
+    }
+  );
+
   it('rewrites array-form Fn::GetAtt via live provider call', async () => {
     const getAttribute = vi.fn(async (_p: string, _t: string, attr: string) =>
       attr === 'Arn' ? 'arn:aws:s3:::b-phys' : undefined
