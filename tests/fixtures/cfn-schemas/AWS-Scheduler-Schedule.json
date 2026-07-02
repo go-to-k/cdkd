@@ -1,0 +1,27 @@
+{
+  "resourceType": "AWS::Scheduler::Schedule",
+  "generatedAt": "2026-07-02",
+  "properties": [
+    "Arn",
+    "Description",
+    "EndDate",
+    "FlexibleTimeWindow",
+    "GroupName",
+    "KmsKeyArn",
+    "Name",
+    "ScheduleExpression",
+    "ScheduleExpressionTimezone",
+    "StartDate",
+    "State",
+    "Target"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ]
+}

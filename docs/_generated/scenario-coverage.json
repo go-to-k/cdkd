@@ -1383,6 +1383,11 @@
       "scenarios": []
     },
     {
+      "name": "scheduler-custom-group",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "schema-v5-to-v6-migration",
       "annotated": true,
       "scenarios": [
@@ -2160,6 +2165,7 @@
     "s3-lifecycle",
     "s3-object-lock",
     "s3-replication-and-filter",
+    "scheduler-custom-group",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
     "secrets-rotation-schedule",
