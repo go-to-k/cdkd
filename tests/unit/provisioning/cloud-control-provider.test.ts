@@ -98,8 +98,12 @@ vi.mock('../../../src/utils/logger.js', () => ({
   },
 }));
 
-import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
+import {
+  CloudControlProvider,
+  CloudControlOperationFailedError,
+} from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 
 describe('CloudControlProvider delete region verification', () => {
   let provider: CloudControlProvider;
@@ -1087,5 +1091,240 @@ describe('CloudControlProvider Events ApiDestination attribute enrichment (CC-AP
 
     expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
     expect(enriched['Arn']).toBeUndefined();
+  });
+});
+
+describe('CloudControlProvider create: failed-create remnant cleanup', () => {
+  let provider: CloudControlProvider;
+
+  // Wires the cloudControl mock for the async-create-materializes-then-fails
+  // shape (the AWS::Synthetics::Canary repro): CreateResource returns a token,
+  // its status poll reports FAILED carrying the materialized Identifier, and
+  // the remnant DeleteResource (when issued) is routed by its own token.
+  function wireFailedCreate(opts: {
+    errorCode?: string;
+    identifier?: string;
+    deleteStatus?: 'SUCCESS' | 'FAILED';
+    deleteFailedMessage?: string;
+    deleteRejects?: Error;
+    statusRejects?: Error;
+  }): void {
+    mockCloudControlSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { RequestToken?: string } }) => {
+        const name = cmd.constructor.name;
+        if (name === 'CreateResourceCommand') {
+          return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-create' } });
+        }
+        if (name === 'DeleteResourceCommand') {
+          if (opts.deleteRejects) return Promise.reject(opts.deleteRejects);
+          return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-delete' } });
+        }
+        if (name === 'GetResourceRequestStatusCommand' && opts.statusRejects) {
+          return Promise.reject(opts.statusRejects);
+        }
+        if (name === 'GetResourceRequestStatusCommand') {
+          if (cmd.input?.RequestToken === 'tok-create') {
+            return Promise.resolve({
+              ProgressEvent: {
+                OperationStatus: 'FAILED',
+                TypeName: 'AWS::Synthetics::Canary',
+                ...(opts.identifier !== undefined && { Identifier: opts.identifier }),
+                ErrorCode: opts.errorCode ?? 'GeneralServiceException',
+                StatusMessage:
+                  'The role defined for the function cannot be assumed by Lambda.',
+              },
+            });
+          }
+          return Promise.resolve({
+            ProgressEvent:
+              opts.deleteStatus === 'FAILED'
+                ? {
+                    OperationStatus: 'FAILED',
+                    ErrorCode: 'GeneralServiceException',
+                    StatusMessage: opts.deleteFailedMessage ?? 'internal failure',
+                  }
+                : { OperationStatus: 'SUCCESS' },
+          });
+        }
+        return Promise.resolve({});
+      }
+    );
+  }
+
+  const deleteCallIdentifiers = (): string[] =>
+    mockCloudControlSend.mock.calls
+      .filter((c) => c[0]?.constructor?.name === 'DeleteResourceCommand')
+      .map((c) => (c[0] as { input: { Identifier: string } }).input.Identifier);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    provider = new CloudControlProvider();
+  });
+
+  it('deletes the materialized remnant when a CREATE fails after returning an Identifier', async () => {
+    wireFailedCreate({ identifier: 'cdkd-bh-syn' });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+    ).rejects.toThrow(/CREATE failed for Canary: The role defined for the function/);
+
+    // The remnant occupying the name was deleted so the deploy engine's outer
+    // withRetry can re-create it once IAM propagates.
+    expect(deleteCallIdentifiers()).toEqual(['cdkd-bh-syn']);
+  });
+
+  it('rethrows the ORIGINAL create error (retry-classifiable), not the cleanup outcome', async () => {
+    wireFailedCreate({ identifier: 'cdkd-bh-syn' });
+
+    const error = await provider
+      .create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+      .then(
+        () => undefined,
+        (e: unknown) => e as CloudControlOperationFailedError
+      );
+
+    expect(error).toBeInstanceOf(CloudControlOperationFailedError);
+    expect(error).toMatchObject({
+      name: 'CloudControlOperationFailedError',
+      physicalId: 'cdkd-bh-syn',
+      ccErrorCode: 'GeneralServiceException',
+      ccOperation: 'CREATE',
+    });
+  });
+
+  it('NEVER deletes when the handler reported AlreadyExists (identifier names a pre-existing resource)', async () => {
+    wireFailedCreate({ errorCode: 'AlreadyExists', identifier: 'users-precious-canary' });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'users-precious-canary' })
+    ).rejects.toThrow(/CREATE failed for Canary/);
+
+    expect(deleteCallIdentifiers()).toEqual([]);
+  });
+
+  it('does nothing when the FAILED event carries no Identifier', async () => {
+    wireFailedCreate({ identifier: undefined });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+    ).rejects.toThrow(/CREATE failed for Canary/);
+
+    expect(deleteCallIdentifiers()).toEqual([]);
+  });
+
+  it('treats a NotFound on the remnant delete as a no-op (speculative identifier, nothing materialized)', async () => {
+    wireFailedCreate({
+      identifier: 'speculative-id',
+      deleteRejects: Object.assign(new Error('Resource not found'), {
+        name: 'ResourceNotFoundException',
+      }),
+    });
+
+    await expect(
+      provider.create('Group', 'AWS::CodeDeploy::DeploymentGroup', { ApplicationName: 'app' })
+    ).rejects.toThrow(/CREATE failed for Group/);
+
+    expect(deleteCallIdentifiers()).toEqual(['speculative-id']);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('warns but still rethrows the original error when the remnant delete itself fails', async () => {
+    wireFailedCreate({ identifier: 'cdkd-bh-syn', deleteStatus: 'FAILED' });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+    ).rejects.toThrow(/CREATE failed for Canary: The role defined for the function/);
+
+    expect(deleteCallIdentifiers()).toEqual(['cdkd-bh-syn']);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to delete the remnant cdkd-bh-syn')
+    );
+  });
+
+  it('NEVER deletes when the handler reported ResourceConflict (identifier may belong to another in-flight operation)', async () => {
+    wireFailedCreate({ errorCode: 'ResourceConflict', identifier: 'contested-resource' });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'contested-resource' })
+    ).rejects.toThrow(/CREATE failed for Canary/);
+
+    expect(deleteCallIdentifiers()).toEqual([]);
+  });
+
+  it('the rethrown stabilization failure stays retry-classifiable by the deploy engine classifier', async () => {
+    wireFailedCreate({ identifier: 'cdkd-bh-syn' });
+
+    const error = await provider
+      .create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    // This is the integration point the fix exists for: after the remnant is
+    // cleaned, the deploy engine's outer withRetry must still classify the
+    // original error as transient so the re-create actually happens.
+    expect(isRetryableTransientError(error, error!.message)).toBe(true);
+  });
+
+  it('treats an async FAILED-NotFound remnant delete as a no-op (no warning)', async () => {
+    wireFailedCreate({
+      identifier: 'speculative-id',
+      deleteStatus: 'FAILED',
+      deleteFailedMessage: "Resource of type 'AWS::Foo::Bar' with identifier 'speculative-id' was not found.",
+    });
+
+    await expect(
+      provider.create('Thing', 'AWS::Foo::Bar', { Name: 'speculative-id' })
+    ).rejects.toThrow(/CREATE failed for Thing/);
+
+    expect(deleteCallIdentifiers()).toEqual(['speculative-id']);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('does not fire cleanup for a non-progress-event error (status polling network failure)', async () => {
+    wireFailedCreate({ statusRejects: new Error('socket hang up') });
+
+    await expect(
+      provider.create('Canary', 'AWS::Synthetics::Canary', { Name: 'cdkd-bh-syn' })
+    ).rejects.toThrow(/socket hang up/);
+
+    expect(deleteCallIdentifiers()).toEqual([]);
+  });
+
+  it('does not fire remnant cleanup for a FAILED UPDATE (existing resource must survive)', async () => {
+    mockCloudControlSend.mockImplementation(
+      (cmd: { constructor: { name: string } }) => {
+        const name = cmd.constructor.name;
+        if (name === 'UpdateResourceCommand') {
+          return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+        }
+        if (name === 'GetResourceRequestStatusCommand') {
+          return Promise.resolve({
+            ProgressEvent: {
+              OperationStatus: 'FAILED',
+              Identifier: 'existing-resource',
+              ErrorCode: 'GeneralServiceException',
+              StatusMessage: 'update blew up',
+            },
+          });
+        }
+        return Promise.resolve({});
+      }
+    );
+    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify({}) });
+
+    await expect(
+      provider.update(
+        'Thing',
+        'existing-resource',
+        'AWS::Some::Type',
+        { Prop: 'new' },
+        { Prop: 'old' }
+      )
+    ).rejects.toThrow(/UPDATE failed for Thing/);
+
+    expect(deleteCallIdentifiers()).toEqual([]);
   });
 });
