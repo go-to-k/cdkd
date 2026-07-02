@@ -58,6 +58,7 @@ import {
 import { KMSProvider } from './providers/kms-provider.js';
 import { KinesisStreamProvider } from './providers/kinesis-provider.js';
 import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsumer-provider.js';
+import { SchedulerScheduleProvider } from './providers/scheduler-schedule-provider.js';
 import { EFSProvider } from './providers/efs-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
@@ -251,6 +252,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // Kinesis
   registry.register('AWS::Kinesis::Stream', new KinesisStreamProvider());
   registry.register('AWS::Kinesis::StreamConsumer', new KinesisStreamConsumerProvider());
+  // Custom-group schedules are unaddressable via Cloud Control (issue #961) —
+  // the SDK provider threads GroupName from the resource properties.
+  registry.register('AWS::Scheduler::Schedule', new SchedulerScheduleProvider());
 
   // EFS
   const efsProvider = new EFSProvider();

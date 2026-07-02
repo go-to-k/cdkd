@@ -2198,6 +2198,25 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Scheduler::Schedule',
+    {
+      handled: new Set<string>([
+        'Description',
+        'EndDate',
+        'FlexibleTimeWindow',
+        'GroupName',
+        'KmsKeyArn',
+        'Name',
+        'ScheduleExpression',
+        'ScheduleExpressionTimezone',
+        'StartDate',
+        'State',
+        'Target',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::SecretsManager::Secret',
     {
       handled: new Set<string>([

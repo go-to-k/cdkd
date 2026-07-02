@@ -350,6 +350,7 @@ provide the physical id explicitly.
 
 - AWS::IAM::Policy (inline)
 - AWS::IAM::UserToGroupAddition
+- AWS::Scheduler::Schedule (schedules are not taggable; the template `Name` + `GroupName` also resolve without a flag)
 
 ### Override-only — sub-resources without per-resource taggable identity
 

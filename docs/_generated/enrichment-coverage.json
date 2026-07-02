@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 115,
+    "classifiedCount": 116,
     "enriched": 3,
     "noComputedAttr": 14,
-    "unenrichedGap": 0,
+    "unenrichedGap": 1,
     "sdkFallbackGap": 98,
     "allowListedTypes": 0
   },
@@ -2499,6 +2499,24 @@
       "gaps": [
         "CreationTime",
         "VectorBucketArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::Scheduler::Schedule",
+      "bucket": "unenriched-computed",
+      "sdkBacked": false,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
       ]
     },
     {

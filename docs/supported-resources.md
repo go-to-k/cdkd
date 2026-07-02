@@ -185,6 +185,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Streaming** | AWS::Kinesis::Stream | SDK Provider | ✅ |
 | **Streaming** | AWS::Kinesis::StreamConsumer | SDK Provider | ✅ |
 | **Streaming** | AWS::KinesisFirehose::DeliveryStream | SDK Provider | ✅ |
+| **Integration** | AWS::Scheduler::Schedule | SDK Provider | ✅ |
 | **Storage** | AWS::EFS::FileSystem | SDK Provider | ✅ |
 | **Storage** | AWS::EFS::MountTarget | SDK Provider | ✅ |
 | **Storage** | AWS::EFS::AccessPoint | SDK Provider | ✅ |
