@@ -1,3 +1,10 @@
+## [0.230.20](https://github.com/go-to-k/cdkd/compare/v0.230.19...v0.230.20) (2026-07-02)
+
+
+### Bug Fixes
+
+* **deploy:** retry CodeDeploy assume-role IAM-propagation race + accurate sibling-abort message ([#948](https://github.com/go-to-k/cdkd/issues/948)) ([7499068](https://github.com/go-to-k/cdkd/commit/749906833cb0a09e2c55144045db9eef382ab4b6))
+
 ## [0.230.19](https://github.com/go-to-k/cdkd/compare/v0.230.18...v0.230.19) (2026-06-29)
 
 
