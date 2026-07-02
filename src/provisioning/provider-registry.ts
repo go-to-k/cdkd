@@ -76,6 +76,29 @@ export interface AutoRouteHit {
  * Tier 1 types whose SDK Provider declares `handledProperties` and where
  * Cloud Control is guaranteed to be a viable alternative.
  */
+/**
+ * Types exempt from the sticky `provisionedBy: 'cc-api'` routing rule.
+ *
+ * The sticky rule exists to avoid physical-ID churn when an SDK provider is
+ * backfilled for a type Cloud Control was already managing fine. These types
+ * are different: their CLOUD CONTROL ROUTING IS BROKEN, so keeping existing
+ * state pinned to cc-api would keep the bug alive for every pre-existing
+ * resource. Only add a type here when BOTH hold:
+ *
+ * 1. the CC handler cannot correctly manage the resource (not a perf choice),
+ * 2. the SDK provider uses the SAME physicalId the CC path stored, so the
+ *    re-route is churn-free and the record flips to `provisionedBy: 'sdk'`
+ *    transparently on its next state write.
+ *
+ * - AWS::Scheduler::Schedule (issue #961): a schedule in a custom
+ *   ScheduleGroup is unaddressable via CC (the handlers resolve the bare-Name
+ *   identifier against the DEFAULT group) — CC UPDATE fails NotFound and CC
+ *   DELETE silently no-ops, orphaning a live schedule. Both paths stored the
+ *   bare schedule name as physicalId, and the state properties carry
+ *   GroupName, so the SDK provider addresses existing records correctly.
+ */
+const STICKY_CC_MIGRATION_EXEMPT: ReadonlySet<string> = new Set(['AWS::Scheduler::Schedule']);
+
 export class ProviderRegistry {
   private logger = getLogger().child('ProviderRegistry');
   private providers = new Map<string, ResourceProvider>();
@@ -183,7 +206,13 @@ export class ProviderRegistry {
     //    stays on Cloud Control regardless of whether the SDK Provider has
     //    since gained coverage. Avoids physical-ID churn / destroy+recreate
     //    cycles on every backfill release.
-    if (provisionedBy === 'cc-api') {
+    //
+    //    Exemption: types in STICKY_CC_MIGRATION_EXEMPT re-route to their SDK
+    //    provider even when state says cc-api — reserved for types where the
+    //    CC routing is BROKEN (not merely slower) and the migration is
+    //    physical-ID-stable, so existing state transparently flips to
+    //    provisionedBy: 'sdk' on its next write.
+    if (provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType)) {
       this.logger.debug(
         `Routing ${resourceType} via Cloud Control (state-recorded provisionedBy=cc-api)`
       );

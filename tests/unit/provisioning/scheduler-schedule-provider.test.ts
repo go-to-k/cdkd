@@ -116,6 +116,34 @@ describe('SchedulerScheduleProvider', () => {
       expect(result.physicalId).toMatch(/^[0-9a-zA-Z\-_.]+$/);
     });
 
+    it('threads every optional field to the SDK input (full-replace API contract)', async () => {
+      mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
+
+      await provider.create('Sched', TYPE, {
+        ...BASE_PROPS,
+        Description: 'my desc',
+        ScheduleExpressionTimezone: 'Asia/Tokyo',
+        State: 'DISABLED',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+      });
+
+      const input = sentInput(CreateScheduleCommand);
+      expect(input).toMatchObject({
+        Description: 'my desc',
+        ScheduleExpressionTimezone: 'Asia/Tokyo',
+        State: 'DISABLED',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+      });
+    });
+
+    it('wraps a create failure in ProvisioningError with the logicalId', async () => {
+      mockSend.mockRejectedValueOnce(new Error('quota exceeded'));
+
+      await expect(provider.create('Sched', TYPE, { ...BASE_PROPS })).rejects.toThrow(
+        /Failed to create Schedule Sched: quota exceeded/
+      );
+    });
+
     it('converts ISO-string StartDate/EndDate to Date for the SDK', async () => {
       mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
 
@@ -146,6 +174,7 @@ describe('SchedulerScheduleProvider', () => {
 
       expect(result.physicalId).toBe('my-sched');
       expect(result.wasReplaced).toBe(false);
+      expect(result.attributes).toEqual({ Arn: SCHED_ARN });
       const input = sentInput(UpdateScheduleCommand);
       expect(input).toMatchObject({
         Name: 'my-sched',
@@ -156,7 +185,7 @@ describe('SchedulerScheduleProvider', () => {
       });
     });
 
-    it('rejects a GroupName change with the typed ResourceUpdateNotSupportedError (never re-wrapped)', async () => {
+    it('rejects a GroupName change with the typed ResourceUpdateNotSupportedError before any API call', async () => {
       await expect(
         provider.update(
           'Sched',
@@ -207,6 +236,18 @@ describe('SchedulerScheduleProvider', () => {
       await expect(
         provider.delete('Sched', 'my-sched', TYPE, { ...BASE_PROPS }, { expectedRegion: 'eu-west-1' })
       ).rejects.toThrow(/eu-west-1/);
+    });
+
+    it('warns and deletes from the default group when the state record has no properties', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete('Sched', 'my-sched', TYPE, undefined);
+
+      const input = sentInput(DeleteScheduleCommand) as Record<string, unknown>;
+      expect(input).toEqual({ Name: 'my-sched' });
+      // The degraded-record warning names the manual escape hatch — a
+      // custom-group schedule cannot be addressed without properties.
+      // (childLogger.warn is the shared spy in the logger mock below.)
     });
 
     it('wraps a non-NotFound failure in ProvisioningError', async () => {
@@ -266,6 +307,21 @@ describe('SchedulerScheduleProvider', () => {
         ScheduleExpression: 'rate(1 hour)',
         StartDate: '2026-08-01T00:00:00.000Z',
       });
+    });
+
+    it('KEEPS an explicit default GroupName when the state properties carry it (no phantom drift)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Name: 'my-sched',
+        GroupName: 'default',
+        ScheduleExpression: 'rate(1 hour)',
+      });
+
+      const state = await provider.readCurrentState('my-sched', 'Sched', TYPE, {
+        GroupName: 'default',
+        ScheduleExpression: 'rate(1 hour)',
+      });
+
+      expect(state).toMatchObject({ GroupName: 'default' });
     });
 
     it('drops the default GroupName from the read-back (template omission must not drift)', async () => {

@@ -106,6 +106,25 @@ describe('ProviderRegistry.getProviderFor', () => {
     expect(decision.provider).toBe(registry.getCloudControlProvider());
   });
 
+  it('EXEMPTS AWS::Scheduler::Schedule from the sticky cc-api rule (issue #961 migration)', () => {
+    // Pre-#961 state records say provisionedBy: cc-api, but the CC routing is
+    // BROKEN for custom-group schedules (bare-Name identifier resolves against
+    // the default group). The exemption re-routes existing records to the SDK
+    // provider; physicalId (bare name) is identical on both paths, so the
+    // migration is churn-free and the record flips to 'sdk' on its next write.
+    const registry = new ProviderRegistry();
+    const sdk = stubSdkProvider();
+    registry.register('AWS::Scheduler::Schedule', sdk);
+
+    const decision = registry.getProviderFor({
+      resourceType: 'AWS::Scheduler::Schedule',
+      properties: { GroupName: 'my-group' },
+      provisionedBy: 'cc-api',
+    });
+    expect(decision.provisionedBy).toBe('sdk');
+    expect(decision.provider).toBe(sdk);
+  });
+
   it('routes a Tier 1 type with no silent-drop properties to the SDK provider', () => {
     const registry = new ProviderRegistry();
     const fx = pickSilentDropFixture();

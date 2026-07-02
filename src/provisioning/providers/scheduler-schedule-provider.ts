@@ -43,9 +43,13 @@ import type {
  *
  * physicalId is the schedule NAME (matches CFn: `Ref` returns the Name, and
  * pre-existing Cloud-Control-provisioned state also stored the bare name, so
- * no state migration is needed). GroupName is recovered from `properties`
- * on update/delete/readCurrentState — the state record always carries the
- * resolved properties.
+ * the physicalId is stable across the migration). Because pre-existing
+ * records say `provisionedBy: 'cc-api'`, the type is ALSO exempted from the
+ * sticky cc-api routing rule (see STICKY_CC_MIGRATION_EXEMPT in
+ * provider-registry.ts) — without the exemption the broken CC path would
+ * keep serving existing schedules. GroupName is recovered from `properties`
+ * on update/delete/readCurrentState — the state record carries the resolved
+ * properties.
  *
  * A GroupName change is rejected with `ResourceUpdateNotSupportedError`:
  * `UpdateSchedule` uses GroupName to ADDRESS the schedule (a different
@@ -233,6 +237,16 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     const groupName = this.groupNameOf(properties);
+    if (properties === undefined) {
+      // A degraded state record without properties cannot recover the group.
+      // The delete below targets the DEFAULT group; a custom-group schedule
+      // would then hit the NotFound-idempotent branch and be left behind —
+      // surface that instead of staying silent (the #961 orphan shape).
+      this.logger.warn(
+        `State record for Schedule ${logicalId} carries no properties — deleting '${physicalId}' from the default group. ` +
+          `If the schedule lives in a custom group, delete it manually: aws scheduler delete-schedule --name ${physicalId} --group-name <group>`
+      );
+    }
 
     this.logger.debug(
       `Deleting Schedule ${logicalId}: ${physicalId}${groupName ? ` (group: ${groupName})` : ''}`
@@ -294,9 +308,12 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       return response.Arn;
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
+      const customGroupHint =
+        error instanceof ResourceNotFoundException
+          ? ' Schedules in a custom group cannot be looked up by bare name; the Arn is normally served from cdkd state attributes.'
+          : '';
       throw new ProvisioningError(
-        `Failed to resolve Arn for Schedule ${physicalId}: ${cause?.message ?? String(error)}. ` +
-          `Schedules in a custom group cannot be looked up by bare name; the Arn is normally served from cdkd state attributes.`,
+        `Failed to resolve Arn for Schedule ${physicalId}: ${cause?.message ?? String(error)}.${customGroupHint}`,
         resourceType,
         physicalId,
         physicalId,
@@ -323,10 +340,18 @@ export class SchedulerScheduleProvider implements ResourceProvider {
           ...(groupName && { GroupName: groupName }),
         })
       );
+      // GroupName normalization: AWS reports 'default' for schedules in the
+      // default group, but a template that OMITS GroupName must not drift
+      // against it. When the state properties explicitly carry GroupName
+      // (even 'default'), keep the read-back value so an explicit template
+      // value keeps comparing.
+      const stateHasGroupName = properties?.['GroupName'] !== undefined;
       return {
         Name: response.Name,
         ...(response.GroupName !== undefined &&
-          response.GroupName !== 'default' && { GroupName: response.GroupName }),
+          (stateHasGroupName || response.GroupName !== 'default') && {
+            GroupName: response.GroupName,
+          }),
         ...(response.Description !== undefined && { Description: response.Description }),
         ...(response.ScheduleExpression !== undefined && {
           ScheduleExpression: response.ScheduleExpression,
