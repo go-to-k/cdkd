@@ -1131,6 +1131,11 @@
       "scenarios": []
     },
     {
+      "name": "loggroup-kms-associate",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "macro-expansion",
       "annotated": true,
       "scenarios": [
@@ -2137,6 +2142,7 @@
     "local-start-cloudfront",
     "local-start-service-watch-fast",
     "loggroup-class-guard",
+    "loggroup-kms-associate",
     "nested-stack",
     "nested-stack-deep",
     "nodejs-function",

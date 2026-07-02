@@ -1,6 +1,8 @@
 import {
+  AssociateKmsKeyCommand,
   CloudWatchLogsClient,
   CreateLogGroupCommand,
+  DisassociateKmsKeyCommand,
   DeleteIndexPolicyCommand,
   DeleteLogGroupCommand,
   DescribeIndexPoliciesCommand,
@@ -243,7 +245,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
    *
    * Mutable: `RetentionInDays`, `DataProtectionPolicy`, `Tags`,
    * `DeletionProtectionEnabled`, `BearerTokenAuthenticationEnabled`,
-   * `FieldIndexPolicies`. `LogGroupName` requires replacement.
+   * `FieldIndexPolicies`, `KmsKeyId` (via AssociateKmsKey /
+   * DisassociateKmsKey). `LogGroupName` requires replacement.
    * `LogGroupClass` cannot be changed at all (CFn: "Updates are not
    * supported" — there is no CloudWatch Logs API to change a log group's
    * class after creation), so a class change throws
@@ -284,6 +287,35 @@ export class LogsLogGroupProvider implements ResourceProvider {
         logicalId,
         `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change`
       );
+    }
+
+    // Update KmsKeyId if changed. CFn applies it in place ("Update
+    // requires: No interruption") via AssociateKmsKey / DisassociateKmsKey;
+    // this previously had NO branch at all, so a KMS key change was
+    // silently dropped (deploy success, AWS unchanged, state poisoned) —
+    // the exact bug class of the LogGroupClass guard above. A just-created
+    // same-stack key can race its key-policy propagation; the engine's
+    // withRetry absorbs it via the existing retryable patterns.
+    const newKmsKeyId = properties['KmsKeyId'] as string | undefined;
+    const oldKmsKeyId = previousProperties['KmsKeyId'] as string | undefined;
+    if (newKmsKeyId !== oldKmsKeyId) {
+      if (newKmsKeyId) {
+        await this.logsClient.send(
+          new AssociateKmsKeyCommand({
+            logGroupName: physicalId,
+            kmsKeyId: newKmsKeyId,
+          })
+        );
+      } else {
+        // Removed -> disassociate; newly-ingested data falls back to the
+        // CloudWatch Logs default encryption (matches CFn).
+        await this.logsClient.send(
+          new DisassociateKmsKeyCommand({
+            logGroupName: physicalId,
+          })
+        );
+      }
+      this.logger.debug(`Updated KMS key association for log group ${physicalId}`);
     }
 
     // Update retention policy if changed

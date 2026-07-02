@@ -2796,6 +2796,7 @@
         "ecr-scanning",
         "infra-security",
         "kms-encryption",
+        "loggroup-kms-associate",
         "propagation-races-2"
       ],
       "signals": {
@@ -2817,6 +2818,9 @@
         "kms-encryption": [
           "l2",
           "literal"
+        ],
+        "loggroup-kms-associate": [
+          "l2"
         ],
         "propagation-races-2": [
           "l1"
@@ -3364,6 +3368,7 @@
         "local-start-alb-from-state",
         "log-pipeline",
         "loggroup-class-guard",
+        "loggroup-kms-associate",
         "monitoring",
         "remove-protection",
         "scheduled-task",
@@ -3396,6 +3401,10 @@
         ],
         "loggroup-class-guard": [
           "l2"
+        ],
+        "loggroup-kms-associate": [
+          "l2",
+          "literal"
         ],
         "monitoring": [
           "l2"
