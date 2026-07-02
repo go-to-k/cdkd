@@ -49,7 +49,6 @@ efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
 efs-standalone	2026-06-21T16:16:44Z	PASS	135	verify.sh	stale-real re-run; 11 deleted 0 err; clean
 elasticache-replicationgroup-getatt	2026-06-21T18:03:30Z	PASS	649	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
 event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-eventbridge	2026-06-21T11:13:40Z	PASS	63	verify.sh	sweep-F staleness re-run (rc=0)
 eventbridge-input-transformer	2026-06-21T07:34:45Z	PASS	53	verify.sh	InputTransformer rewrites payload; UPDATE version reached AWS; destroy clean
 export-nested-stack	2026-06-21T11:00:28Z	PASS	326	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 fifo-sqs-event-source	2026-06-21T07:42:41Z	PASS	83	verify.sh	FIFO ESM delivers + both MessageGroupIds (g1,g2) preserved; spaced poll; destroy clean 0 orphan
@@ -203,4 +202,5 @@ replacement-immutable-name	2026-06-29T06:27:27Z	PASS	130	verify.sh	6-type rename
 bench-cdk-sample	2026-06-29T06:27:27Z	PASS	420	standard	broad VPC/NAT/CF/Lambda, 37+2retained 0err, loggroups swept
 efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustness refactor re-verified, orph clean
 codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
-lambda	2026-07-02T04:45:41Z	PASS	93	verify.sh	broad integ for deploy-engine interrupt-cause change; destroy 9 del 0 err; orph clean
+eventbridge	2026-07-02T04:55:20Z	PASS	150	verify.sh	LogConfig + new Events::Rule Ref-name assertion, destroy 13/0 err
+lambda	2026-07-02T04:57:52Z	PASS	95	verify.sh	broad integ for resolver Ref fix PR; destroy 9 del 0 err; orph clean

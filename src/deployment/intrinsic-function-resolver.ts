@@ -82,6 +82,66 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
 ]);
 
 /**
+ * SDK-provisioned types whose provider stores the resource ARN as the physical
+ * id (their delete / update paths need the ARN), while CloudFormation's `Ref`
+ * returns the CFn physical resource id — which for these types is NOT the ARN:
+ *   - `AWS::Events::Rule` → the rule name (`arn:…:rule/<name>`), or
+ *     `<busName>|<ruleName>` for a custom-bus rule
+ *     (`arn:…:rule/<busName>/<ruleName>`) — the physical id CloudFormation
+ *     reports for such rules. The ARN stays reachable via `Fn::GetAtt Arn`.
+ *   - `AWS::CloudTrail::Trail` → the trail name (`arn:…:trail/<name>`).
+ * Value: the ARN resource-type marker after which the CFn `Ref` value starts.
+ */
+const REF_RETURNS_NAME_FROM_ARN = new Map<string, string>([
+  ['AWS::Events::Rule', ':rule/'],
+  ['AWS::CloudTrail::Trail', ':trail/'],
+]);
+
+/**
+ * Resolve the value CloudFormation's `Ref` returns for a resource, given its
+ * type and cdkd-stored physical id. Pure function shared by the deploy-time
+ * resolver ({@link IntrinsicFunctionResolver.resolveRefValue}) and the
+ * `cdkd orphan` rewriter's `{Ref: <orphan>}` substitution, so both derive
+ * identical CFn `Ref` semantics (after-pipe compound-id extraction and
+ * name-from-ARN extraction included).
+ */
+export function cfnRefValueFromPhysicalId(resourceType: string, physicalId: string): string {
+  const nameMarker = REF_RETURNS_NAME_FROM_ARN.get(resourceType);
+  if (nameMarker && physicalId.startsWith('arn:')) {
+    const markerIdx = physicalId.indexOf(nameMarker);
+    if (markerIdx >= 0) {
+      const segment = physicalId.substring(markerIdx + nameMarker.length);
+      // Custom-bus Events::Rule ARNs carry `rule/<busName>/<ruleName>`;
+      // CloudFormation's physical id for such rules is `<busName>|<ruleName>`
+      // (verified against real CloudFormation, 2026-07-02). Rule names cannot
+      // contain `/` but partner-bus NAMES can (`aws.partner/foo.com/...`), so
+      // split on the LAST slash to keep the whole bus name intact (the
+      // partner-bus form is inferred from that rule, not CFn-verified —
+      // partner buses need a live SaaS integration to create).
+      // NOTE: this split fires only when the segment contains `/`, which is
+      // safe for types whose names forbid `/` (both current entries). A future
+      // REF_RETURNS_NAME_FROM_ARN entry whose names may contain `/` needs a
+      // per-entry flag instead of this shared split.
+      const slashIdx = segment.lastIndexOf('/');
+      if (slashIdx >= 0) {
+        return `${segment.substring(0, slashIdx)}|${segment.substring(slashIdx + 1)}`;
+      }
+      return segment;
+    }
+  }
+  if (REF_RETURNS_SEGMENT_AFTER_PIPE.has(resourceType)) {
+    // Take the segment after the LAST pipe. For 2-segment compounds
+    // (`<parent>|<ref>`) this equals after-first-pipe; for 3-segment AppConfig
+    // children (`<a>|<b>|<ref>`) it correctly returns only the trailing id.
+    const pipeIdx = physicalId.lastIndexOf('|');
+    if (pipeIdx >= 0) {
+      return physicalId.substring(pipeIdx + 1);
+    }
+  }
+  return physicalId;
+}
+
+/**
  * Intrinsic-function keys the resolver knows how to handle.
  *
  * A CloudFormation intrinsic is ALWAYS a single-key object — `{ "Ref": ... }`
@@ -749,19 +809,17 @@ export class IntrinsicFunctionResolver {
    *     compound id, which fails the `[\w+]+` client-id validation.
    * In every case the `Ref` value is the segment after the pipe (the parent id
    * is the first identifier component).
+   *
+   * The {@link REF_RETURNS_NAME_FROM_ARN} types are SDK-provisioned with the
+   * resource ARN stored as the physical id, while CFn's `Ref` returns the
+   * resource NAME (the CFn physical resource id) — e.g. `AWS::Events::Rule`
+   * (`Ref` is the rule name such as `mystack-ScheduledRule-ABC`; a consumer
+   * calling `events:*` APIs by name or composing the name into another string
+   * would otherwise get the full ARN) and `AWS::CloudTrail::Trail` (`Ref` is
+   * the trail name). The name is extracted from the stored ARN.
    */
   private resolveRefValue(resource: ResourceState): string {
-    const physicalId = resource.physicalId;
-    if (REF_RETURNS_SEGMENT_AFTER_PIPE.has(resource.resourceType)) {
-      // Take the segment after the LAST pipe. For 2-segment compounds
-      // (`<parent>|<ref>`) this equals after-first-pipe; for 3-segment AppConfig
-      // children (`<a>|<b>|<ref>`) it correctly returns only the trailing id.
-      const pipeIdx = physicalId.lastIndexOf('|');
-      if (pipeIdx >= 0) {
-        return physicalId.substring(pipeIdx + 1);
-      }
-    }
-    return physicalId;
+    return cfnRefValueFromPhysicalId(resource.resourceType, resource.physicalId);
   }
 
   /**
@@ -1061,6 +1119,11 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::Events::Rule') {
       switch (attributeName) {
         case 'Arn': {
+          // The SDK provider stores the rule ARN as the physical id; only
+          // construct an ARN when the stored id is a bare rule name.
+          if (physicalId.startsWith('arn:')) {
+            return physicalId;
+          }
           const busRaw = resource.properties?.['EventBusName'];
           const bus = typeof busRaw === 'string' && busRaw && busRaw !== 'default' ? busRaw : '';
           // If EventBusName resolved to an ARN, extract the bus name segment
@@ -1122,6 +1185,11 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::CloudTrail::Trail') {
       switch (attributeName) {
         case 'Arn':
+          // The SDK provider stores the trail ARN as the physical id; only
+          // construct an ARN when the stored id is a bare trail name.
+          if (physicalId.startsWith('arn:')) {
+            return physicalId;
+          }
           return `arn:${partition}:cloudtrail:${region}:${accountId}:trail/${physicalId}`;
         default:
           return physicalId;
