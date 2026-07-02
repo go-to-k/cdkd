@@ -1126,6 +1126,11 @@
       "scenarios": []
     },
     {
+      "name": "loggroup-class-guard",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "macro-expansion",
       "annotated": true,
       "scenarios": [
@@ -2131,6 +2136,7 @@
     "local-start-alb-from-state",
     "local-start-cloudfront",
     "local-start-service-watch-fast",
+    "loggroup-class-guard",
     "nested-stack",
     "nested-stack-deep",
     "nodejs-function",
