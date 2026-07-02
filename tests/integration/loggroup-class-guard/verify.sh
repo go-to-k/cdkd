@@ -41,7 +41,7 @@ cleanup() {
   # deleting the state file after a failed destroy would strand live AWS
   # resources with no state pointer left to destroy them from.
   local destroy_rc=1
-  if [ -x "${LOCAL_DIST}" ]; then
+  if [ -n "${STATE_BUCKET:-}" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --yes \
       --state-bucket "${STATE_BUCKET}" \
@@ -116,6 +116,10 @@ P2_RC=$?
 set -e
 echo "${P2_OUT}" | tail -4
 
+if [ "${P2_RC}" -eq 0 ]; then
+  echo "FAIL: class change without --replace exited 0 (CLI exit-code contract broken?)" >&2
+  exit 1
+fi
 if echo "${P2_OUT}" | grep -q "Deployment completed successfully"; then
   echo "FAIL: class change without --replace unexpectedly succeeded (silent drop regressed?)" >&2
   exit 1
