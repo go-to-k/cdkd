@@ -1054,6 +1054,172 @@ describe('LambdaFunctionProvider', () => {
       // calls[3] is the second waiter's GetFunction.
     });
 
+    it('fires UpdateFunctionCode with Architectures on an arch-only switch (code unchanged)', async () => {
+      // Architectures rides on UpdateFunctionCode, so an x86_64 -> arm64
+      // switch with byte-identical code must still issue UpdateFunctionCode
+      // (it was previously silently dropped).
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-arch',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-arch',
+          },
+        });
+
+      await provider.update(
+        'Fn',
+        'fn-arch',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['arm64'],
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['x86_64'],
+        }
+      );
+
+      const codeCmd = mockLambdaSend.mock.calls[0][0];
+      expect(codeCmd).toBeInstanceOf(UpdateFunctionCodeCommand);
+      expect(codeCmd.input.Architectures).toEqual(['arm64']);
+      expect(codeCmd.input.S3Bucket).toBe('b');
+      expect(codeCmd.input.S3Key).toBe('k');
+    });
+
+    it('omits Architectures from UpdateFunctionCode when only the code changed', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-code',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-code',
+          },
+        });
+
+      await provider.update(
+        'Fn',
+        'fn-code',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'new-b', S3Key: 'new-k' },
+          Architectures: ['x86_64'],
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'old-b', S3Key: 'old-k' },
+          Architectures: ['x86_64'],
+        }
+      );
+
+      const codeCmd = mockLambdaSend.mock.calls[0][0];
+      expect(codeCmd).toBeInstanceOf(UpdateFunctionCodeCommand);
+      expect(codeCmd.input.Architectures).toBeUndefined();
+    });
+
+    it('reverts to x86_64 when the Architectures property is removed', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-revert',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-revert',
+          },
+        });
+
+      await provider.update(
+        'Fn',
+        'fn-revert',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['arm64'],
+        }
+      );
+
+      const codeCmd = mockLambdaSend.mock.calls[0][0];
+      expect(codeCmd).toBeInstanceOf(UpdateFunctionCodeCommand);
+      expect(codeCmd.input.Architectures).toEqual(['x86_64']);
+    });
+
+    it('fires UpdateFunctionCode when the arch is added from absent (default x86_64 -> arm64)', async () => {
+      // The most common real-world edit: the template had no explicit
+      // architecture (Lambda default x86_64) and the user adds arm64. Both
+      // comparison sides are normalized, so this must be detected as a
+      // change even though previousProperties carries no Architectures key.
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-add-arch',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-add-arch',
+          },
+        });
+
+      await provider.update(
+        'Fn',
+        'fn-add-arch',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['arm64'],
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+        }
+      );
+
+      const codeCmd = mockLambdaSend.mock.calls[0][0];
+      expect(codeCmd).toBeInstanceOf(UpdateFunctionCodeCommand);
+      expect(codeCmd.input.Architectures).toEqual(['arm64']);
+    });
+
+    it('treats an explicit-x86_64 <-> absent transition as no change (no needless code redeploy)', async () => {
+      // Both sides mean the Lambda default architecture; a template edit
+      // that merely adds or removes the explicit ['x86_64'] must not fire
+      // UpdateFunctionCode when the code is unchanged.
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: {
+          FunctionName: 'fn-noop',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-noop',
+        },
+      }); // final attribute fetch (no config / code mutation expected before it)
+      await provider.update(
+        'Fn',
+        'fn-noop',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['x86_64'],
+        }
+      );
+
+      const codeCall = mockLambdaSend.mock.calls.find(
+        (c) => c[0] instanceof UpdateFunctionCodeCommand
+      );
+      expect(codeCall).toBeUndefined();
+    });
+
     it('throws ProvisioningError when the post-update waiter sees LastUpdateStatus === Failed', async () => {
       mockLambdaSend
         .mockResolvedValueOnce({}) // UpdateFunctionConfiguration
