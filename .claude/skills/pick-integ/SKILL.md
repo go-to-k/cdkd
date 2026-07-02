@@ -36,17 +36,22 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
    ```bash
    LEDGER="docs/_generated/integ-last-run.tsv"
    now=$(date -u +%s)
+   # The ledger merges with the union driver (.gitattributes), so a rare
+   # same-test collision can leave duplicate rows — the LAST row per test is
+   # authoritative (deduped below before any staleness math).
+   DEDUPED="$(mktemp)"
+   awk -F'\t' 'NR==1{print; next} {last[$1]=$0; order[$1]=NR} END{for (t in last) print last[t]}' "$LEDGER" > "$DEDUPED"
    # never-run: fixtures with no ledger row
    comm -23 \
      <(ls -d tests/integration/*/ | sed 's#tests/integration/##;s#/##' | sort) \
-     <(awk -F'\t' 'NR>1{print $1}' "$LEDGER" | sort)
+     <(awk -F'\t' 'NR>1{print $1}' "$DEDUPED" | sort)
    # stale (>14d) or failing, from the ledger:
    awk -F'\t' -v now="$now" 'NR>1 {
      cmd="date -u -j -f %Y-%m-%dT%H:%M:%SZ \""$2"\" +%s 2>/dev/null || date -u -d \""$2"\" +%s 2>/dev/null";
      cmd | getline t; close(cmd);
      age=int((now-t)/86400);
      if ($3=="FAIL" || age>14) printf "%s\tage=%sd\tresult=%s\t%s\n",$1,age,$3,$6
-   }' "$LEDGER"
+   }' "$DEDUPED"
    ```
    (The `date` line handles both BSD/macOS `-j -f` and GNU `-d`.)
 

@@ -1,0 +1,9 @@
+# The integ ledger is an append-ish, one-row-per-test TSV updated by every
+# /run-integ invocation. Parallel-agent PRs almost always touch DIFFERENT
+# test rows, so the union driver auto-resolves what was previously a
+# guaranteed manual conflict on every rebase (three hand-unions in one
+# session on 2026-07-02). The rare same-test collision leaves BOTH rows in
+# the file; consumers are defensive: /run-integ's awk update drops every
+# existing row for the test before appending, and /pick-integ reads the
+# LAST row per test as authoritative.
+docs/_generated/integ-last-run.tsv merge=union
