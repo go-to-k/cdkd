@@ -1,3 +1,10 @@
+## [0.230.31](https://github.com/go-to-k/cdkd/compare/v0.230.30...v0.230.31) (2026-07-02)
+
+
+### Bug Fixes
+
+* **deployment:** resolve Ref on CC-routed ApiGateway Stage/Resource/Authorizer/Deployment/DocumentationPart to the CFn Ref component ([#967](https://github.com/go-to-k/cdkd/issues/967)) ([ee5085c](https://github.com/go-to-k/cdkd/commit/ee5085c675649f6c81f5ca5192bd451fd153f8bc))
+
 ## [0.230.30](https://github.com/go-to-k/cdkd/compare/v0.230.29...v0.230.30) (2026-07-02)
 
 
