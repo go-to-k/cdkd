@@ -123,6 +123,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`dynamodb-ondemand`](../tests/integration/dynamodb-ondemand/)
 - [`dynamodb-sse`](../tests/integration/dynamodb-sse/)
 - [`dynamodb-stream-filter`](../tests/integration/dynamodb-stream-filter/)
+- [`dynamodb-tableclass-switch`](../tests/integration/dynamodb-tableclass-switch/)
 - [`dynamodb-ttl-attr-change`](../tests/integration/dynamodb-ttl-attr-change/)
 - [`ecr-scanning`](../tests/integration/ecr-scanning/)
 - [`efs-immutable-replacement`](../tests/integration/efs-immutable-replacement/)
