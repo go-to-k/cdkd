@@ -629,6 +629,11 @@
       "scenarios": []
     },
     {
+      "name": "dynamodb-tableclass-switch",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-ttl-attr-change",
       "annotated": false,
       "scenarios": []
@@ -2091,6 +2096,7 @@
     "dynamodb-ondemand",
     "dynamodb-sse",
     "dynamodb-stream-filter",
+    "dynamodb-tableclass-switch",
     "dynamodb-ttl-attr-change",
     "ecr-scanning",
     "efs-immutable-replacement",

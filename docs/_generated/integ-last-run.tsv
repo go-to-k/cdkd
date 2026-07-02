@@ -204,3 +204,4 @@ efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustnes
 codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
 lambda	2026-07-02T04:57:52Z	PASS	95	verify.sh	broad integ for resolver Ref fix PR; destroy 9 del 0 err; orph clean
 eventbridge	2026-07-02T06:09:46Z	PASS	210	verify.sh	new Phase 1.5 custom-bus rule-drop update (issue 955 fix), destroy 10/0 err
+dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans

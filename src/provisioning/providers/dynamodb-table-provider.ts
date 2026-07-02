@@ -419,24 +419,55 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // handled here — that needs GlobalSecondaryIndexUpdates and is a separate
       // (deferred) concern; the top-level table throughput is the load-bearing
       // case. A GSI-only capacity change is therefore still a silent gap.
-      if (
+      // TableClass rides the same UpdateTable and is mutable (CFn "Update
+      // requires: No interruption"). It previously had NO update branch at
+      // all, so a STANDARD <-> STANDARD_INFREQUENT_ACCESS switch was silently
+      // dropped: the deploy reported success while AWS kept the old class,
+      // and the next diff saw no change (state recorded the new class), so it
+      // could never self-heal. Only send TableClass when it actually changed
+      // — AWS rejects an UpdateTable that re-asserts the current class.
+      // Normalize BOTH comparison sides first: an absent property means the
+      // DynamoDB default (STANDARD), so an explicit-STANDARD <-> absent
+      // template edit is NOT a real change and must not issue the doomed
+      // same-class UpdateTable.
+      const normalizeTableClass = (v: unknown): 'STANDARD' | 'STANDARD_INFREQUENT_ACCESS' =>
+        typeof v === 'string' && v.length > 0
+          ? (v as 'STANDARD' | 'STANDARD_INFREQUENT_ACCESS')
+          : 'STANDARD';
+      const tableClassChanged =
+        normalizeTableClass(properties['TableClass']) !==
+        normalizeTableClass(previousProperties['TableClass']);
+      const billingOrThroughputChanged =
         JSON.stringify(properties['BillingMode']) !==
           JSON.stringify(previousProperties['BillingMode']) ||
         JSON.stringify(properties['ProvisionedThroughput']) !==
-          JSON.stringify(previousProperties['ProvisionedThroughput'])
-      ) {
+          JSON.stringify(previousProperties['ProvisionedThroughput']);
+      if (billingOrThroughputChanged || tableClassChanged) {
         const billingMode = properties['BillingMode'] as
           | 'PROVISIONED'
           | 'PAY_PER_REQUEST'
           | undefined;
         const updateInput: UpdateTableCommandInput = { TableName: physicalId };
-        if (billingMode) {
+        if (billingOrThroughputChanged && billingMode) {
           updateInput.BillingMode = billingMode;
+        }
+        if (tableClassChanged) {
+          // A removed TableClass property reverts to the DynamoDB default
+          // (STANDARD) — matches CFn, which reverts an absent property to the
+          // type default rather than leaving the old value in place.
+          updateInput.TableClass = normalizeTableClass(properties['TableClass']);
         }
         // PAY_PER_REQUEST rejects ProvisionedThroughput. When BillingMode is
         // PROVISIONED (or omitted, in which case the table is already
         // PROVISIONED and only its capacity is changing) forward the caps.
-        if (billingMode !== 'PAY_PER_REQUEST' && properties['ProvisionedThroughput']) {
+        // Gated on billingOrThroughputChanged so a TableClass-only change does
+        // not re-assert the current throughput — AWS rejects an UpdateTable
+        // whose requested throughput equals the table's current value.
+        if (
+          billingOrThroughputChanged &&
+          billingMode !== 'PAY_PER_REQUEST' &&
+          properties['ProvisionedThroughput']
+        ) {
           const pt = properties['ProvisionedThroughput'] as Record<string, unknown>;
           updateInput.ProvisionedThroughput = {
             ReadCapacityUnits: Number(pt['ReadCapacityUnits'] ?? 5),
@@ -449,7 +480,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // still-UPDATING table.
         await this.waitForTableActiveAfterUpdate(physicalId);
         this.logger.debug(
-          `Updated BillingMode/ProvisionedThroughput on DynamoDB table ${physicalId}`
+          `Updated BillingMode/ProvisionedThroughput/TableClass on DynamoDB table ${physicalId}`
         );
       }
 

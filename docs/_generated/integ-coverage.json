@@ -687,6 +687,7 @@
         "dynamodb-sse",
         "dynamodb-stream-filter",
         "dynamodb-streams",
+        "dynamodb-tableclass-switch",
         "dynamodb-ttl-attr-change",
         "fifo-sqs-event-source",
         "full-stack-demo",
@@ -734,6 +735,9 @@
           "literal"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "dynamodb-tableclass-switch": [
           "l2"
         ],
         "dynamodb-ttl-attr-change": [
