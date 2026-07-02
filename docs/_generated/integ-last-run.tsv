@@ -187,7 +187,6 @@ cross-stack-references	2026-06-27T17:37:40Z	PASS	25	standard	ImportValue strong-
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-eventbridge-pipes	2026-06-27T19:25:47Z	PASS	83	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 eventbridge-scheduler	2026-06-27T19:25:47Z	PASS	53	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
@@ -209,3 +208,4 @@ lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch swit
 loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard error-path + replace recreate, destroy clean 0 orphans
 loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
 synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
+eventbridge-pipes	2026-07-02T12:49:57Z	PASS	114	verify.sh	new UPDATE phase (issue 960): BatchSize in-place, no spurious replacement
