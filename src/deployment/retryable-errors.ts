@@ -108,6 +108,22 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // (Lambda + Alias + CodeDeploy canary); pinned by
   // tests/integration/codedeploy-lambda-deployment-group.
   'permissions required to assume the role',
+  // Step Functions CreateStateMachine / UpdateStateMachine validates that the
+  // states.amazonaws.com service principal can assume the same-stack IAM role
+  // at create time. cdkd's fast SDK path issues the create only ~1s after the
+  // role's CREATE, before IAM finishes propagating the trust policy to Step
+  // Functions' assume layer, so AWS rejects it with "Neither the global
+  // service principal states.amazonaws.com, nor the regional one is
+  // authorized to assume the provided role." None of the existing patterns
+  // match this phrasing ('not authorized to perform' is a different sentence;
+  // 'is unable to assume provided role' is Glue's wording). Anchored on the
+  // SFN-specific "authorized to assume the provided role" tail so a genuine,
+  // permanent trust-policy misconfiguration only burns the bounded retries
+  // before surfacing. CloudFormation tolerates this via deployment latency;
+  // cdkd retries. Surfaced by a bug-hunt sweep deploying a canonical Express
+  // state machine with LoggingConfiguration (StateMachine + fresh Role +
+  // DefaultPolicy); pinned by tests/integration/stepfunctions-logging.
+  'authorized to assume the provided role',
   // S3 bucket creation/deletion still in progress
   'conflicting conditional operation',
   // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate

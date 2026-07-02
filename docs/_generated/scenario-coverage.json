@@ -1456,6 +1456,13 @@
       "scenarios": []
     },
     {
+      "name": "stepfunctions-logging",
+      "annotated": true,
+      "scenarios": [
+        "iam-policy-propagation-retry"
+      ]
+    },
+    {
       "name": "stepfunctions-s3-definition",
       "annotated": false,
       "scenarios": []
@@ -1736,7 +1743,8 @@
       "fixtures": [
         "lambda",
         "microservices",
-        "propagation-races-2"
+        "propagation-races-2",
+        "stepfunctions-logging"
       ]
     },
     {

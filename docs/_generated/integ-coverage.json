@@ -3358,6 +3358,7 @@
         "monitoring",
         "remove-protection",
         "scheduled-task",
+        "stepfunctions-logging",
         "tags-propagation"
       ],
       "signals": {
@@ -3392,6 +3393,9 @@
           "literal"
         ],
         "scheduled-task": [
+          "l2"
+        ],
+        "stepfunctions-logging": [
           "l2"
         ],
         "tags-propagation": [
@@ -4384,6 +4388,7 @@
         "iam-propagation-stress",
         "replacement-immutable-name",
         "stepfunctions",
+        "stepfunctions-logging",
         "stepfunctions-s3-definition"
       ],
       "signals": {
@@ -4395,6 +4400,9 @@
           "literal"
         ],
         "stepfunctions": [
+          "l2"
+        ],
+        "stepfunctions-logging": [
           "l2"
         ],
         "stepfunctions-s3-definition": [
