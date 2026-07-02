@@ -2580,6 +2580,7 @@
         "sdk-ccapi-crossref",
         "serverless-api",
         "stepfunctions-s3-definition",
+        "synthetics-canary",
         "tags-propagation",
         "throttle-wide-dag",
         "update-replace",
@@ -2723,6 +2724,9 @@
           "l2"
         ],
         "stepfunctions-s3-definition": [
+          "l2"
+        ],
+        "synthetics-canary": [
           "l2"
         ],
         "tags-propagation": [
@@ -3558,6 +3562,7 @@
         "s3-object-lock",
         "s3-replication-and-filter",
         "state-destroy",
+        "synthetics-canary",
         "tags-propagation",
         "update-policy-mutations",
         "update-replace"
@@ -3685,6 +3690,9 @@
           "literal"
         ],
         "state-destroy": [
+          "l2"
+        ],
+        "synthetics-canary": [
           "l2"
         ],
         "tags-propagation": [

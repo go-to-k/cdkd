@@ -1461,6 +1461,11 @@
       "scenarios": []
     },
     {
+      "name": "synthetics-canary",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "tags-propagation",
       "annotated": true,
       "scenarios": [
@@ -2130,6 +2135,7 @@
     "sns-event-source",
     "sns-subscription-filter",
     "sqs-esm-max-concurrency",
-    "stepfunctions-s3-definition"
+    "stepfunctions-s3-definition",
+    "synthetics-canary"
   ]
 }
