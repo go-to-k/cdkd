@@ -90,6 +90,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         'Tags',
         'TracingEnabled',
         'Variables',
+        'MethodSettings',
       ]),
     ],
     [
@@ -1071,6 +1072,38 @@ export class ApiGatewayProvider implements ResourceProvider {
         })
       );
 
+      // MethodSettings (issue #966): CreateStage does not accept method
+      // settings — they are applied via UpdateStage patch operations
+      // (`/{method_setting_key}/throttling/rateLimit` etc.), so a stage
+      // declaring them needs one post-create UpdateStage call.
+      const methodSettings = properties['MethodSettings'] as CfnStageMethodSetting[] | undefined;
+      const methodSettingsOps = buildMethodSettingsPatchOps(undefined, methodSettings);
+      if (methodSettingsOps.length > 0) {
+        try {
+          await this.apiGatewayClient.send(
+            new UpdateStageCommand({
+              restApiId,
+              stageName,
+              patchOperations: methodSettingsOps,
+            })
+          );
+        } catch (patchError) {
+          // The stage was already created but no state record will be
+          // written — without cleanup the corpse holds the stage name and
+          // every retry dies with ConflictException (same class as the
+          // Cloud Control create-remnant fix, PR #957). Best-effort delete,
+          // then rethrow the original failure.
+          try {
+            await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
+          } catch (cleanupError) {
+            this.logger.warn(
+              `Failed to clean up stage ${stageName} after a MethodSettings patch failure: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+            );
+          }
+          throw patchError;
+        }
+      }
+
       this.logger.debug(`Successfully created API Gateway Stage ${logicalId}: ${stageName}`);
 
       return {
@@ -1166,6 +1199,17 @@ export class ApiGatewayProvider implements ResourceProvider {
         patchOperations.push({ op: 'remove', path: `/variables/${key}` });
       }
     }
+
+    // MethodSettings (issue #966) — per-method-path overrides
+    // (throttling / metrics / logging / caching) ride the same UpdateStage
+    // call as field-level replace/remove ops; a whole entry dropped from the
+    // template removes every override for that method path.
+    patchOperations.push(
+      ...buildMethodSettingsPatchOps(
+        previousProperties['MethodSettings'] as CfnStageMethodSetting[] | undefined,
+        properties['MethodSettings'] as CfnStageMethodSetting[] | undefined
+      )
+    );
 
     try {
       if (patchOperations.length > 0) {
@@ -1968,6 +2012,36 @@ export class ApiGatewayProvider implements ResourceProvider {
       // so a stage that never set these does not surface phantom drift).
       if (resp.tracingEnabled !== undefined) result['TracingEnabled'] = resp.tracingEnabled;
       if (resp.variables !== undefined) result['Variables'] = resp.variables;
+      // MethodSettings (issue #966): rebuild the CFn list shape from the
+      // get-stage `methodSettings` map, iterating the STATE's entries so the
+      // list order matches the baseline (the drift comparator walks arrays
+      // positionally) and emitting only the fields the state entry declares
+      // (get-stage returns every setting with its default filled in, which
+      // would otherwise surface phantom drift on undeclared fields).
+      // NOTE this deliberately does NOT require `resp.methodSettings` to be
+      // present: when every override was removed out-of-band, the entries
+      // still emit (with the declared fields absent) so the drift surfaces
+      // instead of the key silently dropping out of the comparison.
+      const stateMethodSettings = properties?.['MethodSettings'] as
+        | CfnStageMethodSetting[]
+        | undefined;
+      if (stateMethodSettings && stateMethodSettings.length > 0) {
+        result['MethodSettings'] = stateMethodSettings.map((stateEntry) => {
+          const awsEntry = (resp.methodSettings ?? {})[methodSettingKey(stateEntry)] as
+            | Record<string, unknown>
+            | undefined;
+          const entry: Record<string, unknown> = {};
+          if (stateEntry.ResourcePath !== undefined)
+            entry['ResourcePath'] = stateEntry.ResourcePath;
+          if (stateEntry.HttpMethod !== undefined) entry['HttpMethod'] = stateEntry.HttpMethod;
+          for (const { cfnKey, responseKey } of METHOD_SETTING_PATCH_FIELDS) {
+            if (stateEntry[cfnKey] !== undefined && awsEntry?.[responseKey] !== undefined) {
+              entry[cfnKey] = awsEntry[responseKey];
+            }
+          }
+          return entry;
+        });
+      }
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -2057,6 +2131,150 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
     return null;
   }
+}
+
+/**
+ * CFn `AWS::ApiGateway::Stage.MethodSetting` entry (template shape). Per the
+ * CFn docs, `ResourcePath` is ALREADY `~1`-escaped in the template (`/` in a
+ * real path segment is encoded as `~1`, e.g. `/~1pets`; `/*` is the
+ * all-resources wildcard CDK's `deployOptions` emits), so building the
+ * UpdateStage patch path only needs the leading slash stripped.
+ */
+interface CfnStageMethodSetting {
+  ResourcePath?: string;
+  HttpMethod?: string;
+  ThrottlingRateLimit?: number;
+  ThrottlingBurstLimit?: number;
+  MetricsEnabled?: boolean;
+  LoggingLevel?: string;
+  DataTraceEnabled?: boolean;
+  CachingEnabled?: boolean;
+  CacheTtlInSeconds?: number;
+  CacheDataEncrypted?: boolean;
+  RequireAuthorizationForCacheControl?: boolean;
+  UnauthorizedCacheControlHeaderStrategy?: string;
+}
+
+/**
+ * CFn MethodSetting field → UpdateStage patch-path suffix under
+ * `/{method_setting_key}/`. The get-stage response field for each is the
+ * camelCase of the CFn name (used by the drift readback).
+ */
+const METHOD_SETTING_PATCH_FIELDS: ReadonlyArray<{
+  cfnKey: keyof CfnStageMethodSetting & string;
+  patchSuffix: string;
+  responseKey: string;
+}> = [
+  {
+    cfnKey: 'ThrottlingRateLimit',
+    patchSuffix: 'throttling/rateLimit',
+    responseKey: 'throttlingRateLimit',
+  },
+  {
+    cfnKey: 'ThrottlingBurstLimit',
+    patchSuffix: 'throttling/burstLimit',
+    responseKey: 'throttlingBurstLimit',
+  },
+  { cfnKey: 'MetricsEnabled', patchSuffix: 'metrics/enabled', responseKey: 'metricsEnabled' },
+  { cfnKey: 'LoggingLevel', patchSuffix: 'logging/loglevel', responseKey: 'loggingLevel' },
+  { cfnKey: 'DataTraceEnabled', patchSuffix: 'logging/dataTrace', responseKey: 'dataTraceEnabled' },
+  { cfnKey: 'CachingEnabled', patchSuffix: 'caching/enabled', responseKey: 'cachingEnabled' },
+  {
+    cfnKey: 'CacheTtlInSeconds',
+    patchSuffix: 'caching/ttlInSeconds',
+    responseKey: 'cacheTtlInSeconds',
+  },
+  {
+    cfnKey: 'CacheDataEncrypted',
+    patchSuffix: 'caching/dataEncrypted',
+    responseKey: 'cacheDataEncrypted',
+  },
+  {
+    cfnKey: 'RequireAuthorizationForCacheControl',
+    patchSuffix: 'caching/requireAuthorizationForCacheControl',
+    responseKey: 'requireAuthorizationForCacheControl',
+  },
+  {
+    cfnKey: 'UnauthorizedCacheControlHeaderStrategy',
+    patchSuffix: 'caching/unauthorizedCacheControlHeaderStrategy',
+    responseKey: 'unauthorizedCacheControlHeaderStrategy',
+  },
+];
+
+/**
+ * The `{method_setting_key}` API Gateway keys a stage's method settings by:
+ * `{resource_path}/{http_method}` with the resource path's leading slash
+ * stripped — CDK's stage-level `deployOptions` (`ResourcePath: '/*',
+ * HttpMethod: '*'`) keys as the star-slash-star wildcard (the get-stage
+ * `methodSettings` map key and the UpdateStage patch-path segment are the
+ * same string).
+ */
+function methodSettingKey(setting: CfnStageMethodSetting): string {
+  const resourcePath = setting.ResourcePath ?? '/*';
+  const httpMethod = setting.HttpMethod ?? '*';
+  // The ROOT resource path is the bare `/` (CFn's documented root shape) and
+  // API Gateway keys it as `~1` — `~1/GET` in the get-stage map and in the
+  // UpdateStage patch path (verified live 2026-07-03). Bare leading-slash
+  // stripping would produce the malformed `//GET` patch path.
+  const escaped = resourcePath === '/' ? '~1' : resourcePath.replace(/^\//, '');
+  return `${escaped}/${httpMethod}`;
+}
+
+/**
+ * Build the UpdateStage patch operations that take a stage's method settings
+ * from `previous` to `next` (both in the CFn `MethodSettings` list shape):
+ *   - an entry present only in `next`: `replace` each specified field
+ *     (`replace` both adds and changes a method-setting override)
+ *   - an entry present in both with NO fields dropped: `replace` only the
+ *     changed fields
+ *   - an entry present in both with a field DROPPED: `remove /{key}` then
+ *     `replace` every remaining specified field — API Gateway REJECTS a
+ *     field-level `remove` (`remove <key>/throttling/rateLimit` fails with
+ *     "Cannot remove method setting ... because there is no method setting
+ *     for this method"), while whole-key remove followed by field replaces
+ *     in the SAME UpdateStage call applies sequentially (both verified live
+ *     2026-07-03), so the dropped field reverts to its default (CFn
+ *     absent-field semantics)
+ *   - an entry present only in `previous`: `remove /{key}` — drops every
+ *     override for that method path at once (CFn absent-entry semantics)
+ * Values are rendered as strings (the UpdateStage wire format).
+ */
+function buildMethodSettingsPatchOps(
+  previous: CfnStageMethodSetting[] | undefined,
+  next: CfnStageMethodSetting[] | undefined
+): Array<{ op: 'replace' | 'remove'; path: string; value?: string }> {
+  const ops: Array<{ op: 'replace' | 'remove'; path: string; value?: string }> = [];
+  const prevByKey = new Map((previous ?? []).map((s) => [methodSettingKey(s), s]));
+  const nextByKey = new Map((next ?? []).map((s) => [methodSettingKey(s), s]));
+
+  for (const key of prevByKey.keys()) {
+    if (!nextByKey.has(key)) {
+      ops.push({ op: 'remove', path: `/${key}` });
+    }
+  }
+
+  for (const [key, setting] of nextByKey) {
+    const prevSetting = prevByKey.get(key);
+    const fieldDropped =
+      prevSetting !== undefined &&
+      METHOD_SETTING_PATCH_FIELDS.some(
+        ({ cfnKey }) => prevSetting[cfnKey] !== undefined && setting[cfnKey] === undefined
+      );
+    if (fieldDropped) {
+      // Reset-and-rebuild: clear the whole key, then re-apply every field the
+      // new entry still specifies (see the JSDoc — leaf removes are rejected).
+      ops.push({ op: 'remove', path: `/${key}` });
+    }
+    for (const { cfnKey, patchSuffix } of METHOD_SETTING_PATCH_FIELDS) {
+      const nextValue = setting[cfnKey];
+      const prevValue = fieldDropped ? undefined : prevSetting?.[cfnKey];
+      if (nextValue !== undefined && String(nextValue) !== String(prevValue ?? '')) {
+        ops.push({ op: 'replace', path: `/${key}/${patchSuffix}`, value: String(nextValue) });
+      }
+    }
+  }
+
+  return ops;
 }
 
 /**

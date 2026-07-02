@@ -2,9 +2,12 @@
 # verify.sh — CC-routed ApiGateway Stage compound-id Ref regression test
 # (issue #963).
 #
-# The Stage carries MethodSettings (deployOptions.throttling*), which the SDK
-# provider does not wire, so the #614 routing provisions the Stage via Cloud
-# Control and cdkd stores the compound `<restApiId>|<stageName>` physical id.
+# The Stage carries AccessLogSetting (deployOptions.accessLogDestination),
+# which the SDK provider does not wire, so the #614 routing provisions the
+# Stage via Cloud Control and cdkd stores the compound
+# `<restApiId>|<stageName>` physical id. (The original #963 trigger was
+# MethodSettings; issue #966 wired that into the SDK provider, so the fixture
+# switched triggers to keep the CC route.)
 # Pre-fix, `Ref` on the Stage leaked that compound id into the CDK-generated
 # Lambda Permission SourceArn and the deployed API returned 500 on every
 # request. This test asserts:
@@ -113,7 +116,7 @@ STAGE_PHYSICAL_ID=$(echo "${STAGE_ROW}" | jq -r '.physicalId')
 if [ "${STAGE_PROVISIONED_BY}" != "cc-api" ]; then
   echo "FAIL: Stage provisionedBy is '${STAGE_PROVISIONED_BY}', expected 'cc-api'." >&2
   echo "      The fixture no longer exercises the #963 CC-routed-Stage path" >&2
-  echo "      (did the SDK provider gain MethodSettings support? — then swap" >&2
+  echo "      (did the SDK provider gain AccessLogSetting support? — then swap" >&2
   echo "      in another unwired Stage property to keep the CC route)." >&2
   exit 1
 fi
@@ -167,7 +170,7 @@ if [ "${THROTTLE_RATE}" != "100.0" ] && [ "${THROTTLE_RATE}" != "100" ]; then
   echo "FAIL: stage throttlingRateLimit is '${THROTTLE_RATE}', expected 100" >&2
   exit 1
 fi
-echo "    OK: Stage MethodSettings throttling reached AWS"
+echo "    OK: Stage MethodSettings throttling reached AWS (via the CC route)"
 
 OLD_DEPLOYMENT_IDS=$(aws apigateway get-deployments --rest-api-id "${API_ID}" \
   --region "${REGION}" --query 'items[].id' --output text)

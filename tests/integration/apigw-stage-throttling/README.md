@@ -1,10 +1,12 @@
 # apigw-stage-throttling
 
 Regression integ for issue #963: a REST API whose Stage carries
-`MethodSettings` (synthesized by CDK's `deployOptions.throttlingRateLimit` /
-`throttlingBurstLimit` — also `metricsEnabled` / `loggingLevel` /
-`dataTraceEnabled`) routes the Stage through Cloud Control (#614 silent-drop
-routing), which stores the compound `<restApiId>|<stageName>` physical id.
+a property the SDK provider does not wire routes the Stage through Cloud
+Control (#614 silent-drop routing), which stores the compound
+`<restApiId>|<stageName>` physical id. The trigger is `AccessLogSetting`
+(via `deployOptions.accessLogDestination`); the original #963 trigger was
+`MethodSettings`, which issue #966 wired into the SDK provider, so the
+fixture switched triggers to keep the CC route.
 
 Pre-fix, `Ref` on the Stage resolved to that compound id, poisoning the
 CDK-generated Lambda Permission `SourceArn`
@@ -17,7 +19,7 @@ reported success.
 
 1. The Stage really took the CC route (`provisionedBy == cc-api`, compound
    physical id) — guards the fixture against silently losing the #963 path if
-   the SDK provider later gains `MethodSettings` support.
+   the SDK provider later gains `AccessLogSetting` support.
 2. The Lambda resource policy `SourceArn` carries the bare stage name (no
    compound id) — the direct `Ref`-resolution assertion.
 3. `GET /hello` returns the Lambda body — the functional check a green deploy

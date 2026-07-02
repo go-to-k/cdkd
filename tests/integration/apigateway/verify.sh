@@ -123,6 +123,24 @@ if [ "${FEATURE_FLAG}" != "enabled" ]; then
 fi
 echo "    OK: Stage variables {appVersion, featureFlag} reached AWS (Variables backfill CLOSED)"
 
+# --- Assertion 2b: MethodSettings applied via the SDK path (issue #966) ---
+# `deployOptions.throttling*` synthesizes a Stage MethodSettings wildcard
+# entry. The SDK provider must (a) apply it via the post-create UpdateStage
+# patch AND (b) keep the Stage on the SDK path (pre-#966 the property
+# CC-routed the whole Stage via the #614 silent-drop routing).
+THROTTLE_RATE=$(echo "${STAGE}" | jq -r '.methodSettings."*/*".throttlingRateLimit // empty')
+if [ "${THROTTLE_RATE}" != "100" ] && [ "${THROTTLE_RATE}" != "100.0" ]; then
+  echo "FAIL: Stage methodSettings */* throttlingRateLimit is '${THROTTLE_RATE}', expected 100" >&2
+  echo "      raw stage: ${STAGE}" >&2
+  exit 1
+fi
+STAGE_PROVISIONED_BY=$(echo "${STATE}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGateway::Stage") | .value.provisionedBy // "sdk"')
+if [ "${STAGE_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: Stage provisionedBy is '${STAGE_PROVISIONED_BY}', expected 'sdk' — MethodSettings should no longer CC-route the Stage (issue #966)" >&2
+  exit 1
+fi
+echo "    OK: Stage MethodSettings throttling reached AWS via the SDK path (issue #966 CLOSED)"
+
 # --- Assertion 3: Authorizer AuthType reached AWS (#609 backfill) -----
 AUTHORIZERS=$(aws apigateway get-authorizers --rest-api-id "${API_ID}" --region "${REGION}")
 AUTHORIZER_AUTH_TYPE=$(echo "${AUTHORIZERS}" | jq -r '.items[] | select(.name == "cdkd-request-authorizer") | .authType // empty')

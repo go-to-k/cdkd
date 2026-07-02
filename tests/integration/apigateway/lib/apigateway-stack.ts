@@ -95,8 +95,16 @@ exports.handler = async (event) => {
       // CDK L2 surface for the auto-created `prod` Stage; `tracingEnabled` +
       // `variables` synthesize as `TracingEnabled` / `Variables` on the
       // AWS::ApiGateway::Stage resource and ride on CreateStage / UpdateStage.
+      // `throttlingRateLimit` / `throttlingBurstLimit` synthesize as the
+      // Stage's `MethodSettings` wildcard entry (issue #966): the SDK
+      // provider applies them via a post-create UpdateStage patch, so the
+      // Stage stays on the SDK fast path instead of CC-routing (#963's
+      // trigger). verify.sh asserts the throttling reached AWS AND that the
+      // Stage was NOT CC-routed.
       deployOptions: {
         tracingEnabled: true,
+        throttlingRateLimit: 100,
+        throttlingBurstLimit: 50,
         variables: {
           appVersion: '1.0.0',
           featureFlag: 'enabled',
