@@ -60,7 +60,9 @@ describe('LogsLogGroupProvider LogGroupClass update guard', () => {
         'ClassLg',
         PHYSICAL_ID,
         RESOURCE_TYPE,
-        { LogGroupClass: 'INFREQUENT_ACCESS', RetentionInDays: 1 },
+        // RetentionInDays ALSO changes so a guard misplaced after the
+        // retention branch would provably send PutRetentionPolicy first.
+        { LogGroupClass: 'INFREQUENT_ACCESS', RetentionInDays: 7 },
         { LogGroupClass: 'STANDARD', RetentionInDays: 1 }
       )
     ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
@@ -96,7 +98,19 @@ describe('LogsLogGroupProvider LogGroupClass update guard', () => {
     expect(retention).toBeDefined();
   });
 
-  it('carries the actionable --replace suggestion in the message', async () => {
+  it('throws on a change to the DELIVERY class too', async () => {
+    await expect(
+      provider.update(
+        'ClassLg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupClass: 'DELIVERY' },
+        { LogGroupClass: 'STANDARD' }
+      )
+    ).rejects.toThrow(ResourceUpdateNotSupportedError);
+  });
+
+  it('carries the actionable --replace suggestion in the message (bare flag without retention)', async () => {
     const err = await provider
       .update(
         'ClassLg',
@@ -107,6 +121,20 @@ describe('LogsLogGroupProvider LogGroupClass update guard', () => {
       )
       .catch((e: Error) => e);
     expect((err as Error).message).toMatch(/--replace/);
+    expect((err as Error).message).not.toMatch(/--force-stateful-recreation/);
     expect((err as Error).message).toMatch(/'STANDARD' -> 'INFREQUENT_ACCESS'/);
+  });
+
+  it('names --force-stateful-recreation when the log group retains data (stateful guard)', async () => {
+    const err = await provider
+      .update(
+        'ClassLg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupClass: 'INFREQUENT_ACCESS', RetentionInDays: 7 },
+        { LogGroupClass: 'STANDARD', RetentionInDays: 7 }
+      )
+      .catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/--replace --force-stateful-recreation/);
   });
 });

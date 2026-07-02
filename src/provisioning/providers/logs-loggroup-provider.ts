@@ -273,10 +273,16 @@ export class LogsLogGroupProvider implements ResourceProvider {
     const prevClass = normalizeClass(previousProperties['LogGroupClass']);
     const nextClass = normalizeClass(properties['LogGroupClass']);
     if (prevClass !== nextClass) {
+      // A retention-carrying log group is in the stateful-recreate guard set,
+      // so a bare --replace would be stopped a second time by
+      // STATEFUL_REPLACE_BLOCKED — name the full flag set upfront.
+      const replaceFlags = properties['RetentionInDays']
+        ? '--replace --force-stateful-recreation'
+        : '--replace';
       throw new ResourceUpdateNotSupportedError(
         'AWS::Logs::LogGroup',
         logicalId,
-        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. Re-deploy with --replace to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change`
+        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change`
       );
     }
 
