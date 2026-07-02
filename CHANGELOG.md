@@ -1,3 +1,10 @@
+## [0.230.30](https://github.com/go-to-k/cdkd/compare/v0.230.29...v0.230.30) (2026-07-02)
+
+
+### Bug Fixes
+
+* **provisioning:** add AWS::Scheduler::Schedule SDK provider so custom-group schedules are manageable ([#964](https://github.com/go-to-k/cdkd/issues/964)) ([8f6b6ef](https://github.com/go-to-k/cdkd/commit/8f6b6ef49c0aaa55ac3953758354bf147ca7ef48))
+
 ## [0.230.29](https://github.com/go-to-k/cdkd/compare/v0.230.28...v0.230.29) (2026-07-02)
 
 
