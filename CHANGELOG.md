@@ -1,3 +1,10 @@
+## [0.230.26](https://github.com/go-to-k/cdkd/compare/v0.230.25...v0.230.26) (2026-07-02)
+
+
+### Bug Fixes
+
+* **provisioning:** reject LogGroupClass change with an actionable error (was silently dropped) ([#954](https://github.com/go-to-k/cdkd/issues/954)) ([d3ad617](https://github.com/go-to-k/cdkd/commit/d3ad6175afa92793a5adc49b6b6f96388cf37885))
+
 ## [0.230.25](https://github.com/go-to-k/cdkd/compare/v0.230.24...v0.230.25) (2026-07-02)
 
 
