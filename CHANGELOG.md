@@ -1,3 +1,10 @@
+## [0.230.25](https://github.com/go-to-k/cdkd/compare/v0.230.24...v0.230.25) (2026-07-02)
+
+
+### Bug Fixes
+
+* **provisioning:** apply Lambda architecture switch on update (was silently dropped) ([#952](https://github.com/go-to-k/cdkd/issues/952)) ([6d30d5b](https://github.com/go-to-k/cdkd/commit/6d30d5b5aa09c9ae99a7d3339abd8674016c5089))
+
 ## [0.230.24](https://github.com/go-to-k/cdkd/compare/v0.230.23...v0.230.24) (2026-07-02)
 
 
