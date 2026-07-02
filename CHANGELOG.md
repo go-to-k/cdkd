@@ -1,3 +1,10 @@
+## [0.230.22](https://github.com/go-to-k/cdkd/compare/v0.230.21...v0.230.22) (2026-07-02)
+
+
+### Bug Fixes
+
+* **provisioning:** address custom-bus EventBridge rules in delete/getAttribute ([#956](https://github.com/go-to-k/cdkd/issues/956)) ([21ec870](https://github.com/go-to-k/cdkd/commit/21ec870e1ead058352259e75a96df0eb76180073))
+
 ## [0.230.21](https://github.com/go-to-k/cdkd/compare/v0.230.20...v0.230.21) (2026-07-02)
 
 
