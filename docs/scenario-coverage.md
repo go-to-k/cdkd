@@ -175,3 +175,4 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`sns-subscription-filter`](../tests/integration/sns-subscription-filter/)
 - [`sqs-esm-max-concurrency`](../tests/integration/sqs-esm-max-concurrency/)
 - [`stepfunctions-s3-definition`](../tests/integration/stepfunctions-s3-definition/)
+- [`synthetics-canary`](../tests/integration/synthetics-canary/)

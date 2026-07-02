@@ -106,6 +106,37 @@ function stripNullValues(obj: unknown): unknown {
   return obj;
 }
 
+/**
+ * Thrown when a Cloud Control operation's async progress event reports
+ * FAILED. Carries the handler-reported `ErrorCode` and the operation kind so
+ * the CREATE path can distinguish "our CreateResource materialized a resource
+ * and then failed stabilization" (the remnant must be deleted or every outer
+ * retry collides with AlreadyExists — surfaced by AWS::Synthetics::Canary,
+ * whose create materializes the canary before the IAM-propagation race lands
+ * it in ERROR state) from "the resource already existed before this create"
+ * (`ErrorCode: AlreadyExists` — deleting by that identifier would destroy a
+ * pre-existing user resource, so it is never cleaned up).
+ */
+export class CloudControlOperationFailedError extends ProvisioningError {
+  public readonly ccErrorCode: string | undefined;
+  public readonly ccOperation: string;
+
+  constructor(
+    message: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined,
+    ccErrorCode: string | undefined,
+    ccOperation: string
+  ) {
+    super(message, resourceType, logicalId, physicalId);
+    this.ccErrorCode = ccErrorCode;
+    this.ccOperation = ccOperation;
+    this.name = 'CloudControlOperationFailedError';
+    Object.setPrototypeOf(this, CloudControlOperationFailedError.prototype);
+  }
+}
+
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
@@ -193,7 +224,63 @@ export class CloudControlProvider implements ResourceProvider {
 
       return result;
     } catch (error) {
+      await this.cleanupFailedCreateRemnant(error, resourceType, logicalId);
       this.handleError(error, 'CREATE', resourceType, logicalId);
+    }
+  }
+
+  /**
+   * Best-effort deletion of the physical resource a FAILED async CREATE left
+   * behind.
+   *
+   * Some Cloud Control create handlers materialize the resource first and
+   * stabilize it afterwards (e.g. `AWS::Synthetics::Canary` creates the canary
+   * entity, then builds its backing Lambda). When stabilization fails — most
+   * commonly the just-created-IAM-role propagation race cdkd's fast path is
+   * prone to — the FAILED progress event carries the materialized resource's
+   * `Identifier`, but the half-created remnant keeps occupying the name. The
+   * deploy engine's outer `withRetry` then re-invokes `create()` (the
+   * stabilization message matches the transient-error patterns) and every
+   * retry fails with `AlreadyExists` instead of recovering, and the remnant is
+   * ALSO invisible to rollback (the create never returned, so it is not in
+   * state) — an orphan CloudFormation would have deleted on rollback.
+   *
+   * Deleting the remnant here restores both behaviors: the next retry starts
+   * with a free name (and succeeds once AWS stabilizes), and a final failure
+   * leaves nothing behind.
+   *
+   * Safety: never fires when the handler reported `ErrorCode: AlreadyExists`
+   * — there the identifier names a resource that pre-dates this create (our
+   * CreateCanary repro's SECOND attempt reported exactly that shape), and
+   * deleting it would destroy a user's pre-existing resource. Handlers may
+   * also stuff a speculative identifier into a FAILED event without having
+   * materialized anything (observed on `AWS::CodeDeploy::DeploymentGroup`);
+   * the delete then no-ops via the NotFound-idempotent path. Cleanup failures
+   * are warned, not thrown — the original create error must surface.
+   */
+  private async cleanupFailedCreateRemnant(
+    error: unknown,
+    resourceType: string,
+    logicalId: string
+  ): Promise<void> {
+    if (!(error instanceof CloudControlOperationFailedError)) return;
+    if (error.ccOperation !== 'CREATE' || !error.physicalId) return;
+    if (error.ccErrorCode === 'AlreadyExists') return;
+
+    this.logger.debug(
+      `CREATE of ${logicalId} failed after materializing ${error.physicalId}; deleting the remnant so a retry can re-create it`
+    );
+    try {
+      // Reuse the provider's own delete: it polls the async operation to
+      // completion and already treats NotFound as idempotent success.
+      await this.delete(logicalId, error.physicalId, resourceType);
+      this.logger.debug(`Removed failed-create remnant ${error.physicalId} for ${logicalId}`);
+    } catch (cleanupError) {
+      const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      this.logger.warn(
+        `Failed to delete the remnant ${error.physicalId} left by the failed CREATE of ${logicalId}: ${message} — ` +
+          `a retry may fail with AlreadyExists until it is removed manually`
+      );
     }
   }
 
@@ -525,11 +612,13 @@ export class CloudControlProvider implements ResourceProvider {
           return progressEvent;
 
         case 'FAILED':
-          throw new ProvisioningError(
+          throw new CloudControlOperationFailedError(
             `${operation} failed for ${logicalId}: ${progressEvent.StatusMessage || 'Unknown error'}`,
             progressEvent.TypeName || 'Unknown',
             logicalId,
-            progressEvent.Identifier
+            progressEvent.Identifier,
+            progressEvent.ErrorCode,
+            operation
           );
 
         case 'CANCEL_COMPLETE':
