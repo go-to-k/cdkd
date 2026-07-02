@@ -41,7 +41,7 @@ cleanup() {
   # deleting the state file after a failed destroy would strand live AWS
   # resources with no state pointer left to destroy them from.
   local destroy_rc=1
-  if [ -x "${LOCAL_DIST}" ]; then
+  if [ -n "${STATE_BUCKET:-}" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --yes \
       --state-bucket "${STATE_BUCKET}" \
@@ -54,9 +54,12 @@ cleanup() {
   fi
   # A live invoke in Phase 1/2 creates the function's log group, which
   # survives destroy — sweep it so the run leaves zero orphans.
-  if [ -n "${FN:-}" ]; then
-    aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${REGION}" >/dev/null 2>&1 || true
-  fi
+  # Prefix sweep so a pre-run orphan from an interrupted prior run (FN
+  # unknown) is caught too, not just this run's exact function.
+  for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STACK}" \
+      --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+    aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   set -eu
 }
 
@@ -93,7 +96,10 @@ fn_arch() {
 invoke_arch() {
   local out
   out="$(mktemp)"
-  aws lambda invoke --function-name "$1" --region "${REGION}" "${out}" >/dev/null
+  if ! aws lambda invoke --function-name "$1" --region "${REGION}" "${out}" >/dev/null; then
+    rm -f "${out}"
+    return 1
+  fi
   # Handler returns process.arch as a JSON string, e.g. "x64" / "arm64".
   tr -d '"' < "${out}"
   rm -f "${out}"

@@ -484,9 +484,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // new Architectures.
       const newCode = properties['Code'] as Record<string, unknown> | undefined;
       const oldCode = previousProperties['Code'] as Record<string, unknown> | undefined;
+      // Normalize BOTH comparison sides: an absent property means the Lambda
+      // default (['x86_64']), so an explicit-x86_64 <-> absent template edit
+      // is NOT a real change and must not fire a needless code redeploy.
+      const normalizeArchitectures = (v: unknown): Architecture[] =>
+        Array.isArray(v) && v.length > 0 ? (v as Architecture[]) : (['x86_64'] as Architecture[]);
       const architecturesChanged =
-        JSON.stringify(properties['Architectures']) !==
-        JSON.stringify(previousProperties['Architectures']);
+        JSON.stringify(normalizeArchitectures(properties['Architectures'])) !==
+        JSON.stringify(normalizeArchitectures(previousProperties['Architectures']));
 
       if (
         newCode &&
@@ -503,7 +508,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // A removed Architectures property reverts to the Lambda default
           // (x86_64) — matches CFn's absent-property default semantics.
           Architectures: architecturesChanged
-            ? ((properties['Architectures'] ?? ['x86_64']) as Architecture[])
+            ? normalizeArchitectures(properties['Architectures'])
             : undefined,
         };
 
