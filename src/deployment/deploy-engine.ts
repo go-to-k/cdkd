@@ -299,11 +299,22 @@ export interface DeployResult {
  * - DELETE → cannot rollback (log warning)
  */
 /**
- * Error thrown when deployment is interrupted by SIGINT
+ * Error thrown when the deployment is aborted mid-flight — by a user SIGINT
+ * (Ctrl+C) or because another resource's failure cancelled the remaining
+ * work. The two causes share one class (the engine's catch path treats them
+ * identically) but carry cause-accurate messages: pending siblings cancelled
+ * by a failure used to report "interrupted by user (Ctrl+C)" even though
+ * nobody pressed anything.
  */
+type InterruptCause = 'user' | 'sibling-failure';
+
 class InterruptedError extends Error {
-  constructor() {
-    super('Deployment interrupted by user (Ctrl+C)');
+  constructor(reason: InterruptCause = 'user') {
+    super(
+      reason === 'user'
+        ? 'Deployment interrupted by user (Ctrl+C)'
+        : 'Deployment aborted after another resource failed'
+    );
     this.name = 'InterruptedError';
   }
 }
@@ -382,6 +393,13 @@ export class DeployEngine {
   private logger = getLogger().child('DeployEngine');
   private resolver: IntrinsicFunctionResolver;
   private interrupted = false;
+  /**
+   * Why `interrupted` was set — first cause wins. `'user'` = SIGINT;
+   * `'sibling-failure'` = a resource failed and the remaining work is being
+   * cancelled. Drives the {@link InterruptedError} message so cancelled
+   * siblings don't misreport a Ctrl+C nobody pressed.
+   */
+  private interruptCause: InterruptCause | null = null;
 
   /**
    * In-flight `provider.readCurrentState` promises kicked off after a
@@ -821,6 +839,7 @@ export class DeployEngine {
 
     // Register SIGINT handler to save partial state on Ctrl+C
     this.interrupted = false;
+    this.interruptCause = null;
     const sigintHandler = () => {
       // Route the interrupt notice through the live renderer so it does not
       // collide with the in-flight task display.
@@ -830,6 +849,7 @@ export class DeployEngine {
         );
       });
       this.interrupted = true;
+      this.interruptCause ??= 'user';
     };
     process.on('SIGINT', sigintHandler);
 
@@ -1351,6 +1371,7 @@ export class DeployEngine {
                 // waitForDeployed) in sibling tasks abort promptly instead of blocking
                 // until their own polling timeouts fire.
                 this.interrupted = true;
+                this.interruptCause ??= 'sibling-failure';
                 throw provisionError;
               }
 
@@ -1388,7 +1409,7 @@ export class DeployEngine {
         // as fully successful — matches the prior level-loop's "loop exits, no
         // check" behaviour at the very end of execution.
         if (this.interrupted && this.hasPending(createUpdateExecutor)) {
-          throw new InterruptedError();
+          throw new InterruptedError(this.interruptCause ?? 'user');
         }
       }
 
@@ -1432,6 +1453,7 @@ export class DeployEngine {
                 );
               } catch (provisionError) {
                 this.interrupted = true;
+                this.interruptCause ??= 'sibling-failure';
                 throw provisionError;
               }
 
@@ -1452,7 +1474,7 @@ export class DeployEngine {
         }
 
         if (this.interrupted && this.hasPending(deleteExecutor)) {
-          throw new InterruptedError();
+          throw new InterruptedError(this.interruptCause ?? 'user');
         }
       }
     } catch (error) {
@@ -2974,7 +2996,7 @@ export class DeployEngine {
       ...(initialDelayMs !== undefined && { initialDelayMs }),
       logger: this.logger,
       isInterrupted: () => this.interrupted,
-      onInterrupted: () => new InterruptedError(),
+      onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
     });
   }
 

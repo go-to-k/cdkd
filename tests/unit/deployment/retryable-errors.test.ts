@@ -104,6 +104,16 @@ describe('isRetryableTransientError', () => {
         'Invalid request provided: CreateCapacityProvider error: Caught ServiceAccessDeniedException for ECSInfrastructureRole[arn:aws:iam::123456789012:role/RunnerStack-InfraRole] (Service: Ecs, Status Code: 400, Request ID: 00000000-0000-0000-0000-000000000000) (SDK Attempt Count: 1)',
         'ECS CapacityProvider infrastructure-role IAM propagation',
       ],
+      // CodeDeploy DeploymentGroup same-stack service-role IAM-propagation
+      // race: Cloud Control CreateResource issued before the just-created
+      // service role's trust policy propagates for CodeDeploy to assume.
+      // Exact wire message from a /hunt-bugs live deploy — note the word
+      // order ("the permissions required") differs from the existing
+      // 'does not have required permissions' pattern, which does NOT match.
+      [
+        'CREATE failed for DeploymentGroup6D277AF0: AWS CodeDeploy does not have the permissions required to assume the role arn:aws:iam::123456789012:role/MyStack-DeploymentGroupServiceRole. (Service: CodeDeploy, Status Code: 400, Request ID: 00000000-0000-0000-0000-000000000000) (SDK Attempt Count: 1)',
+        'CodeDeploy DeploymentGroup service-role IAM propagation',
+      ],
       // SNS TopicPolicy fresh-principal IAM-propagation race (#839):
       // SetTopicAttributes rejects a policy naming a just-created role as
       // Principal.AWS before IAM propagates it. Exact wire message wrapped in

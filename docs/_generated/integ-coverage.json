@@ -2915,6 +2915,7 @@
         "cc-api-fallback",
         "cc-api-fallback-transitions",
         "cloudfront-function-url",
+        "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
         "composite-stack",
         "custom-resource-getatt-data",
@@ -3014,6 +3015,9 @@
           "literal"
         ],
         "cloudfront-function-url": [
+          "l2"
+        ],
+        "codedeploy-lambda-deployment-group": [
           "l2"
         ],
         "cognito-lambda-triggers": [
@@ -4444,6 +4448,7 @@
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudWatch::CompositeAlarm",
+    "AWS::CodeDeploy::DeploymentGroup",
     "AWS::CodePipeline::Pipeline",
     "AWS::Cognito::IdentityPool",
     "AWS::Cognito::UserPoolClient",
