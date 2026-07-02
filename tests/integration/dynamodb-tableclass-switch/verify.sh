@@ -41,7 +41,7 @@ cleanup() {
   # deleting the state file after a failed destroy would strand live AWS
   # resources with no state pointer left to destroy them from.
   local destroy_rc=1
-  if [ -x "${LOCAL_DIST}" ]; then
+  if [ -n "${STATE_BUCKET:-}" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --yes \
       --state-bucket "${STATE_BUCKET}" \
