@@ -7,8 +7,8 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 // cdkd LogGroup KmsKeyId-update integ probe (issue #958 item 1).
 //
 // Phase 1 (base): log group with no KMS key; a customer-managed key exists in
-// the stack (with the logs-service key policy the CDK L2 wires) but is not
-// yet associated.
+// the stack (with the logs-service key-policy grant the fixture wires
+// manually — see below) but is not yet associated.
 // Phase 2 (CDKD_TEST_UPDATE=true): the log group associates the key.
 //
 // CFn applies a KmsKeyId change in place ("Update requires: No interruption")

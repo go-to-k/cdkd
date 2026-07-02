@@ -84,7 +84,7 @@ lg_kms() {
   # kmsKeyId is omitted when no key is associated — normalize to NONE.
   local kid
   kid="$(aws logs describe-log-groups --log-group-name-prefix "$1" --region "${REGION}" \
-    --query 'logGroups[0].kmsKeyId' --output text)"
+    --query "logGroups[?logGroupName=='$1'] | [0].kmsKeyId" --output text)"
   if [ "${kid}" = "None" ]; then
     echo "NONE"
   else
@@ -147,8 +147,17 @@ if [ "${FOUND}" != "0" ]; then
 fi
 echo "    log group deleted"
 
+# NotFoundException -> GONE; any OTHER failure (throttle, creds) must surface
+# as a hard failure rather than masquerading as a deleted key.
 KEY_STATE="$(aws kms describe-key --key-id "${KEY_ARN}" --region "${REGION}" \
-  --query 'KeyMetadata.KeyState' --output text 2>/dev/null || echo "GONE")"
+  --query 'KeyMetadata.KeyState' --output text 2>&1)" || {
+  if echo "${KEY_STATE}" | grep -q "NotFoundException"; then
+    KEY_STATE="GONE"
+  else
+    echo "FAIL: describe-key failed unexpectedly: ${KEY_STATE}" >&2
+    exit 1
+  fi
+}
 if [ "${KEY_STATE}" != "PendingDeletion" ] && [ "${KEY_STATE}" != "GONE" ]; then
   echo "FAIL: expected the KMS key to be PendingDeletion after destroy, got '${KEY_STATE}'" >&2
   exit 1

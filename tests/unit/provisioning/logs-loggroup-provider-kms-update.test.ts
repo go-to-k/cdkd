@@ -69,11 +69,30 @@ describe('LogsLogGroupProvider KmsKeyId update (silent-drop regression)', () => 
     expect(sent(DisassociateKmsKeyCommand)).toBeUndefined();
   });
 
-  it('re-associates when the key changes', async () => {
+  it('re-associates when the key changes (single Associate, no Disassociate window)', async () => {
     await provider.update('Lg', PHYSICAL_ID, RESOURCE_TYPE, { KmsKeyId: KEY_B }, { KmsKeyId: KEY_A });
 
     const cmd = sent(AssociateKmsKeyCommand);
-    expect(cmd.input.kmsKeyId).toBe(KEY_B);
+    expect(cmd).toBeDefined();
+    expect(cmd.input).toEqual({ logGroupName: PHYSICAL_ID, kmsKeyId: KEY_B });
+    // A change must be ONE AssociateKmsKey — a disassociate-then-associate
+    // sequence would open an unencrypted window CloudFormation doesn't have.
+    expect(sent(DisassociateKmsKeyCommand)).toBeUndefined();
+  });
+
+  it('fires AFTER the LogGroupClass guard (a doomed class change mutates nothing)', async () => {
+    await expect(
+      provider.update(
+        'Lg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupClass: 'INFREQUENT_ACCESS', KmsKeyId: KEY_A },
+        {}
+      )
+    ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+
+    expect(sent(AssociateKmsKeyCommand)).toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('disassociates when KmsKeyId is removed', async () => {
