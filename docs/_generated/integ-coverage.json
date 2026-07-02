@@ -121,10 +121,14 @@
     {
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
-        "apigateway"
+        "apigateway",
+        "apigw-stage-throttling"
       ],
       "signals": {
         "apigateway": [
+          "literal"
+        ],
+        "apigw-stage-throttling": [
           "literal"
         ]
       }
@@ -152,13 +156,17 @@
       "resourceType": "AWS::ApiGateway::Deployment",
       "integs": [
         "api-cognito",
-        "apigateway"
+        "apigateway",
+        "apigw-stage-throttling"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-stage-throttling": [
           "literal"
         ]
       }
@@ -167,13 +175,17 @@
       "resourceType": "AWS::ApiGateway::Method",
       "integs": [
         "api-cognito",
-        "apigateway"
+        "apigateway",
+        "apigw-stage-throttling"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-stage-throttling": [
           "literal"
         ]
       }
@@ -182,13 +194,17 @@
       "resourceType": "AWS::ApiGateway::Resource",
       "integs": [
         "api-cognito",
-        "apigateway"
+        "apigateway",
+        "apigw-stage-throttling"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-stage-throttling": [
           "literal"
         ]
       }
@@ -197,13 +213,17 @@
       "resourceType": "AWS::ApiGateway::Stage",
       "integs": [
         "api-cognito",
-        "apigateway"
+        "apigateway",
+        "apigw-stage-throttling"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-stage-throttling": [
           "literal"
         ]
       }
@@ -2928,6 +2948,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-stage-throttling",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-api-fallback",
@@ -3019,6 +3040,10 @@
         ],
         "apigateway": [
           "l2"
+        ],
+        "apigw-stage-throttling": [
+          "l2",
+          "literal"
         ],
         "bench-cdk-sample": [
           "l2"
@@ -3313,6 +3338,7 @@
     {
       "resourceType": "AWS::Lambda::Permission",
       "integs": [
+        "apigw-stage-throttling",
         "cloudfront-function-url",
         "cognito-lambda-triggers",
         "export",
@@ -3324,6 +3350,9 @@
         "sns-event-source"
       ],
       "signals": {
+        "apigw-stage-throttling": [
+          "literal"
+        ],
         "cloudfront-function-url": [
           "l1",
           "literal"
