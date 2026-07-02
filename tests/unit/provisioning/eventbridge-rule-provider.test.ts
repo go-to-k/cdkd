@@ -311,6 +311,75 @@ describe('EventBridgeRuleProvider', () => {
       expect(deleteRuleCall.input.Name).toBe('my-rule');
     });
 
+    // Issue #955: a custom-bus rule MUST be addressed with EventBusName —
+    // the Name-only form targets the DEFAULT bus, so a standalone diff-driven
+    // delete of a custom-bus rule (bus kept) reported ResourceNotFound,
+    // silently no-oped, and orphaned the rule on AWS.
+    it('passes EventBusName to all three calls when deleting a custom-bus rule', async () => {
+      mockSend.mockResolvedValueOnce({
+        Targets: [{ Id: 'Target1', Arn: 'arn:aws:lambda:us-east-1:123456789012:function:func' }],
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete(
+        'MyRule',
+        'arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule',
+        'AWS::Events::Rule'
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      const [listCall, removeCall, deleteCall] = mockSend.mock.calls.map((c) => c[0]);
+      expect(listCall.input).toMatchObject({ Rule: 'my-rule', EventBusName: 'my-bus' });
+      expect(removeCall.input).toMatchObject({
+        Rule: 'my-rule',
+        Ids: ['Target1'],
+        EventBusName: 'my-bus',
+      });
+      expect(deleteCall.input).toMatchObject({ Name: 'my-rule', EventBusName: 'my-bus' });
+    });
+
+    it('omits EventBusName when deleting a default-bus rule', async () => {
+      mockSend.mockResolvedValueOnce({ Targets: [] });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete(
+        'MyRule',
+        'arn:aws:events:us-east-1:123456789012:rule/my-rule',
+        'AWS::Events::Rule'
+      );
+
+      const listCall = mockSend.mock.calls[0][0];
+      const deleteCall = mockSend.mock.calls[1][0];
+      expect(listCall.input.EventBusName).toBeUndefined();
+      expect(deleteCall.input.EventBusName).toBeUndefined();
+    });
+
+    // Partner-bus NAMES contain slashes (aws.partner/foo.com/...), while rule
+    // names cannot — the bus is everything between the first and last slash.
+    // The old parts.length === 3 check returned 'default' for these ARNs.
+    it('extracts the full partner-bus name (slashes included) when deleting', async () => {
+      mockSend.mockResolvedValueOnce({ Targets: [] });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete(
+        'MyRule',
+        'arn:aws:events:us-east-1:123456789012:rule/aws.partner/foo.com/123/my-rule',
+        'AWS::Events::Rule'
+      );
+
+      const listCall = mockSend.mock.calls[0][0];
+      const deleteCall = mockSend.mock.calls[1][0];
+      expect(listCall.input).toMatchObject({
+        Rule: 'my-rule',
+        EventBusName: 'aws.partner/foo.com/123',
+      });
+      expect(deleteCall.input).toMatchObject({
+        Name: 'my-rule',
+        EventBusName: 'aws.partner/foo.com/123',
+      });
+    });
+
     it('should delete rule with no targets', async () => {
       // ListTargetsByRule - empty
       mockSend.mockResolvedValueOnce({ Targets: [] });
@@ -418,6 +487,21 @@ describe('EventBridgeRuleProvider', () => {
 
       const describeCall = mockSend.mock.calls[0][0];
       expect(describeCall.constructor.name).toBe('DescribeRuleCommand');
+    });
+
+    it('passes EventBusName to DescribeRule for a custom-bus rule (issue #955)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Arn: 'arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule',
+      });
+
+      await provider.getAttribute(
+        'arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule',
+        'AWS::Events::Rule',
+        'Arn'
+      );
+
+      const describeCall = mockSend.mock.calls[0][0];
+      expect(describeCall.input).toMatchObject({ Name: 'my-rule', EventBusName: 'my-bus' });
     });
 
     it('should throw for unsupported attribute', async () => {

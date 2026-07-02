@@ -61,7 +61,7 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -95,6 +95,30 @@ if [ "${RULE_REF}" != "${BUS_NAME}|${RULE_NAME}" ]; then
   exit 1
 fi
 echo "    OK: Ref on AWS::Events::Rule == '${BUS_NAME}|${RULE_NAME}' (rule name, not ARN)"
+
+# --- Phase 1.5: UPDATE drops the rule while keeping the bus (issue #955) ---
+# Re-deploy without the rule: the diff-driven standalone delete of a
+# custom-bus rule must address the CUSTOM bus. Before the fix the delete
+# hit the default bus, reported "does not exist", silently no-oped, and
+# left the rule orphaned on AWS.
+echo "==> Phase 1.5: update (drop the custom-bus rule, keep the bus)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+REMAINING_RULES=$(aws events list-rules --event-bus-name "${BUS_NAME}" --region "${REGION}" \
+  --query "length(Rules)" --output text)
+if [ "${REMAINING_RULES}" != "0" ]; then
+  echo "FAIL: custom bus '${BUS_NAME}' still has ${REMAINING_RULES} rule(s) after the rule was removed from the template (standalone custom-bus rule delete no-oped — issue #955)" >&2
+  aws events list-rules --event-bus-name "${BUS_NAME}" --region "${REGION}" >&2
+  exit 1
+fi
+if ! aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: custom bus '${BUS_NAME}' disappeared during the rule-only update" >&2
+  exit 1
+fi
+echo "    OK: rule deleted from the CUSTOM bus (0 rules remain, bus still exists)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
