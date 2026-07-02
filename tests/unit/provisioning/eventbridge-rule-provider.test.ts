@@ -528,6 +528,25 @@ describe('EventBridgeRuleProvider', () => {
       };
     }
 
+    it('explicit override (custom-bus ARN): bus name is derived from the ARN, not the template property', async () => {
+      mockSend.mockResolvedValueOnce({
+        Arn: 'arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule',
+      });
+
+      const result = await provider.import({
+        logicalId: 'MyRule',
+        resourceType: 'AWS::Events::Rule',
+        // At import time the template property can still be an unresolved
+        // intrinsic object — it must NOT be forwarded to DescribeRule.
+        properties: { EventBusName: { Ref: 'Bus' } as unknown as string },
+        knownPhysicalId: 'arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule',
+      });
+
+      const describeCall = mockSend.mock.calls[0][0];
+      expect(describeCall.input).toMatchObject({ Name: 'my-rule', EventBusName: 'my-bus' });
+      expect(result?.physicalId).toBe('arn:aws:events:us-east-1:123456789012:rule/my-bus/my-rule');
+    });
+
     it('explicit override (ARN): DescribeRule returns the rule ARN', async () => {
       const arn = 'arn:aws:events:us-east-1:123456789012:rule/adopted';
       mockSend.mockResolvedValueOnce({ Arn: arn, Name: 'adopted' });
