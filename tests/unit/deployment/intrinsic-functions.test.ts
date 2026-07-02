@@ -2941,6 +2941,109 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     }
   );
 
+  // ApiGatewayV2 family (issue #963 follow-up audit): same routing-triggered
+  // compound-Ref exposure as the V1 family — the V2 SDK provider stores
+  // pipe-free ids, but a #614-routed instance stores the CC compound. All Ref
+  // semantics verified against the AWS-docs "Return values / Ref" section.
+  // NOTE the V1/V2 CROSS-WIRING: V2 Deployment is `[ApiId, DeploymentId]`
+  // (after-pipe) while V1 Deployment is `[DeploymentId, RestApiId]`
+  // (before-first-pipe) — and vice versa for Authorizer.
+  it.each([
+    ['AWS::ApiGatewayV2::Stage', 'a1b2c3|prod', 'prod'],
+    ['AWS::ApiGatewayV2::Route', 'a1b2c3|abcd123', 'abcd123'],
+    ['AWS::ApiGatewayV2::Integration', 'a1b2c3|xyz789', 'xyz789'],
+    ['AWS::ApiGatewayV2::Model', 'a1b2c3|model1', 'model1'],
+    ['AWS::ApiGatewayV2::Deployment', 'a1b2c3|dep123', 'dep123'],
+    // 3-segment children: Ref is still the TRAILING segment.
+    ['AWS::ApiGatewayV2::RouteResponse', 'a1b2c3|abcd123|rr1', 'rr1'],
+    ['AWS::ApiGatewayV2::IntegrationResponse', 'a1b2c3|xyz789|ir1', 'ir1'],
+    // SDK-provisioned instances store pipe-free ids — pass through unchanged.
+    ['AWS::ApiGatewayV2::Stage', 'prod', 'prod'],
+  ])(
+    'Ref to %s returns the trailing segment of a CC-routed compound physical id',
+    async (resourceType, physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: { physicalId, resourceType, properties: {}, attributes: {}, dependencies: [] },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
+  // V2 reversed-order compounds: Authorizer `[AuthorizerId, ApiId]` and
+  // ApiMapping `[ApiMappingId, DomainName]` put the Ref component FIRST. The
+  // Authorizer is the daily consumer: a Route's `AuthorizerId` is
+  // `{Ref: <Authorizer>}` in every CDK HTTP-API-with-authorizer template.
+  it.each([
+    ['AWS::ApiGatewayV2::Authorizer', 'auth99|a1b2c3', 'auth99'],
+    ['AWS::ApiGatewayV2::ApiMapping', 'map42|api.example.com', 'map42'],
+    // SDK-provisioned instances store pipe-free ids — pass through unchanged.
+    ['AWS::ApiGatewayV2::Authorizer', 'auth99', 'auth99'],
+  ])(
+    'Ref to %s returns the FIRST segment of the reversed compound physical id',
+    async (resourceType, physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: { physicalId, resourceType, properties: {}, attributes: {}, dependencies: [] },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
+  // The daily V2 consumer shape: a Route wiring `Target:
+  // integrations/{Ref <Integration>}` (the canonical CDK/docs Fn::Join) and
+  // `AuthorizerId: {Ref: <Authorizer>}` must receive bare ids.
+  it('Ref to CC-routed V2 Integration/Authorizer inside the Route wiring yields bare ids', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Integ: { Type: 'AWS::ApiGatewayV2::Integration', Properties: {} },
+        Auth: { Type: 'AWS::ApiGatewayV2::Authorizer', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Integ: {
+          physicalId: 'a1b2c3|xyz789',
+          resourceType: 'AWS::ApiGatewayV2::Integration',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+        Auth: {
+          physicalId: 'auth99|a1b2c3',
+          resourceType: 'AWS::ApiGatewayV2::Authorizer',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const target = await resolver.resolve(
+      { 'Fn::Join': ['/', ['integrations', { Ref: 'Integ' }]] },
+      context
+    );
+    expect(target).toBe('integrations/xyz789');
+
+    const authorizerId = await resolver.resolve({ Ref: 'Auth' }, context);
+    expect(authorizerId).toBe('auth99');
+  });
+
   // Same divergence class, different id shape: the SDK providers for these
   // types store the resource ARN as the physical id, but CFn's `Ref` returns
   // the resource NAME. Found by /hunt-bugs (2026-07-02): a CfnOutput
