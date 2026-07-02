@@ -58,6 +58,15 @@ describe('isRetryableTransientError', () => {
         'Service is unable to assume provided role. Please verify role\'s TrustPolicy.',
         'Glue assume-role IAM propagation',
       ],
+      // Step Functions same-stack role IAM-propagation race: CreateStateMachine
+      // is issued before the just-created role's trust policy propagates to
+      // Step Functions' assume layer (surfaced by a bug-hunt sweep on an
+      // Express state machine with LoggingConfiguration; pinned by the
+      // stepfunctions-logging integ).
+      [
+        'Failed to create Step Functions state machine ExpressEE4D4F3B: Neither the global service principal states.amazonaws.com, nor the regional one is authorized to assume the provided role.',
+        'Step Functions assume-role IAM propagation',
+      ],
       ['The execution role you provided does not have permission', 'execution role'],
       ['Role validation failed', 'Role validation failed'],
       // CW Logs SubscriptionFilter (the bug we are fixing)

@@ -1456,6 +1456,11 @@
       "scenarios": []
     },
     {
+      "name": "stepfunctions-logging",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "stepfunctions-s3-definition",
       "annotated": false,
       "scenarios": []
@@ -2130,6 +2135,7 @@
     "sns-event-source",
     "sns-subscription-filter",
     "sqs-esm-max-concurrency",
+    "stepfunctions-logging",
     "stepfunctions-s3-definition"
   ]
 }
