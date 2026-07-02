@@ -206,3 +206,4 @@ lambda	2026-07-02T04:57:52Z	PASS	95	verify.sh	broad integ for resolver Ref fix P
 eventbridge	2026-07-02T06:09:46Z	PASS	210	verify.sh	new Phase 1.5 custom-bus rule-drop update (issue 955 fix), destroy 10/0 err
 dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
 lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
+loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard error-path + replace recreate, destroy clean 0 orphans
