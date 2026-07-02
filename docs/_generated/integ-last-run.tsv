@@ -144,7 +144,6 @@ stepfunctions	2026-06-21T04:32:59Z	PASS	30	standard	SFN deploy 5 / destroy 5, 0 
 stepfunctions-s3-definition	2026-06-15T08:44:00Z	PASS	55	verify.sh	post-review re-run; DefinitionS3Location+asset fix; destroy clean
 throttle-wide-dag	2026-06-14T04:35:46Z	PASS		verify.sh	bug15 throttle-retry validated deploy+destroy clean
 update-policy-mutations	2026-06-20T19:39:38Z	PASS		verify.sh	first run; DeletionPolicy/UpdateReplacePolicy mutations + retain-on-replace; 5 del +2 retain; step6 cleanup -> 0 leftover
-update-replace	2026-06-13T11:42:29Z	PASS	71	verify.sh	#831 +Lambda/IAM/SG not-found post-destroy; 0 err
 vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
@@ -212,3 +211,4 @@ synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-c
 eventbridge-pipes	2026-07-02T12:49:57Z	PASS	114	verify.sh	new UPDATE phase (issue 960): BatchSize in-place, no spurious replacement
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
 eventbridge-scheduler	2026-07-02T12:35:05Z	PASS	57	verify.sh	regression for new Scheduler SDK provider routing (default group)
+update-replace	2026-07-02T16:38:15Z	PASS	77	verify.sh	fixture updated for stateful-replace guard (--force-stateful-recreation), 0 orphans

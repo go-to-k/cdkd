@@ -176,10 +176,14 @@ esac
 echo "    OK (baseline): ReplaceBucket '${REPLACE_BUCKET_BEFORE}' exists (v1)"
 
 # --- Phase 1b: redeploy with CDKD_TEST_UPDATE=true --------------------
+# The ReplaceBucket rename is a property-driven S3 replacement; since the
+# stateful-replace guard (2026-06-29) it requires an explicit
+# --force-stateful-recreation confirmation (mirrors replacement-immutable-name).
 echo "==> Phase 1b: redeploy with CDKD_TEST_UPDATE=true"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --force-stateful-recreation \
   --yes
 
 STATE_AFTER=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
