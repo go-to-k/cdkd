@@ -3044,6 +3044,105 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(authorizerId).toBe('auth99');
   });
 
+  // Cross-family close-out audit (2026-07-03) — the remaining SDK-registered
+  // compound-primaryIdentifier types:
+  //  - ECS::Service `[ServiceArn, Cluster]`: Ref is the service ARN (FIRST
+  //    segment). The SDK provider stores the bare ARN (pass-through); only a
+  //    #614-routed instance stores the compound.
+  //  - S3Tables Namespace/Table: their SDK provider ITSELF stores the
+  //    compound, so the trailing-segment extraction is load-bearing on BOTH
+  //    paths (Ref = namespace name / table name per the AWS docs).
+  it.each([
+    [
+      'AWS::ECS::Service',
+      'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/web|my-cluster',
+      'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/web',
+    ],
+    // SDK-provisioned ECS service: bare ARN passes through unchanged.
+    [
+      'AWS::ECS::Service',
+      'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/web',
+      'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/web',
+    ],
+    [
+      'AWS::S3Tables::Namespace',
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics',
+      'analytics',
+    ],
+    [
+      'AWS::S3Tables::Table',
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics|events',
+      'events',
+    ],
+  ])(
+    'Ref to %s returns the CFn Ref component of the compound physical id',
+    async (resourceType, physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: { physicalId, resourceType, properties: {}, attributes: {}, dependencies: [] },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
+  // AWS::WAFv2::WebACL is the INVERSE divergence: CFn's `Ref` IS the
+  // pipe-joined `name|id|scope` compound (docs-explicit), matching the CC
+  // identifier — but the SDK provider stores the ARN, so the SDK path must
+  // reconstruct the compound from the ARN.
+  it.each([
+    [
+      // SDK path: ARN -> reconstructed compound.
+      'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-acl/1234a1a-a1b1',
+      'my-acl|1234a1a-a1b1|REGIONAL',
+    ],
+    [
+      // Global (CloudFront) scope marker in the ARN maps to the CLOUDFRONT
+      // scope word CFn uses in the Ref value.
+      'arn:aws:wafv2:us-east-1:123456789012:global/webacl/edge-acl/9zz9',
+      'edge-acl|9zz9|CLOUDFRONT',
+    ],
+    [
+      // CC path: the stored compound IS the CFn Ref value — pass through.
+      'my-acl|1234a1a-a1b1|REGIONAL',
+      'my-acl|1234a1a-a1b1|REGIONAL',
+    ],
+    [
+      // Malformed / foreign arn:-prefixed id: pass through raw rather than
+      // emitting a literal "undefined" segment.
+      'arn:aws:wafv2:us-east-1:123456789012:regional/webacl',
+      'arn:aws:wafv2:us-east-1:123456789012:regional/webacl',
+    ],
+  ])(
+    'Ref to AWS::WAFv2::WebACL returns the CFn name|id|scope compound (%s)',
+    async (physicalId, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: { Acl: { Type: 'AWS::WAFv2::WebACL', Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          Acl: {
+            physicalId,
+            resourceType: 'AWS::WAFv2::WebACL',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'Acl' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
   // Same divergence class, different id shape: the SDK providers for these
   // types store the resource ARN as the physical id, but CFn's `Ref` returns
   // the resource NAME. Found by /hunt-bugs (2026-07-02): a CfnOutput

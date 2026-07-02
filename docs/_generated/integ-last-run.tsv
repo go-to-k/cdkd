@@ -205,6 +205,7 @@ synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-c
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
 eventbridge-scheduler	2026-07-02T12:35:05Z	PASS	57	verify.sh	regression for new Scheduler SDK provider routing (default group)
 multi-resource	2026-07-02T15:57:30Z	PASS	71	standard	broad regression for #963 Ref-resolver change, 0 orphans (CR log groups swept)
+apigw-stage-throttling	2026-07-02T15:53:52Z	PASS	70	verify.sh	new #963 fixture: CC-routed Stage Ref + functional curl + update-deployment-swap, 0 orphans
 eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
 lambda	2026-07-02T16:12:06Z	PASS	90	verify.sh	broad integ for named-replacement-collision engine change; clean
 update-replace	2026-07-02T16:12:06Z	PASS	585	verify.sh	fixture updated: BucketName replacement now passes --force-stateful-recreation (post-#929 guard)
@@ -215,3 +216,4 @@ stepfunctions-logging	2026-07-02T16:12:06Z	PASS	72	verify.sh	ledger backfill (fi
 multi-resource	2026-07-02T16:33:43Z	PASS	59	standard	broad regression for V2 compound-Ref resolver change, 0 orphans (CR log groups swept)
 apigw-stage-throttling	2026-07-02T16:57:21Z	PASS	72	verify.sh	CC-route trigger swapped to AccessLogSettings (#966), all #963 assertions green, 0 orphans
 apigateway	2026-07-02T17:12:19Z	PASS	55	verify.sh	re-run with final #966 binary (root-key + reset-rebuild + corpse-cleanup fixes), 0 orphans
+multi-resource	2026-07-02T17:50:42Z	PASS	64	standard	broad regression for compound-Ref close-out resolver change, 0 orphans (CR log groups swept)

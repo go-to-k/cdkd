@@ -16,6 +16,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
+import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -82,8 +83,15 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *      CFn-generated synthetic id like `mysta-metho-01234b567890example`, not
  *      reconstructible from the `<apiId>|<resourceId>|<verb>` physical id).
  *      Also EXCLUDE types whose AWS-docs page documents NO `Ref` return value
- *      at all (ApiGateway::DocumentationVersion) — with no contract to honor,
- *      the raw physical id is the least-surprising value.
+ *      at all (ApiGateway::DocumentationVersion, Lambda::Permission) — with no
+ *      contract to honor, the raw physical id is the least-surprising value.
+ *      The 2026-07-03 cross-family audit of every SDK-registered compound-id
+ *      type also excluded EC2::Route ("the ID of the route") /
+ *      EC2::VPCGatewayAttachment ("the ID of the VPC gateway attachment") /
+ *      Lambda::EventInvokeConfig ("a unique identifier") — all synthetic CFn
+ *      ids with no bare-segment contract and no consuming API — and
+ *      confirmed WAFv2::WebACL's `Ref` IS the pipe-joined compound (see the
+ *      special case in {@link cfnRefValueFromPhysicalId}).
  *   4. Types whose primaryIdentifier puts the `Ref` component FIRST
  *      (`[<refId>, <parentId>]` — e.g. ApiGateway::Deployment /
  *      ::DocumentationPart) belong in
@@ -114,6 +122,15 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',
   'AWS::AppConfig::Deployment',
+  // S3Tables children (cross-family close-out audit, 2026-07-03): their SDK
+  // provider ITSELF stores the compound (`<tableBucketARN>|<namespace>` /
+  // `<tableBucketARN>|<namespace>|<tableName>`), so unlike the ApiGateway
+  // family the extraction is load-bearing on BOTH the SDK and CC paths. The
+  // TableBucketARN contains no pipes, so after-LAST-pipe is safe. Docs:
+  // Namespace `Ref` returns the namespace name; Table `Ref` returns the
+  // table name.
+  'AWS::S3Tables::Namespace',
+  'AWS::S3Tables::Table',
 ]);
 
 /**
@@ -148,6 +165,12 @@ const REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE = new Set<string>([
   'AWS::ApiGateway::DocumentationPart',
   'AWS::ApiGatewayV2::Authorizer',
   'AWS::ApiGatewayV2::ApiMapping',
+  // Cross-family close-out audit (2026-07-03): CC primaryIdentifier is
+  // `[ServiceArn, Cluster]` and the docs-verified `Ref` is the service ARN —
+  // the FIRST segment. The SDK provider stores the bare ARN (pipe-free, so
+  // the extraction is a no-op there); only a #614-routed instance stores the
+  // compound. Neither an ECS service ARN nor a cluster name can contain `|`.
+  'AWS::ECS::Service',
 ]);
 
 /**
@@ -175,6 +198,24 @@ const REF_RETURNS_NAME_FROM_ARN = new Map<string, string>([
  * extraction and name-from-ARN extraction included).
  */
 export function cfnRefValueFromPhysicalId(resourceType: string, physicalId: string): string {
+  // AWS::WAFv2::WebACL is the inverse of the usual divergence: CFn's `Ref` IS
+  // the pipe-joined compound `name|id|scope` (docs-explicit, e.g.
+  // `my-webacl-name|1234a1a-...|REGIONAL`), which matches the CC identifier —
+  // but the SDK provider stores the ARN as the physical id (its CRUD paths
+  // need it), so the SDK path must RECONSTRUCT the compound from the ARN
+  // (cross-family close-out audit, 2026-07-03). A CC-provisioned instance
+  // already stores the compound and passes through the final return.
+  if (resourceType === 'AWS::WAFv2::WebACL' && physicalId.startsWith('arn:')) {
+    const { id, name, scope } = parseWebACLArn(physicalId);
+    // A short / foreign `arn:`-prefixed id parses to undefined segments —
+    // pass the raw id through rather than emitting a literal "undefined"
+    // (unreachable from cdkd's own state writers, which all store validated
+    // WebACL ARNs, but cheap to guard).
+    if (name && id) {
+      return `${name}|${id}|${scope}`;
+    }
+    return physicalId;
+  }
   const nameMarker = REF_RETURNS_NAME_FROM_ARN.get(resourceType);
   if (nameMarker && physicalId.startsWith('arn:')) {
     const markerIdx = physicalId.indexOf(nameMarker);

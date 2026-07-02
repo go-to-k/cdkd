@@ -60,7 +60,7 @@ function sanitizeDescription(value: unknown): string | undefined {
  *   arn:aws:wafv2:{region}:{account}:regional/webacl/{name}/{id}
  *   arn:aws:wafv2:{region}:{account}:global/webacl/{name}/{id}
  */
-function parseWebACLArn(arn: string): { id: string; name: string; scope: Scope } {
+export function parseWebACLArn(arn: string): { id: string; name: string; scope: Scope } {
   // Example: arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-acl/abc-123
   const parts = arn.split(':');
   // parts[5] = "regional/webacl/my-acl/abc-123" or "global/webacl/my-acl/abc-123"
