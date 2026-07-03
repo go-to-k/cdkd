@@ -1,3 +1,10 @@
+## [0.231.5](https://github.com/go-to-k/cdkd/compare/v0.231.4...v0.231.5) (2026-07-03)
+
+
+### Bug Fixes
+
+* **provisioning:** untag removed ECR repository tags on update ([#988](https://github.com/go-to-k/cdkd/issues/988)) ([15405d2](https://github.com/go-to-k/cdkd/commit/15405d2258c092eba4f4fdcde42317cff9d0ce19))
+
 ## [0.231.4](https://github.com/go-to-k/cdkd/compare/v0.231.3...v0.231.4) (2026-07-03)
 
 
