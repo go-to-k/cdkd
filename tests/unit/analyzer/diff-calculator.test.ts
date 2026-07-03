@@ -1263,6 +1263,78 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(ltChange?.requiresReplacement).toBe(false);
   });
 
+  it('still promotes an ASG when the LaunchTemplate is REPLACED (via the replacement arm, not double-promoted; issue #985 guard)', async () => {
+    // The in-place derived-attr arm (Arm 2) is populated ONLY for non-replacement
+    // UPDATEs (`if (!isReplacement)`), so a REPLACED LaunchTemplate is excluded
+    // from it — promoteReplacementDependents already handles a replaced upstream,
+    // and the ASG must not be double-promoted. This test pins the guarantee that
+    // the replaced-LT case is neither regressed (ASG still promoted) nor
+    // duplicated (single LaunchTemplate propertyChange).
+    const spy = vi
+      .spyOn(ReplacementRulesRegistry.prototype, 'requiresReplacement')
+      .mockImplementation((resourceType: string, propertyPath: string) => {
+        // Force any LaunchTemplateData change to be a replacement.
+        return resourceType === 'AWS::EC2::LaunchTemplate' && propertyPath === 'LaunchTemplateData';
+      });
+
+    try {
+      const state = baseState();
+      state.resources['Lt'] = {
+        physicalId: 'lt-123',
+        resourceType: 'AWS::EC2::LaunchTemplate',
+        properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
+        attributes: { LatestVersionNumber: '1', DefaultVersionNumber: '1' },
+      };
+      state.resources['Asg'] = {
+        physicalId: 'asg-1',
+        resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+        properties: {
+          MinSize: '0',
+          MaxSize: '0',
+          LaunchTemplate: { LaunchTemplateId: 'lt-123', Version: '1' },
+        },
+        attributes: {},
+      };
+
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Lt: {
+            Type: 'AWS::EC2::LaunchTemplate',
+            Properties: { LaunchTemplateData: { InstanceType: 't3.small' } },
+          },
+          Asg: {
+            Type: 'AWS::AutoScaling::AutoScalingGroup',
+            Properties: {
+              MinSize: '0',
+              MaxSize: '0',
+              LaunchTemplate: {
+                LaunchTemplateId: { Ref: 'Lt' },
+                Version: { 'Fn::GetAtt': ['Lt', 'LatestVersionNumber'] },
+              },
+            },
+          },
+        },
+      };
+
+      const calc = new DiffCalculator();
+      const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+      // LT is a replacement.
+      expect(
+        changes.get('Lt')?.propertyChanges?.some((pc) => pc.requiresReplacement)
+      ).toBe(true);
+      // The ASG is still promoted (the replacement arm covers it) — not left stale.
+      expect(changes.get('Asg')?.changeType).toBe('UPDATE');
+      // And it is promoted exactly once: no duplicate LaunchTemplate propertyChange.
+      const ltPropChanges = (changes.get('Asg')?.propertyChanges ?? []).filter(
+        (pc) => pc.path === 'LaunchTemplate'
+      );
+      expect(ltPropChanges.length).toBeLessThanOrEqual(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('promotes an ASG that reads LaunchTemplate LatestVersionNumber via Fn::Sub (issue #985)', async () => {
     const state = baseState();
     state.resources['Lt'] = {

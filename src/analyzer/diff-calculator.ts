@@ -46,9 +46,9 @@ export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
  * NOT track in-place edits (e.g. a Lambda `Arn`) never trigger spurious
  * dependent promotion.
  */
-const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = {
+const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
-};
+});
 
 /**
  * Diff calculator for comparing desired state (template) with current state
@@ -393,7 +393,8 @@ export class DiffCalculator {
 
   /**
    * Promote NO_CHANGE dependents of an IN-PLACE update whose referenced ATTRIBUTE
-   * actually changed (bug-hunt 2026-06-29).
+   * either names a changed property (bug-hunt 2026-06-29) OR is a derived
+   * read-only attribute the update side-effects (issue #985).
    *
    * Distinct from {@link promoteReplacementDependents}: a replacement changes the
    * physical id, so any reference is affected. An in-place update changes only
