@@ -15,8 +15,13 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  * true` never reached AWS. This fixture asserts scanOnPush actually reaches AWS
  * on create AND that toggling it off via UPDATE reaches AWS.
  *
- * Phase 1 (no env): scanOnPush true + a lifecycle rule.
- * Phase 2 (CDKD_TEST_UPDATE=true): scanOnPush false.
+ * Phase 1 (no env): scanOnPush true + a lifecycle rule + two Tags
+ *   (`env=dev`, `team=platform`).
+ * Phase 2 (CDKD_TEST_UPDATE=true): scanOnPush false; the `env` tag value is
+ *   CHANGED to `prod` and the `team` tag is REMOVED. This exercises the
+ *   update() tag-diff: `ECRProvider.update()` used to call `TagResourceCommand`
+ *   only (additive), so a removed tag survived on AWS (issue #981). The fix
+ *   untags the removed key(s) via `UntagResourceCommand` before re-tagging.
  */
 export class EcrScanningStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -33,7 +38,7 @@ export class EcrScanningStack extends cdk.Stack {
       pendingWindow: cdk.Duration.days(7),
     });
 
-    new ecr.Repository(this, 'Repo', {
+    const repo = new ecr.Repository(this, 'Repo', {
       repositoryName: `${this.stackName.toLowerCase()}-repo`,
       imageScanOnPush: !isUpdate,
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
@@ -43,5 +48,12 @@ export class EcrScanningStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
     });
+
+    // Phase 1: env=dev, team=platform. Phase 2: env changed to prod, team
+    // removed entirely (untag path).
+    cdk.Tags.of(repo).add('env', isUpdate ? 'prod' : 'dev');
+    if (!isUpdate) {
+      cdk.Tags.of(repo).add('team', 'platform');
+    }
   }
 }

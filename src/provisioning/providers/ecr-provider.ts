@@ -11,6 +11,7 @@ import {
   PutImageScanningConfigurationCommand,
   PutImageTagMutabilityCommand,
   TagResourceCommand,
+  UntagResourceCommand,
   ListTagsForResourceCommand,
   LifecyclePolicyNotFoundException,
   RepositoryNotFoundException,
@@ -328,7 +329,10 @@ export class ECRProvider implements ResourceProvider {
         }
       }
 
-      // Update Tags if changed
+      // Update Tags if changed. `TagResource` is additive-only, so a tag
+      // dropped from the template (partial removal) — or the entire `Tags`
+      // property removed (full removal, `newTags === undefined`) — would
+      // survive on AWS unless we explicitly `UntagResource` the removed keys.
       const newTags = properties['Tags'] as Tag[] | undefined;
       const oldTags = previousProperties['Tags'] as Tag[] | undefined;
       if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
@@ -337,13 +341,33 @@ export class ECRProvider implements ResourceProvider {
           new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
         );
         const repoArn = describeResponse.repositories?.[0]?.repositoryArn;
-        if (repoArn && newTags) {
-          await this.getClient().send(
-            new TagResourceCommand({
-              resourceArn: repoArn,
-              tags: newTags,
-            })
+        if (repoArn) {
+          // Untag keys present in the old set but absent from the new set.
+          // `newTags === undefined` is treated as "remove all old tags".
+          const newKeys = new Set(
+            (newTags ?? []).map((t) => t.Key).filter((k): k is string => !!k)
           );
+          const removedKeys = (oldTags ?? [])
+            .map((t) => t.Key)
+            .filter((k): k is string => !!k && !newKeys.has(k));
+          if (removedKeys.length > 0) {
+            await this.getClient().send(
+              new UntagResourceCommand({
+                resourceArn: repoArn,
+                tagKeys: removedKeys,
+              })
+            );
+          }
+          // Apply added / changed tags. Skip the call when the new set is
+          // empty (a pure removal has nothing left to add).
+          if (newTags && newTags.length > 0) {
+            await this.getClient().send(
+              new TagResourceCommand({
+                resourceArn: repoArn,
+                tags: newTags,
+              })
+            );
+          }
           this.logger.debug(`Updated tags for ${physicalId}`);
         }
       }

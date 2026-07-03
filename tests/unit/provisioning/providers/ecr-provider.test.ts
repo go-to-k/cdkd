@@ -37,6 +37,8 @@ import {
   DescribeRepositoriesCommand,
   ListTagsForResourceCommand,
   RepositoryNotFoundException,
+  TagResourceCommand,
+  UntagResourceCommand,
 } from '@aws-sdk/client-ecr';
 
 describe('ECRProvider import', () => {
@@ -142,5 +144,106 @@ describe('ECRProvider import', () => {
     const result = await provider.import(makeInput({ knownPhysicalId: 'missing' }));
 
     expect(result).toBeNull();
+  });
+});
+
+describe('ECRProvider update Tags', () => {
+  let provider: ECRProvider;
+  const repoArn = 'arn:aws:ecr:us-east-1:123456789012:repository/my-repo';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ECRProvider();
+  });
+
+  // The update() Tags block issues, in order:
+  //   1. DescribeRepositories (to resolve the ARN for tag ops)
+  //   2. UntagResource (removed keys) — only when there are removed keys
+  //   3. TagResource (new set) — only when the new set is non-empty
+  //   4. DescribeRepositories (final attribute read)
+  function mockDescribeResponses() {
+    const describeResponse = {
+      repositories: [
+        {
+          repositoryName: 'my-repo',
+          repositoryArn: repoArn,
+          repositoryUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo',
+        },
+      ],
+    };
+    mockSend.mockResolvedValue(describeResponse);
+  }
+
+  it('partial removal: untags removed keys and tags the changed/new ones', async () => {
+    mockDescribeResponses();
+
+    await provider.update(
+      'MyRepo',
+      'my-repo',
+      'AWS::ECR::Repository',
+      {
+        Tags: [
+          { Key: 'env', Value: 'prod' }, // changed value
+          { Key: 'owner', Value: 'team-a' }, // new key
+        ],
+      },
+      {
+        Tags: [
+          { Key: 'env', Value: 'dev' }, // changed
+          { Key: 'costcenter', Value: 'cc-1' }, // removed
+        ],
+      }
+    );
+
+    const untagCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof UntagResourceCommand
+    );
+    const tagCall = mockSend.mock.calls.find((c) => c[0] instanceof TagResourceCommand);
+
+    expect(untagCall).toBeDefined();
+    expect(untagCall![0].input).toEqual({
+      resourceArn: repoArn,
+      tagKeys: ['costcenter'],
+    });
+
+    expect(tagCall).toBeDefined();
+    expect(tagCall![0].input).toEqual({
+      resourceArn: repoArn,
+      tags: [
+        { Key: 'env', Value: 'prod' },
+        { Key: 'owner', Value: 'team-a' },
+      ],
+    });
+  });
+
+  it('full removal: untags all old keys and does NOT call TagResource', async () => {
+    mockDescribeResponses();
+
+    await provider.update(
+      'MyRepo',
+      'my-repo',
+      'AWS::ECR::Repository',
+      {}, // Tags property removed entirely
+      {
+        Tags: [
+          { Key: 'env', Value: 'dev' },
+          { Key: 'costcenter', Value: 'cc-1' },
+        ],
+      }
+    );
+
+    const untagCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof UntagResourceCommand
+    );
+    const tagCall = mockSend.mock.calls.find((c) => c[0] instanceof TagResourceCommand);
+
+    expect(untagCall).toBeDefined();
+    expect(untagCall![0].input).toEqual({
+      resourceArn: repoArn,
+      tagKeys: ['env', 'costcenter'],
+    });
+
+    // A pure removal has nothing left to add — TagResource must NOT fire.
+    expect(tagCall).toBeUndefined();
   });
 });
