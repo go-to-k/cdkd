@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd S3Tables::Table Tags backfill integ test (issue #609).
+# verify.sh — cdkd S3Tables integ test.
 #
-# Asserts that an AWS::S3Tables::Table with template-set Tags has those
-# tags reach AWS after `cdkd deploy` — `Tags` was a silent-drop on
-# DBInstance::S3Tables::Table before this PR. Resolves the table ARN
-# from cdkd state's TableArn output, calls `s3tables ListTagsForResource`,
-# asserts both tags are present.
+# Two concerns in one fixture:
+#   1. (issue #609) An AWS::S3Tables::Table / ::TableBucket with template-set
+#      Tags has those tags reach AWS after `cdkd deploy` — `Tags` was a
+#      silent-drop before #609. Resolves the ARNs from cdkd state outputs,
+#      calls `s3tables ListTagsForResource`, asserts the tags are present.
+#   2. (issue #974) A CC-routed AWS::S3Tables::Table (IcebergMetadata set →
+#      silent-drop → Cloud Control) stores the bare TableARN as its physical
+#      id, but CFn `Ref` for a Table returns the table NAME. Asserts the Ref
+#      resolves to the table name (via a CfnOutput AND a consuming SSM
+#      parameter round-trip), not the bare ARN.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -49,6 +54,9 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # The consuming SSM parameter (issue #974) has a deterministic name, so a
+  # partial-failure that left it behind is swept here directly.
+  aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/iceberg-table-ref" >/dev/null 2>&1 || true
   set -eu
 }
 
@@ -200,6 +208,59 @@ if [ "${BUCKET_PROVISIONED_BY}" != "sdk" ]; then
   exit 1
 fi
 echo "    OK: AWS::S3Tables::TableBucket routed via SDK provider (provisionedBy=sdk)"
+
+# --- Assertion: CC-routed Table `Ref` resolves to the table NAME (#974)
+# The IcebergTable carries IcebergMetadata, which is a silent-drop on the
+# SDK provider, so cdkd routes it through Cloud Control. CC's Table
+# primaryIdentifier is the bare single-segment TableARN (pipe-free, ends in
+# a UUID), and CFn `Ref` for a Table returns the table NAME — so before the
+# #974 fix the Ref leaked the ARN. Assert (1) the table DID route via CC,
+# and (2) both the CfnOutput Ref and the consuming SSM parameter's value
+# equal the table name, not the ARN.
+EXPECTED_TABLE_NAME="cdkd_integ_cc_tbl"
+
+ICEBERG_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::Table" and (.value.properties.IcebergMetadata != null)) | .value.provisionedBy] | first // "sdk"')
+if [ "${ICEBERG_PROVISIONED_BY}" != "cc-api" ]; then
+  echo "FAIL: IcebergMetadata Table routed via '${ICEBERG_PROVISIONED_BY}', expected 'cc-api' (the #974 fixture must exercise the CC path — silent-drop routing changed?)" >&2
+  echo "${STATE}" | jq '.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::Table") | {physicalId: .value.physicalId, provisionedBy: .value.provisionedBy, hasIceberg: (.value.properties.IcebergMetadata != null)}'
+  exit 1
+fi
+echo "    OK: IcebergMetadata Table routed via Cloud Control (provisionedBy=cc-api)"
+
+# (a) The CfnOutput Ref value.
+ICEBERG_REF=$(echo "${STATE}" | jq -r '.outputs.IcebergTableRef // ""')
+if [ "${ICEBERG_REF}" != "${EXPECTED_TABLE_NAME}" ]; then
+  echo "FAIL: Ref(IcebergTable) output is '${ICEBERG_REF}', expected the table name '${EXPECTED_TABLE_NAME}' (issue #974 — Ref leaked the ARN instead of the name)" >&2
+  echo "${STATE}" | jq .outputs
+  exit 1
+fi
+echo "    OK: Ref(IcebergTable) output == table name '${EXPECTED_TABLE_NAME}' (issue #974 fix)"
+
+# (b) The consuming SSM parameter's value on AWS — proves the resolved Ref
+# round-trips through a real resource write, not just cdkd's own outputs map.
+REF_PARAM_NAME=$(echo "${STATE}" | jq -r '.outputs.IcebergTableRefParamName // ""')
+if [ -z "${REF_PARAM_NAME}" ] || [ "${REF_PARAM_NAME}" = "null" ]; then
+  echo "FAIL: could not resolve IcebergTableRefParamName from state outputs" >&2
+  exit 1
+fi
+set +e
+SSM_VALUE=$(aws ssm get-parameter \
+  --region "${REGION}" \
+  --name "${REF_PARAM_NAME}" \
+  --query 'Parameter.Value' \
+  --output text 2>/tmp/s3tables-ssm-err)
+SSM_RC=$?
+set -e
+if [ "${SSM_RC}" -ne 0 ]; then
+  echo "FAIL: ssm get-parameter exited ${SSM_RC} for ${REF_PARAM_NAME}" >&2
+  cat /tmp/s3tables-ssm-err >&2 || true
+  exit 1
+fi
+if [ "${SSM_VALUE}" != "${EXPECTED_TABLE_NAME}" ]; then
+  echo "FAIL: SSM parameter '${REF_PARAM_NAME}' value is '${SSM_VALUE}', expected the table name '${EXPECTED_TABLE_NAME}' (Ref(IcebergTable) leaked the ARN into a consuming resource)" >&2
+  exit 1
+fi
+echo "    OK: consuming SSM parameter value == table name '${EXPECTED_TABLE_NAME}' (Ref reached AWS correctly)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

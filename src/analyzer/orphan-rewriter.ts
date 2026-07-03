@@ -1,4 +1,7 @@
-import { cfnRefValueFromPhysicalId } from '../deployment/intrinsic-function-resolver.js';
+import {
+  cfnRefValueFromPhysicalId,
+  refStateLookupFromResource,
+} from '../deployment/intrinsic-function-resolver.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
@@ -130,7 +133,7 @@ class AttributeFetcher {
         `Internal: Ref to '${orphanLogicalId}' has no orphan entry — should have been filtered out`
       );
     }
-    return cfnRefValueFromPhysicalId(o.resourceType, o.physicalId);
+    return cfnRefValueFromPhysicalId(o.resourceType, o.physicalId, refStateLookupFromResource(o));
   }
 
   /**

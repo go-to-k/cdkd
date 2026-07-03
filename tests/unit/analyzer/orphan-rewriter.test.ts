@@ -99,6 +99,30 @@ describe('rewriteResourceReferences', () => {
     }
   );
 
+  // Issue #974: a CC-routed AWS::S3Tables::Table stores the bare TableARN
+  // (pipe-free, ends in a UUID) as its physical id, so `{Ref: table}` must be
+  // rewritten to the stored TableName property — the same state-lookup seam the
+  // deploy-time resolver uses — not the raw ARN.
+  it('rewrites a {Ref: orphan} of a CC-routed S3Tables::Table into the TableName property', async () => {
+    const state = baseState({
+      Target: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: { TableName: 'events' },
+      },
+      Other: {
+        physicalId: 'o-phys',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { SomeRef: { Ref: 'Target' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Target'], fakeRegistry());
+
+    expect(result.unresolvable).toEqual([]);
+    expect(result.state.resources['Other']?.properties).toEqual({ SomeRef: 'events' });
+  });
+
   it('rewrites array-form Fn::GetAtt via live provider call', async () => {
     const getAttribute = vi.fn(async (_p: string, _t: string, attr: string) =>
       attr === 'Arn' ? 'arn:aws:s3:::b-phys' : undefined

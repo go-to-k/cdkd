@@ -3074,17 +3074,6 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics|events',
       'events',
     ],
-    // CC-routed S3Tables::Table stores the bare single-segment TableARN
-    // (CC primaryIdentifier is ['/properties/TableARN'], not the compound) —
-    // pipe-free, so the extraction no-ops and the ARN passes through. This
-    // pins the KNOWN RESIDUAL divergence documented in the Set's maintenance
-    // note (CFn Ref = table name, but the name is not reconstructible from
-    // the ARN, which ends in a UUID).
-    [
-      'AWS::S3Tables::Table',
-      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef-example',
-      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef-example',
-    ],
   ])(
     'Ref to %s returns the CFn Ref component of the compound physical id',
     async (resourceType, physicalId, expected) => {
@@ -3102,6 +3091,114 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       expect(result).toBe(expected);
     }
   );
+
+  // CC-routed S3Tables::Table stores the bare single-segment TableARN (CC
+  // primaryIdentifier is ['/properties/TableARN'], not the compound) — pipe-
+  // free, so the after-pipe extraction no-ops. The ARN ends in a UUID (not the
+  // table name CFn `Ref` returns) and is NOT reconstructible from the physical
+  // id, so the resolver recovers the name from the stored `TableName` property
+  // (issue #974). Pins that the CC-routed Table `Ref` yields the table name.
+  it('Ref to a CC-routed S3Tables::Table resolves to the TableName property, not the bare ARN', async () => {
+    const bareArn =
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef-example';
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: bareArn,
+          resourceType: 'AWS::S3Tables::Table',
+          properties: {
+            TableBucketARN: 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb',
+            Namespace: 'analytics',
+            TableName: 'events',
+          },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe('events');
+  });
+
+  // The `Name` alias (older fixtures / hand-written templates) is honored too.
+  it('Ref to a CC-routed S3Tables::Table falls back to the Name property alias', async () => {
+    const bareArn =
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/9999zzzz-00ff-example';
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: bareArn,
+          resourceType: 'AWS::S3Tables::Table',
+          properties: { Name: 'orders' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe('orders');
+  });
+
+  // Defensive: a CC-routed Table with NO recoverable name (state torn / older
+  // pre-fix state file) falls back to the raw ARN rather than emitting a broken
+  // value — the same least-surprising behavior as before the fix.
+  it('Ref to a CC-routed S3Tables::Table with no TableName falls back to the bare ARN', async () => {
+    const bareArn =
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef-example';
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: bareArn,
+          resourceType: 'AWS::S3Tables::Table',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe(bareArn);
+  });
+
+  // The SDK-compound path must NOT consult the state lookup — its physical id
+  // has a pipe, so the after-pipe extraction returns the table name directly
+  // even when the properties carry a different / stale TableName. Guards that
+  // the #974 branch is gated on the pipe-free (CC) shape only.
+  it('Ref to an SDK-provisioned S3Tables::Table uses the compound physical id, not the property', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::S3Tables::Table', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics|events',
+          resourceType: 'AWS::S3Tables::Table',
+          properties: { TableName: 'stale-should-be-ignored' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe('events');
+  });
 
   // AWS::WAFv2::WebACL is the INVERSE divergence: CFn's `Ref` IS the
   // pipe-joined `name|id|scope` compound (docs-explicit), matching the CC
