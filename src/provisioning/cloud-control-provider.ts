@@ -1327,16 +1327,22 @@ export class CloudControlProvider implements ResourceProvider {
 
       case 'AWS::Backup::BackupSelection': {
         // BackupSelection's CC primaryIdentifier is a single `Id` whose VALUE
-        // is the compound `<SelectionId>|<BackupPlanId>` (pipe-joined) — CFn's
-        // Ref returns the SelectionId. `Fn::GetAtt(<Selection>, 'SelectionId')`
-        // would otherwise fall through to the compound physicalId. Extract the
-        // SelectionId from the compound id (before the pipe), and prefer the CC
-        // read-back model's value when available. Best-effort.
+        // is the compound `<SelectionId>_<BackupPlanId>` joined by an UNDERSCORE
+        // (both segments are UUIDs, so `_` is unambiguous) — CFn's Ref returns
+        // the SelectionId. `Fn::GetAtt(<Selection>, 'SelectionId')` would
+        // otherwise fall through to the compound physicalId. Extract the
+        // SelectionId from the compound id (before the first underscore) as a
+        // best-effort fallback, and prefer the CC read-back model's value when
+        // available (issue #995 corrected the separator from `|` to `_`).
         if (!enriched['SelectionId'] || !enriched['BackupPlanId']) {
-          const compoundSegments = physicalId.split('|');
-          if (compoundSegments.length >= 2) {
-            if (!enriched['SelectionId']) enriched['SelectionId'] = compoundSegments[0];
-            if (!enriched['BackupPlanId']) enriched['BackupPlanId'] = compoundSegments[1];
+          const firstUnderscore = physicalId.indexOf('_');
+          if (firstUnderscore > 0) {
+            if (!enriched['SelectionId']) {
+              enriched['SelectionId'] = physicalId.substring(0, firstUnderscore);
+            }
+            if (!enriched['BackupPlanId']) {
+              enriched['BackupPlanId'] = physicalId.substring(firstUnderscore + 1);
+            }
           }
           const model = await this.readBackupResourceModel(resourceType, physicalId);
           if (model) {

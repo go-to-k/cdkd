@@ -3175,6 +3175,62 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe(bareArn);
   });
 
+  // AWS::Backup::BackupSelection (issue #995): CFn `Ref` returns the bare
+  // BackupSelectionId, but the CC primaryIdentifier cdkd stores is the compound
+  // `Id` = `<SelectionId>_<BackupPlanId>` (UNDERSCORE-joined, so the pipe
+  // extractions never apply). The bare SelectionId is recovered from the
+  // enriched `SelectionId` attribute (PR #992), not by splitting the compound.
+  it('Ref to a BackupSelection resolves to the bare SelectionId attribute, not the compound Id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::Backup::BackupSelection', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId:
+            'b2e56751-988c-4a67-8d1a-dfb727929059_025bd996-eb8b-4979-8831-d8e96bded9c5',
+          resourceType: 'AWS::Backup::BackupSelection',
+          properties: {},
+          attributes: {
+            SelectionId: 'b2e56751-988c-4a67-8d1a-dfb727929059',
+            BackupPlanId: '025bd996-eb8b-4979-8831-d8e96bded9c5',
+          },
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe('b2e56751-988c-4a67-8d1a-dfb727929059');
+  });
+
+  // Defensive: a BackupSelection whose state carries no enriched SelectionId
+  // (torn / pre-#992 state) falls back to the raw compound physical id rather
+  // than emitting a broken value — least-surprising, same as the S3Tables case.
+  it('Ref to a BackupSelection with no SelectionId attribute falls back to the compound physical id', async () => {
+    const compound =
+      'b2e56751-988c-4a67-8d1a-dfb727929059_025bd996-eb8b-4979-8831-d8e96bded9c5';
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::Backup::BackupSelection', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: compound,
+          resourceType: 'AWS::Backup::BackupSelection',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe(compound);
+  });
+
   // The SDK-compound path must NOT consult the state lookup — its physical id
   // has a pipe, so the after-pipe extraction returns the table name directly
   // even when the properties carry a different / stale TableName. Guards that

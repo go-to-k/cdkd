@@ -53,6 +53,22 @@ cleanup() {
   done
   aws backup delete-backup-vault --backup-vault-name "${VAULT}" \
     --region "${REGION}" >/dev/null 2>&1 || true
+  # The tag-based selection creates an IAM role (CDK default) that a direct
+  # backup-resource cleanup above does NOT remove; delete it so a re-run's
+  # fresh deploy does not collide with `Role ... already exists`.
+  for ROLE in $(aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, '${STACK}-PlanSelectionRole')].RoleName" \
+      --output text 2>/dev/null); do
+    for POL in $(aws iam list-attached-role-policies --role-name "${ROLE}" \
+        --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+      aws iam detach-role-policy --role-name "${ROLE}" --policy-arn "${POL}" >/dev/null 2>&1 || true
+    done
+    for INLINE in $(aws iam list-role-policies --role-name "${ROLE}" \
+        --query 'PolicyNames[]' --output text 2>/dev/null); do
+      aws iam delete-role-policy --role-name "${ROLE}" --policy-name "${INLINE}" >/dev/null 2>&1 || true
+    done
+    aws iam delete-role --role-name "${ROLE}" >/dev/null 2>&1 || true
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -105,6 +121,30 @@ case "${STATE_VAULT_ARN}" in
   arn:aws:backup:*) echo "    state vault attribute BackupVaultArn is a real ARN: ${STATE_VAULT_ARN}" ;;
   *) echo "FAIL: state vault attribute BackupVaultArn is not an ARN: '${STATE_VAULT_ARN}'" >&2; exit 1 ;;
 esac
+
+# `Ref` on the BackupSelection must resolve to the bare BackupSelectionId, NOT
+# the compound `Id` (`<SelectionId>_<BackupPlanId>`) — issue #995. Assert the
+# SelectionRef output EQUALS the real SelectionId from AWS (an EQUALITY check,
+# not a "lacks a delimiter" check: the compound separator is `_`, so a
+# `grep -v |` style assertion would false-pass on the composite).
+SELECTION_REF=$(echo "${STATE}" | jq -r \
+  '[.outputs | to_entries[] | select(.key | startswith("SelectionRef")) | .value] | first // (.outputs.SelectionRef // "")')
+echo "    SelectionRef output: ${SELECTION_REF}"
+REAL_SELECTION_ID=$(aws backup list-backup-selections --backup-plan-id "${PLAN_ID_FOR_ASSERT:-$(aws backup list-backup-plans --region "${REGION}" --query "BackupPlansList[?BackupPlanName=='${PLAN}'].BackupPlanId | [0]" --output text)}" \
+  --region "${REGION}" --query 'BackupSelectionsList[0].SelectionId' --output text 2>/dev/null)
+echo "    AWS real SelectionId: ${REAL_SELECTION_ID}"
+if [ -z "${REAL_SELECTION_ID}" ] || [ "${REAL_SELECTION_ID}" = "None" ]; then
+  echo "FAIL: could not read the real SelectionId from AWS to compare against" >&2
+  exit 1
+fi
+if [ "${SELECTION_REF}" != "${REAL_SELECTION_ID}" ]; then
+  echo "FAIL: Ref on BackupSelection is '${SELECTION_REF}' but should equal the bare SelectionId '${REAL_SELECTION_ID}' (issue #995 — returning the compound Id)" >&2
+  exit 1
+fi
+case "${SELECTION_REF}" in
+  *_*) echo "FAIL: SelectionRef still contains an underscore (compound Id leaked): '${SELECTION_REF}'" >&2; exit 1 ;;
+esac
+echo "    SelectionRef resolved to the bare SelectionId (Ref segment fix #995 works)"
 
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"
