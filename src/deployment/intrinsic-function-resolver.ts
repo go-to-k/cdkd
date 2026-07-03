@@ -125,8 +125,15 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // S3Tables children (cross-family close-out audit, 2026-07-03): their SDK
   // provider ITSELF stores the compound (`<tableBucketARN>|<namespace>` /
   // `<tableBucketARN>|<namespace>|<tableName>`), so unlike the ApiGateway
-  // family the extraction is load-bearing on BOTH the SDK and CC paths. The
-  // TableBucketARN contains no pipes, so after-LAST-pipe is safe. Docs:
+  // family the extraction is load-bearing on the SDK path for BOTH types. On
+  // the CC path it is load-bearing for Namespace only (compound
+  // primaryIdentifier `[TableBucketARN, Namespace]`); Table's CC
+  // primaryIdentifier is the bare single-segment TableARN, so a #614-routed
+  // Table stores a pipe-free ARN, the extraction no-ops, and its `Ref`
+  // returns the ARN instead of the CFn-documented table name — a KNOWN
+  // RESIDUAL that cannot be fixed from the physical id alone (Table ARNs end
+  // in a UUID, not the name; a fix needs the stored TableName attribute).
+  // The TableBucketARN contains no pipes, so after-LAST-pipe is safe. Docs:
   // Namespace `Ref` returns the namespace name; Table `Ref` returns the
   // table name.
   'AWS::S3Tables::Namespace',

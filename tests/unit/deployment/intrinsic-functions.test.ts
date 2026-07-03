@@ -3074,6 +3074,17 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics|events',
       'events',
     ],
+    // CC-routed S3Tables::Table stores the bare single-segment TableARN
+    // (CC primaryIdentifier is ['/properties/TableARN'], not the compound) —
+    // pipe-free, so the extraction no-ops and the ARN passes through. This
+    // pins the KNOWN RESIDUAL divergence documented in the Set's maintenance
+    // note (CFn Ref = table name, but the name is not reconstructible from
+    // the ARN, which ends in a UUID).
+    [
+      'AWS::S3Tables::Table',
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef-example',
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef-example',
+    ],
   ])(
     'Ref to %s returns the CFn Ref component of the compound physical id',
     async (resourceType, physicalId, expected) => {

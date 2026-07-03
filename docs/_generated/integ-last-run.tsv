@@ -145,7 +145,6 @@ vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
 vpc-nat-gateway	2026-06-21T17:00:38Z	PASS	145	verify.sh	stale-real re-run; deploy 21 + destroy 21 (split by subshell-death, re-destroyed clean); NAT GW gone
-wafv2	2026-06-21T11:19:37Z	PASS	113	standard	sweep-F staleness re-run (rc=0)
 glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
 ecr-scanning	2026-06-21T17:00:53Z	PASS		verify.sh	ECR scanOnPush + KMS encryption CFn->SDK casing; create+update reach AWS; 0 orphans
 lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans
@@ -182,7 +181,7 @@ cross-stack-references	2026-06-27T17:37:40Z	PASS	25	standard	ImportValue strong-
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-eventbridge-scheduler	2026-06-27T19:25:47Z	PASS	53	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+eventbridge-scheduler	2026-07-02T12:35:05Z	PASS	57	verify.sh	regression for new Scheduler SDK provider routing (default group)
 lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 sqs-esm-max-concurrency	2026-06-27T19:25:47Z	PASS	70	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
@@ -203,9 +202,8 @@ loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard e
 loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
 synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
-eventbridge-scheduler	2026-07-02T12:35:05Z	PASS	57	verify.sh	regression for new Scheduler SDK provider routing (default group)
-multi-resource	2026-07-02T15:57:30Z	PASS	71	standard	broad regression for #963 Ref-resolver change, 0 orphans (CR log groups swept)
-apigw-stage-throttling	2026-07-02T15:53:52Z	PASS	70	verify.sh	new #963 fixture: CC-routed Stage Ref + functional curl + update-deployment-swap, 0 orphans
+multi-resource	2026-07-02T17:50:42Z	PASS	64	standard	broad regression for compound-Ref close-out resolver change, 0 orphans (CR log groups swept)
+apigw-stage-throttling	2026-07-02T16:57:21Z	PASS	72	verify.sh	CC-route trigger swapped to AccessLogSettings (#966), all #963 assertions green, 0 orphans
 eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
 lambda	2026-07-02T16:12:06Z	PASS	90	verify.sh	broad integ for named-replacement-collision engine change; clean
 update-replace	2026-07-02T16:12:06Z	PASS	585	verify.sh	fixture updated: BucketName replacement now passes --force-stateful-recreation (post-#929 guard)
@@ -213,7 +211,5 @@ cc-api-fallback	2026-07-02T16:12:06Z	PASS	59	verify.sh	post-merge validation bat
 rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
 cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
 stepfunctions-logging	2026-07-02T16:12:06Z	PASS	72	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
-multi-resource	2026-07-02T16:33:43Z	PASS	59	standard	broad regression for V2 compound-Ref resolver change, 0 orphans (CR log groups swept)
-apigw-stage-throttling	2026-07-02T16:57:21Z	PASS	72	verify.sh	CC-route trigger swapped to AccessLogSettings (#966), all #963 assertions green, 0 orphans
 apigateway	2026-07-02T17:12:19Z	PASS	55	verify.sh	re-run with final #966 binary (root-key + reset-rebuild + corpse-cleanup fixes), 0 orphans
-multi-resource	2026-07-02T17:50:42Z	PASS	64	standard	broad regression for compound-Ref close-out resolver change, 0 orphans (CR log groups swept)
+wafv2	2026-07-03T04:14:53Z	PASS	75	standard	re-run for PR 972 review-fix (wafv2-provider type honesty); 0 errors, retained CW role swept, events pruned
