@@ -803,6 +803,25 @@ export class ECSProvider implements ResourceProvider {
       JSON.stringify(previousProperties['ServiceRegistries'] ?? null) !==
       JSON.stringify(properties['ServiceRegistries'] ?? null);
 
+    // A LoadBalancers / ServiceRegistries change under a non-ECS controller
+    // (CODE_DEPLOY blue/green or EXTERNAL) is applied by AWS via a new
+    // CodeDeploy deployment / task set, NOT UpdateService — cdkd does not
+    // orchestrate those. Fail loudly rather than silently omitting the field
+    // (which would report success, poison state with the new value, and leave
+    // AWS on the old config — the exact silent-drop class #975 fixes).
+    if (!isEcsController && (loadBalancersChanged || serviceRegistriesChanged)) {
+      throw new ProvisioningError(
+        `AWS::ECS::Service '${logicalId}' changes LoadBalancers/ServiceRegistries under the ` +
+          `'${deploymentControllerType}' deployment controller, which applies them via a new ` +
+          `CodeDeploy deployment / task set rather than UpdateService. cdkd does not support ` +
+          `updating these under a non-ECS controller; recreate the service or manage the ` +
+          `blue/green deployment out-of-band.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
     const loadBalancersInput =
       isEcsController && loadBalancersChanged
         ? (this.convertLoadBalancers(

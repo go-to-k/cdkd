@@ -967,7 +967,42 @@ describe('ECSProvider', () => {
         expect(mockSend.mock.calls[1][0].input.serviceRegistries).toEqual([]);
       });
 
-      it('should NOT send LoadBalancers / ServiceRegistries under a non-ECS deployment controller (issue #975)', async () => {
+      it('should THROW on a LoadBalancers / ServiceRegistries change under a non-ECS controller instead of silently dropping (issue #975)', async () => {
+        // AWS applies LB/SR changes under CODE_DEPLOY via a new CodeDeploy
+        // deployment, NOT UpdateService — cdkd cannot honor them, so it must
+        // fail loudly rather than report success + poison state (the silent-
+        // drop class this PR fixes).
+        await expect(
+          provider.update(
+            'MyService',
+            'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            'AWS::ECS::Service',
+            {
+              Cluster: 'my-cluster',
+              ServiceName: 'my-service',
+              DeploymentController: { Type: 'CODE_DEPLOY' },
+              PropagateTags: 'SERVICE',
+              LoadBalancers: [
+                {
+                  TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/new',
+                  ContainerName: 'web',
+                  ContainerPort: 8080,
+                },
+              ],
+              ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-new' }],
+            },
+            {
+              Cluster: 'my-cluster',
+              ServiceName: 'my-service',
+              DeploymentController: { Type: 'CODE_DEPLOY' },
+            }
+          )
+        ).rejects.toThrow(/non-ECS controller|CODE_DEPLOY/);
+        // The UpdateService call must never have been issued.
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('should still update propagateTags under a non-ECS controller when LB/SR are unchanged (issue #975)', async () => {
         mockSend.mockResolvedValueOnce({
           service: {
             serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
@@ -975,6 +1010,13 @@ describe('ECSProvider', () => {
           },
         });
 
+        const lb = [
+          {
+            TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/same',
+            ContainerName: 'web',
+            ContainerPort: 8080,
+          },
+        ];
         await provider.update(
           'MyService',
           'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
@@ -984,25 +1026,20 @@ describe('ECSProvider', () => {
             ServiceName: 'my-service',
             DeploymentController: { Type: 'CODE_DEPLOY' },
             PropagateTags: 'SERVICE',
-            LoadBalancers: [
-              {
-                TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/new',
-                ContainerName: 'web',
-                ContainerPort: 8080,
-              },
-            ],
-            ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-new' }],
+            LoadBalancers: lb,
           },
           {
             Cluster: 'my-cluster',
             ServiceName: 'my-service',
             DeploymentController: { Type: 'CODE_DEPLOY' },
+            PropagateTags: 'NONE',
+            LoadBalancers: lb,
           }
         );
 
         const updateCall = mockSend.mock.calls[0][0];
-        // enableECSManagedTags / propagateTags are always accepted; LB/SR are not
-        // under CODE_DEPLOY, so they must be omitted (undefined) even though they changed.
+        // enableECSManagedTags / propagateTags are accepted under all controllers;
+        // unchanged LB/SR are omitted (no CodeDeploy-only path triggered).
         expect(updateCall.input.propagateTags).toBe('SERVICE');
         expect(updateCall.input.loadBalancers).toBeUndefined();
         expect(updateCall.input.serviceRegistries).toBeUndefined();

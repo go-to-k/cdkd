@@ -213,4 +213,4 @@ servicediscovery	2026-07-02T18:23:15Z	PASS	111	verify.sh	0703 staleness sweep (p
 cloudwatch	2026-07-02T18:23:15Z	PASS	50	standard	0703 staleness sweep (pre-TTL refresh); clean
 docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
 sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated
-ecs-service-update-props	2026-07-03T07:01:01Z	PASS	50	verify.sh	EnableECSManagedTags+PropagateTags UpdateService mapping; clean destroy
+ecs-service-update-props	2026-07-03T07:12:17Z	PASS	50	verify.sh	EnableECSManagedTags+PropagateTags mapping; non-ECS-controller LB/SR now throws not drops
