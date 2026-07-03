@@ -233,6 +233,12 @@
             "command": ".claude/hooks/main-tree-dirty-detector.sh",
             "timeout": 10,
             "statusMessage": "Checking main-tree tracked-file dirtiness..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/main-tree-git-cwd-detector.sh",
+            "timeout": 10,
+            "statusMessage": "Checking for main-tree git cwd-race..."
           }
         ]
       }
