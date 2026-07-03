@@ -439,12 +439,16 @@
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
       "integs": [
         "drift-revert-vpc",
+        "launchtemplate-asg-inplace",
         "remove-protection"
       ],
       "signals": {
         "drift-revert-vpc": [
           "l1",
           "literal"
+        ],
+        "launchtemplate-asg-inplace": [
+          "l2"
         ],
         "remove-protection": [
           "l2",
@@ -849,6 +853,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -916,6 +921,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "local-start-alb-from-state": [
@@ -981,6 +989,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1048,6 +1057,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "local-start-alb-from-state": [
@@ -1135,6 +1147,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1202,6 +1215,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "local-start-alb-from-state": [
@@ -1267,6 +1283,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1334,6 +1351,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "local-start-alb-from-state": [
@@ -1532,6 +1552,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1599,6 +1620,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "local-start-alb-from-state": [
@@ -1675,6 +1699,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1744,6 +1769,9 @@
         "infra-security": [
           "l2"
         ],
+        "launchtemplate-asg-inplace": [
+          "l2"
+        ],
         "local-start-alb-from-state": [
           "l2",
           "literal"
@@ -1807,6 +1835,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1878,6 +1907,9 @@
         "infra-security": [
           "l2"
         ],
+        "launchtemplate-asg-inplace": [
+          "l2"
+        ],
         "local-start-alb-from-state": [
           "l2",
           "literal"
@@ -1944,6 +1976,7 @@
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "infra-security",
+        "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -2011,6 +2044,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "launchtemplate-asg-inplace": [
           "l2"
         ],
         "local-start-alb-from-state": [

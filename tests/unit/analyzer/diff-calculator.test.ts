@@ -1196,6 +1196,204 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(changes.get('Derived')?.changeType).toBe('NO_CHANGE');
   });
 
+  // --- IN-PLACE derived-attribute propagation (issue #985) -----------------
+  // A LaunchTemplate in-place edit bumps its computed LatestVersionNumber, which
+  // is NOT a template property, so the "changed-property NAME" arm above cannot
+  // see it. An AutoScalingGroup reading `Fn::GetAtt[Lt, LatestVersionNumber]`
+  // (the canonical `LaunchTemplate.Version` shape) must still be promoted so it
+  // re-points at the new version in the SAME deploy, not one deploy behind.
+
+  it('promotes a NO_CHANGE ASG that reads LaunchTemplate LatestVersionNumber when the LT is updated in place (issue #985)', async () => {
+    const state = baseState();
+    state.resources['Lt'] = {
+      physicalId: 'lt-123',
+      resourceType: 'AWS::EC2::LaunchTemplate',
+      properties: {
+        LaunchTemplateData: { InstanceType: 't3.micro' },
+      },
+      // Old computed version; the resolver returns this so the ASG's raw GetAtt
+      // resolves to the stale "1" and lands NO_CHANGE without the promotion.
+      attributes: { LatestVersionNumber: '1', DefaultVersionNumber: '1' },
+    };
+    const asgLaunchTemplate = {
+      LaunchTemplateId: { Ref: 'Lt' },
+      Version: { 'Fn::GetAtt': ['Lt', 'LatestVersionNumber'] },
+    };
+    state.resources['Asg'] = {
+      physicalId: 'asg-1',
+      resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+      // State stores the RESOLVED form so a plain compare against the resolved
+      // desired (which the stale resolver renders as the SAME "1") is NO_CHANGE
+      // on its own -- the ONLY reason the ASG becomes UPDATE is the #985
+      // derived-attribute promotion, not a raw-vs-resolved diff artifact.
+      properties: {
+        MinSize: '0',
+        MaxSize: '0',
+        LaunchTemplate: { LaunchTemplateId: 'lt-123', Version: '1' },
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        // In-place InstanceType edit -> bumps LatestVersionNumber 1 -> 2.
+        Lt: {
+          Type: 'AWS::EC2::LaunchTemplate',
+          Properties: { LaunchTemplateData: { InstanceType: 't3.small' } },
+        },
+        // ASG props are byte-identical across phases; only the LT changed.
+        Asg: {
+          Type: 'AWS::AutoScaling::AutoScalingGroup',
+          Properties: { MinSize: '0', MaxSize: '0', LaunchTemplate: asgLaunchTemplate },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Lt')?.changeType).toBe('UPDATE');
+    // The ASG must be promoted even though NO template property of the ASG
+    // changed and LatestVersionNumber is not a property of the LT.
+    expect(changes.get('Asg')?.changeType).toBe('UPDATE');
+    // The synthetic change targets the referencing property and is an in-place
+    // UPDATE (LaunchTemplate is not create-only for an ASG), not a replacement.
+    const ltChange = changes.get('Asg')?.propertyChanges?.find((pc) => pc.path === 'LaunchTemplate');
+    expect(ltChange).toBeDefined();
+    expect(ltChange?.requiresReplacement).toBe(false);
+  });
+
+  it('promotes an ASG that reads LaunchTemplate LatestVersionNumber via Fn::Sub (issue #985)', async () => {
+    const state = baseState();
+    state.resources['Lt'] = {
+      physicalId: 'lt-123',
+      resourceType: 'AWS::EC2::LaunchTemplate',
+      properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
+      attributes: { LatestVersionNumber: '1' },
+    };
+    const versionSub = { 'Fn::Sub': ['${Lt.LatestVersionNumber}', {}] };
+    state.resources['Asg'] = {
+      physicalId: 'asg-1',
+      resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+      properties: { MinSize: '0', MaxSize: '0', LaunchTemplate: { Version: versionSub } },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Lt: {
+          Type: 'AWS::EC2::LaunchTemplate',
+          Properties: { LaunchTemplateData: { InstanceType: 't3.small' } },
+        },
+        Asg: {
+          Type: 'AWS::AutoScaling::AutoScalingGroup',
+          Properties: { MinSize: '0', MaxSize: '0', LaunchTemplate: { Version: versionSub } },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Asg')?.changeType).toBe('UPDATE');
+  });
+
+  it('does NOT promote an ASG reading LatestVersionNumber when the LT is UNCHANGED (issue #985)', async () => {
+    const state = baseState();
+    state.resources['Lt'] = {
+      physicalId: 'lt-123',
+      resourceType: 'AWS::EC2::LaunchTemplate',
+      properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
+      attributes: { LatestVersionNumber: '1' },
+    };
+    const asgLaunchTemplate = {
+      LaunchTemplateId: { Ref: 'Lt' },
+      Version: { 'Fn::GetAtt': ['Lt', 'LatestVersionNumber'] },
+    };
+    state.resources['Asg'] = {
+      physicalId: 'asg-1',
+      resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+      // State stores the RESOLVED form (what the deploy engine persists), so a
+      // plain compare against the resolved desired is NO_CHANGE on its own.
+      properties: {
+        MinSize: '0',
+        MaxSize: '0',
+        LaunchTemplate: { LaunchTemplateId: 'lt-123', Version: '1' },
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        // LT is byte-identical to state -> NO_CHANGE, no version bump.
+        Lt: {
+          Type: 'AWS::EC2::LaunchTemplate',
+          Properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
+        },
+        Asg: {
+          Type: 'AWS::AutoScaling::AutoScalingGroup',
+          Properties: { MinSize: '0', MaxSize: '0', LaunchTemplate: asgLaunchTemplate },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Lt')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('Asg')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('does NOT promote an ASG reading a NON-allow-listed computed attribute of an updated LT (issue #985)', async () => {
+    // Guards the allow list: only LatestVersionNumber / DefaultVersionNumber
+    // trigger promotion. A GetAtt of some other LaunchTemplate attribute (here
+    // the physical LaunchTemplateId, which an in-place update does not move)
+    // must stay NO_CHANGE.
+    const state = baseState();
+    state.resources['Lt'] = {
+      physicalId: 'lt-123',
+      resourceType: 'AWS::EC2::LaunchTemplate',
+      properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
+      attributes: { LaunchTemplateId: 'lt-123', LatestVersionNumber: '1' },
+    };
+    const asgLaunchTemplate = {
+      // Reads the immutable LaunchTemplateId via GetAtt, NOT the version.
+      LaunchTemplateId: { 'Fn::GetAtt': ['Lt', 'LaunchTemplateId'] },
+      Version: '1',
+    };
+    state.resources['Asg'] = {
+      physicalId: 'asg-1',
+      resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+      // State stores the RESOLVED form (LaunchTemplateId resolves to the stable
+      // physical id), so a plain compare is NO_CHANGE on its own.
+      properties: {
+        MinSize: '0',
+        MaxSize: '0',
+        LaunchTemplate: { LaunchTemplateId: 'lt-123', Version: '1' },
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Lt: {
+          Type: 'AWS::EC2::LaunchTemplate',
+          Properties: { LaunchTemplateData: { InstanceType: 't3.small' } },
+        },
+        Asg: {
+          Type: 'AWS::AutoScaling::AutoScalingGroup',
+          Properties: { MinSize: '0', MaxSize: '0', LaunchTemplate: asgLaunchTemplate },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, makeResolver(state));
+
+    expect(changes.get('Lt')?.changeType).toBe('UPDATE');
+    expect(changes.get('Asg')?.changeType).toBe('NO_CHANGE');
+  });
+
   it('does NOT mutate the desired template (resolveBestEffort resolves a clone)', async () => {
     // The intrinsic resolver mutates its input in place; resolveBestEffort must
     // clone first so the raw Fn::GetAtt survives for the deploy phase to
