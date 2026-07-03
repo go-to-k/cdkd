@@ -212,4 +212,4 @@ rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge va
 cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
 stepfunctions-logging	2026-07-02T16:12:06Z	PASS	72	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
 apigateway	2026-07-02T17:12:19Z	PASS	55	verify.sh	re-run with final #966 binary (root-key + reset-rebuild + corpse-cleanup fixes), 0 orphans
-wafv2	2026-07-03T04:14:53Z	PASS	75	standard	re-run for PR 972 review-fix (wafv2-provider type honesty); 0 errors, retained CW role swept, events pruned
+wafv2	2026-07-03T04:24:38Z	PASS	120	standard	re-run on rebased tree (PR 972 + #971 base); 0 errors, retained CW role swept, events pruned
