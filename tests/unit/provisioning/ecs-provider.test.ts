@@ -808,6 +808,246 @@ describe('ECSProvider', () => {
         expect(updateCall.input.desiredCount).toBe(4);
       });
 
+      it('should map EnableECSManagedTags and PropagateTags into UpdateService (issue #975)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            EnableECSManagedTags: true,
+            PropagateTags: 'TASK_DEFINITION',
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            EnableECSManagedTags: false,
+          }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateServiceCommand');
+        expect(updateCall.input.enableECSManagedTags).toBe(true);
+        expect(updateCall.input.propagateTags).toBe('TASK_DEFINITION');
+      });
+
+      it('should map changed LoadBalancers into UpdateService for the ECS controller (issue #975)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            LoadBalancers: [
+              {
+                TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/abc',
+                ContainerName: 'web',
+                ContainerPort: 8080,
+              },
+            ],
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+          }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateServiceCommand');
+        expect(updateCall.input.loadBalancers).toEqual([
+          {
+            targetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/abc',
+            containerName: 'web',
+            containerPort: 8080,
+            loadBalancerName: undefined,
+          },
+        ]);
+      });
+
+      it('should send empty LoadBalancers list on removal for the ECS controller (issue #975)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            LoadBalancers: [
+              {
+                TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/abc',
+                ContainerName: 'web',
+                ContainerPort: 8080,
+              },
+            ],
+          }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.input.loadBalancers).toEqual([]);
+      });
+
+      it('should map changed and removed ServiceRegistries for the ECS controller (issue #975)', async () => {
+        // Changed: pass through
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc' }],
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+          }
+        );
+
+        expect(mockSend.mock.calls[0][0].input.serviceRegistries).toEqual([
+          { registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc' },
+        ]);
+
+        // Removed: empty list
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc' }],
+          }
+        );
+
+        expect(mockSend.mock.calls[1][0].input.serviceRegistries).toEqual([]);
+      });
+
+      it('should NOT send LoadBalancers / ServiceRegistries under a non-ECS deployment controller (issue #975)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DeploymentController: { Type: 'CODE_DEPLOY' },
+            PropagateTags: 'SERVICE',
+            LoadBalancers: [
+              {
+                TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/new',
+                ContainerName: 'web',
+                ContainerPort: 8080,
+              },
+            ],
+            ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-new' }],
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DeploymentController: { Type: 'CODE_DEPLOY' },
+          }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        // enableECSManagedTags / propagateTags are always accepted; LB/SR are not
+        // under CODE_DEPLOY, so they must be omitted (undefined) even though they changed.
+        expect(updateCall.input.propagateTags).toBe('SERVICE');
+        expect(updateCall.input.loadBalancers).toBeUndefined();
+        expect(updateCall.input.serviceRegistries).toBeUndefined();
+      });
+
+      it('should not send unchanged LoadBalancers / ServiceRegistries (no-drift stays mutation-free)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        const lbs = [
+          {
+            TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/tg/abc',
+            ContainerName: 'web',
+            ContainerPort: 8080,
+          },
+        ];
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DesiredCount: 4,
+            LoadBalancers: lbs,
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DesiredCount: 2,
+            LoadBalancers: lbs,
+          }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.input.desiredCount).toBe(4);
+        expect(updateCall.input.loadBalancers).toBeUndefined();
+        expect(updateCall.input.serviceRegistries).toBeUndefined();
+      });
+
       it('should throw on immutable ServiceName change', async () => {
         await expect(
           provider.update(
