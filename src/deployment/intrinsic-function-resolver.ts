@@ -129,13 +129,15 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // the CC path it is load-bearing for Namespace only (compound
   // primaryIdentifier `[TableBucketARN, Namespace]`); Table's CC
   // primaryIdentifier is the bare single-segment TableARN, so a #614-routed
-  // Table stores a pipe-free ARN, the extraction no-ops, and its `Ref`
-  // returns the ARN instead of the CFn-documented table name — a KNOWN
-  // RESIDUAL that cannot be fixed from the physical id alone (Table ARNs end
-  // in a UUID, not the name; a fix needs the stored TableName attribute).
-  // The TableBucketARN contains no pipes, so after-LAST-pipe is safe. Docs:
-  // Namespace `Ref` returns the namespace name; Table `Ref` returns the
-  // table name.
+  // Table stores a pipe-free ARN and the after-pipe extraction no-ops. That
+  // pipe-free ARN ends in a UUID (not the table name CFn `Ref` returns) and is
+  // NOT reconstructible from the physical id alone — so the CC-routed table
+  // name is recovered from the stored `TableName` property via the
+  // `stateLookup` seam in `cfnRefValueFromPhysicalId` (issue #974), which fires
+  // ONLY when the physical id has no pipe (i.e. the CC path) and leaves the SDK
+  // compound path untouched. The TableBucketARN contains no pipes, so
+  // after-LAST-pipe is safe on the SDK path. Docs: Namespace `Ref` returns the
+  // namespace name; Table `Ref` returns the table name.
   'AWS::S3Tables::Namespace',
   'AWS::S3Tables::Table',
 ]);
@@ -197,14 +199,76 @@ const REF_RETURNS_NAME_FROM_ARN = new Map<string, string>([
 ]);
 
 /**
+ * Optional state-backed lookup so {@link cfnRefValueFromPhysicalId} can recover
+ * a `Ref` value that is NOT reconstructible from the physical id alone (see the
+ * `AWS::S3Tables::Table` CC-routed case). Both call sites pass the resource's
+ * stored `properties` then `attributes` map, so a template property recorded at
+ * create time (`TableName`) or an enriched attribute is reachable. Returns the
+ * stringified value for the first key present, or `undefined` when none match.
+ */
+export type RefStateLookup = (keys: readonly string[]) => string | undefined;
+
+/**
+ * Build a {@link RefStateLookup} from a resource's stored state maps, checking
+ * `properties` first (the template value CFn `Ref` mirrors) then `attributes`.
+ * Only non-empty string values qualify — an intrinsic-shaped or empty value is
+ * skipped so the caller falls back to the raw physical id rather than emitting
+ * a broken `[object Object]` / `''`.
+ */
+export function refStateLookupFromResource(resource: {
+  properties?: Record<string, unknown>;
+  attributes?: Record<string, unknown>;
+}): RefStateLookup {
+  return (keys) => {
+    for (const source of [resource.properties, resource.attributes]) {
+      if (!source) continue;
+      for (const key of keys) {
+        const value = source[key];
+        if (typeof value === 'string' && value.length > 0) {
+          return value;
+        }
+      }
+    }
+    return undefined;
+  };
+}
+
+/**
  * Resolve the value CloudFormation's `Ref` returns for a resource, given its
  * type and cdkd-stored physical id. Pure function shared by the deploy-time
  * resolver ({@link IntrinsicFunctionResolver.resolveRefValue}) and the
  * `cdkd orphan` rewriter's `{Ref: <orphan>}` substitution, so both derive
  * identical CFn `Ref` semantics (after-pipe / before-first-pipe compound-id
  * extraction and name-from-ARN extraction included).
+ *
+ * `stateLookup` (optional) recovers a `Ref` value that the physical id cannot
+ * yield — the `AWS::S3Tables::Table` CC-routed case, whose bare TableARN ends
+ * in a UUID (not the table name CFn `Ref` returns), so the name is read from
+ * the stored `TableName` property/attribute instead (issue #974).
  */
-export function cfnRefValueFromPhysicalId(resourceType: string, physicalId: string): string {
+export function cfnRefValueFromPhysicalId(
+  resourceType: string,
+  physicalId: string,
+  stateLookup?: RefStateLookup
+): string {
+  // AWS::S3Tables::Table diverges by ROUTING layer. The SDK provider stores the
+  // compound `<tableBucketARN>|<namespace>|<tableName>` (the after-pipe
+  // extraction below returns the table name). But a #614-routed Table (its SDK
+  // handledProperties omit IcebergMetadata / Compaction / SnapshotManagement /
+  // WithoutMetadata — IcebergMetadata is the everyday schema-bearing path) goes
+  // through Cloud Control, whose primaryIdentifier is the bare single-segment
+  // `TableARN` — pipe-free, and the ARN ends in a UUID, not the table name CFn
+  // `Ref` returns. So when the physical id has no pipe, recover the name from
+  // the stored `TableName` property (or the `Name` alias older fixtures use)
+  // before falling through to the after-pipe extraction, which would no-op and
+  // leak the ARN (issue #974). SDK-provisioned Tables keep the compound and
+  // never take this branch.
+  if (resourceType === 'AWS::S3Tables::Table' && !physicalId.includes('|') && stateLookup) {
+    const tableName = stateLookup(['TableName', 'Name']);
+    if (tableName) {
+      return tableName;
+    }
+  }
   // AWS::WAFv2::WebACL is the inverse of the usual divergence: CFn's `Ref` IS
   // the pipe-joined compound `name|id|scope` (docs-explicit, e.g.
   // `my-webacl-name|1234a1a-...|REGIONAL`), which matches the CC identifier —
@@ -949,9 +1013,20 @@ export class IntrinsicFunctionResolver {
    * calling `events:*` APIs by name or composing the name into another string
    * would otherwise get the full ARN) and `AWS::CloudTrail::Trail` (`Ref` is
    * the trail name). The name is extracted from the stored ARN.
+   *
+   * `AWS::S3Tables::Table` is a hybrid: on the SDK path its compound physical
+   * id yields the table name via the after-pipe extraction, but a #614-routed
+   * (Cloud Control) Table stores only the bare TableARN (which ends in a UUID,
+   * not the name), so the resolver passes the resource's stored `properties` /
+   * `attributes` as a `stateLookup` and `cfnRefValueFromPhysicalId` recovers
+   * the name from the `TableName` property (issue #974).
    */
   private resolveRefValue(resource: ResourceState): string {
-    return cfnRefValueFromPhysicalId(resource.resourceType, resource.physicalId);
+    return cfnRefValueFromPhysicalId(
+      resource.resourceType,
+      resource.physicalId,
+      refStateLookupFromResource(resource)
+    );
   }
 
   /**
