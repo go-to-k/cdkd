@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateTopicCommand,
+  DeleteTopicCommand,
   SubscribeCommand,
   UnsubscribeCommand,
   ListSubscriptionsByTopicCommand,
@@ -81,6 +82,35 @@ describe('SNSTopicProvider inline Subscription (issue #980)', () => {
       Endpoint: QUEUE_ARN_B,
       Attributes: { RawMessageDelivery: 'true' },
     });
+  });
+
+  it('create() deletes the topic when an inline Subscribe fails (no orphan)', async () => {
+    // The subscribe loop runs INSIDE the create() wiring try/catch, so a
+    // mid-subscribe failure best-effort-deletes the topic rather than leaving
+    // it (with a partial subscription set) for the idempotent CreateTopic to
+    // silently adopt on the next deploy. Regression guard for the PR #991 review.
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof CreateTopicCommand) {
+        return Promise.resolve({ TopicArn: TOPIC_ARN });
+      }
+      if (cmd instanceof SubscribeCommand) {
+        return Promise.reject(new Error('InvalidParameter: Endpoint'));
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      provider.create('MyTopic', 'AWS::SNS::Topic', {
+        TopicName: 'my-topic',
+        Subscription: [{ Protocol: 'sqs', Endpoint: QUEUE_ARN_A }],
+      })
+    ).rejects.toThrow('InvalidParameter');
+
+    const deleteCalls = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof DeleteTopicCommand);
+    expect(deleteCalls).toHaveLength(1);
+    expect(deleteCalls[0].input).toMatchObject({ TopicArn: TOPIC_ARN });
   });
 
   it('create() does not Subscribe when no Subscription property is present', async () => {

@@ -231,6 +231,23 @@ export class SNSTopicProvider implements ResourceProvider {
             }
           }
         }
+
+        // Inline Subscription property - matches CloudFormation, which creates
+        // (and later updates) subscriptions declared inline on the Topic. CDK's
+        // L2 `topic.addSubscription()` emits separate `AWS::SNS::Subscription`
+        // resources (handled by their own provider), but L1 `CfnTopic` with a
+        // `subscription: [...]` list AND migrated CloudFormation templates carry
+        // the subscriptions inline on the Topic - those were previously dropped
+        // silently (issue #980). Subscribe for each entry. This runs INSIDE the
+        // wiring try/catch so a mid-subscribe failure best-effort-deletes the
+        // topic rather than orphaning it with a partial subscription set (which
+        // the idempotent CreateTopic would silently adopt on the next deploy).
+        if (Array.isArray(properties['Subscription'])) {
+          const subscriptions = properties['Subscription'] as Array<Record<string, unknown>>;
+          for (const sub of subscriptions) {
+            await this.subscribeInline(topicArn, sub, logicalId);
+          }
+        }
       } catch (innerError) {
         try {
           await this.snsClient.send(new DeleteTopicCommand({ TopicArn: topicArn }));
@@ -243,20 +260,6 @@ export class SNSTopicProvider implements ResourceProvider {
           );
         }
         throw innerError;
-      }
-
-      // Inline Subscription property — matches CloudFormation, which creates
-      // (and later updates) subscriptions declared inline on the Topic. CDK's
-      // L2 `topic.addSubscription()` emits separate `AWS::SNS::Subscription`
-      // resources (handled by their own provider), but L1 `CfnTopic` with a
-      // `subscription: [...]` list AND migrated CloudFormation templates carry
-      // the subscriptions inline on the Topic — those were previously dropped
-      // silently (issue #980). Subscribe for each entry.
-      if (properties['Subscription']) {
-        const subscriptions = properties['Subscription'] as Array<Record<string, unknown>>;
-        for (const sub of subscriptions) {
-          await this.subscribeInline(topicArn, sub, logicalId);
-        }
       }
 
       this.logger.debug(`Successfully created SNS topic ${logicalId}: ${topicArn}`);
@@ -476,6 +479,14 @@ export class SNSTopicProvider implements ResourceProvider {
    * carry — resolve it via `ListSubscriptionsByTopic` (paginated). A removed
    * entry whose subscription is still `PendingConfirmation` (never confirmed)
    * has no ARN to unsubscribe and is skipped with a debug log.
+   *
+   * KNOWN LIMITATION: identity is `(Protocol, Endpoint)` only, so an
+   * attribute-only change on an UNCHANGED endpoint (e.g. editing `FilterPolicy`
+   * / `RawMessageDelivery` while keeping the same protocol+endpoint) is neither
+   * an add nor a remove and is therefore NOT re-applied here — it would need a
+   * `SetSubscriptionAttributes` pass. CloudFormation updates those in place.
+   * The primary #980 silent-drop (create / add / remove / drift) is fixed; the
+   * attribute-only in-place update is a deliberately-scoped follow-up.
    */
   private async reconcileInlineSubscriptions(
     topicArn: string,
@@ -484,7 +495,7 @@ export class SNSTopicProvider implements ResourceProvider {
     logicalId: string
   ): Promise<void> {
     const key = (protocol: unknown, endpoint: unknown): string =>
-      `${String(protocol)} ${String(endpoint)}`;
+      `${String(protocol)}${String(endpoint)}`;
 
     const oldKeys = new Set(oldSubs.map((s) => key(s['Protocol'], s['Endpoint'])));
     const newKeys = new Set(newSubs.map((s) => key(s['Protocol'], s['Endpoint'])));
