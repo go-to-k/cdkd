@@ -118,6 +118,7 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
     it('issues UpdateTable with the new OnDemandThroughput when it changes', async () => {
       primeDescribeTable();
       mockSend.mockResolvedValueOnce({}); // UpdateTable
+      primeDescribeTable(); // waitForTableActiveAfterUpdate
 
       await provider.update(
         'L',
@@ -139,6 +140,7 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
     it('issues UpdateTable when OnDemandThroughput is newly added', async () => {
       primeDescribeTable();
       mockSend.mockResolvedValueOnce({}); // UpdateTable
+      primeDescribeTable(); // waitForTableActiveAfterUpdate
 
       await provider.update(
         'L',

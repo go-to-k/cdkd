@@ -648,6 +648,99 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
     });
   });
 
+  describe('OnDemand/Warm throughput UpdateTable waits for ACTIVE (follow-up to #989)', () => {
+    // The command class of each send, in order. UpdateTable is async, so a
+    // combined update that changes OnDemandThroughput (or WarmThroughput) AND
+    // a later prop that issues its OWN UpdateTable (SSE / Stream / GSI) must
+    // wait for ACTIVE between the two UpdateTables — otherwise the second call
+    // races a still-UPDATING table and AWS throws ResourceInUseException.
+    const sentCommandNames = () =>
+      mockSend.mock.calls.map((c) => (c[0] as { constructor: { name: string } }).constructor.name);
+
+    it('waits (DescribeTable) between the OnDemandThroughput UpdateTable and a later SSE UpdateTable', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable (update reads current)
+        .mockResolvedValueOnce({}) // UpdateTable (OnDemandThroughput)
+        .mockResolvedValueOnce(activeTable()) // waitForTableActiveAfterUpdate (after OnDemand)
+        .mockResolvedValueOnce({}) // UpdateTable (SSE)
+        .mockResolvedValueOnce(activeTable()); // waitForTableActiveAfterUpdate (after SSE)
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        {
+          ...baseCreateProps,
+          OnDemandThroughput: { MaxReadRequestUnits: 100, MaxWriteRequestUnits: 100 },
+          SSESpecification: { SSEEnabled: true },
+        },
+        {
+          ...baseCreateProps,
+          OnDemandThroughput: { MaxReadRequestUnits: 50, MaxWriteRequestUnits: 50 },
+          SSESpecification: { SSEEnabled: false },
+        }
+      );
+
+      // Ordered sequence pins the wait BETWEEN the two UpdateTables: the
+      // OnDemand UpdateTable, then a DescribeTable (the wait), then the SSE
+      // UpdateTable.
+      expect(sentCommandNames()).toEqual([
+        'DescribeTableCommand', // update reads current
+        'UpdateTableCommand', // OnDemandThroughput
+        'DescribeTableCommand', // waitForTableActiveAfterUpdate
+        'UpdateTableCommand', // SSESpecification
+        'DescribeTableCommand', // waitForTableActiveAfterUpdate
+      ]);
+
+      const updateInputs = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((cmd) => cmd instanceof UpdateTableCommand)
+        .map((cmd) => (cmd as { input: Record<string, unknown> }).input);
+      expect(updateInputs[0].OnDemandThroughput).toBeDefined();
+      expect(updateInputs[1].SSESpecification).toBeDefined();
+    });
+
+    it('waits (DescribeTable) between the WarmThroughput UpdateTable and a later SSE UpdateTable', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable (update reads current)
+        .mockResolvedValueOnce({}) // UpdateTable (WarmThroughput)
+        .mockResolvedValueOnce(activeTable()) // waitForTableActiveAfterUpdate (after Warm)
+        .mockResolvedValueOnce({}) // UpdateTable (SSE)
+        .mockResolvedValueOnce(activeTable()); // waitForTableActiveAfterUpdate (after SSE)
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        {
+          ...baseCreateProps,
+          WarmThroughput: { ReadUnitsPerSecond: 20000, WriteUnitsPerSecond: 20000 },
+          SSESpecification: { SSEEnabled: true },
+        },
+        {
+          ...baseCreateProps,
+          WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 12000 },
+          SSESpecification: { SSEEnabled: false },
+        }
+      );
+
+      expect(sentCommandNames()).toEqual([
+        'DescribeTableCommand', // update reads current
+        'UpdateTableCommand', // WarmThroughput
+        'DescribeTableCommand', // waitForTableActiveAfterUpdate
+        'UpdateTableCommand', // SSESpecification
+        'DescribeTableCommand', // waitForTableActiveAfterUpdate
+      ]);
+
+      const updateInputs = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((cmd) => cmd instanceof UpdateTableCommand)
+        .map((cmd) => (cmd as { input: Record<string, unknown> }).input);
+      expect(updateInputs[0].WarmThroughput).toBeDefined();
+      expect(updateInputs[1].SSESpecification).toBeDefined();
+    });
+  });
+
   describe('ContributorInsightsSpecification', () => {
     it('enables contributor insights with the mode on create', async () => {
       mockSend

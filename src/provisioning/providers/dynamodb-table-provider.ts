@@ -506,6 +506,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
               OnDemandThroughput: properties['OnDemandThroughput'] as OnDemandThroughput,
             })
           );
+          // UpdateTable is async; wait for ACTIVE so later branches (SSE /
+          // Stream / GSI) don't race a still-UPDATING table.
+          await this.waitForTableActiveAfterUpdate(physicalId);
           this.logger.debug(`Updated OnDemandThroughput on DynamoDB table ${physicalId}`);
         }
       }
@@ -527,6 +530,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
               WarmThroughput: properties['WarmThroughput'] as WarmThroughput,
             })
           );
+          // UpdateTable is async; wait for ACTIVE so later branches (SSE /
+          // Stream / GSI) don't race a still-UPDATING table.
+          await this.waitForTableActiveAfterUpdate(physicalId);
           this.logger.debug(`Updated WarmThroughput on DynamoDB table ${physicalId}`);
         }
       }
