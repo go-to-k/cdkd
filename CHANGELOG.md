@@ -1,3 +1,10 @@
+## [0.231.11](https://github.com/go-to-k/cdkd/compare/v0.231.10...v0.231.11) (2026-07-03)
+
+
+### Bug Fixes
+
+* **provisioning:** wait for table ACTIVE after DynamoDB OnDemand/Warm throughput update ([#994](https://github.com/go-to-k/cdkd/issues/994)) ([93415a2](https://github.com/go-to-k/cdkd/commit/93415a2fec18a9e2108e56749eea3f9b5b22c728))
+
 ## [0.231.10](https://github.com/go-to-k/cdkd/compare/v0.231.9...v0.231.10) (2026-07-03)
 
 
