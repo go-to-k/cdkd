@@ -1126,12 +1126,10 @@ describe('CloudControlProvider Backup attribute enrichment (CC-API routing, issu
     provider = new CloudControlProvider();
   });
 
-  it('BackupVault: overlays BackupVaultArn / EncryptionKeyArn from the CC GetResource model', async () => {
+  it('BackupVault: overlays BackupVaultArn from the CC GetResource model', async () => {
     mockCcModel({
       BackupVaultName: 'my-vault',
       BackupVaultArn: 'arn:aws:backup:us-east-1:123456789012:backup-vault:my-vault',
-      EncryptionKeyArn:
-        'arn:aws:kms:us-east-1:123456789012:key/abcd1234-5678-90ab-cdef-1234567890ab',
     });
 
     // physicalId is the vault NAME (the type's Ref-return), NOT the ARN.
@@ -1139,9 +1137,6 @@ describe('CloudControlProvider Backup attribute enrichment (CC-API routing, issu
 
     expect(enriched['BackupVaultArn']).toBe(
       'arn:aws:backup:us-east-1:123456789012:backup-vault:my-vault'
-    );
-    expect(enriched['EncryptionKeyArn']).toBe(
-      'arn:aws:kms:us-east-1:123456789012:key/abcd1234-5678-90ab-cdef-1234567890ab'
     );
     // BackupVaultName resolves to the physicalId even when the model omits it.
     expect(enriched['BackupVaultName']).toBe('my-vault');
@@ -1198,20 +1193,23 @@ describe('CloudControlProvider Backup attribute enrichment (CC-API routing, issu
   });
 
   it('BackupSelection: extracts SelectionId from the compound physicalId and prefers the CC model value', async () => {
+    // Return DIFFERENT values from the read-back than the compound-id split
+    // would produce, so the assertion proves the CC model value wins (not that
+    // the split coincidentally matches).
     mockCcModel({
-      SelectionId: 'sel-abcdef',
-      BackupPlanId: 'plan-1234',
+      SelectionId: 'sel-from-model',
+      BackupPlanId: 'plan-from-model',
     });
 
-    // CC compound primaryIdentifier is `<SelectionId>|<BackupPlanId>`.
+    // CC primaryIdentifier value is `<SelectionId>|<BackupPlanId>`.
     const enriched = await enrich(
       'AWS::Backup::BackupSelection',
       'sel-abcdef|plan-1234',
       {}
     );
 
-    expect(enriched['SelectionId']).toBe('sel-abcdef');
-    expect(enriched['BackupPlanId']).toBe('plan-1234');
+    expect(enriched['SelectionId']).toBe('sel-from-model');
+    expect(enriched['BackupPlanId']).toBe('plan-from-model');
   });
 
   it('BackupSelection: falls back to the compound-id split when the CC read fails', async () => {

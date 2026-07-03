@@ -1268,17 +1268,17 @@ export class CloudControlProvider implements ResourceProvider {
         // constructAttribute to the physicalId — which for BackupVault is the
         // vault NAME, not the ARN. AWS then rejects a BackupPlan rule /
         // selection that references the bare name where an ARN is required.
-        // Overlay the ARN (and EncryptionKeyArn) from a CC GetResource read-back
-        // on the physicalId. Best-effort: a failed read leaves the CC-API
-        // attribute shape unchanged and never fails the deploy.
-        if (!enriched['BackupVaultArn'] || !enriched['EncryptionKeyArn']) {
+        // Overlay the ARN from a CC GetResource read-back on the physicalId.
+        // The read-back is gated SOLELY on the ARN (the one real computed
+        // GetAtt target) — BackupVaultName has a cheap physicalId fallback
+        // below and does not justify a read-back on its own. Best-effort: a
+        // failed read leaves the CC-API attribute shape unchanged and never
+        // fails the deploy.
+        if (!enriched['BackupVaultArn']) {
           const model = await this.readBackupResourceModel(resourceType, physicalId);
           if (model) {
-            if (!enriched['BackupVaultArn'] && typeof model['BackupVaultArn'] === 'string') {
+            if (typeof model['BackupVaultArn'] === 'string') {
               enriched['BackupVaultArn'] = model['BackupVaultArn'];
-            }
-            if (!enriched['EncryptionKeyArn'] && typeof model['EncryptionKeyArn'] === 'string') {
-              enriched['EncryptionKeyArn'] = model['EncryptionKeyArn'];
             }
             // BackupVaultName Ref-return is the physicalId; surface it too so
             // Fn::GetAtt(<Vault>, 'BackupVaultName') resolves.
@@ -1326,8 +1326,8 @@ export class CloudControlProvider implements ResourceProvider {
       }
 
       case 'AWS::Backup::BackupSelection': {
-        // BackupSelection's CC primaryIdentifier is the compound
-        // `<SelectionId>|<BackupPlanId>` (pipe-joined by cdkd) — CFn's
+        // BackupSelection's CC primaryIdentifier is a single `Id` whose VALUE
+        // is the compound `<SelectionId>|<BackupPlanId>` (pipe-joined) — CFn's
         // Ref returns the SelectionId. `Fn::GetAtt(<Selection>, 'SelectionId')`
         // would otherwise fall through to the compound physicalId. Extract the
         // SelectionId from the compound id (before the pipe), and prefer the CC
