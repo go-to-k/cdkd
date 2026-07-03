@@ -1,3 +1,10 @@
+## [0.231.3](https://github.com/go-to-k/cdkd/compare/v0.231.2...v0.231.3) (2026-07-03)
+
+
+### Bug Fixes
+
+* **provisioning:** map EnableECSManagedTags / PropagateTags / LoadBalancers / ServiceRegistries into ECS UpdateService ([#983](https://github.com/go-to-k/cdkd/issues/983)) ([d53d0d2](https://github.com/go-to-k/cdkd/commit/d53d0d2a9e67d05c9a10a20400e5a7d418cf72ce))
+
 ## [0.231.2](https://github.com/go-to-k/cdkd/compare/v0.231.1...v0.231.2) (2026-07-03)
 
 
