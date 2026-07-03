@@ -5,11 +5,15 @@ import {
   GetTopicAttributesCommand,
   ListTopicsCommand,
   ListTagsForResourceCommand,
+  ListSubscriptionsByTopicCommand,
   SetTopicAttributesCommand,
+  SubscribeCommand,
+  UnsubscribeCommand,
   TagResourceCommand,
   UntagResourceCommand,
   NotFoundException,
   type CreateTopicCommandInput,
+  type SubscribeCommandInput,
   type Tag,
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
@@ -241,9 +245,19 @@ export class SNSTopicProvider implements ResourceProvider {
         throw innerError;
       }
 
-      // Note: Subscription property is handled by CloudFormation as separate resources
-      // in CDK, so we don't need to create subscriptions here. The Subscription property
-      // is declared in handledProperties to prevent CC API fallback.
+      // Inline Subscription property — matches CloudFormation, which creates
+      // (and later updates) subscriptions declared inline on the Topic. CDK's
+      // L2 `topic.addSubscription()` emits separate `AWS::SNS::Subscription`
+      // resources (handled by their own provider), but L1 `CfnTopic` with a
+      // `subscription: [...]` list AND migrated CloudFormation templates carry
+      // the subscriptions inline on the Topic — those were previously dropped
+      // silently (issue #980). Subscribe for each entry.
+      if (properties['Subscription']) {
+        const subscriptions = properties['Subscription'] as Array<Record<string, unknown>>;
+        for (const sub of subscriptions) {
+          await this.subscribeInline(topicArn, sub, logicalId);
+        }
+      }
 
       this.logger.debug(`Successfully created SNS topic ${logicalId}: ${topicArn}`);
 
@@ -360,6 +374,22 @@ export class SNSTopicProvider implements ResourceProvider {
       }
     }
 
+    // Update inline Subscription list if changed (issue #980). CloudFormation
+    // adds newly-declared inline subscriptions and removes dropped ones on an
+    // UPDATE; mirror that. Matching is on (Protocol, Endpoint) — the identity
+    // AWS uses when listing a topic's subscriptions.
+    if (
+      JSON.stringify(properties['Subscription']) !==
+      JSON.stringify(previousProperties['Subscription'])
+    ) {
+      await this.reconcileInlineSubscriptions(
+        physicalId,
+        (previousProperties['Subscription'] as Array<Record<string, unknown>>) || [],
+        (properties['Subscription'] as Array<Record<string, unknown>>) || [],
+        logicalId
+      );
+    }
+
     // Update Tags if changed
     const newTags = properties['Tags'] as Tag[] | undefined;
     const oldTags = previousProperties['Tags'] as Tag[] | undefined;
@@ -398,6 +428,105 @@ export class SNSTopicProvider implements ResourceProvider {
         TopicName: topicName,
       },
     };
+  }
+
+  /**
+   * Subscribe a single inline `Subscription` entry to the topic.
+   *
+   * Each entry carries at least `Protocol` + `Endpoint` (the two required CFn
+   * fields). Documented optional subscription attributes that are settable at
+   * subscribe time are passed through the `Subscribe` `Attributes` map
+   * (`RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `RedrivePolicy`,
+   * `DeliveryPolicy`, `ReplayPolicy`, `SubscriptionRoleArn`). Object-valued
+   * attributes (policies) are JSON-stringified; everything else is stringified
+   * verbatim — AWS's `SubscribeCommand` accepts `Attributes` as a
+   * `Record<string,string>`.
+   */
+  private async subscribeInline(
+    topicArn: string,
+    sub: Record<string, unknown>,
+    logicalId: string
+  ): Promise<void> {
+    const protocol = sub['Protocol'];
+    const endpoint = sub['Endpoint'];
+    if (typeof protocol !== 'string' || typeof endpoint !== 'string') {
+      throw new Error(
+        `SNS topic ${logicalId}: inline Subscription entry requires string Protocol and Endpoint, got ${JSON.stringify(sub)}`
+      );
+    }
+
+    const attributes = buildSubscriptionAttributes(sub);
+    const input: SubscribeCommandInput = {
+      TopicArn: topicArn,
+      Protocol: protocol,
+      Endpoint: endpoint,
+      ReturnSubscriptionArn: true,
+      ...(Object.keys(attributes).length > 0 && { Attributes: attributes }),
+    };
+    await this.snsClient.send(new SubscribeCommand(input));
+    this.logger.debug(`Subscribed ${protocol}:${endpoint} to topic ${topicArn} for ${logicalId}`);
+  }
+
+  /**
+   * Reconcile the inline `Subscription` list on an UPDATE: add entries present
+   * in the new list but not the old, and unsubscribe entries present in the
+   * old list but not the new. Identity is `(Protocol, Endpoint)`.
+   *
+   * Removals need the live `SubscriptionArn`, which the template does not
+   * carry — resolve it via `ListSubscriptionsByTopic` (paginated). A removed
+   * entry whose subscription is still `PendingConfirmation` (never confirmed)
+   * has no ARN to unsubscribe and is skipped with a debug log.
+   */
+  private async reconcileInlineSubscriptions(
+    topicArn: string,
+    oldSubs: Array<Record<string, unknown>>,
+    newSubs: Array<Record<string, unknown>>,
+    logicalId: string
+  ): Promise<void> {
+    const key = (protocol: unknown, endpoint: unknown): string =>
+      `${String(protocol)} ${String(endpoint)}`;
+
+    const oldKeys = new Set(oldSubs.map((s) => key(s['Protocol'], s['Endpoint'])));
+    const newKeys = new Set(newSubs.map((s) => key(s['Protocol'], s['Endpoint'])));
+
+    // Additions: in new, not in old.
+    for (const sub of newSubs) {
+      if (!oldKeys.has(key(sub['Protocol'], sub['Endpoint']))) {
+        await this.subscribeInline(topicArn, sub, logicalId);
+      }
+    }
+
+    // Removals: in old, not in new. Resolve ARNs from AWS.
+    const removed = oldSubs.filter((s) => !newKeys.has(key(s['Protocol'], s['Endpoint'])));
+    if (removed.length === 0) return;
+
+    const arnByKey = new Map<string, string>();
+    let nextToken: string | undefined;
+    do {
+      const resp = await this.snsClient.send(
+        new ListSubscriptionsByTopicCommand({
+          TopicArn: topicArn,
+          ...(nextToken && { NextToken: nextToken }),
+        })
+      );
+      for (const s of resp.Subscriptions ?? []) {
+        if (!s.SubscriptionArn || s.SubscriptionArn === 'PendingConfirmation') continue;
+        arnByKey.set(key(s.Protocol, s.Endpoint), s.SubscriptionArn);
+      }
+      nextToken = resp.NextToken;
+    } while (nextToken);
+
+    for (const sub of removed) {
+      const arn = arnByKey.get(key(sub['Protocol'], sub['Endpoint']));
+      if (!arn) {
+        this.logger.debug(
+          `No confirmed SubscriptionArn for ${String(sub['Protocol'])}:${String(sub['Endpoint'])} on topic ${topicArn} — skipping unsubscribe`
+        );
+        continue;
+      }
+      await this.snsClient.send(new UnsubscribeCommand({ SubscriptionArn: arn }));
+      this.logger.debug(`Unsubscribed ${arn} from topic ${topicArn} for ${logicalId}`);
+    }
   }
 
   /**
@@ -499,8 +628,12 @@ export class SNSTopicProvider implements ResourceProvider {
    * comparator would fire false drift on every clean run for any
    * lowercase-`Protocol` template.
    *
-   * `Subscription` is omitted because CDK manages it via separate
-   * `AWS::SNS::Subscription` resources, not as a Topic property.
+   * `Subscription` is reverse-mapped from `ListSubscriptionsByTopic` ONLY
+   * when the passed-in `properties` recorded an inline `Subscription` list
+   * (issue #980) — L1 `CfnTopic` / migrated CloudFormation. A Topic whose
+   * subscriptions are separate `AWS::SNS::Subscription` resources (CDK L2
+   * `addSubscription()`) has no inline list in state, so its subscriptions
+   * are not surfaced here (they belong to sibling resources).
    *
    * Returns `undefined` when the topic is gone (`NotFoundException`).
    */
@@ -593,17 +726,54 @@ export class SNSTopicProvider implements ResourceProvider {
       throw err;
     }
 
+    // Inline Subscription list — only surfaced for drift when the state
+    // actually recorded inline subscriptions (issue #980). CDK's L2
+    // `addSubscription()` manages subscriptions as separate
+    // `AWS::SNS::Subscription` resources, so a Topic deployed that way has
+    // `Subscription` absent from state; emitting AWS's subscriptions there
+    // would produce guaranteed false drift (the subscriptions belong to
+    // sibling resources, not the Topic property). When state DOES carry
+    // inline subscriptions (L1 `CfnTopic` / migrated CFn), reverse-map the
+    // live `(Protocol, Endpoint)` pairs so drift can compare them.
+    if (Array.isArray(properties?.['Subscription'])) {
+      const subs: Array<Record<string, unknown>> = [];
+      let nextToken: string | undefined;
+      do {
+        const resp = await this.snsClient.send(
+          new ListSubscriptionsByTopicCommand({
+            TopicArn: physicalId,
+            ...(nextToken && { NextToken: nextToken }),
+          })
+        );
+        for (const s of resp.Subscriptions ?? []) {
+          if (!s.Protocol || !s.Endpoint) continue;
+          subs.push({ Protocol: s.Protocol, Endpoint: s.Endpoint });
+        }
+        nextToken = resp.NextToken;
+      } while (nextToken);
+      // Stable positional order for the comparator (AWS does not preserve
+      // template order across reads).
+      subs.sort((a, b) =>
+        `${String(a['Protocol'])} ${String(a['Endpoint'])}`.localeCompare(
+          `${String(b['Protocol'])} ${String(b['Endpoint'])}`
+        )
+      );
+      result['Subscription'] = subs;
+    }
+
     return result;
   }
 
   /**
-   * Only `Subscription` remains drift-unknown — CDK manages topic
-   * subscriptions via separate `AWS::SNS::Subscription` resources, so the
-   * inline `Topic.Subscription` property is intentionally not surfaced.
-   * `DeliveryStatusLogging` is now reverse-mapped (see `readCurrentState`).
+   * No drift-unknown paths remain. `DeliveryStatusLogging` is reverse-mapped
+   * (see `readCurrentState`), and the inline `Subscription` list is now
+   * reverse-mapped too (issue #980) — but only when state actually recorded
+   * inline subscriptions, so a Topic whose subscriptions are managed as
+   * separate `AWS::SNS::Subscription` resources (CDK L2 `addSubscription()`)
+   * does not surface them here.
    */
   getDriftUnknownPaths(): string[] {
-    return ['Subscription'];
+    return [];
   }
 
   /**
@@ -693,6 +863,40 @@ export class SNSTopicProvider implements ResourceProvider {
 // AWS rejects with `InvalidParameter: Invalid parameter:
 // AttributeName`. `normalizeDeliveryStatusProtocol` is the single
 // chokepoint mapping any-case input to the canonical PascalCase prefix.
+
+// ─── Inline Subscription attribute mapping (issue #980) ────────────────
+//
+// The documented optional attributes of an inline `AWS::SNS::Topic`
+// `Subscription` entry that are settable at `Subscribe` time. `Protocol`
+// and `Endpoint` are the two required fields (handled separately); every
+// other key here maps 1:1 to an SNS subscription attribute name. Object-
+// valued policies are JSON-stringified; scalar values are stringified
+// verbatim (AWS's Subscribe `Attributes` map is `Record<string,string>`).
+const SNS_SUBSCRIPTION_ATTRIBUTE_KEYS = [
+  'RawMessageDelivery',
+  'FilterPolicy',
+  'FilterPolicyScope',
+  'RedrivePolicy',
+  'DeliveryPolicy',
+  'ReplayPolicy',
+  'SubscriptionRoleArn',
+] as const;
+
+/**
+ * Build the SNS `Subscribe` `Attributes` map from an inline `Subscription`
+ * entry, skipping the required `Protocol` / `Endpoint` fields. Undefined /
+ * null values are omitted; object values (policy documents) are
+ * JSON-stringified; scalars are `String()`-coerced.
+ */
+export function buildSubscriptionAttributes(sub: Record<string, unknown>): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (const key of SNS_SUBSCRIPTION_ATTRIBUTE_KEYS) {
+    const value = sub[key];
+    if (value === undefined || value === null) continue;
+    attributes[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  }
+  return attributes;
+}
 
 const SNS_DELIVERY_STATUS_PROTOCOLS = [
   'Application',

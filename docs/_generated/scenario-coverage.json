@@ -1456,6 +1456,11 @@
       "scenarios": []
     },
     {
+      "name": "sns-inline-subscription",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sns-sqs-event",
       "annotated": true,
       "scenarios": []
@@ -2182,6 +2187,7 @@
     "secrets-rotation-schedule",
     "servicediscovery",
     "sns-event-source",
+    "sns-inline-subscription",
     "sns-subscription-filter",
     "sqs-esm-max-concurrency",
     "stepfunctions-s3-definition",
