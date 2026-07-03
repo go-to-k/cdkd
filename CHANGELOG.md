@@ -1,3 +1,10 @@
+## [0.231.6](https://github.com/go-to-k/cdkd/compare/v0.231.5...v0.231.6) (2026-07-03)
+
+
+### Bug Fixes
+
+* **provisioning:** apply DynamoDB StreamSpecification changes on update ([#989](https://github.com/go-to-k/cdkd/issues/989)) ([13ad843](https://github.com/go-to-k/cdkd/commit/13ad8438abaa91f8f9003913a64209bd4e9cebb7))
+
 ## [0.231.5](https://github.com/go-to-k/cdkd/compare/v0.231.4...v0.231.5) (2026-07-03)
 
 
