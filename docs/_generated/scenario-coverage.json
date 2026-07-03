@@ -669,6 +669,11 @@
       "scenarios": []
     },
     {
+      "name": "ecs-service-update-props",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "efs-immutable-replacement",
       "annotated": false,
       "scenarios": []

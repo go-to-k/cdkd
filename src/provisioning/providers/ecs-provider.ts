@@ -777,6 +777,62 @@ export class ECSProvider implements ResourceProvider {
       );
     }
 
+    // loadBalancers / serviceRegistries are only accepted by UpdateService when
+    // the service uses the ECS rolling-update deployment controller. For
+    // CODE_DEPLOY (blue/green) and EXTERNAL controllers, AWS rejects these
+    // parameters (blue/green updates them via a new CodeDeploy deployment;
+    // EXTERNAL via a new task set) — see the AWS UpdateService API docs. The
+    // deployment controller defaults to ECS when unspecified. enableECSManagedTags
+    // / propagateTags are accepted under ALL three controllers, so they are
+    // mapped unconditionally.
+    const deploymentControllerType =
+      ((properties['DeploymentController'] as Record<string, unknown> | undefined)?.['Type'] as
+        | string
+        | undefined) ?? 'ECS';
+    const isEcsController = deploymentControllerType === 'ECS';
+
+    // Only send loadBalancers / serviceRegistries when they actually changed, so
+    // a no-drift update stays mutation-free and doesn't trigger a spurious new
+    // deployment. Removal-from-template is sent as an empty list (the AWS-
+    // documented "clear" sentinel), not an omitted field (which AWS treats as
+    // "leave unchanged"). Both fields are gated on the ECS rolling controller.
+    const loadBalancersChanged =
+      JSON.stringify(previousProperties['LoadBalancers'] ?? null) !==
+      JSON.stringify(properties['LoadBalancers'] ?? null);
+    const serviceRegistriesChanged =
+      JSON.stringify(previousProperties['ServiceRegistries'] ?? null) !==
+      JSON.stringify(properties['ServiceRegistries'] ?? null);
+
+    // A LoadBalancers / ServiceRegistries change under a non-ECS controller
+    // (CODE_DEPLOY blue/green or EXTERNAL) is applied by AWS via a new
+    // CodeDeploy deployment / task set, NOT UpdateService — cdkd does not
+    // orchestrate those. Fail loudly rather than silently omitting the field
+    // (which would report success, poison state with the new value, and leave
+    // AWS on the old config — the exact silent-drop class #975 fixes).
+    if (!isEcsController && (loadBalancersChanged || serviceRegistriesChanged)) {
+      throw new ProvisioningError(
+        `AWS::ECS::Service '${logicalId}' changes LoadBalancers/ServiceRegistries under the ` +
+          `'${deploymentControllerType}' deployment controller, which applies them via a new ` +
+          `CodeDeploy deployment / task set rather than UpdateService. cdkd does not support ` +
+          `updating these under a non-ECS controller; recreate the service or manage the ` +
+          `blue/green deployment out-of-band.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const loadBalancersInput =
+      isEcsController && loadBalancersChanged
+        ? (this.convertLoadBalancers(
+            properties['LoadBalancers'] as Array<Record<string, unknown>> | undefined
+          ) ?? [])
+        : undefined;
+    const serviceRegistriesInput =
+      isEcsController && serviceRegistriesChanged
+        ? ((properties['ServiceRegistries'] as ServiceRegistry[] | undefined) ?? [])
+        : undefined;
+
     try {
       const response = await client.send(
         new UpdateServiceCommand({
@@ -802,7 +858,11 @@ export class ECSProvider implements ResourceProvider {
           healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
             | number
             | undefined,
+          enableECSManagedTags: properties['EnableECSManagedTags'] as boolean | undefined,
+          propagateTags: properties['PropagateTags'] as PropagateTags | undefined,
           enableExecuteCommand: properties['EnableExecuteCommand'] as boolean | undefined,
+          loadBalancers: loadBalancersInput,
+          serviceRegistries: serviceRegistriesInput,
         })
       );
 
