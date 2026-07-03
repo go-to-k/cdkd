@@ -1,3 +1,10 @@
+## [0.231.9](https://github.com/go-to-k/cdkd/compare/v0.231.8...v0.231.9) (2026-07-03)
+
+
+### Bug Fixes
+
+* **deployment:** enrich Fn::GetAtt attributes for CC-routed AWS::Backup resources ([#992](https://github.com/go-to-k/cdkd/issues/992)) ([580f126](https://github.com/go-to-k/cdkd/commit/580f126b3d273e13d1082a6470fc351210688334))
+
 ## [0.231.8](https://github.com/go-to-k/cdkd/compare/v0.231.7...v0.231.8) (2026-07-03)
 
 
