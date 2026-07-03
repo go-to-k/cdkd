@@ -1,3 +1,10 @@
+## [0.231.7](https://github.com/go-to-k/cdkd/compare/v0.231.6...v0.231.7) (2026-07-03)
+
+
+### Bug Fixes
+
+* **provisioning:** clear removed StepFunctions logging/tracing/encryption config on update ([#990](https://github.com/go-to-k/cdkd/issues/990)) ([051f505](https://github.com/go-to-k/cdkd/commit/051f5053ef3c2c416d7d41856d63c7ab3a42db8b))
+
 ## [0.231.6](https://github.com/go-to-k/cdkd/compare/v0.231.5...v0.231.6) (2026-07-03)
 
 
