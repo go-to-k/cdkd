@@ -1,3 +1,10 @@
+## [0.231.4](https://github.com/go-to-k/cdkd/compare/v0.231.3...v0.231.4) (2026-07-03)
+
+
+### Bug Fixes
+
+* **deployment:** resolve CC-routed S3Tables::Table Ref to the table name ([#986](https://github.com/go-to-k/cdkd/issues/986)) ([98cf087](https://github.com/go-to-k/cdkd/commit/98cf0870bf375338b76eda33e8b0dbc99cb3680b))
+
 ## [0.231.3](https://github.com/go-to-k/cdkd/compare/v0.231.2...v0.231.3) (2026-07-03)
 
 
