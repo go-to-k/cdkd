@@ -43,7 +43,10 @@ CONSUMER_LOCK_KEY="cdkd/${CONSUMER_STACK}/${CONSUMER_REGION}/lock.json"
 PRODUCER_PARAM_NAME="/cdkd/getstackoutput-crossregion/producer"
 CONSUMER_PARAM_NAME="/cdkd/getstackoutput-crossregion/consumer"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probes (both regions)"

@@ -36,7 +36,10 @@ PARAM_NAME="/cdkd/schema-v6-to-v7-migration/probe"
 # bumps to whatever v7 actually shipped as.
 V6_CDKD_VERSION="0.159.3"
 V6_TMPDIR=""
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probe"

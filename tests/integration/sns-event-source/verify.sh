@@ -26,7 +26,10 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TABLE_NAME="cdkd-sns-evt-msgs"
 TOPIC_NAME="cdkd-sns-evt-topic"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 TOPIC_ARN=""
 

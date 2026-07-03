@@ -82,6 +82,9 @@ const inputOfCommand = (Command: new (input: never) => unknown): unknown => {
 const commandSent = (Command: new (input: never) => unknown): boolean =>
   mockSend.mock.calls.some((call) => call[0] instanceof Command);
 
+const countOfCommand = (Command: new (input: never) => unknown): number =>
+  mockSend.mock.calls.filter((call) => call[0] instanceof Command).length;
+
 describe('DynamoDBTableProvider backfill (#609)', () => {
   let provider: DynamoDBTableProvider;
 
@@ -599,8 +602,17 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
         { ...baseCreateProps, TableClass: 'STANDARD_INFREQUENT_ACCESS' }
       );
 
-      const input = inputOfCommand(UpdateTableCommand) as { TableClass?: string };
+      const input = inputOfCommand(UpdateTableCommand) as {
+        TableClass?: string;
+        BillingMode?: string;
+        ProvisionedThroughput?: unknown;
+      };
       expect(input.TableClass).toBe('STANDARD');
+      // The revert is a class-only change: unchanged BillingMode / throughput
+      // must NOT ride along (AWS rejects an UpdateTable re-asserting current
+      // values). Removing TableClass alone must not reopen the throughput path.
+      expect(input.BillingMode).toBeUndefined();
+      expect(input.ProvisionedThroughput).toBeUndefined();
     });
 
     it('does not send TableClass (or any UpdateTable) when the class is unchanged', async () => {
@@ -687,6 +699,10 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(input.TableClass).toBe('STANDARD_INFREQUENT_ACCESS');
       expect(input.BillingMode).toBe('PROVISIONED');
       expect(input.ProvisionedThroughput?.ReadCapacityUnits).toBe(2);
+      // The class change and the billing switch must be folded into a SINGLE
+      // UpdateTable — DynamoDB rejects a second UpdateTable while the first is
+      // still applying, so a two-call implementation would fail the deploy.
+      expect(countOfCommand(UpdateTableCommand)).toBe(1);
     });
   });
 

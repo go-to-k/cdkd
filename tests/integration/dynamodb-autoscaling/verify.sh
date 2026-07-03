@@ -31,7 +31,10 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TABLE_NAME="cdkd-autoscaling-test-table"
 RESOURCE_ID="table/${TABLE_NAME}"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 deregister_targets() {
   for dim in dynamodb:table:ReadCapacityUnits dynamodb:table:WriteCapacityUnits; do

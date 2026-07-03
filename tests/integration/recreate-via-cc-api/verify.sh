@@ -28,7 +28,10 @@ FN_NAME="cdkd-recreate-via-cc-api-probe"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
 BUCKET_NAME="cdkd-recreate-via-cc-api-probe-${ACCOUNT_ID}"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probe"

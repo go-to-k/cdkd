@@ -42,7 +42,10 @@ TRANSITION_KEY="cdkd/${TRANSITION_STACK}/${REGION}/state.json"
 OVERRIDE_FN="cdkd-cc-api-override-probe"
 TRANSITION_FN="cdkd-cc-api-transition-probe"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Read the AWS-side RuntimeManagementConfig.UpdateRuntimeOn setting for a
 # function. Returns the value ('FunctionUpdate' / 'Auto') or empty when the

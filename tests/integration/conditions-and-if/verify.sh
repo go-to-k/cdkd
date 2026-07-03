@@ -37,7 +37,10 @@ TIER_LABEL_PARAM="/cdkd-conditions-if/${ACCOUNT_ID}/tier-label"
 PREMIUM_ONLY_PARAM="/cdkd-conditions-if/${ACCOUNT_ID}/premium-only"
 PREMIUM_PRIMARY_PARAM="/cdkd-conditions-if/${ACCOUNT_ID}/premium-primary"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Captured at deploy time so cleanup / absence checks can find the topic.
 TOPIC_ARN=""

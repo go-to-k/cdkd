@@ -35,7 +35,10 @@ FN_NAME="cdkd-lambda-dest-fn"
 SUCCESS_Q="cdkd-lambda-dest-success"
 FAILURE_Q="cdkd-lambda-dest-failure"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 sweep_log_groups() {
   for lg in $(aws logs describe-log-groups \

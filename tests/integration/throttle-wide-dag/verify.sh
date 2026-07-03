@@ -56,7 +56,10 @@ TOTAL=$((PARAM_COUNT + ROLE_COUNT + TOPIC_COUNT))
 ROLE_PREFIX="${STACK}-role-"
 TOPIC_PREFIX="${STACK}-topic-"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 DEPLOY_LOG="$(mktemp -t throttle-deploy.XXXXXX)"
 DESTROY_LOG="$(mktemp -t throttle-destroy.XXXXXX)"

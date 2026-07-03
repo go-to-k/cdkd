@@ -13,7 +13,10 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 GROUP="${STACK}-grp"
 SCHED="${STACK}-sched"
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup"
