@@ -1,3 +1,10 @@
+## [0.231.1](https://github.com/go-to-k/cdkd/compare/v0.231.0...v0.231.1) (2026-07-03)
+
+
+### Bug Fixes
+
+* **deployment:** close out the compound-Ref audit for ECS::Service, S3Tables, and WAFv2::WebACL ([#972](https://github.com/go-to-k/cdkd/issues/972)) ([4d03209](https://github.com/go-to-k/cdkd/commit/4d03209c478b69b280436951aaa611c19c369593))
+
 # [0.231.0](https://github.com/go-to-k/cdkd/compare/v0.230.33...v0.231.0) (2026-07-02)
 
 
