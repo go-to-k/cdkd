@@ -3897,6 +3897,7 @@
       "integs": [
         "composite-stack",
         "sns-event-source",
+        "sns-inline-subscription",
         "sns-sqs-event",
         "sns-subscription-filter"
       ],
@@ -3905,6 +3906,9 @@
           "literal"
         ],
         "sns-event-source": [
+          "literal"
+        ],
+        "sns-inline-subscription": [
           "literal"
         ],
         "sns-sqs-event": [
@@ -3942,6 +3946,7 @@
         "scheduled-task",
         "serverless-api",
         "sns-event-source",
+        "sns-inline-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
         "tags-propagation",
@@ -4024,6 +4029,10 @@
         "sns-event-source": [
           "l2"
         ],
+        "sns-inline-subscription": [
+          "l1",
+          "literal"
+        ],
         "sns-sqs-event": [
           "l2"
         ],
@@ -4095,6 +4104,7 @@
         "multi-resource",
         "rollback-failure-injection",
         "scheduler-custom-group",
+        "sns-inline-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
         "sqs-esm-max-concurrency",
@@ -4177,6 +4187,9 @@
         ],
         "scheduler-custom-group": [
           "l2"
+        ],
+        "sns-inline-subscription": [
+          "l1"
         ],
         "sns-sqs-event": [
           "l2"

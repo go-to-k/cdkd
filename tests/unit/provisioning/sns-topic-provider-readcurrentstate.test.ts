@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   GetTopicAttributesCommand,
   ListTagsForResourceCommand,
+  ListSubscriptionsByTopicCommand,
   NotFoundException,
 } from '@aws-sdk/client-sns';
 
@@ -108,12 +109,49 @@ describe('SNSTopicProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
-  it('declares only Subscription as drift-unknown (DeliveryStatusLogging is now reverse-mapped)', () => {
-    // CDK manages topic subscriptions via separate AWS::SNS::Subscription
-    // resources, so the inline Topic.Subscription property is intentionally
-    // not surfaced. DeliveryStatusLogging is now reverse-mapped from per-
-    // protocol flat attributes to the CFn array shape — see readCurrentState.
-    expect(provider.getDriftUnknownPaths()).toEqual(['Subscription']);
+  it('reverse-maps the inline Subscription list when state recorded one (issue #980)', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { DisplayName: 'X' } }); // GetTopicAttributes
+    mockSend.mockResolvedValueOnce({ Tags: [] }); // ListTagsForResource
+    mockSend.mockResolvedValueOnce({
+      Subscriptions: [
+        {
+          Protocol: 'sqs',
+          Endpoint: 'arn:aws:sqs:us-east-1:123456789012:q',
+          SubscriptionArn: 'arn:...:sub',
+        },
+      ],
+    }); // ListSubscriptionsByTopic
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+      Subscription: [{ Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:123456789012:q' }],
+    });
+
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListSubscriptionsByTopicCommand);
+    expect(result?.Subscription).toEqual([
+      { Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:123456789012:q' },
+    ]);
+  });
+
+  it('omits the Subscription key when state did not record inline subscriptions', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { DisplayName: 'X' } }); // GetTopicAttributes
+    mockSend.mockResolvedValueOnce({ Tags: [] }); // ListTagsForResource
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {});
+
+    // No ListSubscriptionsByTopic call — state carried no inline list.
+    const listSubCalls = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof ListSubscriptionsByTopicCommand);
+    expect(listSubCalls).toHaveLength(0);
+    expect(result).not.toHaveProperty('Subscription');
+  });
+
+  it('declares no drift-unknown paths (DeliveryStatusLogging + Subscription are now reverse-mapped)', () => {
+    // DeliveryStatusLogging is reverse-mapped from per-protocol flat
+    // attributes to the CFn array shape, and the inline Topic.Subscription
+    // list is reverse-mapped via ListSubscriptionsByTopic when state carries
+    // it (issue #980) — see readCurrentState. Nothing remains drift-unknown.
+    expect(provider.getDriftUnknownPaths()).toEqual([]);
   });
 
   it('reverse-maps DeliveryStatusLogging from per-protocol flat attributes to CFn array shape', async () => {

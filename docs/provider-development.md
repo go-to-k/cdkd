@@ -1011,7 +1011,7 @@ When AWS does not return a field that cdkd state stores (write-only fields, or a
 getDriftUnknownPaths(): string[] {
   return ['Code'];                              // Lambda::Function: pre-signed URL only
   // or ['SecretString', 'GenerateSecretString']
-  // or ['DeliveryStatusLogging', 'Subscription']
+  // or ['RedshiftDestinationConfiguration.Password']  // Firehose: write-only, AWS never returns it
 }
 ```
 

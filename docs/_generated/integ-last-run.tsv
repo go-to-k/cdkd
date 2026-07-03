@@ -214,3 +214,4 @@ multi-resource	2026-07-03T07:21:52Z	PASS	59	standard	broad integ for #974 intrin
 ecr-scanning	2026-07-03T08:26:37Z	PASS	55	verify.sh	tag add/change/untag on update reach AWS; destroy clean
 dynamodb-streams	2026-07-03T08:36:26Z	PASS	87	verify.sh	StreamSpecification enable-on-UPDATE + StreamArn enrich reach AWS; destroy clean
 stepfunctions-logging	2026-07-03T08:44:32Z	PASS	52	verify.sh	logging/tracing removal-clear reaches AWS (OFF/0/False); destroy clean
+sns-inline-subscription	2026-07-03T09:04:10Z	PASS	47	verify.sh	inline sub create(in-try)+update+drift reach AWS; destroy clean
