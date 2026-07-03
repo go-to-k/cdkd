@@ -127,7 +127,6 @@ vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness r
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
 vpc-nat-gateway	2026-06-21T17:00:38Z	PASS	145	verify.sh	stale-real re-run; deploy 21 + destroy 21 (split by subshell-death, re-destroyed clean); NAT GW gone
 glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
-ecr-scanning	2026-06-21T17:00:53Z	PASS		verify.sh	ECR scanOnPush + KMS encryption CFn->SDK casing; create+update reach AWS; 0 orphans
 lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans
 eventbridge-api-destination	2026-06-21T18:24:53Z	PASS	90	verify.sh	ConnectionArn+ApiDest Arn enrichment verified, destroy clean 0 orphans
 conditions-and-if	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); CFn Conditions + Fn::If 2-phase premium/basic; 14 assertions; clean destroy 0 err
@@ -214,3 +213,4 @@ sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears Fi
 ecs-service-update-props	2026-07-03T07:12:17Z	PASS	50	verify.sh	EnableECSManagedTags+PropagateTags mapping; non-ECS-controller LB/SR now throws not drops
 s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to table name (#974); clean destroy
 multi-resource	2026-07-03T07:21:52Z	PASS	59	standard	broad integ for #974 intrinsic-resolver change; 17 created/deleted 0 errors
+ecr-scanning	2026-07-03T08:26:37Z	PASS	55	verify.sh	tag add/change/untag on update reach AWS; destroy clean
