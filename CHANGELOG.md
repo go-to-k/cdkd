@@ -1,3 +1,10 @@
+## [0.231.8](https://github.com/go-to-k/cdkd/compare/v0.231.7...v0.231.8) (2026-07-03)
+
+
+### Bug Fixes
+
+* **provisioning:** create and update SNS inline subscriptions ([#991](https://github.com/go-to-k/cdkd/issues/991)) ([6a52e97](https://github.com/go-to-k/cdkd/commit/6a52e9722e330ffc623019cf26ffb256a912b712))
+
 ## [0.231.7](https://github.com/go-to-k/cdkd/compare/v0.231.6...v0.231.7) (2026-07-03)
 
 
