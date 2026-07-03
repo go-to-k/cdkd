@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd Lambda SQS ESM ScalingConfig.MaximumConcurrency integ.
-# Asserts the maxConcurrency ESM attribute reaches AWS, then destroys clean.
-# Confirmed-clean /hunt-bugs pattern; regression guard.
+# Base phase: asserts maxConcurrency + FilterCriteria reach AWS.
+# UPDATE phase (issue #976): removes FilterCriteria + ScalingConfig from the
+# template and asserts AWS actually CLEARS both (removal-on-UPDATE, not a
+# silent drop). Then destroys clean.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -38,16 +40,57 @@ trap cleanup EXIT
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
-echo "==> Deploy"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Reads the ESM's ScalingConfig.MaximumConcurrency (or "None" when unset).
+esm_maxconc() {
+  aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+    --query 'EventSourceMappings[0].ScalingConfig.MaximumConcurrency' --output text 2>/dev/null
+}
+# Reads the ESM's FilterCriteria.Filters count (0 when cleared / unset). The
+# `|| ` + backtick-empty-array coalesces a null Filters (the cleared state) to
+# `[]` INSIDE JMESPath, so `length()` never receives null — otherwise the AWS
+# CLI errors ("invalid type for value: None") with a non-zero exit, and under
+# this script's `set -e` a bare `length(... .Filters)` would abort the whole
+# run at the `$( )` assignment the instant the filter is (correctly) cleared.
+esm_filter_count() {
+  aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+    --query 'length(EventSourceMappings[0].FilterCriteria.Filters || `[]`)' --output text 2>/dev/null
+}
 
-MAXCONC=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
-  --query 'EventSourceMappings[0].ScalingConfig.MaximumConcurrency' --output text 2>/dev/null)
+echo "==> Deploy (base: FilterCriteria + ScalingConfig set)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+MAXCONC=$(esm_maxconc)
 if [ "${MAXCONC}" != "${EXPECTED_MAXCONC}" ]; then
-  echo "FAIL: ScalingConfig.MaximumConcurrency is '${MAXCONC}', expected '${EXPECTED_MAXCONC}' (silent-drop?)" >&2
+  echo "FAIL: base ScalingConfig.MaximumConcurrency is '${MAXCONC}', expected '${EXPECTED_MAXCONC}' (silent-drop?)" >&2
   exit 1
 fi
-echo "    OK: ScalingConfig.MaximumConcurrency == ${EXPECTED_MAXCONC} on AWS"
+echo "    OK: base ScalingConfig.MaximumConcurrency == ${EXPECTED_MAXCONC} on AWS"
+
+FILTERS=$(esm_filter_count)
+if [ "${FILTERS}" == "None" ] || [ "${FILTERS}" == "0" ] || [ -z "${FILTERS}" ]; then
+  echo "FAIL: base FilterCriteria has no filters ('${FILTERS}'), expected >= 1 (silent-drop?)" >&2
+  exit 1
+fi
+echo "    OK: base FilterCriteria has ${FILTERS} filter(s) on AWS"
+
+echo "==> Deploy (UPDATE: FilterCriteria + ScalingConfig removed from template)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+# Removal must CLEAR the cap on AWS — ScalingConfig.MaximumConcurrency gone.
+MAXCONC_AFTER=$(esm_maxconc)
+if [ "${MAXCONC_AFTER}" != "None" ] && [ -n "${MAXCONC_AFTER}" ]; then
+  echo "FAIL: after removal, ScalingConfig.MaximumConcurrency is still '${MAXCONC_AFTER}', expected cleared (None) — removal silently dropped (issue #976)" >&2
+  exit 1
+fi
+echo "    OK: ScalingConfig.MaximumConcurrency CLEARED on AWS after removal"
+
+# Removal must CLEAR the filter on AWS — no Filters remain.
+FILTERS_AFTER=$(esm_filter_count)
+if [ "${FILTERS_AFTER}" != "None" ] && [ "${FILTERS_AFTER}" != "0" ] && [ -n "${FILTERS_AFTER}" ]; then
+  echo "FAIL: after removal, FilterCriteria still has '${FILTERS_AFTER}' filter(s), expected cleared — removal silently dropped (issue #976)" >&2
+  exit 1
+fi
+echo "    OK: FilterCriteria CLEARED on AWS after removal"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
