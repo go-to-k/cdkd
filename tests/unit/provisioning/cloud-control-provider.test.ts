@@ -1201,10 +1201,10 @@ describe('CloudControlProvider Backup attribute enrichment (CC-API routing, issu
       BackupPlanId: 'plan-from-model',
     });
 
-    // CC primaryIdentifier value is `<SelectionId>|<BackupPlanId>`.
+    // CC primaryIdentifier value is `<SelectionId>_<BackupPlanId>` (underscore).
     const enriched = await enrich(
       'AWS::Backup::BackupSelection',
-      'sel-abcdef|plan-1234',
+      'sel-abcdef_plan-1234',
       {}
     );
 
@@ -1212,18 +1212,19 @@ describe('CloudControlProvider Backup attribute enrichment (CC-API routing, issu
     expect(enriched['BackupPlanId']).toBe('plan-from-model');
   });
 
-  it('BackupSelection: falls back to the compound-id split when the CC read fails', async () => {
+  it('BackupSelection: falls back to the compound-id split (before first underscore) when the CC read fails', async () => {
     mockCloudControlSend.mockRejectedValueOnce(
       Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
     );
 
     const enriched = await enrich(
       'AWS::Backup::BackupSelection',
-      'sel-abcdef|plan-1234',
+      'sel-abcdef_plan-1234',
       {}
     );
 
-    // The split fallback still resolves both without the read-back.
+    // The split fallback still resolves both without the read-back: the
+    // compound `Id` is `<SelectionId>_<BackupPlanId>`, split on the first `_`.
     expect(enriched['SelectionId']).toBe('sel-abcdef');
     expect(enriched['BackupPlanId']).toBe('plan-1234');
   });
