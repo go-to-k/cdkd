@@ -22,12 +22,31 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
  * AWS::Lambda::EventSourceMapping.
  *
  * covers: AWS::Lambda::EventSourceMapping
+ *
+ * UPDATE-phase toggle (`CDKD_TEST_UPDATE=true`, issue #977): DynamoDB Streams
+ * `StreamSpecification` had NO update() branch, so enabling a stream on an
+ * existing table was silently dropped. To exercise the enable-on-UPDATE path
+ * the table's `stream` (and everything that CONSUMES the stream — the Lambda,
+ * its EventSourceMapping, and the ESM filter-KMS key) is gated behind the
+ * update flag:
+ *   - Phase 1 (flag unset): the table has NO stream, and no Lambda/ESM/KMS.
+ *   - UPDATE phase (flag set): `stream: NEW_AND_OLD_IMAGES` is added (the
+ *     update() StreamSpecification branch fires an `UpdateTable` with
+ *     `StreamEnabled: true`), and the stream-consumer subtree comes along so
+ *     the newly-materialized stream is actually wired to a consumer.
+ * The StreamArn `Fn::GetAtt` output is only emitted in the UPDATE phase, so
+ * verify.sh can assert `LatestStreamArn` resolved after the update-time enable.
  */
 export class DynamodbStreamsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Create DynamoDB table with stream enabled
+    // The UPDATE phase (issue #977) enables the DynamoDB Stream on an
+    // already-deployed (Phase-1) stream-less table.
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+
+    // Create DynamoDB table. The stream is enabled only in the UPDATE phase
+    // (issue #977) so the enable-on-UPDATE path is exercised.
     //
     // pointInTimeRecoverySpecification + timeToLiveAttribute exercise the
     // PointInTimeRecoverySpecification / TimeToLiveSpecification properties
@@ -47,7 +66,7 @@ export class DynamodbStreamsStack extends cdk.Stack {
       readCapacity: 5,
       writeCapacity: 5,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+      ...(isUpdate ? { stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES } : {}),
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: true,
       },
@@ -75,6 +94,25 @@ export class DynamodbStreamsStack extends cdk.Stack {
     writeScaling.scaleOnUtilization({
       targetUtilizationPercent: 70,
     });
+
+    // Outputs common to both phases.
+    new cdk.CfnOutput(this, 'TableName', {
+      value: table.tableName,
+      description: 'DynamoDB table name',
+    });
+
+    new cdk.CfnOutput(this, 'TableArn', {
+      value: table.tableArn,
+      description: 'DynamoDB table ARN',
+    });
+
+    // The stream-consumer subtree (Lambda + EventSourceMapping + KMS key) and
+    // the StreamArn output exist ONLY in the UPDATE phase (issue #977) — a
+    // DynamoDB stream must exist before an ESM can be wired to it, so Phase 1
+    // (stream-less) omits the entire consumer subtree.
+    if (!isUpdate) {
+      return;
+    }
 
     // Create Lambda function with inline code to process stream records
     const fn = new lambda.Function(this, 'StreamProcessor', {
@@ -164,20 +202,10 @@ def handler(event, context):
     esmL1.addPropertyOverride('KmsKeyArn', esmKey.keyArn);
     esmL1.addPropertyOverride('MetricsConfig', { Metrics: ['EventCount'] });
 
-    // Outputs
-    new cdk.CfnOutput(this, 'TableName', {
-      value: table.tableName,
-      description: 'DynamoDB table name',
-    });
-
-    new cdk.CfnOutput(this, 'TableArn', {
-      value: table.tableArn,
-      description: 'DynamoDB table ARN',
-    });
-
+    // UPDATE-phase-only outputs (the stream + its consumer only exist here).
     new cdk.CfnOutput(this, 'StreamArn', {
       value: table.tableStreamArn!,
-      description: 'DynamoDB stream ARN',
+      description: 'DynamoDB stream ARN (resolved via Fn::GetAtt after update-time enable)',
     });
 
     new cdk.CfnOutput(this, 'FunctionName', {

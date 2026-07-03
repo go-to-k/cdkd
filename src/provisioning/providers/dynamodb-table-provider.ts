@@ -386,6 +386,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
       const table = response.Table;
 
+      // The StreamArn attribute returned to the deploy engine. Seeded from the
+      // DescribeTable snapshot above, but the StreamSpecification branch below
+      // overwrites it after an update-time enable / disable / view-type change
+      // so `Fn::GetAtt [Table, StreamArn]` resolves to the freshly-materialized
+      // (or cleared) stream ARN rather than the pre-update value.
+      let latestStreamArn = table?.LatestStreamArn;
+
       // Apply tag diff if changed. DynamoDB's TagResource takes
       // [{ Key, Value }] arrays; UntagResource takes a TagKeys list.
       if (table?.TableArn) {
@@ -546,6 +553,89 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       }
 
+      // StreamSpecification — DynamoDB Streams enable / disable / view-type
+      // change, all via UpdateTable's StreamSpecification field (a separate
+      // UpdateTable from the billing / SSE calls, mirroring their pattern).
+      // It previously had NO update branch, so enabling a stream, changing the
+      // StreamViewType, or removing a stream were ALL silently dropped: the
+      // deploy reported success while AWS kept the old stream config, and the
+      // next diff saw no change (state recorded the new spec), so it could
+      // never self-heal (the throw-not-swallow / no-silent-drop rule).
+      //
+      // Three transitions, keyed off whether the spec is present on each side:
+      //  - enable  (new present, previous absent): StreamEnabled: true + the
+      //    new StreamViewType, then wait ACTIVE and capture LatestStreamArn.
+      //  - disable (new absent, previous present): StreamEnabled: false; the
+      //    stream ARN is cleared afterwards.
+      //  - view-type change (both present, different StreamViewType): AWS
+      //    REJECTS a direct StreamViewType switch on an enabled stream, so the
+      //    change is applied as disable -> wait ACTIVE -> re-enable with the
+      //    new view type -> wait ACTIVE. (DynamoDB also rejects a rapid
+      //    disable-then-enable against a still-UPDATING table, so the wait
+      //    between the two calls is load-bearing, not just cosmetic.)
+      if (
+        JSON.stringify(properties['StreamSpecification']) !==
+        JSON.stringify(previousProperties['StreamSpecification'])
+      ) {
+        const newViewType = this.extractStreamViewType(properties['StreamSpecification']);
+        const prevViewType = this.extractStreamViewType(previousProperties['StreamSpecification']);
+
+        if (newViewType && prevViewType && newViewType !== prevViewType) {
+          // View-type change on an enabled stream: disable, wait, re-enable.
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              StreamSpecification: { StreamEnabled: false } as StreamSpecification,
+            })
+          );
+          await this.waitForTableActiveAfterUpdate(physicalId);
+          const reenable = await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              StreamSpecification: {
+                StreamEnabled: true,
+                StreamViewType: newViewType,
+              } as StreamSpecification,
+            })
+          );
+          await this.waitForTableActiveAfterUpdate(physicalId);
+          latestStreamArn =
+            reenable.TableDescription?.LatestStreamArn ??
+            (await this.describeLatestStreamArn(physicalId));
+          this.logger.debug(
+            `Changed StreamViewType on DynamoDB table ${physicalId} to ${newViewType}`
+          );
+        } else if (newViewType) {
+          // Enable a stream (or re-assert with the same/new view type when the
+          // previous side had no stream).
+          const enable = await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              StreamSpecification: {
+                StreamEnabled: true,
+                StreamViewType: newViewType,
+              } as StreamSpecification,
+            })
+          );
+          await this.waitForTableActiveAfterUpdate(physicalId);
+          latestStreamArn =
+            enable.TableDescription?.LatestStreamArn ??
+            (await this.describeLatestStreamArn(physicalId));
+          this.logger.debug(`Enabled DynamoDB Stream on table ${physicalId} (${newViewType})`);
+        } else {
+          // Removal (new absent, previous present): disable the stream.
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              StreamSpecification: { StreamEnabled: false } as StreamSpecification,
+            })
+          );
+          await this.waitForTableActiveAfterUpdate(physicalId);
+          latestStreamArn = undefined;
+          this.logger.debug(`Disabled DynamoDB Stream on table ${physicalId}`);
+        }
+      }
+
       // GlobalSecondaryIndexes — add / remove / per-index throughput change via
       // UpdateTable's GlobalSecondaryIndexUpdates. AWS permits only ONE GSI
       // create or delete per UpdateTable and rejects a concurrent update while
@@ -662,7 +752,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         attributes: {
           Arn: table?.TableArn,
           TableId: table?.TableId,
-          StreamArn: table?.LatestStreamArn,
+          StreamArn: latestStreamArn,
           TableName: physicalId,
         },
       };
@@ -1185,6 +1275,33 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (spec === undefined || spec === null) return undefined;
     const arn = (spec as Record<string, unknown>)['StreamArn'];
     return typeof arn === 'string' ? arn : undefined;
+  }
+
+  /**
+   * Extract the `StreamViewType` from a CFn `StreamSpecification` block. Returns
+   * undefined when the spec is absent (no stream) — which is how update() tells
+   * an enable / disable apart from a view-type change. CDK always emits a
+   * StreamViewType when a stream is enabled (there is no valid enabled stream
+   * without one), so a present spec implies a present view type; defensively
+   * returns undefined for a malformed spec with no StreamViewType.
+   */
+  private extractStreamViewType(spec: unknown): string | undefined {
+    if (spec === undefined || spec === null) return undefined;
+    const viewType = (spec as Record<string, unknown>)['StreamViewType'];
+    return typeof viewType === 'string' && viewType.length > 0 ? viewType : undefined;
+  }
+
+  /**
+   * Fetch the table's current `LatestStreamArn` via DescribeTable. Used as a
+   * fallback when an UpdateTable that enabled a stream did not echo the ARN
+   * back in its TableDescription, so `Fn::GetAtt [Table, StreamArn]` still
+   * resolves after an update-time enable.
+   */
+  private async describeLatestStreamArn(tableName: string): Promise<string | undefined> {
+    const response = await this.dynamoDBClient.send(
+      new DescribeTableCommand({ TableName: tableName })
+    );
+    return response.Table?.LatestStreamArn;
   }
 
   /**

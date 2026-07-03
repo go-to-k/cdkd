@@ -20,6 +20,14 @@ This stack includes the following resources:
 5. **Resource Dependencies**: Lambda -> DynamoDB -> IAM Role -> Event Source Mapping dependency chain
 6. **Fn::GetAtt**: Retrieve table ARN, stream ARN, and function name in outputs
 7. **Automatic IAM Policy Generation**: Stream read permissions via `addEventSource()`
+8. **StreamSpecification enable-on-UPDATE (issue #977)**: `verify.sh` deploys a
+   stream-LESS table first, then re-deploys with `CDKD_TEST_UPDATE=true` to add
+   `stream: NEW_AND_OLD_IMAGES`. This exercises the provider `update()`
+   StreamSpecification branch (an `UpdateTable` with `StreamEnabled: true`) —
+   which was a silent-drop before #977 — and asserts `LatestStreamArn` is
+   materialized and enriched back into cdkd's `StreamArn` output. The Lambda /
+   EventSourceMapping stream consumer only exists in the UPDATE phase (an ESM
+   needs a stream to attach to).
 
 ## Deploy
 
