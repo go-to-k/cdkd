@@ -45,10 +45,15 @@ esm_maxconc() {
   aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
     --query 'EventSourceMappings[0].ScalingConfig.MaximumConcurrency' --output text 2>/dev/null
 }
-# Reads the ESM's FilterCriteria.Filters count (0 / None when cleared / unset).
+# Reads the ESM's FilterCriteria.Filters count (0 when cleared / unset). The
+# `|| ` + backtick-empty-array coalesces a null Filters (the cleared state) to
+# `[]` INSIDE JMESPath, so `length()` never receives null — otherwise the AWS
+# CLI errors ("invalid type for value: None") with a non-zero exit, and under
+# this script's `set -e` a bare `length(... .Filters)` would abort the whole
+# run at the `$( )` assignment the instant the filter is (correctly) cleared.
 esm_filter_count() {
   aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
-    --query 'length(EventSourceMappings[0].FilterCriteria.Filters)' --output text 2>/dev/null
+    --query 'length(EventSourceMappings[0].FilterCriteria.Filters || `[]`)' --output text 2>/dev/null
 }
 
 echo "==> Deploy (base: FilterCriteria + ScalingConfig set)"
