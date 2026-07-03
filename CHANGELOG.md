@@ -1,3 +1,10 @@
+## [0.231.10](https://github.com/go-to-k/cdkd/compare/v0.231.9...v0.231.10) (2026-07-03)
+
+
+### Bug Fixes
+
+* **deployment:** propagate in-place GetAtt value changes to NO_CHANGE dependents ([#993](https://github.com/go-to-k/cdkd/issues/993)) ([58d144c](https://github.com/go-to-k/cdkd/commit/58d144c9da7a015a08e7455aacf573f675983c5c))
+
 ## [0.231.9](https://github.com/go-to-k/cdkd/compare/v0.231.8...v0.231.9) (2026-07-03)
 
 
