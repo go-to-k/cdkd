@@ -922,6 +922,11 @@
       "scenarios": []
     },
     {
+      "name": "launchtemplate-asg-inplace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "legacy-bucket-name-fallback",
       "annotated": true,
       "scenarios": [
@@ -2168,6 +2173,7 @@
     "lambda-layer-version-update",
     "lambda-log-retention",
     "lambda-reserved-concurrency",
+    "launchtemplate-asg-inplace",
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",

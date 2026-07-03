@@ -170,7 +170,6 @@ inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstrea
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 s3-replication-and-filter	2026-06-29T05:06:19Z	PASS	55	verify.sh	And filter create+update+destroy, orph clean
 replacement-immutable-name	2026-06-29T06:27:27Z	PASS	130	verify.sh	6-type rename w/ --force-stateful-recreation, orph clean
-bench-cdk-sample	2026-06-29T06:27:27Z	PASS	420	standard	broad VPC/NAT/CF/Lambda, 37+2retained 0err, loggroups swept
 efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustness refactor re-verified, orph clean
 codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
 eventbridge	2026-07-02T06:09:46Z	PASS	210	verify.sh	new Phase 1.5 custom-bus rule-drop update (issue 955 fix), destroy 10/0 err
@@ -216,3 +215,5 @@ dynamodb-streams	2026-07-03T08:36:26Z	PASS	87	verify.sh	StreamSpecification enab
 stepfunctions-logging	2026-07-03T08:44:32Z	PASS	52	verify.sh	logging/tracing removal-clear reaches AWS (OFF/0/False); destroy clean
 sns-inline-subscription	2026-07-03T09:04:10Z	PASS	47	verify.sh	inline sub create(in-try)+update+drift reach AWS; destroy clean
 backup	2026-07-03T09:10:59Z	PASS	48	verify.sh	BackupVaultArn GetAtt enrichment resolves real ARN; destroy clean
+launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAtt value change propagates to NO_CHANGE ASG same deploy; destroy clean
+bench-cdk-sample	2026-07-03T09:40:40Z	PASS	505	standard	broad regression for #985 diff-classifier; 39 created / 37 deleted+2 retain 0 errors

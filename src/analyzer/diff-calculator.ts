@@ -23,6 +23,34 @@ import {
 export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
 
 /**
+ * Per-type set of computed/derived read-only attributes whose value can change
+ * as a side effect of an IN-PLACE update, even though the attribute NAME never
+ * appears among the type's template properties (issue #985).
+ *
+ * The default in-place propagation arm matches a dependent only when the GetAtt
+ * attribute NAME equals a template property that CHANGED on the upstream (e.g.
+ * an SSM Parameter `Value`). That arm cannot see version-style attributes: an
+ * `AWS::EC2::LaunchTemplate` edit changes `LaunchTemplateData`, which bumps the
+ * read-only `LatestVersionNumber` from N to N+1 — but `LatestVersionNumber` is
+ * NOT a template property, so a dependent reading `Fn::GetAtt[Lt,
+ * LatestVersionNumber]` (the canonical `autoscaling.AutoScalingGroup`
+ * `LaunchTemplate.Version` shape) is left NO_CHANGE and stays pinned one deploy
+ * behind. These attributes resolve LIVE from AWS at deploy time (see the
+ * `DescribeLaunchTemplates` special case in intrinsic-function-resolver.ts), so
+ * a speculative promotion is safe: the deploy engine re-resolves the dependent
+ * against the fresh live value and skips the provider call if it did not move.
+ *
+ * Keyed by upstream resource type -> the derived attribute names that any
+ * in-place UPDATE of that type may move. Kept intentionally narrow (an allow
+ * list, not "every read-only attr") so unrelated computed attributes that do
+ * NOT track in-place edits (e.g. a Lambda `Arn`) never trigger spurious
+ * dependent promotion.
+ */
+const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
+});
+
+/**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
@@ -365,15 +393,24 @@ export class DiffCalculator {
 
   /**
    * Promote NO_CHANGE dependents of an IN-PLACE update whose referenced ATTRIBUTE
-   * actually changed (bug-hunt 2026-06-29).
+   * either names a changed property (bug-hunt 2026-06-29) OR is a derived
+   * read-only attribute the update side-effects (issue #985).
    *
    * Distinct from {@link promoteReplacementDependents}: a replacement changes the
    * physical id, so any reference is affected. An in-place update changes only
-   * specific properties, so a dependent is affected ONLY when it reads (via
-   * `Fn::GetAtt[Up, Attr]` or `Fn::Sub`'s `${Up.Attr}`) an attribute whose NAME
-   * matches a property that changed in `Up`'s update. (`Ref` resolves to the
-   * physical id, which an in-place update never moves, so Ref-only dependents are
-   * left NO_CHANGE; likewise a GetAtt of a computed / unchanged attribute.)
+   * specific properties, so a dependent is affected in one of two ways when it
+   * reads (via `Fn::GetAtt[Up, Attr]` or `Fn::Sub`'s `${Up.Attr}`) an attribute
+   * of an updated `Up`:
+   *   1. `Attr` NAMES a property that CHANGED in `Up`'s update (e.g. an SSM
+   *      Parameter `Value` embedded in a downstream `Fn::Sub`); or
+   *   2. `Attr` is a DERIVED read-only attribute of `Up`'s type that an in-place
+   *      update side-effects even though it is not a template property — the
+   *      per-type {@link IN_PLACE_UPDATE_DERIVED_ATTRS} allow list (issue #985;
+   *      e.g. `AWS::EC2::LaunchTemplate.LatestVersionNumber`, which an
+   *      `autoscaling.AutoScalingGroup` reads for its `LaunchTemplate.Version`).
+   * (`Ref` resolves to the physical id, which an in-place update never moves, so
+   * Ref-only dependents are left NO_CHANGE; likewise a GetAtt of a computed
+   * attribute NOT in the allow list, e.g. a Lambda `Arn` on a Description edit.)
    *
    * Promotion is safe even when speculative: the deploy engine re-resolves the
    * promoted resource against the in-flight state and skips the provider call
@@ -393,14 +430,22 @@ export class DiffCalculator {
   ): void {
     // Per upstream UPDATE: the set of top-level property names that changed.
     const changedPropsByUpstream = new Map<string, Set<string>>();
+    // Per upstream in-place UPDATE: its resource type, used to look up the
+    // derived-attribute allow list (issue #985). Populated for every UPDATE
+    // that is NOT a replacement — a replaced upstream is already handled by
+    // promoteReplacementDependents, and its dependents must not be double-promoted.
+    const inPlaceUpdateTypeByUpstream = new Map<string, string>();
     for (const [logicalId, change] of changes) {
       if (change.changeType !== 'UPDATE') continue;
-      const props = (change.propertyChanges ?? [])
+      const propertyChanges = change.propertyChanges ?? [];
+      const isReplacement = propertyChanges.some((pc) => pc.requiresReplacement);
+      if (!isReplacement) inPlaceUpdateTypeByUpstream.set(logicalId, change.resourceType);
+      const props = propertyChanges
         .map((pc) => pc.path)
         .filter((p): p is string => typeof p === 'string');
       if (props.length > 0) changedPropsByUpstream.set(logicalId, new Set(props));
     }
-    if (changedPropsByUpstream.size === 0) return;
+    if (changedPropsByUpstream.size === 0 && inPlaceUpdateTypeByUpstream.size === 0) return;
 
     for (const [dependentId, perProp] of rawGetAttRefs) {
       const resource = desiredTemplate.Resources[dependentId];
@@ -419,10 +464,21 @@ export class DiffCalculator {
         let matched = false;
         for (const [upstreamId, attrs] of getAttRefs) {
           if (upstreamId === dependentId) continue; // self-reference defense
+          // Arm 1: the referenced attribute names a property that changed.
           const changedProps = changedPropsByUpstream.get(upstreamId);
-          if (!changedProps) continue;
-          // Affected only when the referenced attribute names a changed property.
-          if ([...attrs].some((attr) => changedProps.has(attr))) {
+          if (changedProps && [...attrs].some((attr) => changedProps.has(attr))) {
+            matched = true;
+            break;
+          }
+          // Arm 2 (issue #985): the referenced attribute is a derived read-only
+          // attribute of the upstream's type that an in-place UPDATE side-effects
+          // (e.g. LaunchTemplate LatestVersionNumber) — regardless of WHICH
+          // property changed, since any in-place edit can bump it.
+          const upstreamType = inPlaceUpdateTypeByUpstream.get(upstreamId);
+          const derivedAttrs = upstreamType
+            ? IN_PLACE_UPDATE_DERIVED_ATTRS[upstreamType]
+            : undefined;
+          if (derivedAttrs && [...attrs].some((attr) => derivedAttrs.has(attr))) {
             matched = true;
             break;
           }
