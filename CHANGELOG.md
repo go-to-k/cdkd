@@ -1,3 +1,10 @@
+## [0.231.12](https://github.com/go-to-k/cdkd/compare/v0.231.11...v0.231.12) (2026-07-03)
+
+
+### Bug Fixes
+
+* **deployment:** Ref on AWS::Backup::BackupSelection returns the bare SelectionId ([#996](https://github.com/go-to-k/cdkd/issues/996)) ([4ffa0ac](https://github.com/go-to-k/cdkd/commit/4ffa0acf05dfc4154943fd2ebdef709c4385b122))
+
 ## [0.231.11](https://github.com/go-to-k/cdkd/compare/v0.231.10...v0.231.11) (2026-07-03)
 
 
