@@ -111,6 +111,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`apigw-usage-plan-key`](../tests/integration/apigw-usage-plan-key/)
 - [`appconfig`](../tests/integration/appconfig/)
 - [`aws-custom-resource`](../tests/integration/aws-custom-resource/)
+- [`backup`](../tests/integration/backup/)
 - [`bucket-deployment`](../tests/integration/bucket-deployment/)
 - [`cc-api-fallback`](../tests/integration/cc-api-fallback/)
 - [`cc-api-fallback-transitions`](../tests/integration/cc-api-fallback-transitions/)

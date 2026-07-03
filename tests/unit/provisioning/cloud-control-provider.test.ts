@@ -1094,6 +1094,143 @@ describe('CloudControlProvider Events ApiDestination attribute enrichment (CC-AP
   });
 });
 
+describe('CloudControlProvider Backup attribute enrichment (CC-API routing, issue #984)', () => {
+  let provider: CloudControlProvider;
+
+  const enrich = (
+    resourceType: string,
+    physicalId: string,
+    attributes: Record<string, unknown>
+  ) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes(resourceType, physicalId, attributes);
+
+  // The Backup branches read back via the CC GetResource path
+  // (this.cloudControlClient.send(GetResourceCommand)), so the CC send spy is
+  // what returns the read-back model.
+  const mockCcModel = (model: Record<string, unknown>) => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: { Properties: JSON.stringify(model) },
+    });
+  };
+
+  beforeEach(() => {
+    mockCloudControlSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('BackupVault: overlays BackupVaultArn / EncryptionKeyArn from the CC GetResource model', async () => {
+    mockCcModel({
+      BackupVaultName: 'my-vault',
+      BackupVaultArn: 'arn:aws:backup:us-east-1:123456789012:backup-vault:my-vault',
+      EncryptionKeyArn:
+        'arn:aws:kms:us-east-1:123456789012:key/abcd1234-5678-90ab-cdef-1234567890ab',
+    });
+
+    // physicalId is the vault NAME (the type's Ref-return), NOT the ARN.
+    const enriched = await enrich('AWS::Backup::BackupVault', 'my-vault', {});
+
+    expect(enriched['BackupVaultArn']).toBe(
+      'arn:aws:backup:us-east-1:123456789012:backup-vault:my-vault'
+    );
+    expect(enriched['EncryptionKeyArn']).toBe(
+      'arn:aws:kms:us-east-1:123456789012:key/abcd1234-5678-90ab-cdef-1234567890ab'
+    );
+    // BackupVaultName resolves to the physicalId even when the model omits it.
+    expect(enriched['BackupVaultName']).toBe('my-vault');
+    // GetResource must be issued for the physicalId (the vault name).
+    const sent = mockCloudControlSend.mock.calls[0]![0] as {
+      input: { TypeName: string; Identifier: string };
+    };
+    expect(sent.input.TypeName).toBe('AWS::Backup::BackupVault');
+    expect(sent.input.Identifier).toBe('my-vault');
+  });
+
+  it('BackupVault: is best-effort — a failed GetResource does not throw and leaves attributes unchanged (except physicalId fallbacks)', async () => {
+    mockCloudControlSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const enriched = await enrich('AWS::Backup::BackupVault', 'my-vault', {
+      ExistingAttr: 'keep-me',
+    });
+
+    expect(enriched['ExistingAttr']).toBe('keep-me');
+    expect(enriched['BackupVaultArn']).toBeUndefined();
+    // The name fallback still lands (it does not depend on the read-back).
+    expect(enriched['BackupVaultName']).toBe('my-vault');
+  });
+
+  it('BackupPlan: overlays BackupPlanArn / VersionId from the CC GetResource model', async () => {
+    mockCcModel({
+      BackupPlanId: 'plan-1234',
+      BackupPlanArn: 'arn:aws:backup:us-east-1:123456789012:backup-plan:plan-1234',
+      VersionId: 'AbCdEf1234567890VersionToken',
+    });
+
+    const enriched = await enrich('AWS::Backup::BackupPlan', 'plan-1234', {});
+
+    expect(enriched['BackupPlanArn']).toBe(
+      'arn:aws:backup:us-east-1:123456789012:backup-plan:plan-1234'
+    );
+    expect(enriched['VersionId']).toBe('AbCdEf1234567890VersionToken');
+    expect(enriched['BackupPlanId']).toBe('plan-1234');
+  });
+
+  it('BackupPlan: is best-effort — a failed GetResource leaves attributes unchanged (except physicalId fallback)', async () => {
+    mockCloudControlSend.mockRejectedValueOnce(
+      Object.assign(new Error('throttled'), { name: 'ThrottlingException' })
+    );
+
+    const enriched = await enrich('AWS::Backup::BackupPlan', 'plan-1234', {});
+
+    expect(enriched['BackupPlanArn']).toBeUndefined();
+    expect(enriched['VersionId']).toBeUndefined();
+    // BackupPlanId falls back to the physicalId.
+    expect(enriched['BackupPlanId']).toBe('plan-1234');
+  });
+
+  it('BackupSelection: extracts SelectionId from the compound physicalId and prefers the CC model value', async () => {
+    mockCcModel({
+      SelectionId: 'sel-abcdef',
+      BackupPlanId: 'plan-1234',
+    });
+
+    // CC compound primaryIdentifier is `<SelectionId>|<BackupPlanId>`.
+    const enriched = await enrich(
+      'AWS::Backup::BackupSelection',
+      'sel-abcdef|plan-1234',
+      {}
+    );
+
+    expect(enriched['SelectionId']).toBe('sel-abcdef');
+    expect(enriched['BackupPlanId']).toBe('plan-1234');
+  });
+
+  it('BackupSelection: falls back to the compound-id split when the CC read fails', async () => {
+    mockCloudControlSend.mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { name: 'AccessDeniedException' })
+    );
+
+    const enriched = await enrich(
+      'AWS::Backup::BackupSelection',
+      'sel-abcdef|plan-1234',
+      {}
+    );
+
+    // The split fallback still resolves both without the read-back.
+    expect(enriched['SelectionId']).toBe('sel-abcdef');
+    expect(enriched['BackupPlanId']).toBe('plan-1234');
+  });
+});
+
 describe('CloudControlProvider create: failed-create remnant cleanup', () => {
   let provider: CloudControlProvider;
 

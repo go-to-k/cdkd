@@ -254,6 +254,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 These types have an `enrichResourceAttributes` case but no cached CFn schema, so their readOnly coverage cannot be verified offline. Refresh the fixture (`node scripts/refresh-cfn-schemas.mjs`) to bring them under the matrix.
 
 - `AWS::ApiGateway::RestApi`
+- `AWS::Backup::BackupPlan`
+- `AWS::Backup::BackupSelection`
+- `AWS::Backup::BackupVault`
 - `AWS::CloudFront::OriginAccessControl`
 - `AWS::EC2::EIP`
 - `AWS::ElastiCache::ReplicationGroup`
