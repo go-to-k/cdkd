@@ -49,7 +49,10 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 SSM_PARAM_NAME="/cdkd/rds-full-stack/db-endpoint"
 EXPECTED_APP_NAME="cdkd-rds-full-stack"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Physical ids resolved from cdkd state after deploy; used by the trap so a
 # partial-failure run still cleans up in the RDS-safe order.

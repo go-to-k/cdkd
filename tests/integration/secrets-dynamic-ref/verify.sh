@@ -57,7 +57,10 @@ EXPECTED_PASSWORD="cdkd-known-pw-123"
 EXPECTED_FULL='{"username":"cdkd-user","password":"cdkd-known-pw-123"}'
 EXPECTED_SSM="cdkd-known-ssm-value"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # mask <value> -> echoes a masked form (first 2 chars + length) so logs never
 # leak the resolved secret value. Empty -> "<empty>".

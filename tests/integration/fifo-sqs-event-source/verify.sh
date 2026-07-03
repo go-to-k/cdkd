@@ -29,7 +29,10 @@ QUEUE_NAME="cdkd-fifo-sqs-source.fifo"
 FN_NAME="cdkd-fifo-sqs-consumer"
 TABLE_NAME="cdkd-fifo-sqs-seen"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 sweep_log_groups() {
   for lg in $(aws logs describe-log-groups \

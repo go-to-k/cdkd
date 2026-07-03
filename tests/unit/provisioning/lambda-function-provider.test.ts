@@ -1220,6 +1220,78 @@ describe('LambdaFunctionProvider', () => {
       expect(codeCall).toBeUndefined();
     });
 
+    it('treats an empty-array previous Architectures ([]) as the default x86_64 (drift-baseline no-op)', async () => {
+      // readCurrentState emits `Architectures: []` when GetFunction omits the
+      // field (a non-arm64 function), so a drift-baseline UPDATE compares
+      // previous `[]` against a template default `['x86_64']`. normalizeArchitectures
+      // maps both to ['x86_64'], so this must be a no-op — not a needless
+      // arch-switch code redeploy.
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: {
+          FunctionName: 'fn-empty-arch',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-empty-arch',
+        },
+      }); // final attribute fetch (no config / code mutation expected before it)
+      await provider.update(
+        'Fn',
+        'fn-empty-arch',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: ['x86_64'],
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+          Architectures: [],
+        }
+      );
+
+      const codeCall = mockLambdaSend.mock.calls.find(
+        (c) => c[0] instanceof UpdateFunctionCodeCommand
+      );
+      expect(codeCall).toBeUndefined();
+    });
+
+    it('fires ONE UpdateFunctionCode carrying both the new code and the new Architectures on a combined arch+code change', async () => {
+      // A code change and an arch switch both ride on UpdateFunctionCode; the
+      // provider folds them into a single call so the deploy does not issue
+      // two code deployments.
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-combo',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-combo',
+          },
+        }); // final attribute fetch
+      await provider.update(
+        'Fn',
+        'fn-combo',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k-new' },
+          Architectures: ['arm64'],
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Code: { S3Bucket: 'b', S3Key: 'k-old' },
+          Architectures: ['x86_64'],
+        }
+      );
+
+      const codeCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof UpdateFunctionCodeCommand
+      );
+      expect(codeCalls).toHaveLength(1);
+      const codeCmd = codeCalls[0]?.[0] as UpdateFunctionCodeCommand;
+      expect(codeCmd.input.S3Key).toBe('k-new');
+      expect(codeCmd.input.Architectures).toEqual(['arm64']);
+    });
+
     it('throws ProvisioningError when the post-update waiter sees LastUpdateStatus === Failed', async () => {
       mockLambdaSend
         .mockResolvedValueOnce({}) // UpdateFunctionConfiguration

@@ -19,7 +19,10 @@ REGION="${AWS_REGION:-us-east-1}"
 ADDR_PARAM="/cdkd-integ/elasticache-rg/primary-endpoint-address"
 PORT_PARAM="/cdkd-integ/elasticache-rg/primary-endpoint-port"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DEPLOY_LOG="$(mktemp -t ecrg-deploy.XXXXXX)"
 
 # AWS DescribeReplicationGroups + describe-parameters can throttle right after a

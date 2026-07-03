@@ -187,6 +187,13 @@ export class ReplacementRulesRegistry {
         'TracingConfig',
         'Layers',
         'FileSystemConfigs',
+        // Architectures is mutable in place (CFn "Update requires: No
+        // interruption") — the provider re-sends the code with the new
+        // instruction set via UpdateFunctionCode. Classified explicitly
+        // (rather than relying on the DescribeType createOnly fallback) so
+        // the intent is pinned and the classification is free of a network
+        // round-trip.
+        'Architectures',
       ]),
     });
 

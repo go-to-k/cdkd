@@ -32,7 +32,12 @@ STACK="CdkdLambdaArchSwitchExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path WITHOUT a `cd` into dist/ that would fail
+# cryptically (aborting the script under `set -e`) when dist/ has not been
+# built yet — let the friendly `[ ! -f "${LOCAL_DIST}" ]` guard below report
+# it instead. We are already in the fixture dir (cd above), which is three
+# levels below the repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"

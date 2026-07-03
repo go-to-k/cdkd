@@ -32,6 +32,9 @@ EXPECTED_TEAM_TAG="platform"
 EXPECTED_BUCKET_ENV_TAG="cdkd-integ"
 EXPECTED_BUCKET_TEAM_TAG="platform"
 
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 TABLE_ARN=""

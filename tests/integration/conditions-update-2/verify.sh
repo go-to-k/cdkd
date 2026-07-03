@@ -55,7 +55,10 @@ REF_HOLDER_PARAM="/cdkd-conditions-update-2/${ACCOUNT_ID}/ref-holder"
 DLQ_NAME="cdkd-conditions-update-2-dlq-${ACCOUNT_ID}"
 WORK_QUEUE_NAME="cdkd-conditions-update-2-work-${ACCOUNT_ID}"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+# Resolve the built CLI path without a `cd` into dist/ that fails cryptically
+# (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
+# reports it instead. We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Captured at deploy time so cleanup / attribute checks can find the queues.
 WORK_QUEUE_URL=""
