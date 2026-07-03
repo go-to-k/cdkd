@@ -1,3 +1,10 @@
+## [0.231.2](https://github.com/go-to-k/cdkd/compare/v0.231.1...v0.231.2) (2026-07-03)
+
+
+### Bug Fixes
+
+* **provisioning:** clear removed FilterCriteria/ScalingConfig on Lambda ESM update ([#982](https://github.com/go-to-k/cdkd/issues/982)) ([144bc11](https://github.com/go-to-k/cdkd/commit/144bc11e1dd301defedd1d98848aac3e0ca73a45))
+
 ## [0.231.1](https://github.com/go-to-k/cdkd/compare/v0.231.0...v0.231.1) (2026-07-03)
 
 
