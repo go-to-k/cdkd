@@ -2765,6 +2765,9 @@
   ],
   "enrichedWithoutCachedSchema": [
     "AWS::ApiGateway::RestApi",
+    "AWS::Backup::BackupPlan",
+    "AWS::Backup::BackupSelection",
+    "AWS::Backup::BackupVault",
     "AWS::CloudFront::OriginAccessControl",
     "AWS::EC2::EIP",
     "AWS::ElastiCache::ReplicationGroup",

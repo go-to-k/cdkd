@@ -1259,11 +1259,141 @@ export class CloudControlProvider implements ResourceProvider {
         break;
       }
 
+      case 'AWS::Backup::BackupVault': {
+        // Backup types have NO SDK provider, so they always route through
+        // Cloud Control. The CC API CREATE response's ResourceModel is sparse
+        // for Backup and does not reliably surface the vault ARN, so
+        // `Fn::GetAtt(<Vault>, 'BackupVaultArn')` (the canonical CDK shape,
+        // emitted by `vault.backupVaultArn`) would fall through the resolver's
+        // constructAttribute to the physicalId — which for BackupVault is the
+        // vault NAME, not the ARN. AWS then rejects a BackupPlan rule /
+        // selection that references the bare name where an ARN is required.
+        // Overlay the ARN from a CC GetResource read-back on the physicalId.
+        // The read-back is gated SOLELY on the ARN (the one real computed
+        // GetAtt target) — BackupVaultName has a cheap physicalId fallback
+        // below and does not justify a read-back on its own. Best-effort: a
+        // failed read leaves the CC-API attribute shape unchanged and never
+        // fails the deploy.
+        if (!enriched['BackupVaultArn']) {
+          const model = await this.readBackupResourceModel(resourceType, physicalId);
+          if (model) {
+            if (typeof model['BackupVaultArn'] === 'string') {
+              enriched['BackupVaultArn'] = model['BackupVaultArn'];
+            }
+            // BackupVaultName Ref-return is the physicalId; surface it too so
+            // Fn::GetAtt(<Vault>, 'BackupVaultName') resolves.
+            if (!enriched['BackupVaultName'] && typeof model['BackupVaultName'] === 'string') {
+              enriched['BackupVaultName'] = model['BackupVaultName'];
+            }
+            this.logger.debug(
+              `Enriched Backup BackupVault ${physicalId} with BackupVaultArn from CC GetResource`
+            );
+          }
+        }
+        if (!enriched['BackupVaultName']) {
+          enriched['BackupVaultName'] = physicalId;
+        }
+        break;
+      }
+
+      case 'AWS::Backup::BackupPlan': {
+        // Sibling of the BackupVault branch: the CC CREATE ResourceModel does
+        // not reliably surface the plan ARN / version id, so
+        // `Fn::GetAtt(<Plan>, 'BackupPlanArn')` / `'VersionId'` fall through to
+        // the physicalId (the BackupPlanId). Overlay both from a CC
+        // GetResource read-back. Best-effort.
+        if (!enriched['BackupPlanArn'] || !enriched['VersionId']) {
+          const model = await this.readBackupResourceModel(resourceType, physicalId);
+          if (model) {
+            if (!enriched['BackupPlanArn'] && typeof model['BackupPlanArn'] === 'string') {
+              enriched['BackupPlanArn'] = model['BackupPlanArn'];
+            }
+            if (!enriched['VersionId'] && typeof model['VersionId'] === 'string') {
+              enriched['VersionId'] = model['VersionId'];
+            }
+            if (!enriched['BackupPlanId'] && typeof model['BackupPlanId'] === 'string') {
+              enriched['BackupPlanId'] = model['BackupPlanId'];
+            }
+            this.logger.debug(
+              `Enriched Backup BackupPlan ${physicalId} with BackupPlanArn/VersionId from CC GetResource`
+            );
+          }
+        }
+        if (!enriched['BackupPlanId']) {
+          enriched['BackupPlanId'] = physicalId;
+        }
+        break;
+      }
+
+      case 'AWS::Backup::BackupSelection': {
+        // BackupSelection's CC primaryIdentifier is a single `Id` whose VALUE
+        // is the compound `<SelectionId>|<BackupPlanId>` (pipe-joined) — CFn's
+        // Ref returns the SelectionId. `Fn::GetAtt(<Selection>, 'SelectionId')`
+        // would otherwise fall through to the compound physicalId. Extract the
+        // SelectionId from the compound id (before the pipe), and prefer the CC
+        // read-back model's value when available. Best-effort.
+        if (!enriched['SelectionId'] || !enriched['BackupPlanId']) {
+          const compoundSegments = physicalId.split('|');
+          if (compoundSegments.length >= 2) {
+            if (!enriched['SelectionId']) enriched['SelectionId'] = compoundSegments[0];
+            if (!enriched['BackupPlanId']) enriched['BackupPlanId'] = compoundSegments[1];
+          }
+          const model = await this.readBackupResourceModel(resourceType, physicalId);
+          if (model) {
+            if (typeof model['SelectionId'] === 'string') {
+              enriched['SelectionId'] = model['SelectionId'];
+            }
+            if (typeof model['BackupPlanId'] === 'string') {
+              enriched['BackupPlanId'] = model['BackupPlanId'];
+            }
+            this.logger.debug(
+              `Enriched Backup BackupSelection ${physicalId} with SelectionId from CC GetResource`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         break;
     }
 
     return enriched;
+  }
+
+  /**
+   * Read the Cloud Control GetResource model for a pure-CC Backup resource and
+   * return its parsed property map, or `undefined` on any failure. Backup types
+   * have no SDK provider, so this generic CC read-back is the cleanest source
+   * of their readOnly attributes (ARNs, VersionId, SelectionId) that the sparse
+   * CREATE ResourceModel does not reliably surface. Best-effort: never throws.
+   */
+  private async readBackupResourceModel(
+    resourceType: string,
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const response = await this.cloudControlClient.send(
+        new GetResourceCommand({
+          TypeName: resourceType,
+          Identifier: physicalId,
+        })
+      );
+      const raw = response.ResourceDescription?.Properties;
+      if (typeof raw !== 'string' || raw.length === 0) {
+        return undefined;
+      }
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return undefined;
+      }
+      return parsed as Record<string, unknown>;
+    } catch (error) {
+      this.logger.debug(
+        `Failed to read CC model for ${resourceType} ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return undefined;
+    }
   }
 
   /**

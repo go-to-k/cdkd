@@ -339,6 +339,11 @@
       "scenarios": []
     },
     {
+      "name": "backup",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "basic",
       "annotated": true,
       "scenarios": []
@@ -2124,6 +2129,7 @@
     "apigw-usage-plan-key",
     "appconfig",
     "aws-custom-resource",
+    "backup",
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
