@@ -213,7 +213,7 @@ multi-resource	2026-07-03T07:21:52Z	PASS	59	standard	broad integ for #974 intrin
 ecr-scanning	2026-07-03T08:26:37Z	PASS	55	verify.sh	tag add/change/untag on update reach AWS; destroy clean
 stepfunctions-logging	2026-07-03T08:44:32Z	PASS	52	verify.sh	logging/tracing removal-clear reaches AWS (OFF/0/False); destroy clean
 sns-inline-subscription	2026-07-03T09:04:10Z	PASS	47	verify.sh	inline sub create(in-try)+update+drift reach AWS; destroy clean
-backup	2026-07-03T09:10:59Z	PASS	48	verify.sh	BackupVaultArn GetAtt enrichment resolves real ARN; destroy clean
 launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAtt value change propagates to NO_CHANGE ASG same deploy; destroy clean
-bench-cdk-sample	2026-07-03T09:40:40Z	PASS	505	standard	broad regression for #985 diff-classifier; 39 created / 37 deleted+2 retain 0 errors
 dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
+backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
+bench-cdk-sample	2026-07-03T11:11:09Z	PASS	578	standard	broad for #995 intrinsic-resolver change; 39 created/37 del+2 retain 0 err

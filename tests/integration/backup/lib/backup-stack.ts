@@ -49,8 +49,9 @@ export class BackupStack extends cdk.Stack {
     });
 
     // A tag-based selection exercises AWS::Backup::BackupSelection (its CC
-    // primaryIdentifier is the compound `<SelectionId>|<BackupPlanId>`).
-    plan.addSelection('Selection', {
+    // primaryIdentifier is the compound `Id` = `<SelectionId>_<BackupPlanId>`,
+    // joined by an UNDERSCORE).
+    const selection = plan.addSelection('Selection', {
       resources: [
         backup.BackupResource.fromTag('cdkd-backup-integ', 'true'),
       ],
@@ -60,6 +61,14 @@ export class BackupStack extends cdk.Stack {
     // whose enrichment this integ regression-guards.
     new cdk.CfnOutput(this, 'VaultArn', {
       value: vault.backupVaultArn,
+    });
+
+    // `Ref` on the selection: CFn returns the bare BackupSelectionId (issue
+    // #995). cdkd must return the same, NOT the compound `Id`. Reach the L1
+    // child to emit a raw `{Ref: <logicalId>}`.
+    const cfnSelection = selection.node.defaultChild as backup.CfnBackupSelection;
+    new cdk.CfnOutput(this, 'SelectionRef', {
+      value: cfnSelection.ref,
     });
   }
 }

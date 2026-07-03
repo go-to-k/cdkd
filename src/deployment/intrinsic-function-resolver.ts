@@ -269,6 +269,22 @@ export function cfnRefValueFromPhysicalId(
       return tableName;
     }
   }
+  // AWS::Backup::BackupSelection: CFn's `Ref` returns `BackupSelectionId` (the
+  // bare SelectionId; docs-verified), but the Cloud Control primaryIdentifier
+  // cdkd stores as the physical id is the compound `Id` = `<SelectionId>_<BackupPlanId>`
+  // joined by an UNDERSCORE (not a pipe, so the REF_RETURNS_SEGMENT_*_PIPE
+  // extractions do not apply). Rather than string-split on `_` (a fragile
+  // assumption about the separator + segment order), recover the bare
+  // SelectionId from the enriched `SelectionId` attribute the CC read-back
+  // already populated (PR #992). Falls through to the raw physical id when the
+  // attribute is absent — same graceful degradation as the S3Tables case
+  // above (issue #995).
+  if (resourceType === 'AWS::Backup::BackupSelection' && stateLookup) {
+    const selectionId = stateLookup(['SelectionId']);
+    if (selectionId) {
+      return selectionId;
+    }
+  }
   // AWS::WAFv2::WebACL is the inverse of the usual divergence: CFn's `Ref` IS
   // the pipe-joined compound `name|id|scope` (docs-explicit, e.g.
   // `my-webacl-name|1234a1a-...|REGIONAL`), which matches the CC identifier —
