@@ -212,4 +212,4 @@ throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (
 servicediscovery	2026-07-02T18:23:15Z	PASS	111	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 cloudwatch	2026-07-02T18:23:15Z	PASS	50	standard	0703 staleness sweep (pre-TTL refresh); clean
 docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
-sqs-esm-max-concurrency	2026-07-03T06:43:53Z	PASS	133	verify.sh	removal clears FilterCriteria+ScalingConfig; fixed null length() set-e abort in fixture
+sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated

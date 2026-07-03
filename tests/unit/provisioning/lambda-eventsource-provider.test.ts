@@ -400,6 +400,32 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(input['TumblingWindowInSeconds']).toBe(0);
     });
 
+    it('does NOT restore stream-only numeric defaults for an SQS source (AWS rejects them off-stream)', async () => {
+      // The numeric restores are Kinesis/DynamoDB-only. If a hand-authored /
+      // imported previous template carried one on an SQS mapping and it is
+      // removed, cdkd must NOT send the reset value (AWS would reject it).
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN },
+        {
+          FunctionName: 'fn',
+          EventSourceArn: SQS_ARN,
+          MaximumRetryAttempts: 5,
+          MaximumRecordAgeInSeconds: 3600,
+          ParallelizationFactor: 4,
+          TumblingWindowInSeconds: 30,
+        }
+      );
+
+      const input = getUpdateInput();
+      expect(input['MaximumRetryAttempts']).toBeUndefined();
+      expect(input['MaximumRecordAgeInSeconds']).toBeUndefined();
+      expect(input['ParallelizationFactor']).toBeUndefined();
+      expect(input['TumblingWindowInSeconds']).toBeUndefined();
+    });
+
     it('clears FunctionResponseTypes to [] on removal for an SQS source (kind allows it)', async () => {
       await provider.update(
         'L',

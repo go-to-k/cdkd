@@ -122,6 +122,15 @@ const KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT: ReadonlySet<EventSourceKind> = ne
   'kinesis',
   'dynamodb',
 ]);
+/**
+ * Source kinds that accept the stream-processing numeric parameters
+ * (`MaximumRetryAttempts` / `MaximumRecordAgeInSeconds` /
+ * `ParallelizationFactor` / `TumblingWindowInSeconds`) — Kinesis / DynamoDB
+ * streams only. AWS rejects these on SQS / Kafka / MQ / DocumentDB, so the
+ * removal-on-UPDATE default-restore path is gated on this set (see the numeric
+ * restores in `update()`).
+ */
+const KINDS_WITH_STREAM_NUMERICS: ReadonlySet<EventSourceKind> = new Set(['kinesis', 'dynamodb']);
 
 /**
  * AWS Lambda Event Source Mapping Provider
@@ -469,11 +478,18 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // Numeric properties: restore the AWS default value on removal. The
     // documented defaults are: MaximumRetryAttempts = -1 (infinite),
     // MaximumRecordAgeInSeconds = -1 (infinite), ParallelizationFactor = 1,
-    // TumblingWindowInSeconds = 0 (no window).
-    if (wasSet('MaximumRetryAttempts')) updateParams.MaximumRetryAttempts = -1;
-    if (wasSet('MaximumRecordAgeInSeconds')) updateParams.MaximumRecordAgeInSeconds = -1;
-    if (wasSet('ParallelizationFactor')) updateParams.ParallelizationFactor = 1;
-    if (wasSet('TumblingWindowInSeconds')) updateParams.TumblingWindowInSeconds = 0;
+    // TumblingWindowInSeconds = 0 (no window). All four are stream-only
+    // (Kinesis / DynamoDB) parameters — AWS rejects them on SQS / Kafka / MQ /
+    // DocumentDB mappings — so gate the restore on the stream kinds, mirroring
+    // the array / batching-window clears above. CDK never emits these on a
+    // non-stream mapping, so the guard is defense-in-depth against a
+    // hand-authored / imported previous template carrying a stray value.
+    if (KINDS_WITH_STREAM_NUMERICS.has(prevKind)) {
+      if (wasSet('MaximumRetryAttempts')) updateParams.MaximumRetryAttempts = -1;
+      if (wasSet('MaximumRecordAgeInSeconds')) updateParams.MaximumRecordAgeInSeconds = -1;
+      if (wasSet('ParallelizationFactor')) updateParams.ParallelizationFactor = 1;
+      if (wasSet('TumblingWindowInSeconds')) updateParams.TumblingWindowInSeconds = 0;
+    }
 
     // MaximumBatchingWindowInSeconds: the default is 0 for
     // SQS/Kinesis/DynamoDB but 500 ms for Kafka/MSK/MQ/DocumentDB — and AWS
