@@ -510,6 +510,144 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
     });
   });
 
+  describe('StreamSpecification update (silent-drop regression, #977)', () => {
+    // Collect every UpdateTableCommand carrying a StreamSpecification, in send
+    // order, so a test can pin the exact enable / disable / view-type sequence.
+    const streamUpdates = () =>
+      mockSend.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (cmd) =>
+            cmd instanceof UpdateTableCommand &&
+            (cmd as { input?: { StreamSpecification?: unknown } }).input?.StreamSpecification
+        )
+        .map((cmd) => (cmd as { input: { StreamSpecification: Record<string, unknown> } }).input);
+
+    it('enables a stream on update and returns the fresh StreamArn attribute', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable (update reads current)
+        .mockResolvedValueOnce({
+          TableDescription: {
+            LatestStreamArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/2024',
+          },
+        }) // UpdateTable (enable stream)
+        .mockResolvedValueOnce(activeTable()); // waitForTableActiveAfterUpdate
+
+      const result = await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' } },
+        { ...baseCreateProps }
+      );
+
+      const updates = streamUpdates();
+      expect(updates).toHaveLength(1);
+      expect(updates[0].StreamSpecification).toEqual({
+        StreamEnabled: true,
+        StreamViewType: 'NEW_AND_OLD_IMAGES',
+      });
+      expect(result.attributes?.StreamArn).toBe(
+        'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/2024'
+      );
+    });
+
+    it('falls back to DescribeTable for the StreamArn when UpdateTable omits it', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable (update reads current)
+        .mockResolvedValueOnce({}) // UpdateTable (enable stream, no LatestStreamArn echoed)
+        .mockResolvedValueOnce(activeTable()) // waitForTableActiveAfterUpdate
+        .mockResolvedValueOnce(
+          activeTable({
+            LatestStreamArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/fallback',
+          })
+        ); // describeLatestStreamArn fallback
+
+      const result = await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, StreamSpecification: { StreamViewType: 'KEYS_ONLY' } },
+        { ...baseCreateProps }
+      );
+
+      expect(result.attributes?.StreamArn).toBe(
+        'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/fallback'
+      );
+    });
+
+    it('disables the stream on update with StreamEnabled:false and clears StreamArn', async () => {
+      mockSend
+        .mockResolvedValueOnce(
+          activeTable({
+            LatestStreamArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/old',
+          })
+        ) // DescribeTable (update reads current, stream still present)
+        .mockResolvedValueOnce({}) // UpdateTable (disable stream)
+        .mockResolvedValueOnce(activeTable()); // waitForTableActiveAfterUpdate
+
+      const result = await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps },
+        { ...baseCreateProps, StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' } }
+      );
+
+      const updates = streamUpdates();
+      expect(updates).toHaveLength(1);
+      expect(updates[0].StreamSpecification).toEqual({ StreamEnabled: false });
+      expect(result.attributes?.StreamArn).toBeUndefined();
+    });
+
+    it('applies a StreamViewType change as disable -> wait -> re-enable', async () => {
+      mockSend
+        .mockResolvedValueOnce(activeTable()) // DescribeTable (update reads current)
+        .mockResolvedValueOnce({}) // UpdateTable (disable)
+        .mockResolvedValueOnce(activeTable()) // waitForTableActiveAfterUpdate (after disable)
+        .mockResolvedValueOnce({
+          TableDescription: {
+            LatestStreamArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/new',
+          },
+        }) // UpdateTable (re-enable with new view type)
+        .mockResolvedValueOnce(activeTable()); // waitForTableActiveAfterUpdate (after re-enable)
+
+      const result = await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, StreamSpecification: { StreamViewType: 'NEW_IMAGE' } },
+        { ...baseCreateProps, StreamSpecification: { StreamViewType: 'KEYS_ONLY' } }
+      );
+
+      const updates = streamUpdates();
+      expect(updates).toHaveLength(2);
+      // First: disable. Second: re-enable with the new view type.
+      expect(updates[0].StreamSpecification).toEqual({ StreamEnabled: false });
+      expect(updates[1].StreamSpecification).toEqual({
+        StreamEnabled: true,
+        StreamViewType: 'NEW_IMAGE',
+      });
+      expect(result.attributes?.StreamArn).toBe(
+        'arn:aws:dynamodb:us-east-1:123456789012:table/MyTable/stream/new'
+      );
+    });
+
+    it('does NOT fire a StreamSpecification UpdateTable when unchanged', async () => {
+      mockSend.mockResolvedValueOnce(activeTable()); // DescribeTable only
+
+      await provider.update(
+        'MyTable',
+        'MyTable',
+        'AWS::DynamoDB::Table',
+        { ...baseCreateProps, StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' } },
+        { ...baseCreateProps, StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' } }
+      );
+
+      expect(streamUpdates()).toHaveLength(0);
+    });
+  });
+
   describe('ContributorInsightsSpecification', () => {
     it('enables contributor insights with the mode on create', async () => {
       mockSend

@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd DynamoDB WarmThroughput backfill integ test
-# (issue #609).
+# verify.sh — cdkd DynamoDB WarmThroughput backfill (#609) + DynamoDB Streams
+# StreamSpecification enable-on-UPDATE (#977) integ test.
 #
-# Asserts that a DynamoDB table whose template sets pre-warmed capacity
-# (`WarmThroughput.ReadUnitsPerSecond` / `WriteUnitsPerSecond`) has those
-# values reach AWS after `cdkd deploy` — the property was a silent-drop
-# before the #609 backfill. The `dynamodb-streams` fixture's EventsTable
-# is PROVISIONED (WarmThroughput works with both billing modes) and also
-# exercises the sibling PITR / TTL props. Also asserts the destroy path
-# cleans up.
+# Phase 1 deploys a PROVISIONED DynamoDB table WITHOUT a stream and asserts:
+#   - WarmThroughput (Read/Write UnitsPerSecond) reached AWS (silent-drop #609)
+#   - the table has NO enabled stream yet
+# The UPDATE phase (CDKD_TEST_UPDATE=true) enables `stream: NEW_AND_OLD_IMAGES`
+# on the existing table (plus a Lambda + EventSourceMapping consumer) and
+# asserts:
+#   - StreamSpecification.StreamEnabled == true (the #977 silent-drop close:
+#     StreamSpecification had NO update() branch before, so enabling a stream
+#     on UPDATE was dropped — deploy reported green while AWS kept no stream)
+#   - LatestStreamArn is non-null (the update-time enable materialized a stream
+#     ARN, resolvable via `Fn::GetAtt [Table, StreamArn]`)
+#   - the ESM 2-prop backfill (KmsKeyArn / MetricsConfig) reached AWS (#609)
+# Also asserts the destroy path cleans up.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -41,7 +47,10 @@ cleanup() {
   # cleanup should run as much as it can with the env it has.
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    # Destroy under CDKD_TEST_UPDATE=true so the synthesized template matches
+    # whatever phase the state was last written in (the stream-consumer subtree
+    # only exists in the UPDATE phase).
+    CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   if [ -n "${TABLE_NAME}" ]; then
     aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -73,8 +82,8 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# --- Phase 1: deploy --------------------------------------------------
-echo "==> Phase 1: deploy with the local binary"
+# --- Phase 1: deploy WITHOUT a stream ---------------------------------
+echo "==> Phase 1: deploy with the local binary (stream-less table)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -121,14 +130,78 @@ if [ "${ACTUAL_WRITE}" != "${EXPECTED_WRITE}" ]; then
 fi
 echo "    OK: Table.WarmThroughput.WriteUnitsPerSecond == ${EXPECTED_WRITE} on AWS (silent-drop CLOSED by #609)"
 
-# --- Assertion: Lambda::EventSourceMapping 7-props backfill (#609) ----
-# Resolve the ESM UUID from cdkd state, then GetEventSourceMapping and
-# assert the 2 universally-applicable props (KmsKeyArn / MetricsConfig)
-# made it to AWS. The other 5 props in the R bundle (LoggingConfig /
-# ProvisionedPollerConfig / Queues / Topics / StartingPositionTimestamp)
-# are source-kind-discriminated (Kafka / SQS / Kinesis-AT_TIMESTAMP-only)
-# and are unit-test-covered; this fixture's DynamoDB Streams source
-# doesn't accept them.
+# --- Assertion: NO stream yet (Phase 1 baseline) ----------------------
+# DescribeTable's StreamSpecification.StreamEnabled is false (or the block is
+# absent) on a stream-less table. Wrap length() on the possibly-null
+# StreamSpecification so a null field does not abort under `set -e`.
+STREAM_ENABLED_P1=$(aws dynamodb describe-table \
+  --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.StreamSpecification.StreamEnabled' --output text 2>/dev/null || echo "None")
+if [ "${STREAM_ENABLED_P1}" = "True" ]; then
+  echo "FAIL: table has a stream enabled in Phase 1, expected none" >&2
+  exit 1
+fi
+echo "    OK: no stream enabled in Phase 1 (StreamEnabled == '${STREAM_ENABLED_P1}')"
+
+# --- UPDATE phase: enable the stream on the existing table (#977) ------
+echo "==> UPDATE phase: enable DynamoDB Stream on the existing table"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# Re-read state (now carries the stream + the Lambda / ESM consumer subtree).
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE}" ]; then
+  echo "FAIL: no state file after UPDATE-phase deploy" >&2
+  exit 1
+fi
+
+# --- Assertion: stream is now enabled (#977 silent-drop close) --------
+DT_JSON=$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" 2>/dev/null)
+
+STREAM_ENABLED=$(echo "${DT_JSON}" | jq -r '.Table.StreamSpecification.StreamEnabled // false')
+if [ "${STREAM_ENABLED}" != "true" ]; then
+  echo "FAIL: Table.StreamSpecification.StreamEnabled is '${STREAM_ENABLED}', expected 'true' (StreamSpecification enable-on-UPDATE NOT applied — #977)" >&2
+  echo "${DT_JSON}" | jq '.Table.StreamSpecification'
+  exit 1
+fi
+echo "    OK: Table.StreamSpecification.StreamEnabled == true after UPDATE (silent-drop CLOSED by #977)"
+
+STREAM_VIEW=$(echo "${DT_JSON}" | jq -r '.Table.StreamSpecification.StreamViewType // "null"')
+if [ "${STREAM_VIEW}" != "NEW_AND_OLD_IMAGES" ]; then
+  echo "FAIL: Table.StreamSpecification.StreamViewType is '${STREAM_VIEW}', expected 'NEW_AND_OLD_IMAGES'" >&2
+  echo "${DT_JSON}" | jq '.Table.StreamSpecification'
+  exit 1
+fi
+echo "    OK: Table.StreamSpecification.StreamViewType == NEW_AND_OLD_IMAGES"
+
+# LatestStreamArn is the ARN the update-time enable materialized. Assert it is
+# a non-null, non-empty string (also proves Fn::GetAtt [Table, StreamArn]
+# had a real value to resolve to).
+LATEST_STREAM_ARN=$(echo "${DT_JSON}" | jq -r '.Table.LatestStreamArn // "null"')
+if [ -z "${LATEST_STREAM_ARN}" ] || [ "${LATEST_STREAM_ARN}" = "null" ]; then
+  echo "FAIL: Table.LatestStreamArn is null/empty after UPDATE-phase enable (#977)" >&2
+  echo "${DT_JSON}" | jq '{StreamSpecification: .Table.StreamSpecification, LatestStreamArn: .Table.LatestStreamArn}'
+  exit 1
+fi
+echo "    OK: Table.LatestStreamArn is non-null (${LATEST_STREAM_ARN})"
+
+# The StreamArn output (Fn::GetAtt [Table, StreamArn]) should equal AWS's
+# LatestStreamArn — this proves the update() attribute-enrichment fed the
+# freshly-enabled stream ARN back into cdkd state / outputs.
+STREAM_ARN_OUTPUT=$(echo "${STATE}" | jq -r '.outputs.StreamArn // ""')
+if [ "${STREAM_ARN_OUTPUT}" != "${LATEST_STREAM_ARN}" ]; then
+  echo "FAIL: cdkd StreamArn output '${STREAM_ARN_OUTPUT}' != AWS LatestStreamArn '${LATEST_STREAM_ARN}' (attribute enrichment gap — #977)" >&2
+  echo "${STATE}" | jq .outputs
+  exit 1
+fi
+echo "    OK: cdkd StreamArn output matches AWS LatestStreamArn (attribute enrichment CLOSED by #977)"
+
+# --- Assertion: Lambda::EventSourceMapping 2-props backfill (#609) -----
+# The ESM only exists in the UPDATE phase (it needs the stream). Resolve its
+# UUID from cdkd state, then GetEventSourceMapping and assert the 2
+# universally-applicable props (KmsKeyArn / MetricsConfig) made it to AWS.
 ESM_UUID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::EventSourceMapping") | .value.physicalId] | first // ""')
 if [ -z "${ESM_UUID}" ] || [ "${ESM_UUID}" = "null" ]; then
   echo "FAIL: could not resolve EventSourceMapping UUID from state" >&2
@@ -170,9 +243,9 @@ if [ "${ACTUAL_METRICS}" != "EventCount" ]; then
 fi
 echo "    OK: ESM.MetricsConfig.Metrics == ['EventCount'] (MetricsConfig silent-drop CLOSED by #609)"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+# --- Phase 3: destroy -------------------------------------------------
+echo "==> Phase 3: destroy"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force
@@ -201,4 +274,4 @@ fi
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-streams test passed (WarmThroughput + ESM KmsKeyArn + ESM MetricsConfig backfills closed + clean destroy)"
+echo "==> dynamodb-streams test passed (WarmThroughput + ESM backfills #609 + StreamSpecification enable-on-UPDATE #977 + clean destroy)"
