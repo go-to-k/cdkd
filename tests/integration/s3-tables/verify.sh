@@ -32,7 +32,7 @@ EXPECTED_TEAM_TAG="platform"
 EXPECTED_BUCKET_ENV_TAG="cdkd-integ"
 EXPECTED_BUCKET_TEAM_TAG="platform"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 TABLE_ARN=""
 TABLE_BUCKET_ARN=""

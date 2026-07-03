@@ -4253,6 +4253,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-failure-injection",
+        "s3-tables",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -4389,6 +4390,9 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "s3-tables": [
+          "l1"
         ],
         "schema-v5-to-v6-migration": [
           "l2"

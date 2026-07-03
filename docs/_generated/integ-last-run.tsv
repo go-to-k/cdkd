@@ -109,7 +109,6 @@ replacement-fanout	2026-06-20T19:35:04Z	PASS		verify.sh	first run; SNS replaceme
 route53	2026-06-21T16:16:44Z	PASS	384	verify.sh	stale-real re-run; 6 deleted 0 err; clean
 s3-directory-bucket	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 s3-event-notification	2026-06-20T18:40:52Z	PASS		verify.sh	S3->Lambda notification fired (DynamoDB record); 3 phases pass, clean destroy, 0 orphan
-s3-tables	2026-06-21T11:17:42Z	PASS	32	verify.sh	sweep-F staleness re-run (rc=0)
 s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
 scheduled-task	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 schema-v5-to-v6-migration	2026-06-21T14:38:30Z	PASS	57	verify.sh	sweep-G verify.sh re-run (rc=0)
@@ -183,7 +182,6 @@ loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard e
 loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
 synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
-multi-resource	2026-07-02T17:50:42Z	PASS	64	standard	broad regression for compound-Ref close-out resolver change, 0 orphans (CR log groups swept)
 apigw-stage-throttling	2026-07-02T16:57:21Z	PASS	72	verify.sh	CC-route trigger swapped to AccessLogSettings (#966), all #963 assertions green, 0 orphans
 eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
 lambda	2026-07-02T16:12:06Z	PASS	90	verify.sh	broad integ for named-replacement-collision engine change; clean
@@ -214,3 +212,5 @@ cloudwatch	2026-07-02T18:23:15Z	PASS	50	standard	0703 staleness sweep (pre-TTL r
 docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
 sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated
 ecs-service-update-props	2026-07-03T07:12:17Z	PASS	50	verify.sh	EnableECSManagedTags+PropagateTags mapping; non-ECS-controller LB/SR now throws not drops
+s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to table name (#974); clean destroy
+multi-resource	2026-07-03T07:21:52Z	PASS	59	standard	broad integ for #974 intrinsic-resolver change; 17 created/deleted 0 errors
