@@ -79,6 +79,26 @@ function classifyEventSource(resp: {
   return 'unknown';
 }
 
+/**
+ * Classify an event source mapping from its CFn property bag (as opposed to
+ * `classifyEventSource`, which reads an AWS `GetEventSourceMapping` response).
+ * The discriminating keys are identical in both shapes (`EventSourceArn` plus
+ * the four `*EventSourceConfig` / `SelfManagedEventSource` markers), so this
+ * is a thin type-narrowing adapter over the same logic. Used by `update()`'s
+ * removal-clear path (issue #976) to gate source-kind-specific clears
+ * (`FunctionResponseTypes` / `SourceAccessConfigurations` /
+ * `MaximumBatchingWindowInSeconds`).
+ */
+function classifyEventSourceFromProperties(properties: Record<string, unknown>): EventSourceKind {
+  return classifyEventSource({
+    EventSourceArn: properties['EventSourceArn'] as string | undefined,
+    SelfManagedEventSource: properties['SelfManagedEventSource'],
+    AmazonManagedKafkaEventSourceConfig: properties['AmazonManagedKafkaEventSourceConfig'],
+    SelfManagedKafkaEventSourceConfig: properties['SelfManagedKafkaEventSourceConfig'],
+    DocumentDBEventSourceConfig: properties['DocumentDBEventSourceConfig'],
+  });
+}
+
 const KINDS_WITH_FUNCTION_RESPONSE_TYPES: ReadonlySet<EventSourceKind> = new Set([
   'sqs',
   'kinesis',
@@ -88,6 +108,19 @@ const KINDS_WITH_SOURCE_ACCESS_CONFIGURATIONS: ReadonlySet<EventSourceKind> = ne
   'kafka',
   'mq',
   'documentdb',
+]);
+/**
+ * Source kinds whose `MaximumBatchingWindowInSeconds` default is `0` seconds
+ * (SQS / Kinesis / DynamoDB). The poll-based kinds (Kafka / MSK / MQ /
+ * DocumentDB) default to 500 ms, which cannot be restored via
+ * `UpdateEventSourceMapping` (the field only accepts whole-second increments),
+ * so the removal-on-UPDATE path only restores `0` for these kinds — see the
+ * comment at the `MaximumBatchingWindowInSeconds` clear in `update()`.
+ */
+const KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT: ReadonlySet<EventSourceKind> = new Set([
+  'sqs',
+  'kinesis',
+  'dynamodb',
 ]);
 
 /**
@@ -386,6 +419,85 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       updateParams.ProvisionedPollerConfig = properties[
         'ProvisionedPollerConfig'
       ] as import('@aws-sdk/client-lambda').ProvisionedPollerConfig;
+
+    // Removal-on-UPDATE (issue #976). The `!== undefined` guards above only
+    // fire when the NEW template still carries the property, so a property
+    // REMOVED from the template is simply omitted from the Update call and
+    // AWS treats the omission as "no change" — the old value silently
+    // survives (cdkd diff shows old->undefined, state drops it, AWS keeps
+    // it). CloudFormation instead sends each cleared property's documented
+    // reset sentinel on UpdateEventSourceMapping. We mirror that: for every
+    // property that was present in `previousProperties` and is now absent in
+    // `properties`, send the documented clear/reset value.
+    //
+    // Source-kind gating: `FunctionResponseTypes` (SQS/Kinesis/DynamoDB) and
+    // `SourceAccessConfigurations` (Kafka/MSK/MQ/DocumentDB) are only valid
+    // for a subset of source kinds — AWS rejects the `[]` clear against the
+    // wrong kind ("X is not allowed for this event source"), so we classify
+    // the source from the previous property bag and gate those two clears.
+    const wasSet = (key: string): boolean =>
+      previousProperties[key] !== undefined && properties[key] === undefined;
+    const prevKind = classifyEventSourceFromProperties(previousProperties);
+
+    // Object properties whose documented clear sentinel is an empty object.
+    // `FilterCriteria: {}` is explicitly documented (Lambda event-filtering
+    // guide: "run update-event-source-mapping ... with an empty
+    // FilterCriteria object"); `ScalingConfig: {}` / `DestinationConfig: {}`
+    // reset MaximumConcurrency / the on-failure destination back to default.
+    if (wasSet('FilterCriteria')) updateParams.FilterCriteria = {};
+    if (wasSet('ScalingConfig')) updateParams.ScalingConfig = {};
+    if (wasSet('DestinationConfig')) updateParams.DestinationConfig = {};
+
+    // Array properties whose documented clear sentinel is an empty array,
+    // gated by source kind (see above).
+    if (wasSet('FunctionResponseTypes') && KINDS_WITH_FUNCTION_RESPONSE_TYPES.has(prevKind))
+      updateParams.FunctionResponseTypes = [];
+    if (
+      wasSet('SourceAccessConfigurations') &&
+      KINDS_WITH_SOURCE_ACCESS_CONFIGURATIONS.has(prevKind)
+    )
+      updateParams.SourceAccessConfigurations = [];
+
+    // MetricsConfig resets by disabling the opt-in metrics — `{ Metrics: [] }`.
+    if (wasSet('MetricsConfig')) updateParams.MetricsConfig = { Metrics: [] };
+
+    // KMSKeyArn (CFn `KmsKeyArn`): the documented clear sentinel is an empty
+    // string — Lambda then falls back to the AWS-owned key. Mirrors the
+    // explicit-`''` passthrough above; here we also honor REMOVAL.
+    if (wasSet('KmsKeyArn')) updateParams.KMSKeyArn = '';
+
+    // Numeric properties: restore the AWS default value on removal. The
+    // documented defaults are: MaximumRetryAttempts = -1 (infinite),
+    // MaximumRecordAgeInSeconds = -1 (infinite), ParallelizationFactor = 1,
+    // TumblingWindowInSeconds = 0 (no window).
+    if (wasSet('MaximumRetryAttempts')) updateParams.MaximumRetryAttempts = -1;
+    if (wasSet('MaximumRecordAgeInSeconds')) updateParams.MaximumRecordAgeInSeconds = -1;
+    if (wasSet('ParallelizationFactor')) updateParams.ParallelizationFactor = 1;
+    if (wasSet('TumblingWindowInSeconds')) updateParams.TumblingWindowInSeconds = 0;
+
+    // MaximumBatchingWindowInSeconds: the default is 0 for
+    // SQS/Kinesis/DynamoDB but 500 ms for Kafka/MSK/MQ/DocumentDB — and AWS
+    // documents that the 500 ms default CANNOT be restored via
+    // UpdateEventSourceMapping (the field only accepts whole-second
+    // increments, so you must create a new mapping). We therefore restore
+    // `0` on removal ONLY for the second-granular kinds; for the poll-based
+    // kinds we intentionally leave the field untouched (a template change
+    // that must restore 500 ms is a CFn-side replace, not an in-place clear).
+    if (
+      wasSet('MaximumBatchingWindowInSeconds') &&
+      KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT.has(prevKind)
+    )
+      updateParams.MaximumBatchingWindowInSeconds = 0;
+
+    // No documented clear sentinel — intentionally NOT cleared on removal:
+    //   - LoggingConfig: holds enum log-level fields, not a presence toggle;
+    //     AWS documents no `{}` reset. Removing it in the template is a
+    //     no-op against AWS (the last-applied log config survives).
+    //   - ProvisionedPollerConfig: no documented empty-object reset to
+    //     on-demand poller scaling. Left untouched on removal.
+    //   - BatchSize: source-dependent default (10 for SQS, 100 otherwise);
+    //     rarely removed, and a wrong default would change batching
+    //     behavior. Left untouched on removal (the last value survives).
 
     const updateResp = await this.lambdaClient.send(
       new UpdateEventSourceMappingCommand(updateParams)
