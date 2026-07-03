@@ -32,7 +32,7 @@ STACK="EcsServiceUpdatePropsStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
-LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
