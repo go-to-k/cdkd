@@ -26,7 +26,6 @@ deep-getatt-chains	2026-06-20T19:32:52Z	PASS		verify.sh	first run; deep GetAtt c
 deletion-policy-retain	2026-06-21T11:00:28Z	PASS	24	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 diff-intrinsic-target-change	2026-06-21T11:00:28Z	PASS	47	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 docdb-neptune	2026-06-21T15:21:39Z	PASS	1512	verify.sh	sweep-G verify.sh re-run (rc=0)
-docker-image-asset	2026-06-13T11:02:44Z	PASS	60	verify.sh	ECR build+push (ARM_64 pinned); image by tag + Lambda runs; 0 err
 dynamodb-globaltable	2026-06-20T17:59:38Z	PASS		verify.sh	BillingMode/autoscaling UPDATE + clean destroy (#887 regression); 1 deleted 0 errors
 dynamodb-gsi-update	2026-06-20T18:10:27Z	PASS		verify.sh	#887 add-GSI in-place UPDATE (no replacement); 3 phases pass, clean destroy
 dynamodb-ondemand	2026-06-20T18:12:58Z	PASS		verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE (#887 regression); 3 deleted 0 errors
@@ -213,3 +212,4 @@ s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-
 throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 servicediscovery	2026-07-02T18:23:15Z	PASS	111	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 cloudwatch	2026-07-02T18:23:15Z	PASS	50	standard	0703 staleness sweep (pre-TTL refresh); clean
+docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
