@@ -318,6 +318,133 @@ describe('StepFunctionsProvider', () => {
         )
       ).rejects.toThrow('Failed to update Step Functions state machine MyStateMachine');
     });
+
+    // ---------------------------------------------------------------------
+    // Removal-clear (issue #978): removing a config from the template must
+    // send the explicit disable sentinel, otherwise the patch-style
+    // UpdateStateMachine keeps the old config.
+    // ---------------------------------------------------------------------
+    describe('config removal clears the removed config', () => {
+      const arn = 'arn:aws:states:us-east-1:123456789012:stateMachine:my-state-machine';
+      const definition =
+        '{"StartAt":"Hello","States":{"Hello":{"Type":"Pass","End":true}}}';
+
+      /** Run update(), return the UpdateStateMachineCommand input. */
+      async function runRemovalUpdate(
+        previousExtra: Record<string, unknown>,
+        newExtra: Record<string, unknown> = {}
+      ): Promise<Record<string, unknown>> {
+        // UpdateStateMachine
+        mockSend.mockResolvedValueOnce({});
+        // DescribeStateMachine
+        mockSend.mockResolvedValueOnce({ name: 'my-state-machine', revisionId: 'rev-2' });
+
+        await provider.update(
+          'MyStateMachine',
+          arn,
+          'AWS::StepFunctions::StateMachine',
+          {
+            RoleArn: 'arn:aws:iam::123456789012:role/role',
+            DefinitionString: definition,
+            ...newExtra,
+          },
+          {
+            RoleArn: 'arn:aws:iam::123456789012:role/role',
+            DefinitionString: definition,
+            ...previousExtra,
+          }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateStateMachineCommand');
+        return updateCall.input as Record<string, unknown>;
+      }
+
+      it('clears removed TracingConfiguration with { enabled: false }', async () => {
+        const input = await runRemovalUpdate({
+          TracingConfiguration: { Enabled: true },
+        });
+        expect(input['tracingConfiguration']).toEqual({ enabled: false });
+      });
+
+      it('clears removed LoggingConfiguration with an OFF disable shape', async () => {
+        const input = await runRemovalUpdate({
+          LoggingConfiguration: {
+            Level: 'ALL',
+            IncludeExecutionData: true,
+            Destinations: [
+              {
+                CloudWatchLogsLogGroup: {
+                  LogGroupArn:
+                    'arn:aws:logs:us-east-1:123456789012:log-group:/aws/vendedlogs/states/my:*',
+                },
+              },
+            ],
+          },
+        });
+        expect(input['loggingConfiguration']).toEqual({
+          level: 'OFF',
+          includeExecutionData: false,
+          destinations: [],
+        });
+      });
+
+      it('clears removed EncryptionConfiguration by resetting to AWS_OWNED_KEY', async () => {
+        const input = await runRemovalUpdate({
+          EncryptionConfiguration: {
+            Type: 'CUSTOMER_MANAGED_KMS_KEY',
+            KmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+            KmsDataKeyReusePeriodSeconds: 300,
+          },
+        });
+        expect(input['encryptionConfiguration']).toEqual({ type: 'AWS_OWNED_KEY' });
+      });
+
+      it('clears all three configs when all are removed in one update', async () => {
+        const input = await runRemovalUpdate({
+          TracingConfiguration: { Enabled: true },
+          LoggingConfiguration: { Level: 'ERROR' },
+          EncryptionConfiguration: { Type: 'CUSTOMER_MANAGED_KMS_KEY', KmsKeyId: 'k' },
+        });
+        expect(input['tracingConfiguration']).toEqual({ enabled: false });
+        expect(input['loggingConfiguration']).toEqual({
+          level: 'OFF',
+          includeExecutionData: false,
+          destinations: [],
+        });
+        expect(input['encryptionConfiguration']).toEqual({ type: 'AWS_OWNED_KEY' });
+      });
+
+      it('does NOT emit a disable sentinel when the config was never configured before', async () => {
+        // previous side has no configs at all -> nothing to clear
+        const input = await runRemovalUpdate({});
+        expect(input['tracingConfiguration']).toBeUndefined();
+        expect(input['loggingConfiguration']).toBeUndefined();
+        expect(input['encryptionConfiguration']).toBeUndefined();
+      });
+
+      it('does NOT clear when the config is still present in the new properties', async () => {
+        const input = await runRemovalUpdate(
+          { TracingConfiguration: { Enabled: true } },
+          { TracingConfiguration: { Enabled: true } }
+        );
+        // still enabled: mapped through, not disabled
+        expect(input['tracingConfiguration']).toEqual({ enabled: true });
+      });
+
+      it('does NOT clear on the readCurrentState empty-placeholder round-trip', async () => {
+        // previous carries the always-emitted placeholders from readCurrentState
+        // (no Level / no Type / Enabled:false); a drift-revert must be a no-op.
+        const input = await runRemovalUpdate({
+          TracingConfiguration: { Enabled: false },
+          LoggingConfiguration: {},
+          EncryptionConfiguration: {},
+        });
+        expect(input['tracingConfiguration']).toBeUndefined();
+        expect(input['loggingConfiguration']).toBeUndefined();
+        expect(input['encryptionConfiguration']).toBeUndefined();
+      });
+    });
   });
 
   describe('delete', () => {

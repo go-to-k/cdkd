@@ -199,11 +199,34 @@ export class StepFunctionsProvider implements ResourceProvider {
       // silently ignored Level / IncludeExecutionData / Destinations, which
       // surfaced as `cdkd drift --revert` reporting `✓ reverted` while the
       // very next `cdkd drift` re-detected the same drift.
-      const encryptionConfiguration = mapEncryptionConfiguration(
-        properties['EncryptionConfiguration']
-      );
-      const loggingConfiguration = mapLoggingConfiguration(properties['LoggingConfiguration']);
-      const tracingConfiguration = mapTracingConfiguration(properties['TracingConfiguration']);
+      //
+      // REMOVAL-CLEAR (issue #978): `UpdateStateMachine` is patch-style — a
+      // field omitted from the request keeps its current AWS value. So when a
+      // config that WAS present in `previousProperties` is absent from the new
+      // `properties`, mapping from `properties` alone yields `undefined`, the
+      // field is omitted, and AWS silently keeps the old config (the removal is
+      // never applied). For each of the three configs we detect the
+      // prev-present / new-absent transition and send an explicit disable
+      // sentinel instead of `undefined`, mirroring Lambda ESM's
+      // `clearOnUpdateRemoval` / SQS's `SQS_ATTRIBUTE_REMOVAL_RESET`.
+      const encryptionConfiguration =
+        mapEncryptionConfiguration(properties['EncryptionConfiguration']) ??
+        disabledEncryptionConfigurationOnRemoval(
+          previousProperties['EncryptionConfiguration'],
+          properties['EncryptionConfiguration']
+        );
+      const loggingConfiguration =
+        mapLoggingConfiguration(properties['LoggingConfiguration']) ??
+        disabledLoggingConfigurationOnRemoval(
+          previousProperties['LoggingConfiguration'],
+          properties['LoggingConfiguration']
+        );
+      const tracingConfiguration =
+        mapTracingConfiguration(properties['TracingConfiguration']) ??
+        disabledTracingConfigurationOnRemoval(
+          previousProperties['TracingConfiguration'],
+          properties['TracingConfiguration']
+        );
 
       await this.getClient().send(
         new UpdateStateMachineCommand({
@@ -696,4 +719,82 @@ function mapTracingConfiguration(value: unknown): TracingConfiguration | undefin
   const cfg = value as Record<string, unknown>;
   if (cfg['Enabled'] === undefined) return undefined;
   return { enabled: cfg['Enabled'] as boolean };
+}
+
+// ---------------------------------------------------------------------------
+// Removal-clear sentinels (issue #978)
+//
+// `UpdateStateMachine` is patch-style, so omitting a config field keeps the
+// current AWS value. These helpers turn a prev-present / new-absent transition
+// into the explicit disable payload AWS needs to actually clear the config.
+//
+// Each is only consulted when the corresponding `map*Configuration(properties[...])`
+// returned `undefined` (i.e. the new side carries no meaningful config). The
+// `wasMeaningfullyConfigured` guard distinguishes a genuine removal (the prop
+// was really set before) from the `readCurrentState` empty-placeholder round-trip
+// (`{}` / `{ Enabled: false }`), which must stay a no-op — sending a disable
+// sentinel there would spuriously reaffirm the AWS default on every drift-revert.
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the SDK disable payload for `EncryptionConfiguration` when it was
+ * present+configured in the previous properties but is absent/placeholder in
+ * the new ones; otherwise `undefined` (no clear needed). `AWS_OWNED_KEY` is
+ * the AWS default, so this resets a customer-managed-key config back to default.
+ */
+function disabledEncryptionConfigurationOnRemoval(
+  previous: unknown,
+  next: unknown
+): EncryptionConfiguration | undefined {
+  if (!wasMeaningfullyConfigured(previous, 'Type')) return undefined;
+  if (mapEncryptionConfiguration(next) !== undefined) return undefined;
+  return { type: 'AWS_OWNED_KEY' };
+}
+
+/**
+ * Return the SDK disable payload for `LoggingConfiguration` when it was
+ * present+configured in the previous properties but is absent/placeholder in
+ * the new ones; otherwise `undefined`. `level: OFF` disables logging;
+ * `destinations: []` clears the log destinations (only required when level is
+ * not OFF, so an empty list is accepted alongside OFF).
+ */
+function disabledLoggingConfigurationOnRemoval(
+  previous: unknown,
+  next: unknown
+): LoggingConfiguration | undefined {
+  if (!wasMeaningfullyConfigured(previous, 'Level')) return undefined;
+  if (mapLoggingConfiguration(next) !== undefined) return undefined;
+  return { level: 'OFF', includeExecutionData: false, destinations: [] };
+}
+
+/**
+ * Return the SDK disable payload for `TracingConfiguration` when it was
+ * present+enabled in the previous properties but is absent/placeholder in the
+ * new ones; otherwise `undefined`. `enabled: false` turns X-Ray tracing off.
+ *
+ * Unlike logging/encryption, the "meaningful" signal here is `Enabled === true`
+ * (a previous `{ Enabled: false }` is already the AWS default, so there is
+ * nothing to clear).
+ */
+function disabledTracingConfigurationOnRemoval(
+  previous: unknown,
+  next: unknown
+): TracingConfiguration | undefined {
+  if (previous === null || typeof previous !== 'object') return undefined;
+  const prevCfg = previous as Record<string, unknown>;
+  if (prevCfg['Enabled'] !== true) return undefined;
+  if (mapTracingConfiguration(next) !== undefined) return undefined;
+  return { enabled: false };
+}
+
+/**
+ * True when `value` is an object that carries a defined `discriminatorKey`
+ * field (`Level` for logging, `Type` for encryption) — i.e. it was a real,
+ * non-placeholder config in the previous properties. The empty-placeholder
+ * shape `{}` that `readCurrentState` emits has no discriminator, so it returns
+ * false and no clear is emitted.
+ */
+function wasMeaningfullyConfigured(value: unknown, discriminatorKey: string): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  return (value as Record<string, unknown>)[discriminatorKey] !== undefined;
 }

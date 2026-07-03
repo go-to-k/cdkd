@@ -187,7 +187,6 @@ update-replace	2026-07-02T16:12:06Z	PASS	585	verify.sh	fixture updated: BucketNa
 cc-api-fallback	2026-07-02T16:12:06Z	PASS	59	verify.sh	post-merge validation batch; clean
 rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
 cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
-stepfunctions-logging	2026-07-02T16:12:06Z	PASS	72	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
 apigateway	2026-07-02T17:12:19Z	PASS	55	verify.sh	re-run with final #966 binary (root-key + reset-rebuild + corpse-cleanup fixes), 0 orphans
 wafv2	2026-07-03T04:24:38Z	PASS	120	standard	re-run on rebased tree (PR 972 + #971 base); 0 errors, retained CW role swept, events pruned
 glue-update-hardening	2026-07-02T18:23:15Z	PASS	68	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
@@ -214,3 +213,4 @@ s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to
 multi-resource	2026-07-03T07:21:52Z	PASS	59	standard	broad integ for #974 intrinsic-resolver change; 17 created/deleted 0 errors
 ecr-scanning	2026-07-03T08:26:37Z	PASS	55	verify.sh	tag add/change/untag on update reach AWS; destroy clean
 dynamodb-streams	2026-07-03T08:36:26Z	PASS	87	verify.sh	StreamSpecification enable-on-UPDATE + StreamArn enrich reach AWS; destroy clean
+stepfunctions-logging	2026-07-03T08:44:32Z	PASS	52	verify.sh	logging/tracing removal-clear reaches AWS (OFF/0/False); destroy clean

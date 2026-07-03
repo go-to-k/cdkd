@@ -10,14 +10,18 @@
 # deploy hard-failed and rolled back. CloudFormation tolerates this via its
 # deployment latency; cdkd retries (src/deployment/retryable-errors.ts).
 #
-# Also the first integ coverage for SFN LoggingConfiguration (CREATE + in-place
-# UPDATE of the log level).
+# Also the integ coverage for SFN LoggingConfiguration + TracingConfiguration
+# removal-clear on UPDATE (issue #978): UpdateStateMachine is patch-style, so a
+# config removed from the template is silently kept unless cdkd sends the
+# explicit disable sentinel. Phase 2 removes BOTH logging and tracing and
+# asserts AWS actually cleared them.
 #
 # Phases:
-#   1. Deploy an Express state machine with logging level ALL. Assert AWS
-#      reports the logging configuration, then start-sync-execution succeeds.
-#   2. Re-deploy with CDKD_TEST_UPDATE=true (level ERROR). Assert AWS now
-#      reports ERROR (the update actually reached AWS, not just cdkd state).
+#   1. Deploy an Express state machine with logging level ALL + tracing
+#      ENABLED. Assert AWS reports both, then start-sync-execution succeeds.
+#   2. Re-deploy with CDKD_TEST_UPDATE=true (logging + tracing REMOVED from the
+#      template). Assert AWS now reports logging level OFF and tracing disabled
+#      (the removal actually reached AWS, not just cdkd state).
 #   3. Destroy + assert the state machine is gone and cdkd state is removed.
 #
 # Required env vars:
@@ -88,8 +92,21 @@ logging_level() {
     --query 'loggingConfiguration.level' --output text
 }
 
-# --- Phase 1: deploy baseline (logging level ALL) ----------------------
-echo "==> Phase 1: deploy Express state machine with logging level ALL"
+# JMESPath length() is wrapped as length(X || `[]`) so an empty/absent
+# destinations list yields 0 instead of a non-zero AWS CLI exit that would
+# abort under `set -e` (see feedback_integ_jmespath_length_null_set_e_abort).
+logging_destinations_count() {
+  aws stepfunctions describe-state-machine --state-machine-arn "$1" --region "${REGION}" \
+    --query 'length(loggingConfiguration.destinations || `[]`)' --output text
+}
+
+tracing_enabled() {
+  aws stepfunctions describe-state-machine --state-machine-arn "$1" --region "${REGION}" \
+    --query 'tracingConfiguration.enabled' --output text
+}
+
+# --- Phase 1: deploy baseline (logging level ALL + tracing enabled) ----
+echo "==> Phase 1: deploy Express state machine with logging level ALL + tracing enabled"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -103,6 +120,13 @@ if [ "${LEVEL_P1}" != "ALL" ]; then
   exit 1
 fi
 
+TRACING_P1="$(tracing_enabled "${SM_ARN}")"
+echo "    AWS tracing enabled (Phase 1): ${TRACING_P1}"
+if [ "${TRACING_P1}" != "True" ]; then
+  echo "FAIL: expected tracing enabled=True after Phase 1, got '${TRACING_P1}'" >&2
+  exit 1
+fi
+
 echo "==> Phase 1b: functional check (start-sync-execution)"
 EXEC_STATUS="$(aws stepfunctions start-sync-execution --state-machine-arn "${SM_ARN}" \
   --input '{}' --region "${REGION}" --query 'status' --output text)"
@@ -112,15 +136,29 @@ if [ "${EXEC_STATUS}" != "SUCCEEDED" ]; then
   exit 1
 fi
 
-# --- Phase 2: switch logging level to ERROR (must reach AWS) ------------
-echo "==> Phase 2: re-deploy with logging level ERROR (in-place UpdateStateMachine)"
+# --- Phase 2: remove logging + tracing (must reach AWS) ----------------
+echo "==> Phase 2: re-deploy with logging + tracing REMOVED (issue #978 removal-clear)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 LEVEL_P2="$(logging_level "${SM_ARN}")"
 echo "    AWS logging level (Phase 2): ${LEVEL_P2}"
-if [ "${LEVEL_P2}" != "ERROR" ]; then
-  echo "FAIL: expected logging level ERROR after Phase 2 (update silently dropped?), got '${LEVEL_P2}'" >&2
+if [ "${LEVEL_P2}" != "OFF" ]; then
+  echo "FAIL: expected logging level OFF after Phase 2 (removal silently dropped?), got '${LEVEL_P2}'" >&2
+  exit 1
+fi
+
+DEST_P2="$(logging_destinations_count "${SM_ARN}")"
+echo "    AWS logging destinations (Phase 2): ${DEST_P2}"
+if [ "${DEST_P2}" != "0" ]; then
+  echo "FAIL: expected 0 logging destinations after Phase 2, got '${DEST_P2}'" >&2
+  exit 1
+fi
+
+TRACING_P2="$(tracing_enabled "${SM_ARN}")"
+echo "    AWS tracing enabled (Phase 2): ${TRACING_P2}"
+if [ "${TRACING_P2}" != "False" ]; then
+  echo "FAIL: expected tracing enabled=False after Phase 2 (removal silently dropped?), got '${TRACING_P2}'" >&2
   exit 1
 fi
 
@@ -159,4 +197,4 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/n
 fi
 echo "    cdkd state removed"
 
-echo "[verify] PASS — SFN Express + LoggingConfiguration deploy (assume-role retry), level update, destroy: all 3 phases passed"
+echo "[verify] PASS — SFN Express + Logging/Tracing deploy (assume-role retry), removal-clear update (#978), destroy: all 3 phases passed"
