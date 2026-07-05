@@ -109,10 +109,16 @@ Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [test
          │
          ▼
 ┌─────────────────┐
+│ Asset Build &   │  S3 ZIP upload / ECR image build & push
+│   Publish       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
 │ cdkd Engine     │
 │ - DAG Analysis  │  Dependency graph construction
 │ - Diff Calc     │  Compare with existing resources
-│ - Parallel Exec │  Event-driven dispatch
+│ - Parallel Exec │  Dispatch on deps complete (no level barrier)
 └────────┬────────┘
          │
     ┌────┴────┐
