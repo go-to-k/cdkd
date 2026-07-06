@@ -14,6 +14,8 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 
 **cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration and SAM-style local execution; use the AWS CDK CLI in production for full CloudFormation tooling. Install cdkd alongside an existing `cdk deploy` workflow — no migration needed, `cdkd local *` reads deployed state directly via `--from-cfn-stack`. Bidirectional migration is also supported — [import](#importing-existing-resources) into cdkd or [export](#exporting-a-stack-back-to-cloudformation) back to CloudFormation when ready.
 
+**A natural fit for AI-driven development.** AI coding agents iterate in tight spin-up / tear-down loops — and cdkd keeps each turn short, with fast deploys and an equally fast `cdkd destroy` that deletes via direct SDK calls instead of polling a CloudFormation stack-delete.
+
 > [!IMPORTANT]
 > cdkd is for dev/test workflows only — early in development, not yet production-ready.
 
