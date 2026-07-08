@@ -78,16 +78,42 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
    - CloudWatch Log Groups: `aws logs describe-log-groups --region us-east-1 --log-group-name-prefix /aws/lambda/{Prefix}`
    - Security Groups: `aws ec2 describe-security-groups --region us-east-1 --filters "Name=group-name,Values=*{Prefix}*" --query 'SecurityGroups[].{Id:GroupId,Name:GroupName}'`
    - VPCs: `aws ec2 describe-vpcs --region us-east-1 --filters "Name=tag:Name,Values=*{Prefix}*" --query 'Vpcs[].{Id:VpcId,Name:Tags[?Key==\`Name\`].Value|[0]}'`
+   - Kinesis Data Streams: `aws kinesis list-streams --region us-east-1 --query 'StreamNames[?contains(@, \`{Prefix}\`)]'`. **Provisioned streams bill continuously**, so surface these first. Delete with `aws kinesis delete-stream --stream-name {name} --region us-east-1`.
+   - Kinesis Firehose delivery streams: `aws firehose list-delivery-streams --region us-east-1 --query 'DeliveryStreamNames[?contains(@, \`{Prefix}\`)]'`. Delete with `aws firehose delete-delivery-stream --delivery-stream-name {name} --region us-east-1`.
+   - EventBridge Pipes: `aws pipes list-pipes --region us-east-1 --query 'Pipes[?contains(Name, \`{Prefix}\`)].Name'`. Delete with `aws pipes delete-pipe --name {name} --region us-east-1`.
+   - EventBridge Scheduler schedules: `aws scheduler list-schedules --region us-east-1 --query 'Schedules[?contains(Name, \`{Prefix}\`)].Name'`. Delete with `aws scheduler delete-schedule --name {name} --region us-east-1`.
+   - Synthetics canaries: `aws synthetics describe-canaries --region us-east-1 --query 'Canaries[?contains(Name, \`{prefix}\`)].{Name:Name,Id:Id}'` (canary names are lowercased). Stop if running, then delete with `aws synthetics delete-canary --name {name} --region us-east-1`.
+   - Cognito User Pools: `aws cognito-idp list-user-pools --max-results 60 --region us-east-1 --query 'UserPools[?contains(Name, \`{Prefix}\`)].{Name:Name,Id:Id}'`. Delete with `aws cognito-idp delete-user-pool --user-pool-id {id} --region us-east-1`.
+   - Secrets Manager secrets: `aws secretsmanager list-secrets --region us-east-1 --query 'SecretList[?contains(Name, \`{Prefix}\`)].{Name:Name,Arn:ARN}'`. Delete with `aws secretsmanager delete-secret --secret-id {arn} --force-delete-without-recovery --region us-east-1`.
+   - Step Functions state machines: `aws stepfunctions list-state-machines --region us-east-1 --query 'stateMachines[?contains(name, \`{Prefix}\`)].{Name:name,Arn:stateMachineArn}'`. Delete with `aws stepfunctions delete-state-machine --state-machine-arn {arn} --region us-east-1`.
+   - Backup vaults: `aws backup list-backup-vaults --region us-east-1 --query 'BackupVaultList[?contains(BackupVaultName, \`{Prefix}\`)].BackupVaultName'`. A vault with recovery points cannot be deleted until they are removed (`list-recovery-points-by-backup-vault` → `delete-recovery-point`), then `aws backup delete-backup-vault --backup-vault-name {name} --region us-east-1`.
+   - KMS customer keys: enumerate then filter — these are **never auto-deleted** and each enabled key bills ~$1/mo:
+     ```bash
+     for id in $(aws kms list-keys --region us-east-1 --query 'Keys[].KeyId' --output text); do
+       meta=$(aws kms describe-key --key-id "$id" --region us-east-1 \
+         --query 'KeyMetadata.{Mgr:KeyManager,State:KeyState,Desc:Description}' --output json)
+       # Keep only CUSTOMER-managed, Enabled keys whose Description matches a cdkd pattern
+       echo "$meta" | grep -q '"Mgr": "CUSTOMER"' || continue
+       echo "$meta" | grep -q '"State": "Enabled"' || continue
+       echo "$meta" | grep -qi 'cdkd\|bughunt' || continue
+       echo "KMS candidate: $id -> $meta"
+     done
+     ```
+     **Safety (KMS-specific, MUST hold):** only `KeyManager==CUSTOMER` AND `KeyState==Enabled` keys (never touch `AWS`-managed keys, and skip anything already `PendingDeletion`); match cdkd origin via the key **Description** (integ keys carry descriptions like `... cdkd #609 integ` / `bughunt sweep11 key A`) or tags (`aws kms list-resource-tags`). **Skip any key that is the active API Gateway account CloudWatch role key, or that has active grants (`aws kms list-grants --key-id {id}`) or aliases (`aws kms list-aliases --key-id {id}`).** KMS keys cannot be deleted immediately — schedule deletion with `aws kms schedule-key-deletion --key-id {id} --pending-window-in-days 7 --region us-east-1` (7 is the minimum window) and **surface the returned `DeletionDate`** in the report.
+   - IAM Roles — API Gateway account-level CloudWatch roles: these are a recurring leftover class because they **survive stack destroy** — they are referenced by the account-level `apigateway` CloudWatch-role-ARN setting, not the stack, so nothing deletes them on teardown. They match the general IAM-role scan above (e.g. `CdkdApigwUsagePlanKeyExample-...`, `ApiCognitoStack-...`), but before deleting one confirm it is not the ARN currently set on the account via `aws apigateway get-account`; if it is, unset it there first.
 
 5. **Report findings**: Show a table of detected resources grouped by type
 
 6. **If deletion requested** (not `--detect-only`):
    - Use `AskUserQuestion` to show the full list and confirm deletion
    - Delete in reverse dependency order (e.g., Lambda before IAM Role, Subnet before VPC)
-   - For IAM Roles: detach all policies first, then delete
+   - For IAM Roles: detach all policies first, then delete. For API Gateway account CloudWatch roles, confirm via `aws apigateway get-account` that the role is not the active account-level ARN before deleting.
    - For S3 Buckets: empty the bucket first (only if bucket name matches cdkd pattern), then delete
    - For ECR Repositories: use `--force` flag
-   - Report each deletion result
+   - For KMS keys: deletion is **scheduled, not immediate** — `schedule-key-deletion --pending-window-in-days 7` returns a `DeletionDate`; report it so the user knows the key bills until then. Never delete `AWS`-managed keys or keys with grants/aliases.
+   - For Backup vaults: delete all recovery points first, then the vault.
+   - For Synthetics canaries: stop a running canary before deleting.
+   - Report each deletion result (for KMS, include the scheduled `DeletionDate`)
 
 ## Important
 
@@ -95,3 +121,5 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
 - Never delete resources that could belong to other projects
 - When in doubt, ask the user via `AskUserQuestion`
 - Log Groups under `/aws/lambda/` are created automatically by Lambda and are safe to clean up if the function name matches
+- **Cost-bearing leftovers to prioritize**: Kinesis provisioned streams and enabled KMS customer keys bill continuously and are *not* auto-deleted on stack destroy, so they accumulate silently across integ/bug-hunt campaigns. Surface these two types first in the report.
+- **KMS is scheduled-deletion only**: a key never leaves your account instantly — the minimum pending window is 7 days, during which it keeps billing. Always report the `DeletionDate`. Only ever touch `CUSTOMER`-managed + `Enabled` keys matched to a cdkd description/tag, and never one with active grants, aliases, or the apigateway account CloudWatch role binding.
