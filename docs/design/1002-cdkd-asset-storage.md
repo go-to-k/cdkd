@@ -134,7 +134,7 @@ already reads; the result is cached for the process lifetime):
 
 | Marker for deploy region | Mode |
 | --- | --- |
-| absent | **legacy** — publish to the `assets.json` destinations verbatim, no rewrite. Byte-identical to today's behavior. A one-shot `logger.info` mentions the `cdk gc` hazard and the `cdkd bootstrap` opt-in (info, not warn — existing users are not doing anything wrong). |
+| absent | **legacy** — publish to the `assets.json` destinations verbatim, no rewrite. Byte-identical to today's behavior. One `logger.info` line per invocation mentions the `cdk gc` hazard and the `cdkd bootstrap` opt-in (info, not warn — existing users are not doing anything wrong). |
 | present | **cdkd-assets** — redirect + rewrite (§6, §7). |
 | present but bucket/repo missing (user deleted them) | hard error naming the missing resource and the `cdkd bootstrap --region <r>` fix. Never silently fall back — that would flip-flop stack properties between deploys. |
 
@@ -371,21 +371,42 @@ names — consistent with what the rewrite deployed.
   state files (fully-resolved `properties`) — strictly better signal than
   gc's template substring scan.
 - **Upstream protection-tag proposal** for `cdk gc` (separate issue,
-  defense-in-depth for environments mid-migration and for option-8 rows we
+  defense-in-depth for environments mid-migration and for the §8 rows we
   leave verbatim).
 - **`cdkd export` interaction**: the exported stack keeps running (code /
   image already loaded); the next `cdk deploy` republishes assets to the CDK
   bootstrap bucket via cdk-assets and updates references — self-correcting.
   Docs note only.
 
-## 12. Open questions
+## 12. Decisions (previously open questions)
 
-1. **Marker key layout** — `cdkd-bootstrap/{region}.json` (proposed; outside
-   the `cdkd/` state prefix so `state list` key-listing never mistakes it for
-   a stack) vs a single `cdkd-bootstrap.json` with a region map (single-key
-   read, but concurrent bootstraps in two regions race on last-writer-wins).
-   Leaning per-region keys.
-2. **Legacy-mode info line** — every deploy vs once per state bucket
-   (recorded)? Leaning every deploy at `info` level; it is one line and the
-   hazard is real.
-3. **Bucket/repo lifecycle defaults** — none in v1; revisit with `cdkd gc`.
+1. **Marker key layout: per-region keys** — `cdkd-bootstrap/{region}.json`,
+   outside the `cdkd/` state prefix so `state list` key-listing never
+   mistakes it for a stack, and concurrent bootstraps in two regions cannot
+   race last-writer-wins on a shared region-map object.
+2. **Legacy-mode info line: one line per invocation** at `info` level — the
+   hazard is real, the line is cheap, and `--use-cdk-bootstrap-assets` /
+   `--no-assets` users have an explicit knob that also suppresses it.
+3. **Bucket/repo lifecycle defaults: none in v1** — revisit with `cdkd gc`.
+
+## 13. Suggested implementation phasing
+
+Each PR independently shippable; legacy mode is the default until a marker
+exists, so partial rollout is safe at every point.
+
+1. **PR 1 — bootstrap + marker + mode detection**: asset bucket / ECR repo /
+   marker creation (`--no-assets`, squatting defense), the deploy-side marker
+   read + `AssetMode` plumbing (legacy path byte-identical), `state info`
+   surfacing, this design doc moved to main, docs updates
+   (README / state-management / cli-reference).
+2. **PR 2 — redirection + rewrite + audit**: §6 mapping table, §7 rewrite
+   pass incl. nested child template load sites, post-resolution audit,
+   `--use-cdk-bootstrap-assets`, §7.1 command coverage (deploy / diff /
+   import / publish-assets). Unit tests over every §8 destination-shape row.
+3. **PR 3 — `cdkd local` matching + cdk-local upstream**: `cdkd-container-assets-`
+   + generalized qualifier pattern in the local resolvers; upstream cdk-local
+   PR + version bump for the shim-owned sites.
+4. **Integ**: a dedicated migration integ (deploy pre-marker → re-bootstrap →
+   deploy → verify repointing → destroy clean) plus a broad-set integ run —
+   PR 2 touches `deploy-engine` / `template-parser` scope, so the
+   `integ-broad` gate applies on top of `integ-destroy`.
