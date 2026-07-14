@@ -181,6 +181,19 @@ Idempotent like the state-bucket path (exists → reconfigure only under
 `--force`). `--no-assets` skips 1–3. Bootstrap output states loudly that
 asset mode is now ON for the region and what the first deploy will do (§9).
 
+**Bucket-squatting defense.** The bucket name is predictable (the same
+weakness as CDK's bootstrap bucket — see the 2024 upstream advisory on
+predictable bootstrap bucket names). Two layers:
+
+- Bootstrap distinguishes `BucketAlreadyOwnedByYou` (fine, idempotent) from
+  owned-elsewhere (hard error naming the conflict; never adopt a bucket this
+  account does not own).
+- Every S3 call against the asset bucket (`HeadObject` existence check,
+  `PutObject` upload) passes `ExpectedBucketOwner: accountId`, so even a
+  DNS-style hijack or a marker pointing at a since-recreated foreign bucket
+  can never leak assets cross-account. (Cheap: we always know the account id
+  at publish time.)
+
 ## 6. Publish-time redirection (`src/assets/**`, WorkGraph)
 
 The publishers already publish to whatever `assets.json` `destinations`
@@ -219,6 +232,10 @@ A dedicated pass over the parsed template, per stack, before DAG build:
    is partially evaluated to a literal (all are deploy-time constants), then
    replaced. Joins containing real resource refs are left alone — synthesizer
    output never splits an asset location across a resource ref.
+   Matching is **boundary-aware**: a source name only matches when followed
+   by end-of-string or a URI delimiter (`/`, `:`, `.`, `"`, whitespace), so a
+   user resource whose name merely starts with the bootstrap bucket name
+   (e.g. `cdk-hnb659fds-assets-<acct>-<region>-backup`) is never corrupted.
 3. **Post-resolution audit** (defense in depth): after
    `IntrinsicFunctionResolver` produces final literals, if any resolved
    property value still contains a mapped **source** name, fail the resource
@@ -241,9 +258,31 @@ deploys with **no schema bump**; `cdkd diff` output shows the real (cdkd)
 locations. `cdkd synth` output stays **unrewritten** — it prints the CDK
 app's template, not cdkd's deployment plan.
 
-Nested-stack `TemplateURL` also gets rewritten, harmlessly —
-`NestedStackProvider` reads child templates from `cdk.out` locally and never
-dereferences the URL.
+**Nested child templates are a separate parse path and MUST get the same
+pass.** `NestedStackProvider` (and `diff-recursive.ts` / `export.ts`'s child
+readers) load `<Stack>.<Child>.nested.template.json` from `cdk.out` via their
+own `readFileSync` — they do not flow through the top-level analyzer entry.
+A nested Lambda/ECS asset reference that misses the rewrite would be exactly
+the split-brain the audit exists to prevent, so the rewrite helper is applied
+at every child-template load site (the child's assets live in the same
+assembly-level `assets.json`, so the mapping table is already in hand).
+The parent's `TemplateURL` property itself also gets rewritten, harmlessly —
+`NestedStackProvider` never dereferences the URL.
+
+### 7.1 Command coverage
+
+The marker read + mapping table + rewrite must behave identically across
+every synth-consuming command:
+
+| Command | Behavior in cdkd-assets mode |
+| --- | --- |
+| `deploy` | redirect + rewrite (this section) |
+| `diff` (incl. `--recursive`) | rewrite, so the shown plan matches what deploy will do (incl. the one-time migration diff) |
+| `import` | rewrite before writing state, so imported state matches what the next deploy would write (no spurious first-deploy churn) |
+| `publish-assets` | redirect via the same table; reads the marker, which adds a state-bucket read to this command — if no state bucket is resolvable, fall back to legacy destinations with an info line |
+| `synth` | **unrewritten** — it prints the CDK app's template, not cdkd's deployment plan |
+| `export` | **unrewritten** (intentional): the IMPORT changeset template returns to the CFn/cdk-assets world; the first post-export `cdk deploy` republishes to the CDK bootstrap bucket and repoints properties — self-correcting |
+| `destroy` / `state *` / `drift` / `events` | state-driven, no template/asset involvement — unchanged |
 
 ## 8. Custom synthesizers: scope rule
 
@@ -261,6 +300,7 @@ to redirect*:
 | Default bootstrap, custom qualifier | `cdk-myqual-assets-…` | **yes** (gc can target any bootstrap stack) | redirect (pattern `cdk-[a-z0-9]+-(container-)?assets-…`) |
 | `bucketPrefix` on DefaultStackSynthesizer | affects `objectKey` only | n/a | flows through unchanged (§6 keeps keys) |
 | Custom `fileAssetsBucketName` / `imageAssetsRepositoryName` | user-chosen names | no — gc only reads the bootstrap stack's storage | leave verbatim (user made an explicit storage choice) |
+| Destination `region` ≠ deploy region (cross-region publishing, e.g. pipeline setups) | any | varies | leave verbatim — cdkd asset storage + marker are per-region; cross-region destinations stay out of scope (matches the existing `assumeRoleArn` stance) |
 | `AppStagingSynthesizer` | per-app staging bucket; **one ECR repo per image asset**, with staging-stack lifecycle rules (30-day deploy-time expiry, `imageAssetVersionCount` default 3) | no — gc never sees the staging stack's storage | leave verbatim; the lifecycle-expiry semantics are the user's chosen model and apply equally to CFn deploys |
 
 So: **redirect only default-bootstrap-shaped destinations** (any qualifier)
@@ -285,6 +325,27 @@ expected. No state migration, no schema bump. (Not a state-schema change, so
 the `integ-schema-migration` gate is not in play; a dedicated migration integ
 — deploy on old version → re-bootstrap → deploy on new version → destroy
 clean — is still required.)
+
+Known edges (documented, accepted):
+
+- **Rollback of the migration deploy after gc already ran**: rolling back
+  repoints e.g. `Code.S3Bucket` to the CDK bucket; if `cdk gc` had already
+  deleted those objects (the incident that motivates the migration), that
+  rollback step fails and cdkd's normal partial-state handling applies —
+  re-running `cdkd deploy` rolls forward. Called out in the migration docs.
+- **Mixed binary versions in a team during the migration window**: an old
+  binary ignores the marker and repoints properties back to CDK storage on
+  its next deploy; the next new-binary deploy repoints them again. Flip-flop
+  churn, never breakage (both storages hold the content-addressed objects).
+  Docs: upgrade the team/CI binary before re-bootstrapping.
+- **IAM**: deploy principals need `s3:*Object` on `cdkd-assets-*` and the
+  usual ECR push set on `cdkd-container-assets-*`; least-privilege users must
+  extend their policies before re-bootstrapping (docs note + a dedicated
+  error hint on AccessDenied at publish time).
+- **Partition**: the flattener uses the same partition resolution as today's
+  `resolveAssetDestinationValue` (default `aws`); GovCloud/China partitions
+  inherit whatever that resolves — no new gap, and the audit catches a wrong
+  fold loudly.
 
 ## 10. `cdkd local` family
 
