@@ -2207,6 +2207,7 @@
         "local-ecs-service-connect",
         "local-run-task",
         "local-run-task-awsvpc",
+        "local-run-task-cdkd-assets",
         "local-run-task-from-state",
         "local-run-task-multi-container",
         "local-start-alb",
@@ -2230,6 +2231,9 @@
         "local-run-task-awsvpc": [
           "l2",
           "literal"
+        ],
+        "local-run-task-cdkd-assets": [
+          "l2"
         ],
         "local-run-task-from-state": [
           "l1",
