@@ -1,7 +1,9 @@
 # cdkd-owned asset storage (`cdk gc` survival) — Design
 
 Tracking: [#1002](https://github.com/go-to-k/cdkd/issues/1002)
-Status: **Design only — no code change in the same PR.**
+Status: **Accepted — implementation phased per §13** (PR 1: bootstrap +
+marker + mode detection, shipped alongside this document; PR 2:
+redirection + rewrite + audit; PR 3: `cdkd local`).
 
 cdkd currently publishes S3 file assets and ECR image assets to the **CDK
 bootstrap** resources, exactly as the synthesized `*.assets.json` instructs.

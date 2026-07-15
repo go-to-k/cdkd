@@ -4,6 +4,7 @@ import {
   CreateBucketCommand,
   PutBucketEncryptionCommand,
   PutBucketPolicyCommand,
+  PutPublicAccessBlockCommand,
   type BucketLocationConstraint,
 } from '@aws-sdk/client-s3';
 import {
@@ -136,6 +137,18 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
       'INVALID_BOOTSTRAP_MARKER'
     );
   }
+  if (marker.assetSupportVersion > ASSET_SUPPORT_VERSION) {
+    // A newer cdkd wrote this marker with semantics this binary does not
+    // know. Interpreting it under v1 rules could publish to the wrong
+    // destination — hard error instead (the marker is the user's explicit
+    // opt-in, so silent legacy fallback is equally wrong here).
+    throw new CdkdError(
+      `Bootstrap marker '${markerKey}' has assetSupportVersion ` +
+        `${marker.assetSupportVersion}, but this cdkd only understands up to ` +
+        `${ASSET_SUPPORT_VERSION}. Upgrade cdkd to deploy in this region.`,
+      'UNSUPPORTED_BOOTSTRAP_MARKER_VERSION'
+    );
+  }
   return {
     assetBucket: marker.assetBucket,
     containerRepo: marker.containerRepo,
@@ -159,12 +172,18 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
 export async function verifyAssetStorageExists(
   marker: BootstrapMarker,
   accountId: string,
-  region: string
+  region: string,
+  opts: { profile?: string } = {}
 ): Promise<void> {
   const rebootstrapHint = `Run 'cdkd bootstrap --region ${region}' to recreate it. cdkd never silently falls back to CDK bootstrap asset storage once a region is opted in.`;
 
-  const s3Client = new S3Client({ region });
-  const ecrClient = new ECRClient({ region });
+  // `--profile` must reach these probes: with the default chain resolving a
+  // DIFFERENT account, the asset bucket's own deny-external-account policy
+  // turns HeadBucket into a 403 and the error below misreports a foreign
+  // bucket.
+  const clientOpts = { region, ...(opts.profile && { profile: opts.profile }) };
+  const s3Client = new S3Client(clientOpts);
+  const ecrClient = new ECRClient(clientOpts);
   try {
     try {
       await s3Client.send(
@@ -311,12 +330,15 @@ export async function ensureAssetStorage(
   }
 
   if (!bucketExists || force) {
-    // Encryption AES-256 + BucketKey, same deny-external-account policy as
-    // the state bucket. Deliberately NO versioning — assets are immutable
-    // content-addressed blobs (design §5).
+    // Encryption AES-256 + BucketKey, public-access block, same
+    // deny-external-account policy as the state bucket. Deliberately NO
+    // versioning — assets are immutable content-addressed blobs (design §5).
+    // `ExpectedBucketOwner` on every configuration PUT closes the
+    // (tiny) window between the ownership probe above and these writes.
     await s3Client.send(
       new PutBucketEncryptionCommand({
         Bucket: assetBucket,
+        ExpectedBucketOwner: accountId,
         ServerSideEncryptionConfiguration: {
           Rules: [
             {
@@ -328,8 +350,21 @@ export async function ensureAssetStorage(
       })
     );
     await s3Client.send(
+      new PutPublicAccessBlockCommand({
+        Bucket: assetBucket,
+        ExpectedBucketOwner: accountId,
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        },
+      })
+    );
+    await s3Client.send(
       new PutBucketPolicyCommand({
         Bucket: assetBucket,
+        ExpectedBucketOwner: accountId,
         Policy: JSON.stringify({
           Version: '2012-10-17',
           Statement: [
@@ -347,7 +382,9 @@ export async function ensureAssetStorage(
         }),
       })
     );
-    logger.info('✓ Configured asset bucket (AES-256 encryption, deny external access)');
+    logger.info(
+      '✓ Configured asset bucket (AES-256 encryption, public access block, deny external access)'
+    );
   }
 
   // 2. Container-asset ECR repo. Repos are account-scoped, so an existing
@@ -421,10 +458,12 @@ export class AssetModeResolver {
   private legacyNoticeShown = false;
   private stateBackend: S3StateBackend;
   private accountId: string;
+  private profile: string | undefined;
 
-  constructor(stateBackend: S3StateBackend, accountId: string) {
+  constructor(stateBackend: S3StateBackend, accountId: string, opts: { profile?: string } = {}) {
     this.stateBackend = stateBackend;
     this.accountId = accountId;
+    this.profile = opts.profile;
   }
 
   /**
@@ -461,7 +500,9 @@ export class AssetModeResolver {
     }
 
     const marker = parseBootstrapMarker(body, markerKey);
-    await verifyAssetStorageExists(marker, this.accountId, region);
+    await verifyAssetStorageExists(marker, this.accountId, region, {
+      ...(this.profile && { profile: this.profile }),
+    });
     this.logger.debug(
       `cdkd asset storage active for region '${region}': ` +
         `${marker.assetBucket} / ${marker.containerRepo}`

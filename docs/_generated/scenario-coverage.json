@@ -334,6 +334,11 @@
       "scenarios": []
     },
     {
+      "name": "asset-bootstrap",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "aws-custom-resource",
       "annotated": false,
       "scenarios": []
@@ -2133,6 +2138,7 @@
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
     "appconfig",
+    "asset-bootstrap",
     "aws-custom-resource",
     "backup",
     "bucket-deployment",

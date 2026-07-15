@@ -360,7 +360,9 @@ async function deployCommand(
     // byte-identical to before (plus one info line about the `cdk gc`
     // hazard); the publish redirection + template rewrite that consume the
     // `cdkd-assets` mode land in PR 2.
-    const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId);
+    const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId, {
+      ...(options.profile && { profile: options.profile }),
+    });
     const stateConfig = {
       bucket: stateBucket,
       prefix: options.statePrefix,
@@ -386,29 +388,32 @@ async function deployCommand(
 
       // Add asset-publish nodes via AssetPublisher
       if (!options.skipAssets && stack.assetManifestPath) {
+        const assetRegion = stack.region || baseRegion;
+        let nodeIds: string[] = [];
         try {
-          const assetRegion = stack.region || baseRegion;
-          const nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
+          nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
             accountId,
             region: assetRegion,
             ...(options.profile && { profile: options.profile }),
             nodePrefix: `${stack.stackName}:`,
           });
-          if (nodeIds.length > 0) {
-            // Resolve the asset mode only when the stack actually publishes
-            // assets — asset-less deploys stay byte-identical (no marker
-            // read, no legacy-mode info line).
-            const assetMode = await assetModeResolver.resolve(assetRegion);
-            logger.debug(
-              `Asset mode for region ${assetRegion}: ${assetMode.mode} (stack ${stack.stackName})`
-            );
-          }
-          for (const id of nodeIds) {
-            stackDeps.add(id);
-          }
         } catch (error) {
           const err = error as { code?: string };
           if (err.code !== 'ENOENT') throw error;
+        }
+        if (nodeIds.length > 0) {
+          // Resolve the asset mode only when the stack actually publishes
+          // assets — asset-less deploys stay byte-identical (no marker
+          // read, no legacy-mode info line). Deliberately OUTSIDE the
+          // ENOENT-swallowing try above: a marker/verification error must
+          // never be mistaken for a missing asset manifest.
+          const assetMode = await assetModeResolver.resolve(assetRegion);
+          logger.debug(
+            `Asset mode for region ${assetRegion}: ${assetMode.mode} (stack ${stack.stackName})`
+          );
+        }
+        for (const id of nodeIds) {
+          stackDeps.add(id);
         }
       }
 

@@ -59,6 +59,7 @@ import {
   PutBucketEncryptionCommand,
   PutBucketPolicyCommand,
 } from '@aws-sdk/client-s3';
+import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { createBootstrapCommand } from '../../../src/cli/commands/bootstrap.js';
 
 const ACCOUNT = '123456789012';
@@ -173,5 +174,11 @@ describe('cdkd bootstrap', () => {
     )![0] as { input: { Bucket: string } };
     expect(createCall.input.Bucket).toBe('my-custom-state');
     expect(mockEnsureAssetStorage).toHaveBeenCalledTimes(1);
+    // The marker-carrying state backend must target the SAME custom bucket.
+    expect(vi.mocked(S3StateBackend)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ bucket: 'my-custom-state' }),
+      expect.anything()
+    );
   });
 });

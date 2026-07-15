@@ -3029,6 +3029,7 @@
         "api-cognito",
         "apigateway",
         "apigw-stage-throttling",
+        "asset-bootstrap",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-api-fallback",
@@ -3124,6 +3125,9 @@
         "apigw-stage-throttling": [
           "l2",
           "literal"
+        ],
+        "asset-bootstrap": [
+          "l2"
         ],
         "bench-cdk-sample": [
           "l2"

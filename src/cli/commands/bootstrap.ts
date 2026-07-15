@@ -211,13 +211,21 @@ async function bootstrapCommand(options: {
     let assetStorage: { assetBucket: string; containerRepo: string } | undefined;
     if (options.assets) {
       logger.info('\nSetting up cdkd asset storage...');
-      const ecrClient = new ECRClient({ region });
+      const ecrClient = new ECRClient({
+        region,
+        ...(options.profile && { profile: options.profile }),
+      });
       // The marker lives in the state bucket, which may be in a different
       // region than --region (the state bucket is account-scoped and
       // single-region). S3StateBackend resolves the bucket's actual region
       // before the write — it OWNS (and may destroy/rebuild) its client, so
-      // it gets a dedicated one instead of sharing awsClients.s3.
-      const markerS3Client = new S3Client({ region });
+      // it gets a dedicated one instead of sharing awsClients.s3. The
+      // `prefix` is irrelevant here (the marker is written via prefix-free
+      // putRawObject) but the constructor requires one.
+      const markerS3Client = new S3Client({
+        region,
+        ...(options.profile && { profile: options.profile }),
+      });
       const stateBackend = new S3StateBackend(
         markerS3Client,
         { bucket: bucketName, prefix: 'cdkd' },

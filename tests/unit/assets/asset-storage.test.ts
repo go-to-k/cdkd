@@ -20,6 +20,9 @@ vi.mock('@aws-sdk/client-s3', () => ({
   PutBucketEncryptionCommand: vi
     .fn()
     .mockImplementation((input) => ({ ...input, _type: 'PutBucketEncryption' })),
+  PutPublicAccessBlockCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ ...input, _type: 'PutPublicAccessBlock' })),
   PutBucketPolicyCommand: vi
     .fn()
     .mockImplementation((input) => ({ ...input, _type: 'PutBucketPolicy' })),
@@ -136,6 +139,11 @@ describe('parseBootstrapMarker', () => {
       expect(() => parseBootstrapMarker(JSON.stringify(body), 'k')).toThrowError(/malformed/);
     }
   );
+
+  it('rejects a marker written by a newer cdkd (assetSupportVersion above ours)', () => {
+    const body = { ...validMarker(), assetSupportVersion: ASSET_SUPPORT_VERSION + 1 };
+    expect(() => parseBootstrapMarker(JSON.stringify(body), 'k')).toThrowError(/Upgrade cdkd/);
+  });
 });
 
 describe('verifyAssetStorageExists', () => {
@@ -168,6 +176,12 @@ describe('verifyAssetStorageExists', () => {
       code: 'ASSET_STORAGE_MISSING',
       message: expect.stringContaining('cdkd-container-assets-123456789012-us-east-1'),
     });
+  });
+
+  it('threads --profile into the verification clients', async () => {
+    await verifyAssetStorageExists(validMarker(), ACCOUNT, REGION, { profile: 'dev' });
+    expect(vi.mocked(S3Client)).toHaveBeenCalledWith({ region: REGION, profile: 'dev' });
+    expect(vi.mocked(ECRClient)).toHaveBeenCalledWith({ region: REGION, profile: 'dev' });
   });
 });
 
@@ -280,6 +294,7 @@ describe('ensureAssetStorage', () => {
       'HeadBucket',
       'CreateBucket',
       'PutBucketEncryption',
+      'PutPublicAccessBlock',
       'PutBucketPolicy',
     ]);
     const createCall = mockS3Send.mock.calls[1]![0];
@@ -329,8 +344,17 @@ describe('ensureAssetStorage', () => {
   it('reconfigures existing resources under --force', async () => {
     const { options } = makeOptions({ force: true });
     await ensureAssetStorage(options);
-    expect(s3CallTypes()).toEqual(['HeadBucket', 'PutBucketEncryption', 'PutBucketPolicy']);
+    expect(s3CallTypes()).toEqual([
+      'HeadBucket',
+      'PutBucketEncryption',
+      'PutPublicAccessBlock',
+      'PutBucketPolicy',
+    ]);
     expect(ecrCallTypes()).toEqual(['DescribeRepositories', 'PutImageTagMutability']);
+    // Every configuration PUT is owner-pinned.
+    for (const call of mockS3Send.mock.calls.slice(1)) {
+      expect(call[0].ExpectedBucketOwner).toBe(ACCOUNT);
+    }
   });
 
   it('refuses a foreign-owned bucket on the HeadBucket probe (403) and writes no marker', async () => {
