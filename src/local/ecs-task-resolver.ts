@@ -968,6 +968,30 @@ function buildSubstitutionContextFromImageContext(
 }
 
 /**
+ * A container-image URI that points at a CDK-bootstrap OR cdkd-owned assets
+ * ECR repository:
+ *
+ *   - `cdk-<qualifier>-container-assets-<acct>-<region>` — the CDK bootstrap
+ *     repo (default qualifier `hnb659fds`, or a custom `cdk bootstrap
+ *     --qualifier` value);
+ *   - `cdkd-container-assets-<acct>-<region>` — the repo `cdkd bootstrap`
+ *     creates and `cdkd deploy` publishes into once a bootstrap marker exists
+ *     (issue #1002; a migrated stack's template / `--from-state` state carries
+ *     this shape).
+ *
+ * Either is a CDK asset image the ECS runner resolves back to the on-disk
+ * `cdk.out` build, so both must classify as `kind: 'cdk-asset'`. The `cdk-`
+ * qualifier is generalized to `[a-z0-9]+` so a custom-qualifier bootstrap is
+ * matched too (previously only the hardcoded `hnb659fds` default was).
+ */
+const CDK_ASSET_IMAGE_REPO_RE = /(?:cdk-[a-z0-9]+|cdkd)-container-assets-/;
+
+/** True when `uri` embeds a CDK-bootstrap or cdkd-owned container-assets repo. */
+function isCdkAssetImageUri(uri: string): boolean {
+  return CDK_ASSET_IMAGE_REPO_RE.test(uri);
+}
+
+/**
  * Parse the `Image` field of an ECS container definition.
  *
  * Three shapes:
@@ -1050,10 +1074,11 @@ function parseContainerImage(
     );
   }
 
-  // CDK asset shape: contains the bootstrap-assets repo placeholder. The
-  // tail `:<hash>` is the asset hash (same shape used by Lambda container
-  // images — see `getDockerImageBySourceHash`).
-  if (flat.includes('cdk-hnb659fds-container-assets-')) {
+  // CDK asset shape: contains a CDK-bootstrap or cdkd-owned container-assets
+  // repo (see `isCdkAssetImageUri`). The tail `:<hash>` is the asset hash
+  // (same shape used by Lambda container images — see
+  // `getDockerImageBySourceHash`).
+  if (isCdkAssetImageUri(flat)) {
     const hashMatch = /:([a-f0-9]{8,})$/.exec(flat);
     const out: ResolvedEcsImage = { kind: 'cdk-asset' };
     if (hashMatch) out.assetHash = hashMatch[1]!;
@@ -1134,7 +1159,7 @@ function findUnresolvedEcrRepositoryRef(
  * `Fn::GetAtt` path can share the regex-match branches.
  */
 function classifyResolvedImage(uri: string): ResolvedEcsImage {
-  if (uri.includes('cdk-hnb659fds-container-assets-')) {
+  if (isCdkAssetImageUri(uri)) {
     const hashMatch = /:([a-f0-9]{8,})$/.exec(uri);
     const out: ResolvedEcsImage = { kind: 'cdk-asset' };
     if (hashMatch) out.assetHash = hashMatch[1]!;

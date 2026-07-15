@@ -265,12 +265,71 @@ describe('resolveEcsTaskTarget', () => {
     }
   });
 
+  it('classifies Image: cdkd-owned container-assets Fn::Sub (issue #1002)', () => {
+    // Once a bootstrap marker exists, `cdkd deploy` publishes container assets
+    // into `cdkd-container-assets-<acct>-<region>` and rewrites templates to
+    // point there. The local run-task resolver must treat that repo shape the
+    // same as the CDK-bootstrap one — resolve it back to the cdk.out build.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub':
+            '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdkd-container-assets-${AWS::AccountId}-${AWS::Region}:deadbeefcafef00d',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('cdk-asset');
+    if (img.kind === 'cdk-asset') {
+      expect(img.assetHash).toBe('deadbeefcafef00d');
+    }
+  });
+
+  it('classifies Image: custom-qualifier bootstrap container-assets Fn::Sub', () => {
+    // A `cdk bootstrap --qualifier myqual123` account uses
+    // `cdk-myqual123-container-assets-...`; the pre-#1002 hardcoded
+    // `hnb659fds` match missed it. The generalized `cdk-[a-z0-9]+-` pattern
+    // now classifies any qualifier as a CDK asset image.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub':
+            '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-myqual123-container-assets-${AWS::AccountId}-${AWS::Region}:deadbeefcafef00d',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('cdk-asset');
+    if (img.kind === 'cdk-asset') {
+      expect(img.assetHash).toBe('deadbeefcafef00d');
+    }
+  });
+
   it('classifies Image: public uri', () => {
     const stack = buildStack('S1', {
       TD: makeTaskDef({ image: 'public.ecr.aws/nginx/nginx:alpine' }),
     });
     const r = resolveEcsTaskTarget('TD', [stack]);
     expect(r.containers[0]!.image.kind).toBe('public');
+  });
+
+  it('does NOT treat a `container-assets` repo without the cdk-/cdkd- prefix as a CDK asset', () => {
+    // The classification regex requires a `cdk-<qualifier>-` or `cdkd-` prefix
+    // in front of `container-assets-`; a user ECR repo that merely embeds the
+    // words `container-assets` must stay a plain ECR pull, not a cdk.out build.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-container-assets-repo:latest',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.account).toBe('123456789012');
+    }
   });
 
   it('rejects an unresolved AccountId pseudo-parameter image', () => {
@@ -606,6 +665,56 @@ describe('resolveEcsTaskTarget', () => {
           '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-deployed-repo:latest'
         );
       }
+    });
+
+    it('classifies a resolved cdkd-container-assets repo URI as cdk-asset (issue #1002)', () => {
+      // When the Fn::Join resolves to a URI whose repo NAME is a cdkd-owned
+      // container-assets repo, the resolved-URI classifier (shared with the
+      // GetAtt path) must surface `kind: 'cdk-asset'` — NOT a plain ECR pull —
+      // so the runner routes it back through the cdk.out build.
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+        stateResources: deployedRepoState({
+          physicalId: 'cdkd-container-assets-123456789012-us-east-1',
+          arn: 'arn:aws:ecr:us-east-1:123456789012:repository/cdkd-container-assets-123456789012-us-east-1',
+        }),
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('cdk-asset');
+    });
+
+    it('classifies a resolved custom-qualifier container-assets repo URI as cdk-asset (issue #1002)', () => {
+      // Symmetry with the flat/Fn::Sub site: the generalized qualifier match
+      // must also fire at the resolved-URI (`classifyResolvedImage`) site, so a
+      // custom-`cdk bootstrap --qualifier` repo name resolves to a cdk.out
+      // build here too — not a plain ECR pull.
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+        stateResources: deployedRepoState({
+          physicalId: 'cdk-myqual123-container-assets-123456789012-us-east-1',
+          arn: 'arn:aws:ecr:us-east-1:123456789012:repository/cdk-myqual123-container-assets-123456789012-us-east-1',
+        }),
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('cdk-asset');
     });
 
     it('resolves with a custom tag', () => {
