@@ -397,10 +397,13 @@ describe('cdkd publish-assets', () => {
       };
     }
 
+    // NOTE: use *Once variants for per-test stubbing — `vi.clearAllMocks()`
+    // in the top-level beforeEach clears call history but NOT implementations,
+    // so a plain mockReturnValue would leak into later tests.
     it('passes the §6 redirect table to addAssetsToGraph in cdkd-assets mode', async () => {
       mockResolveStateBucketWithDefault.mockResolvedValueOnce('test-bucket');
-      mockLoadPublishableManifest.mockReturnValue(publishableManifest());
-      mockModeResolve.mockResolvedValue({
+      mockLoadPublishableManifest.mockReturnValueOnce(publishableManifest());
+      mockModeResolve.mockResolvedValueOnce({
         mode: 'cdkd-assets',
         marker: {
           assetBucket: CDKD_BUCKET,
@@ -427,7 +430,7 @@ describe('cdkd publish-assets', () => {
 
     it('publishes verbatim (no redirect) when no state bucket is resolvable', async () => {
       // Default mockResolveStateBucketWithDefault rejects = never bootstrapped.
-      mockLoadPublishableManifest.mockReturnValue(publishableManifest());
+      mockLoadPublishableManifest.mockReturnValueOnce(publishableManifest());
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'StackA' })],
         manifest: {},
@@ -442,7 +445,7 @@ describe('cdkd publish-assets', () => {
     });
 
     it('publishes verbatim under --use-cdk-bootstrap-assets (no marker probe at all)', async () => {
-      mockLoadPublishableManifest.mockReturnValue(publishableManifest());
+      // No manifest stub: the opt-out path must never even load the manifest.
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'StackA' })],
         manifest: {},
