@@ -41,7 +41,8 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveApp: (cliApp?: string) => mockResolveApp(cliApp),
   resolveStateBucketWithDefault: (bucket?: string, region?: string) =>
     mockResolveStateBucketWithDefault(bucket, region),
-  resolveUseCdkBootstrapAssets: vi.fn(() => false),
+  // Mirror the real precedence for the CLI flag (cdk.json is not read here).
+  resolveUseCdkBootstrapAssets: vi.fn((cliValue?: boolean) => cliValue === true),
 }));
 
 // STS — accountId resolution.
@@ -56,6 +57,29 @@ vi.mock('@aws-sdk/client-sts', () => ({
     ...input,
     _type: 'GetCallerIdentity',
   })),
+}));
+
+// Issue #1002 PR 2 — asset-mode plumbing. `loadPublishableAssetManifest`
+// defaults to null (no publishable assets → no marker probe), matching the
+// pre-#1002 behavior most tests pin; the redirect-path test overrides it.
+// `buildAssetRedirectMap` stays REAL (pure) so the wiring test exercises the
+// actual table construction.
+const { mockLoadPublishableManifest, mockModeResolve } = vi.hoisted(() => ({
+  mockLoadPublishableManifest: vi.fn((): unknown => null),
+  mockModeResolve: vi.fn(),
+}));
+vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/assets/asset-redirect.js')>()),
+  loadPublishableAssetManifest: (p: string) => mockLoadPublishableManifest(p),
+}));
+vi.mock('../../../src/assets/asset-storage.js', () => ({
+  AssetModeResolver: vi.fn().mockImplementation(() => ({ resolve: mockModeResolve })),
+}));
+vi.mock('../../../src/state/s3-state-backend.js', () => ({
+  S3StateBackend: vi.fn().mockImplementation(() => ({})),
+}));
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
 }));
 
 // Logger — silence during tests.
@@ -352,6 +376,84 @@ describe('cdkd publish-assets', () => {
       const { stderr, error } = await runCmd(['--region', 'us-east-1']);
       expect(error).toBeUndefined();
       expect(stderr).toMatch(/--region is deprecated and will be removed in a future release/);
+    });
+  });
+
+  describe('asset-mode redirection (#1002 PR 2)', () => {
+    const CDK_BUCKET = 'cdk-hnb659fds-assets-111111111111-us-east-1';
+    const CDKD_BUCKET = 'cdkd-assets-111111111111-us-east-1';
+
+    function publishableManifest() {
+      return {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: { d1: { bucketName: CDK_BUCKET, objectKey: 'aaaa1111.zip' } },
+          },
+        },
+        dockerImages: {},
+      };
+    }
+
+    it('passes the §6 redirect table to addAssetsToGraph in cdkd-assets mode', async () => {
+      mockResolveStateBucketWithDefault.mockResolvedValueOnce('test-bucket');
+      mockLoadPublishableManifest.mockReturnValue(publishableManifest());
+      mockModeResolve.mockResolvedValue({
+        mode: 'cdkd-assets',
+        marker: {
+          assetBucket: CDKD_BUCKET,
+          containerRepo: 'cdkd-container-assets-111111111111-us-east-1',
+          assetSupportVersion: 1,
+          createdAt: '2026-07-15T00:00:00.000Z',
+        },
+      });
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'StackA' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+
+      const { error } = await runCmd([]);
+      expect(error).toBeUndefined();
+      expect(mockModeResolve).toHaveBeenCalledWith('us-east-1');
+      const opts = mockAddAssetsToGraph.mock.calls[0]![2] as {
+        redirect?: { buckets: Map<string, string> };
+      };
+      expect(opts.redirect).toBeDefined();
+      expect(opts.redirect!.buckets.get(CDK_BUCKET)).toBe(CDKD_BUCKET);
+    });
+
+    it('publishes verbatim (no redirect) when no state bucket is resolvable', async () => {
+      // Default mockResolveStateBucketWithDefault rejects = never bootstrapped.
+      mockLoadPublishableManifest.mockReturnValue(publishableManifest());
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'StackA' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+
+      const { error } = await runCmd([]);
+      expect(error).toBeUndefined();
+      expect(mockModeResolve).not.toHaveBeenCalled();
+      const opts = mockAddAssetsToGraph.mock.calls[0]![2] as { redirect?: unknown };
+      expect(opts.redirect).toBeUndefined();
+    });
+
+    it('publishes verbatim under --use-cdk-bootstrap-assets (no marker probe at all)', async () => {
+      mockLoadPublishableManifest.mockReturnValue(publishableManifest());
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'StackA' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+
+      const { error } = await runCmd(['--use-cdk-bootstrap-assets']);
+      expect(error).toBeUndefined();
+      expect(mockResolveStateBucketWithDefault).not.toHaveBeenCalled();
+      const opts = mockAddAssetsToGraph.mock.calls[0]![2] as { redirect?: unknown };
+      expect(opts.redirect).toBeUndefined();
     });
   });
 });

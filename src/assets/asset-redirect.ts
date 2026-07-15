@@ -146,14 +146,21 @@ export function buildAssetRedirectMap(
   const addForms = (rawName: string, flattened: string, target: string): void => {
     sources.set(flattened, target);
     if (rawName !== flattened) sources.set(rawName, target);
-    // Synthesized placeholder form: covers templates that reference the
+    // Synthesized placeholder forms: cover templates that reference the
     // name with pseudo-parameter placeholders even when the manifest
-    // carried it as a literal.
-    const placeholderForm = flattened.replace(
-      new RegExp(`-${accountId}-${escapeRegExp(region)}$`),
-      '-${AWS::AccountId}-${AWS::Region}'
-    );
-    if (placeholderForm !== flattened) sources.set(placeholderForm, target);
+    // carried it as a literal — including the mixed single-placeholder
+    // shapes (`…-<acct>-${AWS::Region}` / `…-${AWS::AccountId}-<region>`),
+    // which would otherwise survive the rewrite unmatched and trip the
+    // post-resolution audit as a hard error.
+    const suffixRe = new RegExp(`-${accountId}-${escapeRegExp(region)}$`);
+    for (const suffix of [
+      '-${AWS::AccountId}-${AWS::Region}',
+      `-\${AWS::AccountId}-${region}`,
+      `-${accountId}-\${AWS::Region}`,
+    ]) {
+      const form = flattened.replace(suffixRe, suffix);
+      if (form !== flattened) sources.set(form, target);
+    }
   };
 
   const destTargetsDeployRegion = (dest: FileAssetDestination | DockerImageAssetDestination) => {
@@ -197,6 +204,13 @@ export function buildAssetRedirectMap(
  * one (so `cdk-hnb659fds-assets-<acct>-<region>-backup` is never corrupted).
  * URI delimiters (`/`, `:`, `.`, quotes, whitespace) and end-of-string are
  * boundaries.
+ *
+ * Known trade-off: a trailing `.` MUST be a boundary for virtual-host-style
+ * URLs (`<bucket>.s3.<region>.amazonaws.com`), so a user bucket literally
+ * named `cdk-<qualifier>-assets-<acct>-<region>.backup` (dot-suffixed
+ * lookalike) would have its prefix rewritten. S3 discourages dots in bucket
+ * names (breaks virtual-host TLS) and the name would ALSO have to collide
+ * with the deploy account+region bootstrap shape — accepted as pathological.
  */
 function buildBoundaryRegex(source: string): RegExp {
   return new RegExp(`(?<![A-Za-z0-9_.-])${escapeRegExp(source)}(?![A-Za-z0-9_-])`, 'g');
@@ -442,7 +456,7 @@ export function redirectFileAsset(asset: FileAsset, map: AssetRedirectMap): File
       map.partition
     );
     const target = map.buckets.get(flattened);
-    if (target && (!dest.region || destRegionMatches(dest, map))) {
+    if (target && destRegionMatches(dest, map)) {
       destinations[id] = { ...dest, bucketName: target };
       changed = true;
     } else {
@@ -471,7 +485,7 @@ export function redirectDockerAsset(
       map.partition
     );
     const target = map.repos.get(flattened);
-    if (target && (!dest.region || destRegionMatches(dest, map))) {
+    if (target && destRegionMatches(dest, map)) {
       destinations[id] = { ...dest, repositoryName: target };
       changed = true;
     } else {

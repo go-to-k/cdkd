@@ -176,8 +176,18 @@ if echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}"; then
   exit 1
 fi
 
+# `length(Contents || ...)` instead of `KeyCount`: KeyCount rendered as
+# literal "None" through --output text on this CLI, silently no-op-ing the
+# numeric comparison. Guard non-numeric output explicitly so a query
+# regression fails loudly instead of passing vacuously.
 OBJECT_COUNT=$(aws s3api list-objects-v2 --bucket "${CDKD_BUCKET}" \
-  --query 'KeyCount' --output text)
+  --query 'length(Contents || `[]`)' --output text)
+case "${OBJECT_COUNT}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not count objects in ${CDKD_BUCKET} (got '${OBJECT_COUNT}')" >&2
+    exit 1
+    ;;
+esac
 if [ "${OBJECT_COUNT}" -lt 3 ]; then
   echo "FAIL: expected >=3 assets in ${CDKD_BUCKET} (2 lambda zips + data asset; CFn template assets are never published), got ${OBJECT_COUNT}" >&2
   exit 1
@@ -219,15 +229,25 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
 BUCKETS=$(lambda_code_buckets "${parent_state_key}")
 [ "${BUCKETS}" = "${CDK_BUCKET}" ] ||
   { echo "FAIL: opt-out deploy left Code.S3Bucket at '${BUCKETS}', expected '${CDK_BUCKET}'" >&2; exit 1; }
-echo "    OK: opt-out deploy repointed back to ${CDK_BUCKET}"
+CHILD_BUCKETS=$(lambda_code_buckets "$(child_state_key)")
+[ "${CHILD_BUCKETS}" = "${CDK_BUCKET}" ] ||
+  { echo "FAIL: opt-out deploy left child Code.S3Bucket at '${CHILD_BUCKETS}', expected '${CDK_BUCKET}'" >&2; exit 1; }
+echo "    OK: opt-out deploy repointed parent+child back to ${CDK_BUCKET}"
 
-echo "==> Phase 4b: normal deploy repoints to cdkd storage again"
+echo "==> Phase 4b: deploy --skip-assets still rewrites (assets already in cdkd storage)"
+# The rewrite must run even when publishing is skipped: assets were published
+# to cdkd storage in Phase 3, so a --skip-assets deploy in cdkd-assets mode
+# has to repoint the templates or it would deploy split-brain references.
 node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >/dev/null 2>&1
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --skip-assets --yes >/dev/null 2>&1
 BUCKETS=$(lambda_code_buckets "${parent_state_key}")
 [ "${BUCKETS}" = "${CDKD_BUCKET}" ] ||
-  { echo "FAIL: re-deploy left Code.S3Bucket at '${BUCKETS}', expected '${CDKD_BUCKET}'" >&2; exit 1; }
-echo "    OK: flip-flop churn round-trips cleanly (design §9)"
+  { echo "FAIL: --skip-assets deploy left Code.S3Bucket at '${BUCKETS}', expected '${CDKD_BUCKET}'" >&2; exit 1; }
+CHILD_BUCKETS=$(lambda_code_buckets "$(child_state_key)")
+[ "${CHILD_BUCKETS}" = "${CDKD_BUCKET}" ] ||
+  { echo "FAIL: --skip-assets deploy left child Code.S3Bucket at '${CHILD_BUCKETS}', expected '${CDKD_BUCKET}'" >&2; exit 1; }
+echo "    OK: flip-flop churn round-trips cleanly, incl. under --skip-assets (design §9)"
 
 # --- Phase 5: Docker image asset (skipped without a daemon) -------------------
 if docker info >/dev/null 2>&1; then

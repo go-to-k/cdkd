@@ -209,6 +209,29 @@ describe('buildAssetRedirectMap (§6 + §8 rows)', () => {
     const map = buildMap(manifestWith({ templateAsset: true }));
     expect(map.buckets.get(CDK_BUCKET_LITERAL)).toBe(CDKD_BUCKET);
   });
+
+  it('synthesizes mixed single-placeholder source forms (review M1)', () => {
+    const map = buildMap(manifestWith({ fileDest: {} }));
+    const sources = map.entries.map((e) => e.source);
+    expect(sources).toContain(`cdk-hnb659fds-assets-\${AWS::AccountId}-${REGION}`);
+    expect(sources).toContain(`cdk-hnb659fds-assets-${ACCOUNT}-\${AWS::Region}`);
+  });
+
+  it('leaves custom docker repositoryName / cross-region docker destinations verbatim (§8)', () => {
+    expect(
+      buildMap(manifestWith({ dockerDest: { repositoryName: 'my-app-repo' } })).repos.size
+    ).toBe(0);
+    expect(
+      buildMap(
+        manifestWith({
+          dockerDest: {
+            repositoryName: `cdk-hnb659fds-container-assets-${ACCOUNT}-eu-west-1`,
+            region: 'eu-west-1',
+          },
+        })
+      ).repos.size
+    ).toBe(0);
+  });
 });
 
 describe('rewriteTemplateAssetReferences (§7)', () => {
@@ -321,6 +344,29 @@ describe('rewriteTemplateAssetReferences (§7)', () => {
     expect(JSON.stringify(template)).toBe(before);
   });
 
+  it('rewrites a mixed single-placeholder Fn::Sub reference (review M1)', () => {
+    const template = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Code: {
+              S3Bucket: { 'Fn::Sub': `cdk-hnb659fds-assets-${ACCOUNT}-\${AWS::Region}` },
+            },
+          },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    const map = buildMap(manifestWith({ fileDest: {} }));
+    expect(rewriteTemplateAssetReferences(template, map)).toBe(1);
+    const bucket = (
+      (template.Resources!['Fn'] as { Properties: Record<string, unknown> }).Properties as {
+        Code: { S3Bucket: { 'Fn::Sub': string } };
+      }
+    ).Code.S3Bucket['Fn::Sub'];
+    expect(bucket).toBe(CDKD_BUCKET);
+  });
+
   it('is boundary-aware: lookalike names are never corrupted (§7 addendum 4)', () => {
     const template = {
       Resources: {
@@ -423,6 +469,25 @@ describe('redirectFileAsset / redirectDockerAsset (§6 publish-time)', () => {
     const map = buildMap(manifest);
     const asset = manifest.files['aaaa1111']!;
     expect(redirectFileAsset(asset, map)).toBe(asset);
+  });
+
+  it('redirects only the deploy-region destination when a name is shared with a cross-region one', () => {
+    // Both destinations flatten to the SAME in-scope repo name (the
+    // placeholder resolves against the deploy region), but only the
+    // deploy-region destination may redirect — the cross-region copy stays
+    // verbatim (§8 row 5) via the destRegionMatches guard.
+    const asset = {
+      displayName: 'Image',
+      source: { directory: 'asset.bbbb3333' },
+      destinations: {
+        same: { repositoryName: CDK_REPO_PLACEHOLDER, imageTag: 't1' },
+        cross: { repositoryName: CDK_REPO_PLACEHOLDER, imageTag: 't1', region: 'eu-west-1' },
+      },
+    };
+    const map = buildMap({ version: '38.0.0', files: {}, dockerImages: { bbbb3333: asset } });
+    const redirected = redirectDockerAsset(asset, map);
+    expect(redirected.destinations['same']!.repositoryName).toBe(CDKD_REPO);
+    expect(redirected.destinations['cross']!.repositoryName).toBe(CDK_REPO_PLACEHOLDER);
   });
 });
 

@@ -206,62 +206,15 @@ async function publishAssetsCommand(
   }
   const results: StackResult[] = [];
 
-  for (const stack of targetStacks) {
-    const startedAt = Date.now();
-    let assetCount = 0;
-    let error: Error | undefined;
+  try {
+    for (const stack of targetStacks) {
+      const startedAt = Date.now();
+      let assetCount = 0;
+      let error: Error | undefined;
 
-    try {
-      if (!stack.assetManifestPath) {
-        logger.debug(`Stack ${stack.stackName} has no asset manifest; nothing to publish`);
-        results.push({
-          stackName: stack.stackName,
-          displayName: stack.displayName,
-          assetCount: 0,
-          durationMs: Date.now() - startedAt,
-        });
-        continue;
-      }
-
-      logger.info(`\nPublishing assets for stack: ${describeStack(stack)}`);
-
-      // Issue #1002 PR 2 — build the §6 mapping table when the stack has
-      // publishable assets and its region is in cdkd-assets mode, so the
-      // publish nodes below redirect to the cdkd-owned storage.
-      let redirect: AssetRedirectMap | undefined;
-      if (!useCdkBootstrapAssets) {
-        const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
-        if (manifest) {
-          const modeResolver = await getModeResolver();
-          if (modeResolver) {
-            const stackRegion = stack.region || baseRegion;
-            const assetMode = await modeResolver.resolve(stackRegion);
-            if (assetMode.mode === 'cdkd-assets') {
-              const map = buildAssetRedirectMap(manifest, assetMode.marker, accountId, stackRegion);
-              if (map.entries.length > 0) redirect = map;
-            }
-          }
-        }
-      }
-
-      const workGraph = new WorkGraph();
-      let nodeIds: string[] = [];
       try {
-        nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
-          accountId,
-          region: stack.region || baseRegion,
-          ...(options.profile && { profile: options.profile }),
-          nodePrefix: `${stack.stackName}:`,
-          ...(redirect && { redirect }),
-        });
-      } catch (err) {
-        const e = err as { code?: string };
-        if (e.code === 'ENOENT') {
-          // Manifest path was set but the file doesn't exist on disk — match
-          // deploy.ts's behavior, which silently skips this case.
-          logger.debug(
-            `Asset manifest not found for ${stack.stackName} (${stack.assetManifestPath}); skipping`
-          );
+        if (!stack.assetManifestPath) {
+          logger.debug(`Stack ${stack.stackName} has no asset manifest; nothing to publish`);
           results.push({
             stackName: stack.stackName,
             displayName: stack.displayName,
@@ -270,53 +223,108 @@ async function publishAssetsCommand(
           });
           continue;
         }
-        throw err;
+
+        logger.info(`\nPublishing assets for stack: ${describeStack(stack)}`);
+
+        // Issue #1002 PR 2 — build the §6 mapping table when the stack has
+        // publishable assets and its region is in cdkd-assets mode, so the
+        // publish nodes below redirect to the cdkd-owned storage.
+        let redirect: AssetRedirectMap | undefined;
+        if (!useCdkBootstrapAssets) {
+          const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
+          if (manifest) {
+            const modeResolver = await getModeResolver();
+            if (modeResolver) {
+              const stackRegion = stack.region || baseRegion;
+              const assetMode = await modeResolver.resolve(stackRegion);
+              if (assetMode.mode === 'cdkd-assets') {
+                const map = buildAssetRedirectMap(
+                  manifest,
+                  assetMode.marker,
+                  accountId,
+                  stackRegion
+                );
+                if (map.entries.length > 0) redirect = map;
+              }
+            }
+          }
+        }
+
+        const workGraph = new WorkGraph();
+        let nodeIds: string[] = [];
+        try {
+          nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
+            accountId,
+            region: stack.region || baseRegion,
+            ...(options.profile && { profile: options.profile }),
+            nodePrefix: `${stack.stackName}:`,
+            ...(redirect && { redirect }),
+          });
+        } catch (err) {
+          const e = err as { code?: string };
+          if (e.code === 'ENOENT') {
+            // Manifest path was set but the file doesn't exist on disk — match
+            // deploy.ts's behavior, which silently skips this case.
+            logger.debug(
+              `Asset manifest not found for ${stack.stackName} (${stack.assetManifestPath}); skipping`
+            );
+            results.push({
+              stackName: stack.stackName,
+              displayName: stack.displayName,
+              assetCount: 0,
+              durationMs: Date.now() - startedAt,
+            });
+            continue;
+          }
+          throw err;
+        }
+
+        assetCount = nodeIds.filter((id) => id.startsWith('asset-publish:')).length;
+
+        if (assetCount === 0) {
+          logger.info('  (no assets to publish)');
+          results.push({
+            stackName: stack.stackName,
+            displayName: stack.displayName,
+            assetCount: 0,
+            durationMs: Date.now() - startedAt,
+          });
+          continue;
+        }
+
+        // Stack-deploy nodes are intentionally NOT added — `stack: 0` concurrency
+        // is a belt-and-suspenders guard so even an accidental stack node would
+        // never run.
+        await workGraph.execute(
+          {
+            'asset-build': options.imageBuildConcurrency,
+            'asset-publish': options.assetPublishConcurrency,
+            stack: 0,
+          },
+          (node) => assetPublisher.executeNode(node)
+        );
+
+        logger.info(
+          `  ✓ Published ${assetCount} asset(s) in ${((Date.now() - startedAt) / 1000).toFixed(2)}s`
+        );
+      } catch (err) {
+        error = err instanceof Error ? err : new Error(String(err));
+        logger.error(`  ✗ ${stack.stackName}: ${error.message}`);
       }
 
-      assetCount = nodeIds.filter((id) => id.startsWith('asset-publish:')).length;
-
-      if (assetCount === 0) {
-        logger.info('  (no assets to publish)');
-        results.push({
-          stackName: stack.stackName,
-          displayName: stack.displayName,
-          assetCount: 0,
-          durationMs: Date.now() - startedAt,
-        });
-        continue;
-      }
-
-      // Stack-deploy nodes are intentionally NOT added — `stack: 0` concurrency
-      // is a belt-and-suspenders guard so even an accidental stack node would
-      // never run.
-      await workGraph.execute(
-        {
-          'asset-build': options.imageBuildConcurrency,
-          'asset-publish': options.assetPublishConcurrency,
-          stack: 0,
-        },
-        (node) => assetPublisher.executeNode(node)
-      );
-
-      logger.info(
-        `  ✓ Published ${assetCount} asset(s) in ${((Date.now() - startedAt) / 1000).toFixed(2)}s`
-      );
-    } catch (err) {
-      error = err instanceof Error ? err : new Error(String(err));
-      logger.error(`  ✗ ${stack.stackName}: ${error.message}`);
+      results.push({
+        stackName: stack.stackName,
+        displayName: stack.displayName,
+        assetCount,
+        durationMs: Date.now() - startedAt,
+        ...(error && { error }),
+      });
     }
-
-    results.push({
-      stackName: stack.stackName,
-      displayName: stack.displayName,
-      assetCount,
-      durationMs: Date.now() - startedAt,
-      ...(error && { error }),
-    });
+  } finally {
+    // Tear down the lazily-created marker-access S3 client, if any — in a
+    // finally so a future throwing statement in the loop cannot leak it.
+    markerAccess?.dispose();
   }
-
-  // Tear down the lazily-created marker-access S3 client, if any.
-  markerAccess?.dispose();
 
   // 5. Summary + exit code policy.
   const failed = results.filter((r) => r.error);

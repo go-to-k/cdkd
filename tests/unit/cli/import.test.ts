@@ -39,11 +39,16 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 // Issue #1002 PR 2 — the import command consults the asset-redirect resolver
-// right after stack selection. These tests use fixture stacks with no asset
-// manifest, so the resolver must simply report "no redirect".
+// right after stack selection. Most tests use fixture stacks with no asset
+// manifest, so the default resolver reports "no redirect"; the rewrite-wiring
+// test overrides it with a real §6 mapping table (rewriteTemplateAssetReferences
+// stays REAL via the importOriginal spread).
+const { mockCreateAssetRedirectResolver } = vi.hoisted(() => ({
+  mockCreateAssetRedirectResolver: vi.fn(() => async (): Promise<unknown> => undefined),
+}));
 vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/assets/asset-redirect.js')>()),
-  createAssetRedirectResolver: vi.fn(() => async () => undefined),
+  createAssetRedirectResolver: mockCreateAssetRedirectResolver,
 }));
 
 // Mock AWS clients. The `sts` field is needed by
@@ -306,6 +311,59 @@ describe('cdkd import', () => {
     await expect(runImport(['import', '--app', 'x'])).rejects.toThrow();
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(/State already exists.*--force/);
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(/--resource <id>=<physicalId>/);
+  });
+
+  it('rewrites asset references to cdkd storage before writing state (#1002 PR 2)', async () => {
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    const cdkBucket = 'cdk-hnb659fds-assets-111111111111-us-east-1';
+    const cdkdBucket = 'cdkd-assets-111111111111-us-east-1';
+    const map = buildAssetRedirectMap(
+      {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: { d1: { bucketName: cdkBucket, objectKey: 'k.zip' } },
+          },
+        },
+        dockerImages: {},
+      },
+      {
+        assetBucket: cdkdBucket,
+        containerRepo: 'cdkd-container-assets-111111111111-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+      '111111111111',
+      'us-east-1'
+    );
+    mockCreateAssetRedirectResolver.mockReturnValueOnce(async () => map);
+
+    const tmpl = template({
+      MyBucket: {
+        Type: 'AWS::S3::Bucket',
+        Properties: { BucketName: 'b', DataUrl: `s3://${cdkBucket}/k.zip` },
+        Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation(() => ({
+      import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+    }));
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { properties: Record<string, unknown> }> },
+    ];
+    // The template was rewritten IN PLACE before its Properties landed in
+    // state, so the imported state matches what the next deploy would write.
+    expect(state.resources['MyBucket']!.properties['DataUrl']).toBe(`s3://${cdkdBucket}/k.zip`);
   });
 
   it('rejects when stack name is unknown', async () => {

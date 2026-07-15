@@ -184,6 +184,49 @@ describe('DeployEngine — post-resolution asset-reference audit (#1002 PR 2)', 
     expect(provider.create).toHaveBeenCalled();
   });
 
+  it('fails an UPDATE whose resolved properties still name a mapped source (audit runs before the no-change short-circuit)', async () => {
+    const engine = makeEngine(true);
+    const properties = { Code: { S3Bucket: CDK_BUCKET, S3Key: 'aaaa1111.zip' } };
+    const change: ResourceChange = {
+      logicalId: 'Fn',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::Lambda::Function',
+      currentProperties: properties,
+      desiredProperties: properties,
+    };
+    const template: CloudFormationTemplate = {
+      Resources: { Fn: { Type: 'AWS::Lambda::Function', Properties: properties } },
+    };
+    const stateResources = {
+      Fn: {
+        physicalId: 'pid-1',
+        resourceType: 'AWS::Lambda::Function',
+        properties,
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk' as const,
+      },
+    };
+    const provisionResource = (
+      engine as unknown as {
+        provisionResource: (
+          logicalId: string,
+          change: ResourceChange,
+          stateResources: Record<string, unknown>,
+          stackName: string,
+          template: CloudFormationTemplate
+        ) => Promise<void>;
+      }
+    ).provisionResource.bind(engine);
+    const err = await provisionResource('Fn', change, stateResources, 'MyStack', template).then(
+      () => null,
+      (e) => e as Error & { cause?: Error }
+    );
+    expect(err).not.toBeNull();
+    expect(err!.cause?.message).toMatch(/Unrewritten asset reference/);
+    expect(provider.update).not.toHaveBeenCalled();
+  });
+
   it('is a no-op in legacy mode (no assetRedirect): CDK bucket references deploy verbatim', async () => {
     const engine = makeEngine(false);
     const err = await invokeCreate(engine, {
