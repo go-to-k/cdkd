@@ -1075,6 +1075,11 @@
       ]
     },
     {
+      "name": "local-run-task-cdkd-assets",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "local-run-task-from-state",
       "annotated": true,
       "scenarios": [
