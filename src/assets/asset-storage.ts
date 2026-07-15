@@ -459,11 +459,37 @@ export class AssetModeResolver {
   private stateBackend: S3StateBackend;
   private accountId: string;
   private profile: string | undefined;
+  private useCdkBootstrapAssets: boolean;
+  private suppressLegacyNotice: boolean;
 
-  constructor(stateBackend: S3StateBackend, accountId: string, opts: { profile?: string } = {}) {
+  constructor(
+    stateBackend: S3StateBackend,
+    accountId: string,
+    opts: {
+      profile?: string;
+      /**
+       * `--use-cdk-bootstrap-assets` / `cdk.json context.cdkd.useCdkBootstrapAssets`
+       * (design §4.2): pin legacy mode for this invocation even when the
+       * region's bootstrap marker exists — for apps deployed via both CFn
+       * and cdkd during a migration window. Skips the marker read entirely
+       * and also suppresses the legacy-mode `cdk gc` notice (the user made
+       * an explicit storage choice — design §12.2).
+       */
+      useCdkBootstrapAssets?: boolean;
+      /**
+       * Skip the legacy-mode `cdk gc` info line. Used by commands whose
+       * invocation publishes nothing (`diff`, `import`) — the notice's
+       * "assets are published to..." wording only fits `deploy` /
+       * `publish-assets`.
+       */
+      suppressLegacyNotice?: boolean;
+    } = {}
+  ) {
     this.stateBackend = stateBackend;
     this.accountId = accountId;
     this.profile = opts.profile;
+    this.useCdkBootstrapAssets = opts.useCdkBootstrapAssets ?? false;
+    this.suppressLegacyNotice = opts.suppressLegacyNotice ?? false;
   }
 
   /**
@@ -471,6 +497,11 @@ export class AssetModeResolver {
    * same region share one in-flight resolution.
    */
   resolve(region: string): Promise<AssetMode> {
+    if (this.useCdkBootstrapAssets) {
+      // Explicit per-app / per-invocation legacy pin: no marker read, no
+      // notice — byte-identical to pre-#1002 behavior (design §4.2).
+      return Promise.resolve({ mode: 'legacy' });
+    }
     const cached = this.cache.get(region);
     if (cached) return cached;
     const inFlight = this.doResolve(region).catch((error: unknown) => {
@@ -488,7 +519,7 @@ export class AssetModeResolver {
     const body = await this.stateBackend.getRawObject(markerKey);
 
     if (body === null) {
-      if (!this.legacyNoticeShown) {
+      if (!this.legacyNoticeShown && !this.suppressLegacyNotice) {
         this.legacyNoticeShown = true;
         this.logger.info(
           `Assets are published to the CDK bootstrap bucket/repo, which 'cdk gc' may ` +

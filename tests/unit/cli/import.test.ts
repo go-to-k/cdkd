@@ -35,6 +35,15 @@ vi.mock('../../../src/utils/logger.js', () => ({
 vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
   resolveApp: vi.fn(() => 'cdk-out'),
+  resolveUseCdkBootstrapAssets: vi.fn(() => false),
+}));
+
+// Issue #1002 PR 2 — the import command consults the asset-redirect resolver
+// right after stack selection. These tests use fixture stacks with no asset
+// manifest, so the resolver must simply report "no redirect".
+vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/assets/asset-redirect.js')>()),
+  createAssetRedirectResolver: vi.fn(() => async () => undefined),
 }));
 
 // Mock AWS clients. The `sts` field is needed by

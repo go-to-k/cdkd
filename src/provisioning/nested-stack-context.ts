@@ -6,6 +6,7 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import type { ProviderRegistry } from './provider-registry.js';
 import type { DeployEngineOptions } from '../deployment/deploy-engine.js';
+import type { AssetRedirectMap } from '../assets/asset-redirect.js';
 import type { AwsClients } from '../utils/aws-clients.js';
 
 /**
@@ -83,6 +84,17 @@ export interface NestedStackProviderContext {
    * on top of these on its own.
    */
   options?: DeployEngineOptions;
+
+  /**
+   * Deploy-only: §6 asset-location mapping table (issue #1002 PR 2), present
+   * when the deploy region is in cdkd-assets mode. `NestedStackProvider`
+   * applies the §7 template rewrite to every child template it loads via
+   * `readChildTemplate` — nested templates bypass the top-level analyzer
+   * entry, so a child Lambda/ECS asset reference would otherwise split-brain
+   * (assets in cdkd storage, child property pointing at the CDK bucket).
+   * Grandchildren inherit it through the context spread.
+   */
+  assetRedirect?: AssetRedirectMap;
 
   /**
    * Destroy-only: caller's `--resource-warn-after` / `--resource-timeout`

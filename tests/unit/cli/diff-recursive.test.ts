@@ -478,6 +478,75 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     expect(treeHasChanges(root)).toBe(true);
   });
 
+  it('applies the #1002 asset-reference rewrite to nested child templates (assetRedirect set)', async () => {
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    const cdkBucketLiteral = 'cdk-hnb659fds-assets-123456789012-us-east-1';
+    const cdkdBucket = 'cdkd-assets-123456789012-us-east-1';
+    const childPath = join(dir, 'child.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Resources: {
+          ChildRes: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Value: `s3://${cdkBucketLiteral}/key.zip` },
+          },
+        },
+      })
+    );
+    const parentTemplate: CloudFormationTemplate = {
+      Resources: {
+        Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+      },
+    };
+    const assetRedirect = buildAssetRedirectMap(
+      {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: { d1: { bucketName: cdkBucketLiteral, objectKey: 'key.zip' } },
+          },
+        },
+        dockerImages: {},
+      },
+      {
+        assetBucket: cdkdBucket,
+        containerRepo: 'cdkd-container-assets-123456789012-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+      '123456789012',
+      'us-east-1'
+    );
+    // State already carries the REWRITTEN (cdkd) location — the child diff
+    // must therefore report NO change, proving the walker rewrote the child
+    // template it read from disk before diffing.
+    const backend = fakeBackend({
+      Parent: st('Parent', { Child: res(NESTED, {}) }),
+      'Parent~Child': st('Parent~Child', {
+        ChildRes: res('AWS::SSM::Parameter', { Value: `s3://${cdkdBucket}/key.zip` }),
+      }),
+    });
+
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: parentTemplate,
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+      assetRedirect,
+    });
+
+    expect(root.children).toHaveLength(1);
+    expect(nodeHasChanges(root.children[0]!)).toBe(false);
+    expect(treeHasChanges(root)).toBe(false);
+  });
+
   it('does not descend when recursive is false', async () => {
     const { parentTemplate, nestedTemplates } = writeTemplates('g-old');
     const backend = fakeBackend(deployedStates('g-old'));

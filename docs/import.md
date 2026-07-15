@@ -104,6 +104,7 @@ the rest by tag automatically.
 | `--yes` | Skip the confirmation prompt before writing state (and the CloudFormation retirement prompt under `--migrate-from-cloudformation`). |
 | `--force` | Confirm a destructive write to existing state — see below. |
 | `--migrate-from-cloudformation [name]` | After cdkd state is written, retire the source CloudFormation stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every resource via `UpdateStack`, then `DeleteStack`. AWS resources are NOT deleted. See [Migrating from `cdk deploy` (CloudFormation) to cdkd](#migrating-from-cdk-deploy-cloudformation-to-cdkd) below. |
+| `--use-cdk-bootstrap-assets` | Keep the CDK bootstrap asset destinations verbatim (skip the cdkd asset-storage rewrite) even when the region is opted in via `cdkd bootstrap`. Without it, import rewrites asset references (Lambda `Code`, image URIs, …) to the cdkd-owned storage before writing state, so the imported state matches what the next `cdkd deploy` would write. See the asset-destinations section in [docs/cli-reference.md](cli-reference.md). |
 
 `--force` is only needed when the import would lose data:
 

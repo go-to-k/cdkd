@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
 import { FileAssetPublisher } from './file-asset-publisher.js';
 import { DockerAssetPublisher } from './docker-asset-publisher.js';
+import { redirectDockerAsset, redirectFileAsset, type AssetRedirectMap } from './asset-redirect.js';
 import type { AssetManifest, FileAsset, DockerImageAsset } from '../types/assets.js';
 import { WorkGraph, type WorkNode } from '../deployment/work-graph.js';
 import { getLogger } from '../utils/logger.js';
@@ -63,6 +64,15 @@ export interface AssetPublisherOptions {
 
   /** Concurrency for Docker image builds. Default: 4 */
   imageBuildConcurrency?: number;
+
+  /**
+   * §6 asset-location mapping table (issue #1002 PR 2). When present, every
+   * default-bootstrap-shaped destination is redirected to the cdkd-owned
+   * bucket / ECR repo before the publish nodes are built. `objectKey` /
+   * `imageTag` are untouched. Absent in legacy mode — destinations publish
+   * verbatim.
+   */
+  redirect?: AssetRedirectMap;
 }
 
 /**
@@ -84,12 +94,19 @@ export class AssetPublisher {
   addAssetsToGraph(
     graph: WorkGraph,
     manifestPath: string,
-    options: { accountId: string; region: string; profile?: string; nodePrefix?: string }
+    options: {
+      accountId: string;
+      region: string;
+      profile?: string;
+      nodePrefix?: string;
+      redirect?: AssetRedirectMap;
+    }
   ): string[] {
     const content = readFileSync(manifestPath, 'utf-8');
     const manifest = JSON.parse(content) as AssetManifest;
     const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
     const prefix = options.nodePrefix || '';
+    const redirect = options.redirect;
     const nodeIds: string[] = [];
 
     // File assets: single publish node
@@ -97,9 +114,14 @@ export class AssetPublisher {
     // templates itself. Shared predicate with AssetManifestLoader.getFileAssets
     // so the two file-asset-selection sites cannot drift (see
     // isCfnTemplateAssetPath for why `.template.json`, not a plain `.json`).
-    const fileAssets = Object.entries(manifest.files || {}).filter(
-      ([, asset]) => !isCfnTemplateAssetPath(asset.source.path)
-    );
+    // In cdkd-assets mode (issue #1002 PR 2), each asset's destinations are
+    // redirected through the §6 mapping table before the node is built — the
+    // same table the template rewrite consumes, so the two cannot diverge.
+    const fileAssets = Object.entries(manifest.files || {})
+      .filter(([, asset]) => !isCfnTemplateAssetPath(asset.source.path))
+      .map(
+        ([hash, asset]) => [hash, redirect ? redirectFileAsset(asset, redirect) : asset] as const
+      );
     for (const [hash, asset] of fileAssets) {
       const nodeId = `asset-publish:${prefix}file:${hash}`;
       graph.addNode({
@@ -121,7 +143,8 @@ export class AssetPublisher {
     }
 
     // Docker assets: build node → publish node
-    for (const [hash, asset] of Object.entries(manifest.dockerImages || {})) {
+    for (const [hash, rawAsset] of Object.entries(manifest.dockerImages || {})) {
+      const asset = redirect ? redirectDockerAsset(rawAsset, redirect) : rawAsset;
       const localTag = `cdkd-asset-${hash}`;
       const buildNodeId = `asset-build:${prefix}docker:${hash}`;
       const publishNodeId = `asset-publish:${prefix}docker:${hash}`;
@@ -215,6 +238,7 @@ export class AssetPublisher {
         accountId,
         region,
         ...(options.profile && { profile: options.profile }),
+        ...(options.redirect && { redirect: options.redirect }),
       });
 
       if (nodeIds.length === 0) {

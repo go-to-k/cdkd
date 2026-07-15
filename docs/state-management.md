@@ -50,7 +50,11 @@ asset storage — its body names the region's asset bucket
 (`cdkd-container-assets-{accountId}-{region}`). Deploys read the marker per
 (account, region) to pick the asset mode: absent → legacy (publish to the
 CDK bootstrap destinations verbatim, byte-identical to pre-#1002 behavior);
-present → cdkd-assets mode; present but bucket/repo deleted → hard error
+present → cdkd-assets mode (asset publishing redirects to the cdkd storage
+and template references are rewritten to match — see the asset-destinations
+section in [docs/cli-reference.md](cli-reference.md); no state schema
+change, the deployed `properties` simply carry the cdkd names); present but
+bucket/repo deleted → hard error
 (never a silent fallback). The marker deliberately lives OUTSIDE the
 `{STATE_PREFIX}/` prefix so stack listing never mistakes it for a stack, and
 per-region keys mean concurrent bootstraps of two regions cannot race on a

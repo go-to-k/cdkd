@@ -25,6 +25,12 @@ import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { AssetModeResolver } from '../../assets/asset-storage.js';
+import {
+  buildAssetRedirectMap,
+  loadPublishableAssetManifest,
+  rewriteTemplateAssetReferences,
+  type AssetRedirectMap,
+} from '../../assets/asset-redirect.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
 import { startRunRecorder, recordRunSucceeded, recordRunFailed } from './deployment-events-run.js';
@@ -47,6 +53,7 @@ import {
   resolveCaptureObservedState,
   resolveSkipPrefix,
   resolveStateBucketWithDefault,
+  resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
@@ -89,6 +96,7 @@ async function deployCommand(
     recreateViaSdkProvider?: string[];
     forceStatefulRecreation?: boolean;
     replace?: boolean;
+    useCdkBootstrapAssets?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -355,13 +363,16 @@ async function deployCommand(
 
     const assetPublisher = new AssetPublisher();
     // Issue #1002 — per-region asset-mode detection (legacy vs cdkd-assets).
-    // One marker read per unique region, cached for the invocation. In PR 1
-    // of the phasing the resolved mode is detection-only: legacy deploys are
-    // byte-identical to before (plus one info line about the `cdk gc`
-    // hazard); the publish redirection + template rewrite that consume the
-    // `cdkd-assets` mode land in PR 2.
+    // One marker read per unique region, cached for the invocation. In
+    // `cdkd-assets` mode (marker present), PR 2 wires publish redirection +
+    // template rewrite through the §6 mapping table built below; legacy
+    // deploys stay byte-identical to before (plus one info line about the
+    // `cdk gc` hazard). `--use-cdk-bootstrap-assets` (or cdk.json
+    // context.cdkd.useCdkBootstrapAssets) pins legacy mode for the app.
+    const useCdkBootstrapAssets = resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets);
     const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId, {
       ...(options.profile && { profile: options.profile }),
+      ...(useCdkBootstrapAssets && { useCdkBootstrapAssets: true }),
     });
     const stateConfig = {
       bucket: stateBucket,
@@ -381,39 +392,59 @@ async function deployCommand(
     // Build work graph
     const workGraph = new WorkGraph();
     const stackMap = new Map(targetStacks.map((s) => [s.stackName, s]));
+    // Issue #1002 PR 2 — per-stack §6 mapping table for stacks whose region
+    // is in cdkd-assets mode. Consumed by the deploy engine's
+    // post-resolution audit + the NestedStackProvider context below.
+    const stackRedirects = new Map<string, AssetRedirectMap>();
 
     for (const stack of targetStacks) {
       const stackNodeId = `stack:${stack.stackName}`;
       const stackDeps = new Set<string>();
 
-      // Add asset-publish nodes via AssetPublisher
-      if (!options.skipAssets && stack.assetManifestPath) {
+      // Asset-mode resolution + §6 mapping table + §7 template rewrite +
+      // asset-publish nodes. `loadPublishableAssetManifest` returns null on
+      // a missing manifest OR one with nothing cdkd would publish, so
+      // asset-less deploys stay byte-identical (no marker read, no
+      // legacy-mode info line). The mode resolution + rewrite run even
+      // under --skip-assets: assets already published (e.g. via
+      // `cdkd publish-assets`) live in cdkd storage once the region is
+      // opted in, so skipping the rewrite would deploy split-brain
+      // references that the audit then rejects.
+      if (stack.assetManifestPath) {
         const assetRegion = stack.region || baseRegion;
-        let nodeIds: string[] = [];
-        try {
-          nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
-            accountId,
-            region: assetRegion,
-            ...(options.profile && { profile: options.profile }),
-            nodePrefix: `${stack.stackName}:`,
-          });
-        } catch (error) {
-          const err = error as { code?: string };
-          if (err.code !== 'ENOENT') throw error;
-        }
-        if (nodeIds.length > 0) {
-          // Resolve the asset mode only when the stack actually publishes
-          // assets — asset-less deploys stay byte-identical (no marker
-          // read, no legacy-mode info line). Deliberately OUTSIDE the
-          // ENOENT-swallowing try above: a marker/verification error must
-          // never be mistaken for a missing asset manifest.
+        const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
+        if (manifest) {
           const assetMode = await assetModeResolver.resolve(assetRegion);
           logger.debug(
             `Asset mode for region ${assetRegion}: ${assetMode.mode} (stack ${stack.stackName})`
           );
-        }
-        for (const id of nodeIds) {
-          stackDeps.add(id);
+          let redirect: AssetRedirectMap | undefined;
+          if (assetMode.mode === 'cdkd-assets') {
+            redirect = buildAssetRedirectMap(manifest, assetMode.marker, accountId, assetRegion);
+            if (redirect.entries.length > 0) {
+              stackRedirects.set(stack.stackName, redirect);
+              const rewritten = rewriteTemplateAssetReferences(stack.template, redirect);
+              logger.debug(
+                `Rewrote ${rewritten} asset reference(s) to cdkd asset storage ` +
+                  `(${assetMode.marker.assetBucket} / ${assetMode.marker.containerRepo}) ` +
+                  `in template of stack ${stack.stackName}`
+              );
+            } else {
+              redirect = undefined;
+            }
+          }
+          if (!options.skipAssets) {
+            const nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
+              accountId,
+              region: assetRegion,
+              ...(options.profile && { profile: options.profile }),
+              nodePrefix: `${stack.stackName}:`,
+              ...(redirect && { redirect }),
+            });
+            for (const id of nodeIds) {
+              stackDeps.add(id);
+            }
+          }
         }
       }
 
@@ -626,10 +657,16 @@ async function deployCommand(
           }
         }
 
+        // Issue #1002 PR 2 — thread the stack's §6 mapping table into the
+        // engine (post-resolution audit) and the nested-stack context
+        // (child-template rewrite). Undefined in legacy mode.
+        const assetRedirect = stackRedirects.get(stackInfo.stackName);
+
         const deployEngineOptions: DeployEngineOptions = {
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: !options.rollback,
+          ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
           ...(recreateViaCcApiTargets &&
             recreateViaCcApiTargets.size > 0 && { recreateViaCcApiTargets }),
@@ -685,6 +722,7 @@ async function deployCommand(
             dagBuilder,
             diffCalculator,
             options: deployEngineOptions,
+            ...(assetRedirect && { assetRedirect }),
           },
           () => stackDeployEngine.deploy(stackInfo.stackName, stackInfo.template)
         );

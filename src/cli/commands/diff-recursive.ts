@@ -6,6 +6,10 @@ import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
+import {
+  rewriteTemplateAssetReferences,
+  type AssetRedirectMap,
+} from '../../assets/asset-redirect.js';
 import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 
@@ -279,6 +283,15 @@ export async function buildDiffTree(args: {
    * nested-stack parameter resolves instead of surfacing as spurious drift.
    */
   parameters?: Record<string, unknown>;
+  /**
+   * Issue #1002 PR 2 — §6 asset-location mapping table, present when the
+   * stack's region is in cdkd-assets mode. Every nested child template read
+   * by this walker gets the §7 rewrite applied (nested templates bypass the
+   * top-level rewrite in `diff.ts`), so the recursive diff previews the same
+   * repointing the deploy will perform. The ROOT template is expected to be
+   * rewritten by the caller before this is invoked.
+   */
+  assetRedirect?: AssetRedirectMap;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -290,6 +303,7 @@ export async function buildDiffTree(args: {
     stateBackend,
     diffCalculator,
     parameters,
+    assetRedirect,
   } = args;
 
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
@@ -328,6 +342,9 @@ export async function buildDiffTree(args: {
     }
     const childStackName = `${stackName}~${logicalId}`;
     const childTemplate = readNestedTemplate(childTemplatePath);
+    if (assetRedirect) {
+      rewriteTemplateAssetReferences(childTemplate, assetRedirect);
+    }
     const grandchildTemplates = indexNestedChildTemplates(childTemplate, childTemplatePath);
     // Resolve the child's input `Parameters` (declared on this parent's
     // `AWS::CloudFormation::Stack` row) against THIS node's deployed state +
@@ -354,6 +371,7 @@ export async function buildDiffTree(args: {
         stateBackend,
         diffCalculator,
         parameters: childParameters,
+        ...(assetRedirect && { assetRedirect }),
       })
     );
   }

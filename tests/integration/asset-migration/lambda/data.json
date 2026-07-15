@@ -1,0 +1,4 @@
+{
+  "fixture": "asset-migration",
+  "purpose": "s3_assets.Asset published alongside the Lambda ZIP; its S3 URL lands in the Lambda's DATA_ASSET_URL env var so the bootstrap-bucket reference is visible via GetFunctionConfiguration"
+}

@@ -27,10 +27,21 @@ vi.mock('../../../src/assets/asset-publisher.js', () => ({
   })),
 }));
 
-// config-loader so we don't read real cdk.json.
+// config-loader so we don't read real cdk.json. `resolveStateBucketWithDefault`
+// rejects by default (= "no state bucket resolvable") so the #1002 asset-mode
+// probe falls back to legacy destinations — matching the pre-#1002 behavior
+// these tests pin. Individual tests can override via mockResolvedValue.
 const mockResolveApp = vi.fn();
+const mockResolveStateBucketWithDefault = vi.fn(
+  async (_bucket?: string, _region?: string): Promise<string> => {
+    throw new Error('no state bucket in this test');
+  }
+);
 vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveApp: (cliApp?: string) => mockResolveApp(cliApp),
+  resolveStateBucketWithDefault: (bucket?: string, region?: string) =>
+    mockResolveStateBucketWithDefault(bucket, region),
+  resolveUseCdkBootstrapAssets: vi.fn(() => false),
 }));
 
 // STS — accountId resolution.

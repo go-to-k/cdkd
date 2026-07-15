@@ -196,6 +196,26 @@ Publishes Docker image assets to ECR:
 
 Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type. Used by standalone `publish-assets` command. For `deploy`, the `WorkGraph` DAG manages individual asset nodes directly.
 
+#### `asset-storage.ts` + `asset-redirect.ts` - cdkd-owned asset storage (issue #1002)
+
+`asset-storage.ts` owns the storage naming, the per-region bootstrap marker
+(`s3://{stateBucket}/cdkd-bootstrap/{region}.json`, written by
+`cdkd bootstrap`), and the deploy-time `AssetModeResolver` (marker absent →
+legacy mode, byte-identical to pre-#1002; present → cdkd-assets mode).
+`asset-redirect.ts` owns what happens in cdkd-assets mode: the
+destination-driven mapping table built from the stack's `*.assets.json`
+(only default-bootstrap-shaped destinations for the deploy account+region
+are redirected — user-chosen storage and cross-region destinations stay
+verbatim), the boundary-aware template rewrite (plain strings, `Fn::Sub`
+template strings, and folded pseudo-parameter-only `Fn::Join` runs), the
+post-resolution audit the deploy engine runs on every resolved resource
+(any surviving CDK-bootstrap reference fails the resource loudly), and the
+publish-time destination redirection the publishers consume — the SAME
+table feeds both sides so they cannot diverge. Applied by `deploy` (incl.
+nested-child templates via `NestedStackProvider`), `diff` (incl.
+`--recursive` children), `import` (incl. the recursive CFn-migration walk),
+and `publish-assets`; `synth` / `export` stay unrewritten by design.
+
 **Asset Types**:
 
 - **File Assets**: Lambda code zip, CloudFormation templates
@@ -203,8 +223,11 @@ Orchestrator that reads asset manifests and delegates to the appropriate publish
 
 **Publish Destinations**:
 
-- S3: `cdk-hnb659fds-assets-${AccountId}-${Region}/`
-- ECR: `cdk-hnb659fds-container-assets-${AccountId}-${Region}`
+- Legacy mode (default): S3 `cdk-hnb659fds-assets-${AccountId}-${Region}/`,
+  ECR `cdk-hnb659fds-container-assets-${AccountId}-${Region}`
+- cdkd-assets mode (region opted in via `cdkd bootstrap`): S3
+  `cdkd-assets-${AccountId}-${Region}/`, ECR
+  `cdkd-container-assets-${AccountId}-${Region}` — out of `cdk gc`'s reach
 
 ### 4. Analysis Layer (`src/analyzer/`)
 

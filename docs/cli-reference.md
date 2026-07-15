@@ -972,6 +972,40 @@ silently falls back to CDK bootstrap storage once a region is opted in.
 `cdkd state info` shows which regions are opted in (`Asset storage:` line /
 `assetStorage` JSON field).
 
+### Asset destinations after opt-in (cdkd-assets mode)
+
+Once a region's bootstrap marker exists, every asset-consuming command
+redirects **default-bootstrap-shaped** destinations
+(`cdk-<qualifier>-assets-…` / `cdk-<qualifier>-container-assets-…` for this
+account+region — exactly the population `cdk gc` can delete) to the
+cdkd-owned storage, and rewrites the matching template references
+(`Code.S3Bucket`, `Code.ImageUri`, `s3.Asset` URLs in env vars, nested-stack
+`TemplateURL`, …) to the cdkd names. `objectKey` / `imageTag` (content
+hashes) are unchanged. User-chosen storage (custom `fileAssetsBucketName` /
+`imageAssetsRepositoryName`, `AppStagingSynthesizer` staging buckets) and
+cross-region destinations are never touched — `cdk gc` cannot reach those.
+
+Per-command behavior:
+
+| Command | cdkd-assets mode |
+| --- | --- |
+| `deploy` | redirect publishes + rewrite templates (incl. nested children); a post-resolution audit fails any resource whose resolved properties still name the CDK bootstrap storage |
+| `diff` (incl. `--recursive`) | rewrite, so the shown plan matches what deploy will do (incl. the one-time migration diff) |
+| `import` | rewrite before writing state (no spurious first-deploy churn) |
+| `publish-assets` | redirect via the same table (reads the marker from the state bucket; falls back to legacy with an info line when no state bucket resolves) |
+| `synth` / `export` | **unrewritten** — synth prints the CDK app's template; export returns the stack to the CFn/cdk-assets world |
+| `destroy` / `state *` / `drift` / `events` | state-driven, unchanged |
+
+The first deploy after opting in shows a one-time "everything with assets
+updates" diff — an ordinary in-place UPDATE repointing `Code` / `Image` at
+cdkd storage (content identical, no replacement).
+
+`--use-cdk-bootstrap-assets` (on `deploy` / `diff` / `import` /
+`publish-assets`) pins legacy destinations for one invocation even after the
+region is opted in; `cdk.json` `context.cdkd.useCdkBootstrapAssets: true`
+pins it per app — for apps deployed via both CloudFormation and cdkd during
+a migration window. The pin also suppresses the legacy-mode `cdk gc` notice.
+
 ## `cdkd diff`
 
 `cdkd diff [<stacks...>]` synthesizes the CDK app and reports the
@@ -1813,6 +1847,16 @@ when a directory is given, synthesis is skipped and the manifest is
 read directly. Same dual semantics as `cdkd deploy`. Re-using a
 pre-synthesized assembly is therefore covered by `-a <dir>` and
 `publish-assets` does NOT have its own `--path <manifest>` flag.
+
+Asset destinations follow the region's asset mode (issue
+[#1002](https://github.com/go-to-k/cdkd/issues/1002)): the command reads the
+per-region bootstrap marker from the state bucket (resolved via the standard
+`--state-bucket` / `CDKD_STATE_BUCKET` / `cdk.json` / default chain — the
+command never writes state) and, when the region is opted in, publishes to
+the cdkd-owned storage so a subsequent `cdkd deploy` finds the assets where
+its rewritten templates point. When no state bucket is resolvable at all,
+the command falls back to the manifest destinations verbatim with an info
+line. `--use-cdk-bootstrap-assets` pins the legacy destinations explicitly.
 
 Concurrency knobs (same defaults as `deploy`):
 
