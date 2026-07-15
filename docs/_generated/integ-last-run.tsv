@@ -219,4 +219,4 @@ bench-cdk-sample	2026-07-03T11:11:09Z	PASS	578	standard	broad for #995 intrinsic
 asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: legacy notice, bootstrap storage+marker, cdkd-assets detect, deleted-repo hard error, clean destroy
 lambda	2026-07-15T05:34:28Z	PASS	75	verify.sh	broad integ for #1002 PR2 deploy-engine/deploy.ts scope; legacy asset path regression clean
 asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean
-local-run-task-cdkd-assets	2026-07-15T10:15:43Z	PASS	14	verify.sh	custom-qualifier fromAsset classified as cdk-asset; local-only, docker sweep clean
+local-run-task-cdkd-assets	2026-07-15T10:33:43Z	PASS	15	verify.sh	re-run after sidecar add; docker sweep clean
