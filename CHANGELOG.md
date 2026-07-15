@@ -1,3 +1,10 @@
+# [0.232.0](https://github.com/go-to-k/cdkd/compare/v0.231.12...v0.232.0) (2026-07-15)
+
+
+### Features
+
+* **bootstrap:** cdkd-owned asset storage + per-region marker + deploy-time asset-mode detection (issue [#1002](https://github.com/go-to-k/cdkd/issues/1002), PR 1 of 3) ([#1003](https://github.com/go-to-k/cdkd/issues/1003)) ([ba6b6d8](https://github.com/go-to-k/cdkd/commit/ba6b6d846cc1104a9585768ae947041f63335d0e))
+
 ## [0.231.12](https://github.com/go-to-k/cdkd/compare/v0.231.11...v0.231.12) (2026-07-03)
 
 
