@@ -15,8 +15,13 @@
 #            (PR 1 is detection-only; publish destinations unchanged).
 #   Phase 4: delete the ECR repo, deploy -> hard error naming the repo and
 #            the re-bootstrap fix (never a silent legacy fallback).
-#   Cleanup: destroy the stack, delete marker + asset bucket + repo so the
-#            account is left exactly as found.
+#   Cleanup: destroy the stack, delete marker + asset bucket + repo.
+#
+# NOTE: cleanup deletes the account's CANONICAL cdkd asset storage
+# (cdkd-assets-{account}-{region} + repo + marker) — safe on the dedicated
+# test account while PR 1 storage holds no objects, but once PR 2 publishes
+# real assets there, re-point this fixture at a dedicated marker/bucket or
+# gate the deletion on the bucket being empty.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -44,7 +49,7 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
     node "${LOCAL_DIST}" events prune "${STACK}" --all --state-bucket "${STATE_BUCKET:-}" \
-      --yes >/dev/null 2>&1
+      --region "${REGION}" --yes >/dev/null 2>&1
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
