@@ -39,7 +39,23 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
       └── {Region}/
           ├── lock.json      # Exclusive lock information (region-scoped)
           └── state.json     # Resource state (region-scoped)
+s3://{STATE_BUCKET}/cdkd-bootstrap/
+  └── {Region}.json          # Asset-storage bootstrap marker (issue #1002)
 ```
+
+The `cdkd-bootstrap/{region}.json` marker is written by `cdkd bootstrap`
+(unless `--no-assets`) and records that the region opted into cdkd-owned
+asset storage — its body names the region's asset bucket
+(`cdkd-assets-{accountId}-{region}`) and container-asset ECR repo
+(`cdkd-container-assets-{accountId}-{region}`). Deploys read the marker per
+(account, region) to pick the asset mode: absent → legacy (publish to the
+CDK bootstrap destinations verbatim, byte-identical to pre-#1002 behavior);
+present → cdkd-assets mode; present but bucket/repo deleted → hard error
+(never a silent fallback). The marker deliberately lives OUTSIDE the
+`{STATE_PREFIX}/` prefix so stack listing never mistakes it for a stack, and
+per-region keys mean concurrent bootstraps of two regions cannot race on a
+shared object. `cdkd state info` lists the opted-in regions. Full design in
+[docs/design/1002-cdkd-asset-storage.md](design/1002-cdkd-asset-storage.md).
 
 ### Configuration Example
 

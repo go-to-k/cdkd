@@ -24,6 +24,7 @@ import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
 import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
+import { AssetModeResolver } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
 import { startRunRecorder, recordRunSucceeded, recordRunFailed } from './deployment-events-run.js';
@@ -353,6 +354,15 @@ async function deployCommand(
     stsClient.destroy();
 
     const assetPublisher = new AssetPublisher();
+    // Issue #1002 — per-region asset-mode detection (legacy vs cdkd-assets).
+    // One marker read per unique region, cached for the invocation. In PR 1
+    // of the phasing the resolved mode is detection-only: legacy deploys are
+    // byte-identical to before (plus one info line about the `cdk gc`
+    // hazard); the publish redirection + template rewrite that consume the
+    // `cdkd-assets` mode land in PR 2.
+    const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId, {
+      ...(options.profile && { profile: options.profile }),
+    });
     const stateConfig = {
       bucket: stateBucket,
       prefix: options.statePrefix,
@@ -378,20 +388,32 @@ async function deployCommand(
 
       // Add asset-publish nodes via AssetPublisher
       if (!options.skipAssets && stack.assetManifestPath) {
+        const assetRegion = stack.region || baseRegion;
+        let nodeIds: string[] = [];
         try {
-          const assetRegion = stack.region || baseRegion;
-          const nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
+          nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
             accountId,
             region: assetRegion,
             ...(options.profile && { profile: options.profile }),
             nodePrefix: `${stack.stackName}:`,
           });
-          for (const id of nodeIds) {
-            stackDeps.add(id);
-          }
         } catch (error) {
           const err = error as { code?: string };
           if (err.code !== 'ENOENT') throw error;
+        }
+        if (nodeIds.length > 0) {
+          // Resolve the asset mode only when the stack actually publishes
+          // assets — asset-less deploys stay byte-identical (no marker
+          // read, no legacy-mode info line). Deliberately OUTSIDE the
+          // ENOENT-swallowing try above: a marker/verification error must
+          // never be mistaken for a missing asset manifest.
+          const assetMode = await assetModeResolver.resolve(assetRegion);
+          logger.debug(
+            `Asset mode for region ${assetRegion}: ${assetMode.mode} (stack ${stack.stackName})`
+          );
+        }
+        for (const id of nodeIds) {
+          stackDeps.add(id);
         }
       }
 

@@ -926,6 +926,52 @@ then assumes a role from those base credentials. Use both together
 when the IAM principal lives in profile A and the deploy role lives
 in account B that profile A trusts.
 
+## `cdkd bootstrap`
+
+One-time per-account setup (plus once per additional region for asset
+storage). Creates:
+
+1. The S3 **state bucket** (`cdkd-state-{accountId}`, or `--state-bucket
+   <name>`) — versioned, AES-256 encrypted, account-only bucket policy.
+2. cdkd-owned **asset storage** for `--region` (issue
+   [#1002](https://github.com/go-to-k/cdkd/issues/1002)): the asset bucket
+   `cdkd-assets-{accountId}-{region}` (AES-256, account-only policy, no
+   versioning — assets are immutable content-addressed blobs) and the
+   container-asset ECR repo `cdkd-container-assets-{accountId}-{region}`
+   (immutable tags), plus the per-region bootstrap **marker**
+   `s3://{stateBucket}/cdkd-bootstrap/{region}.json` that opts the region
+   into cdkd-assets mode. Why: `cdk gc` decides "in use" by scanning
+   CloudFormation stack templates — cdkd-deployed stacks have no CFn stack,
+   so assets published to the CDK bootstrap bucket/repo look isolated to gc
+   and get deleted. cdkd-owned storage is structurally out of gc's reach.
+   See [docs/design/1002-cdkd-asset-storage.md](design/1002-cdkd-asset-storage.md).
+
+Flags:
+
+- `--no-assets` — skip step 2 (no asset bucket / ECR repo / marker).
+  Explicit opt-out for users who keep CDK bootstrap storage or use a custom
+  synthesizer with their own asset destinations. Deploys in the region stay
+  in legacy mode (publish to the `assets.json` destinations verbatim).
+- `--force` — reconfigure existing buckets/repo (re-apply encryption /
+  policy / tag-immutability). Without it, existing resources are left
+  untouched (re-running bootstrap is idempotent and is the supported way to
+  opt an existing account's region into asset storage).
+- `--state-bucket <name>` / `--region <region>` — as documented above;
+  `--region` on bootstrap is a real (non-deprecated) option.
+
+Re-running `cdkd bootstrap` on an already-bootstrapped account does NOT
+require `--force` to add the asset storage — the state bucket is simply
+left as-is and the asset bucket / repo / marker are created.
+
+Bucket-squatting defense: bootstrap refuses to adopt an asset bucket owned
+by another account (predictable-name defense), and cdkd's asset-bucket S3
+calls pass `ExpectedBucketOwner`. Deleting the asset bucket/repo while the
+marker exists makes deploys fail with a re-bootstrap hint — cdkd never
+silently falls back to CDK bootstrap storage once a region is opted in.
+
+`cdkd state info` shows which regions are opted in (`Asset storage:` line /
+`assetStorage` JSON field).
+
 ## `cdkd diff`
 
 `cdkd diff [<stacks...>]` synthesizes the CDK app and reports the

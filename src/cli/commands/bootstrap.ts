@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import {
+  S3Client,
   CreateBucketCommand,
   HeadBucketCommand,
   PutBucketPolicyCommand,
@@ -8,17 +9,24 @@ import {
   type BucketLocationConstraint,
 } from '@aws-sdk/client-s3';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { ECRClient } from '@aws-sdk/client-ecr';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
+import { ensureAssetStorage } from '../../assets/asset-storage.js';
+import { S3StateBackend } from '../../state/s3-state-backend.js';
 
 /**
  * Bootstrap command implementation
  *
- * Creates S3 bucket for state management
+ * Creates the S3 bucket for state management and (unless --no-assets) the
+ * cdkd-owned asset storage for the region: asset bucket + container-asset
+ * ECR repo + the per-region bootstrap marker that flips deploys in this
+ * region from legacy (CDK bootstrap destinations) to cdkd-assets mode
+ * (issue #1002, design at docs/design/1002-cdkd-asset-storage.md).
  */
 async function bootstrapCommand(options: {
   stateBucket?: string;
@@ -26,6 +34,7 @@ async function bootstrapCommand(options: {
   profile?: string;
   roleArn?: string;
   force: boolean;
+  assets: boolean;
   verbose: boolean;
 }): Promise<void> {
   const logger = getLogger();
@@ -89,14 +98,27 @@ async function bootstrapCommand(options: {
       }
     }
 
+    // Skip the state-bucket configuration PUTs (versioning / encryption /
+    // policy) when the bucket already exists and --force was not passed.
+    // Unlike the pre-#1002 flow this no longer returns early — the asset
+    // storage step below must still run so an existing user can opt a
+    // region into cdkd-assets mode by simply re-running bootstrap.
+    let skipStateBucketConfig = false;
     if (bucketExists) {
       if (!options.force) {
-        logger.warn(
-          `Bucket ${bucketName} already exists. Use --force to reconfigure (this will not delete existing state)`
+        if (!options.assets) {
+          logger.warn(
+            `Bucket ${bucketName} already exists. Use --force to reconfigure (this will not delete existing state)`
+          );
+          return;
+        }
+        logger.info(
+          `State bucket ${bucketName} already exists — skipping reconfiguration (use --force to reconfigure)`
         );
-        return;
+        skipStateBucketConfig = true;
+      } else {
+        logger.info('--force specified, continuing with existing bucket');
       }
-      logger.info('--force specified, continuing with existing bucket');
     } else {
       // Create bucket
       logger.info(`Creating S3 bucket: ${bucketName} in region ${region}`);
@@ -121,68 +143,132 @@ async function bootstrapCommand(options: {
       logger.info(`✓ Created S3 bucket: ${bucketName}`);
     }
 
-    // Enable versioning
-    logger.debug('Enabling bucket versioning...');
-    await s3Client.send(
-      new PutBucketVersioningCommand({
-        Bucket: bucketName,
-        VersioningConfiguration: {
-          Status: 'Enabled',
-        },
-      })
-    );
-    logger.info('✓ Enabled bucket versioning');
+    if (!skipStateBucketConfig) {
+      // Enable versioning
+      logger.debug('Enabling bucket versioning...');
+      await s3Client.send(
+        new PutBucketVersioningCommand({
+          Bucket: bucketName,
+          VersioningConfiguration: {
+            Status: 'Enabled',
+          },
+        })
+      );
+      logger.info('✓ Enabled bucket versioning');
 
-    // Enable server-side encryption (AES-256)
-    logger.debug('Enabling bucket encryption...');
-    await s3Client.send(
-      new PutBucketEncryptionCommand({
-        Bucket: bucketName,
-        ServerSideEncryptionConfiguration: {
-          Rules: [
-            {
-              ApplyServerSideEncryptionByDefault: {
-                SSEAlgorithm: 'AES256',
+      // Enable server-side encryption (AES-256)
+      logger.debug('Enabling bucket encryption...');
+      await s3Client.send(
+        new PutBucketEncryptionCommand({
+          Bucket: bucketName,
+          ServerSideEncryptionConfiguration: {
+            Rules: [
+              {
+                ApplyServerSideEncryptionByDefault: {
+                  SSEAlgorithm: 'AES256',
+                },
+                BucketKeyEnabled: true,
               },
-              BucketKeyEnabled: true,
-            },
-          ],
-        },
-      })
-    );
-    logger.info('✓ Enabled bucket encryption (AES-256)');
+            ],
+          },
+        })
+      );
+      logger.info('✓ Enabled bucket encryption (AES-256)');
 
-    // Set bucket policy to deny external access
-    logger.debug('Setting bucket policy...');
-    const bucketPolicy = {
-      Version: '2012-10-17',
-      Statement: [
-        {
-          Sid: 'DenyExternalAccess',
-          Effect: 'Deny',
-          Principal: '*',
-          Action: 's3:*',
-          Resource: [`arn:aws:s3:::${bucketName}`, `arn:aws:s3:::${bucketName}/*`],
-          Condition: {
-            StringNotEquals: {
-              'aws:PrincipalAccount': accountId,
+      // Set bucket policy to deny external access
+      logger.debug('Setting bucket policy...');
+      const bucketPolicy = {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'DenyExternalAccess',
+            Effect: 'Deny',
+            Principal: '*',
+            Action: 's3:*',
+            Resource: [`arn:aws:s3:::${bucketName}`, `arn:aws:s3:::${bucketName}/*`],
+            Condition: {
+              StringNotEquals: {
+                'aws:PrincipalAccount': accountId,
+              },
             },
           },
-        },
-      ],
-    };
+        ],
+      };
 
-    await s3Client.send(
-      new PutBucketPolicyCommand({
-        Bucket: bucketName,
-        Policy: JSON.stringify(bucketPolicy),
-      })
-    );
-    logger.info('✓ Set bucket policy (deny external access)');
+      await s3Client.send(
+        new PutBucketPolicyCommand({
+          Bucket: bucketName,
+          Policy: JSON.stringify(bucketPolicy),
+        })
+      );
+      logger.info('✓ Set bucket policy (deny external access)');
+    }
+
+    // cdkd-owned asset storage (issue #1002): asset bucket + container-asset
+    // ECR repo + the per-region bootstrap marker. Skipped under --no-assets
+    // (explicit opt-out for users who want to keep CDK bootstrap storage,
+    // e.g. custom-synthesizer users).
+    let assetStorage: { assetBucket: string; containerRepo: string } | undefined;
+    if (options.assets) {
+      logger.info('\nSetting up cdkd asset storage...');
+      const ecrClient = new ECRClient({
+        region,
+        ...(options.profile && { profile: options.profile }),
+      });
+      // The marker lives in the state bucket, which may be in a different
+      // region than --region (the state bucket is account-scoped and
+      // single-region). S3StateBackend resolves the bucket's actual region
+      // before the write — it OWNS (and may destroy/rebuild) its client, so
+      // it gets a dedicated one instead of sharing awsClients.s3. The
+      // `prefix` is irrelevant here (the marker is written via prefix-free
+      // putRawObject) but the constructor requires one.
+      const markerS3Client = new S3Client({
+        region,
+        ...(options.profile && { profile: options.profile }),
+      });
+      const stateBackend = new S3StateBackend(
+        markerS3Client,
+        { bucket: bucketName, prefix: 'cdkd' },
+        { region, ...(options.profile && { profile: options.profile }) }
+      );
+      try {
+        assetStorage = await ensureAssetStorage({
+          s3Client,
+          ecrClient,
+          stateBackend,
+          accountId,
+          region,
+          force: options.force,
+        });
+      } finally {
+        ecrClient.destroy();
+        // If the backend rebuilt its client for the state bucket's region it
+        // already destroyed this one; a second destroy is a safe no-op.
+        markerS3Client.destroy();
+      }
+    } else {
+      logger.info(
+        '\n--no-assets specified — skipping cdkd asset storage. Deploys in this region ' +
+          'keep publishing assets to the CDK bootstrap bucket/repo.'
+      );
+    }
 
     logger.info('\n✓ Bootstrap completed successfully');
     logger.info(`\nState bucket: ${bucketName}`);
+    if (assetStorage) {
+      logger.info(`Asset bucket: ${assetStorage.assetBucket}`);
+      logger.info(`Container-asset repository: ${assetStorage.containerRepo}`);
+    }
     logger.info(`Region: ${region}`);
+    if (assetStorage) {
+      logger.info(
+        `\ncdkd asset storage is now ON for region ${region}: deploys in this region ` +
+          `publish assets to the cdkd-owned bucket/repo (out of 'cdk gc' reach) instead ` +
+          `of the CDK bootstrap storage. The first deploy of each existing stack with ` +
+          `assets will show a one-time UPDATE re-pointing asset references — content is ` +
+          `identical, no replacement.`
+      );
+    }
     logger.info('\nYou can now use cdkd deploy with:');
     logger.info(`  --state-bucket ${bucketName}`);
     logger.info(`  --region ${region}`);
@@ -196,12 +282,20 @@ async function bootstrapCommand(options: {
  */
 export function createBootstrapCommand(): Command {
   const cmd = new Command('bootstrap')
-    .description('Bootstrap cdkd by creating required S3 bucket for state management')
+    .description(
+      'Bootstrap cdkd by creating the S3 state bucket plus cdkd-owned asset storage ' +
+        '(asset bucket + container-asset ECR repo) for the region'
+    )
     .option(
       '--state-bucket <bucket>',
       'Name of S3 bucket to create for state storage (default: cdkd-state-{accountId})'
     )
     .option('--force', 'Force reconfiguration of existing bucket', false)
+    .option(
+      '--no-assets',
+      'Skip cdkd asset storage (asset bucket / ECR repo / marker) — deploys keep ' +
+        'publishing assets to the CDK bootstrap bucket/repo'
+    )
     .addOption(
       // Bootstrap-specific: needs to know which region to create the bucket
       // in. After PR 5, `--region` is removed from `commonOptions` and only
