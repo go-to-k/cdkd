@@ -1,3 +1,10 @@
+# [0.234.0](https://github.com/go-to-k/cdkd/compare/v0.233.0...v0.234.0) (2026-07-15)
+
+
+### Features
+
+* **local:** recognize cdkd-owned + custom-qualifier container-assets images in run-task ([#1005](https://github.com/go-to-k/cdkd/issues/1005)) ([1f407c0](https://github.com/go-to-k/cdkd/commit/1f407c00bb3569030fbcb55bc0479ea92468628f))
+
 # [0.233.0](https://github.com/go-to-k/cdkd/compare/v0.232.0...v0.233.0) (2026-07-15)
 
 
