@@ -115,7 +115,10 @@ child_state_key() {
 
 handler_function_name() {
   aws s3 cp "s3://${STATE_BUCKET}/${parent_state_key}" - |
-    jq -r '.resources | to_entries[] | select(.key | startswith("Handler")) | .value.physicalId'
+    jq -r '.resources | to_entries[]
+      | select(.value.resourceType == "AWS::Lambda::Function")
+      | select(.key | startswith("Handler"))
+      | .value.physicalId'
 }
 
 # --- Phase 1: deploy WITHOUT marker (legacy destinations) -------------------
@@ -176,7 +179,7 @@ fi
 OBJECT_COUNT=$(aws s3api list-objects-v2 --bucket "${CDKD_BUCKET}" \
   --query 'KeyCount' --output text)
 if [ "${OBJECT_COUNT}" -lt 3 ]; then
-  echo "FAIL: expected >=3 assets in ${CDKD_BUCKET} (2 lambda zips + data asset + nested template), got ${OBJECT_COUNT}" >&2
+  echo "FAIL: expected >=3 assets in ${CDKD_BUCKET} (2 lambda zips + data asset; CFn template assets are never published), got ${OBJECT_COUNT}" >&2
   exit 1
 fi
 BUCKETS=$(lambda_code_buckets "${parent_state_key}")
