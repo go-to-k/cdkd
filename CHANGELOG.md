@@ -1,3 +1,10 @@
+# [0.233.0](https://github.com/go-to-k/cdkd/compare/v0.232.0...v0.233.0) (2026-07-15)
+
+
+### Features
+
+* **assets:** redirect asset publishing to cdkd-owned storage + rewrite template references (issue [#1002](https://github.com/go-to-k/cdkd/issues/1002), PR 2 of 3) ([#1004](https://github.com/go-to-k/cdkd/issues/1004)) ([5da8fd4](https://github.com/go-to-k/cdkd/commit/5da8fd415e5e938760b6e14240495ea767c6b8e7))
+
 # [0.232.0](https://github.com/go-to-k/cdkd/compare/v0.231.12...v0.232.0) (2026-07-15)
 
 
