@@ -315,6 +315,23 @@ describe('resolveEcsTaskTarget', () => {
     expect(r.containers[0]!.image.kind).toBe('public');
   });
 
+  it('does NOT treat a `container-assets` repo without the cdk-/cdkd- prefix as a CDK asset', () => {
+    // The classification regex requires a `cdk-<qualifier>-` or `cdkd-` prefix
+    // in front of `container-assets-`; a user ECR repo that merely embeds the
+    // words `container-assets` must stay a plain ECR pull, not a cdk.out build.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-container-assets-repo:latest',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.account).toBe('123456789012');
+    }
+  });
+
   it('rejects an unresolved AccountId pseudo-parameter image', () => {
     const stack = buildStack('S1', {
       TD: makeTaskDef({
@@ -669,6 +686,31 @@ describe('resolveEcsTaskTarget', () => {
         stateResources: deployedRepoState({
           physicalId: 'cdkd-container-assets-123456789012-us-east-1',
           arn: 'arn:aws:ecr:us-east-1:123456789012:repository/cdkd-container-assets-123456789012-us-east-1',
+        }),
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('cdk-asset');
+    });
+
+    it('classifies a resolved custom-qualifier container-assets repo URI as cdk-asset (issue #1002)', () => {
+      // Symmetry with the flat/Fn::Sub site: the generalized qualifier match
+      // must also fire at the resolved-URI (`classifyResolvedImage`) site, so a
+      // custom-`cdk bootstrap --qualifier` repo name resolves to a cdk.out
+      // build here too — not a plain ECR pull.
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+        stateResources: deployedRepoState({
+          physicalId: 'cdk-myqual123-container-assets-123456789012-us-east-1',
+          arn: 'arn:aws:ecr:us-east-1:123456789012:repository/cdk-myqual123-container-assets-123456789012-us-east-1',
         }),
       });
       const img = r.containers[0]!.image;
