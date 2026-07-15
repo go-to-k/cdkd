@@ -139,7 +139,7 @@ parsing → synthesis → asset publishing → per-stack deploy), see
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
-- **AWS CDK Bootstrap**: You must run `cdk bootstrap` before using cdkd. cdkd uses CDK's bootstrap bucket (`cdk-hnb659fds-assets-*`) for asset uploads (Lambda code, Docker images). Custom bootstrap qualifiers are supported — CDK embeds the correct bucket/repo names in the asset manifest during synthesis.
+- **AWS CDK Bootstrap**: You must run `cdk bootstrap` before using cdkd. cdkd uses CDK's bootstrap bucket (`cdk-hnb659fds-assets-*`) for asset uploads (Lambda code, Docker images). Custom bootstrap qualifiers are supported — CDK embeds the correct bucket/repo names in the asset manifest during synthesis. Note: `cdk gc` cannot see cdkd-deployed stacks (no CloudFormation stack to scan) and may garbage-collect cdkd-published assets from the CDK bootstrap storage — `cdkd bootstrap` therefore also creates cdkd-owned asset storage that asset publishing is moving onto (issue [#1002](https://github.com/go-to-k/cdkd/issues/1002); design in [docs/design/1002-cdkd-asset-storage.md](docs/design/1002-cdkd-asset-storage.md); the publish redirection ships in a follow-up release).
 - **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
 
 ## Installation
@@ -156,12 +156,16 @@ The installed binary is `cdkd`.
 > **First-time setup**: cdkd requires a one-time `cdkd bootstrap` per AWS
 > account before any other command will work — it creates the S3 state
 > bucket (`cdkd-state-{accountId}`) that cdkd uses to track deployed
-> resources. This is separate from `cdk bootstrap` (which sets up the
+> resources, plus cdkd-owned asset storage for the region
+> (`cdkd-assets-{accountId}-{region}` bucket +
+> `cdkd-container-assets-{accountId}-{region}` ECR repo — skip with
+> `--no-assets`; see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)).
+> This is separate from `cdk bootstrap` (which sets up the
 > CDK asset bucket / ECR repo and is also required — see
 > [Prerequisites](#prerequisites)).
 
 ```bash
-# Bootstrap (creates S3 state bucket — one-time setup, once per AWS account)
+# Bootstrap (creates S3 state bucket + asset storage — one-time setup per AWS account)
 cdkd bootstrap
 
 # List stacks in the CDK app

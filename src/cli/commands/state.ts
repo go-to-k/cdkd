@@ -42,6 +42,7 @@ import {
   type StackTreeNode,
 } from './state-list-tree.js';
 import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
+import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 
 /**
@@ -1490,6 +1491,75 @@ async function readSchemaVersion(
 }
 
 /**
+ * One region's cdkd asset storage entry as surfaced by `state info` —
+ * derived from the bootstrap marker at `cdkd-bootstrap/{region}.json`
+ * (issue #1002).
+ */
+interface AssetStorageInfo {
+  region: string;
+  assetBucket: string;
+  containerRepo: string;
+  createdAt: string;
+}
+
+/**
+ * List every region's bootstrap marker under `cdkd-bootstrap/` in the state
+ * bucket. Malformed markers are skipped with a warning — `state info` is a
+ * cosmetic command and should not crash on an unexpected payload (deploy
+ * hard-errors on the same marker instead).
+ */
+async function listAssetStorageMarkers(
+  awsClients: AwsClients,
+  bucket: string
+): Promise<AssetStorageInfo[]> {
+  const logger = getLogger();
+  const entries: AssetStorageInfo[] = [];
+  let continuationToken: string | undefined;
+  const keys: string[] = [];
+  do {
+    const resp = await awsClients.s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: BOOTSTRAP_MARKER_PREFIX,
+        ...(continuationToken && { ContinuationToken: continuationToken }),
+      })
+    );
+    for (const obj of resp.Contents ?? []) {
+      // Defensive startsWith re-check on top of the ListObjectsV2 Prefix —
+      // a key outside the marker prefix must never be parsed as a marker.
+      if (
+        typeof obj.Key === 'string' &&
+        obj.Key.startsWith(BOOTSTRAP_MARKER_PREFIX) &&
+        obj.Key.endsWith('.json')
+      ) {
+        keys.push(obj.Key);
+      }
+    }
+    continuationToken = resp.NextContinuationToken;
+  } while (continuationToken);
+
+  for (const key of keys) {
+    const region = key.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length);
+    try {
+      const resp = await awsClients.s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      const body = (await resp.Body?.transformToString()) ?? '';
+      const marker = parseBootstrapMarker(body, key);
+      entries.push({
+        region,
+        assetBucket: marker.assetBucket,
+        containerRepo: marker.containerRepo,
+        createdAt: marker.createdAt,
+      });
+    } catch (error) {
+      logger.warn(
+        `Skipping malformed/unreadable bootstrap marker '${key}': ${(error as Error).message}`
+      );
+    }
+  }
+  return entries.sort((a, b) => a.region.localeCompare(b.region));
+}
+
+/**
  * Shape of `cdkd state info --json` output. Documented as a stable contract
  * in the plan; downstream tooling may parse it.
  */
@@ -1500,6 +1570,12 @@ interface StateInfoJson {
   bucketSource: StateBucketSource;
   schemaVersion: number | 'unknown';
   stackCount: number;
+  /**
+   * Regions opted into cdkd-owned asset storage via `cdkd bootstrap`
+   * (issue #1002). Empty array = every region publishes assets to the CDK
+   * bootstrap destinations (legacy mode).
+   */
+  assetStorage: AssetStorageInfo[];
 }
 
 /**
@@ -1553,6 +1629,7 @@ async function stateInfoCommand(options: {
     const detectedRegion = await detectBucketRegion(awsClients, bucket);
     const stateFileKeys = await listStateFileKeys(awsClients, bucket, prefix);
     const schemaVersion = await readSchemaVersion(awsClients, bucket, stateFileKeys);
+    const assetStorage = await listAssetStorageMarkers(awsClients, bucket);
 
     if (options.json) {
       const json: StateInfoJson = {
@@ -1562,6 +1639,7 @@ async function stateInfoCommand(options: {
         bucketSource: resolved.source,
         schemaVersion,
         stackCount: stateFileKeys.length,
+        assetStorage,
       };
       process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
       return;
@@ -1577,6 +1655,14 @@ async function stateInfoCommand(options: {
     lines.push(`Source:          ${formatBucketSource(resolved.source)}`);
     lines.push(`Schema version:  ${schemaVersion}`);
     lines.push(`Stacks:          ${stateFileKeys.length}`);
+    if (assetStorage.length === 0) {
+      lines.push('Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in');
+    } else {
+      lines.push(`Asset storage:   cdkd-assets mode in ${assetStorage.length} region(s)`);
+      for (const entry of assetStorage) {
+        lines.push(`  ${entry.region}: ${entry.assetBucket} / ${entry.containerRepo}`);
+      }
+    }
     process.stdout.write(`${lines.join('\n')}\n`);
   } finally {
     awsClients.destroy();

@@ -106,11 +106,15 @@ function scriptS3({
   region,
   keys,
   schemaVersion,
+  markers = {},
 }: {
   region: string | null;
   keys: string[];
   schemaVersion?: number | 'malformed' | 'no-body';
+  /** Bootstrap markers by region: body string returned for `cdkd-bootstrap/{region}.json`. */
+  markers?: Record<string, string>;
 }): void {
+  const markerKeys = Object.keys(markers).map((r) => `cdkd-bootstrap/${r}.json`);
   mockS3Send.mockImplementation(async (command) => {
     if (command instanceof GetBucketLocationCommand) {
       if (region === null) {
@@ -121,12 +125,22 @@ function scriptS3({
       return { LocationConstraint: region };
     }
     if (command instanceof ListObjectsV2Command) {
+      const prefix = (command.input.Prefix as string | undefined) ?? '';
       return {
-        Contents: keys.map((Key) => ({ Key })),
+        Contents: [...keys, ...markerKeys]
+          .filter((k) => k.startsWith(prefix))
+          .map((Key) => ({ Key })),
         NextContinuationToken: undefined,
       };
     }
     if (command instanceof GetObjectCommand) {
+      const key = command.input.Key as string;
+      if (key.startsWith('cdkd-bootstrap/')) {
+        const markerRegion = key.slice('cdkd-bootstrap/'.length, -'.json'.length);
+        return {
+          Body: { transformToString: async () => markers[markerRegion] ?? '' },
+        };
+      }
       if (schemaVersion === 'no-body') return {};
       if (schemaVersion === 'malformed') {
         return {
@@ -286,6 +300,7 @@ describe('cdkd state info', () => {
       bucketSource: 'default',
       schemaVersion: 2,
       stackCount: 2,
+      assetStorage: [],
     });
   });
 
@@ -312,5 +327,73 @@ describe('cdkd state info', () => {
     const out = await runStateInfo(['info']);
     expect(out).toContain('Schema version:  unknown');
     expect(out).toContain('Stacks:          1');
+  });
+
+  it('reports legacy asset storage when no bootstrap marker exists', async () => {
+    mockResolveWithSource.mockResolvedValue({ bucket: 'b', source: 'cli-flag' });
+    scriptS3({ region: 'us-east-1', keys: [] });
+
+    const out = await runStateInfo(['info']);
+    expect(out).toContain(
+      'Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in'
+    );
+  });
+
+  it('lists opted-in asset-storage regions from bootstrap markers (text + JSON)', async () => {
+    mockResolveWithSource.mockResolvedValue({ bucket: 'b', source: 'cli-flag' });
+    const marker = (region: string): string =>
+      JSON.stringify({
+        assetBucket: `cdkd-assets-123456789012-${region}`,
+        containerRepo: `cdkd-container-assets-123456789012-${region}`,
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      });
+    scriptS3({
+      region: 'us-east-1',
+      keys: [],
+      markers: {
+        'us-east-1': marker('us-east-1'),
+        'ap-northeast-1': marker('ap-northeast-1'),
+      },
+    });
+
+    const out = await runStateInfo(['info']);
+    expect(out).toContain('Asset storage:   cdkd-assets mode in 2 region(s)');
+    expect(out).toContain(
+      '  ap-northeast-1: cdkd-assets-123456789012-ap-northeast-1 / cdkd-container-assets-123456789012-ap-northeast-1'
+    );
+    expect(out).toContain(
+      '  us-east-1: cdkd-assets-123456789012-us-east-1 / cdkd-container-assets-123456789012-us-east-1'
+    );
+
+    // Same fixture through --json.
+    scriptS3({
+      region: 'us-east-1',
+      keys: [],
+      markers: { 'us-east-1': marker('us-east-1') },
+    });
+    const json = JSON.parse(await runStateInfo(['info', '--json']));
+    expect(json.assetStorage).toEqual([
+      {
+        region: 'us-east-1',
+        assetBucket: 'cdkd-assets-123456789012-us-east-1',
+        containerRepo: 'cdkd-container-assets-123456789012-us-east-1',
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('skips a malformed bootstrap marker instead of crashing', async () => {
+    mockResolveWithSource.mockResolvedValue({ bucket: 'b', source: 'cli-flag' });
+    scriptS3({
+      region: 'us-east-1',
+      keys: [],
+      markers: { 'us-east-1': '{ not json' },
+    });
+
+    const out = await runStateInfo(['info']);
+    expect(out).toContain(
+      'Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in'
+    );
   });
 });
