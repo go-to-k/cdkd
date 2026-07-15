@@ -114,6 +114,26 @@ export function resolveCaptureObservedState(cliValue: boolean): boolean {
 }
 
 /**
+ * Resolve the effective `--use-cdk-bootstrap-assets` value (issue #1002
+ * PR 2, design §4.2): pin legacy asset destinations for one app even when
+ * the region's bootstrap marker exists — for apps deployed via both
+ * CloudFormation and cdkd during a migration window.
+ *
+ * Priority: CLI flag (`true` wins) > `cdk.json context.cdkd.useCdkBootstrapAssets`
+ * (boolean) > default `false`. The CLI flag has no `--no-` negation form, so
+ * a cdk.json `true` can only be overruled by removing the context entry —
+ * matching the "per-app pin" semantics (the app is CFn-co-deployed or it
+ * isn't; per-invocation flip-flop would churn stack properties).
+ */
+export function resolveUseCdkBootstrapAssets(cliValue?: boolean): boolean {
+  if (cliValue === true) return true;
+  const cdkJson = loadCdkJson();
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  const v = cdkdContext?.['useCdkBootstrapAssets'];
+  return v === true;
+}
+
+/**
  * Resolve the effective value for "should cdkd skip the stack-name
  * prefix on user-supplied physical names?" on `cdkd deploy`.
  *

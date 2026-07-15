@@ -43,6 +43,7 @@ import {
 } from '../analyzer/implicit-delete-deps.js';
 import { withRetry } from './retry.js';
 import { withResourceDeadline } from './resource-deadline.js';
+import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
 
 /**
  * Completed operation record for rollback tracking
@@ -144,6 +145,19 @@ export interface DeployEngineOptions {
    * when deploy speed is more important than rich drift detection.
    */
   captureObservedState?: boolean;
+
+  /**
+   * Issue #1002 PR 2 — §6 asset-location mapping table, present when the
+   * deploy region is in cdkd-assets mode and the stack has redirected
+   * assets. The engine uses it for the §7 step 3 post-resolution audit:
+   * after the intrinsic resolver produces final literal properties, any
+   * value still naming a mapped SOURCE (CDK bootstrap) bucket / repo fails
+   * the resource loudly — a template shape the rewrite missed must never
+   * deploy as a split-brain reference. Forwarded to nested-child engines
+   * via `NestedStackProvider`'s options spread. `undefined` in legacy mode
+   * (no audit — byte-identical behavior).
+   */
+  assetRedirect?: AssetRedirectMap;
 
   /**
    * When set, every state save during this deploy stamps the supplied
@@ -2102,6 +2116,39 @@ export class DeployEngine {
   }
 
   /**
+   * Issue #1002 PR 2 — §7 step 3 post-resolution audit (defense in depth).
+   * No-op in legacy mode (`options.assetRedirect` unset). In cdkd-assets
+   * mode, a resolved property still naming a mapped SOURCE (CDK bootstrap)
+   * bucket / repo means a template shape the §7 rewrite missed — fail the
+   * resource loudly BEFORE provisioning instead of deploying a split-brain
+   * reference (assets live in cdkd storage, the property points at the CDK
+   * bootstrap bucket that `cdk gc` may have emptied).
+   */
+  private auditResolvedAssetReferences(
+    logicalId: string,
+    resourceType: string,
+    resolvedProps: Record<string, unknown>
+  ): void {
+    const redirect = this.options.assetRedirect;
+    if (!redirect) return;
+    const findings = findUnrewrittenAssetReferences(resolvedProps, redirect);
+    if (findings.length === 0) return;
+    const detail = findings.map((f) => `  - ${f.path}: still references '${f.source}'`).join('\n');
+    throw new ProvisioningError(
+      `Unrewritten asset reference on '${logicalId}' (${resourceType}): this region uses ` +
+        `cdkd-owned asset storage, but the following resolved properties still point at the ` +
+        `CDK bootstrap storage that 'cdk gc' may garbage-collect:\n${detail}\n` +
+        `This is a template shape cdkd's asset-reference rewrite did not cover — deploying it ` +
+        `would split-brain the stack (assets in cdkd storage, properties reading the CDK ` +
+        `bucket). Please report this at https://github.com/go-to-k/cdkd/issues with the ` +
+        `property shape. Workaround: deploy with --use-cdk-bootstrap-assets to pin the ` +
+        `legacy destinations for this app.`,
+      resourceType,
+      logicalId
+    );
+  }
+
+  /**
    * Inner body of provisionResource, extracted so the outer wrapper can
    * apply the per-resource deadline (`withResourceDeadline`) without
    * having the timeout / warn timer code dwarf the real provisioning
@@ -2147,6 +2194,8 @@ export class DeployEngine {
           string,
           unknown
         >;
+
+        this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
         // #614 routing: consult the registry with the resolved properties.
         // If the SDK provider would silent-drop a top-level key (and the
@@ -2240,6 +2289,8 @@ export class DeployEngine {
           string,
           unknown
         >;
+
+        this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
         // Re-check diff after resolving intrinsic functions
         // DiffCalculator compares unresolved template vs resolved state, which may produce false positives

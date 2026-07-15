@@ -3030,6 +3030,7 @@
         "apigateway",
         "apigw-stage-throttling",
         "asset-bootstrap",
+        "asset-migration",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-api-fallback",
@@ -3127,6 +3128,9 @@
           "literal"
         ],
         "asset-bootstrap": [
+          "l2"
+        ],
+        "asset-migration": [
           "l2"
         ],
         "bench-cdk-sample": [

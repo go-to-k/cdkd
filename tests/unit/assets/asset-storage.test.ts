@@ -247,6 +247,28 @@ describe('AssetModeResolver', () => {
     expect(await resolver.resolve(REGION)).toEqual({ mode: 'legacy' });
     expect(getRawObject).toHaveBeenCalledTimes(2);
   });
+
+  it('useCdkBootstrapAssets pins legacy mode: no marker read, no gc notice, even with a marker present', async () => {
+    const getRawObject = vi.fn().mockResolvedValue(JSON.stringify(validMarker()));
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT, {
+      useCdkBootstrapAssets: true,
+    });
+    expect(await resolver.resolve(REGION)).toEqual({ mode: 'legacy' });
+    expect(getRawObject).not.toHaveBeenCalled();
+    const gcNotices = mockLoggerInfo.mock.calls.filter((c) => String(c[0]).includes('cdk gc'));
+    expect(gcNotices).toHaveLength(0);
+  });
+
+  it('suppressLegacyNotice skips the gc info line in legacy mode', async () => {
+    const getRawObject = vi.fn().mockResolvedValue(null);
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT, {
+      suppressLegacyNotice: true,
+    });
+    expect(await resolver.resolve(REGION)).toEqual({ mode: 'legacy' });
+    expect(getRawObject).toHaveBeenCalledTimes(1);
+    const gcNotices = mockLoggerInfo.mock.calls.filter((c) => String(c[0]).includes('cdk gc'));
+    expect(gcNotices).toHaveLength(0);
+  });
 });
 
 describe('ensureAssetStorage', () => {

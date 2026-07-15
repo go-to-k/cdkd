@@ -757,6 +757,22 @@ export const replaceOption = new Option(
     'is a data-losing DELETE + CREATE.'
 ).default(false);
 
+/**
+ * Issue #1002 PR 2 — per-invocation legacy pin for asset destinations
+ * (design §4.2). Shared by `deploy`, `diff`, `import`, and `publish-assets`
+ * (every command the redirection / rewrite affects) so the CLI surface stays
+ * consistent; the per-app pin is `cdk.json context.cdkd.useCdkBootstrapAssets`
+ * (see `resolveUseCdkBootstrapAssets` in config-loader.ts).
+ */
+export const useCdkBootstrapAssetsOption = new Option(
+  '--use-cdk-bootstrap-assets',
+  'Publish assets to the CDK bootstrap bucket/repo named by the asset manifest verbatim, ' +
+    'skipping the cdkd asset-storage redirection even when this region is opted in via ' +
+    "'cdkd bootstrap'. For apps deployed via both CloudFormation and cdkd during a migration " +
+    'window. Per-app pin: cdk.json context.cdkd.useCdkBootstrapAssets. Also suppresses the ' +
+    "legacy-mode 'cdk gc' notice."
+).default(false);
+
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)
@@ -821,6 +837,7 @@ export const deployOptions = [
   recreateViaSdkProviderOption,
   forceStatefulRecreationOption,
   replaceOption,
+  useCdkBootstrapAssetsOption,
   ...resourceTimeoutOptions,
 ];
 

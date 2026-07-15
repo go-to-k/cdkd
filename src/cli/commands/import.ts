@@ -8,6 +8,7 @@ import {
   contextOptions,
   parseContextOptions,
   stateOptions,
+  useCdkBootstrapAssetsOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -20,7 +21,16 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
-import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import {
+  resolveApp,
+  resolveStateBucketWithDefault,
+  resolveUseCdkBootstrapAssets,
+} from '../config-loader.js';
+import {
+  createAssetRedirectResolver,
+  rewriteTemplateAssetReferences,
+  type AssetRedirectMap,
+} from '../../assets/asset-redirect.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import { readCdkPath } from '../cdk-path.js';
 import {
@@ -86,6 +96,11 @@ interface ImportOptions {
    * stacks); pass a string to override when the CFn stack name differs.
    */
   migrateFromCloudformation?: boolean | string;
+  /**
+   * Issue #1002 PR 2 — pin legacy asset destinations (skip the cdkd
+   * asset-storage rewrite) for this invocation. See design §4.2.
+   */
+  useCdkBootstrapAssets?: boolean;
 }
 
 /**
@@ -214,6 +229,29 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     const targetRegion = stackInfo.region || region;
 
     logger.info(`Target stack: ${stackInfo.stackName} (${targetRegion})`);
+
+    // Issue #1002 PR 2 — when the target region is in cdkd-assets mode,
+    // rewrite the template's asset references BEFORE anything reads it, so
+    // the imported state matches what the next deploy would write (no
+    // spurious first-deploy churn; design §7.1). Nested child templates in
+    // the recursive CFn-migration walk are rewritten at their own load site
+    // below. Lazy: asset-less apps / legacy regions add no AWS calls beyond
+    // the marker read.
+    const resolveAssetRedirect = createAssetRedirectResolver({
+      stateBackend,
+      stsRegion: region,
+      ...(options.profile && { profile: options.profile }),
+      useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets),
+      suppressLegacyNotice: true,
+    });
+    const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, targetRegion);
+    if (assetRedirect) {
+      const rewritten = rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);
+      logger.debug(
+        `Rewrote ${rewritten} asset reference(s) to cdkd asset storage in template of ` +
+          `stack ${stackInfo.stackName}`
+      );
+    }
 
     // Parse user-supplied physical-id overrides up front so any syntax error
     // surfaces before we make AWS calls.
@@ -654,6 +692,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           lockOwner: owner,
           accountId: accountIdForNestedSynth,
           logger,
+          assetRedirect,
         });
       }
 
@@ -1318,6 +1357,7 @@ export function createImportCommand(): Command {
         '(the typical case for a CDK app that was previously deployed via ' +
         '`cdk deploy`); pass an explicit value when the CFn stack name differs.'
     )
+    .addOption(useCdkBootstrapAssetsOption)
     .action(withErrorHandling(importCommand));
 
   // Re-use the same option set as `deploy` / `destroy` for parity.
@@ -1541,6 +1581,13 @@ async function importNestedStackChildrenRecursive(args: {
   lockOwner: string;
   accountId: string;
   logger: ReturnType<typeof getLogger>;
+  /**
+   * Issue #1002 PR 2 — §6 mapping table when the region is in cdkd-assets
+   * mode. Each child template read below gets the §7 rewrite before its
+   * properties land in state (nested templates bypass the top-level
+   * rewrite in `importCommand`).
+   */
+  assetRedirect?: AssetRedirectMap | undefined;
 }): Promise<void> {
   const {
     parentStackName,
@@ -1554,6 +1601,7 @@ async function importNestedStackChildrenRecursive(args: {
     lockOwner,
     accountId,
     logger,
+    assetRedirect,
   } = args;
 
   for (const [childLogicalId, childTreeNode] of parentTree.nested) {
@@ -1574,6 +1622,9 @@ async function importNestedStackChildrenRecursive(args: {
     );
 
     const childTemplate = readNestedChildTemplate(childTemplatePath, childLogicalId);
+    if (assetRedirect) {
+      rewriteTemplateAssetReferences(childTemplate, assetRedirect);
+    }
 
     await lockManager.acquireLock(childStackName, childRegion, lockOwner, 'import');
     try {
@@ -1675,6 +1726,7 @@ async function importNestedStackChildrenRecursive(args: {
           lockOwner,
           accountId,
           logger,
+          assetRedirect,
         });
       }
     } finally {

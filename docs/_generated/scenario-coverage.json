@@ -339,6 +339,11 @@
       "scenarios": []
     },
     {
+      "name": "asset-migration",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "aws-custom-resource",
       "annotated": false,
       "scenarios": []
@@ -2139,6 +2144,7 @@
     "apigw-usage-plan-key",
     "appconfig",
     "asset-bootstrap",
+    "asset-migration",
     "aws-custom-resource",
     "backup",
     "bucket-deployment",

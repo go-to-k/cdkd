@@ -14,6 +14,10 @@ import {
   getCurrentNestedStackContext,
   type NestedStackProviderContext,
 } from '../nested-stack-context.js';
+import {
+  rewriteTemplateAssetReferences,
+  type AssetRedirectMap,
+} from '../../assets/asset-redirect.js';
 import { getLogger } from '../../utils/logger.js';
 
 /**
@@ -169,7 +173,7 @@ export class NestedStackProvider implements ResourceProvider {
       );
     }
 
-    const childTemplate = this.readChildTemplate(childTemplatePath);
+    const childTemplate = this.readChildTemplate(childTemplatePath, ctx.assetRedirect);
     const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
     const childRegion = ctx.parentRegion;
     const childParameters = this.extractParameters(properties);
@@ -220,7 +224,7 @@ export class NestedStackProvider implements ResourceProvider {
       );
     }
 
-    const childTemplate = this.readChildTemplate(childTemplatePath);
+    const childTemplate = this.readChildTemplate(childTemplatePath, ctx.assetRedirect);
     const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
     const childRegion = ctx.parentRegion;
     const childParameters = this.extractParameters(properties);
@@ -478,7 +482,10 @@ export class NestedStackProvider implements ResourceProvider {
     return result;
   }
 
-  private readChildTemplate(templatePath: string): CloudFormationTemplate {
+  private readChildTemplate(
+    templatePath: string,
+    assetRedirect?: AssetRedirectMap
+  ): CloudFormationTemplate {
     let raw: string;
     try {
       raw = fs.readFileSync(templatePath, 'utf-8');
@@ -487,13 +494,27 @@ export class NestedStackProvider implements ResourceProvider {
         `Failed to read nested template at ${templatePath}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+    let template: CloudFormationTemplate;
     try {
-      return JSON.parse(raw) as CloudFormationTemplate;
+      template = JSON.parse(raw) as CloudFormationTemplate;
     } catch (err) {
       throw new Error(
         `Failed to parse nested template at ${templatePath}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+    // Issue #1002 PR 2 — nested child templates are a separate parse path
+    // that bypasses the top-level analyzer entry, so the §7 asset-reference
+    // rewrite must be applied here too (design §7). No-op in legacy mode
+    // (assetRedirect undefined).
+    if (assetRedirect) {
+      const n = rewriteTemplateAssetReferences(template, assetRedirect);
+      if (n > 0) {
+        this.logger.debug(
+          `Rewrote ${n} asset reference(s) to cdkd asset storage in nested template ${templatePath}`
+        );
+      }
+    }
+    return template;
   }
 
   private indexGrandchildTemplates(

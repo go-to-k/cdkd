@@ -23,6 +23,7 @@ const deployCalls: Array<{
   deploy: {
     stackName: string;
     templateResourceCount: number;
+    template: { Resources?: Record<string, unknown> };
     capturedCtx: NestedStackProviderContext | undefined;
   };
 }> = [];
@@ -40,6 +41,7 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
         deploy: {
           stackName,
           templateResourceCount: Object.keys(template.Resources ?? {}).length,
+          template,
           capturedCtx,
         },
       });
@@ -289,6 +291,76 @@ describe('NestedStackProvider', () => {
       // No grandchildren in this fixture: the child template has only
       // an S3 bucket, so the indexed grandchild-templates map is empty.
       expect(captured?.nestedTemplates).toEqual({});
+    });
+
+    it('applies the #1002 asset-reference rewrite to the child template when ctx.assetRedirect is set', async () => {
+      const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: {
+            Fn: {
+              Type: 'AWS::Lambda::Function',
+              Properties: {
+                Code: {
+                  S3Bucket: {
+                    'Fn::Sub': 'cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}',
+                  },
+                  S3Key: 'aaaa1111.zip',
+                },
+              },
+            },
+          },
+        })
+      );
+
+      const assetRedirect = buildAssetRedirectMap(
+        {
+          version: '38.0.0',
+          files: {
+            aaaa1111: {
+              displayName: 'Code',
+              source: { path: 'asset.aaaa1111', packaging: 'zip' },
+              destinations: {
+                d1: {
+                  bucketName: 'cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}',
+                  objectKey: 'aaaa1111.zip',
+                },
+              },
+            },
+          },
+          dockerImages: {},
+        },
+        {
+          assetBucket: 'cdkd-assets-123456789012-us-east-1',
+          containerRepo: 'cdkd-container-assets-123456789012-us-east-1',
+          assetSupportVersion: 1,
+          createdAt: '2026-07-15T00:00:00.000Z',
+        },
+        '123456789012',
+        'us-east-1'
+      );
+
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplatePath }, assetRedirect });
+
+      await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {})
+      );
+
+      expect(deployCalls.length).toBe(1);
+      const deployedTemplate = deployCalls[0]!.deploy.template as {
+        Resources: { Fn: { Properties: { Code: { S3Bucket: { 'Fn::Sub': string } } } } };
+      };
+      expect(deployedTemplate.Resources.Fn.Properties.Code.S3Bucket['Fn::Sub']).toBe(
+        'cdkd-assets-123456789012-us-east-1'
+      );
+      // The child ALS context inherits the redirect map so grandchildren
+      // rewrite too.
+      expect(deployCalls[0]!.deploy.capturedCtx?.assetRedirect).toBe(assetRedirect);
     });
 
     it('indexes grandchild templates from the child template + rejects absolute aws:asset:path', async () => {

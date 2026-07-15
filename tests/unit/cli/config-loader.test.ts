@@ -27,6 +27,7 @@ import {
   resolveApp,
   resolveCaptureObservedState,
   resolveSkipPrefix,
+  resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
   resolveStateBucket,
   resolveStateBucketWithSource,
@@ -626,6 +627,36 @@ describe('config-loader', () => {
         JSON.stringify({ context: { cdkd: { captureObservedState: 'yes' } } })
       );
       expect(resolveCaptureObservedState(true)).toBe(true);
+    });
+  });
+
+  describe('resolveUseCdkBootstrapAssets', () => {
+    it('returns true when the CLI flag is passed, regardless of cdk.json', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveUseCdkBootstrapAssets(true)).toBe(true);
+    });
+
+    it('returns true when cdk.json sets useCdkBootstrapAssets=true (per-app pin)', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { useCdkBootstrapAssets: true } } })
+      );
+      expect(resolveUseCdkBootstrapAssets(false)).toBe(true);
+      expect(resolveUseCdkBootstrapAssets(undefined)).toBe(true);
+    });
+
+    it('returns false when nothing is set (the default)', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveUseCdkBootstrapAssets(false)).toBe(false);
+      expect(resolveUseCdkBootstrapAssets(undefined)).toBe(false);
+    });
+
+    it('ignores non-boolean cdk.json values (truthy strings do not pin)', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { useCdkBootstrapAssets: 'yes' } } })
+      );
+      expect(resolveUseCdkBootstrapAssets(false)).toBe(false);
     });
   });
 

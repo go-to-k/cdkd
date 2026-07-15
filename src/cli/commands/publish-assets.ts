@@ -5,6 +5,8 @@ import {
   contextOptions,
   deprecatedRegionOption,
   parseContextOptions,
+  stateOptions,
+  useCdkBootstrapAssetsOption,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -12,6 +14,13 @@ import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
+import { AssetModeResolver } from '../../assets/asset-storage.js';
+import {
+  buildAssetRedirectMap,
+  loadPublishableAssetManifest,
+  type AssetRedirectMap,
+} from '../../assets/asset-redirect.js';
+import { S3StateBackend } from '../../state/s3-state-backend.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -19,7 +28,12 @@ import {
 } from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
-import { resolveApp } from '../config-loader.js';
+import { AwsClients } from '../../utils/aws-clients.js';
+import {
+  resolveApp,
+  resolveStateBucketWithDefault,
+  resolveUseCdkBootstrapAssets,
+} from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 
 interface PublishAssetsOptions {
@@ -34,6 +48,9 @@ interface PublishAssetsOptions {
   roleArn?: string;
   assetPublishConcurrency: number;
   imageBuildConcurrency: number;
+  stateBucket?: string;
+  statePrefix: string;
+  useCdkBootstrapAssets?: boolean;
 }
 
 /**
@@ -134,6 +151,45 @@ async function publishAssetsCommand(
   const accountId = callerIdentity.Account!;
   stsClient.destroy();
 
+  // Issue #1002 PR 2 — asset-mode detection so publishing lands in the same
+  // storage a subsequent `cdkd deploy` will reference. The bootstrap marker
+  // lives in the state bucket, which publish-assets otherwise never touches;
+  // when NO state bucket is resolvable (account never bootstrapped), fall
+  // back to legacy destinations with an info line instead of failing
+  // (design §7.1). Both the bucket resolution and the marker resolver are
+  // lazy — invoked only for stacks that actually have publishable assets.
+  const useCdkBootstrapAssets = resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets);
+  let markerAccess: { resolver: AssetModeResolver; dispose: () => void } | null | undefined;
+  const getModeResolver = async (): Promise<AssetModeResolver | null> => {
+    if (markerAccess !== undefined) return markerAccess?.resolver ?? null;
+    let bucket: string;
+    try {
+      bucket = await resolveStateBucketWithDefault(options.stateBucket, baseRegion);
+    } catch {
+      logger.info(
+        'No cdkd state bucket found — publishing to the asset-manifest destinations ' +
+          "(CDK bootstrap storage) verbatim. Run 'cdkd bootstrap' to opt into cdkd-owned " +
+          "asset storage that 'cdk gc' never touches."
+      );
+      markerAccess = null;
+      return null;
+    }
+    const markerClients = new AwsClients({
+      region: baseRegion,
+      ...(options.profile && { profile: options.profile }),
+    });
+    const backend = new S3StateBackend(
+      markerClients.s3,
+      { bucket, prefix: options.statePrefix },
+      { region: baseRegion, ...(options.profile && { profile: options.profile }) }
+    );
+    const resolver = new AssetModeResolver(backend, accountId, {
+      ...(options.profile && { profile: options.profile }),
+    });
+    markerAccess = { resolver, dispose: () => markerClients.destroy() };
+    return resolver;
+  };
+
   // 4. Per-stack: build a WorkGraph populated with asset nodes only and run it.
   // Running per stack (rather than one shared graph) keeps the per-stack
   // success/failure accounting clean and mirrors the CI expectation that
@@ -150,42 +206,15 @@ async function publishAssetsCommand(
   }
   const results: StackResult[] = [];
 
-  for (const stack of targetStacks) {
-    const startedAt = Date.now();
-    let assetCount = 0;
-    let error: Error | undefined;
+  try {
+    for (const stack of targetStacks) {
+      const startedAt = Date.now();
+      let assetCount = 0;
+      let error: Error | undefined;
 
-    try {
-      if (!stack.assetManifestPath) {
-        logger.debug(`Stack ${stack.stackName} has no asset manifest; nothing to publish`);
-        results.push({
-          stackName: stack.stackName,
-          displayName: stack.displayName,
-          assetCount: 0,
-          durationMs: Date.now() - startedAt,
-        });
-        continue;
-      }
-
-      logger.info(`\nPublishing assets for stack: ${describeStack(stack)}`);
-
-      const workGraph = new WorkGraph();
-      let nodeIds: string[] = [];
       try {
-        nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
-          accountId,
-          region: stack.region || baseRegion,
-          ...(options.profile && { profile: options.profile }),
-          nodePrefix: `${stack.stackName}:`,
-        });
-      } catch (err) {
-        const e = err as { code?: string };
-        if (e.code === 'ENOENT') {
-          // Manifest path was set but the file doesn't exist on disk — match
-          // deploy.ts's behavior, which silently skips this case.
-          logger.debug(
-            `Asset manifest not found for ${stack.stackName} (${stack.assetManifestPath}); skipping`
-          );
+        if (!stack.assetManifestPath) {
+          logger.debug(`Stack ${stack.stackName} has no asset manifest; nothing to publish`);
           results.push({
             stackName: stack.stackName,
             displayName: stack.displayName,
@@ -194,49 +223,107 @@ async function publishAssetsCommand(
           });
           continue;
         }
-        throw err;
+
+        logger.info(`\nPublishing assets for stack: ${describeStack(stack)}`);
+
+        // Issue #1002 PR 2 — build the §6 mapping table when the stack has
+        // publishable assets and its region is in cdkd-assets mode, so the
+        // publish nodes below redirect to the cdkd-owned storage.
+        let redirect: AssetRedirectMap | undefined;
+        if (!useCdkBootstrapAssets) {
+          const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
+          if (manifest) {
+            const modeResolver = await getModeResolver();
+            if (modeResolver) {
+              const stackRegion = stack.region || baseRegion;
+              const assetMode = await modeResolver.resolve(stackRegion);
+              if (assetMode.mode === 'cdkd-assets') {
+                const map = buildAssetRedirectMap(
+                  manifest,
+                  assetMode.marker,
+                  accountId,
+                  stackRegion
+                );
+                if (map.entries.length > 0) redirect = map;
+              }
+            }
+          }
+        }
+
+        const workGraph = new WorkGraph();
+        let nodeIds: string[] = [];
+        try {
+          nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
+            accountId,
+            region: stack.region || baseRegion,
+            ...(options.profile && { profile: options.profile }),
+            nodePrefix: `${stack.stackName}:`,
+            ...(redirect && { redirect }),
+          });
+        } catch (err) {
+          const e = err as { code?: string };
+          if (e.code === 'ENOENT') {
+            // Manifest path was set but the file doesn't exist on disk — match
+            // deploy.ts's behavior, which silently skips this case.
+            logger.debug(
+              `Asset manifest not found for ${stack.stackName} (${stack.assetManifestPath}); skipping`
+            );
+            results.push({
+              stackName: stack.stackName,
+              displayName: stack.displayName,
+              assetCount: 0,
+              durationMs: Date.now() - startedAt,
+            });
+            continue;
+          }
+          throw err;
+        }
+
+        assetCount = nodeIds.filter((id) => id.startsWith('asset-publish:')).length;
+
+        if (assetCount === 0) {
+          logger.info('  (no assets to publish)');
+          results.push({
+            stackName: stack.stackName,
+            displayName: stack.displayName,
+            assetCount: 0,
+            durationMs: Date.now() - startedAt,
+          });
+          continue;
+        }
+
+        // Stack-deploy nodes are intentionally NOT added — `stack: 0` concurrency
+        // is a belt-and-suspenders guard so even an accidental stack node would
+        // never run.
+        await workGraph.execute(
+          {
+            'asset-build': options.imageBuildConcurrency,
+            'asset-publish': options.assetPublishConcurrency,
+            stack: 0,
+          },
+          (node) => assetPublisher.executeNode(node)
+        );
+
+        logger.info(
+          `  ✓ Published ${assetCount} asset(s) in ${((Date.now() - startedAt) / 1000).toFixed(2)}s`
+        );
+      } catch (err) {
+        error = err instanceof Error ? err : new Error(String(err));
+        logger.error(`  ✗ ${stack.stackName}: ${error.message}`);
       }
 
-      assetCount = nodeIds.filter((id) => id.startsWith('asset-publish:')).length;
-
-      if (assetCount === 0) {
-        logger.info('  (no assets to publish)');
-        results.push({
-          stackName: stack.stackName,
-          displayName: stack.displayName,
-          assetCount: 0,
-          durationMs: Date.now() - startedAt,
-        });
-        continue;
-      }
-
-      // Stack-deploy nodes are intentionally NOT added — `stack: 0` concurrency
-      // is a belt-and-suspenders guard so even an accidental stack node would
-      // never run.
-      await workGraph.execute(
-        {
-          'asset-build': options.imageBuildConcurrency,
-          'asset-publish': options.assetPublishConcurrency,
-          stack: 0,
-        },
-        (node) => assetPublisher.executeNode(node)
-      );
-
-      logger.info(
-        `  ✓ Published ${assetCount} asset(s) in ${((Date.now() - startedAt) / 1000).toFixed(2)}s`
-      );
-    } catch (err) {
-      error = err instanceof Error ? err : new Error(String(err));
-      logger.error(`  ✗ ${stack.stackName}: ${error.message}`);
+      results.push({
+        stackName: stack.stackName,
+        displayName: stack.displayName,
+        assetCount,
+        durationMs: Date.now() - startedAt,
+        ...(error && { error }),
+      });
     }
-
-    results.push({
-      stackName: stack.stackName,
-      displayName: stack.displayName,
-      assetCount,
-      durationMs: Date.now() - startedAt,
-      ...(error && { error }),
-    });
+  } finally {
+    // Tear down the lazily-created marker-access S3 client, if any — in a
+    // finally so a future throwing statement in the loop cannot leak it.
+    markerAccess?.dispose();
   }
 
   // 5. Summary + exit code policy.
@@ -294,12 +381,16 @@ export function createPublishAssetsCommand(): Command {
         .default(4)
         .argParser((value) => parseInt(value, 10))
     )
+    .addOption(useCdkBootstrapAssetsOption)
     .action(withErrorHandling(publishAssetsCommand));
 
-  // App-mode options: --app, --output, --context, common.
-  // Note: --state-bucket is intentionally NOT added — publish-assets never
-  // touches state, so advertising it would be misleading.
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  // App-mode options: --app, --output, --context, common, plus state options.
+  // --state-bucket / --state-prefix joined in issue #1002 PR 2: the command
+  // reads the per-region bootstrap marker from the state bucket to decide
+  // between legacy and cdkd-owned asset destinations (no state writes).
+  [...commonOptions, ...appOptions, ...contextOptions, ...stateOptions].forEach((opt) =>
+    cmd.addOption(opt)
+  );
 
   // --stack <name> kept for parity with deploy/destroy CLIs, even though the
   // recommended form is positional.

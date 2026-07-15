@@ -216,5 +216,6 @@ launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAt
 dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
 backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
 bench-cdk-sample	2026-07-03T11:11:09Z	PASS	578	standard	broad for #995 intrinsic-resolver change; 39 created/37 del+2 retain 0 err
-lambda	2026-07-15T01:48:51Z	PASS	84	verify.sh	issue-1002 PR1 legacy-mode broad integ; gc info line verified; clean destroy 9/9
 asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: legacy notice, bootstrap storage+marker, cdkd-assets detect, deleted-repo hard error, clean destroy
+lambda	2026-07-15T05:34:28Z	PASS	75	verify.sh	broad integ for #1002 PR2 deploy-engine/deploy.ts scope; legacy asset path regression clean
+asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean

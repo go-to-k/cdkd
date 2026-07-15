@@ -7,6 +7,7 @@ import {
   stackOptions,
   contextOptions,
   parseContextOptions,
+  useCdkBootstrapAssetsOption,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -14,9 +15,17 @@ import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
+import {
+  createAssetRedirectResolver,
+  rewriteTemplateAssetReferences,
+} from '../../assets/asset-redirect.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import {
+  resolveApp,
+  resolveStateBucketWithDefault,
+  resolveUseCdkBootstrapAssets,
+} from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import {
   buildDiffTree,
@@ -62,6 +71,7 @@ async function diffCommand(
     roleArn?: string;
     verbose: boolean;
     context?: string[];
+    useCdkBootstrapAssets?: boolean;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -169,6 +179,19 @@ async function diffCommand(
     const diffCalculator = new DiffCalculator();
     const recursive = options.recursive ?? false;
 
+    // Issue #1002 PR 2 — when a stack's region is in cdkd-assets mode, the
+    // §7 asset-reference rewrite is applied to the template before diffing
+    // so the shown plan matches what deploy will do (incl. the one-time
+    // migration diff after `cdkd bootstrap`). Lazy: no extra AWS calls for
+    // asset-less apps / legacy regions beyond the marker read.
+    const resolveAssetRedirect = createAssetRedirectResolver({
+      stateBackend,
+      stsRegion: region,
+      ...(options.profile && { profile: options.profile }),
+      useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets),
+      suppressLegacyNotice: true,
+    });
+
     // 4. Build a diff tree per target stack (nested children only when --recursive).
     const trees: DiffTreeNode[] = [];
     for (const stackInfo of targetStacks) {
@@ -176,6 +199,14 @@ async function diffCommand(
       // Stack region drives the state key. Falls back to the CLI region only
       // when synth couldn't determine a region (e.g. env-agnostic stacks).
       const stackRegion = stackInfo.region || region;
+      const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, stackRegion);
+      if (assetRedirect) {
+        const rewritten = rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);
+        logger.debug(
+          `Rewrote ${rewritten} asset reference(s) to cdkd asset storage in template of ` +
+            `stack ${stackInfo.stackName}`
+        );
+      }
       trees.push(
         await buildDiffTree({
           stackName: stackInfo.stackName,
@@ -186,6 +217,7 @@ async function diffCommand(
           recursive,
           stateBackend,
           diffCalculator,
+          ...(assetRedirect && { assetRedirect }),
         })
       );
     }
@@ -240,6 +272,7 @@ export function createDiffCommand(): Command {
       'Output the diff as JSON (nested tree shape when combined with --recursive)',
       false
     )
+    .addOption(useCdkBootstrapAssetsOption)
     .action(withErrorHandling(diffCommand));
 
   // Add options
