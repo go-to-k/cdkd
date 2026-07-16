@@ -139,7 +139,11 @@ parsing → synthesis → asset publishing → per-stack deploy), see
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
-- **AWS CDK Bootstrap: NOT required.** `cdkd bootstrap` creates everything cdkd needs — the S3 state bucket plus cdkd-owned asset storage (`cdkd-assets-{accountId}-{region}` bucket / `cdkd-container-assets-{accountId}-{region}` ECR repo) that asset publishing (Lambda code, Docker images) targets automatically, with template references rewritten to match (issue [#1002](https://github.com/go-to-k/cdkd/issues/1002); design in [docs/design/1002-cdkd-asset-storage.md](docs/design/1002-cdkd-asset-storage.md)). cdkd does not use CDK's bootstrap roles either (see the credentials note below), and it ignores the template's `BootstrapVersion` check. Asset storage is created per region — automatically on the first `cdkd deploy` into each region (see [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version)), or explicitly via `cdkd bootstrap --region <r>`. `cdk bootstrap` storage (`cdk-hnb659fds-assets-*`) is only involved when you deliberately stay in **legacy mode** (`--no-auto-asset-storage` / `cdkd bootstrap --no-assets`, or the `--use-cdk-bootstrap-assets` pin for apps co-deployed through CloudFormation during a migration window): legacy deploys keep publishing there — byte-identical to older versions, but `cdk gc` cannot see cdkd-deployed stacks (no CloudFormation stack to scan) and may garbage-collect those assets. (`cdkd export` hands a stack back to the CFn / CDK CLI world, where `cdk bootstrap` is the CDK CLI's own prerequisite again.)
+- **AWS CDK Bootstrap: not required.** `cdkd bootstrap` (once per account) creates
+  everything cdkd needs, and per-region asset storage is added automatically on the
+  first `cdkd deploy` into each region. Existing setups, legacy-mode opt-outs, and
+  how this relates to `cdk bootstrap`: see
+  [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
 - **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
 
 ## Installation
@@ -198,6 +202,14 @@ To stay on CDK bootstrap storage instead:
 
 - `--no-auto-asset-storage` (or `cdk.json` `context.cdkd.autoAssetStorage: false`) skips the auto-create — deploys into un-opted-in regions stay in **legacy mode** (assets go to the CDK bootstrap bucket, byte-identical to older versions, plus a one-line `cdk gc`-hazard notice naming the region).
 - `--use-cdk-bootstrap-assets` (or `cdk.json` `context.cdkd.useCdkBootstrapAssets: true`) pins the legacy destinations even for opted-in regions — for apps deployed via both CloudFormation and cdkd during a migration window. Also suppresses the notice.
+
+Notes on the relationship with `cdk bootstrap`:
+
+- cdkd never uses CDK's bootstrap roles (it deploys with the caller's credentials)
+  and does not resolve the template's `BootstrapVersion` parameter, so a region
+  never touched by `cdk bootstrap` works fine.
+- `cdkd export` hands a stack back to the CloudFormation / CDK CLI world, where
+  `cdk bootstrap` is the CDK CLI's own prerequisite again.
 
 See [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap) for details.
 
