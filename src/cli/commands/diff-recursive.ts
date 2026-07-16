@@ -177,6 +177,11 @@ export async function computeStackDiff(
       resources: currentState.resources,
       stateBackend,
       stackName,
+      // Diff resolution is best-effort (the calculator catches failures and
+      // keeps the raw intrinsic): a Ref to a to-be-created resource is the
+      // expected case here, so the resolver logs it at debug, not warn
+      // (issue #1017).
+      bestEffort: true,
       // Nested-stack children receive their input `Parameters` resolved
       // against the parent's deployed state (issue #555 follow-up). Without
       // this, a `Ref` to a synthesized nested-stack input parameter (e.g.
@@ -236,6 +241,9 @@ async function resolveChildStackParameters(
         resources: parentState.resources,
         stateBackend,
         stackName: parentStackName,
+        // Best-effort like computeStackDiff's resolver: an unresolvable
+        // parameter is expected (caught + omitted below), not warn-worthy.
+        bestEffort: true,
         ...(parentParameters && { parameters: parentParameters }),
       });
     } catch {
@@ -636,6 +644,33 @@ function stripUnchangedValues(value: unknown, other: unknown): unknown {
 }
 
 /**
+ * Render one side of a property change for the diff output.
+ *
+ * A side whose WHOLE value is still a raw intrinsic could not be resolved
+ * against current state — most commonly a `Ref` / `Fn::GetAtt` to a resource
+ * this same deploy will CREATE (the CDK logical-id-churn dance: an
+ * `AWS::ApiGateway::Deployment` hash rotation, a `fn.currentVersion` Lambda
+ * Version). Rendering that via {@link stripUnchangedValues} collapsed it to
+ * the literal string `undefined`, which reads as "this property is being
+ * removed" (issue #1017). Instead, render the raw intrinsic compactly and —
+ * on the NEW side — annotate that the value only exists after the deploy.
+ * Everything else keeps the existing strip-unchanged rendering.
+ */
+function renderDiffValue(
+  own: unknown,
+  opposite: unknown,
+  indent: string,
+  isNewSide: boolean
+): string {
+  if (isIntrinsic(own)) {
+    const suffix = isNewSide ? ' (known after deploy)' : '';
+    return `${JSON.stringify(own)}${suffix}`;
+  }
+  const filtered = stripUnchangedValues(own, opposite);
+  return (JSON.stringify(filtered, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`);
+}
+
+/**
  * Render one resource-change map into human-readable diff lines via `logFn`,
  * returning the per-type counts. Shared by the root stack block and every
  * nested-stack block.
@@ -680,18 +715,9 @@ export function renderChangeLines(
             // it so the apparent string -> {Ref} delta is not misread as a
             // literal value edit.
             const propagated = propChange.replacementPropagated ? ' [replacement propagated]' : '';
-            // Strip unchanged and intrinsic values to show only actual changes
-            const oldFiltered = stripUnchangedValues(propChange.oldValue, propChange.newValue);
-            const newFiltered = stripUnchangedValues(propChange.newValue, propChange.oldValue);
             const indent = '              ';
-            const oldStr = (JSON.stringify(oldFiltered, null, 2) ?? 'undefined').replace(
-              /\n/g,
-              `\n${indent}`
-            );
-            const newStr = (JSON.stringify(newFiltered, null, 2) ?? 'undefined').replace(
-              /\n/g,
-              `\n${indent}`
-            );
+            const oldStr = renderDiffValue(propChange.oldValue, propChange.newValue, indent, false);
+            const newStr = renderDiffValue(propChange.newValue, propChange.oldValue, indent, true);
             logFn(`      - ${propChange.path}:${requiresReplace}${propagated}`);
             logFn(`          old: ${oldStr}`);
             logFn(`          new: ${newStr}`);

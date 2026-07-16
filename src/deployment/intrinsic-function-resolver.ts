@@ -489,6 +489,19 @@ export interface ResolverContext {
    * already-evaluated `conditions` map (or the not-found path).
    */
   conditionResolver?: (conditionName: string) => Promise<boolean>;
+  /**
+   * Set by BEST-EFFORT callers (the diff calculator's
+   * `resolveBestEffort`, which catches resolution failures and keeps the
+   * raw intrinsic) where a `Ref` to a resource that is not in state yet is
+   * the EXPECTED case — the classic CDK logical-id-churn dance (an
+   * `AWS::ApiGateway::Deployment` hash rotation, a `fn.currentVersion`
+   * Lambda Version) makes the new template reference a resource this same
+   * deploy will CREATE. When true, the resolver's "Ref not found" log is
+   * demoted from warn to debug so a routine diff is not noisy (issue
+   * #1017); the throw itself is unchanged. Deploy-time resolution leaves
+   * this unset, keeping the warn as a genuine error signal.
+   */
+  bestEffort?: boolean;
 }
 
 /**
@@ -1023,8 +1036,14 @@ export class IntrinsicFunctionResolver {
       return pseudoValue;
     }
 
-    // Not found
-    this.logger.warn(`Ref ${logicalId} not found (not a resource, parameter, or pseudo parameter)`);
+    // Not found. In a best-effort context (diff), a Ref to a resource this
+    // same deploy will CREATE is routine — log at debug, not warn (#1017).
+    const notFoundMsg = `Ref ${logicalId} not found (not a resource, parameter, or pseudo parameter)`;
+    if (context.bestEffort) {
+      this.logger.debug(notFoundMsg);
+    } else {
+      this.logger.warn(notFoundMsg);
+    }
     throw new Error(`Ref ${logicalId} not found`);
   }
 
