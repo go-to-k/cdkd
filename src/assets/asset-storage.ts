@@ -498,7 +498,9 @@ export class AssetModeResolver {
        * callers log-and-return-true). A declined confirm or a failed
        * creation falls back to legacy mode + the gc notice — a deploy that
        * used to work must never start hard-failing because S3/ECR create
-       * was denied. Only `deploy` passes this (and not under `--dry-run`);
+       * was denied. Only `deploy` passes this (and not under `--dry-run` /
+       * `--skip-assets` — the latter would rewrite already-published legacy
+       * references to a freshly created EMPTY bucket/repo);
        * `diff` / `import` / `publish-assets` never create resources.
        */
       autoCreate?: { confirm: (region: string) => Promise<boolean> };
@@ -591,15 +593,19 @@ export class AssetModeResolver {
     if (!confirmed) {
       return null;
     }
-    const s3Client = new S3Client({
-      region,
-      ...(this.profile && { profile: this.profile }),
-    });
-    const ecrClient = new ECRClient({
-      region,
-      ...(this.profile && { profile: this.profile }),
-    });
+    // Constructed inside the try so even a throwing client constructor
+    // lands in the fail-open catch below instead of escaping to the deploy.
+    let s3Client: S3Client | undefined;
+    let ecrClient: ECRClient | undefined;
     try {
+      s3Client = new S3Client({
+        region,
+        ...(this.profile && { profile: this.profile }),
+      });
+      ecrClient = new ECRClient({
+        region,
+        ...(this.profile && { profile: this.profile }),
+      });
       await ensureAssetStorage({
         s3Client,
         ecrClient,
@@ -633,8 +639,8 @@ export class AssetModeResolver {
       );
       return null;
     } finally {
-      s3Client.destroy();
-      ecrClient.destroy();
+      s3Client?.destroy();
+      ecrClient?.destroy();
     }
   }
 }

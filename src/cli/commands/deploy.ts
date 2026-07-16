@@ -21,6 +21,7 @@ import {
   probeAndRevalidateStateful,
 } from '../../deployment/recreate-targets.js';
 import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
+import { promptYesNo } from './confirm-prompt.js';
 import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
@@ -60,21 +61,6 @@ import {
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { findPendingPrefixRenames, promptMigrationConfirm } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
-
-/**
- * Default-yes confirmation prompt for the issue #1007 asset-storage
- * auto-create (only reached on interactive TTY runs without `--yes`).
- */
-async function promptYesNo(prompt: string): Promise<boolean> {
-  const readline = await import('node:readline/promises');
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [Y/n] `);
-    return /^(y(es)?)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
-}
 
 /**
  * Deploy command implementation
@@ -413,8 +399,14 @@ async function deployCommand(
     const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId, {
       ...(options.profile && { profile: options.profile }),
       ...(useCdkBootstrapAssets && { useCdkBootstrapAssets: true }),
+      // Never under --skip-assets: assets already published to the legacy
+      // destinations would be rewritten to a freshly created EMPTY
+      // bucket/repo with nothing re-publishing them, so a deploy that
+      // worked before would start failing at resource CREATE (reviewer
+      // catch on PR 1008).
       ...(autoAssetStorage &&
-        !options.dryRun && {
+        !options.dryRun &&
+        !options.skipAssets && {
           autoCreate: { confirm: confirmAutoAssetStorage },
         }),
     });

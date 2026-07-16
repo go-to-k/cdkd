@@ -18,6 +18,9 @@
 #            publish then fails (the CDK bootstrap bucket does not exist) —
 #            the expected outcome; assert the failure is the legacy publish,
 #            not the auto-create path.
+#   Phase 3: deploy with --skip-assets -> auto-create must NOT fire (no
+#            info line, no marker) — it would rewrite already-published
+#            legacy references to a freshly created empty bucket.
 #   Cleanup: stack state/resources + asset storage + marker + log groups.
 #
 # Required env vars:
@@ -190,7 +193,38 @@ if [ "${OPTOUT_RC}" -eq 0 ]; then
   echo "FAIL: legacy deploy unexpectedly succeeded in a cdk-bootstrap-free region" >&2
   exit 1
 fi
+if ! echo "${OPTOUT_OUT}" | grep -q "asset-publish"; then
+  echo "FAIL: opt-out deploy failed somewhere other than the legacy asset publish. Output tail:" >&2
+  echo "${OPTOUT_OUT}" | tail -10 >&2
+  exit 1
+fi
 echo "    OK: opt-out stayed legacy (gc notice, no marker) and failed only at the legacy publish"
+
+# --- Phase 3: --skip-assets never auto-creates -------------------------------
+# Reviewer catch on PR 1008: auto-create under --skip-assets would rewrite
+# already-published legacy references to a freshly created EMPTY bucket.
+echo "==> Phase 3: deploy with --skip-assets (no auto-create expected)"
+set +e
+SKIP_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}"   --state-bucket "${STATE_BUCKET}"   --region "${REGION}"   --skip-assets   --yes 2>&1)
+SKIP_RC=$?
+set -e
+echo "${SKIP_OUT}" | tail -3
+
+if echo "${SKIP_OUT}" | grep -qF "${AUTO_CREATE_LINE}"; then
+  echo "FAIL: --skip-assets deploy auto-created asset storage" >&2
+  exit 1
+fi
+if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+  echo "FAIL: bootstrap marker was written under --skip-assets" >&2
+  exit 1
+fi
+# The deploy itself fails downstream (nothing was ever published in this
+# fresh region) — the assertion here is only that auto-create did NOT fire.
+if [ "${SKIP_RC}" -eq 0 ]; then
+  echo "FAIL: --skip-assets deploy unexpectedly succeeded with never-published assets" >&2
+  exit 1
+fi
+echo "    OK: --skip-assets stayed legacy (no auto-create line, no marker)"
 
 # --- Still no CDK bootstrap anywhere ----------------------------------------
 if aws ssm get-parameter --name "${CDK_SSM_PARAM}" --region "${REGION}" >/dev/null 2>&1; then

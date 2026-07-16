@@ -27,6 +27,7 @@ import {
   resolveApp,
   resolveCaptureObservedState,
   resolveSkipPrefix,
+  resolveAutoAssetStorage,
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
   resolveStateBucket,
@@ -627,6 +628,37 @@ describe('config-loader', () => {
         JSON.stringify({ context: { cdkd: { captureObservedState: 'yes' } } })
       );
       expect(resolveCaptureObservedState(true)).toBe(true);
+    });
+  });
+
+  describe('resolveAutoAssetStorage', () => {
+    it('returns false when CLI explicitly opts out (--no-auto-asset-storage), regardless of cdk.json', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { autoAssetStorage: true } } })
+      );
+      expect(resolveAutoAssetStorage(false)).toBe(false);
+    });
+
+    it('returns false when cdk.json sets autoAssetStorage=false and CLI is at default', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { autoAssetStorage: false } } })
+      );
+      expect(resolveAutoAssetStorage(true)).toBe(false);
+    });
+
+    it('returns true when nothing is set (the default)', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveAutoAssetStorage(true)).toBe(true);
+    });
+
+    it('ignores non-boolean cdk.json values and falls through to true', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { autoAssetStorage: 'off' } } })
+      );
+      expect(resolveAutoAssetStorage(true)).toBe(true);
     });
   });
 
