@@ -1,3 +1,10 @@
+# [0.238.0](https://github.com/go-to-k/cdkd/compare/v0.237.0...v0.238.0) (2026-07-16)
+
+
+### Features
+
+* **gc:** garbage-collect unreferenced objects/images from cdkd-owned asset storage ([#1022](https://github.com/go-to-k/cdkd/issues/1022)) ([fbc2e05](https://github.com/go-to-k/cdkd/commit/fbc2e05f884360c2c4b8da16266cb190b6078e98))
+
 # [0.237.0](https://github.com/go-to-k/cdkd/compare/v0.236.0...v0.237.0) (2026-07-16)
 
 
