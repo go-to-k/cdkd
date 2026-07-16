@@ -955,9 +955,14 @@ Flags:
 - `--force` — reconfigure existing buckets/repo (re-apply encryption /
   policy / tag-immutability). Without it, existing resources are left
   untouched (re-running bootstrap is idempotent and is the supported way to
-  opt an existing account's region into asset storage).
+  opt an existing account's region into asset storage). Under `--destroy`,
+  `--force` instead skips the deployed-stack reference scan (see below).
 - `--state-bucket <name>` / `--region <region>` — as documented above;
   `--region` on bootstrap is a real (non-deprecated) option.
+- `--destroy` — tear down the region's asset storage instead of creating it
+  (see "Teardown" below).
+- `--include-state-bucket` — with `--destroy` only: also delete the S3 state
+  bucket.
 
 Re-running `cdkd bootstrap` on an already-bootstrapped account does NOT
 require `--force` to add the asset storage — the state bucket is simply
@@ -1041,6 +1046,46 @@ back to legacy mode, so `cdkd bootstrap` stays a true once-per-account step.
   read), as does `--dry-run` (a dry run creates nothing). Only `deploy`
   auto-creates — `diff` / `import` / `publish-assets` never create
   resources.
+
+### Teardown (`cdkd bootstrap --destroy`, issue #1010)
+
+`cdkd bootstrap --destroy --region <r>` is the reverse of bootstrap for ONE
+region's asset storage — the cdkd equivalent of deleting the CDK CLI's
+`CDKToolkit` stack, replacing the manual `aws s3 rb` / `aws ecr
+delete-repository` / marker-delete sequence. It:
+
+1. Empties (all versions + delete markers) and deletes the region's **asset
+   bucket**, then force-deletes the **container-asset ECR repo**, then
+   deletes the region's bootstrap **marker LAST** — the mirror of the
+   create side's marker-written-last ordering, so a crash mid-teardown
+   leaves the region consistently opted in (deploys hard-error with a
+   re-bootstrap hint rather than silently falling back to legacy mode).
+2. Reads the asset bucket / repo **names from the marker**, never from the
+   naming convention — compatible with custom asset-storage names.
+3. Refuses while any deployed stack's state still references the region's
+   asset bucket / repo (running Lambdas keep working after deletion, but a
+   future re-deploy / rollback of those stacks would break). `--force`
+   overrides the scan.
+4. Prompts for confirmation with the full deletion plan (`y/N`, default
+   No); `--yes` / `-y` skips the prompt. A non-TTY stdin without `--yes` is
+   a hard error.
+5. Is idempotent: already-missing pieces are skipped with info lines
+   (mirror of `ensureAssetStorage`), and every S3 call passes
+   `ExpectedBucketOwner` (a foreign bucket squatting the name is refused,
+   never deleted).
+
+The **state bucket is kept by default** — it is the account's source of
+truth. `--include-state-bucket` opts it into the teardown, and even then
+the deletion is refused while ANY stack state exists (destroy every stack
+first; there is no `--force` override) or while any OTHER region still has
+a bootstrap marker in the bucket (tear those regions down first — deleting
+their markers with the bucket would silently flip them back to legacy
+mode).
+
+A region with no bootstrap marker is a no-op (nothing to delete); note the
+auto-create-on-first-deploy behavior above will re-create the storage on
+the next `cdkd deploy` into the region unless you opt out
+(`--no-auto-asset-storage` / `context.cdkd.autoAssetStorage: false`).
 
 ## `cdkd diff`
 
