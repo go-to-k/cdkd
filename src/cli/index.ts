@@ -13,6 +13,7 @@ import { createDiffCommand } from './commands/diff.js';
 import { createDriftCommand } from './commands/drift.js';
 import { createDestroyCommand } from './commands/destroy.js';
 import { createEventsCommand } from './commands/events.js';
+import { createGcCommand } from './commands/gc.js';
 import { createOrphanCommand } from './commands/orphan.js';
 import { createPublishAssetsCommand } from './commands/publish-assets.js';
 import { createForceUnlockCommand } from './commands/force-unlock.js';
@@ -32,6 +33,7 @@ const SUBCOMMANDS = new Set([
   'diff',
   'drift',
   'destroy',
+  'gc',
   'orphan',
   'import',
   'export',
@@ -81,6 +83,7 @@ async function main(): Promise<void> {
   program.addCommand(createDriftCommand());
   program.addCommand(createDestroyCommand());
   program.addCommand(createEventsCommand());
+  program.addCommand(createGcCommand());
   program.addCommand(createOrphanCommand());
   program.addCommand(createImportCommand());
   program.addCommand(createPublishAssetsCommand());

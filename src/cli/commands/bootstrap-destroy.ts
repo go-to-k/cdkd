@@ -23,6 +23,7 @@ import {
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { listAllStateKeys, describeStateKey } from './state-file-keys.js';
 
 /**
  * `cdkd bootstrap --destroy` — teardown of cdkd-created account resources
@@ -50,31 +51,6 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 
 /** S3 key prefix for state files — same fixed value the create side uses. */
 const STATE_PREFIX = 'cdkd';
-
-/**
- * Every cdkd state file ends with this suffix, regardless of the
- * `--state-prefix` it was deployed under (`{prefix}/{stack}/{region}/state.json`,
- * or legacy `{prefix}/{stack}/state.json`).
- */
-const STATE_FILE_SUFFIX = '/state.json';
-
-/** `us-east-1` / `ap-northeast-1` / `us-gov-west-1` — a region-shaped segment. */
-const REGION_SEGMENT = /^[a-z]{2}(-[a-z]+)+-\d+$/;
-
-/**
- * List every state file in the bucket — the WHOLE bucket, not just the
- * default `cdkd/` prefix. Other commands accept `--state-prefix`, so live
- * stack state may exist under ANY prefix in this bucket; scoping this
- * listing to the default prefix would let the reference scan and the
- * `--include-state-bucket` guard silently miss those stacks and delete
- * live state.
- */
-async function listAllStateKeys(
-  stateBackend: Pick<S3StateBackend, 'listRawKeys'>
-): Promise<string[]> {
-  const keys = await stateBackend.listRawKeys('');
-  return keys.filter((k) => k.endsWith(STATE_FILE_SUFFIX));
-}
 
 export interface BootstrapDestroyOptions {
   stateBucket?: string;
@@ -160,23 +136,6 @@ export async function scanStateReferences(
     }
   }
   return referencing;
-}
-
-/**
- * `{prefix}/{stack}/{region}/state.json` → `stack (region)`; legacy
- * `{prefix}/{stack}/state.json` → `stack`. The prefix is arbitrary (custom
- * `--state-prefix` values included), so the stack/region pair is derived
- * from the key's TAIL: the last segment is treated as a region only when
- * it is region-shaped.
- */
-function describeStateKey(key: string): string {
-  const segments = key.slice(0, -STATE_FILE_SUFFIX.length).split('/');
-  const last = segments[segments.length - 1] ?? key;
-  const secondLast = segments[segments.length - 2];
-  if (secondLast !== undefined && REGION_SEGMENT.test(last)) {
-    return `${secondLast} (${last})`;
-  }
-  return last;
 }
 
 /**

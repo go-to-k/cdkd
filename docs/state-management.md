@@ -72,6 +72,13 @@ down the region's asset bucket + ECR repo and deletes the marker last
 is destroyed. See the teardown section in
 [docs/cli-reference.md](cli-reference.md#teardown-cdkd-bootstrap---destroy-issue-1010).
 
+Because assets are content-addressed and never deleted on `cdkd destroy`,
+the asset bucket / ECR repo grow over time; `cdkd gc` reclaims
+unreferenced objects / images by scanning every state file in the state
+bucket for asset references (with a 30d default age guard). See the gc
+section in
+[docs/cli-reference.md](cli-reference.md#cdkd-gc-garbage-collect-cdkd-owned-asset-storage).
+
 ### Configuration Example
 
 ```bash

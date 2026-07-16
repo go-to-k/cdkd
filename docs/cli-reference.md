@@ -1114,6 +1114,60 @@ auto-create-on-first-deploy behavior above will re-create the storage on
 the next `cdkd deploy` into the region unless you opt out
 (`--no-auto-asset-storage` / `context.cdkd.autoAssetStorage: false`).
 
+## `cdkd gc` (garbage-collect cdkd-owned asset storage)
+
+`cdkd gc [--region <r>] [--older-than <dur>] [--dry-run] [-y]` deletes
+unreferenced objects / images from ONE region's cdkd-owned asset storage
+(the asset bucket + container-asset ECR repo created by `cdkd bootstrap`,
+issue #1012). Assets are content-addressed and deliberately never deleted
+on `cdkd destroy` (another stack or a future rollback may reference the
+same hash), so the storage grows without bound — and `cdk gc` cannot reach
+it by design. cdkd can gc it *precisely* because its state files record
+exactly which assets are in use.
+
+**Scope**: one region per invocation (`--region`, same resolution as
+`bootstrap`: flag → `AWS_REGION` → `us-east-1`). The asset bucket / repo
+names are read from the region's bootstrap marker, never recomputed from
+the naming convention (custom-name compatible). A region with no marker is
+a friendly no-op. **CDK bootstrap storage (`cdk-hnb659fds-*`) is never
+touched** — that stays `cdk gc`'s job.
+
+**Reference collection**: every state file in the state bucket is scanned
+(the whole bucket, so stacks deployed under any `--state-prefix` are
+covered — including nested-stack children). References are collected from
+each resource's `properties` / `observedProperties` / `attributes` and the
+stack `outputs`, matching `{S3Bucket, S3Key}` pairs (Lambda `Code` etc.),
+`s3://` URIs, virtual-hosted and path-style `https://...amazonaws.com`
+URLs (query strings stripped), and ECR image URIs by `:tag` and/or
+`@sha256:digest`.
+
+**Guards** (this command deletes data — every ambiguity is biased toward
+NOT deleting):
+
+- **Fail safe**: a state file that fails to JSON-parse aborts the whole
+  run — deleting on partial knowledge is how a live asset gets deleted.
+- **Lock guard**: any stack lock (`lock.json`) in the state bucket aborts
+  with a listing of the locked stack(s) — a deploy in flight may have
+  published assets whose state write has not landed yet.
+- **Age guard**: `--older-than <dur>` (default `30d`, accepts `<n>d` /
+  `<n>h`) — an object (`LastModified`) / image (`imagePushedAt`) newer
+  than the cutoff is never deleted, even when unreferenced. Protects
+  in-flight publishes and recent rollback targets. Missing timestamps are
+  treated as "new" (kept).
+- **Ownership**: every S3 call pins `ExpectedBucketOwner`; a 403 on the
+  asset bucket is a foreign-bucket refusal (never deleted).
+
+**Reporting + confirmation**: the reclaim plan (per-item key / tag+digest,
+size, age) and byte totals are printed first. `--dry-run` prints the plan
+and exits without prompting or deleting. Otherwise an interactive
+`Continue? (y/N)` prompt (default No) gates the deletion; `--yes` / `-y`
+skips it, and a non-TTY stdin without `--yes` is a hard error. Zero
+candidates → info line, exit 0, no prompt. Deletion is chunked
+(`DeleteObjects` 1,000 keys / `BatchDeleteImage` 100 images per call) and
+any per-item failure is surfaced as a hard error.
+
+Also accepts `--state-bucket`, `--profile`, `--role-arn`, `--verbose`.
+
 ## `cdkd diff`
 
 `cdkd diff [<stacks...>]` synthesizes the CDK app and reports the
