@@ -20,6 +20,7 @@
     "AWS::BedrockAgentCore::Runtime",
     "AWS::CertificateManager::Certificate",
     "AWS::CloudFormation::Stack",
+    "AWS::CloudFormation::WaitConditionHandle",
     "AWS::CloudFront::CloudFrontOriginAccessIdentity",
     "AWS::CloudFront::Distribution",
     "AWS::CloudTrail::Trail",
@@ -513,6 +514,17 @@
           "literal"
         ],
         "nested-stack-deep": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+      "integs": [
+        "wait-condition-handle"
+      ],
+      "signals": {
+        "wait-condition-handle": [
           "literal"
         ]
       }
@@ -4363,7 +4375,8 @@
         "tags-propagation",
         "throttle-wide-dag",
         "update-policy-mutations",
-        "vpc-lookup"
+        "vpc-lookup",
+        "wait-condition-handle"
       ],
       "signals": {
         "bench-sdk": [
@@ -4527,6 +4540,9 @@
           "literal"
         ],
         "vpc-lookup": [
+          "l2"
+        ],
+        "wait-condition-handle": [
           "l2"
         ]
       }

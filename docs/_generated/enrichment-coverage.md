@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **116**
-- Fully enriched: **3**
+- Classified types (cached schema): **117**
+- Fully enriched: **4**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **99**
-- Types with allow-listed (not-a-gap) attributes: **0**
+- Types with allow-listed (not-a-gap) attributes: **1**
 
 ## Pure-CC latent gaps
 
@@ -152,6 +152,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::BedrockAgentCore::Runtime` | yes | sdk-fallback-gap | `AgentRuntimeArn` (GAP), `AgentRuntimeId` (GAP), `AgentRuntimeVersion` (GAP), `CreatedAt` (GAP), `FailureReason` (GAP), `LastUpdatedAt` (GAP), `Status` (GAP), `WorkloadIdentityDetails` (GAP) |
 | `AWS::CertificateManager::Certificate` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::CloudFormation::Stack` | yes | sdk-fallback-gap | `ChangeSetId` (GAP), `CreationTime` (GAP), `LastUpdateTime` (GAP), `Outputs` (GAP), `ParentId` (GAP), `RootId` (GAP), `StackId` (GAP), `StackStatus` (GAP) |
+| `AWS::CloudFormation::WaitConditionHandle` | no | enriched | `Id` (allow) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | yes | sdk-fallback-gap | `Id` (GAP), `S3CanonicalUserId` (OK) |
 | `AWS::CloudFront::Distribution` | yes | sdk-fallback-gap | `DomainName` (GAP), `Id` (GAP) |
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |

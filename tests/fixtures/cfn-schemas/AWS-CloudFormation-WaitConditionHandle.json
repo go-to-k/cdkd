@@ -1,0 +1,14 @@
+{
+  "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+  "generatedAt": "2026-07-16",
+  "properties": [
+    "Id"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

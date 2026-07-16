@@ -491,6 +491,13 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::CloudFormation::WaitConditionHandle',
+    {
+      handled: new Set<string>(),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::CloudFront::CloudFrontOriginAccessIdentity',
     {
       handled: new Set<string>(['CloudFrontOriginAccessIdentityConfig']),

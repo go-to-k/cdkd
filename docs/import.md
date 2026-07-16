@@ -352,6 +352,7 @@ provide the physical id explicitly.
 - AWS::IAM::Policy (inline)
 - AWS::IAM::UserToGroupAddition
 - AWS::Scheduler::Schedule (schedules are not taggable; the template `Name` + `GroupName` also resolve without a flag)
+- AWS::CloudFormation::WaitConditionHandle (no AWS-queryable resource exists behind a handle; an explicit `--resource` id — or CloudFormation's pre-signed-URL physical id during `--migrate-from-cloudformation` — is recorded verbatim, and a synthesized placeholder is used otherwise)
 
 ### Override-only — sub-resources without per-resource taggable identity
 

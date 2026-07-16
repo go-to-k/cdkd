@@ -9,6 +9,21 @@ describe('ProviderRegistry pre-flight (validateResourceTypes)', () => {
     ).not.toThrow();
   });
 
+  it('passes for AWS::CloudFormation::WaitConditionHandle via its no-op SDK provider (issue #1020)', async () => {
+    const { registerAllProviders } = await import('../../../src/provisioning/register-providers.js');
+    const { WaitConditionHandleProvider } = await import(
+      '../../../src/provisioning/providers/wait-condition-handle-provider.js'
+    );
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry);
+    expect(() =>
+      registry.validateResourceTypes(new Set(['AWS::CloudFormation::WaitConditionHandle']))
+    ).not.toThrow();
+    expect(registry.getProvider('AWS::CloudFormation::WaitConditionHandle')).toBeInstanceOf(
+      WaitConditionHandleProvider
+    );
+  });
+
   it('rejects a tier3 type with the NON_PROVISIONABLE reason + issue link + escape-hatch hint', () => {
     const registry = new ProviderRegistry();
     let message = '';

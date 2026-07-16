@@ -1632,6 +1632,11 @@
       "name": "wafv2",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "wait-condition-handle",
+      "annotated": true,
+      "scenarios": []
     }
   ],
   "perScenarioCoverage": [
