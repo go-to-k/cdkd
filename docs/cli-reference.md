@@ -935,10 +935,11 @@ storage). Creates:
    <name>`) — versioned, AES-256 encrypted, account-only bucket policy.
 2. cdkd-owned **asset storage** for `--region` (issue
    [#1002](https://github.com/go-to-k/cdkd/issues/1002)): the asset bucket
-   `cdkd-assets-{accountId}-{region}` (AES-256, account-only policy, no
-   versioning — assets are immutable content-addressed blobs) and the
-   container-asset ECR repo `cdkd-container-assets-{accountId}-{region}`
-   (immutable tags), plus the per-region bootstrap **marker**
+   (default name `cdkd-assets-{accountId}-{region}`; AES-256, account-only
+   policy, no versioning — assets are immutable content-addressed blobs) and
+   the container-asset ECR repo (default name
+   `cdkd-container-assets-{accountId}-{region}`; immutable tags), plus the
+   per-region bootstrap **marker**
    `s3://{stateBucket}/cdkd-bootstrap/{region}.json` that opts the region
    into cdkd-assets mode. Why: `cdk gc` decides "in use" by scanning
    CloudFormation stack templates — cdkd-deployed stacks have no CFn stack,
@@ -952,6 +953,30 @@ Flags:
   Explicit opt-out for users who keep CDK bootstrap storage or use a custom
   synthesizer with their own asset destinations. Deploys in the region stay
   in legacy mode (publish to the `assets.json` destinations verbatim).
+- `--asset-bucket <name>` / `--container-repo <name>` (issue
+  [#1011](https://github.com/go-to-k/cdkd/issues/1011)) — custom names for
+  the asset bucket / container-asset ECR repo instead of the defaults above.
+  The escape hatch when the predictable default S3 name is squatted by
+  another account (S3 names are global), and the compliance knob for
+  org-wide naming policies (ECR repo names are account-scoped, so the ECR
+  half is purely for naming policy). The names are validated before any AWS
+  call (S3: 3-63 lowercase letters / digits / dots / hyphens, starting and
+  ending with a letter or digit; ECR: 2-256 lowercase letters / digits with
+  single `.` `_` `-` `/` separators), written into the bootstrap marker, and
+  every consumer (deploy redirect / rewrite, publish, verification,
+  `state info`, teardown) reads them from the marker from then on. A plain
+  re-run of `cdkd bootstrap` keeps the marker's existing (custom) names.
+  Re-bootstrapping a region with names that DIFFER from its marker is a hard
+  error (`ASSET_STORAGE_NAME_CONFLICT`) — changing names would strand the
+  existing storage and its published assets, so run
+  `cdkd bootstrap --destroy --region <r>` first, then re-bootstrap with the
+  new names. Rejected in combination with `--no-assets` (which skips the
+  asset storage the flags name) and with `--destroy` (teardown reads the
+  names from the marker). The deploy-time auto-create (issue #1007) always
+  uses the default names — custom names require the explicit
+  `cdkd bootstrap`. Custom bucket names get the same squatting defense as
+  the defaults (owned-elsewhere hard refusal, `ExpectedBucketOwner` on every
+  call).
 - `--force` — reconfigure existing buckets/repo (re-apply encryption /
   policy / tag-immutability). Without it, existing resources are left
   untouched (re-running bootstrap is idempotent and is the supported way to

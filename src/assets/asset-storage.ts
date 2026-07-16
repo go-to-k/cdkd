@@ -74,6 +74,52 @@ export function getBootstrapMarkerKey(region: string): string {
 }
 
 /**
+ * Pragmatic S3 bucket-name check for `cdkd bootstrap --asset-bucket`
+ * (issue #1011): 3-63 chars, lowercase letters / digits / dots / hyphens,
+ * starting and ending with a letter or digit. Rejecting before any AWS call
+ * gives a clearer error than S3's own `InvalidBucketName`.
+ */
+const ASSET_BUCKET_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+
+/**
+ * Pragmatic ECR repository-name check for `cdkd bootstrap --container-repo`
+ * (issue #1011): 2-256 chars of `[a-z0-9]` runs joined by single `.` / `_` /
+ * `-` / `/` separators (no leading / trailing / doubled separators).
+ */
+const CONTAINER_REPO_NAME_PATTERN = /^[a-z0-9]+(?:[._\-/][a-z0-9]+)*$/;
+
+/**
+ * Validate a custom asset bucket name (`cdkd bootstrap --asset-bucket`).
+ * Throws before any AWS call so a typo never reaches S3.
+ */
+export function validateAssetBucketName(name: string): void {
+  if (!ASSET_BUCKET_NAME_PATTERN.test(name)) {
+    throw new CdkdError(
+      `--asset-bucket '${name}' is not a valid S3 bucket name. Bucket names must be ` +
+        `3-63 characters of lowercase letters, digits, dots, and hyphens, and must ` +
+        `start and end with a letter or digit.`,
+      'INVALID_ASSET_STORAGE_NAME'
+    );
+  }
+}
+
+/**
+ * Validate a custom container-asset ECR repository name
+ * (`cdkd bootstrap --container-repo`). Throws before any AWS call.
+ */
+export function validateContainerRepoName(name: string): void {
+  if (name.length < 2 || name.length > 256 || !CONTAINER_REPO_NAME_PATTERN.test(name)) {
+    throw new CdkdError(
+      `--container-repo '${name}' is not a valid ECR repository name. Repository names ` +
+        `must be 2-256 characters of lowercase letters and digits, optionally separated ` +
+        `by single '.', '_', '-', or '/' characters (no leading, trailing, or doubled ` +
+        `separators).`,
+      'INVALID_ASSET_STORAGE_NAME'
+    );
+  }
+}
+
+/**
  * Bootstrap marker object written by `cdkd bootstrap` to
  * `s3://{stateBucket}/cdkd-bootstrap/{region}.json`. Its presence records
  * explicit user intent ("I ran the new bootstrap for this region") — chosen
@@ -246,6 +292,19 @@ export interface EnsureAssetStorageOptions {
   region: string;
   /** Re-apply bucket encryption/policy + repo tag-mutability on existing resources. */
   force: boolean;
+  /**
+   * Custom asset bucket name (`cdkd bootstrap --asset-bucket`, issue #1011).
+   * Overrides the conventional `cdkd-assets-{acct}-{region}` name for the
+   * existence probe, the create calls, and the value written into the
+   * marker (the marker is the single source of truth for every consumer
+   * afterward). Must not conflict with an existing marker's name — see the
+   * conflict check in {@link ensureAssetStorage}. The deploy-time
+   * auto-create (issue #1007) never passes this: custom names require the
+   * explicit `cdkd bootstrap`.
+   */
+  assetBucketName?: string;
+  /** Custom container-asset ECR repo name (`--container-repo`) — see {@link assetBucketName}. */
+  containerRepoName?: string;
 }
 
 /**
@@ -261,14 +320,80 @@ export interface EnsureAssetStorageOptions {
  * Bucket-squatting defense: the bucket name is predictable (same weakness as
  * CDK's bootstrap bucket), so this refuses to adopt a bucket this account
  * does not own, and the `HeadBucket` probe passes `ExpectedBucketOwner`.
+ * A CUSTOM bucket name (issue #1011) goes through the exact same probe /
+ * refusal path — custom names get the identical squatting defense.
+ *
+ * Name resolution (issue #1011): an explicit custom name
+ * ({@link EnsureAssetStorageOptions.assetBucketName} /
+ * {@link EnsureAssetStorageOptions.containerRepoName}) wins; otherwise an
+ * existing marker's name is reused (so a plain re-bootstrap of a region
+ * bootstrapped with custom names keeps them instead of creating a second,
+ * conventional set); otherwise the conventional name. A custom name that
+ * DIFFERS from an existing marker's name is a hard error — re-pointing a
+ * region at different storage requires `cdkd bootstrap --destroy` first.
  */
 export async function ensureAssetStorage(
   options: EnsureAssetStorageOptions
 ): Promise<{ assetBucket: string; containerRepo: string }> {
   const logger = getLogger();
   const { s3Client, ecrClient, stateBackend, accountId, region, force } = options;
-  const assetBucket = getCdkdAssetBucketName(accountId, region);
-  const containerRepo = getCdkdContainerRepoName(accountId, region);
+
+  // 0. Existing-marker read (issue #1011) — needed both to reuse a custom
+  // name on plain re-bootstrap and to refuse a conflicting custom name.
+  const markerKey = getBootstrapMarkerKey(region);
+  let existingMarker: BootstrapMarker | null = null;
+  const existingBody = await stateBackend.getRawObject(markerKey);
+  if (existingBody !== null) {
+    try {
+      existingMarker = parseBootstrapMarker(existingBody, markerKey);
+    } catch (error) {
+      if (error instanceof CdkdError && error.code === 'UNSUPPORTED_BOOTSTRAP_MARKER_VERSION') {
+        // A newer cdkd wrote this marker — clobbering it with v1 semantics
+        // could re-point deploys at the wrong storage. Same hard error as
+        // the deploy-time read.
+        throw error;
+      }
+      // Corrupt / malformed marker: re-running bootstrap is the documented
+      // fix ("Re-run 'cdkd bootstrap' ... to rewrite it"), so treat it as
+      // absent and rewrite it below.
+      logger.warn(
+        `Bootstrap marker '${markerKey}' is malformed — rewriting it as part of this bootstrap.`
+      );
+    }
+  }
+
+  if (existingMarker) {
+    const conflicts: string[] = [];
+    if (options.assetBucketName && options.assetBucketName !== existingMarker.assetBucket) {
+      conflicts.push(
+        `asset bucket '${existingMarker.assetBucket}' (requested '${options.assetBucketName}')`
+      );
+    }
+    if (options.containerRepoName && options.containerRepoName !== existingMarker.containerRepo) {
+      conflicts.push(
+        `container repo '${existingMarker.containerRepo}' (requested '${options.containerRepoName}')`
+      );
+    }
+    if (conflicts.length > 0) {
+      throw new CdkdError(
+        `Region '${region}' is already bootstrapped with ${conflicts.join(' and ')}. ` +
+          `Changing asset storage names would strand the existing storage and every ` +
+          `published asset in it — run 'cdkd bootstrap --destroy --region ${region}' to ` +
+          `tear the region's asset storage down first, then re-run bootstrap with the ` +
+          `new names.`,
+        'ASSET_STORAGE_NAME_CONFLICT'
+      );
+    }
+  }
+
+  const assetBucket =
+    options.assetBucketName ??
+    existingMarker?.assetBucket ??
+    getCdkdAssetBucketName(accountId, region);
+  const containerRepo =
+    options.containerRepoName ??
+    existingMarker?.containerRepo ??
+    getCdkdContainerRepoName(accountId, region);
 
   // 1. Asset bucket.
   let bucketExists = false;
@@ -437,8 +562,8 @@ export async function ensureAssetStorage(
     assetSupportVersion: ASSET_SUPPORT_VERSION,
     createdAt: new Date().toISOString(),
   };
-  await stateBackend.putRawObject(getBootstrapMarkerKey(region), JSON.stringify(marker, null, 2));
-  logger.info(`✓ Wrote bootstrap marker (${getBootstrapMarkerKey(region)})`);
+  await stateBackend.putRawObject(markerKey, JSON.stringify(marker, null, 2));
+  logger.info(`✓ Wrote bootstrap marker (${markerKey})`);
 
   return { assetBucket, containerRepo };
 }

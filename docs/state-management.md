@@ -46,8 +46,12 @@ s3://{STATE_BUCKET}/cdkd-bootstrap/
 The `cdkd-bootstrap/{region}.json` marker is written by `cdkd bootstrap`
 (unless `--no-assets`) and records that the region opted into cdkd-owned
 asset storage — its body names the region's asset bucket
-(`cdkd-assets-{accountId}-{region}`) and container-asset ECR repo
-(`cdkd-container-assets-{accountId}-{region}`). Deploys read the marker per
+(default `cdkd-assets-{accountId}-{region}`) and container-asset ECR repo
+(default `cdkd-container-assets-{accountId}-{region}`; custom names via
+`cdkd bootstrap --asset-bucket <name>` / `--container-repo <name>`, issue
+[#1011](https://github.com/go-to-k/cdkd/issues/1011) — every consumer reads
+the names from the marker, never from the naming convention). Deploys read
+the marker per
 (account, region) to pick the asset mode: absent → legacy (publish to the
 CDK bootstrap destinations verbatim, byte-identical to pre-#1002 behavior);
 present → cdkd-assets mode (asset publishing redirects to the cdkd storage

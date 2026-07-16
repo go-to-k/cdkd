@@ -161,9 +161,10 @@ The installed binary is `cdkd`.
 > account before any other command will work — it creates the S3 state
 > bucket (`cdkd-state-{accountId}`) that cdkd uses to track deployed
 > resources, plus cdkd-owned asset storage for the region
-> (`cdkd-assets-{accountId}-{region}` bucket +
-> `cdkd-container-assets-{accountId}-{region}` ECR repo — skip with
-> `--no-assets`; see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)).
+> (by default a `cdkd-assets-{accountId}-{region}` bucket +
+> `cdkd-container-assets-{accountId}-{region}` ECR repo — custom names via
+> `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
+> [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)).
 > This replaces `cdk bootstrap`, which cdkd does not require — see
 > [Prerequisites](#prerequisites).
 

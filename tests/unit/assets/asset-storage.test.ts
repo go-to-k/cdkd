@@ -67,6 +67,8 @@ import {
   parseBootstrapMarker,
   verifyAssetStorageExists,
   ensureAssetStorage,
+  validateAssetBucketName,
+  validateContainerRepoName,
   AssetModeResolver,
   type BootstrapMarker,
 } from '../../../src/assets/asset-storage.js';
@@ -289,18 +291,31 @@ describe('AssetModeResolver', () => {
 });
 
 describe('ensureAssetStorage', () => {
-  function makeOptions(overrides: { region?: string; force?: boolean } = {}) {
+  function makeOptions(
+    overrides: {
+      region?: string;
+      force?: boolean;
+      /** Pre-existing marker body returned by the getRawObject read (default: none). */
+      existingMarkerBody?: string;
+      assetBucketName?: string;
+      containerRepoName?: string;
+    } = {}
+  ) {
     const putRawObject = vi.fn().mockResolvedValue(undefined);
+    const getRawObject = vi.fn().mockResolvedValue(overrides.existingMarkerBody ?? null);
     const region = overrides.region ?? REGION;
     return {
       putRawObject,
+      getRawObject,
       options: {
         s3Client: new S3Client({}) as S3Client,
         ecrClient: new ECRClient({}) as ECRClient,
-        stateBackend: { putRawObject } as unknown as S3StateBackend,
+        stateBackend: { putRawObject, getRawObject } as unknown as S3StateBackend,
         accountId: ACCOUNT,
         region,
         force: overrides.force ?? false,
+        ...(overrides.assetBucketName && { assetBucketName: overrides.assetBucketName }),
+        ...(overrides.containerRepoName && { containerRepoName: overrides.containerRepoName }),
       },
     };
   }
@@ -441,6 +456,223 @@ describe('ensureAssetStorage', () => {
     const { putRawObject, options } = makeOptions();
     await ensureAssetStorage(options);
     expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ensureAssetStorage — custom names (issue #1011)', () => {
+  const CUSTOM_BUCKET = 'my-org-cdkd-assets';
+  const CUSTOM_REPO = 'my-org/cdkd-assets';
+
+  function makeOptions(
+    overrides: {
+      existingMarkerBody?: string;
+      assetBucketName?: string;
+      containerRepoName?: string;
+    } = {}
+  ) {
+    const putRawObject = vi.fn().mockResolvedValue(undefined);
+    const getRawObject = vi.fn().mockResolvedValue(overrides.existingMarkerBody ?? null);
+    return {
+      putRawObject,
+      getRawObject,
+      options: {
+        s3Client: new S3Client({}) as S3Client,
+        ecrClient: new ECRClient({}) as ECRClient,
+        stateBackend: { putRawObject, getRawObject } as unknown as S3StateBackend,
+        accountId: ACCOUNT,
+        region: REGION,
+        force: false,
+        ...(overrides.assetBucketName && { assetBucketName: overrides.assetBucketName }),
+        ...(overrides.containerRepoName && { containerRepoName: overrides.containerRepoName }),
+      },
+    };
+  }
+
+  /** Script S3/ECR for a fresh region: nothing exists, every create succeeds. */
+  function scriptFreshRegion(): void {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+  }
+
+  it('threads custom names into the probe, the create calls, and the marker body', async () => {
+    scriptFreshRegion();
+    const { putRawObject, options } = makeOptions({
+      assetBucketName: CUSTOM_BUCKET,
+      containerRepoName: CUSTOM_REPO,
+    });
+
+    const result = await ensureAssetStorage(options);
+
+    expect(result).toEqual({ assetBucket: CUSTOM_BUCKET, containerRepo: CUSTOM_REPO });
+    // Probe + create + every configuration PUT target the custom bucket.
+    for (const call of mockS3Send.mock.calls) {
+      expect(call[0].Bucket).toBe(CUSTOM_BUCKET);
+    }
+    const policyCall = mockS3Send.mock.calls.find((c) => c[0]._type === 'PutBucketPolicy')![0];
+    expect(policyCall.Policy).toContain(`arn:aws:s3:::${CUSTOM_BUCKET}`);
+    // ECR probe + create target the custom repo.
+    expect(mockEcrSend.mock.calls[0]![0].repositoryNames).toEqual([CUSTOM_REPO]);
+    expect(mockEcrSend.mock.calls[1]![0].repositoryName).toBe(CUSTOM_REPO);
+    // The marker carries the custom names — the single source of truth for
+    // deploy redirect, publish, verification, state info, and teardown.
+    const [key, body] = putRawObject.mock.calls[0]! as [string, string];
+    const marker = parseBootstrapMarker(body, key);
+    expect(marker.assetBucket).toBe(CUSTOM_BUCKET);
+    expect(marker.containerRepo).toBe(CUSTOM_REPO);
+  });
+
+  it('keeps conventional defaults when no custom names are passed (no marker)', async () => {
+    scriptFreshRegion();
+    const { putRawObject, options } = makeOptions();
+    const result = await ensureAssetStorage(options);
+    expect(result).toEqual({
+      assetBucket: `cdkd-assets-${ACCOUNT}-${REGION}`,
+      containerRepo: `cdkd-container-assets-${ACCOUNT}-${REGION}`,
+    });
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('hard-errors when a custom name differs from an existing marker (points at --destroy)', async () => {
+    const existing = { ...validMarker(), assetBucket: 'already-bootstrapped-bucket' };
+    const { putRawObject, options } = makeOptions({
+      existingMarkerBody: JSON.stringify(existing),
+      assetBucketName: CUSTOM_BUCKET,
+    });
+
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_NAME_CONFLICT',
+      message: expect.stringContaining(`cdkd bootstrap --destroy --region ${REGION}`),
+    });
+    // Refused before ANY AWS call and before any marker write.
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockEcrSend).not.toHaveBeenCalled();
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('same custom names as the marker stay the idempotent verify path', async () => {
+    const existing = {
+      ...validMarker(),
+      assetBucket: CUSTOM_BUCKET,
+      containerRepo: CUSTOM_REPO,
+    };
+    const { putRawObject, options } = makeOptions({
+      existingMarkerBody: JSON.stringify(existing),
+      assetBucketName: CUSTOM_BUCKET,
+      containerRepoName: CUSTOM_REPO,
+    });
+
+    // HeadBucket 200 + DescribeRepositories 200 (defaults) — nothing created.
+    const result = await ensureAssetStorage(options);
+    expect(result).toEqual({ assetBucket: CUSTOM_BUCKET, containerRepo: CUSTOM_REPO });
+    expect(mockS3Send.mock.calls.map((c) => c[0]._type)).toEqual(['HeadBucket']);
+    expect(mockEcrSend.mock.calls.map((c) => c[0]._type)).toEqual(['DescribeRepositories']);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('plain re-bootstrap of a custom-named region reuses the marker names (never creates a second, conventional set)', async () => {
+    const existing = {
+      ...validMarker(),
+      assetBucket: CUSTOM_BUCKET,
+      containerRepo: CUSTOM_REPO,
+    };
+    const { putRawObject, options } = makeOptions({
+      existingMarkerBody: JSON.stringify(existing),
+    });
+
+    const result = await ensureAssetStorage(options);
+    expect(result).toEqual({ assetBucket: CUSTOM_BUCKET, containerRepo: CUSTOM_REPO });
+    expect(mockS3Send.mock.calls[0]![0].Bucket).toBe(CUSTOM_BUCKET);
+    expect(mockEcrSend.mock.calls[0]![0].repositoryNames).toEqual([CUSTOM_REPO]);
+    const [key, body] = putRawObject.mock.calls[0]! as [string, string];
+    expect(parseBootstrapMarker(body, key).assetBucket).toBe(CUSTOM_BUCKET);
+  });
+
+  it('applies the squatting defense to a custom name (HeadBucket 403 → hard refusal, no marker)', async () => {
+    mockS3Send.mockRejectedValueOnce(awsError('Forbidden', 403));
+    const { putRawObject, options } = makeOptions({ assetBucketName: CUSTOM_BUCKET });
+
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_BUCKET',
+      message: expect.stringContaining(CUSTOM_BUCKET),
+    });
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('rewrites a corrupt marker instead of failing (re-running bootstrap is the documented fix)', async () => {
+    scriptFreshRegion();
+    const { putRawObject, options } = makeOptions({
+      existingMarkerBody: 'not json{',
+      assetBucketName: CUSTOM_BUCKET,
+    });
+
+    const result = await ensureAssetStorage(options);
+    expect(result.assetBucket).toBe(CUSTOM_BUCKET);
+    expect(mockLoggerWarn.mock.calls.some((c) => String(c[0]).includes('malformed'))).toBe(true);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to clobber a marker written by a newer cdkd (assetSupportVersion above ours)', async () => {
+    const newer = { ...validMarker(), assetSupportVersion: ASSET_SUPPORT_VERSION + 1 };
+    const { putRawObject, options } = makeOptions({
+      existingMarkerBody: JSON.stringify(newer),
+    });
+
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_BOOTSTRAP_MARKER_VERSION',
+    });
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+});
+
+describe('custom asset storage name validation (issue #1011)', () => {
+  it.each(['my-org-assets', 'a1b', 'bucket.with.dots', 'a'.repeat(63)])(
+    'accepts valid bucket name %s',
+    (name) => {
+      expect(() => validateAssetBucketName(name)).not.toThrow();
+    }
+  );
+
+  it.each([
+    'ab', // too short
+    'a'.repeat(64), // too long
+    'MyBucket', // uppercase
+    '-leading-hyphen',
+    'trailing-hyphen-',
+    '.leading-dot',
+    'trailing-dot.',
+    'under_score',
+  ])('rejects invalid bucket name %s', (name) => {
+    expect(() => validateAssetBucketName(name)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_ASSET_STORAGE_NAME' })
+    );
+  });
+
+  it.each(['my-repo', 'my-org/cdkd-assets', 'a.b_c-d/e2', 'ab'])(
+    'accepts valid repo name %s',
+    (name) => {
+      expect(() => validateContainerRepoName(name)).not.toThrow();
+    }
+  );
+
+  it.each([
+    'a', // too short
+    'a'.repeat(257), // too long
+    'MyRepo', // uppercase
+    '/leading-slash',
+    'trailing-slash/',
+    'double//slash',
+    'double--ok-but-doubled..dot', // doubled separators
+  ])('rejects invalid repo name %s', (name) => {
+    expect(() => validateContainerRepoName(name)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_ASSET_STORAGE_NAME' })
+    );
   });
 });
 describe('AssetModeResolver auto-create (issue #1007)', () => {
