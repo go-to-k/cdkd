@@ -190,7 +190,7 @@ describe('AssetModeResolver', () => {
     return { getRawObject } as unknown as S3StateBackend;
   }
 
-  it('resolves legacy mode when no marker exists, with ONE info line across regions', async () => {
+  it('resolves legacy mode when no marker exists, with ONE region-naming info line PER legacy region', async () => {
     const getRawObject = vi.fn().mockResolvedValue(null);
     const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
 
@@ -199,6 +199,23 @@ describe('AssetModeResolver', () => {
 
     expect(getRawObject).toHaveBeenCalledWith('cdkd-bootstrap/us-east-1.json');
     expect(getRawObject).toHaveBeenCalledWith('cdkd-bootstrap/ap-northeast-1.json');
+    // One notice per legacy region, each naming the exact opt-in command for
+    // ITS region — a region-less notice reads as a false negative to a user
+    // who just bootstrapped a different region (their CLI default) while the
+    // stack's env.region stayed legacy.
+    const gcNotices = mockLoggerInfo.mock.calls.filter((c) => String(c[0]).includes('cdk gc'));
+    expect(gcNotices).toHaveLength(2);
+    expect(String(gcNotices[0]![0])).toContain("Run 'cdkd bootstrap --region us-east-1'");
+    expect(String(gcNotices[1]![0])).toContain("Run 'cdkd bootstrap --region ap-northeast-1'");
+  });
+
+  it('shows the legacy notice only once per region across repeated resolves', async () => {
+    const getRawObject = vi.fn().mockResolvedValue(null);
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
+
+    await resolver.resolve('us-east-1');
+    await resolver.resolve('us-east-1');
+
     const gcNotices = mockLoggerInfo.mock.calls.filter((c) => String(c[0]).includes('cdk gc'));
     expect(gcNotices).toHaveLength(1);
   });

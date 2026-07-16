@@ -448,14 +448,18 @@ export async function ensureAssetStorage(
  * are cached per region for the process lifetime (the marker read is one
  * GetObject against a bucket every deploy already reads — design §4.1).
  *
- * In legacy mode, one `logger.info` line per invocation mentions the
- * `cdk gc` hazard and the `cdkd bootstrap` opt-in (info, not warn — existing
- * users are not doing anything wrong; design §12.2).
+ * In legacy mode, one `logger.info` line per legacy region per invocation
+ * mentions the `cdk gc` hazard and the exact `cdkd bootstrap --region <r>`
+ * opt-in command (info, not warn — existing users are not doing anything
+ * wrong; design §12.2). Per-region because opt-in is keyed by each stack's
+ * deploy region: a multi-region app can be opted in for one region and
+ * legacy for another, and a region-less notice reads as a false negative to
+ * a user who just bootstrapped a different region.
  */
 export class AssetModeResolver {
   private logger = getLogger().child('AssetMode');
   private cache = new Map<string, Promise<AssetMode>>();
-  private legacyNoticeShown = false;
+  private legacyNoticeShownRegions = new Set<string>();
   private stateBackend: S3StateBackend;
   private accountId: string;
   private profile: string | undefined;
@@ -519,12 +523,16 @@ export class AssetModeResolver {
     const body = await this.stateBackend.getRawObject(markerKey);
 
     if (body === null) {
-      if (!this.legacyNoticeShown && !this.suppressLegacyNotice) {
-        this.legacyNoticeShown = true;
+      if (!this.legacyNoticeShownRegions.has(region) && !this.suppressLegacyNotice) {
+        this.legacyNoticeShownRegions.add(region);
+        // Name the exact region so users who already ran `cdkd bootstrap` in
+        // another region (e.g. their CLI default) see WHY the notice still
+        // fires — opt-in is per deploy region, keyed by each stack's
+        // env.region, not the shell's default region.
         this.logger.info(
-          `Assets are published to the CDK bootstrap bucket/repo, which 'cdk gc' may ` +
+          `Assets for region '${region}' are published to the CDK bootstrap bucket/repo, which 'cdk gc' may ` +
             `garbage-collect (cdkd-deployed stacks have no CloudFormation stack for gc to scan). ` +
-            `Run 'cdkd bootstrap' to create cdkd-owned asset storage that 'cdk gc' never touches.`
+            `Run 'cdkd bootstrap --region ${region}' to create cdkd-owned asset storage that 'cdk gc' never touches.`
         );
       }
       return { mode: 'legacy' };
