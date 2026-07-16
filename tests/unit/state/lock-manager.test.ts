@@ -6,6 +6,18 @@ import type { StateBackendConfig } from '../../../src/types/config.js';
 import { LockError } from '../../../src/utils/error-handler.js';
 
 // Mock the S3Client
+// The stores' standard-shaped client doubles (config.region/credentials
+// functions) pass resolveExpectedBucketOwner's structural guard, so STS
+// must be mocked or every test would issue a LIVE GetCallerIdentity
+// (PR 1015 reviewer catch: 22ms -> 15s + offline flakiness).
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: vi.fn().mockImplementation(() => ({
+    send: vi.fn().mockResolvedValue({ Account: '111111111111' }),
+    destroy: vi.fn(),
+  })),
+  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+}));
+
 vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {
@@ -96,6 +108,8 @@ describe('LockManager', () => {
       await manager.acquireLock('test-stack', 'us-east-1');
 
       const putCall = s3Client.send.mock.calls[0][0];
+      // Squatting hardening (PR 1015): lock writes carry the caller account.
+      expect(putCall.input.ExpectedBucketOwner).toBe('111111111111');
       const lockBody = JSON.parse(putCall.input.Body) as LockInfo;
       const expectedExpiry = now + 30 * 60 * 1000;
 

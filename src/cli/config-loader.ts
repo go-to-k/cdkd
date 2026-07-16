@@ -508,12 +508,14 @@ async function bucketHasAnyState(
   bucketName: string
 ): Promise<boolean> {
   const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+  const { expectedOwnerParam } = await import('../utils/expected-bucket-owner.js');
   try {
     const resp = await client.send(
       new ListObjectsV2Command({
         Bucket: bucketName,
         Prefix: 'cdkd/',
         MaxKeys: 1,
+        ...(await expectedOwnerParam(client)),
       })
     );
     return (resp.KeyCount ?? 0) > 0;
@@ -542,8 +544,14 @@ async function bucketExists(
   bucketName: string
 ): Promise<boolean> {
   const { HeadBucketCommand } = await import('@aws-sdk/client-s3');
+  const { expectedOwnerParam } = await import('../utils/expected-bucket-owner.js');
   try {
-    await client.send(new HeadBucketCommand({ Bucket: bucketName }));
+    // With ExpectedBucketOwner a foreign-owned bucket comes back 403, which
+    // this probe already treats as "exists" — the decision is unchanged, but
+    // the hardened state backend then refuses to use it (fail closed).
+    await client.send(
+      new HeadBucketCommand({ Bucket: bucketName, ...(await expectedOwnerParam(client)) })
+    );
     return true;
   } catch (error) {
     const err = error as {

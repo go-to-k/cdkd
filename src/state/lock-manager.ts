@@ -9,6 +9,7 @@ import {
 import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
+import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { hostname } from 'os';
@@ -72,6 +73,15 @@ export class LockManager {
    * so when the state backend has already resolved the same bucket this
    * incurs no additional `GetBucketLocation` call.
    */
+  /**
+   * `ExpectedBucketOwner` spread for every state-bucket S3 call (squatting
+   * hardening — see src/utils/expected-bucket-owner.ts). Best-effort:
+   * resolves to an empty object for non-standard clients (test doubles).
+   */
+  private async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
+    return expectedOwnerParam(this.s3Client);
+  }
+
   private async ensureClientForBucket(): Promise<void> {
     if (this.clientResolved) return;
     if (this.resolveInFlight) return this.resolveInFlight;
@@ -192,6 +202,7 @@ export class LockManager {
       await this.s3Client.send(
         new PutObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: key,
           Body: lockBody,
           ContentLength: Buffer.byteLength(lockBody),
@@ -224,6 +235,7 @@ export class LockManager {
             await this.s3Client.send(
               new PutObjectCommand({
                 Bucket: this.config.bucket,
+                ...(await this.ownerParam()),
                 Key: key,
                 Body: retryBody,
                 ContentLength: Buffer.byteLength(retryBody),
@@ -279,6 +291,7 @@ export class LockManager {
       const response = await this.s3Client.send(
         new GetObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: key,
         })
       );
@@ -337,6 +350,7 @@ export class LockManager {
       await this.s3Client.send(
         new DeleteObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: key,
         })
       );
@@ -390,6 +404,7 @@ export class LockManager {
     await this.s3Client.send(
       new DeleteObjectCommand({
         Bucket: this.config.bucket,
+        ...(await this.ownerParam()),
         Key: key,
       })
     );

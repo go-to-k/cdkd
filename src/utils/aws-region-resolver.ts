@@ -68,7 +68,16 @@ export async function resolveBucketRegion(
       ...(opts.credentials && { credentials: opts.credentials }),
     });
     try {
-      const response = await client.send(new GetBucketLocationCommand({ Bucket: bucketName }));
+      // ExpectedBucketOwner: a foreign-owned bucket 403s here and falls into
+      // the fallback below — it must not even leak its region (the data
+      // calls behind this probe are all owner-guarded too).
+      const { expectedOwnerParam } = await import('./expected-bucket-owner.js');
+      const response = await client.send(
+        new GetBucketLocationCommand({
+          Bucket: bucketName,
+          ...(await expectedOwnerParam(client)),
+        })
+      );
       // Empty / null `LocationConstraint` is S3's way of saying us-east-1.
       return response.LocationConstraint || 'us-east-1';
     } catch {

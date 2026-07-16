@@ -44,6 +44,7 @@ import {
 import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState } from '../../types/state.js';
+import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 
 /**
  * Detail row for a single stack when --long is requested.
@@ -1417,7 +1418,12 @@ async function detectBucketRegion(
   bucket: string
 ): Promise<string | undefined> {
   try {
-    const resp = await awsClients.s3.send(new GetBucketLocationCommand({ Bucket: bucket }));
+    const resp = await awsClients.s3.send(
+      new GetBucketLocationCommand({
+        Bucket: bucket,
+        ...(await expectedOwnerParam(awsClients.s3)),
+      })
+    );
     // S3 returns `null`/empty for us-east-1 (historical quirk).
     const constraint: string | undefined = resp.LocationConstraint;
     if (!constraint) return 'us-east-1';
@@ -1480,7 +1486,13 @@ async function readSchemaVersion(
 ): Promise<number | 'unknown'> {
   if (keys.length === 0) return 'unknown';
   try {
-    const resp = await awsClients.s3.send(new GetObjectCommand({ Bucket: bucket, Key: keys[0]! }));
+    const resp = await awsClients.s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: keys[0]!,
+        ...(await expectedOwnerParam(awsClients.s3)),
+      })
+    );
     if (!resp.Body) return 'unknown';
     const body = await resp.Body.transformToString();
     const parsed = JSON.parse(body) as Partial<StackState>;
@@ -1541,7 +1553,13 @@ async function listAssetStorageMarkers(
   for (const key of keys) {
     const region = key.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length);
     try {
-      const resp = await awsClients.s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      const resp = await awsClients.s3.send(
+        new GetObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ...(await expectedOwnerParam(awsClients.s3)),
+        })
+      );
       const body = (await resp.Body?.transformToString()) ?? '';
       const marker = parseBootstrapMarker(body, key);
       entries.push({
