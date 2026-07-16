@@ -17,6 +17,7 @@ import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../t
 import { S3StateBackend } from '../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
+import { TemplateParser } from '../analyzer/template-parser.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -609,6 +610,26 @@ export function resetAccountInfoCache(): void {
 }
 
 /**
+ * Collect every name referenced (Ref / Fn::Sub placeholder / other intrinsic
+ * argument) by the sections cdkd actually evaluates: Resources, Outputs, and
+ * Conditions. Deliberately excludes `Rules` (assertion-only, never evaluated
+ * by cdkd — CloudFormation evaluates them pre-deployment, cdkd has no
+ * equivalent gate) and `Metadata`. Used to avoid resolving template
+ * parameters nothing consumes.
+ */
+function collectReferencedParameterNames(template: CloudFormationTemplate): Set<string> {
+  const parser = new TemplateParser();
+  const referenced = new Set<string>();
+  for (const section of [template.Resources, template.Outputs, template.Conditions]) {
+    if (!section || typeof section !== 'object') continue;
+    for (const name of parser.extractReferences(section)) {
+      referenced.add(name);
+    }
+  }
+  return referenced;
+}
+
+/**
  * CloudFormation Parameter definition
  */
 export interface ParameterDefinition {
@@ -654,6 +675,10 @@ export class IntrinsicFunctionResolver {
       return parameters;
     }
 
+    // Computed lazily — only templates that actually carry an SSM-typed
+    // default without a user-provided value pay for the template walk.
+    let referencedNames: Set<string> | undefined;
+
     for (const [name, definition] of Object.entries(templateParameters)) {
       const paramDef = definition as ParameterDefinition;
 
@@ -671,6 +696,21 @@ export class IntrinsicFunctionResolver {
       if ('Default' in paramDef) {
         // SSM Parameter type: resolve the default value (SSM parameter path) via SSM API
         if (paramDef.Type.startsWith('AWS::SSM::Parameter::Value')) {
+          // Skip the SSM lookup for parameters nothing in Resources / Outputs /
+          // Conditions consumes. The load-bearing case is the CDK default
+          // synthesizer's `BootstrapVersion` parameter (default
+          // `/cdk-bootstrap/<qualifier>/version`), which is referenced only by
+          // the `Rules.CheckBootstrapVersion` assertion cdkd never evaluates —
+          // resolving it eagerly makes every deploy require `cdk bootstrap` in
+          // the target region (GetParameter throws ParameterNotFound
+          // otherwise), defeating cdkd-owned asset storage (issue #1002).
+          referencedNames ??= collectReferencedParameterNames(template);
+          if (!referencedNames.has(name)) {
+            this.logger.debug(
+              `Parameter ${name}: skipping SSM resolution (not referenced by Resources/Outputs/Conditions)`
+            );
+            continue;
+          }
           const ssmPath = String(paramDef.Default);
           this.logger.debug(`Parameter ${name}: resolving SSM parameter path ${ssmPath}`);
           const resolved = await this.resolveSSMParameter(ssmPath);

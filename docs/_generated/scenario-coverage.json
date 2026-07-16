@@ -394,6 +394,11 @@
       ]
     },
     {
+      "name": "bootstrap-free-region",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "bucket-deployment",
       "annotated": false,
       "scenarios": []
@@ -2152,6 +2157,7 @@
     "asset-migration",
     "aws-custom-resource",
     "backup",
+    "bootstrap-free-region",
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",

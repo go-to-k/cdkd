@@ -18,6 +18,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import { ensureAssetStorage } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 
 /**
  * Bootstrap command implementation
@@ -76,6 +77,22 @@ async function bootstrapCommand(options: {
     logger.info(`Using default state bucket: ${bucketName}`);
   }
 
+  // The state bucket is account-scoped and single-region, while --region
+  // picks where the ASSET storage lives — an EXISTING state bucket may
+  // therefore be in a different region than --region (e.g. bucket in
+  // us-east-1, `cdkd bootstrap --region ap-northeast-1` to opt that region
+  // into asset storage). HeadBucket and the config PUTs against a
+  // cross-region bucket fail with a 301 PermanentRedirect, so resolve the
+  // bucket's actual region first and use a bucket-scoped client for every
+  // STATE-bucket call. For a not-yet-existing bucket the probe falls back
+  // to the client's own region (resolveBucketRegion never throws), so a
+  // first-time bootstrap still creates the bucket in --region. The ASSET
+  // bucket / ECR repo below keep using the --region clients.
+  const rebuiltStateBucketClient = await rebuildClientForBucketRegion(s3Client, bucketName, {
+    ...(options.profile && { profile: options.profile }),
+  });
+  const stateBucketS3 = rebuiltStateBucketClient ?? s3Client;
+
   try {
     // Check if bucket already exists.
     //
@@ -86,7 +103,7 @@ async function bootstrapCommand(options: {
     // ("different region", "access denied", etc.).
     let bucketExists = false;
     try {
-      await s3Client.send(new HeadBucketCommand({ Bucket: bucketName }));
+      await stateBucketS3.send(new HeadBucketCommand({ Bucket: bucketName }));
       bucketExists = true;
       logger.info(`Bucket ${bucketName} already exists`);
     } catch (error) {
@@ -139,14 +156,14 @@ async function bootstrapCommand(options: {
         };
       }
 
-      await s3Client.send(new CreateBucketCommand(createBucketParams));
+      await stateBucketS3.send(new CreateBucketCommand(createBucketParams));
       logger.info(`✓ Created S3 bucket: ${bucketName}`);
     }
 
     if (!skipStateBucketConfig) {
       // Enable versioning
       logger.debug('Enabling bucket versioning...');
-      await s3Client.send(
+      await stateBucketS3.send(
         new PutBucketVersioningCommand({
           Bucket: bucketName,
           VersioningConfiguration: {
@@ -158,7 +175,7 @@ async function bootstrapCommand(options: {
 
       // Enable server-side encryption (AES-256)
       logger.debug('Enabling bucket encryption...');
-      await s3Client.send(
+      await stateBucketS3.send(
         new PutBucketEncryptionCommand({
           Bucket: bucketName,
           ServerSideEncryptionConfiguration: {
@@ -195,7 +212,7 @@ async function bootstrapCommand(options: {
         ],
       };
 
-      await s3Client.send(
+      await stateBucketS3.send(
         new PutBucketPolicyCommand({
           Bucket: bucketName,
           Policy: JSON.stringify(bucketPolicy),
@@ -273,6 +290,7 @@ async function bootstrapCommand(options: {
     logger.info(`  --state-bucket ${bucketName}`);
     logger.info(`  --region ${region}`);
   } finally {
+    rebuiltStateBucketClient?.destroy();
     awsClients.destroy();
   }
 }
