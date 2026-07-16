@@ -796,6 +796,11 @@
       ]
     },
     {
+      "name": "gc-custom-asset-names",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "getstackoutput-crossregion",
       "annotated": true,
       "scenarios": [
