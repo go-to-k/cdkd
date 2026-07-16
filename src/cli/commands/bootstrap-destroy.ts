@@ -51,6 +51,31 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 /** S3 key prefix for state files — same fixed value the create side uses. */
 const STATE_PREFIX = 'cdkd';
 
+/**
+ * Every cdkd state file ends with this suffix, regardless of the
+ * `--state-prefix` it was deployed under (`{prefix}/{stack}/{region}/state.json`,
+ * or legacy `{prefix}/{stack}/state.json`).
+ */
+const STATE_FILE_SUFFIX = '/state.json';
+
+/** `us-east-1` / `ap-northeast-1` / `us-gov-west-1` — a region-shaped segment. */
+const REGION_SEGMENT = /^[a-z]{2}(-[a-z]+)+-\d+$/;
+
+/**
+ * List every state file in the bucket — the WHOLE bucket, not just the
+ * default `cdkd/` prefix. Other commands accept `--state-prefix`, so live
+ * stack state may exist under ANY prefix in this bucket; scoping this
+ * listing to the default prefix would let the reference scan and the
+ * `--include-state-bucket` guard silently miss those stacks and delete
+ * live state.
+ */
+async function listAllStateKeys(
+  stateBackend: Pick<S3StateBackend, 'listRawKeys'>
+): Promise<string[]> {
+  const keys = await stateBackend.listRawKeys('');
+  return keys.filter((k) => k.endsWith(STATE_FILE_SUFFIX));
+}
+
 export interface BootstrapDestroyOptions {
   stateBucket?: string;
   region?: string;
@@ -114,8 +139,9 @@ export async function promptBootstrapDestroyConfirm(input: {
  * bucket / repo NAME verbatim, so a substring match over the raw JSON body
  * catches every shape — including ones future providers add — with zero
  * per-shape maintenance. Covers both key layouts (region-prefixed and
- * legacy) and nested-stack children (their state files live under the same
- * prefix).
+ * legacy), nested-stack children, and stacks deployed under a custom
+ * `--state-prefix` (the listing spans the whole bucket, not just the
+ * default `cdkd/` prefix).
  *
  * Returns a human-readable `stack (region)` descriptor per referencing
  * state file.
@@ -124,8 +150,7 @@ export async function scanStateReferences(
   stateBackend: Pick<S3StateBackend, 'listRawKeys' | 'getRawObject'>,
   names: string[]
 ): Promise<string[]> {
-  const keys = await stateBackend.listRawKeys(`${STATE_PREFIX}/`);
-  const stateKeys = keys.filter((k) => k.endsWith('/state.json'));
+  const stateKeys = await listAllStateKeys(stateBackend);
   const referencing: string[] = [];
   for (const key of stateKeys) {
     const body = await stateBackend.getRawObject(key);
@@ -137,14 +162,21 @@ export async function scanStateReferences(
   return referencing;
 }
 
-/** `cdkd/{stack}/{region}/state.json` → `stack (region)`; legacy → `stack`. */
+/**
+ * `{prefix}/{stack}/{region}/state.json` → `stack (region)`; legacy
+ * `{prefix}/{stack}/state.json` → `stack`. The prefix is arbitrary (custom
+ * `--state-prefix` values included), so the stack/region pair is derived
+ * from the key's TAIL: the last segment is treated as a region only when
+ * it is region-shaped.
+ */
 function describeStateKey(key: string): string {
-  const rest = key.slice(`${STATE_PREFIX}/`.length, -'/state.json'.length);
-  const segments = rest.split('/');
-  if (segments.length >= 2) {
-    return `${segments[0]} (${segments[1]})`;
+  const segments = key.slice(0, -STATE_FILE_SUFFIX.length).split('/');
+  const last = segments[segments.length - 1] ?? key;
+  const secondLast = segments[segments.length - 2];
+  if (secondLast !== undefined && REGION_SEGMENT.test(last)) {
+    return `${secondLast} (${last})`;
   }
-  return rest;
+  return last;
 }
 
 /**
@@ -245,7 +277,7 @@ async function deleteContainerRepo(
     if (err.name === 'RepositoryNotFoundException') {
       logger.info(`Container-asset repository ${containerRepo} does not exist — skipping`);
     } else {
-      throw error;
+      throw normalizeAwsError(error, { operation: 'DeleteRepository' });
     }
   } finally {
     ecrClient.destroy();
@@ -317,7 +349,21 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     //    asset bucket / repo names (never recompute the naming convention;
     //    custom-name compatibility, issue #1011).
     const markerKey = getBootstrapMarkerKey(region);
-    const markerBody = await stateBackend.getRawObject(markerKey);
+    let markerBody: string | null;
+    try {
+      markerBody = await stateBackend.getRawObject(markerKey);
+    } catch (error) {
+      if ((error as { name?: string }).name === 'NoSuchBucket') {
+        // Never-bootstrapped account: no state bucket means no marker, no
+        // asset storage, and nothing for --include-state-bucket either.
+        logger.info(
+          `State bucket '${bucketName}' does not exist — this account/region was ` +
+            `never bootstrapped; nothing to delete.`
+        );
+        return;
+      }
+      throw error;
+    }
     let marker: BootstrapMarker | undefined;
     if (markerBody === null) {
       logger.info(
@@ -362,15 +408,15 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     //    the account's source of truth — refuse while ANY stack state
     //    exists (no --force override), and refuse while any OTHER region
     //    is still opted in (deleting their markers would silently flip
-    //    those regions back to legacy mode).
+    //    those regions back to legacy mode). The state listing spans the
+    //    WHOLE bucket (not just the default `cdkd/` prefix) so stacks
+    //    deployed with a custom --state-prefix cannot slip past the guard.
     if (options.includeStateBucket) {
-      const stacks = await stateBackend.listStacks();
-      if (stacks.length > 0) {
-        const listing = stacks
-          .map((s) => `  - ${s.stackName}${s.region ? ` (${s.region})` : ''}`)
-          .join('\n');
+      const stateKeys = await listAllStateKeys(stateBackend);
+      if (stateKeys.length > 0) {
+        const listing = stateKeys.map((k) => `  - ${describeStateKey(k)}  [${k}]`).join('\n');
         throw new CdkdError(
-          `Refusing to delete state bucket '${bucketName}': ${stacks.length} stack(s) ` +
+          `Refusing to delete state bucket '${bucketName}': ${stateKeys.length} stack(s) ` +
             `still have state in it:\n${listing}\n` +
             `Destroy every stack ('cdkd destroy' / 'cdkd state destroy') before ` +
             `deleting the state bucket.`,

@@ -19,7 +19,6 @@ const {
     stateBackendMocks: {
       getRawObject: vi.fn(),
       listRawKeys: vi.fn(),
-      listStacks: vi.fn(),
       deleteRawObjects: vi.fn(),
     },
     callLog,
@@ -153,9 +152,10 @@ beforeEach(() => {
   );
   stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
     if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY];
+    // Whole-bucket listing ('' prefix): marker only, no state files.
+    if (prefix === '') return [MARKER_KEY];
     return [];
   });
-  stateBackendMocks.listStacks.mockResolvedValue([]);
   stateBackendMocks.deleteRawObjects.mockImplementation(async () => {
     callLog.push('state:deleteRawObjects');
   });
@@ -248,7 +248,7 @@ describe('cdkd bootstrap --destroy', () => {
 
   it('refuses when a deployed stack still references the asset storage', async () => {
     stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
-      if (prefix === 'cdkd/') return [`cdkd/MyStack/${REGION}/state.json`];
+      if (prefix === '') return [`cdkd/MyStack/${REGION}/state.json`, MARKER_KEY];
       return [MARKER_KEY];
     });
     stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
@@ -261,9 +261,26 @@ describe('cdkd bootstrap --destroy', () => {
     expectNothingDeleted();
   });
 
+  it('reference scan covers stacks deployed under a custom --state-prefix', async () => {
+    // Live state under a NON-default prefix (other commands accept
+    // --state-prefix) must still block the teardown — the scan lists the
+    // whole bucket, never just `cdkd/`.
+    stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+      if (prefix === '') return [`custom-prefix/PrefixedStack/${REGION}/state.json`, MARKER_KEY];
+      return [MARKER_KEY];
+    });
+    stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+      if (key === MARKER_KEY) return MARKER_BODY;
+      return JSON.stringify({ resources: { Fn: { properties: { Repo: CONTAINER_REPO } } } });
+    });
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow(/PrefixedStack \(us-east-1\)/);
+    expectNothingDeleted();
+  });
+
   it('--force overrides the deployed-stack reference scan', async () => {
     stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
-      if (prefix === 'cdkd/') return [`cdkd/MyStack/${REGION}/state.json`];
+      if (prefix === '') return [`cdkd/MyStack/${REGION}/state.json`, MARKER_KEY];
       return [MARKER_KEY];
     });
     stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
@@ -274,10 +291,80 @@ describe('cdkd bootstrap --destroy', () => {
     await runDestroy(['--yes', '--force']);
 
     // Deletion proceeded; the state scan was skipped entirely (no
-    // `cdkd/`-prefixed listing).
+    // whole-bucket listing).
     expect(s3CommandNames()).toContain(DeleteBucketCommand.name);
     expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([MARKER_KEY]);
-    expect(stateBackendMocks.listRawKeys).not.toHaveBeenCalledWith('cdkd/');
+    expect(stateBackendMocks.listRawKeys).not.toHaveBeenCalledWith('');
+  });
+
+  it('threads pagination markers across ListObjectVersions pages when emptying', async () => {
+    let listCall = 0;
+    mockS3Send.mockImplementation(async (command: object) => {
+      callLog.push(`s3:${command.constructor.name}`);
+      if (command instanceof ListObjectVersionsCommand) {
+        listCall += 1;
+        if (listCall === 1) {
+          return {
+            Versions: [{ Key: 'a', VersionId: 'v1' }],
+            IsTruncated: true,
+            NextKeyMarker: 'a',
+            NextVersionIdMarker: 'v1',
+          };
+        }
+        return { Versions: [{ Key: 'b', VersionId: 'v2' }], IsTruncated: false };
+      }
+      return {};
+    });
+
+    await runDestroy(['--yes']);
+
+    const listInputs = s3Inputs(ListObjectVersionsCommand.name);
+    expect(listInputs).toHaveLength(2);
+    expect(listInputs[0]).not.toHaveProperty('KeyMarker');
+    expect(listInputs[1]).toMatchObject({ KeyMarker: 'a', VersionIdMarker: 'v1' });
+
+    // One DeleteObjects per page, then the bucket delete.
+    const deleteInputs = s3Inputs(DeleteObjectsCommand.name);
+    expect(deleteInputs).toHaveLength(2);
+    expect(deleteInputs[0]!['Delete']).toMatchObject({
+      Objects: [{ Key: 'a', VersionId: 'v1' }],
+    });
+    expect(deleteInputs[1]!['Delete']).toMatchObject({
+      Objects: [{ Key: 'b', VersionId: 'v2' }],
+    });
+    expect(s3CommandNames()).toContain(DeleteBucketCommand.name);
+  });
+
+  it('aborts before DeleteBucket and keeps the marker when DeleteObjects reports failures', async () => {
+    mockS3Send.mockImplementation(async (command: object) => {
+      callLog.push(`s3:${command.constructor.name}`);
+      if (command instanceof ListObjectVersionsCommand) {
+        return { Versions: [{ Key: 'a', VersionId: 'v1' }], IsTruncated: false };
+      }
+      if (command instanceof DeleteObjectsCommand) {
+        return { Errors: [{ Key: 'a', Code: 'AccessDenied', Message: 'denied' }] };
+      }
+      return {};
+    });
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow(/Failed to delete 1 object/);
+
+    // Never report success while objects remain: no bucket delete, no ECR
+    // delete, and the marker survives (delete-last ordering).
+    expect(s3CommandNames()).not.toContain(DeleteBucketCommand.name);
+    expect(mockEcrSend).not.toHaveBeenCalled();
+    expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalled();
+  });
+
+  it('is a friendly no-op when the state bucket itself does not exist', async () => {
+    stateBackendMocks.getRawObject.mockRejectedValue(
+      Object.assign(new Error('The specified bucket does not exist'), { name: 'NoSuchBucket' })
+    );
+
+    // No --yes on purpose: the early return must fire before any prompt.
+    await runDestroy();
+
+    expectNothingDeleted();
   });
 
   it('is a no-op with an info line when the region has no bootstrap marker', async () => {
@@ -371,13 +458,25 @@ describe('cdkd bootstrap --destroy', () => {
 
   describe('--include-state-bucket', () => {
     it('refuses while any stack state exists (no --force override)', async () => {
-      stateBackendMocks.listStacks.mockResolvedValue([
-        { stackName: 'MyStack', region: REGION },
-      ]);
+      // One stack under the default prefix AND one under a custom
+      // --state-prefix: the guard lists the WHOLE bucket, so both must
+      // block — a custom-prefix stack slipping past this check would mean
+      // deleting its live state.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '')
+          return [
+            `cdkd/MyStack/${REGION}/state.json`,
+            'custom-prefix/PrefixedStack/eu-west-1/state.json',
+            MARKER_KEY,
+          ];
+        return [MARKER_KEY];
+      });
 
-      await expect(runDestroy(['--yes', '--force', '--include-state-bucket'])).rejects.toThrow(
-        /still have state/
-      );
+      const run = runDestroy(['--yes', '--force', '--include-state-bucket']);
+      await expect(run).rejects.toThrow(/still have state/);
+      await expect(
+        runDestroy(['--yes', '--force', '--include-state-bucket'])
+      ).rejects.toThrow(/PrefixedStack \(eu-west-1\)/);
       expectNothingDeleted();
     });
 

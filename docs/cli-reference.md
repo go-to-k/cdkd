@@ -1064,8 +1064,9 @@ delete-repository` / marker-delete sequence. It:
    naming convention — compatible with custom asset-storage names.
 3. Refuses while any deployed stack's state still references the region's
    asset bucket / repo (running Lambdas keep working after deletion, but a
-   future re-deploy / rollback of those stacks would break). `--force`
-   overrides the scan.
+   future re-deploy / rollback of those stacks would break). The scan
+   covers every state file in the bucket regardless of the
+   `--state-prefix` it was deployed under. `--force` overrides the scan.
 4. Prompts for confirmation with the full deletion plan (`y/N`, default
    No); `--yes` / `-y` skips the prompt. A non-TTY stdin without `--yes` is
    a hard error.
@@ -1076,7 +1077,8 @@ delete-repository` / marker-delete sequence. It:
 
 The **state bucket is kept by default** — it is the account's source of
 truth. `--include-state-bucket` opts it into the teardown, and even then
-the deletion is refused while ANY stack state exists (destroy every stack
+the deletion is refused while ANY stack state exists — under any
+`--state-prefix`, the guard lists the whole bucket — (destroy every stack
 first; there is no `--force` override) or while any OTHER region still has
 a bootstrap marker in the bucket (tear those regions down first — deleting
 their markers with the bucket would silently flip them back to legacy
