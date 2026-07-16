@@ -972,6 +972,13 @@ breaks by upgrading the binary alone, and downgrading is safe in either
 mode (old binaries ignore the marker; both storages hold the same
 content-addressed objects).
 
+Relationship with `cdk bootstrap`: cdkd never uses CDK's bootstrap roles
+(it deploys with the caller's credentials) and does not resolve the
+template's `BootstrapVersion` parameter, so a region never touched by
+`cdk bootstrap` works fine. `cdkd export` hands a stack back to the
+CloudFormation / CDK CLI world, where `cdk bootstrap` is the CDK CLI's own
+prerequisite again.
+
 Bucket-squatting defense: bootstrap refuses to adopt an asset bucket owned
 by another account (predictable-name defense), and cdkd's asset-bucket S3
 calls pass `ExpectedBucketOwner`. Deleting the asset bucket/repo while the
