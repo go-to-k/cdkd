@@ -442,10 +442,13 @@ AssetPublisherError: Failed to publish asset: Access Denied
 cdkd bootstrap --region us-east-1
 ```
 
-Regions bootstrapped by cdkd < 0.232.0 (or with `--no-assets`) run in
-**legacy mode** instead: assets go to the CDK bootstrap bucket, which then
-must exist (`npx cdk bootstrap aws://123456789012/us-east-1`). Re-running
-`cdkd bootstrap` opts the region into cdkd-owned storage — see
+Normally this is automatic — the first `cdkd deploy` into a region
+auto-creates the storage (issue #1007), so this error usually means the
+auto-create was declined / opted out (`--no-auto-asset-storage`), failed
+(check the deploy output for the auto-create warning), or someone deleted
+the bucket/repo after opt-in. Deploys that stay in **legacy mode** publish
+to the CDK bootstrap bucket instead, which then must exist
+(`npx cdk bootstrap aws://123456789012/us-east-1`). See
 [cli-reference.md](cli-reference.md#cdkd-bootstrap).
 
 > **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest (and, in cdkd-assets mode, redirects default-bootstrap-shaped destinations to cdkd-owned storage), so custom qualifiers are fully supported.
