@@ -24,11 +24,13 @@
 #            -> custom bucket gone, custom repo gone, marker gone, state gone.
 #
 # SAFETY NOTE: the pre-run / trap cleanup reads the region's bootstrap marker
-# and, when one exists, prints what it points at and runs
-# `cdkd bootstrap --destroy --force --yes` against it — clearing leftovers
-# from a previous crashed run even though their unique names are unknown.
-# This deletes the region's CURRENT cdkd asset storage; safe on the dedicated
-# test account only.
+# and, when one exists AND its assetBucket carries this fixture's
+# `cdkd-integ-gc-` prefix, runs `cdkd bootstrap --destroy --force --yes`
+# against it — clearing leftovers from a previous crashed run even though
+# their unique names are unknown. A marker owned by anything else (the
+# region's default-named storage, another test) is left untouched, and the
+# pre-run guard fails fast telling you to pick a marker-free region via
+# AWS_REGION.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -71,19 +73,42 @@ cleanup() {
     # any) so leftovers from a PREVIOUS crashed run — whose unique names we
     # cannot recompute — are cleared via `bootstrap --destroy` (names come
     # from the marker). Print what the marker points at before destroying.
-    MARKER_LEFTOVER=$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null)
+    # ONLY markers created by THIS fixture (assetBucket prefixed
+    # cdkd-integ-gc-) are auto-destroyed — a default-named or foreign
+    # marker means the region's asset storage is genuinely in use, and
+    # tearing it down with --force could delete live assets of deployed
+    # stacks. Those are left untouched (the pre-run guard below fails
+    # fast on them instead).
+    MARKER_LEFTOVER=$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null || true)
     if [ -n "${MARKER_LEFTOVER}" ]; then
+      LEFTOVER_BUCKET=$(echo "${MARKER_LEFTOVER}" | jq -r '.assetBucket // empty' 2>/dev/null || true)
       echo "    pre-existing bootstrap marker for ${REGION} points at: ${MARKER_LEFTOVER}"
-      echo "    destroying the marker's asset storage (dedicated test account)"
-      node "${LOCAL_DIST}" bootstrap --destroy --state-bucket "${STATE_BUCKET}" \
-        --region "${REGION}" --force --yes >/dev/null 2>&1
+      case "${LEFTOVER_BUCKET}" in
+        cdkd-integ-gc-*)
+          echo "    destroying the marker's asset storage (leftover from a previous run of this fixture)"
+          node "${LOCAL_DIST}" bootstrap --destroy --state-bucket "${STATE_BUCKET}" \
+            --region "${REGION}" --force --yes >/dev/null 2>&1
+          # Remove the marker key only once its bucket is really gone —
+          # on a partial teardown the marker is the only machine-readable
+          # record of the previous run's unique names, so keep it for the
+          # next attempt instead of orphaning the resources namelessly.
+          if [ -n "${LEFTOVER_BUCKET}" ] &&
+            ! aws s3api head-bucket --bucket "${LEFTOVER_BUCKET}" >/dev/null 2>&1; then
+            aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1
+          else
+            echo "    WARNING: teardown incomplete; keeping the marker for the next cleanup attempt"
+          fi
+          ;;
+        *)
+          echo "    marker is NOT this fixture's (bucket '${LEFTOVER_BUCKET}') — leaving it untouched"
+          ;;
+      esac
     fi
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
-    aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
   fi
   # Belt-and-braces: THIS run's uniquely-named bucket/repo (no-ops when the
   # marker-driven teardown above already removed them).
@@ -121,12 +146,24 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# Fail fast when the region's bootstrap marker belongs to something else
+# (default-named storage or another test) — this fixture must own the
+# region's marker for its bootstrap/gc/teardown cycle, and destroying a
+# foreign marker's storage could delete live assets. Pick another region
+# via AWS_REGION instead.
+PRE_MARKER=$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null || true)
+if [ -n "${PRE_MARKER}" ]; then
+  echo "FAIL: region ${REGION} already has a bootstrap marker in use: ${PRE_MARKER}" >&2
+  echo "      Run this test in a region without cdkd asset storage (e.g. AWS_REGION=us-west-2)." >&2
+  exit 1
+fi
+
 # --- Phase 1: bootstrap with CUSTOM names ----------------------------------
 echo "==> Phase 1: cdkd bootstrap --asset-bucket ${ASSET_BUCKET} --container-repo ${CONTAINER_REPO}"
 node "${LOCAL_DIST}" bootstrap --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --asset-bucket "${ASSET_BUCKET}" --container-repo "${CONTAINER_REPO}"
 
-MARKER=$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null)
+MARKER=$(aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - 2>/dev/null || true)
 if [ -z "${MARKER}" ]; then
   echo "FAIL: bootstrap marker missing at s3://${STATE_BUCKET}/${MARKER_KEY}" >&2
   exit 1
@@ -156,7 +193,7 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes
 
-STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null || true)
 if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
   exit 1
@@ -205,11 +242,17 @@ echo "==> Phase 3: seed unreferenced object + cdkd gc"
 printf 'seeded unreferenced garbage for the cdkd gc integ\n' |
   aws s3 cp - "s3://${ASSET_BUCKET}/${GARBAGE_KEY}"
 # --older-than 0.0002h (~0.72s) age guard: sleep so the seeded object is
-# strictly older than the cutoff when gc lists the bucket.
-sleep 2
+# strictly older than the cutoff when gc lists the bucket. 5s (not 2s)
+# keeps the margin clock-skew-proof — gc compares local Date.now()
+# against S3's AWS-stamped LastModified.
+sleep 5
 
-DRY_OUT=$(node "${LOCAL_DIST}" gc --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --older-than 0.0002h --dry-run 2>&1)
+if ! DRY_OUT=$(node "${LOCAL_DIST}" gc --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --older-than 0.0002h --dry-run 2>&1); then
+  echo "FAIL: gc --dry-run exited non-zero. Output:" >&2
+  echo "${DRY_OUT}" >&2
+  exit 1
+fi
 echo "${DRY_OUT}" | tail -5
 
 if ! echo "${DRY_OUT}" | grep -qF "s3://${ASSET_BUCKET}/${GARBAGE_KEY}"; then
