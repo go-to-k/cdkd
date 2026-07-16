@@ -439,7 +439,10 @@ export function createBootstrapCommand(): Command {
         }
         // `--no-assets` skips the asset-storage leg entirely, so naming it
         // is contradictory — reject rather than silently ignore the names.
-        if (!options.assets && (options.assetBucket !== undefined || options.containerRepo !== undefined)) {
+        if (
+          !options.assets &&
+          (options.assetBucket !== undefined || options.containerRepo !== undefined)
+        ) {
           throw new CdkdError(
             '--asset-bucket / --container-repo cannot be combined with --no-assets ' +
               '(the flags name the asset storage that --no-assets skips).',

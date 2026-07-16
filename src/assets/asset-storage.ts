@@ -173,7 +173,10 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
   // v1 required fields, and classifying it as merely "malformed" would let
   // ensureAssetStorage's corrupt-marker rewrite path clobber it with v1
   // semantics — exactly what this guard exists to prevent.
-  if (typeof marker.assetSupportVersion === 'number' && marker.assetSupportVersion > ASSET_SUPPORT_VERSION) {
+  if (
+    typeof marker.assetSupportVersion === 'number' &&
+    marker.assetSupportVersion > ASSET_SUPPORT_VERSION
+  ) {
     // A newer cdkd wrote this marker with semantics this binary does not
     // know. Interpreting it under v1 rules could publish to the wrong
     // destination — hard error instead (the marker is the user's explicit
