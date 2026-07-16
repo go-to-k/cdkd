@@ -1,3 +1,10 @@
+# [0.237.0](https://github.com/go-to-k/cdkd/compare/v0.236.0...v0.237.0) (2026-07-16)
+
+
+### Features
+
+* **bootstrap:** support custom asset storage names via --asset-bucket / --container-repo ([#1021](https://github.com/go-to-k/cdkd/issues/1021)) ([b5f8399](https://github.com/go-to-k/cdkd/commit/b5f839961186b05f25d0c8d2d0213effd39194ed))
+
 # [0.236.0](https://github.com/go-to-k/cdkd/compare/v0.235.1...v0.236.0) (2026-07-16)
 
 
