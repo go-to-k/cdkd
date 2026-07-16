@@ -230,3 +230,4 @@ lambda	2026-07-16T17:11:44Z	PASS	78	verify.sh	broad refresh for intrinsic-resolv
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
 multi-resource	2026-07-17T05:02:58Z	PASS	79	standard	broad refresh for deploy-engine edit (#1032): 17 created/deleted, 0 errors, log groups swept
 local-run-task-cdkd-assets	2026-07-16T17:53:49Z	PASS	95	verify.sh	classifier regression for issue-1025 marker-based repo match; docker sweep clean
+gc-custom-asset-names	2026-07-16T17:50:46Z	PASS	188	verify.sh	us-west-2 (us-east-1 marker in use); bootstrap custom names + publish + gc + teardown clean
