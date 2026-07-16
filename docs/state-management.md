@@ -61,6 +61,13 @@ per-region keys mean concurrent bootstraps of two regions cannot race on a
 shared object. `cdkd state info` lists the opted-in regions. Full design in
 [docs/design/1002-cdkd-asset-storage.md](design/1002-cdkd-asset-storage.md).
 
+To opt a region back out, `cdkd bootstrap --destroy --region <r>` tears
+down the region's asset bucket + ECR repo and deletes the marker last
+(the reverse of the create-side marker-written-last ordering); add
+`--include-state-bucket` to also delete the state bucket once every stack
+is destroyed. See the teardown section in
+[docs/cli-reference.md](cli-reference.md#teardown-cdkd-bootstrap---destroy-issue-1010).
+
 ### Configuration Example
 
 ```bash

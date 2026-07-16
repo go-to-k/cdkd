@@ -12,7 +12,8 @@ import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { ECRClient } from '@aws-sdk/client-ecr';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { withErrorHandling, normalizeAwsError } from '../../utils/error-handler.js';
+import { withErrorHandling, normalizeAwsError, CdkdError } from '../../utils/error-handler.js';
+import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
@@ -301,23 +302,60 @@ async function bootstrapCommand(options: {
 }
 
 /**
+ * Options shared by the create and destroy dispatch below. The destroy
+ * fields (`destroy` / `includeStateBucket`) are consumed by the action's
+ * dispatcher only; `bootstrapCommand` never sees them.
+ */
+interface BootstrapCommandOptions {
+  stateBucket?: string;
+  region?: string;
+  profile?: string;
+  roleArn?: string;
+  force: boolean;
+  assets: boolean;
+  destroy: boolean;
+  includeStateBucket: boolean;
+  yes: boolean;
+  verbose: boolean;
+}
+
+/**
  * Create bootstrap command
  */
 export function createBootstrapCommand(): Command {
   const cmd = new Command('bootstrap')
     .description(
       'Bootstrap cdkd by creating the S3 state bucket plus cdkd-owned asset storage ' +
-        '(asset bucket + container-asset ECR repo) for the region'
+        '(asset bucket + container-asset ECR repo) for the region. With --destroy, ' +
+        "tear down the region's asset storage instead (issue #1010)."
     )
     .option(
       '--state-bucket <bucket>',
       'Name of S3 bucket to create for state storage (default: cdkd-state-{accountId})'
     )
-    .option('--force', 'Force reconfiguration of existing bucket', false)
+    .option(
+      '--force',
+      'Create: force reconfiguration of an existing bucket. Destroy: delete the asset ' +
+        'storage even when deployed stacks still reference it',
+      false
+    )
     .option(
       '--no-assets',
       'Skip cdkd asset storage (asset bucket / ECR repo / marker) — deploys keep ' +
         'publishing assets to the CDK bootstrap bucket/repo'
+    )
+    .option(
+      '--destroy',
+      "Tear down the region's cdkd asset storage (empty + delete the asset bucket, " +
+        'force-delete the container-asset ECR repo, then delete the bootstrap marker ' +
+        'last). The state bucket is kept unless --include-state-bucket is also passed',
+      false
+    )
+    .option(
+      '--include-state-bucket',
+      'With --destroy: also delete the S3 state bucket. Refused while any stack state ' +
+        'exists or any other region is still opted in to asset storage',
+      false
     )
     .addOption(
       // Bootstrap-specific: needs to know which region to create the bucket
@@ -329,7 +367,42 @@ export function createBootstrapCommand(): Command {
         'AWS region in which to create the state bucket (defaults to AWS_REGION env or us-east-1)'
       )
     )
-    .action(withErrorHandling(bootstrapCommand));
+    .action(
+      withErrorHandling(async (options: BootstrapCommandOptions): Promise<void> => {
+        if (options.destroy) {
+          // `--no-assets` only shapes the CREATE side; on the destroy side
+          // the asset storage IS the target, so the combination signals a
+          // misunderstanding — reject rather than silently ignore.
+          if (!options.assets) {
+            throw new CdkdError(
+              '--no-assets cannot be combined with --destroy. The teardown scope is ' +
+                'the asset storage itself; use --include-state-bucket to also delete ' +
+                'the state bucket.',
+              'INVALID_OPTIONS'
+            );
+          }
+          await bootstrapDestroyCommand({
+            ...(options.stateBucket && { stateBucket: options.stateBucket }),
+            ...(options.region && { region: options.region }),
+            ...(options.profile && { profile: options.profile }),
+            ...(options.roleArn && { roleArn: options.roleArn }),
+            force: options.force,
+            includeStateBucket: options.includeStateBucket,
+            yes: options.yes,
+            verbose: options.verbose,
+          });
+          return;
+        }
+        if (options.includeStateBucket) {
+          throw new CdkdError(
+            '--include-state-bucket requires --destroy (it opts the state bucket ' +
+              'into the teardown).',
+            'INVALID_OPTIONS'
+          );
+        }
+        await bootstrapCommand(options);
+      })
+    );
 
   // Add common options (--profile, --verbose, --yes)
   commonOptions.forEach((opt) => cmd.addOption(opt));
