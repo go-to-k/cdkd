@@ -1,3 +1,11 @@
+## [0.238.1](https://github.com/go-to-k/cdkd/compare/v0.238.0...v0.238.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **diff:** render unresolved intrinsics as known-after-deploy instead of 'undefined' and quiet the diff-context Ref-not-found warn ([#1024](https://github.com/go-to-k/cdkd/issues/1024)) ([5b4f653](https://github.com/go-to-k/cdkd/commit/5b4f65302e56132fd9b30c6080ad06c2ce810112))
+* **diff:** skip cloudformation:DescribeType for custom resource types in replacement detection ([#1023](https://github.com/go-to-k/cdkd/issues/1023)) ([d5647f8](https://github.com/go-to-k/cdkd/commit/d5647f8f23ee27ecd5f0182fb1bfbe7063cbb338))
+
 # [0.238.0](https://github.com/go-to-k/cdkd/compare/v0.237.0...v0.238.0) (2026-07-16)
 
 
