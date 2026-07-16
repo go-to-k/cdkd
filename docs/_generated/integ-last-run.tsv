@@ -226,5 +226,5 @@ eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases
 lambda-snapstart	2026-07-16T15:54:15Z	PASS	187	verify.sh	new fixture, 3 phases clean, orph clean
 iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
 apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix live-verify, warn 1->0 + rendering sample, orph clean
-wait-condition-handle	2026-07-16T17:44:55Z	PASS	57	verify.sh	issue 1020: deploy+update+destroy clean, 0 orphans
 lambda	2026-07-16T17:48:04Z	PASS	75	verify.sh	broad refresh for register-providers edit (issue-1020), orph clean
+wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review-nit JSDoc edit, orph clean

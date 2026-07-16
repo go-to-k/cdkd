@@ -50,6 +50,9 @@ describe('WaitConditionHandleProvider', () => {
       await expect(provider.getAttribute('existing-id', TYPE, 'Anything')).rejects.toThrow(
         ProvisioningError
       );
+      await expect(provider.getAttribute('existing-id', TYPE, 'Anything')).rejects.toThrow(
+        /Anything/
+      );
     });
   });
 

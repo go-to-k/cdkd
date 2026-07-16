@@ -72,7 +72,13 @@ export class WaitConditionHandleProvider implements ResourceProvider {
     this.logger.debug(`No-op delete for WaitConditionHandle ${logicalId}`);
   }
 
-  /** WaitConditionHandle supports `Ref` only — it has no `Fn::GetAtt` attributes. */
+  /**
+   * WaitConditionHandle is effectively `Ref`-only. Its CFn schema declares a
+   * single read-only property `Id` (the primary identifier); the deploy
+   * engine's resolver never calls this method for it (it resolves via the
+   * physicalId fallback), so a direct call — e.g. `cdkd orphan`'s live
+   * attribute fetch — fails loudly instead of fabricating a value.
+   */
   async getAttribute(
     physicalId: string,
     resourceType: string,
