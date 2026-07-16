@@ -17,6 +17,7 @@ import { AwsClients, resetAwsClients, setAwsClients } from '../../utils/aws-clie
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
+import { getBootstrapMarkerKey, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { StackState } from '../../types/state.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
 
@@ -120,6 +121,89 @@ export async function loadStateForStack(
     // module-global `globalClients` reference. Bare `awsClients.destroy()`
     // would leave a destroyed instance pointed at by the global, which a
     // later caller of `getAwsClients()` would silently reuse.
+    resetAwsClients();
+  }
+}
+
+/**
+ * Best-effort read of the region's asset-storage bootstrap marker
+ * (`s3://{stateBucket}/cdkd-bootstrap/{region}.json`) to recover the
+ * cdkd-owned container-asset ECR repository name (issue #1025). Since
+ * `cdkd bootstrap --container-repo <name>` (issue #1011) the repo can
+ * carry ANY name, so the local resolvers' conventional-prefix regex
+ * cannot classify images published to a custom-named repo — the marker
+ * is the only source of truth.
+ *
+ * This is a fast-path optimization for `cdkd local run-task
+ * --from-state` (recognizing a cdk-asset image enables the local
+ * `cdk.out` docker build instead of an ECR pull), so it must NEVER fail
+ * the run: every miss (no bucket, no marker, malformed marker, any AWS
+ * error) logs at debug and returns `undefined` — the caller falls back
+ * to the conventional-prefix regex.
+ *
+ * Region resolution mirrors {@link loadStateForStack}'s chain.
+ */
+export async function loadBootstrapContainerRepo(
+  synthRegion: string | undefined,
+  opts: LoadStateForStackOptions
+): Promise<string | undefined> {
+  const logger = getLogger();
+  const prefix = opts.logPrefix ?? '--from-state';
+
+  const region =
+    opts.region ??
+    process.env['AWS_REGION'] ??
+    process.env['AWS_DEFAULT_REGION'] ??
+    synthRegion ??
+    'us-east-1';
+
+  let stateBucket: string;
+  try {
+    stateBucket = await resolveStateBucketWithDefault(opts.stateBucket, region);
+  } catch (err) {
+    logger.debug(
+      `${prefix}: could not resolve state bucket for the bootstrap-marker read: ${err instanceof Error ? err.message : String(err)}. Falling back to conventional asset-repo names.`
+    );
+    return undefined;
+  }
+
+  const awsClients = new AwsClients({
+    ...(opts.region !== undefined && { region: opts.region }),
+    ...(opts.profile !== undefined && { profile: opts.profile }),
+  });
+  setAwsClients(awsClients);
+
+  try {
+    const stateConfig = { bucket: stateBucket, prefix: opts.statePrefix };
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+      ...(opts.region !== undefined && { region: opts.region }),
+      ...(opts.profile !== undefined && { profile: opts.profile }),
+    });
+    // `getRawObject` takes a bucket-root-relative key; the marker lives
+    // OUTSIDE the state prefix (see asset-storage.ts), so the key from
+    // `getBootstrapMarkerKey` is used verbatim — no prefixing.
+    const markerKey = getBootstrapMarkerKey(region);
+    const body = await stateBackend.getRawObject(markerKey);
+    if (body === null) {
+      logger.debug(
+        `${prefix}: no bootstrap marker at '${markerKey}' in bucket '${stateBucket}' — assuming conventional asset-repo names.`
+      );
+      return undefined;
+    }
+    const marker = parseBootstrapMarker(body, markerKey);
+    logger.debug(
+      `${prefix}: bootstrap marker for ${region} names container repo '${marker.containerRepo}'.`
+    );
+    return marker.containerRepo;
+  } catch (err) {
+    logger.debug(
+      `${prefix}: bootstrap-marker read failed: ${err instanceof Error ? err.message : String(err)}. Falling back to conventional asset-repo names.`
+    );
+    return undefined;
+  } finally {
+    // Same rationale as `loadStateForStack`: `resetAwsClients()` destroys
+    // the clients AND clears the module-global reference so no destroyed
+    // instance leaks to a later `getAwsClients()` caller.
     resetAwsClients();
   }
 }

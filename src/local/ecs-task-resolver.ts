@@ -201,7 +201,22 @@ export function derivePartitionAndUrlSuffix(region: string): {
  * Existing consumers (`src/cli/commands/local-run-task.ts`) import the
  * alias; new code should reach for `ImageResolutionContext` directly.
  */
-export type EcsImageResolutionContext = ImageResolutionContext;
+export type EcsImageResolutionContext = ImageResolutionContext & {
+  /**
+   * Name of the region's cdkd-owned container-asset ECR repository, as
+   * recorded in the per-region bootstrap marker (issue #1025). Since
+   * `cdkd bootstrap --container-repo <name>` (issue #1011) a region's
+   * repo can carry ANY name — the marker is the source of truth — so
+   * the conventional `cdkd-container-assets-` prefix regex alone cannot
+   * classify images published to a custom-named repo. When set,
+   * `isCdkAssetImageUri` additionally accepts any ECR-hosted URI whose
+   * repository path component equals this name. Populated lazily by the
+   * CLI from the region's bootstrap marker under `--from-state` only
+   * (`--from-cfn-stack` stacks were deployed via CloudFormation and
+   * therefore use conventional names the regex already matches).
+   */
+  cdkAssetContainerRepo?: string;
+};
 
 /**
  * Parse a `target` argument into (optional stack pattern, path-or-id).
@@ -254,6 +269,16 @@ export interface EcsImageResolutionNeeds {
    * load cost.
    */
   needsCrossStackResolver: boolean;
+  /**
+   * Any container's `Image` is a flat-extractable ECR-hosted URI (host
+   * part contains `.dkr.ecr.`) whose repository path component does NOT
+   * match the conventional `CDK_ASSET_IMAGE_REPO_RE` shapes. The CLI
+   * uses this flag to gate the lazy bootstrap-marker read (issue #1025):
+   * a region bootstrapped with `cdkd bootstrap --container-repo <name>`
+   * publishes container assets to a custom-named repo the prefix regex
+   * cannot recognize, and only the marker knows the actual name.
+   */
+  needsAssetRepoMarker: boolean;
 }
 
 export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolutionNeeds {
@@ -262,6 +287,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
   let needsStateResources = false;
   let needsEnvOrSecretSubstitution = false;
   let needsCrossStackResolver = false;
+  let needsAssetRepoMarker = false;
 
   for (const res of Object.values(resources)) {
     if (res.Type !== 'AWS::ECS::TaskDefinition') continue;
@@ -276,6 +302,19 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
       const need = inspectImageForSubstitutions(image, resources);
       if (need.pseudo) needsPseudoParameters = true;
       if (need.state) needsStateResources = true;
+      // Issue #1025: an ECR-hosted image whose repo component is not one
+      // of the conventional container-assets shapes may still be a cdkd
+      // asset image published to a custom-named repo (`cdkd bootstrap
+      // --container-repo`). Only the region's bootstrap marker can tell,
+      // so flag it for the CLI's lazy marker read.
+      const flat = extractImageString(image);
+      if (
+        flat !== undefined &&
+        extractEcrRepoComponent(flat) !== undefined &&
+        !CDK_ASSET_IMAGE_REPO_RE.test(flat)
+      ) {
+        needsAssetRepoMarker = true;
+      }
       if (containerHasIntrinsicEnvOrSecret(co)) needsEnvOrSecretSubstitution = true;
       if (containerHasCrossStackEnvOrSecret(co)) {
         needsEnvOrSecretSubstitution = true;
@@ -308,6 +347,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
     needsStateResources,
     needsEnvOrSecretSubstitution,
     needsCrossStackResolver,
+    needsAssetRepoMarker,
   };
 }
 
@@ -983,12 +1023,57 @@ function buildSubstitutionContextFromImageContext(
  * `cdk.out` build, so both must classify as `kind: 'cdk-asset'`. The `cdk-`
  * qualifier is generalized to `[a-z0-9]+` so a custom-qualifier bootstrap is
  * matched too (previously only the hardcoded `hnb659fds` default was).
+ *
+ * Since `cdkd bootstrap --container-repo <name>` (issue #1011) the
+ * cdkd-owned repo can carry ANY name — the per-region bootstrap marker is
+ * the source of truth. The regex therefore cannot recognize images
+ * published to a custom-named repo; `isCdkAssetImageUri` additionally
+ * matches an ECR-hosted URI whose repository path component equals the
+ * marker-resolved name when the caller supplies it (issue #1025). The
+ * regex stays as the no-marker fallback — `cdkd local run-task` can run
+ * without AWS access, where no marker read is possible.
  */
 const CDK_ASSET_IMAGE_REPO_RE = /(?:cdk-[a-z0-9]+|cdkd)-container-assets-/;
 
-/** True when `uri` embeds a CDK-bootstrap or cdkd-owned container-assets repo. */
-function isCdkAssetImageUri(uri: string): boolean {
-  return CDK_ASSET_IMAGE_REPO_RE.test(uri);
+/**
+ * Extract the repository path component of an ECR-hosted image URI.
+ *
+ * The host part (before the first `/`) must contain `.dkr.ecr.` — this
+ * tolerates both concrete hosts (`123456789012.dkr.ecr.us-east-1.amazonaws.com`)
+ * and placeholder-bearing hosts
+ * (`${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}`). The repo
+ * component is the substring after the first `/`, stripped of a trailing
+ * `@<digest>` (first `@`) or `:<tag>` (last `:` — ECR repo names cannot
+ * contain `:` but CAN contain `/`, so the last colon is the tag
+ * separator). Returns `undefined` for non-ECR hosts and empty results.
+ */
+function extractEcrRepoComponent(uri: string): string | undefined {
+  const slash = uri.indexOf('/');
+  if (slash <= 0) return undefined;
+  const host = uri.slice(0, slash);
+  if (!host.includes('.dkr.ecr.')) return undefined;
+  let repo = uri.slice(slash + 1);
+  const at = repo.indexOf('@');
+  if (at !== -1) {
+    repo = repo.slice(0, at);
+  } else {
+    const colon = repo.lastIndexOf(':');
+    if (colon !== -1) repo = repo.slice(0, colon);
+  }
+  return repo.length > 0 ? repo : undefined;
+}
+
+/**
+ * True when `uri` embeds a CDK-bootstrap or cdkd-owned container-assets
+ * repo — either via the conventional-name regex, or (issue #1025) via an
+ * exact match between the URI's ECR repository path component and the
+ * bootstrap-marker-resolved `cdkAssetContainerRepo` name, which covers
+ * regions bootstrapped with `cdkd bootstrap --container-repo <name>`.
+ */
+function isCdkAssetImageUri(uri: string, cdkAssetContainerRepo?: string): boolean {
+  if (CDK_ASSET_IMAGE_REPO_RE.test(uri)) return true;
+  if (cdkAssetContainerRepo === undefined) return false;
+  return extractEcrRepoComponent(uri) === cdkAssetContainerRepo;
 }
 
 /**
@@ -1037,7 +1122,7 @@ function parseContainerImage(
   // unusual but we surface the resulting tagless URI rather than guess.
   const getAttImage = tryResolveImageGetAtt(raw, resources, context);
   if (getAttImage) {
-    return classifyResolvedImage(getAttImage);
+    return classifyResolvedImage(getAttImage, context?.cdkAssetContainerRepo);
   }
 
   // Issue #271: CDK 2.x synthesizes `ContainerImage.fromEcrRepository(repo)`
@@ -1048,7 +1133,7 @@ function parseContainerImage(
   // shape inherently requires `--from-state` (Tier 2).
   const joinResolved = tryResolveImageFnJoin(raw, resources, context);
   if (joinResolved.kind === 'resolved') {
-    return classifyResolvedImage(joinResolved.uri);
+    return classifyResolvedImage(joinResolved.uri, context?.cdkAssetContainerRepo);
   }
   if (joinResolved.kind === 'needs-state') {
     throw new EcsTaskResolutionError(
@@ -1075,10 +1160,11 @@ function parseContainerImage(
   }
 
   // CDK asset shape: contains a CDK-bootstrap or cdkd-owned container-assets
-  // repo (see `isCdkAssetImageUri`). The tail `:<hash>` is the asset hash
-  // (same shape used by Lambda container images — see
+  // repo, or targets the marker-named custom repo when the CLI resolved one
+  // (see `isCdkAssetImageUri`, issue #1025). The tail `:<hash>` is the asset
+  // hash (same shape used by Lambda container images — see
   // `getDockerImageBySourceHash`).
-  if (isCdkAssetImageUri(flat)) {
+  if (isCdkAssetImageUri(flat, context?.cdkAssetContainerRepo)) {
     const hashMatch = /:([a-f0-9]{8,})$/.exec(flat);
     const out: ResolvedEcsImage = { kind: 'cdk-asset' };
     if (hashMatch) out.assetHash = hashMatch[1]!;
@@ -1157,9 +1243,11 @@ function findUnresolvedEcrRepositoryRef(
  * Classify a fully-substituted image URI (Tier 1 / Tier 2 produced a
  * concrete string) into the `ResolvedEcsImage` shape. Splits out so the
  * `Fn::GetAtt` path can share the regex-match branches.
+ * `cdkAssetContainerRepo` is the optional marker-resolved custom repo
+ * name (issue #1025) threaded through from the resolution context.
  */
-function classifyResolvedImage(uri: string): ResolvedEcsImage {
-  if (isCdkAssetImageUri(uri)) {
+function classifyResolvedImage(uri: string, cdkAssetContainerRepo?: string): ResolvedEcsImage {
+  if (isCdkAssetImageUri(uri, cdkAssetContainerRepo)) {
     const hashMatch = /:([a-f0-9]{8,})$/.exec(uri);
     const out: ResolvedEcsImage = { kind: 'cdk-asset' };
     if (hashMatch) out.assetHash = hashMatch[1]!;

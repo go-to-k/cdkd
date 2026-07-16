@@ -364,6 +364,14 @@ Image-URI detection sites currently match the literal
 `local invoke --from-state` reads state that (post-migration) carries cdkd
 names — consistent with what the rewrite deployed.
 
+Update (issue [#1025](https://github.com/go-to-k/cdkd/issues/1025)): custom
+repo names from `cdkd bootstrap --container-repo <name>` (issue #1011) are
+now matched too — `cdkd local run-task --from-state` lazily reads the
+region's bootstrap marker and accepts any ECR-hosted image URI whose
+repository component equals the marker's `containerRepo` as a cdk-asset
+image. The conventional-prefix regex remains the fallback when no marker /
+state context is available (local run-task can run without AWS access).
+
 ## 11. Out of scope (v1) & follow-ups
 
 - **Cross-account / cross-region destinations** (`assumeRoleArn`): already
