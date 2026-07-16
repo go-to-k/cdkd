@@ -273,6 +273,62 @@ describe('renderDiffTree', () => {
     expect(lines).toEqual([]);
   });
 
+  it('renders a whole-value unresolved intrinsic annotated instead of "undefined" (issue #1017)', () => {
+    // The classic Deployment-hash-rotation shape: the Stage's DeploymentId is
+    // rebound to a Deployment this same deploy will CREATE, so the new-side
+    // value is still the raw {Ref} the best-effort resolver could not resolve.
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'ApiStage',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::ApiGateway::Stage',
+        propertyChanges: [
+          {
+            path: 'DeploymentId',
+            oldValue: 'qwpwni',
+            newValue: { Ref: 'ApiDeploymentNewHash123' },
+            requiresReplacement: false,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text).toContain('old: "qwpwni"');
+    expect(text).toContain('new: {"Ref":"ApiDeploymentNewHash123"} (known after deploy)');
+    expect(text).not.toContain('new: undefined');
+  });
+
+  it('renders an old-side raw intrinsic without the known-after-deploy annotation', () => {
+    // Old-side intrinsic (state written by an older cdkd, or the #807
+    // replacement-propagated shape): render the intrinsic, no annotation.
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'Live',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::Lambda::Alias',
+        propertyChanges: [
+          {
+            path: 'FunctionVersion',
+            oldValue: { 'Fn::GetAtt': ['OldVersion', 'Version'] },
+            newValue: '2',
+            requiresReplacement: false,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text).toContain('old: {"Fn::GetAtt":["OldVersion","Version"]}');
+    expect(text).not.toContain('old: {"Fn::GetAtt":["OldVersion","Version"]} (known after deploy)');
+    expect(text).toContain('new: "2"');
+    expect(text).not.toContain('old: undefined');
+  });
+
   it('annotates CREATE / UPDATE lines with [via CC API: <props>] when ccApiRoutes carries the logical id (#614)', () => {
     const root = leaf(
       'P',

@@ -995,6 +995,13 @@ export class DeployEngine {
         },
         stackName
       );
+      // The diff-phase resolution is best-effort (the calculator catches
+      // failures and keeps the raw intrinsic): a Ref to a resource this
+      // same deploy will CREATE is the expected case, so the resolver logs
+      // it at debug, not warn (issue #1017). The provisioning-phase
+      // resolver contexts do NOT set this — there, an unresolvable Ref is
+      // a genuine error signal.
+      diffResolverContext.bestEffort = true;
       const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
       const changes = await this.diffCalculator.calculateDiff(
         currentState,
