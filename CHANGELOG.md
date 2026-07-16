@@ -1,3 +1,10 @@
+# [0.235.0](https://github.com/go-to-k/cdkd/compare/v0.234.1...v0.235.0) (2026-07-16)
+
+
+### Features
+
+* **assets:** auto-create per-region asset storage on first deploy ([#1008](https://github.com/go-to-k/cdkd/issues/1008)) ([ddb811f](https://github.com/go-to-k/cdkd/commit/ddb811ffc12ec5ec42419f4a26f2c64db9bdb1d4))
+
 ## [0.234.1](https://github.com/go-to-k/cdkd/compare/v0.234.0...v0.234.1) (2026-07-16)
 
 
