@@ -1,3 +1,10 @@
+## [0.235.1](https://github.com/go-to-k/cdkd/compare/v0.235.0...v0.235.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **state:** pass ExpectedBucketOwner on every state-bucket-family S3 call ([#1015](https://github.com/go-to-k/cdkd/issues/1015)) ([36d6118](https://github.com/go-to-k/cdkd/commit/36d611829baa16eb012ac431d00a9c693e80ada9))
+
 # [0.235.0](https://github.com/go-to-k/cdkd/compare/v0.234.1...v0.235.0) (2026-07-16)
 
 
