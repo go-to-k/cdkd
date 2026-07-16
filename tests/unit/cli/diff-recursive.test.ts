@@ -445,6 +445,148 @@ describe('computeStackDiff', () => {
     );
     expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
   });
+
+  // Issue #1027 — the diff must mirror the deploy engine's parameter /
+  // condition preprocessing (deploy-engine steps 2.5-2.7), or raw-CFn
+  // templates (CfnInclude et al.) report spurious changes deploy never makes.
+  describe('template Parameters / Conditions parity with deploy (#1027)', () => {
+    const paramTemplate = (
+      resources: CloudFormationTemplate['Resources']
+    ): CloudFormationTemplate => ({
+      Parameters: {
+        Env: { Type: 'String', Default: 'dev' },
+      },
+      Conditions: {
+        IsProd: { 'Fn::Equals': [{ Ref: 'Env' }, 'prod'] },
+      },
+      Resources: resources,
+    });
+
+    it('binds template Parameter defaults so an unchanged param-derived value is NO_CHANGE', async () => {
+      const template = paramTemplate({
+        A: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: { 'Fn::Join': ['-', ['p', { Ref: 'Env' }]] },
+            Value: { 'Fn::Sub': '${Env}-suffix' },
+          },
+        },
+      });
+      const state = st('S', {
+        A: res('AWS::SSM::Parameter', { Name: 'p-dev', Value: 'dev-suffix' }),
+      });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
+    });
+
+    it('prunes a condition-false resource instead of reporting CREATE', async () => {
+      const template = paramTemplate({
+        ProdOnly: {
+          Type: 'AWS::SSM::Parameter',
+          Condition: 'IsProd',
+          Properties: { Value: 'prod-only' },
+        },
+        Always: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+      });
+      const changes = await computeStackDiff(
+        st('S', {}),
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.has('ProdOnly')).toBe(false);
+      expect(changes.get('Always')!.changeType).toBe('CREATE');
+    });
+
+    it('reports DELETE for a condition-false resource still in state (deploy parity)', async () => {
+      const template = paramTemplate({
+        ProdOnly: {
+          Type: 'AWS::SSM::Parameter',
+          Condition: 'IsProd',
+          Properties: { Value: 'prod-only' },
+        },
+      });
+      const state = st('S', { ProdOnly: res('AWS::SSM::Parameter', { Value: 'prod-only' }) });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.get('ProdOnly')!.changeType).toBe('DELETE');
+    });
+
+    it('resolves Fn::If in property values via the evaluated conditions', async () => {
+      const template = paramTemplate({
+        A: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Value: { 'Fn::If': ['IsProd', 'prod-v', 'dev-v'] } },
+        },
+      });
+      const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'dev-v' }) });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
+    });
+
+    it('lets nested input parameters satisfy a required template parameter', async () => {
+      const template: CloudFormationTemplate = {
+        Parameters: { Req: { Type: 'String' } },
+        Resources: {
+          A: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'Req' } } },
+        },
+      };
+      const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'given' }) });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator(),
+        { Req: 'given' }
+      );
+      expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
+    });
+
+    it('falls back to the raw-template diff when a required parameter cannot be bound', async () => {
+      const template: CloudFormationTemplate = {
+        Parameters: { Req: { Type: 'String' } },
+        Resources: {
+          A: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'Req' } } },
+        },
+      };
+      const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'given' }) });
+      // No parameters supplied and no default — binding fails, the diff must
+      // not throw and keeps the pre-#1027 raw-intrinsic comparison (UPDATE).
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.get('A')!.changeType).toBe('UPDATE');
+    });
+  });
 });
 
 describe('buildDiffTree (recursive nested-stack diff)', () => {
