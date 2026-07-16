@@ -1,3 +1,10 @@
+## [0.238.2](https://github.com/go-to-k/cdkd/compare/v0.238.1...v0.238.2) (2026-07-16)
+
+
+### Bug Fixes
+
+* **provisioning:** add no-op SDK provider for AWS::CloudFormation::WaitConditionHandle ([#1029](https://github.com/go-to-k/cdkd/issues/1029)) ([e1ba3fc](https://github.com/go-to-k/cdkd/commit/e1ba3fcab78cbf94ed1c1a53036397ac69ff8be8))
+
 ## [0.238.1](https://github.com/go-to-k/cdkd/compare/v0.238.0...v0.238.1) (2026-07-16)
 
 
