@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockS3Send, mockStsSend, mockEnsureAssetStorage } = vi.hoisted(() => ({
+const { mockS3Send, mockStsSend, mockEnsureAssetStorage, mockRebuildClient } = vi.hoisted(() => ({
   mockS3Send: vi.fn(),
   mockStsSend: vi.fn(),
   mockEnsureAssetStorage: vi.fn(),
+  mockRebuildClient: vi.fn(),
+}));
+
+// The command resolves the state bucket's ACTUAL region before any
+// state-bucket S3 call (the bucket may live in a different region than
+// --region — see the cross-region test below). Default: `null` = "already in
+// the right region, keep the original client".
+vi.mock('../../../src/utils/bucket-region-client.js', () => ({
+  rebuildClientForBucketRegion: mockRebuildClient,
 }));
 
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -87,6 +96,7 @@ function scriptStateBucket(exists: boolean): void {
 beforeEach(() => {
   vi.clearAllMocks();
   mockStsSend.mockResolvedValue({ Account: ACCOUNT });
+  mockRebuildClient.mockResolvedValue(null);
   mockEnsureAssetStorage.mockResolvedValue({
     assetBucket: `cdkd-assets-${ACCOUNT}-us-east-1`,
     containerRepo: `cdkd-container-assets-${ACCOUNT}-us-east-1`,
@@ -161,6 +171,33 @@ describe('cdkd bootstrap', () => {
     expect(names).toContain(PutBucketPolicyCommand.name);
     expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
       expect.objectContaining({ force: true })
+    );
+  });
+
+  it('routes state-bucket calls through the bucket-region client when --region differs from the bucket region (upgrade path)', async () => {
+    // Existing state bucket in us-east-1; user opts ap-northeast-1 into
+    // asset storage. Without the bucket-region rebuild, HeadBucket against
+    // the ap-northeast-1 client 301s and bootstrap dies before the asset
+    // storage leg (seen live, 2026-07-16).
+    const mockRebuiltSend = vi.fn().mockResolvedValue({});
+    mockRebuildClient.mockResolvedValue({ send: mockRebuiltSend, destroy: vi.fn() });
+
+    await runBootstrap(['--region', 'ap-northeast-1']);
+
+    expect(mockRebuildClient).toHaveBeenCalledWith(
+      expect.anything(),
+      `cdkd-state-${ACCOUNT}`,
+      expect.anything()
+    );
+    // Every STATE-bucket call went through the rebuilt (bucket-region)
+    // client — the --region client made no state-bucket S3 call.
+    expect(mockRebuiltSend.mock.calls.map((c) => (c[0] as object).constructor.name)).toContain(
+      HeadBucketCommand.name
+    );
+    expect(mockS3Send).not.toHaveBeenCalled();
+    // The asset-storage leg still runs against --region.
+    expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'ap-northeast-1' })
     );
   });
 
