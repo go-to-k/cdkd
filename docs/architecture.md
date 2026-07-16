@@ -223,7 +223,9 @@ and `publish-assets`; `synth` / `export` stay unrewritten by design.
 
 **Publish Destinations**:
 
-- Legacy mode (default): S3 `cdk-hnb659fds-assets-${AccountId}-${Region}/`,
+- Legacy mode (no bootstrap marker for the region — bootstrapped by
+  cdkd < 0.232.0 or with `--no-assets`): S3
+  `cdk-hnb659fds-assets-${AccountId}-${Region}/`,
   ECR `cdk-hnb659fds-container-assets-${AccountId}-${Region}`
 - cdkd-assets mode (region opted in via `cdkd bootstrap`): S3
   `cdkd-assets-${AccountId}-${Region}/`, ECR

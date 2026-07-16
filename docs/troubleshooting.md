@@ -424,21 +424,34 @@ AssetPublisherError: Failed to publish asset: Access Denied
 
 #### Causes
 
-- Asset bucket (`cdk-hnb659fds-assets-*`) doesn't exist
-- CDK Bootstrap has not been run
+- Asset storage doesn't exist for the target: in cdkd-assets mode the
+  `cdkd-assets-*` bucket / `cdkd-container-assets-*` repo (someone deleted
+  them after bootstrap), in legacy mode the CDK bootstrap bucket
+  (`cdk-hnb659fds-assets-*`)
 - Insufficient IAM permissions
 
 #### Solutions
 
-**1. Run CDK Bootstrap (required prerequisite)**
+**1. Run `cdkd bootstrap` for the region**
 
-cdkd uses CDK's bootstrap bucket for asset uploads. The `cdkd bootstrap` command only creates the state management bucket — it does NOT create the asset bucket. You must run CDK bootstrap separately:
+`cdkd bootstrap` creates the state bucket AND cdkd-owned asset storage for
+`--region` (asset bucket + container-asset ECR repo + opt-in marker), so no
+`cdk bootstrap` is needed:
 
 ```bash
-npx cdk bootstrap aws://123456789012/us-east-1
+cdkd bootstrap --region us-east-1
 ```
 
-> **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest, so custom bootstrap is fully supported.
+Normally this is automatic — the first `cdkd deploy` into a region
+auto-creates the storage (issue #1007), so this error usually means the
+auto-create was declined / opted out (`--no-auto-asset-storage`), failed
+(check the deploy output for the auto-create warning), or someone deleted
+the bucket/repo after opt-in. Deploys that stay in **legacy mode** publish
+to the CDK bootstrap bucket instead, which then must exist
+(`npx cdk bootstrap aws://123456789012/us-east-1`). See
+[cli-reference.md](cli-reference.md#cdkd-bootstrap).
+
+> **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest (and, in cdkd-assets mode, redirects default-bootstrap-shaped destinations to cdkd-owned storage), so custom qualifiers are fully supported.
 
 **2. Skip asset publishing**
 
@@ -449,7 +462,10 @@ node dist/cli.js deploy --app "..." --skip-assets
 
 **3. Check IAM permissions**
 
-The following permissions are required:
+cdkd publishes assets with the caller's credentials directly (it never
+assumes CDK's `cdk-hnb659fds-file-publishing-role-*`). The caller needs
+S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode,
+`cdk-hnb659fds-assets-*` in legacy mode:
 
 ```json
 {
@@ -461,16 +477,17 @@ The following permissions are required:
         "s3:PutObject",
         "s3:GetObject"
       ],
-      "Resource": "arn:aws:s3:::cdk-hnb659fds-assets-*/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "sts:AssumeRole",
-      "Resource": "arn:aws:iam::*:role/cdk-hnb659fds-file-publishing-role-*"
+      "Resource": [
+        "arn:aws:s3:::cdkd-assets-*/*",
+        "arn:aws:s3:::cdk-hnb659fds-assets-*/*"
+      ]
     }
   ]
 }
 ```
+
+(Docker image assets additionally need ECR push permissions on the
+container-asset repo.)
 
 ### Issue: Lambda Deployment Fails
 
@@ -494,8 +511,8 @@ The provided execution role does not have permissions to call CreateFunction.
 # Check asset manifest
 cat cdk.out/MyStack.assets.json
 
-# Check asset bucket
-aws s3 ls s3://cdk-hnb659fds-assets-${AWS_ACCOUNT_ID}-${AWS_REGION}/
+# Check asset bucket (cdkd-assets mode; use cdk-hnb659fds-assets-... in legacy mode)
+aws s3 ls s3://cdkd-assets-${AWS_ACCOUNT_ID}-${AWS_REGION}/
 ```
 
 **2. Check IAM Role dependencies**
