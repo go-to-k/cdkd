@@ -180,14 +180,15 @@ describe('cdkd bootstrap', () => {
     // the ap-northeast-1 client 301s and bootstrap dies before the asset
     // storage leg (seen live, 2026-07-16).
     const mockRebuiltSend = vi.fn().mockResolvedValue({});
-    mockRebuildClient.mockResolvedValue({ send: mockRebuiltSend, destroy: vi.fn() });
+    const mockRebuiltDestroy = vi.fn();
+    mockRebuildClient.mockResolvedValue({ send: mockRebuiltSend, destroy: mockRebuiltDestroy });
 
-    await runBootstrap(['--region', 'ap-northeast-1']);
+    await runBootstrap(['--region', 'ap-northeast-1', '--profile', 'dev']);
 
     expect(mockRebuildClient).toHaveBeenCalledWith(
       expect.anything(),
       `cdkd-state-${ACCOUNT}`,
-      expect.anything()
+      expect.objectContaining({ profile: 'dev' })
     );
     // Every STATE-bucket call went through the rebuilt (bucket-region)
     // client — the --region client made no state-bucket S3 call.
@@ -199,6 +200,8 @@ describe('cdkd bootstrap', () => {
     expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
       expect.objectContaining({ region: 'ap-northeast-1' })
     );
+    // The command owns the rebuilt client and must destroy it on the way out.
+    expect(mockRebuiltDestroy).toHaveBeenCalled();
   });
 
   it('honors --state-bucket for the marker-carrying bucket name', async () => {

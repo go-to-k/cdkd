@@ -675,7 +675,9 @@ export class IntrinsicFunctionResolver {
       return parameters;
     }
 
-    const referencedNames = collectReferencedParameterNames(template);
+    // Computed lazily — only templates that actually carry an SSM-typed
+    // default without a user-provided value pay for the template walk.
+    let referencedNames: Set<string> | undefined;
 
     for (const [name, definition] of Object.entries(templateParameters)) {
       const paramDef = definition as ParameterDefinition;
@@ -702,6 +704,7 @@ export class IntrinsicFunctionResolver {
           // resolving it eagerly makes every deploy require `cdk bootstrap` in
           // the target region (GetParameter throws ParameterNotFound
           // otherwise), defeating cdkd-owned asset storage (issue #1002).
+          referencedNames ??= collectReferencedParameterNames(template);
           if (!referencedNames.has(name)) {
             this.logger.debug(
               `Parameter ${name}: skipping SSM resolution (not referenced by Resources/Outputs/Conditions)`

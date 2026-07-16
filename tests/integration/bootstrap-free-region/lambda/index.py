@@ -1,2 +1,2 @@
 def handler(event, context):
-    return {"statusCode": 200, "body": "asset-bootstrap integ"}
+    return {"statusCode": 200, "body": "bootstrap-free-region integ"}
