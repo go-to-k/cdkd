@@ -16,6 +16,7 @@ import {
 } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
+import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 
@@ -170,10 +171,28 @@ export class S3StateBackend {
    * synthetic `UnknownError` (e.g. cross-region HEAD) becomes a concrete
    * "Bucket does not exist" / "Access denied" / "different region" message.
    */
+  /**
+   * `ExpectedBucketOwner` spread for every state-bucket S3 call — S3 itself
+   * rejects the call (403) when the bucket is owned by another account,
+   * closing the predictable-name squatting hole (a foreign bucket that
+   * ALLOWS this account would otherwise silently receive state
+   * reads/writes). Best-effort: resolves to an empty object for
+   * non-standard clients (test doubles) — see expected-bucket-owner.ts.
+   */
+  private async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
+    return expectedOwnerParam(this.s3Client);
+  }
+
   async verifyBucketExists(): Promise<void> {
     await this.ensureClientForBucket();
     try {
-      await this.s3Client.send(new HeadBucketCommand({ Bucket: this.config.bucket }));
+      await this.s3Client.send(
+        new HeadBucketCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          ...(await this.ownerParam()),
+        })
+      );
     } catch (error) {
       const name = (error as { name?: string }).name;
       if (name === 'NotFound' || name === 'NoSuchBucket') {
@@ -242,6 +261,7 @@ export class S3StateBackend {
       const response = await this.s3Client.send(
         new GetObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: newKey,
         })
       );
@@ -327,6 +347,7 @@ export class S3StateBackend {
       const response = await this.s3Client.send(
         new PutObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: newKey,
           Body: bodyString,
           ContentLength: Buffer.byteLength(bodyString),
@@ -352,6 +373,7 @@ export class S3StateBackend {
           await this.s3Client.send(
             new DeleteObjectCommand({
               Bucket: this.config.bucket,
+              ...(await this.ownerParam()),
               Key: this.getLegacyStateKey(stackName),
             })
           );
@@ -400,6 +422,7 @@ export class S3StateBackend {
       await this.s3Client.send(
         new DeleteObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: this.getStateKey(stackName, region),
         })
       );
@@ -409,6 +432,7 @@ export class S3StateBackend {
         await this.s3Client.send(
           new DeleteObjectCommand({
             Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
             Key: this.getLegacyStateKey(stackName),
           })
         );
@@ -456,6 +480,7 @@ export class S3StateBackend {
         const response = await this.s3Client.send(
           new ListObjectsV2Command({
             Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
             Prefix: prefix,
             ...(continuationToken && { ContinuationToken: continuationToken }),
           })
@@ -521,6 +546,7 @@ export class S3StateBackend {
     await this.s3Client.send(
       new PutObjectCommand({
         Bucket: this.config.bucket,
+        ...(await this.ownerParam()),
         Key: key,
         Body: body,
         ContentLength: Buffer.byteLength(body),
@@ -539,6 +565,7 @@ export class S3StateBackend {
       const response = await this.s3Client.send(
         new GetObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: key,
         })
       );
@@ -564,6 +591,7 @@ export class S3StateBackend {
       const response = await this.s3Client.send(
         new ListObjectsV2Command({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Prefix: keyPrefix,
           ...(continuationToken && { ContinuationToken: continuationToken }),
         })
@@ -599,6 +627,7 @@ export class S3StateBackend {
       const response = await this.s3Client.send(
         new DeleteObjectsCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true },
         })
       );
@@ -622,6 +651,7 @@ export class S3StateBackend {
       await this.s3Client.send(
         new HeadObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: key,
         })
       );
@@ -644,6 +674,7 @@ export class S3StateBackend {
       const response = await this.s3Client.send(
         new GetObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: this.getLegacyStateKey(stackName),
         })
       );
@@ -678,6 +709,7 @@ export class S3StateBackend {
       const response = await this.s3Client.send(
         new GetObjectCommand({
           Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
           Key: this.getLegacyStateKey(stackName),
         })
       );

@@ -23,7 +23,6 @@
 
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import type { S3Client } from '@aws-sdk/client-s3';
-import type { AwsCredentialIdentity } from '@aws-sdk/types';
 import { getLogger } from './logger.js';
 
 const cache = new WeakMap<object, Promise<string | undefined>>();
@@ -59,12 +58,21 @@ export function resolveExpectedBucketOwner(client: S3Client): Promise<string | u
         return undefined;
       }
       const region = await (config.region as () => Promise<unknown>)();
-      const credentials = (await (
-        config.credentials as () => Promise<unknown>
-      )()) as AwsCredentialIdentity;
+      const credentials = (await (config.credentials as () => Promise<unknown>)()) as {
+        accessKeyId?: string;
+        secretAccessKey?: string;
+        sessionToken?: string;
+      };
+      if (!credentials?.accessKeyId || !credentials.secretAccessKey) {
+        return undefined;
+      }
       const sts = new STSClient({
-        ...(typeof region === 'string' && region && { region }),
-        credentials,
+        ...(typeof region === 'string' && region ? { region } : {}),
+        credentials: {
+          accessKeyId: credentials.accessKeyId,
+          secretAccessKey: credentials.secretAccessKey,
+          ...(credentials.sessionToken && { sessionToken: credentials.sessionToken }),
+        },
       });
       try {
         const identity = await sts.send(new GetCallerIdentityCommand({}));

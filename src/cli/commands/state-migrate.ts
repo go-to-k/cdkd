@@ -23,6 +23,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
 import { getDefaultStateBucketName, getLegacyStateBucketName } from '../config-loader.js';
+import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 
 interface MigrateOptions {
   region?: string;
@@ -155,6 +156,8 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
             new CopyObjectCommand({
               Bucket: newBucket,
               Key: obj.Key,
+              ...(await expectedOwnerParam(newS3)),
+              ExpectedSourceBucketOwner: accountId,
               // CopySource needs encoding for slashes inside the key path.
               CopySource: encodeURIComponent(`${legacyBucket}/${obj.Key}`),
             })
@@ -180,7 +183,12 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
           logger.info(`Emptying source bucket ${legacyBucket} (all versions + delete markers)...`);
           await emptyBucketAllVersions(legacyS3, legacyBucket);
           logger.info(`Deleting source bucket ${legacyBucket}...`);
-          await legacyS3.send(new DeleteBucketCommand({ Bucket: legacyBucket }));
+          await legacyS3.send(
+            new DeleteBucketCommand({
+              Bucket: legacyBucket,
+              ...(await expectedOwnerParam(legacyS3)),
+            })
+          );
           logger.info(`✓ Deleted source bucket: ${legacyBucket}`);
         } else {
           logger.info(
@@ -202,7 +210,7 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
 
 async function bucketExists(s3: S3Client, bucketName: string): Promise<boolean> {
   try {
-    await s3.send(new HeadBucketCommand({ Bucket: bucketName }));
+    await s3.send(new HeadBucketCommand({ Bucket: bucketName, ...(await expectedOwnerParam(s3)) }));
     return true;
   } catch (error) {
     const err = error as {
@@ -226,6 +234,7 @@ async function listAllObjects(s3: S3Client, bucket: string): Promise<_Object[]> 
     const resp = await s3.send(
       new ListObjectsV2Command({
         Bucket: bucket,
+        ...(await expectedOwnerParam(s3)),
         ...(continuationToken && { ContinuationToken: continuationToken }),
       })
     );
@@ -303,12 +312,14 @@ async function ensureDestinationBucket(
   await s3.send(
     new PutBucketVersioningCommand({
       Bucket: bucketName,
+      ...(await expectedOwnerParam(s3)),
       VersioningConfiguration: { Status: 'Enabled' },
     })
   );
   await s3.send(
     new PutBucketEncryptionCommand({
       Bucket: bucketName,
+      ...(await expectedOwnerParam(s3)),
       ServerSideEncryptionConfiguration: {
         Rules: [
           {
@@ -322,6 +333,7 @@ async function ensureDestinationBucket(
   await s3.send(
     new PutBucketPolicyCommand({
       Bucket: bucketName,
+      ...(await expectedOwnerParam(s3)),
       Policy: JSON.stringify({
         Version: '2012-10-17',
         Statement: [
@@ -353,6 +365,7 @@ async function emptyBucketAllVersions(s3: S3Client, bucket: string): Promise<voi
     const resp = await s3.send(
       new ListObjectVersionsCommand({
         Bucket: bucket,
+        ...(await expectedOwnerParam(s3)),
         ...(keyMarker && { KeyMarker: keyMarker }),
         ...(versionIdMarker && { VersionIdMarker: versionIdMarker }),
       })
@@ -372,6 +385,7 @@ async function emptyBucketAllVersions(s3: S3Client, bucket: string): Promise<voi
       await s3.send(
         new DeleteObjectsCommand({
           Bucket: bucket,
+          ...(await expectedOwnerParam(s3)),
           Delete: {
             Objects: batch,
             Quiet: true,

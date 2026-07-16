@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
 import type { TemplateFormat } from './yaml-cfn.js';
+import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 
 /**
  * CloudFormation `TemplateBody` hard limit (51,200 bytes). Templates larger
@@ -126,6 +127,7 @@ export async function uploadCfnTemplate(
   try {
     await s3.send(
       new PutObjectCommand({
+        ...(await expectedOwnerParam(s3)),
         Bucket: bucket,
         Key: key,
         Body: body,
@@ -143,7 +145,9 @@ export async function uploadCfnTemplate(
   const url = `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
   const cleanup = async (): Promise<void> => {
     try {
-      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+      await s3.send(
+        new DeleteObjectCommand({ Bucket: bucket, Key: key, ...(await expectedOwnerParam(s3)) })
+      );
     } finally {
       s3.destroy();
     }

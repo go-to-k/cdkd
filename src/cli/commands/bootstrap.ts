@@ -103,7 +103,9 @@ async function bootstrapCommand(options: {
     // ("different region", "access denied", etc.).
     let bucketExists = false;
     try {
-      await stateBucketS3.send(new HeadBucketCommand({ Bucket: bucketName }));
+      await stateBucketS3.send(
+        new HeadBucketCommand({ Bucket: bucketName, ExpectedBucketOwner: accountId })
+      );
       bucketExists = true;
       logger.info(`Bucket ${bucketName} already exists`);
     } catch (error) {
@@ -166,6 +168,7 @@ async function bootstrapCommand(options: {
       await stateBucketS3.send(
         new PutBucketVersioningCommand({
           Bucket: bucketName,
+          ExpectedBucketOwner: accountId,
           VersioningConfiguration: {
             Status: 'Enabled',
           },
@@ -178,6 +181,7 @@ async function bootstrapCommand(options: {
       await stateBucketS3.send(
         new PutBucketEncryptionCommand({
           Bucket: bucketName,
+          ExpectedBucketOwner: accountId,
           ServerSideEncryptionConfiguration: {
             Rules: [
               {
@@ -215,6 +219,7 @@ async function bootstrapCommand(options: {
       await stateBucketS3.send(
         new PutBucketPolicyCommand({
           Bucket: bucketName,
+          ExpectedBucketOwner: accountId,
           Policy: JSON.stringify(bucketPolicy),
         })
       );

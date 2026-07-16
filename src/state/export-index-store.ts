@@ -48,6 +48,7 @@ import {
   S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import type { S3StateBackend } from './s3-state-backend.js';
 
@@ -199,6 +200,15 @@ export class ExportIndexStore {
    * `config.region()` shape (e.g. a hand-rolled test double) the resolution
    * is skipped and the original client is used unchanged.
    */
+  /**
+   * `ExpectedBucketOwner` spread for every state-bucket S3 call (squatting
+   * hardening — see src/utils/expected-bucket-owner.ts). Best-effort:
+   * resolves to an empty object for non-standard clients (test doubles).
+   */
+  private async ownerParam(): Promise<{ ExpectedBucketOwner?: string }> {
+    return expectedOwnerParam(this.s3Client);
+  }
+
   private async ensureClientForBucket(): Promise<void> {
     if (this.clientResolved) return;
     if (this.resolveInFlight) return this.resolveInFlight;
@@ -396,6 +406,7 @@ export class ExportIndexStore {
       const response = await this.s3Client.send(
         new GetObjectCommand({
           Bucket: this.bucket,
+          ...(await this.ownerParam()),
           Key: this.indexKey(),
         })
       );
@@ -416,6 +427,7 @@ export class ExportIndexStore {
     const response = await this.s3Client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
+        ...(await this.ownerParam()),
         Key: this.indexKey(),
         Body: body,
         ContentLength: Buffer.byteLength(body),
