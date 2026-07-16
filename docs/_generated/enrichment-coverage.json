@@ -492,7 +492,7 @@
     {
       "resourceType": "AWS::CloudFormation::WaitConditionHandle",
       "bucket": "enriched",
-      "sdkBacked": false,
+      "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
       ],
