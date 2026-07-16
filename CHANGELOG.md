@@ -1,3 +1,10 @@
+# [0.236.0](https://github.com/go-to-k/cdkd/compare/v0.235.1...v0.236.0) (2026-07-16)
+
+
+### Features
+
+* **bootstrap:** add --destroy teardown for cdkd-created account resources ([#1018](https://github.com/go-to-k/cdkd/issues/1018)) ([0d7aa08](https://github.com/go-to-k/cdkd/commit/0d7aa08074ffb89458beb8ede4d6668c8ef7bfcf))
+
 ## [0.235.1](https://github.com/go-to-k/cdkd/compare/v0.235.0...v0.235.1) (2026-07-16)
 
 
