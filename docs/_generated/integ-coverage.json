@@ -122,10 +122,14 @@
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
         "apigateway",
+        "apigw-gateway-response",
         "apigw-stage-throttling"
       ],
       "signals": {
         "apigateway": [
+          "literal"
+        ],
+        "apigw-gateway-response": [
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -157,6 +161,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-gateway-response",
         "apigw-stage-throttling"
       ],
       "signals": {
@@ -164,6 +169,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-gateway-response": [
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -176,6 +184,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-gateway-response",
         "apigw-stage-throttling"
       ],
       "signals": {
@@ -183,6 +192,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-gateway-response": [
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -214,6 +226,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-gateway-response",
         "apigw-stage-throttling"
       ],
       "signals": {
@@ -221,6 +234,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-gateway-response": [
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -2455,11 +2471,16 @@
     {
       "resourceType": "AWS::Events::EventBus",
       "integs": [
-        "eventbridge"
+        "eventbridge",
+        "eventbridge-archive"
       ],
       "signals": {
         "eventbridge": [
           "l2"
+        ],
+        "eventbridge-archive": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -2660,11 +2681,13 @@
         "export",
         "glue-update-hardening",
         "iam-managed-policy",
+        "iam-oidc-provider",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "infra-security",
         "intrinsic-functions",
+        "lambda-snapstart",
         "local-invoke-dotnet",
         "local-invoke-java",
         "local-invoke-provided",
@@ -2744,6 +2767,10 @@
         "iam-managed-policy": [
           "l2"
         ],
+        "iam-oidc-provider": [
+          "l2",
+          "literal"
+        ],
         "iam-propagation-stress": [
           "l2"
         ],
@@ -2760,6 +2787,9 @@
         ],
         "intrinsic-functions": [
           "l2"
+        ],
+        "lambda-snapstart": [
+          "literal"
         ],
         "local-invoke-dotnet": [
           "l2"
@@ -3074,6 +3104,7 @@
         "lambda-layer-version-update",
         "lambda-log-retention",
         "lambda-reserved-concurrency",
+        "lambda-snapstart",
         "lambda-versioning",
         "local-invoke",
         "local-invoke-buildkit",
@@ -3262,6 +3293,10 @@
         ],
         "lambda-reserved-concurrency": [
           "l2"
+        ],
+        "lambda-snapstart": [
+          "l2",
+          "literal"
         ],
         "lambda-versioning": [
           "l2",
@@ -4652,6 +4687,7 @@
   ],
   "unknownTypesInIntegs": [
     "AWS::ApiGateway::ApiKey",
+    "AWS::ApiGateway::GatewayResponse",
     "AWS::ApiGateway::Model",
     "AWS::ApiGateway::RequestValidator",
     "AWS::ApiGateway::RestApi",
@@ -4686,6 +4722,7 @@
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
     "AWS::Events::ApiDestination",
+    "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
@@ -4698,6 +4735,8 @@
     "AWS::Redshift::Cluster",
     "AWS::Route53::CidrCollection",
     "AWS::Route53::HealthCheck",
+    "AWS::SES::ConfigurationSet",
+    "AWS::SES::EmailIdentity",
     "AWS::SSM::Document",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
