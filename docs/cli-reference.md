@@ -1168,6 +1168,22 @@ any per-item failure is surfaced as a hard error.
 
 Also accepts `--state-bucket`, `--profile`, `--role-arn`, `--verbose`.
 
+**Reference shapes covered**: `{S3Bucket, S3Key}` / `{Bucket, Key}` (and any
+other object shape carrying the asset bucket name as a value — every sibling
+string is protected), `s3://` URIs, virtual-hosted and path-style `https`
+URLs, ECR image URIs by tag and/or digest, content-addressed
+`<sha256>.<ext>` tokens anywhere in a state string (protects keys embedded
+in joined lists), and references inside base64-encoded values (one decode
+level — covers `Fn::Base64`-resolved EC2 / ASG UserData fetching assets at
+boot).
+
+**Known limitation**: an UNTAGGED child manifest of a referenced multi-arch
+/ attestation image index is not individually protected (references point at
+the index). cdkd's own image publisher builds single-manifest images
+(`BUILDX_NO_DEFAULT_ATTESTATIONS=1`), so this only affects images
+hand-pushed into the cdkd repo — keep those out of gc'd repos or reference
+them by digest in a deployed stack.
+
 ## `cdkd diff`
 
 `cdkd diff [<stacks...>]` synthesizes the CDK app and reports the

@@ -116,11 +116,45 @@ function escapeRegExp(value: string): string {
 const KEY_TERMINATORS = '[^\\s"\'?]';
 
 /**
+ * cdkd's publishers write content-addressed keys (`<sha256>.<ext>`). A
+ * second, name-independent pass collects every such token from every
+ * scanned string — belt-and-braces against URL captures that ran through
+ * an embedded separator (e.g. two `s3://` URIs joined by a comma yield ONE
+ * over-long capture, leaving both real keys unprotected). Over-collection
+ * only ever KEEPS more.
+ */
+const CONTENT_HASH_KEY_RE = /\b[0-9a-f]{64}\.[A-Za-z0-9]+\b/g;
+
+/**
+ * Try to decode a base64-looking string (e.g. `Fn::Base64`-resolved EC2 /
+ * ASG UserData stored in state) so references INSIDE it are collected too —
+ * an `aws s3 cp s3://<assetBucket>/<key>` in UserData is a long-lived
+ * reference (every future scale-out fetches it at boot). Returns null for
+ * strings that are not plausibly base64-encoded text; a binary decode is
+ * rejected by the control-character check. Hex strings (valid base64
+ * alphabet) decode to binary and are rejected the same way.
+ */
+function tryDecodeBase64Text(value: string): string | null {
+  if (value.length < 24 || value.length % 4 !== 0) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+  try {
+    const decoded = Buffer.from(value, 'base64').toString('utf8');
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x08\x0e-\x1f\ufffd]/.test(decoded)) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Per-(bucket, repo) reference extractors. Built once per run.
  *
  * Matched shapes (all carry the bucket / repo name verbatim):
- * - `{ S3Bucket: <assetBucket>, S3Key: <key> }` objects (Lambda `Code`,
- *   nested-stack `TemplateURL` pairs, ...) — handled in the walk itself.
+ * - (bucket, key) location OBJECTS — any object carrying the asset bucket
+ *   name as a value (`{S3Bucket, S3Key}` Lambda Code, `{Bucket, Key}`
+ *   ApiGateway BodyS3Location / SFN DefinitionS3Location, ...) — handled
+ *   in the walk itself; every sibling string value is collected.
  * - `s3://<assetBucket>/<key>` URIs.
  * - `https://<assetBucket>.s3[.<region>].amazonaws.com/<key>`
  *   (virtual-hosted style, region / dualstack variants included).
@@ -150,16 +184,29 @@ function buildReferenceExtractors(marker: BootstrapMarker): {
     'g'
   );
 
+  const extractOnce = (value: string, refs: AssetReferences): void => {
+    for (const re of [s3UriRe, virtualHostedRe, pathStyleRe]) {
+      for (const match of value.matchAll(re)) {
+        if (match[1]) refs.s3Keys.add(match[1]);
+      }
+    }
+    for (const match of value.matchAll(ecrRe)) {
+      if (match[1]) refs.imageTags.add(match[1]);
+      if (match[2]) refs.imageDigests.add(match[2]);
+    }
+    // Name-independent content-hash pass (see CONTENT_HASH_KEY_RE).
+    for (const match of value.matchAll(CONTENT_HASH_KEY_RE)) {
+      refs.s3Keys.add(match[0]);
+    }
+  };
+
   return {
     extractFromString(value: string, refs: AssetReferences): void {
-      for (const re of [s3UriRe, virtualHostedRe, pathStyleRe]) {
-        for (const match of value.matchAll(re)) {
-          if (match[1]) refs.s3Keys.add(match[1]);
-        }
-      }
-      for (const match of value.matchAll(ecrRe)) {
-        if (match[1]) refs.imageTags.add(match[1]);
-        if (match[2]) refs.imageDigests.add(match[2]);
+      extractOnce(value, refs);
+      // One decode level covers Fn::Base64-resolved UserData in state.
+      const decoded = tryDecodeBase64Text(value);
+      if (decoded !== null) {
+        extractOnce(decoded, refs);
       }
     },
   };
@@ -194,11 +241,23 @@ export function collectAssetReferences(
     }
     if (value !== null && typeof value === 'object') {
       const record = value as Record<string, unknown>;
-      // `{ S3Bucket: <assetBucket>, S3Key: <key> }` pair (Lambda Code etc.).
-      if (record['S3Bucket'] === marker.assetBucket && typeof record['S3Key'] === 'string') {
-        refs.s3Keys.add(record['S3Key']);
+      // Any object carrying the asset bucket name as a VALUE is treated as
+      // a (bucket, key) location shape: `{S3Bucket, S3Key}` (Lambda Code,
+      // nested-stack TemplateURL pairs), `{Bucket, Key}` (ApiGateway
+      // BodyS3Location, StepFunctions DefinitionS3Location), and any
+      // future variant. EVERY sibling string value is collected as a
+      // candidate key — a non-key sibling merely protects a key that does
+      // not exist (safe over-collection), while a missed shape would
+      // delete a live asset (found as a review blocker on this PR).
+      const values = Object.values(record);
+      if (values.some((v) => v === marker.assetBucket)) {
+        for (const v of values) {
+          if (typeof v === 'string' && v !== marker.assetBucket) {
+            refs.s3Keys.add(v);
+          }
+        }
       }
-      for (const item of Object.values(record)) walk(item);
+      for (const item of values) walk(item);
     }
   };
 
@@ -236,11 +295,16 @@ async function scanReferencedAssets(
     try {
       parsed = JSON.parse(body);
     } catch (error) {
+      const described = describeStateKey(key);
+      const regionMatch = /^(\S+) \((\S+)\)$/.exec(described);
+      const inspectHint = regionMatch
+        ? `cdkd state show ${regionMatch[1]} --stack-region ${regionMatch[2]}`
+        : `cdkd state show ${described}`;
       throw new CdkdError(
         `State file '${key}' is not valid JSON — aborting: gc must know every ` +
           `referenced asset before deleting anything, and this file's references ` +
           `are unreadable. Repair or remove the corrupt state file ` +
-          `('cdkd state show ${describeStateKey(key).split(' ')[0]}' to inspect), then re-run.`,
+          `('${inspectHint}' to inspect), then re-run.`,
         'GC_STATE_UNREADABLE',
         error as Error
       );

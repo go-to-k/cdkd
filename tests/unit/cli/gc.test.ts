@@ -101,6 +101,21 @@ const REF_DIGEST = `sha256:${'a'.repeat(64)}`;
 const GARBAGE_DIGEST = `sha256:${'b'.repeat(64)}`;
 const NEW_DIGEST = `sha256:${'c'.repeat(64)}`;
 const TAG_ONLY_DIGEST = `sha256:${'d'.repeat(64)}`;
+const MULTI_TAG_DIGEST = `sha256:${'e'.repeat(64)}`;
+const COMBO_DIGEST = `sha256:${'f'.repeat(64)}`;
+
+// Content-addressed keys for the comma-joined-URI belt-and-braces pass:
+// two s3:// URIs joined by a comma yield ONE over-long URL capture, so
+// only the name-independent `<sha256>.<ext>` pass protects them.
+const HASH_KEY_A = `${'1'.repeat(64)}.zip`;
+const HASH_KEY_B = `${'2'.repeat(64)}.zip`;
+
+// Fn::Base64-resolved UserData carrying an s3:// reference — collected via
+// the one-level base64 decode pass.
+const USERDATA_B64 = Buffer.from(
+  `#!/bin/bash\naws s3 cp s3://my-custom-asset-bucket/ref-userdata.sh /tmp/boot.sh\n`,
+  'utf8'
+).toString('base64');
 
 // Older than the 30d default cutoff vs. brand new.
 const OLD = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
@@ -147,6 +162,47 @@ const STATE_BODY = JSON.stringify({
       },
       dependencies: [],
     },
+    Api: {
+      physicalId: 'rest-api',
+      resourceType: 'AWS::ApiGateway::RestApi',
+      properties: {
+        // `{Bucket, Key}` location shape (SpecRestApi / ApiDefinition.fromAsset,
+        // SFN DefinitionS3Location) — the generalized any-value-matches-bucket
+        // pair collection must protect this (review blocker on PR #1022).
+        BodyS3Location: { Bucket: ASSET_BUCKET, Key: 'ref-bucketkey.json' },
+      },
+      attributes: {},
+      dependencies: [],
+    },
+    Instance: {
+      physicalId: 'i-userdata',
+      resourceType: 'AWS::EC2::Instance',
+      properties: {
+        // Fn::Base64-resolved UserData — reference inside the encoded text.
+        UserData: USERDATA_B64,
+        // Comma-joined URIs: the URL capture over-runs the comma, so only
+        // the content-hash pass protects the two real keys.
+        BootAssets: `s3://${ASSET_BUCKET}/${HASH_KEY_A},s3://${ASSET_BUCKET}/${HASH_KEY_B}`,
+      },
+      attributes: {},
+      dependencies: [],
+    },
+    MultiTagImage: {
+      physicalId: 'multi-tag-fn',
+      resourceType: 'AWS::Lambda::Function',
+      properties: {
+        // Only ONE of the image's tags is referenced — the image must be
+        // kept (tags.some semantics).
+        Code: {
+          ImageUri: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${CONTAINER_REPO}:ref-tag-multi`,
+        },
+      },
+      attributes: {
+        // Combined `:tag@sha256:digest` URI — both captures collected.
+        ComboUri: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${CONTAINER_REPO}:combo-tag@${COMBO_DIGEST}`,
+      },
+      dependencies: [],
+    },
   },
   outputs: {
     TemplateUrl: `https://${ASSET_BUCKET}.s3.${REGION}.amazonaws.com/ref-output.json`,
@@ -180,6 +236,10 @@ const REFERENCED_KEYS = [
   'ref-path.zip',
   'ref-output.json',
   'ref-prefixed.zip',
+  'ref-bucketkey.json',
+  'ref-userdata.sh',
+  HASH_KEY_A,
+  HASH_KEY_B,
 ];
 
 async function runGc(extraArgs: string[] = []): Promise<void> {
@@ -264,6 +324,21 @@ beforeEach(() => {
             imagePushedAt: OLD,
           },
           { imageDigest: REF_DIGEST, imageSizeInBytes: 1000, imagePushedAt: OLD },
+          {
+            // Only 'ref-tag-multi' is referenced; 'unref-tag' is not — the
+            // image must be KEPT (tags.some, not tags.every).
+            imageDigest: MULTI_TAG_DIGEST,
+            imageTags: ['ref-tag-multi', 'unref-tag'],
+            imageSizeInBytes: 1000,
+            imagePushedAt: OLD,
+          },
+          {
+            // Referenced via the combined `:combo-tag@sha256:...` URI.
+            imageDigest: COMBO_DIGEST,
+            imageTags: ['combo-tag'],
+            imageSizeInBytes: 1000,
+            imagePushedAt: OLD,
+          },
           {
             imageDigest: GARBAGE_DIGEST,
             imageTags: ['garbage-tag'],
