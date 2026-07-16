@@ -1,3 +1,10 @@
+## [0.234.1](https://github.com/go-to-k/cdkd/compare/v0.234.0...v0.234.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **bootstrap:** make cdk-bootstrap-free deploys work end-to-end ([#1006](https://github.com/go-to-k/cdkd/issues/1006)) ([848b454](https://github.com/go-to-k/cdkd/commit/848b454863e6404712a816fa589988610b6d57c6))
+
 # [0.234.0](https://github.com/go-to-k/cdkd/compare/v0.233.0...v0.234.0) (2026-07-15)
 
 
