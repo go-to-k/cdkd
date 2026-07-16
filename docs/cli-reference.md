@@ -961,7 +961,13 @@ Flags:
 
 Re-running `cdkd bootstrap` on an already-bootstrapped account does NOT
 require `--force` to add the asset storage — the state bucket is simply
-left as-is and the asset bucket / repo / marker are created.
+left as-is and the asset bucket / repo / marker are created. This is the
+upgrade path from cdkd versions before 0.232.0: until you re-run bootstrap,
+deploys in the region stay in **legacy mode** (publish to the CDK bootstrap
+destinations, byte-identical to older versions, plus a one-line `cdk gc`
+notice) — nothing breaks by upgrading the binary alone, and downgrading is
+safe in either mode (old binaries ignore the marker; both storages hold the
+same content-addressed objects).
 
 Bucket-squatting defense: bootstrap refuses to adopt an asset bucket owned
 by another account (predictable-name defense), and cdkd's asset-bucket S3
