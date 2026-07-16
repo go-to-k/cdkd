@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 116,
-    "enriched": 3,
+    "classifiedCount": 117,
+    "enriched": 4,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 99,
-    "allowListedTypes": 0
+    "allowListedTypes": 1
   },
   "types": [
     {
@@ -488,6 +488,23 @@
         "StackId",
         "StackStatus"
       ]
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
     },
     {
       "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",

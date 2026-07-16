@@ -69,6 +69,7 @@ import { S3TablesProvider } from './providers/s3-tables-provider.js';
 import { ECRProvider } from './providers/ecr-provider.js';
 import { ASGProvider } from './providers/asg-provider.js';
 import { NestedStackProvider } from './providers/nested-stack-provider.js';
+import { WaitConditionHandleProvider } from './providers/wait-condition-handle-provider.js';
 import { ACMCertificateProvider } from './providers/acm-certificate-provider.js';
 
 /**
@@ -292,4 +293,12 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // (see src/provisioning/nested-stack-context.ts) that deploy.ts / destroy.ts
   // set around their DeployEngine.deploy / runDestroyForStack call.
   registry.register('AWS::CloudFormation::Stack', new NestedStackProvider());
+
+  // WaitConditionHandle is a no-op placeholder outside CloudFormation (its
+  // real physical id is a CloudFormation-internal pre-signed URL). Registered
+  // so stacks that carry one — e.g. cdk-multi-region-stack's empty-twin
+  // placeholder — pass pre-flight and deploy (issue #1020). Note:
+  // AWS::CloudFormation::WaitCondition (the blocking signal-wait) remains
+  // unsupported.
+  registry.register('AWS::CloudFormation::WaitConditionHandle', new WaitConditionHandleProvider());
 }

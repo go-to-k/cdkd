@@ -51,8 +51,11 @@ describe('isRuntimeSupported (replica of ProviderRegistry.hasProvider)', () => {
     expect(isRuntimeSupported('AWS::CloudFormation::CustomResource', sdk)).toBe(true);
   });
   it('rejects blocklisted types with no SDK provider', () => {
+    // WaitConditionHandle is deliberately NOT used as the example here: the
+    // real registry ships an SDK provider for it since issue #1020, so only
+    // WaitCondition remains a production-accurate blocklisted-without-provider
+    // example for this synthetic SDK set.
     expect(isRuntimeSupported('AWS::CloudFormation::WaitCondition', sdk)).toBe(false);
-    expect(isRuntimeSupported('AWS::CloudFormation::WaitConditionHandle', sdk)).toBe(false);
   });
   it('optimistically accepts any other AWS:: type (the silent-tier3 trap)', () => {
     expect(isRuntimeSupported('AWS::AppMesh::GatewayRoute', sdk)).toBe(true);
