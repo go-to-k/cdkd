@@ -188,30 +188,13 @@ That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket
 
 ### Upgrading from an earlier cdkd version
 
-**There is no breaking change, and no manual step: just deploy.** The first `cdkd deploy` into each region auto-creates the cdkd-owned asset storage (asset bucket + ECR repo + per-region marker) — interactive runs are asked once per region (`[Y/n]`), `--yes` / CI runs create it automatically with an info line. Asset storage is per region because AWS requires Lambda code (S3) and container images (ECR) to live in the function's own region — the auto-create keys off each stack's `env.region`, so multi-region apps opt in region by region as they deploy. That deploy shows a one-time diff repointing `Code` / `Image` references to the cdkd storage — an ordinary in-place UPDATE (content identical, no replacement). `cdkd state info` shows which regions are opted in.
-
-Downgrading is equally safe: older binaries ignore the bootstrap marker and keep publishing to the CDK bootstrap destinations; both storages hold the same content-addressed objects.
-
-Prefer the explicit path (e.g. to pre-provision in CI before the first deploy)? The equivalent manual opt-in is:
-
-```bash
-cdkd bootstrap --region <r>   # re-run per region; the state bucket is left untouched (no --force)
-```
-
-To stay on CDK bootstrap storage instead:
-
-- `--no-auto-asset-storage` (or `cdk.json` `context.cdkd.autoAssetStorage: false`) skips the auto-create — deploys into un-opted-in regions stay in **legacy mode** (assets go to the CDK bootstrap bucket, byte-identical to older versions, plus a one-line `cdk gc`-hazard notice naming the region).
-- `--use-cdk-bootstrap-assets` (or `cdk.json` `context.cdkd.useCdkBootstrapAssets: true`) pins the legacy destinations even for opted-in regions — for apps deployed via both CloudFormation and cdkd during a migration window. Also suppresses the notice.
-
-Notes on the relationship with `cdk bootstrap`:
-
-- cdkd never uses CDK's bootstrap roles (it deploys with the caller's credentials)
-  and does not resolve the template's `BootstrapVersion` parameter, so a region
-  never touched by `cdk bootstrap` works fine.
-- `cdkd export` hands a stack back to the CloudFormation / CDK CLI world, where
-  `cdk bootstrap` is the CDK CLI's own prerequisite again.
-
-See [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap) for details.
+**No breaking change, no manual step: just deploy.** The first `cdkd deploy` into
+each region auto-creates the cdkd-owned asset storage (interactive runs are asked
+once per region, `--yes` / CI runs create it automatically) and shows a one-time
+in-place UPDATE repointing asset references — content identical, no replacement.
+Downgrading is safe too (older binaries ignore the marker). Explicit pre-provisioning
+(`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
+`cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
 
 ## Usage
 
