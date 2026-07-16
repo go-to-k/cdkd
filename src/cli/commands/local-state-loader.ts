@@ -141,7 +141,14 @@ export async function loadStateForStack(
  * error) logs at debug and returns `undefined` — the caller falls back
  * to the conventional-prefix regex.
  *
- * Region resolution mirrors {@link loadStateForStack}'s chain.
+ * Marker-key region resolution: the marker records the repo for the
+ * stack's DEPLOY region, so after the explicit CLI overrides (`--region`
+ * highest per the repo convention, then `--stack-region` — the state
+ * disambiguator that names the region whose state is being loaded) the
+ * synth-derived stack region outranks the ambient env region. This
+ * deliberately differs from {@link loadStateForStack}'s bucket-resolution
+ * chain (which is about WHERE the state bucket is, not WHICH region's
+ * data is read).
  */
 export async function loadBootstrapContainerRepo(
   synthRegion: string | undefined,
@@ -152,9 +159,10 @@ export async function loadBootstrapContainerRepo(
 
   const region =
     opts.region ??
+    opts.stackRegion ??
+    synthRegion ??
     process.env['AWS_REGION'] ??
     process.env['AWS_DEFAULT_REGION'] ??
-    synthRegion ??
     'us-east-1';
 
   let stateBucket: string;

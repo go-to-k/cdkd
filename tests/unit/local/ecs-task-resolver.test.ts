@@ -1660,6 +1660,31 @@ describe('custom-named cdkd asset repo classification (issue #1025)', () => {
     }
   });
 
+  it('matches the combined name:tag@digest form Docker accepts (digest stripped first, then tag)', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image:
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-custom-repo:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'my-custom-repo',
+    });
+    expect(r.containers[0]!.image.kind).toBe('cdk-asset');
+  });
+
+  it('matches a namespaced repo name (contains /) with a trailing tag', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: '123456789012.dkr.ecr.us-east-1.amazonaws.com/team/assets-repo:abc1234567',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'team/assets-repo',
+    });
+    expect(r.containers[0]!.image.kind).toBe('cdk-asset');
+  });
+
   it('does NOT match a different repo name in the marker context (stays ecr)', () => {
     const stack = buildStack('S1', {
       TD: makeTaskDef({

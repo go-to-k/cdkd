@@ -129,6 +129,42 @@ describe('loadBootstrapContainerRepo (issue #1025)', () => {
     }
   });
 
+  it('prefers --stack-region over the synth/env regions for the marker key', async () => {
+    mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+    mocks.getRawObjectMock.mockResolvedValue(null);
+    const savedRegion = process.env['AWS_REGION'];
+    process.env['AWS_REGION'] = 'us-east-1';
+    try {
+      await loadBootstrapContainerRepo('ap-northeast-1', {
+        statePrefix: 'cdkd',
+        stackRegion: 'eu-west-1',
+      });
+      // The marker records the STACK's deploy region — the explicit
+      // --stack-region disambiguator wins over both the synth-derived
+      // region and the ambient env region (only --region outranks it).
+      expect(mocks.getRawObjectMock).toHaveBeenCalledWith('cdkd-bootstrap/eu-west-1.json');
+    } finally {
+      if (savedRegion !== undefined) process.env['AWS_REGION'] = savedRegion;
+      else delete process.env['AWS_REGION'];
+    }
+  });
+
+  it('prefers the synth region over the ambient env region for the marker key', async () => {
+    mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
+    mocks.getRawObjectMock.mockResolvedValue(null);
+    const savedRegion = process.env['AWS_REGION'];
+    process.env['AWS_REGION'] = 'us-east-1';
+    try {
+      await loadBootstrapContainerRepo('ap-northeast-1', { statePrefix: 'cdkd' });
+      // The synth-derived stack region names the deploy region whose
+      // marker is relevant; the env region is only the last resort.
+      expect(mocks.getRawObjectMock).toHaveBeenCalledWith('cdkd-bootstrap/ap-northeast-1.json');
+    } finally {
+      if (savedRegion !== undefined) process.env['AWS_REGION'] = savedRegion;
+      else delete process.env['AWS_REGION'];
+    }
+  });
+
   it('resets globalClients after the read so no destroyed reference leaks', async () => {
     mocks.resolveStateBucketWithDefaultMock.mockResolvedValue('test-bucket');
     mocks.getRawObjectMock.mockResolvedValue(null);

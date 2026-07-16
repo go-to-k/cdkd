@@ -306,7 +306,13 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
       // of the conventional container-assets shapes may still be a cdkd
       // asset image published to a custom-named repo (`cdkd bootstrap
       // --container-repo`). Only the region's bootstrap marker can tell,
-      // so flag it for the CLI's lazy marker read.
+      // so flag it for the CLI's lazy marker read. Known asymmetry: only
+      // flat-extractable images are inspected, so a stack whose ONLY
+      // candidate images are `Fn::GetAtt` / `Fn::Join` shapes never
+      // triggers the marker read even though `classifyResolvedImage`
+      // would consume the name — acceptable because those shapes resolve
+      // via state-recorded USER repos, not the cdkd asset repo (design
+      // 1002 §7.1: synth output stays unrewritten).
       const flat = extractImageString(image);
       if (
         flat !== undefined &&
@@ -1043,9 +1049,11 @@ const CDK_ASSET_IMAGE_REPO_RE = /(?:cdk-[a-z0-9]+|cdkd)-container-assets-/;
  * and placeholder-bearing hosts
  * (`${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}`). The repo
  * component is the substring after the first `/`, stripped of a trailing
- * `@<digest>` (first `@`) or `:<tag>` (last `:` — ECR repo names cannot
- * contain `:` but CAN contain `/`, so the last colon is the tag
- * separator). Returns `undefined` for non-ECR hosts and empty results.
+ * `@<digest>` (first `@`) and then a trailing `:<tag>` (last `:` — ECR
+ * repo names cannot contain `:` but CAN contain `/`, so the last colon is
+ * the tag separator). Stripping the digest FIRST handles the combined
+ * `name:tag@digest` form Docker accepts. Returns `undefined` for non-ECR
+ * hosts and empty results.
  */
 function extractEcrRepoComponent(uri: string): string | undefined {
   const slash = uri.indexOf('/');
@@ -1054,12 +1062,9 @@ function extractEcrRepoComponent(uri: string): string | undefined {
   if (!host.includes('.dkr.ecr.')) return undefined;
   let repo = uri.slice(slash + 1);
   const at = repo.indexOf('@');
-  if (at !== -1) {
-    repo = repo.slice(0, at);
-  } else {
-    const colon = repo.lastIndexOf(':');
-    if (colon !== -1) repo = repo.slice(0, colon);
-  }
+  if (at !== -1) repo = repo.slice(0, at);
+  const colon = repo.lastIndexOf(':');
+  if (colon !== -1) repo = repo.slice(0, colon);
   return repo.length > 0 ? repo : undefined;
 }
 
