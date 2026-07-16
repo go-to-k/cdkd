@@ -220,4 +220,4 @@ asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: le
 asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean
 local-run-task-cdkd-assets	2026-07-15T10:33:43Z	PASS	15	verify.sh	re-run after sidecar add; docker sweep clean
 bootstrap-free-region	2026-07-16T11:28:18Z	PASS	77	verify.sh	new fixture: cdk-bootstrap-free bootstrap+deploy+destroy in ca-central-1, 0 orphans
-lambda	2026-07-16T11:31:04Z	PASS	88	verify.sh	broad refresh for resolver change; 9/9 destroy, 0 orphans
+lambda	2026-07-16T11:45:00Z	PASS	85	verify.sh	re-run after review fix-back (lazy param collection); 9/9 destroy, 0 orphans
