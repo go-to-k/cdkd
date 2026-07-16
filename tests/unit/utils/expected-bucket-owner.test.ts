@@ -72,6 +72,14 @@ describe('resolveExpectedBucketOwner', () => {
     mockStsSend.mockRejectedValue(new Error('sts down'));
     await expect(resolveExpectedBucketOwner(standardClient())).resolves.toBeUndefined();
   });
+
+  it('does NOT cache a transient STS failure — the next resolution retries and succeeds', async () => {
+    const client = standardClient();
+    mockStsSend.mockRejectedValueOnce(new Error('throttled'));
+    await expect(resolveExpectedBucketOwner(client)).resolves.toBeUndefined();
+    await expect(resolveExpectedBucketOwner(client)).resolves.toBe('123456789012');
+    expect(mockStsSend).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('expectedOwnerParam', () => {

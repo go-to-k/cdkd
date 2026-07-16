@@ -11,6 +11,18 @@ import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 // replacement client is constructed for the bucket's actual region. The
 // happy-path suites never construct an S3Client (they cast a plain object via
 // `mockS3`), so this mock is inert for them.
+// The stores' standard-shaped client doubles (config.region/credentials
+// functions) pass resolveExpectedBucketOwner's structural guard, so STS
+// must be mocked or every test would issue a LIVE GetCallerIdentity
+// (PR 1015 reviewer catch: 22ms -> 15s + offline flakiness).
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: vi.fn().mockImplementation(() => ({
+    send: vi.fn().mockResolvedValue({ Account: '111111111111' }),
+    destroy: vi.fn(),
+  })),
+  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+}));
+
 vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {

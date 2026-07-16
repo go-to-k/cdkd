@@ -15,6 +15,19 @@ import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/type
 import { StateError } from '../../../src/utils/error-handler.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 
+// The backend's standard-shaped client double passes
+// resolveExpectedBucketOwner's structural guard, so STS must be mocked —
+// otherwise every test issues a LIVE GetCallerIdentity (PR 1015 reviewer
+// catch). With the mock, every state-bucket command is asserted to carry
+// ExpectedBucketOwner (the positive pin for the squatting hardening).
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: vi.fn().mockImplementation(() => ({
+    send: vi.fn().mockResolvedValue({ Account: '999999999999' }),
+    destroy: vi.fn(),
+  })),
+  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+}));
+
 vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {
@@ -60,12 +73,22 @@ vi.mock('../../../src/utils/logger.js', () => ({
 function makeFakeClient(region: string): {
   send: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
-  config: { region: () => Promise<string> };
+  config: {
+    region: () => Promise<string>;
+    credentials: () => Promise<{ accessKeyId: string; secretAccessKey: string }>;
+  };
 } {
   return {
     send: vi.fn(),
     destroy: vi.fn(),
-    config: { region: () => Promise.resolve(region) },
+    config: {
+      region: () => Promise.resolve(region),
+      // Standard-shaped credentials so resolveExpectedBucketOwner resolves
+      // via the MOCKED STS above — every command then carries
+      // ExpectedBucketOwner: '999999999999' (the positive hardening pin).
+      credentials: () =>
+        Promise.resolve({ accessKeyId: 'AKIAFAKE', secretAccessKey: 'fake-secret' }),
+    },
   };
 }
 
@@ -99,7 +122,12 @@ describe('S3StateBackend.verifyBucketExists', () => {
 
     const call = s3Client.send.mock.calls[0][0];
     expect(call).toBeInstanceOf(HeadBucketCommand);
-    expect(call.input).toEqual({ Bucket: 'my-state-bucket' });
+    // ExpectedBucketOwner is the squatting hardening (PR 1015): a foreign-
+    // owned bucket 403s at S3 regardless of its policy.
+    expect(call.input).toEqual({
+      Bucket: 'my-state-bucket',
+      ExpectedBucketOwner: '999999999999',
+    });
   });
 
   it('throws a StateError with bootstrap hint when the bucket is missing (NotFound)', async () => {

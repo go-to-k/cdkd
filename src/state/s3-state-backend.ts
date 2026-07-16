@@ -190,7 +190,6 @@ export class S3StateBackend {
         new HeadBucketCommand({
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
-          ...(await this.ownerParam()),
         })
       );
     } catch (error) {

@@ -114,6 +114,17 @@ describe('cdkd bootstrap', () => {
     expect(names).toContain(PutBucketVersioningCommand.name);
     expect(names).toContain(PutBucketEncryptionCommand.name);
     expect(names).toContain(PutBucketPolicyCommand.name);
+    // Squatting hardening (PR 1015): every state-bucket call carries the
+    // caller account as ExpectedBucketOwner (CreateBucket takes no such
+    // parameter — creating is owner-safe by nature).
+    for (const c of mockS3Send.mock.calls) {
+      const cmd = c[0] as { constructor: { name: string }; input: Record<string, unknown> };
+      if (cmd.constructor.name === CreateBucketCommand.name) {
+        expect(cmd.input).not.toHaveProperty('ExpectedBucketOwner');
+      } else {
+        expect(cmd.input.ExpectedBucketOwner).toBe(ACCOUNT);
+      }
+    }
 
     expect(mockEnsureAssetStorage).toHaveBeenCalledTimes(1);
     expect(mockEnsureAssetStorage).toHaveBeenCalledWith(

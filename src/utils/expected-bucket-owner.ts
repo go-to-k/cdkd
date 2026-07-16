@@ -84,6 +84,12 @@ export function resolveExpectedBucketOwner(client: S3Client): Promise<string | u
       getLogger().debug(
         `ExpectedBucketOwner resolution skipped (header omitted): ${String(error)}`
       );
+      // Do NOT keep a failed resolution cached — a transient STS throttle at
+      // process start must not silently disable the header for the rest of
+      // the run (mirrors write-only-properties.ts's no-failure-caching).
+      // The early structural returns above stay cached: a test double /
+      // credential-less client is deterministic, not transient.
+      cache.delete(client);
       return undefined;
     }
   })();
