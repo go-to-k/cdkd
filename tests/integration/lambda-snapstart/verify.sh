@@ -49,6 +49,9 @@ cleanup() {
     for parn in $(aws iam list-attached-role-policies --role-name "${role}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
       aws iam detach-role-policy --role-name "${role}" --policy-arn "${parn}" >/dev/null 2>&1 || true
     done
+    for pname in $(aws iam list-role-policies --role-name "${role}" --query 'PolicyNames[]' --output text 2>/dev/null); do
+      aws iam delete-role-policy --role-name "${role}" --policy-name "${pname}" >/dev/null 2>&1 || true
+    done
     aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
   done
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -79,9 +82,11 @@ echo "==> Pre-run cleanup"
 cleanup
 
 invoke_alias() {
-  local out="/tmp/cdkd-integ-snapstart-invoke.json"
+  local out
+  out="$(mktemp)"
   aws lambda invoke --function-name "${FN}:live" --region "${REGION}" "${out}" >/dev/null
   cat "${out}"
+  rm -f "${out}"
 }
 
 # --- Phase 1: deploy baseline (version 1) --------------------------------

@@ -122,14 +122,10 @@
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
         "apigateway",
-        "apigw-gateway-response",
         "apigw-stage-throttling"
       ],
       "signals": {
         "apigateway": [
-          "literal"
-        ],
-        "apigw-gateway-response": [
           "literal"
         ],
         "apigw-stage-throttling": [

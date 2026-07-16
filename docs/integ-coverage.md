@@ -35,7 +35,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
-| `AWS::ApiGateway::Account` | [`apigateway`](../tests/integration/apigateway/) (literal)<br>[`apigw-gateway-response`](../tests/integration/apigw-gateway-response/) (literal)<br>[`apigw-stage-throttling`](../tests/integration/apigw-stage-throttling/) (literal) |
+| `AWS::ApiGateway::Account` | [`apigateway`](../tests/integration/apigateway/) (literal)<br>[`apigw-stage-throttling`](../tests/integration/apigw-stage-throttling/) (literal) |
 | `AWS::ApiGateway::Authorizer` | [`api-cognito`](../tests/integration/api-cognito/) (l1)<br>[`apigateway`](../tests/integration/apigateway/) (l1)<br>[`local-start-api`](../tests/integration/local-start-api/) (l2) |
 | `AWS::ApiGateway::Deployment` | [`api-cognito`](../tests/integration/api-cognito/) (literal)<br>[`apigateway`](../tests/integration/apigateway/) (literal)<br>[`apigw-gateway-response`](../tests/integration/apigw-gateway-response/) (literal)<br>[`apigw-stage-throttling`](../tests/integration/apigw-stage-throttling/) (literal) |
 | `AWS::ApiGateway::Method` | [`api-cognito`](../tests/integration/api-cognito/) (literal)<br>[`apigateway`](../tests/integration/apigateway/) (literal)<br>[`apigw-gateway-response`](../tests/integration/apigw-gateway-response/) (literal)<br>[`apigw-stage-throttling`](../tests/integration/apigw-stage-throttling/) (literal) |

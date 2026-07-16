@@ -15,8 +15,11 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
  * new-Deployment + Stage-repoint + old-Deployment-delete dance.
  *
  * `cloudWatchRole: false` keeps the fixture free of the account-level
- * `AWS::ApiGateway::Account` + Retain'd CloudWatch role (which would survive
- * destroy by design and count as an orphan in the integ sweep).
+ * ApiGateway Account resource + Retain'd CloudWatch role (which would
+ * survive destroy by design and count as an orphan in the integ sweep).
+ * (Deliberately NOT written as the literal CFn type name here — the
+ * integ-coverage matrix generator credits bare type literals in comments
+ * as coverage, and this stack intentionally does not create that type.)
  *
  * covers: AWS::ApiGateway::RestApi
  * covers: AWS::ApiGateway::Deployment

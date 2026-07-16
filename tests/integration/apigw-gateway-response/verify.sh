@@ -35,8 +35,11 @@ API_NAME="cdkd-integ-gwresponse"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 api_id() {
+  # `|| true` so a transient AWS CLI failure (throttle, creds) surfaces as an
+  # empty id — which the callers turn into an explicit FAIL message — instead
+  # of aborting the `$(api_id)` assignment under `set -e` with no diagnostics.
   aws apigateway get-rest-apis --region "${REGION}" \
-    --query "items[?name=='${API_NAME}'].id | [0]" --output text 2>/dev/null
+    --query "items[?name=='${API_NAME}'].id | [0]" --output text 2>/dev/null || true
 }
 
 cleanup() {
@@ -83,8 +86,11 @@ wait_403_origin() {
   local expected="$1" id origin
   id="$(api_id)"
   for _ in $(seq 1 12); do
+    # `|| true` keeps the loop alive when the header is ABSENT (fresh
+    # deployment before the gateway response propagates): without it, grep's
+    # exit 1 + pipefail would kill the script on iteration 1 under `set -e`.
     origin="$(curl -si "https://${id}.execute-api.${REGION}.amazonaws.com/prod/nonexistent" 2>/dev/null \
-      | tr -d '\r' | grep -i '^access-control-allow-origin:' | awk '{print $2}')"
+      | tr -d '\r' | grep -i '^access-control-allow-origin:' | awk '{print $2}' || true)"
     if [ "${origin}" = "${expected}" ]; then
       return 0
     fi
