@@ -114,6 +114,22 @@ describe('getCreateOnlyPropertyPaths', () => {
     expect(second.map((p) => p.join('.'))).toEqual(['ProtocolType']);
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(2);
   });
+
+  it('Custom::* types skip DescribeType entirely — no API call, no warning (issue #1016)', async () => {
+    const result = await getCreateOnlyPropertyPaths('Custom::AWSCDKOpenIdConnectProvider');
+
+    expect(result.length).toBe(0);
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('AWS::CloudFormation::CustomResource skips DescribeType entirely (issue #1016)', async () => {
+    const result = await getCreateOnlyPropertyPaths('AWS::CloudFormation::CustomResource');
+
+    expect(result.length).toBe(0);
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
 });
 
 describe('createOnlyChangeRequiresReplacement (pure path-granular comparison, issue #960)', () => {

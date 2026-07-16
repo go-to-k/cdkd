@@ -73,6 +73,17 @@ export function clearCreateOnlyPropertiesCache(): void {
 export function getCreateOnlyPropertyPaths(
   resourceType: string
 ): Promise<ReadonlyArray<readonly string[]>> {
+  // Custom resource types have no CloudFormation registry schema, and the
+  // DescribeType `typeName` parameter rejects the two-segment `Custom::Foo`
+  // form outright — so the lookup would ALWAYS fail validation, wasting an
+  // API call and emitting a misleading "grant cloudformation:DescribeType"
+  // warning on every diff/deploy that updates a custom resource property
+  // (issue #1016). Replacement semantics for custom resources are
+  // handler-driven (the handler returns a new PhysicalResourceId on UPDATE),
+  // not schema-driven, so an empty createOnly list is the correct answer.
+  if (isCustomResourceType(resourceType)) {
+    return Promise.resolve([]);
+  }
   const cached = createOnlyPropertiesCache.get(resourceType);
   if (cached) {
     return cached;
@@ -95,6 +106,18 @@ export function getCreateOnlyPropertyPaths(
   });
   createOnlyPropertiesCache.set(resourceType, entry);
   return entry;
+}
+
+/**
+ * True for the two custom-resource type shapes CloudFormation accepts:
+ * `AWS::CloudFormation::CustomResource` and anything under the `Custom::`
+ * prefix. Neither has a registry schema, so schema-driven lookups
+ * (DescribeType) must be skipped for them.
+ */
+function isCustomResourceType(resourceType: string): boolean {
+  return (
+    resourceType === 'AWS::CloudFormation::CustomResource' || resourceType.startsWith('Custom::')
+  );
 }
 
 /**
