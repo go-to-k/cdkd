@@ -51,6 +51,7 @@ import { withSkipPrefix } from '../../provisioning/resource-name.js';
 import {
   resolveApp,
   resolveCaptureObservedState,
+  resolveAutoAssetStorage,
   resolveSkipPrefix,
   resolveStateBucketWithDefault,
   resolveUseCdkBootstrapAssets,
@@ -59,6 +60,21 @@ import {
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { findPendingPrefixRenames, promptMigrationConfirm } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
+
+/**
+ * Default-yes confirmation prompt for the issue #1007 asset-storage
+ * auto-create (only reached on interactive TTY runs without `--yes`).
+ */
+async function promptYesNo(prompt: string): Promise<boolean> {
+  const readline = await import('node:readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = await rl.question(`${prompt} [Y/n] `);
+    return /^(y(es)?)?$/i.test(ans.trim());
+  } finally {
+    rl.close();
+  }
+}
 
 /**
  * Deploy command implementation
@@ -97,6 +113,7 @@ async function deployCommand(
     forceStatefulRecreation?: boolean;
     replace?: boolean;
     useCdkBootstrapAssets?: boolean;
+    autoAssetStorage?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -370,9 +387,36 @@ async function deployCommand(
     // `cdk gc` hazard). `--use-cdk-bootstrap-assets` (or cdk.json
     // context.cdkd.useCdkBootstrapAssets) pins legacy mode for the app.
     const useCdkBootstrapAssets = resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets);
+    // Issue #1007 — first deploy into a region with no bootstrap marker
+    // auto-creates the per-region asset storage (instead of legacy mode), so
+    // `cdkd bootstrap` stays a true once-per-account step. Interactive runs
+    // are prompted once per region; `--yes` / non-TTY runs create with an
+    // info line. Opt out via --no-auto-asset-storage / cdk.json
+    // context.cdkd.autoAssetStorage: false. Never under --dry-run (a
+    // dry run must not create resources), and moot under the
+    // --use-cdk-bootstrap-assets legacy pin (marker is never read).
+    const autoAssetStorage = resolveAutoAssetStorage(options.autoAssetStorage);
+    const confirmAutoAssetStorage = async (assetRegion: string): Promise<boolean> => {
+      if (options.yes || !process.stdin.isTTY) {
+        logger.info(
+          `Creating cdkd asset storage for region '${assetRegion}' (first deploy into this ` +
+            `region; opt out with --no-auto-asset-storage).`
+        );
+        return true;
+      }
+      return promptYesNo(
+        `Region '${assetRegion}' has no cdkd asset storage yet. Create it now ` +
+          `(S3 bucket cdkd-assets-${accountId}-${assetRegion} + container-asset ECR repo, ` +
+          `out of 'cdk gc' reach)?`
+      );
+    };
     const assetModeResolver = new AssetModeResolver(preflightStateBackend, accountId, {
       ...(options.profile && { profile: options.profile }),
       ...(useCdkBootstrapAssets && { useCdkBootstrapAssets: true }),
+      ...(autoAssetStorage &&
+        !options.dryRun && {
+          autoCreate: { confirm: confirmAutoAssetStorage },
+        }),
     });
     const stateConfig = {
       bucket: stateBucket,

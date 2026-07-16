@@ -792,6 +792,16 @@ export const deployOptions = [
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure'),
+  // Issue #1007 — deploy-only (diff / import / publish-assets never create
+  // resources). Per-app opt-out: cdk.json context.cdkd.autoAssetStorage:
+  // false (see resolveAutoAssetStorage in config-loader.ts).
+  new Option(
+    '--no-auto-asset-storage',
+    'Do not auto-create cdkd-owned asset storage (asset bucket + container-asset ECR repo + ' +
+      "marker) on the first deploy into a region not yet opted in via 'cdkd bootstrap'. " +
+      'Deploys into such regions stay in legacy mode (CDK bootstrap destinations). ' +
+      'Per-app opt-out: cdk.json context.cdkd.autoAssetStorage: false.'
+  ),
   new Option(
     '--no-capture-observed-state',
     'Skip capturing AWS-current properties after each create/update ' +

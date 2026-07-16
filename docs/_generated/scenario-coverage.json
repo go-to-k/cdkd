@@ -334,6 +334,11 @@
       "scenarios": []
     },
     {
+      "name": "asset-auto-create",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "asset-bootstrap",
       "annotated": false,
       "scenarios": []
@@ -2153,6 +2158,7 @@
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
     "appconfig",
+    "asset-auto-create",
     "asset-bootstrap",
     "asset-migration",
     "aws-custom-resource",

@@ -3033,6 +3033,7 @@
         "api-cognito",
         "apigateway",
         "apigw-stage-throttling",
+        "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",
         "bench-cdk-sample",
@@ -3131,6 +3132,9 @@
         "apigw-stage-throttling": [
           "l2",
           "literal"
+        ],
+        "asset-auto-create": [
+          "l2"
         ],
         "asset-bootstrap": [
           "l2"

@@ -443,3 +443,140 @@ describe('ensureAssetStorage', () => {
     expect(putRawObject).toHaveBeenCalledTimes(1);
   });
 });
+describe('AssetModeResolver auto-create (issue #1007)', () => {
+  /**
+   * Backend double whose marker read reflects what ensureAssetStorage wrote:
+   * read #1 (mode resolution) returns null, and after the auto-create path's
+   * putRawObject lands, the re-read returns the stored marker body.
+   */
+  function makeAutoCreateBackend() {
+    let stored: string | null = null;
+    const putRawObject = vi.fn().mockImplementation(async (_key: string, body: string) => {
+      stored = body;
+    });
+    const getRawObject = vi.fn().mockImplementation(async () => stored);
+    return {
+      backend: { getRawObject, putRawObject } as unknown as S3StateBackend,
+      putRawObject,
+      getRawObject,
+    };
+  }
+
+  /** Script S3/ECR for a fresh region: nothing exists, every create succeeds. */
+  function scriptFreshRegion(): void {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+  }
+
+  function gcNotices(): unknown[] {
+    return mockLoggerInfo.mock.calls.filter((c) => String(c[0]).includes('cdk gc'));
+  }
+
+  it('creates storage and returns cdkd-assets mode when confirm approves (no gc notice)', async () => {
+    scriptFreshRegion();
+    const { backend, putRawObject } = makeAutoCreateBackend();
+    const confirm = vi.fn().mockResolvedValue(true);
+    const resolver = new AssetModeResolver(backend, ACCOUNT, { autoCreate: { confirm } });
+
+    const mode = await resolver.resolve(REGION);
+
+    expect(confirm).toHaveBeenCalledWith(REGION);
+    expect(mode.mode).toBe('cdkd-assets');
+    if (mode.mode === 'cdkd-assets') {
+      expect(mode.marker.assetBucket).toBe(`cdkd-assets-${ACCOUNT}-${REGION}`);
+    }
+    // The marker was written by the same ensureAssetStorage path bootstrap uses.
+    expect(putRawObject).toHaveBeenCalledWith(
+      `cdkd-bootstrap/${REGION}.json`,
+      expect.stringContaining(`cdkd-assets-${ACCOUNT}-${REGION}`)
+    );
+    expect(gcNotices()).toHaveLength(0);
+  });
+
+  it('declined confirm stays legacy: no creation calls, gc notice shown', async () => {
+    scriptFreshRegion();
+    const { backend, putRawObject } = makeAutoCreateBackend();
+    const confirm = vi.fn().mockResolvedValue(false);
+    const resolver = new AssetModeResolver(backend, ACCOUNT, { autoCreate: { confirm } });
+
+    expect(await resolver.resolve(REGION)).toEqual({ mode: 'legacy' });
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockEcrSend).not.toHaveBeenCalled();
+    expect(putRawObject).not.toHaveBeenCalled();
+    expect(gcNotices()).toHaveLength(1);
+  });
+
+  it('creation failure falls back to legacy with an actionable warning + gc notice (never hard-fails the deploy)', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket') return Promise.reject(awsError('AccessDenied', 403));
+      return Promise.resolve({});
+    });
+    const { backend } = makeAutoCreateBackend();
+    const confirm = vi.fn().mockResolvedValue(true);
+    const resolver = new AssetModeResolver(backend, ACCOUNT, { autoCreate: { confirm } });
+
+    expect(await resolver.resolve(REGION)).toEqual({ mode: 'legacy' });
+    const warns = mockLoggerWarn.mock.calls.filter((c) =>
+      String(c[0]).includes('Failed to auto-create cdkd asset storage')
+    );
+    expect(warns).toHaveLength(1);
+    expect(String(warns[0]![0])).toContain(`cdkd bootstrap --region ${REGION}`);
+    expect(gcNotices()).toHaveLength(1);
+  });
+
+  it('a throwing confirm is treated as a decline (legacy, no throw)', async () => {
+    scriptFreshRegion();
+    const { backend } = makeAutoCreateBackend();
+    const confirm = vi.fn().mockRejectedValue(new Error('stdin closed'));
+    const resolver = new AssetModeResolver(backend, ACCOUNT, { autoCreate: { confirm } });
+
+    expect(await resolver.resolve(REGION)).toEqual({ mode: 'legacy' });
+    expect(gcNotices()).toHaveLength(1);
+  });
+
+  it('never fires when the marker already exists', async () => {
+    const getRawObject = vi.fn().mockResolvedValue(JSON.stringify(validMarker()));
+    const confirm = vi.fn();
+    const resolver = new AssetModeResolver(
+      { getRawObject } as unknown as S3StateBackend,
+      ACCOUNT,
+      { autoCreate: { confirm } }
+    );
+
+    const mode = await resolver.resolve(REGION);
+    expect(mode.mode).toBe('cdkd-assets');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('never fires under the useCdkBootstrapAssets legacy pin (marker not even read)', async () => {
+    const { backend, getRawObject } = makeAutoCreateBackend();
+    const confirm = vi.fn();
+    const resolver = new AssetModeResolver(backend, ACCOUNT, {
+      useCdkBootstrapAssets: true,
+      autoCreate: { confirm },
+    });
+
+    expect(await resolver.resolve(REGION)).toEqual({ mode: 'legacy' });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(getRawObject).not.toHaveBeenCalled();
+  });
+
+  it('single-flights the confirm across concurrent same-region resolves', async () => {
+    scriptFreshRegion();
+    const { backend } = makeAutoCreateBackend();
+    const confirm = vi.fn().mockResolvedValue(true);
+    const resolver = new AssetModeResolver(backend, ACCOUNT, { autoCreate: { confirm } });
+
+    const [a, b] = await Promise.all([resolver.resolve(REGION), resolver.resolve(REGION)]);
+    expect(a.mode).toBe('cdkd-assets');
+    expect(b.mode).toBe('cdkd-assets');
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+});
