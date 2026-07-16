@@ -314,6 +314,11 @@
       ]
     },
     {
+      "name": "apigw-gateway-response",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "apigw-stage-throttling",
       "annotated": false,
       "scenarios": []
@@ -736,6 +741,11 @@
       "scenarios": []
     },
     {
+      "name": "eventbridge-archive",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "eventbridge-input-transformer",
       "annotated": false,
       "scenarios": []
@@ -802,6 +812,11 @@
     {
       "name": "iam-managed-policy",
       "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "iam-oidc-provider",
+      "annotated": true,
       "scenarios": []
     },
     {
@@ -934,6 +949,11 @@
     {
       "name": "lambda-reserved-concurrency",
       "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-snapstart",
+      "annotated": true,
       "scenarios": []
     },
     {
@@ -1476,6 +1496,11 @@
     {
       "name": "servicediscovery",
       "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "ses-identity",
+      "annotated": true,
       "scenarios": []
     },
     {
