@@ -17,7 +17,11 @@ import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
-import { ensureAssetStorage } from '../../assets/asset-storage.js';
+import {
+  ensureAssetStorage,
+  validateAssetBucketName,
+  validateContainerRepoName,
+} from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 
@@ -37,6 +41,8 @@ async function bootstrapCommand(options: {
   roleArn?: string;
   force: boolean;
   assets: boolean;
+  assetBucket?: string;
+  containerRepo?: string;
   verbose: boolean;
 }): Promise<void> {
   const logger = getLogger();
@@ -262,6 +268,12 @@ async function bootstrapCommand(options: {
           accountId,
           region,
           force: options.force,
+          // Issue #1011 — custom names override the conventional ones for
+          // the probe, the creates, and the marker body. Re-bootstrap with
+          // names that differ from an existing marker's is a hard error
+          // inside ensureAssetStorage.
+          ...(options.assetBucket && { assetBucketName: options.assetBucket }),
+          ...(options.containerRepo && { containerRepoName: options.containerRepo }),
         });
       } finally {
         ecrClient.destroy();
@@ -313,6 +325,8 @@ interface BootstrapCommandOptions {
   roleArn?: string;
   force: boolean;
   assets: boolean;
+  assetBucket?: string;
+  containerRepo?: string;
   destroy: boolean;
   includeStateBucket: boolean;
   yes: boolean;
@@ -345,6 +359,18 @@ export function createBootstrapCommand(): Command {
         'publishing assets to the CDK bootstrap bucket/repo'
     )
     .option(
+      '--asset-bucket <name>',
+      'Custom name for the cdkd asset bucket (default: cdkd-assets-{accountId}-{region}). ' +
+        'Written into the bootstrap marker; re-bootstrapping a region with a different ' +
+        'name is refused'
+    )
+    .option(
+      '--container-repo <name>',
+      'Custom name for the container-asset ECR repository ' +
+        '(default: cdkd-container-assets-{accountId}-{region}). Written into the ' +
+        'bootstrap marker; re-bootstrapping a region with a different name is refused'
+    )
+    .option(
       '--destroy',
       "Tear down the region's cdkd asset storage (empty + delete the asset bucket, " +
         'force-delete the container-asset ECR repo, then delete the bootstrap marker ' +
@@ -370,6 +396,17 @@ export function createBootstrapCommand(): Command {
     .action(
       withErrorHandling(async (options: BootstrapCommandOptions): Promise<void> => {
         if (options.destroy) {
+          // Custom names only shape the CREATE side; teardown reads the
+          // names from the marker, so passing them here signals a
+          // misunderstanding — reject rather than silently ignore.
+          if (options.assetBucket !== undefined || options.containerRepo !== undefined) {
+            throw new CdkdError(
+              '--asset-bucket / --container-repo cannot be combined with --destroy. ' +
+                "The teardown reads the region's asset storage names from the " +
+                'bootstrap marker.',
+              'INVALID_OPTIONS'
+            );
+          }
           // `--no-assets` only shapes the CREATE side; on the destroy side
           // the asset storage IS the target, so the combination signals a
           // misunderstanding — reject rather than silently ignore.
@@ -399,6 +436,29 @@ export function createBootstrapCommand(): Command {
               'into the teardown).',
             'INVALID_OPTIONS'
           );
+        }
+        // `--no-assets` skips the asset-storage leg entirely, so naming it
+        // is contradictory — reject rather than silently ignore the names.
+        if (
+          !options.assets &&
+          (options.assetBucket !== undefined || options.containerRepo !== undefined)
+        ) {
+          throw new CdkdError(
+            '--asset-bucket / --container-repo cannot be combined with --no-assets ' +
+              '(the flags name the asset storage that --no-assets skips).',
+            'INVALID_OPTIONS'
+          );
+        }
+        // Reject malformed names BEFORE any AWS call (clearer than the
+        // service-side InvalidBucketName / InvalidParameterException).
+        // `!== undefined` (not truthiness): an explicit empty value like
+        // --asset-bucket="" must reach the validator and be rejected, not
+        // be silently treated as flag-absent.
+        if (options.assetBucket !== undefined) {
+          validateAssetBucketName(options.assetBucket);
+        }
+        if (options.containerRepo !== undefined) {
+          validateContainerRepoName(options.containerRepo);
         }
         await bootstrapCommand(options);
       })

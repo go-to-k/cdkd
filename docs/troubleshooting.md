@@ -464,8 +464,9 @@ node dist/cli.js deploy --app "..." --skip-assets
 
 cdkd publishes assets with the caller's credentials directly (it never
 assumes CDK's `cdk-hnb659fds-file-publishing-role-*`). The caller needs
-S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode,
-`cdk-hnb659fds-assets-*` in legacy mode:
+S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode
+(adjust the ARN if the region was bootstrapped with a custom
+`--asset-bucket` name), `cdk-hnb659fds-assets-*` in legacy mode:
 
 ```json
 {

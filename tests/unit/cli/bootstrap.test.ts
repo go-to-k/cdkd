@@ -46,10 +46,27 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 
 // The asset-storage creation leg is unit-tested in
 // tests/unit/assets/asset-storage.test.ts — here we only assert the command
-// wires it correctly (called / skipped / force flag / identity args).
-vi.mock('../../../src/assets/asset-storage.js', () => ({
-  ensureAssetStorage: mockEnsureAssetStorage,
-}));
+// wires it correctly (called / skipped / force flag / identity args). The
+// name validators stay real so the pre-AWS rejection paths are exercised.
+vi.mock('../../../src/assets/asset-storage.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/assets/asset-storage.js')>();
+  return {
+    ...actual,
+    ensureAssetStorage: mockEnsureAssetStorage,
+  };
+});
+
+// Let action errors propagate to parseAsync instead of process.exit-ing, so
+// the flag-combination / validation refusal paths are assertable. Every
+// other export stays real (CdkdError, normalizeAwsError are consumed by the
+// code under test).
+vi.mock('../../../src/utils/error-handler.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/utils/error-handler.js')>();
+  return {
+    ...actual,
+    withErrorHandling: <Args extends unknown[]>(fn: (...args: Args) => Promise<void> | void) => fn,
+  };
+});
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
@@ -57,9 +74,15 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   })),
 }));
 
-vi.mock('@aws-sdk/client-ecr', () => ({
-  ECRClient: vi.fn().mockImplementation(() => ({ send: vi.fn(), destroy: vi.fn() })),
-}));
+// Keep the command classes real — the (partially real) asset-storage module
+// imports them at load time.
+vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-ecr')>();
+  return {
+    ...actual,
+    ECRClient: vi.fn().mockImplementation(() => ({ send: vi.fn(), destroy: vi.fn() })),
+  };
+});
 
 import {
   HeadBucketCommand,
@@ -213,6 +236,89 @@ describe('cdkd bootstrap', () => {
     );
     // The command owns the rebuilt client and must destroy it on the way out.
     expect(mockRebuiltDestroy).toHaveBeenCalled();
+  });
+
+  it('threads --asset-bucket / --container-repo into ensureAssetStorage (issue #1011)', async () => {
+    scriptStateBucket(false);
+
+    await runBootstrap([
+      '--region',
+      'us-east-1',
+      '--asset-bucket',
+      'my-org-cdkd-assets',
+      '--container-repo',
+      'my-org/cdkd-assets',
+    ]);
+
+    expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assetBucketName: 'my-org-cdkd-assets',
+        containerRepoName: 'my-org/cdkd-assets',
+      })
+    );
+  });
+
+  it('passes NO custom-name fields to ensureAssetStorage when the flags are absent', async () => {
+    scriptStateBucket(false);
+
+    await runBootstrap(['--region', 'us-east-1']);
+
+    const call = mockEnsureAssetStorage.mock.calls[0]![0] as Record<string, unknown>;
+    expect(call).not.toHaveProperty('assetBucketName');
+    expect(call).not.toHaveProperty('containerRepoName');
+  });
+
+  it('rejects --asset-bucket / --container-repo with --no-assets before any AWS call', async () => {
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--no-assets', '--asset-bucket', 'my-bucket'])
+    ).rejects.toMatchObject({ code: 'INVALID_OPTIONS' });
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--no-assets', '--container-repo', 'my-repo'])
+    ).rejects.toMatchObject({ code: 'INVALID_OPTIONS' });
+
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockStsSend).not.toHaveBeenCalled();
+    expect(mockEnsureAssetStorage).not.toHaveBeenCalled();
+  });
+
+  it('rejects --asset-bucket / --container-repo with --destroy (teardown reads names from the marker)', async () => {
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--destroy', '--asset-bucket', 'my-bucket'])
+    ).rejects.toMatchObject({ code: 'INVALID_OPTIONS' });
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--destroy', '--container-repo', 'my-repo'])
+    ).rejects.toMatchObject({ code: 'INVALID_OPTIONS' });
+
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockStsSend).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid --asset-bucket name before any AWS call', async () => {
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--asset-bucket', 'Bad_Bucket_Name'])
+    ).rejects.toMatchObject({ code: 'INVALID_ASSET_STORAGE_NAME' });
+
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockStsSend).not.toHaveBeenCalled();
+    expect(mockEnsureAssetStorage).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid --container-repo name before any AWS call', async () => {
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--container-repo', 'Bad//Repo'])
+    ).rejects.toMatchObject({ code: 'INVALID_ASSET_STORAGE_NAME' });
+
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockStsSend).not.toHaveBeenCalled();
+    expect(mockEnsureAssetStorage).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicit empty value (--asset-bucket "") instead of treating it as flag-absent', async () => {
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--asset-bucket', ''])
+    ).rejects.toMatchObject({ code: 'INVALID_ASSET_STORAGE_NAME' });
+
+    expect(mockEnsureAssetStorage).not.toHaveBeenCalled();
   });
 
   it('honors --state-bucket for the marker-carrying bucket name', async () => {
