@@ -146,6 +146,15 @@ describe('parseBootstrapMarker', () => {
     const body = { ...validMarker(), assetSupportVersion: ASSET_SUPPORT_VERSION + 1 };
     expect(() => parseBootstrapMarker(JSON.stringify(body), 'k')).toThrowError(/Upgrade cdkd/);
   });
+
+  it('classifies a newer-version marker MISSING the v1 fields as UNSUPPORTED, not malformed', () => {
+    // A future marker version may rename / remove the v1 required fields.
+    // If that classified as "malformed", ensureAssetStorage's corrupt-marker
+    // rewrite path would clobber it with v1 semantics — the version check
+    // must win over field validation.
+    const body = { assetSupportVersion: ASSET_SUPPORT_VERSION + 1, storage: { v2: 'shape' } };
+    expect(() => parseBootstrapMarker(JSON.stringify(body), 'k')).toThrowError(/Upgrade cdkd/);
+  });
 });
 
 describe('verifyAssetStorageExists', () => {
@@ -536,6 +545,56 @@ describe('ensureAssetStorage — custom names (issue #1011)', () => {
       containerRepo: `cdkd-container-assets-${ACCOUNT}-${REGION}`,
     });
     expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves per field: only --asset-bucket set, no marker → repo stays conventional', async () => {
+    scriptFreshRegion();
+    const { putRawObject, options } = makeOptions({ assetBucketName: CUSTOM_BUCKET });
+
+    const result = await ensureAssetStorage(options);
+
+    expect(result).toEqual({
+      assetBucket: CUSTOM_BUCKET,
+      containerRepo: `cdkd-container-assets-${ACCOUNT}-${REGION}`,
+    });
+    const [key, body] = putRawObject.mock.calls[0]! as [string, string];
+    const marker = parseBootstrapMarker(body, key);
+    expect(marker.assetBucket).toBe(CUSTOM_BUCKET);
+    expect(marker.containerRepo).toBe(`cdkd-container-assets-${ACCOUNT}-${REGION}`);
+  });
+
+  it('resolves per field: marker custom names + only a MATCHING --asset-bucket → repo from the marker', async () => {
+    scriptFreshRegion();
+    const existing = JSON.stringify({
+      assetBucket: CUSTOM_BUCKET,
+      containerRepo: CUSTOM_REPO,
+      assetSupportVersion: 1,
+      createdAt: '2026-07-15T00:00:00.000Z',
+    });
+    const { options } = makeOptions({
+      existingMarkerBody: existing,
+      assetBucketName: CUSTOM_BUCKET,
+    });
+
+    const result = await ensureAssetStorage(options);
+
+    // No conflict (names match), and the unspecified repo resolves from the
+    // marker — never falls through to the conventional default.
+    expect(result).toEqual({ assetBucket: CUSTOM_BUCKET, containerRepo: CUSTOM_REPO });
+  });
+
+  it('hard-errors (never rewrites) an existing newer-version marker even when its v1 fields are missing', async () => {
+    scriptFreshRegion();
+    const v2Marker = JSON.stringify({
+      assetSupportVersion: 2,
+      storage: { renamed: 'shape' },
+    });
+    const { putRawObject, options } = makeOptions({ existingMarkerBody: v2Marker });
+
+    await expect(ensureAssetStorage(options)).rejects.toThrowError(/Upgrade cdkd/);
+    expect(putRawObject).not.toHaveBeenCalled();
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockEcrSend).not.toHaveBeenCalled();
   });
 
   it('hard-errors when a custom name differs from an existing marker (points at --destroy)', async () => {

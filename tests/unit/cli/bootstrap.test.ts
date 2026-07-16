@@ -313,6 +313,14 @@ describe('cdkd bootstrap', () => {
     expect(mockEnsureAssetStorage).not.toHaveBeenCalled();
   });
 
+  it('rejects an explicit empty value (--asset-bucket "") instead of treating it as flag-absent', async () => {
+    await expect(
+      runBootstrap(['--region', 'us-east-1', '--asset-bucket', ''])
+    ).rejects.toMatchObject({ code: 'INVALID_ASSET_STORAGE_NAME' });
+
+    expect(mockEnsureAssetStorage).not.toHaveBeenCalled();
+  });
+
   it('honors --state-bucket for the marker-carrying bucket name', async () => {
     scriptStateBucket(false);
 

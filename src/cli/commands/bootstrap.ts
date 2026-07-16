@@ -399,7 +399,7 @@ export function createBootstrapCommand(): Command {
           // Custom names only shape the CREATE side; teardown reads the
           // names from the marker, so passing them here signals a
           // misunderstanding — reject rather than silently ignore.
-          if (options.assetBucket || options.containerRepo) {
+          if (options.assetBucket !== undefined || options.containerRepo !== undefined) {
             throw new CdkdError(
               '--asset-bucket / --container-repo cannot be combined with --destroy. ' +
                 "The teardown reads the region's asset storage names from the " +
@@ -439,7 +439,7 @@ export function createBootstrapCommand(): Command {
         }
         // `--no-assets` skips the asset-storage leg entirely, so naming it
         // is contradictory — reject rather than silently ignore the names.
-        if (!options.assets && (options.assetBucket || options.containerRepo)) {
+        if (!options.assets && (options.assetBucket !== undefined || options.containerRepo !== undefined)) {
           throw new CdkdError(
             '--asset-bucket / --container-repo cannot be combined with --no-assets ' +
               '(the flags name the asset storage that --no-assets skips).',
@@ -448,10 +448,13 @@ export function createBootstrapCommand(): Command {
         }
         // Reject malformed names BEFORE any AWS call (clearer than the
         // service-side InvalidBucketName / InvalidParameterException).
-        if (options.assetBucket) {
+        // `!== undefined` (not truthiness): an explicit empty value like
+        // --asset-bucket="" must reach the validator and be rejected, not
+        // be silently treated as flag-absent.
+        if (options.assetBucket !== undefined) {
           validateAssetBucketName(options.assetBucket);
         }
-        if (options.containerRepo) {
+        if (options.containerRepo !== undefined) {
           validateContainerRepoName(options.containerRepo);
         }
         await bootstrapCommand(options);

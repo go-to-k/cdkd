@@ -169,6 +169,22 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     );
   }
   const marker = parsed as Partial<BootstrapMarker>;
+  // Version check FIRST: a future marker version may rename / remove the
+  // v1 required fields, and classifying it as merely "malformed" would let
+  // ensureAssetStorage's corrupt-marker rewrite path clobber it with v1
+  // semantics — exactly what this guard exists to prevent.
+  if (typeof marker.assetSupportVersion === 'number' && marker.assetSupportVersion > ASSET_SUPPORT_VERSION) {
+    // A newer cdkd wrote this marker with semantics this binary does not
+    // know. Interpreting it under v1 rules could publish to the wrong
+    // destination — hard error instead (the marker is the user's explicit
+    // opt-in, so silent legacy fallback is equally wrong here).
+    throw new CdkdError(
+      `Bootstrap marker '${markerKey}' has assetSupportVersion ` +
+        `${marker.assetSupportVersion}, but this cdkd only understands up to ` +
+        `${ASSET_SUPPORT_VERSION}. Upgrade cdkd to deploy in this region.`,
+      'UNSUPPORTED_BOOTSTRAP_MARKER_VERSION'
+    );
+  }
   if (
     typeof marker.assetBucket !== 'string' ||
     marker.assetBucket.length === 0 ||
@@ -181,18 +197,6 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
         `(missing assetBucket / containerRepo / assetSupportVersion). ` +
         `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER'
-    );
-  }
-  if (marker.assetSupportVersion > ASSET_SUPPORT_VERSION) {
-    // A newer cdkd wrote this marker with semantics this binary does not
-    // know. Interpreting it under v1 rules could publish to the wrong
-    // destination — hard error instead (the marker is the user's explicit
-    // opt-in, so silent legacy fallback is equally wrong here).
-    throw new CdkdError(
-      `Bootstrap marker '${markerKey}' has assetSupportVersion ` +
-        `${marker.assetSupportVersion}, but this cdkd only understands up to ` +
-        `${ASSET_SUPPORT_VERSION}. Upgrade cdkd to deploy in this region.`,
-      'UNSUPPORTED_BOOTSTRAP_MARKER_VERSION'
     );
   }
   return {
