@@ -3036,6 +3036,7 @@
         "asset-bootstrap",
         "asset-migration",
         "bench-cdk-sample",
+        "bootstrap-free-region",
         "cache-streaming",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
@@ -3138,6 +3139,9 @@
           "l2"
         ],
         "bench-cdk-sample": [
+          "l2"
+        ],
+        "bootstrap-free-region": [
           "l2"
         ],
         "cache-streaming": [
