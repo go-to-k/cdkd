@@ -220,10 +220,10 @@ asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: le
 asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean
 local-run-task-cdkd-assets	2026-07-15T10:33:43Z	PASS	15	verify.sh	re-run after sidecar add; docker sweep clean
 asset-auto-create	2026-07-16T14:11:56Z	PASS	149	verify.sh	3 phases incl. --skip-assets no-auto-create leg (PR 1008 review fix-back), 0 orphans
-lambda	2026-07-16T14:13:46Z	PASS	73	verify.sh	broad refresh after PR 1008 fix-back; 9/9 destroy, 0 orphans
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
-iam-oidc-provider	2026-07-16T15:54:15Z	PASS	79	verify.sh	new fixture, 3 phases clean, orph clean
-apigw-gateway-response	2026-07-16T15:54:15Z	PASS	58	verify.sh	new fixture, 3 phases clean, orph clean
 ses-identity	2026-07-16T15:54:15Z	PASS	182	verify.sh	new fixture, 3 phases clean, orph clean
 eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
 lambda-snapstart	2026-07-16T15:54:15Z	PASS	187	verify.sh	new fixture, 3 phases clean, orph clean
+iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
+apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix live-verify, warn 1->0 + rendering sample, orph clean
+lambda	2026-07-16T17:11:44Z	PASS	78	verify.sh	broad refresh for intrinsic-resolver+deploy-engine edit (issue-1017), orph clean
