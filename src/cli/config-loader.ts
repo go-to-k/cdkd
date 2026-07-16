@@ -134,6 +134,26 @@ export function resolveUseCdkBootstrapAssets(cliValue?: boolean): boolean {
 }
 
 /**
+ * Resolve the effective "auto-create cdkd asset storage on first deploy into
+ * an un-opted-in region" value (issue #1007).
+ *
+ * Mirrors {@link resolveCaptureObservedState}'s `--no-X` shape: Commander
+ * reports `--no-auto-asset-storage` as `autoAssetStorage: false`, and the
+ * implicit default is `true` — so the cdk.json fallback
+ * (`context.cdkd.autoAssetStorage`, boolean) only fires when the CLI value
+ * is the implicit default. Priority: CLI `false` wins > cdk.json boolean >
+ * default `true`.
+ */
+export function resolveAutoAssetStorage(cliValue?: boolean): boolean {
+  if (cliValue === false) return false;
+  const cdkJson = loadCdkJson();
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  const v = cdkdContext?.['autoAssetStorage'];
+  if (typeof v === 'boolean') return v;
+  return true;
+}
+
+/**
  * Resolve the effective value for "should cdkd skip the stack-name
  * prefix on user-supplied physical names?" on `cdkd deploy`.
  *

@@ -465,6 +465,7 @@ export class AssetModeResolver {
   private profile: string | undefined;
   private useCdkBootstrapAssets: boolean;
   private suppressLegacyNotice: boolean;
+  private autoCreate: { confirm: (region: string) => Promise<boolean> } | undefined;
 
   constructor(
     stateBackend: S3StateBackend,
@@ -487,6 +488,22 @@ export class AssetModeResolver {
        * `publish-assets`.
        */
       suppressLegacyNotice?: boolean;
+      /**
+       * Issue #1007 — auto-create the per-region asset storage on the first
+       * deploy into a region with no bootstrap marker, instead of falling
+       * back to legacy mode. Restores the "bootstrap once per account" UX:
+       * asset storage is inherently regional (Lambda requires same-region
+       * S3/ECR), but the per-region step no longer leaks into the workflow.
+       * `confirm` gates creation (interactive prompt; `--yes` / non-TTY
+       * callers log-and-return-true). A declined confirm or a failed
+       * creation falls back to legacy mode + the gc notice — a deploy that
+       * used to work must never start hard-failing because S3/ECR create
+       * was denied. Only `deploy` passes this (and not under `--dry-run` /
+       * `--skip-assets` — the latter would rewrite already-published legacy
+       * references to a freshly created EMPTY bucket/repo);
+       * `diff` / `import` / `publish-assets` never create resources.
+       */
+      autoCreate?: { confirm: (region: string) => Promise<boolean> };
     } = {}
   ) {
     this.stateBackend = stateBackend;
@@ -494,6 +511,7 @@ export class AssetModeResolver {
     this.profile = opts.profile;
     this.useCdkBootstrapAssets = opts.useCdkBootstrapAssets ?? false;
     this.suppressLegacyNotice = opts.suppressLegacyNotice ?? false;
+    this.autoCreate = opts.autoCreate;
   }
 
   /**
@@ -523,6 +541,11 @@ export class AssetModeResolver {
     const body = await this.stateBackend.getRawObject(markerKey);
 
     if (body === null) {
+      if (this.autoCreate) {
+        const created = await this.tryAutoCreate(region, markerKey);
+        if (created) return created;
+        // Declined or failed — fall through to legacy mode + the notice.
+      }
       if (!this.legacyNoticeShownRegions.has(region) && !this.suppressLegacyNotice) {
         this.legacyNoticeShownRegions.add(region);
         // Name the exact region so users who already ran `cdkd bootstrap` in
@@ -547,5 +570,77 @@ export class AssetModeResolver {
         `${marker.assetBucket} / ${marker.containerRepo}`
     );
     return { mode: 'cdkd-assets', marker };
+  }
+
+  /**
+   * Issue #1007 — first deploy into an un-opted-in region: confirm, then
+   * create the asset bucket + container repo + marker via the same
+   * {@link ensureAssetStorage} `cdkd bootstrap` uses (squatting defense,
+   * idempotent creation, marker-written-last all included). Returns `null`
+   * (= stay legacy) when the user declines or creation fails — the caller
+   * then shows the legacy notice, so the user still learns the exact
+   * `cdkd bootstrap --region <r>` remediation.
+   */
+  private async tryAutoCreate(region: string, markerKey: string): Promise<AssetMode | null> {
+    let confirmed: boolean;
+    try {
+      confirmed = await this.autoCreate!.confirm(region);
+    } catch {
+      // A broken prompt (closed stdin, readline error) must not fail the
+      // deploy — treat it as a decline.
+      confirmed = false;
+    }
+    if (!confirmed) {
+      return null;
+    }
+    // Constructed inside the try so even a throwing client constructor
+    // lands in the fail-open catch below instead of escaping to the deploy.
+    let s3Client: S3Client | undefined;
+    let ecrClient: ECRClient | undefined;
+    try {
+      s3Client = new S3Client({
+        region,
+        ...(this.profile && { profile: this.profile }),
+      });
+      ecrClient = new ECRClient({
+        region,
+        ...(this.profile && { profile: this.profile }),
+      });
+      await ensureAssetStorage({
+        s3Client,
+        ecrClient,
+        stateBackend: this.stateBackend,
+        accountId: this.accountId,
+        region,
+        force: false,
+      });
+      const body = await this.stateBackend.getRawObject(markerKey);
+      if (body === null) {
+        throw new CdkdError(
+          `bootstrap marker missing at '${markerKey}' right after creation`,
+          'ASSET_STORAGE_MARKER_MISSING'
+        );
+      }
+      const marker = parseBootstrapMarker(body, markerKey);
+      this.logger.debug(
+        `cdkd asset storage auto-created for region '${region}': ` +
+          `${marker.assetBucket} / ${marker.containerRepo}`
+      );
+      return { mode: 'cdkd-assets', marker };
+    } catch (error) {
+      // Never hard-fail the deploy over a denied/failed storage creation —
+      // legacy mode is exactly the pre-#1007 behavior and still works
+      // wherever it worked before.
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Failed to auto-create cdkd asset storage for region '${region}': ${message} ` +
+          `Falling back to the CDK bootstrap destinations for this run — run ` +
+          `'cdkd bootstrap --region ${region}' (with S3/ECR create permissions) to opt the region in.`
+      );
+      return null;
+    } finally {
+      s3Client?.destroy();
+      ecrClient?.destroy();
+    }
   }
 }

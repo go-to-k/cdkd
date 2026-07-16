@@ -1006,6 +1006,26 @@ region is opted in; `cdk.json` `context.cdkd.useCdkBootstrapAssets: true`
 pins it per app — for apps deployed via both CloudFormation and cdkd during
 a migration window. The pin also suppresses the legacy-mode `cdk gc` notice.
 
+### Auto-create on first deploy (issue #1007)
+
+`cdkd deploy` into a region that has **no** bootstrap marker auto-creates
+the per-region asset storage (asset bucket + container-asset ECR repo +
+marker — the same `ensureAssetStorage` path `cdkd bootstrap` uses, including
+the squatting defense and marker-written-last ordering) instead of falling
+back to legacy mode, so `cdkd bootstrap` stays a true once-per-account step.
+
+- Interactive runs are prompted once per region (`[Y/n]`, default yes);
+  `--yes` / non-TTY runs create immediately with an info line.
+- A declined prompt or a failed creation (e.g. S3/ECR create denied) falls
+  back to legacy mode with an actionable warning — a deploy that worked
+  before never starts hard-failing.
+- Opt out per invocation with `--no-auto-asset-storage`, or per app with
+  `cdk.json` `context.cdkd.autoAssetStorage: false`. The
+  `--use-cdk-bootstrap-assets` pin also disables it (the marker is never
+  read), as does `--dry-run` (a dry run creates nothing). Only `deploy`
+  auto-creates — `diff` / `import` / `publish-assets` never create
+  resources.
+
 ## `cdkd diff`
 
 `cdkd diff [<stacks...>]` synthesizes the CDK app and reports the
