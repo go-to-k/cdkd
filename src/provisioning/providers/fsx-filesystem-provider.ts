@@ -509,7 +509,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
       let updatedFs: FileSystem | undefined;
 
       if (needsUpdateCall) {
-        await this.getClient().send(
+        const callTimeMs = Date.now();
+        const updateResponse = await this.getClient().send(
           new UpdateFileSystemCommand({
             FileSystemId: physicalId,
             ...(storageCapacityChanged && {
@@ -533,10 +534,35 @@ export class FSxFileSystemProvider implements ResourceProvider {
         // Lifecycle can report AVAILABLE while the config change has not
         // propagated to the Describe view yet (observed live: a
         // DataCompressionType NONE -> LZ4 change still read NONE seconds
-        // after UpdateFileSystem returned). Wait until the update action
+        // after UpdateFileSystem returned). Wait until THIS update's action
         // completes so the next read (drift compare, verify scripts) sees
         // the final values — CloudFormation waits the same way.
-        updatedFs = await this.waitForUpdateActionComplete(physicalId, logicalId, resourceType);
+        //
+        // The wait must scope to actions from THIS update: FSx keeps
+        // completed/FAILED actions in the AdministrativeActions history, so
+        // an unscoped wait would (a) mistake a PAST failed update for this
+        // one, permanently failing every retry, and (b) return early when
+        // the just-created action is not visible in Describe yet. The
+        // UpdateFileSystem response carries the newly-created action —
+        // derive the tracking threshold from its RequestTime, falling back
+        // to the local call time minus a clock-skew margin.
+        const respPendingActions = (updateResponse.FileSystem?.AdministrativeActions ?? []).filter(
+          (a) =>
+            a.AdministrativeActionType === 'FILE_SYSTEM_UPDATE' &&
+            (a.Status === 'PENDING' || a.Status === 'IN_PROGRESS')
+        );
+        const requestTimes = respPendingActions
+          .map((a) => a.RequestTime?.getTime())
+          .filter((t): t is number => t !== undefined);
+        const actionThresholdMs =
+          requestTimes.length > 0 ? Math.min(...requestTimes) : callTimeMs - 60_000;
+
+        updatedFs = await this.waitForUpdateActionComplete(
+          physicalId,
+          logicalId,
+          resourceType,
+          actionThresholdMs
+        );
       }
 
       if (tagsChanged) {
@@ -550,12 +576,25 @@ export class FSxFileSystemProvider implements ResourceProvider {
       // Re-derive the attribute set so the deploy engine's state write keeps
       // GetAtt-served attributes (DNSName / LustreMountName / ResourceARN)
       // fresh across updates — an update result without attributes would
-      // otherwise degrade Fn::GetAtt to the physical-id fallback.
+      // otherwise degrade Fn::GetAtt to the physical-id fallback. Best-effort:
+      // the real update already succeeded at this point, so a transient
+      // Describe failure must NOT fail (and roll back) the whole update —
+      // returning without attributes lets the deploy engine carry the
+      // previously-stored attributes forward, which is exactly the intended
+      // degradation.
       if (!updatedFs) {
-        const resp = await this.getClient().send(
-          new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
-        );
-        updatedFs = resp.FileSystems?.[0];
+        try {
+          const resp = await this.getClient().send(
+            new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
+          );
+          updatedFs = resp.FileSystems?.[0];
+        } catch (describeError) {
+          this.logger.debug(
+            `Post-update attribute refresh for ${physicalId} failed (returning without attributes): ${
+              describeError instanceof Error ? describeError.message : String(describeError)
+            }`
+          );
+        }
       }
 
       this.logger.debug(`Successfully updated FSx FileSystem ${logicalId}`);
@@ -755,11 +794,18 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * for hours after a capacity grow, and CloudFormation does not wait for
    * them either (`UPDATED_OPTIMIZING` counts as done). A FAILED update
    * action is a hard error carrying the action's failure message.
+   *
+   * `actionThresholdMs` scopes the wait to THIS update's actions: FSx keeps
+   * terminal (COMPLETED / FAILED) actions in the history, so only actions
+   * whose `RequestTime` is at or after the threshold are considered — a
+   * PAST failed update must not fail this one's retry. An action without a
+   * `RequestTime` is conservatively tracked.
    */
   private async waitForUpdateActionComplete(
     fileSystemId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    actionThresholdMs: number
   ): Promise<FileSystem> {
     const startTime = Date.now();
     const transientState = { count: 0 };
@@ -769,7 +815,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
       if (fs) {
         const updateActions = (fs.AdministrativeActions ?? []).filter(
-          (a) => a.AdministrativeActionType === 'FILE_SYSTEM_UPDATE'
+          (a) =>
+            a.AdministrativeActionType === 'FILE_SYSTEM_UPDATE' &&
+            (a.RequestTime === undefined || a.RequestTime.getTime() >= actionThresholdMs)
         );
         const failed = updateActions.find((a) => a.Status === 'FAILED');
         if (failed) {

@@ -376,6 +376,57 @@ describe('FSxFileSystemProvider update', () => {
     expect(callsOf(DescribeFileSystemsCommand).length).toBeGreaterThanOrEqual(2);
   });
 
+  it('ignores HISTORICAL failed update actions — only actions from this update are tracked', async () => {
+    const now = new Date();
+    const oldFailure = {
+      AdministrativeActionType: 'FILE_SYSTEM_UPDATE',
+      Status: 'FAILED',
+      RequestTime: new Date('2020-01-01T00:00:00Z'),
+      FailureDetails: { Message: 'a PREVIOUS update failed' },
+    };
+    routeSend({
+      // The UpdateFileSystem response carries the newly-created action —
+      // its RequestTime seeds the tracking threshold.
+      UpdateFileSystemCommand: {
+        FileSystem: {
+          FileSystemId: FS_ID,
+          AdministrativeActions: [
+            oldFailure,
+            { AdministrativeActionType: 'FILE_SYSTEM_UPDATE', Status: 'PENDING', RequestTime: now },
+          ],
+        },
+      },
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            AdministrativeActions: [
+              oldFailure,
+              {
+                AdministrativeActionType: 'FILE_SYSTEM_UPDATE',
+                Status: 'COMPLETED',
+                RequestTime: now,
+              },
+            ],
+          }),
+        ],
+      },
+    });
+
+    // Must NOT throw on the stale 2020 FAILED action — the retry succeeds.
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        {
+          ...LUSTRE_PROPS,
+          LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
+        },
+        { ...LUSTRE_PROPS, LustreConfiguration: { DeploymentType: 'SCRATCH_2' } }
+      )
+    ).resolves.toMatchObject({ physicalId: FS_ID, wasReplaced: false });
+  });
+
   it('hard-fails when the FILE_SYSTEM_UPDATE administrative action reports FAILED', async () => {
     routeSend({
       UpdateFileSystemCommand: {},
