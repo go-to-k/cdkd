@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-17T12:32:48.618Z",
+  "generatedAt": "2026-07-17T14:54:36.339Z",
   "summary": {
-    "tier1Count": 125,
+    "tier1Count": 126,
     "tier2Count": 1349,
-    "tier3Count": 165,
+    "tier3Count": 164,
     "totalCount": 1639
   },
   "tier1": [
@@ -74,6 +74,7 @@
     "AWS::ElasticLoadBalancingV2::TargetGroup",
     "AWS::Events::EventBus",
     "AWS::Events::Rule",
+    "AWS::FSx::FileSystem",
     "AWS::Glue::Connection",
     "AWS::Glue::Crawler",
     "AWS::Glue::Database",
@@ -1536,7 +1537,6 @@
     "AWS::ElastiCache::SecurityGroupIngress",
     "AWS::ElasticLoadBalancingV2::ListenerCertificate",
     "AWS::Elasticsearch::Domain",
-    "AWS::FSx::FileSystem",
     "AWS::FSx::Snapshot",
     "AWS::FSx::StorageVirtualMachine",
     "AWS::FSx::Volume",
