@@ -56,6 +56,7 @@
     "@aws-sdk/client-cloudwatch-logs": "^3.1018.0",
     "@aws-sdk/client-codebuild": "^3.1019.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.1017.0",
+    "@aws-sdk/client-dlm": "^3.1088.0",
     "@aws-sdk/client-docdb": "^3.1045.0",
     "@aws-sdk/client-dynamodb": "^3.1017.0",
     "@aws-sdk/client-ec2": "^3.1016.0",

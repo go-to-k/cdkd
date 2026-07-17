@@ -611,6 +611,11 @@
       "scenarios": []
     },
     {
+      "name": "dlm-lifecycle-policy",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "docdb-neptune",
       "annotated": true,
       "scenarios": []

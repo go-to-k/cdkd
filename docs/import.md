@@ -341,6 +341,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::S3Tables::Namespace
 - AWS::S3Tables::Table
 - AWS::S3Vectors::VectorBucket
+- AWS::DLM::LifecyclePolicy
 
 ### Override-only — no standalone identity / list API
 

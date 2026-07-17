@@ -1,0 +1,28 @@
+{
+  "resourceType": "AWS::DLM::LifecyclePolicy",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "Arn",
+    "CopyTags",
+    "CreateInterval",
+    "CrossRegionCopyTargets",
+    "DefaultPolicy",
+    "Description",
+    "Exclusions",
+    "ExecutionRoleArn",
+    "ExtendDeletion",
+    "Id",
+    "PolicyDetails",
+    "RetainInterval",
+    "State",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "Id"
+  ],
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

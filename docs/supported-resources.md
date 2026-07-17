@@ -195,6 +195,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Storage** | AWS::S3Tables::Table | SDK Provider | ✅ |
 | **Storage** | AWS::S3Vectors::VectorBucket | SDK Provider | ✅ |
 | **Audit** | AWS::CloudTrail::Trail | SDK Provider | ✅ |
+| **Backup** | AWS::DLM::LifecyclePolicy | SDK Provider | ✅ |
 | **CI/CD** | AWS::CodeBuild::Project | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Compute** | AWS::AutoScaling::AutoScalingGroup | SDK Provider | ✅ |

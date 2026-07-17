@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 117,
+    "classifiedCount": 118,
     "enriched": 4,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 99,
-    "allowListedTypes": 1
+    "sdkFallbackGap": 100,
+    "allowListedTypes": 2
   },
   "types": [
     {
@@ -655,6 +655,30 @@
         "ProviderName",
         "ProviderURL",
         "UserPoolId"
+      ]
+    },
+    {
+      "resourceType": "AWS::DLM::LifecyclePolicy",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": [
+        "Arn"
       ]
     },
     {
