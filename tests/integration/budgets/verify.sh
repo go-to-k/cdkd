@@ -74,8 +74,9 @@ echo "==> Pre-run cleanup"
 cleanup
 
 notification_json() {
-  # The single expected notification for a given threshold, in the exact
-  # shape describe-notifications-for-budget returns.
+  # ALL notifications currently on the budget, in the exact shape
+  # describe-notifications-for-budget returns (callers assert on count +
+  # threshold).
   aws budgets describe-notifications-for-budget \
     --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
     --query 'Notifications' --output json
@@ -144,7 +145,7 @@ echo "    both subscribers present on the new notification"
 # The budget must route via the SDK provider (catch a silent routing flip).
 PROVISIONED_BY="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::Budgets::Budget");process.stdout.write((r[k]&&r[k].provisionedBy)||"sdk")})')"
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::Budgets::Budget");if(!k){process.stdout.write("MISSING");return;}process.stdout.write(r[k].provisionedBy||"sdk")})')"
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: expected budget provisionedBy=sdk, got '${PROVISIONED_BY}'" >&2
   exit 1

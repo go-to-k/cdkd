@@ -237,3 +237,4 @@ dlm-lifecycle-policy	2026-07-17T07:27:24Z	PASS	72	verify.sh	re-run post review f
 lambda	2026-07-17T10:15:29Z	PASS	77	verify.sh	broad refresh for register-providers+intrinsic-resolver edit (#1045): 9 del 0 err, orph clean
 codecommit	2026-07-17T10:28:12Z	PASS	59	verify.sh	re-run on final code post-review fixes (null-id delete + retry-safe rename); 3 phases clean 0 orphans
 budgets	2026-07-17T09:19:14Z	PASS	60	verify.sh	new fixture #1041: create+in-place notif/subscriber reconcile+destroy clean, 0 orphans
+budgets	2026-07-17T11:11:00Z	PASS	60	verify.sh	re-run post review fixes (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans

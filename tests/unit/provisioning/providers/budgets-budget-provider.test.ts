@@ -53,6 +53,7 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   NotFoundException,
+  DuplicateRecordException,
 } from '@aws-sdk/client-budgets';
 import { BudgetsBudgetProvider } from '../../../../src/provisioning/providers/budgets-budget-provider.js';
 import {
@@ -119,6 +120,16 @@ describe('BudgetsBudgetProvider', () => {
       expect(input['ResourceTags']).toBeUndefined();
     });
 
+    it('passes a user-supplied BudgetName through verbatim (no sanitize, no prefix)', async () => {
+      const result = await provider.create('MyBudget', TYPE, budgetProps('My Team Budget 2026'));
+      expect(result.physicalId).toBe('My Team Budget 2026');
+
+      const [input] = callsOf(CreateBudgetCommand) as [Record<string, unknown>];
+      expect((input['Budget'] as Record<string, unknown>)['BudgetName']).toBe(
+        'My Team Budget 2026'
+      );
+    });
+
     it('generates a budget name when Budget.BudgetName is absent', async () => {
       const result = await provider.create('MyBudget', TYPE, budgetProps());
       expect(result.physicalId).toMatch(/MyBudget/);
@@ -182,6 +193,71 @@ describe('BudgetsBudgetProvider', () => {
 
     it('requires the Budget property', async () => {
       await expect(provider.create('MyBudget', TYPE, {})).rejects.toThrow(ProvisioningError);
+    });
+
+    it('converts PlannedBudgetLimits amounts to numeric strings per key', async () => {
+      await provider.create('MyBudget', TYPE, {
+        Budget: {
+          BudgetName: 'pbl',
+          BudgetType: 'COST',
+          TimeUnit: 'MONTHLY',
+          PlannedBudgetLimits: {
+            '1783036800': { Amount: 5, Unit: 'USD' },
+            '1785715200': { Amount: 7.5, Unit: 'USD' },
+          },
+        },
+      });
+
+      const [input] = callsOf(CreateBudgetCommand) as [Record<string, unknown>];
+      expect((input['Budget'] as Record<string, unknown>)['PlannedBudgetLimits']).toEqual({
+        '1783036800': { Amount: '5', Unit: 'USD' },
+        '1785715200': { Amount: '7.5', Unit: 'USD' },
+      });
+    });
+
+    it('converts numeric epoch TimePeriod values (seconds and milliseconds)', async () => {
+      await provider.create('MyBudget', TYPE, {
+        Budget: {
+          BudgetName: 'tp-num',
+          BudgetType: 'COST',
+          TimeUnit: 'MONTHLY',
+          // Start: epoch SECONDS as a number; End: epoch MILLISECONDS as a
+          // numeric string (>= 1e12 triggers the millis branch).
+          TimePeriod: { Start: 1783036800, End: '1783036800000' },
+        },
+      });
+
+      const [input] = callsOf(CreateBudgetCommand) as [Record<string, unknown>];
+      const period = (input['Budget'] as Record<string, unknown>)['TimePeriod'] as {
+        Start: Date;
+        End: Date;
+      };
+      expect(period.Start).toEqual(new Date(1783036800 * 1000));
+      expect(period.End).toEqual(new Date(1783036800000));
+    });
+
+    it('wraps CreateBudget failures in ProvisioningError', async () => {
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
+      await expect(provider.create('MyBudget', TYPE, budgetProps('x'))).rejects.toThrow(
+        /Failed to create budget MyBudget: AccessDenied/
+      );
+    });
+
+    it('coerces ResourceTags values and skips entries without a string Key', async () => {
+      await provider.create('MyBudget', TYPE, {
+        ...budgetProps('rt'),
+        ResourceTags: [
+          { Key: 'num', Value: 7 },
+          { Key: 'bool', Value: true },
+          { Value: 'no-key' },
+        ],
+      });
+
+      const [input] = callsOf(CreateBudgetCommand) as [Record<string, unknown>];
+      expect(input['ResourceTags']).toEqual([
+        { Key: 'num', Value: '7' },
+        { Key: 'bool', Value: 'true' },
+      ]);
     });
 
     it('caches the STS account id across calls (single-flight per instance)', async () => {
@@ -325,6 +401,120 @@ describe('BudgetsBudgetProvider', () => {
       expect(tags[0]!['ResourceTags']).toEqual([{ Key: 'keep', Value: 'v2' }]);
     });
 
+    it('creates all notifications when the previous set was absent', async () => {
+      await provider.update(
+        'MyBudget',
+        'team-budget',
+        TYPE,
+        {
+          ...budgetProps('team-budget'),
+          NotificationsWithSubscribers: [
+            emailNotification(80, 'a@example.com'),
+            emailNotification(90, 'b@example.com'),
+          ],
+        },
+        budgetProps('team-budget')
+      );
+
+      expect(callsOf(CreateNotificationCommand)).toHaveLength(2);
+      expect(callsOf(DeleteNotificationCommand)).toHaveLength(0);
+    });
+
+    it('deletes all notifications when the new set is absent', async () => {
+      await provider.update('MyBudget', 'team-budget', TYPE, budgetProps('team-budget'), {
+        ...budgetProps('team-budget'),
+        NotificationsWithSubscribers: [emailNotification(80, 'a@example.com')],
+      });
+
+      expect(callsOf(DeleteNotificationCommand)).toHaveLength(1);
+      expect(callsOf(CreateNotificationCommand)).toHaveLength(0);
+    });
+
+    it('removes all tags via UntagResource only when ResourceTags becomes empty', async () => {
+      await provider.update('MyBudget', 'team-budget', TYPE, budgetProps('team-budget'), {
+        ...budgetProps('team-budget'),
+        ResourceTags: [{ Key: 'drop', Value: 'x' }],
+      });
+
+      const untags = callsOf(UntagResourceCommand) as Array<Record<string, unknown>>;
+      expect(untags).toHaveLength(1);
+      expect(untags[0]!['ResourceTagKeys']).toEqual(['drop']);
+      expect(callsOf(TagResourceCommand)).toHaveLength(0);
+    });
+
+    it('treats NotFound on reconciler deletes as idempotent success (retry/rollback safety)', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DeleteNotificationCommand) {
+          return Promise.reject(new NotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update('MyBudget', 'team-budget', TYPE, budgetProps('team-budget'), {
+          ...budgetProps('team-budget'),
+          NotificationsWithSubscribers: [emailNotification(80, 'a@example.com')],
+        })
+      ).resolves.toBeDefined();
+    });
+
+    it('treats DuplicateRecord on reconciler creates as idempotent success (retry safety)', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateNotificationCommand || cmd instanceof CreateSubscriberCommand) {
+          return Promise.reject(new DuplicateRecordException({ message: 'dup', $metadata: {} }));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyBudget',
+          'team-budget',
+          TYPE,
+          {
+            ...budgetProps('team-budget'),
+            NotificationsWithSubscribers: [
+              emailNotification(90, 'a@example.com'),
+              emailNotification(80, 'b@example.com'),
+            ],
+          },
+          {
+            ...budgetProps('team-budget'),
+            NotificationsWithSubscribers: [emailNotification(80, 'a@example.com')],
+          }
+        )
+      ).resolves.toBeDefined();
+    });
+
+    it('still fails the update when a reconciler delete errors with a non-NotFound error', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DeleteNotificationCommand) {
+          return Promise.reject(new Error('AccessDenied'));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update('MyBudget', 'team-budget', TYPE, budgetProps('team-budget'), {
+          ...budgetProps('team-budget'),
+          NotificationsWithSubscribers: [emailNotification(80, 'a@example.com')],
+        })
+      ).rejects.toThrow(/AccessDenied/);
+    });
+
+    it('wraps UpdateBudget failures in ProvisioningError', async () => {
+      mockSend.mockRejectedValueOnce(new Error('Throttling'));
+      await expect(
+        provider.update(
+          'MyBudget',
+          'team-budget',
+          TYPE,
+          budgetProps('team-budget'),
+          budgetProps('team-budget')
+        )
+      ).rejects.toThrow(/Failed to update budget MyBudget: Throttling/);
+    });
+
     it('skips tag calls when ResourceTags are unchanged', async () => {
       const props = {
         ...budgetProps('team-budget'),
@@ -381,6 +571,13 @@ describe('BudgetsBudgetProvider', () => {
         /Unknown attribute/
       );
     });
+
+    it('wraps DescribeBudget failures in ProvisioningError', async () => {
+      mockSend.mockRejectedValueOnce(new Error('boom'));
+      await expect(provider.getAttribute('team-budget', TYPE, 'Arn')).rejects.toThrow(
+        /Failed to resolve Arn for budget team-budget: boom/
+      );
+    });
   });
 
   describe('import', () => {
@@ -431,6 +628,47 @@ describe('BudgetsBudgetProvider', () => {
 
       const result = await provider.import(input());
       expect(result?.physicalId).toBe('tagged');
+    });
+
+    it('walks DescribeBudgets pagination and forwards NextToken', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeBudgetsCommand) {
+          const token = (cmd as { input: { NextToken?: string } }).input.NextToken;
+          if (!token) {
+            return Promise.resolve({ Budgets: [{ BudgetName: 'other' }], NextToken: 't1' });
+          }
+          return Promise.resolve({ Budgets: [{ BudgetName: 'tagged' }] });
+        }
+        if (cmd instanceof ListTagsForResourceCommand) {
+          const arn = (cmd as { input: { ResourceARN: string } }).input.ResourceARN;
+          return Promise.resolve({
+            ResourceTags: arn.endsWith('/tagged')
+              ? [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBudget' }]
+              : [],
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await provider.import(input());
+      expect(result?.physicalId).toBe('tagged');
+
+      const describeCalls = callsOf(DescribeBudgetsCommand) as Array<Record<string, unknown>>;
+      expect(describeCalls).toHaveLength(2);
+      expect(describeCalls[1]!['NextToken']).toBe('t1');
+    });
+
+    it('returns null when there is no explicit name and no cdkPath', async () => {
+      const result = await provider.import(input({ cdkPath: '' }));
+      expect(result).toBeNull();
+      expect(callsOf(DescribeBudgetsCommand)).toHaveLength(0);
+    });
+
+    it('rethrows non-NotFound errors from the explicit DescribeBudget unwrapped', async () => {
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
+      await expect(provider.import(input({ knownPhysicalId: 'team-budget' }))).rejects.toThrow(
+        'AccessDenied'
+      );
     });
 
     it('returns null when no budget carries the cdk path tag', async () => {

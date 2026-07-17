@@ -13,6 +13,7 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   NotFoundException,
+  DuplicateRecordException,
   type Budget,
   type Notification,
   type NotificationWithSubscribers,
@@ -26,7 +27,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceNameWithFallback } from '../resource-name.js';
+import { generateResourceName } from '../resource-name.js';
 import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -335,13 +336,21 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     this.logger.debug(`Creating budget ${logicalId}`);
 
     const rawBudget = (properties['Budget'] ?? {}) as Record<string, unknown>;
-    const name = generateResourceNameWithFallback(
-      typeof rawBudget['BudgetName'] === 'string' ? rawBudget['BudgetName'] : undefined,
-      logicalId,
-      // Budget names allow most printable characters except `:` and `\`,
-      // up to 100 chars; keep the generated fallback conservative.
-      { maxLength: 100, allowedPattern: /[^a-zA-Z0-9\-_.]/g }
-    );
+    const rawName = rawBudget['BudgetName'];
+    // A user-supplied BudgetName is a user contract: Budgets accepts nearly
+    // every printable character except `:` and `\`, so it passes through
+    // VERBATIM (no sanitize, no stack prefix) — running it through the name
+    // generator would silently mutate names like "My Team Budget" and desync
+    // the physical id from the template (breaking import's explicit-name
+    // lookup). Only the logical-id fallback goes through the conservative
+    // generator.
+    const name =
+      typeof rawName === 'string' && rawName.length > 0
+        ? rawName
+        : generateResourceName(logicalId, {
+            maxLength: 100,
+            allowedPattern: /[^a-zA-Z0-9\-_.]/g,
+          });
 
     try {
       const accountId = await this.resolveAccountId();
@@ -442,9 +451,55 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   }
 
   /**
+   * Send a reconciler DELETE call, treating `NotFoundException` as success.
+   * The reconciler must be idempotent: after a partial failure the deploy
+   * engine retries the update forward (re-deleting an already-deleted
+   * notification/subscriber) or rolls it back with the reversed diff
+   * (deleting a notification the forward pass never created) — both land
+   * here as NotFound and must not fail the recovery.
+   */
+  private async sendDeleteIdempotent(
+    command: DeleteNotificationCommand | DeleteSubscriberCommand,
+    what: string
+  ): Promise<void> {
+    try {
+      await this.getClient().send(command as DeleteNotificationCommand);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        this.logger.debug(`${what} already absent, skipping delete`);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Send a reconciler CREATE call, treating `DuplicateRecordException` as
+   * success — the retry/rollback twin of {@link sendDeleteIdempotent} for
+   * re-creating a notification/subscriber a previous partial pass already
+   * created.
+   */
+  private async sendCreateIdempotent(
+    command: CreateNotificationCommand | CreateSubscriberCommand,
+    what: string
+  ): Promise<void> {
+    try {
+      await this.getClient().send(command as CreateNotificationCommand);
+    } catch (error) {
+      if (error instanceof DuplicateRecordException) {
+        this.logger.debug(`${what} already exists, skipping create`);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Reconcile the notification set: delete removed notifications first
    * (frees the 10-notifications-per-budget cap before additions), create
-   * added ones, then diff subscribers on retained notifications.
+   * added ones, then diff subscribers on retained notifications. Every
+   * step is idempotent (NotFound on delete / DuplicateRecord on create are
+   * success) so a partial failure can be retried forward or rolled back.
    */
   private async reconcileNotifications(
     accountId: string,
@@ -452,25 +507,41 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     oldList: NotificationWithSubscribers[],
     newList: NotificationWithSubscribers[]
   ): Promise<void> {
-    const client = this.getClient();
-    const oldByKey = new Map<string, NotificationWithSubscribers>();
-    for (const nws of oldList) {
-      if (nws.Notification) oldByKey.set(this.notificationKey(nws.Notification), nws);
-    }
-    const newByKey = new Map<string, NotificationWithSubscribers>();
-    for (const nws of newList) {
-      if (nws.Notification) newByKey.set(this.notificationKey(nws.Notification), nws);
-    }
+    const buildKeyed = (
+      list: NotificationWithSubscribers[],
+      side: string
+    ): Map<string, NotificationWithSubscribers> => {
+      const byKey = new Map<string, NotificationWithSubscribers>();
+      for (const nws of list) {
+        if (!nws.Notification) continue;
+        const key = this.notificationKey(nws.Notification);
+        if (byKey.has(key)) {
+          // Two notifications with identical (type, operator, threshold,
+          // thresholdType) — the Budgets API itself rejects true duplicates
+          // with DuplicateRecord, and Map aggregation keeps the LAST entry's
+          // subscribers. Surface it so a silently-dropped subscriber list is
+          // diagnosable.
+          this.logger.warn(
+            `Duplicate notification key ${key} in ${side} NotificationsWithSubscribers for budget ${budgetName}; the last entry's subscribers win`
+          );
+        }
+        byKey.set(key, nws);
+      }
+      return byKey;
+    };
+    const oldByKey = buildKeyed(oldList, 'previous');
+    const newByKey = buildKeyed(newList, 'desired');
 
     // Removed notifications (their subscribers are deleted with them).
     for (const [key, nws] of oldByKey) {
       if (newByKey.has(key)) continue;
-      await client.send(
+      await this.sendDeleteIdempotent(
         new DeleteNotificationCommand({
           AccountId: accountId,
           BudgetName: budgetName,
           Notification: nws.Notification,
-        })
+        }),
+        `Notification ${key} on budget ${budgetName}`
       );
       this.logger.debug(`Deleted notification ${key} from budget ${budgetName}`);
     }
@@ -478,13 +549,14 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     // Added notifications (created with their full subscriber list).
     for (const [key, nws] of newByKey) {
       if (oldByKey.has(key)) continue;
-      await client.send(
+      await this.sendCreateIdempotent(
         new CreateNotificationCommand({
           AccountId: accountId,
           BudgetName: budgetName,
           Notification: nws.Notification,
           Subscribers: nws.Subscribers,
-        })
+        }),
+        `Notification ${key} on budget ${budgetName}`
       );
       this.logger.debug(`Created notification ${key} on budget ${budgetName}`);
     }
@@ -492,7 +564,11 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     // Retained notifications: diff subscribers. Create additions BEFORE
     // deleting removals — a notification must keep at least one subscriber
     // at all times, so delete-first would fail on a full swap of a
-    // single-subscriber notification.
+    // single-subscriber notification. Known trade-off: a full swap of a
+    // notification already AT the per-notification subscriber cap can
+    // transiently exceed the cap and fail — the inverse of the delete-first
+    // ordering used for whole notifications above; the at-cap full swap is
+    // the rarer case.
     for (const [key, newNws] of newByKey) {
       const oldNws = oldByKey.get(key);
       if (!oldNws) continue;
@@ -503,25 +579,27 @@ export class BudgetsBudgetProvider implements ResourceProvider {
 
       for (const [subKey, subscriber] of newSubs) {
         if (oldSubs.has(subKey)) continue;
-        await client.send(
+        await this.sendCreateIdempotent(
           new CreateSubscriberCommand({
             AccountId: accountId,
             BudgetName: budgetName,
             Notification: newNws.Notification,
             Subscriber: subscriber,
-          })
+          }),
+          `Subscriber ${subKey} on notification ${key}`
         );
         this.logger.debug(`Created subscriber ${subKey} on notification ${key}`);
       }
       for (const [subKey, subscriber] of oldSubs) {
         if (newSubs.has(subKey)) continue;
-        await client.send(
+        await this.sendDeleteIdempotent(
           new DeleteSubscriberCommand({
             AccountId: accountId,
             BudgetName: budgetName,
             Notification: newNws.Notification,
             Subscriber: subscriber,
-          })
+          }),
+          `Subscriber ${subKey} on notification ${key}`
         );
         this.logger.debug(`Deleted subscriber ${subKey} from notification ${key}`);
       }
