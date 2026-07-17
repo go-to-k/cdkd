@@ -1160,6 +1160,23 @@ Rationales are free text but should be greppable. Common shapes:
 - `"covered by separate AWS::Foo::Bar resource type"`
 - `"OpenAPI-import-only flag; meaningful only on the ImportApi code path"`
 
+**NON_PROVISIONABLE types: set `disableCcApiFallback`.** A template property
+in neither `handledProperties` nor the allow set normally auto-routes the
+resource through Cloud Control (issue #614). If your provider covers a
+`ProvisioningType: NON_PROVISIONABLE` type (the reason SDK providers exist
+for e.g. `AWS::FSx::FileSystem` / `AWS::DLM::LifecyclePolicy`), that route
+target does not exist — Cloud Control has no handlers — and the runtime
+Tier 3 set cannot catch it (it excludes SDK-covered types by design, so
+`isNonProvisionable()` returns false once your provider is registered).
+Declare `readonly disableCcApiFallback = true;` on the provider class: the
+`ProviderRegistry` then rejects such templates pre-flight with a clear
+error (property rationale + `--allow-unsupported-properties` escape hatch)
+instead of failing at provisioning time with an opaque
+`UnsupportedActionException`. This only matters when the type has (or may
+gain) `unhandledByDesign` / not-yet-handled properties — a fully-handled
+type never triggers the auto-route — but declaring it is cheap insurance
+against a future schema addition.
+
 #### Workflow when adding a new provider
 
 1. Add the provider as usual ([§3 Provider Implementation Examples](#provider-implementation-examples)).
