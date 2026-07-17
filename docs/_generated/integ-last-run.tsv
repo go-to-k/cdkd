@@ -235,5 +235,5 @@ gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run 
 asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
 asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
 asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
-dlm-lifecycle-policy	2026-07-17T06:50:47Z	PASS	74	verify.sh	deploy+update(tag removal)+destroy clean; fixture desc fixed (DLM pattern disallows parens)
 bench-cdk-sample	2026-07-17T07:09:48Z	PASS	906	standard	39 created / 37 deleted 2 retained 0 errors; log-group sweep clean; integ-broad for DLM provider PR
+dlm-lifecycle-policy	2026-07-17T07:27:24Z	PASS	72	verify.sh	re-run post review fixes; deploy+update+destroy clean, 0 orphans
