@@ -423,6 +423,13 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Budgets::Budget',
+    {
+      handled: new Set<string>(['Budget', 'NotificationsWithSubscribers', 'ResourceTags']),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::CertificateManager::Certificate',
     {
       handled: new Set<string>([

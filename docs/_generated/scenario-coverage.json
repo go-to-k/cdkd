@@ -432,6 +432,11 @@
       "scenarios": []
     },
     {
+      "name": "budgets",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "cache-streaming",
       "annotated": true,
       "scenarios": []

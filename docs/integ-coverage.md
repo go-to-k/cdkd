@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**115 / 119 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**116 / 120 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -31,7 +31,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::RDS::DBProxy` | rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
 
-## Covered providers (115)
+## Covered providers (116)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -53,6 +53,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::AppSync::Resolver` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AutoScaling::AutoScalingGroup` | [`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l1,literal)<br>[`launchtemplate-asg-inplace`](../tests/integration/launchtemplate-asg-inplace/) (l2)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
 | `AWS::BedrockAgentCore::Runtime` | [`bedrock-agentcore`](../tests/integration/bedrock-agentcore/) (literal) |
+| `AWS::Budgets::Budget` | [`budgets`](../tests/integration/budgets/) (literal) |
 | `AWS::CertificateManager::Certificate` | [`acm-certificate`](../tests/integration/acm-certificate/) (l2) |
 | `AWS::CloudFormation::Stack` | [`export-nested-stack`](../tests/integration/export-nested-stack/) (literal)<br>[`import-nested-stack`](../tests/integration/import-nested-stack/) (literal)<br>[`nested-stack`](../tests/integration/nested-stack/) (literal)<br>[`nested-stack-3level`](../tests/integration/nested-stack-3level/) (literal)<br>[`nested-stack-deep`](../tests/integration/nested-stack-deep/) (literal) |
 | `AWS::CloudFormation::WaitConditionHandle` | [`wait-condition-handle`](../tests/integration/wait-condition-handle/) (literal) |

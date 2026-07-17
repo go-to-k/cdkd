@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-17T09:38:01.364Z",
+  "generatedAt": "2026-07-17T10:52:35.692Z",
   "summary": {
-    "tier1Count": 119,
+    "tier1Count": 120,
     "tier2Count": 1350,
-    "tier3Count": 170,
+    "tier3Count": 169,
     "totalCount": 1639
   },
   "tier1": [
@@ -26,6 +26,7 @@
     "AWS::AppSync::Resolver",
     "AWS::AutoScaling::AutoScalingGroup",
     "AWS::BedrockAgentCore::Runtime",
+    "AWS::Budgets::Budget",
     "AWS::CertificateManager::Certificate",
     "AWS::CloudFormation::Stack",
     "AWS::CloudFormation::WaitConditionHandle",
@@ -1497,7 +1498,6 @@
     "AWS::BedrockAgentCore::Browser",
     "AWS::BedrockAgentCore::CodeInterpreter",
     "AWS::BedrockAgentCore::TokenVault",
-    "AWS::Budgets::Budget",
     "AWS::Cloud9::EnvironmentEC2",
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudFormation::Macro",

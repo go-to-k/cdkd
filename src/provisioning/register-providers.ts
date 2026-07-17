@@ -56,6 +56,7 @@ import {
   GlueTriggerProvider,
 } from './providers/glue-provider.js';
 import { KMSProvider } from './providers/kms-provider.js';
+import { BudgetsBudgetProvider } from './providers/budgets-budget-provider.js';
 import { KinesisStreamProvider } from './providers/kinesis-provider.js';
 import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsumer-provider.js';
 import { SchedulerScheduleProvider } from './providers/scheduler-schedule-provider.js';
@@ -295,6 +296,10 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::S3Tables::TableBucket', s3TablesProvider);
   registry.register('AWS::S3Tables::Namespace', s3TablesProvider);
   registry.register('AWS::S3Tables::Table', s3TablesProvider);
+
+  // Budgets (global API served from us-east-1; the SDK endpoint ruleset
+  // routes any configured region to the global endpoint — issue #1041)
+  registry.register('AWS::Budgets::Budget', new BudgetsBudgetProvider());
 
   // Nested stacks (recursive deploy via NestedStackProvider — issue #459).
   // The provider is state-less; per-invocation parent identity + asset paths

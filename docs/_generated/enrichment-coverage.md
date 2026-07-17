@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **119**
-- Fully enriched: **4**
+- Classified types (cached schema): **120**
+- Fully enriched: **5**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **101**
-- Types with allow-listed (not-a-gap) attributes: **3**
+- Types with allow-listed (not-a-gap) attributes: **4**
 
 ## Pure-CC latent gaps
 
@@ -152,6 +152,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::AppSync::Resolver` | yes | sdk-fallback-gap | `ResolverArn` (GAP) |
 | `AWS::AutoScaling::AutoScalingGroup` | yes | sdk-fallback-gap | `AutoScalingGroupARN` (GAP) |
 | `AWS::BedrockAgentCore::Runtime` | yes | sdk-fallback-gap | `AgentRuntimeArn` (GAP), `AgentRuntimeId` (GAP), `AgentRuntimeVersion` (GAP), `CreatedAt` (GAP), `FailureReason` (GAP), `LastUpdatedAt` (GAP), `Status` (GAP), `WorkloadIdentityDetails` (GAP) |
+| `AWS::Budgets::Budget` | yes | enriched | `Id` (allow) |
 | `AWS::CertificateManager::Certificate` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::CloudFormation::Stack` | yes | sdk-fallback-gap | `ChangeSetId` (GAP), `CreationTime` (GAP), `LastUpdateTime` (GAP), `Outputs` (GAP), `ParentId` (GAP), `RootId` (GAP), `StackId` (GAP), `StackStatus` (GAP) |
 | `AWS::CloudFormation::WaitConditionHandle` | yes | enriched | `Id` (allow) |

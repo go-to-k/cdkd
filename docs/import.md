@@ -343,6 +343,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::S3Tables::Table
 - AWS::S3Vectors::VectorBucket
 - AWS::DLM::LifecyclePolicy
+- AWS::Budgets::Budget (the template `Budget.BudgetName` also resolves without a flag; tag lookup walks `DescribeBudgets` + `ListTagsForResource`)
 
 ### Override-only — no standalone identity / list API
 

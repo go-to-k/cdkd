@@ -29,7 +29,6 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::BedrockAgentCore::Browser',
   'AWS::BedrockAgentCore::CodeInterpreter',
   'AWS::BedrockAgentCore::TokenVault',
-  'AWS::Budgets::Budget',
   'AWS::Cloud9::EnvironmentEC2',
   'AWS::CloudFormation::Macro',
   'AWS::CloudFormation::WaitCondition',
