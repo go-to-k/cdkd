@@ -1,3 +1,10 @@
+# [0.243.0](https://github.com/go-to-k/cdkd/compare/v0.242.0...v0.243.0) (2026-07-17)
+
+
+### Features
+
+* **providers:** AgentCore Browser / CodeInterpreter / Evaluator ([#1062](https://github.com/go-to-k/cdkd/issues/1062)) ([07b22f3](https://github.com/go-to-k/cdkd/commit/07b22f34cf9dd89a374fc45cc6df8ff6969e9f9b))
+
 # [0.242.0](https://github.com/go-to-k/cdkd/compare/v0.241.0...v0.242.0) (2026-07-17)
 
 
