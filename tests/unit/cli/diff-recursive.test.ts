@@ -26,6 +26,18 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => fns };
 });
 
+// SSM send mock so AWS::SSM::Parameter::Value<...>-typed parameter defaults
+// never reach the network from the diff path (#1035 pins). Rejects by
+// default — the failure-degradation tests rely on that.
+const ssmSend = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../../src/utils/aws-clients.js')>();
+  return {
+    ...original,
+    getAwsClients: () => ({ ssm: { send: ssmSend } }),
+  };
+});
+
 import {
   buildDiffTree,
   computeStackDiff,
@@ -592,6 +604,123 @@ describe('computeStackDiff', () => {
         new DiffCalculator()
       );
       expect(changes.get('Gated')!.changeType).not.toBe('DELETE');
+    });
+
+    it('resolves Fn::FindInMap keyed by a bound parameter (#1035 pin)', async () => {
+      const template: CloudFormationTemplate = {
+        Parameters: { Env: { Type: 'String', Default: 'dev' } },
+        Mappings: { EnvMap: { dev: { Suffix: 'dev-q' }, prod: { Suffix: 'prod-q' } } },
+        Resources: {
+          A: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: {
+              Value: { 'Fn::FindInMap': ['EnvMap', { Ref: 'Env' }, 'Suffix'] },
+            },
+          },
+        },
+      };
+      const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'dev-q' }) });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
+    });
+
+    it('degrades to the raw-template diff when an SSM-typed parameter lookup fails (#1035 pin)', async () => {
+      // The diff path now calls resolveParameters, which resolves
+      // AWS::SSM::Parameter::Value<...>-typed defaults via GetParameter.
+      // A lookup failure (no bootstrap, no permission, transient error)
+      // must degrade to the pre-binding raw-template diff — never crash.
+      ssmSend.mockRejectedValueOnce(new Error('ParameterNotFound'));
+      const template: CloudFormationTemplate = {
+        Parameters: {
+          SsmVal: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/some/path' },
+        },
+        Resources: {
+          A: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'SsmVal' } } },
+        },
+      };
+      const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'x' }) });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      // Raw fallback keeps the unresolved Ref → reported as a change, not a crash.
+      expect(changes.get('A')!.changeType).toBe('UPDATE');
+    });
+
+    it('skips the SSM lookup for an unreferenced SSM-typed parameter (BootstrapVersion diff pin, #1035)', async () => {
+      // The CDK default synthesizer's BootstrapVersion parameter is SSM-typed
+      // and referenced only by Rules cdkd never evaluates. The diff path must
+      // inherit resolveParameters' unreferenced-skip (#1002) so diffing does
+      // not suddenly require `cdk bootstrap` in the target region.
+      ssmSend.mockClear();
+      const template: CloudFormationTemplate = {
+        Parameters: {
+          Env: { Type: 'String', Default: 'dev' },
+          BootstrapVersion: {
+            Type: 'AWS::SSM::Parameter::Value<String>',
+            Default: '/cdk-bootstrap/hnb659fds/version',
+          },
+        },
+        Resources: {
+          A: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'Env' } } },
+        },
+      };
+      const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'dev' }) });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
+      expect(ssmSend).not.toHaveBeenCalled();
+    });
+
+    it('applies parameter/condition preprocessing through buildDiffTree (walker wiring, #1035)', async () => {
+      const template: CloudFormationTemplate = {
+        Parameters: { Env: { Type: 'String', Default: 'dev' } },
+        Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Env' }, 'prod'] } },
+        Resources: {
+          A: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Value: { 'Fn::Sub': '${Env}-suffix' } },
+          },
+          ProdOnly: {
+            Type: 'AWS::SSM::Parameter',
+            Condition: 'IsProd',
+            Properties: { Value: 'prod-only' },
+          },
+        },
+      };
+      const backend = fakeBackend({
+        S: st('S', { A: res('AWS::SSM::Parameter', { Value: 'dev-suffix' }) }),
+      });
+      const root = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template,
+        nestedTemplates: {},
+        recursive: false,
+        stateBackend: backend,
+        diffCalculator: new DiffCalculator(),
+      });
+      expect(root.changes.get('A')!.changeType).toBe('NO_CHANGE');
+      expect(root.changes.has('ProdOnly')).toBe(false);
+      expect(treeHasChanges(root)).toBe(false);
     });
 
     it('falls back to the raw-template diff when a required parameter cannot be bound', async () => {
