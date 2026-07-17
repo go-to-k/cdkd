@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 119,
-    "enriched": 4,
+    "classifiedCount": 120,
+    "enriched": 5,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 101,
-    "allowListedTypes": 3
+    "allowListedTypes": 4
   },
   "types": [
     {
@@ -410,6 +410,23 @@
         "Status",
         "WorkloadIdentityDetails"
       ]
+    },
+    {
+      "resourceType": "AWS::Budgets::Budget",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
     },
     {
       "resourceType": "AWS::CertificateManager::Certificate",
