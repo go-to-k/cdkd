@@ -221,6 +221,10 @@
       "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A."
     },
     {
+      "tag": "raw-cfn-template-diff-parity",
+      "description": "Raw CloudFormation template (CfnInclude) carrying Parameters w/ defaults + Mappings + Conditions on resources AND outputs: deploy resolves them, a no-op `cdkd diff --fail` must exit 0 (no phantom replacement / phantom create — #1027), an inlined-parameter change updates in place, and a condition-false Output is skipped without a `Failed to resolve output` warn (#1028)."
+    },
+    {
       "tag": "rds-aurora-cluster-instance",
       "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family."
     },
@@ -1322,6 +1326,13 @@
       ]
     },
     {
+      "name": "raw-cfn-conditions-params",
+      "annotated": true,
+      "scenarios": [
+        "raw-cfn-template-diff-parity"
+      ]
+    },
+    {
       "name": "rds-aurora",
       "annotated": true,
       "scenarios": [
@@ -2063,6 +2074,13 @@
       "description": "CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A.",
       "fixtures": [
         "import-nested-stack"
+      ]
+    },
+    {
+      "scenario": "raw-cfn-template-diff-parity",
+      "description": "Raw CloudFormation template (CfnInclude) carrying Parameters w/ defaults + Mappings + Conditions on resources AND outputs: deploy resolves them, a no-op `cdkd diff --fail` must exit 0 (no phantom replacement / phantom create — #1027), an inlined-parameter change updates in place, and a condition-false Output is skipped without a `Failed to resolve output` warn (#1028).",
+      "fixtures": [
+        "raw-cfn-conditions-params"
       ]
     },
     {

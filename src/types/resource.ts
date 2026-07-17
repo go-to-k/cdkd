@@ -56,6 +56,13 @@ export interface TemplateResource {
 export interface TemplateOutput {
   Value: unknown;
   Description?: string;
+  /**
+   * Name of a template `Conditions` entry gating this output. CFn only
+   * creates the output when the condition evaluates true; the deploy
+   * engine's `resolveOutputs` mirrors that by skipping condition-false
+   * outputs (issue #1028).
+   */
+  Condition?: string;
   Export?: {
     Name: string;
   };

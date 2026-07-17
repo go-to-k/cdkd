@@ -3208,6 +3208,16 @@ export class DeployEngine {
     );
 
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
+      // CFn semantics: an output whose `Condition` evaluates false is simply
+      // not created — skip it silently instead of attempting resolution
+      // (which would warn on a Ref to a condition-pruned resource and could
+      // even publish an output/export CFn would omit). Mirrors the resource
+      // side's `filterResourcesByCondition` (issue #1028; unknown condition
+      // names are kept, matching that helper's semantics).
+      if (output.Condition !== undefined && conditions?.[output.Condition] === false) {
+        this.logger.debug(`Skipping output ${outputKey} — condition ${output.Condition} is false`);
+        continue;
+      }
       try {
         const value = await this.resolver.resolve(output.Value, context);
         outputs[outputKey] = value;

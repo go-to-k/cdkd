@@ -1,0 +1,84 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Raw CFn template ingested via CfnInclude - Parameters/Mappings/Conditions parity fixture",
+  "Parameters": {
+    "Env": {
+      "Type": "String",
+      "Default": "dev",
+      "AllowedValues": ["dev", "prod"]
+    },
+    "RetentionSeconds": {
+      "Type": "Number",
+      "Default": 120
+    }
+  },
+  "Mappings": {
+    "EnvMap": {
+      "dev": { "QueueSuffix": "dev-q" },
+      "prod": { "QueueSuffix": "prod-q" }
+    }
+  },
+  "Conditions": {
+    "IsProd": { "Fn::Equals": [{ "Ref": "Env" }, "prod"] },
+    "IsDev": { "Fn::Not": [{ "Condition": "IsProd" }] }
+  },
+  "Resources": {
+    "WorkQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": {
+          "Fn::Join": [
+            "-",
+            [
+              "cdkd-raw-cfn-cond",
+              { "Fn::FindInMap": ["EnvMap", { "Ref": "Env" }, "QueueSuffix"] }
+            ]
+          ]
+        },
+        "MessageRetentionPeriod": { "Ref": "RetentionSeconds" },
+        "Tags": [
+          { "Key": "env", "Value": { "Ref": "Env" } },
+          {
+            "Key": "region-suffix",
+            "Value": {
+              "Fn::Select": [1, { "Fn::Split": ["-", { "Ref": "AWS::Region" }] }]
+            }
+          }
+        ]
+      }
+    },
+    "ProdOnlyParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Condition": "IsProd",
+      "Properties": {
+        "Name": "/cdkd-raw-cfn-cond/prod-only",
+        "Type": "String",
+        "Value": "prod-only"
+      }
+    },
+    "EnvParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Condition": "IsDev",
+      "Properties": {
+        "Name": "/cdkd-raw-cfn-cond/env",
+        "Type": "String",
+        "Value": {
+          "Fn::Sub": "${Env}:${WorkQueue.QueueName}:${AWS::StackName}"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "QueueUrl": {
+      "Value": { "Ref": "WorkQueue" }
+    },
+    "ProdParamName": {
+      "Condition": "IsProd",
+      "Value": { "Ref": "ProdOnlyParam" }
+    },
+    "DevParamName": {
+      "Condition": "IsDev",
+      "Value": { "Ref": "EnvParam" }
+    }
+  }
+}

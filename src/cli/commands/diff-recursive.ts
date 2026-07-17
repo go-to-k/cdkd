@@ -4,7 +4,9 @@ import type { CloudFormationTemplate, TemplateResource } from '../../types/resou
 import type { ResourceChange, StackState } from '../../types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
+import { TemplateParser } from '../../analyzer/template-parser.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
+import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import {
   rewriteTemplateAssetReferences,
@@ -12,6 +14,8 @@ import {
 } from '../../assets/asset-redirect.js';
 import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
+
+const logger = getLogger().child('DiffRecursive');
 
 /**
  * One node in the recursive `cdkd diff --recursive` tree (issue
@@ -171,9 +175,73 @@ export async function computeStackDiff(
   parameters?: Record<string, unknown>
 ): Promise<Map<string, ResourceChange>> {
   const intrinsicResolver = new IntrinsicFunctionResolver(region);
+
+  // Mirror the deploy engine's parameter/condition preprocessing (steps
+  // 2.5-2.7, issue #1027) so the diff matches what deploy will actually do.
+  // Everything here is best-effort: a template whose parameters cannot be
+  // bound (e.g. a required parameter with no default) falls back to the
+  // pre-#1027 behavior — raw template, nested input parameters only — and
+  // the calculator keeps unresolved intrinsics as-is.
+  //
+  // 1) Bind template `Parameters` (defaults + SSM-typed lookups). The
+  //    nested-stack input parameters (see the resolver-context comment
+  //    below) act as the user-provided values, exactly like
+  //    `DeployEngineOptions.parameters` does on deploy.
+  let mergedParameters: Record<string, unknown> | undefined = parameters;
+  let parametersBound = false;
+  try {
+    const userParameters: Record<string, string> = {};
+    for (const [name, value] of Object.entries(parameters ?? {})) {
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        userParameters[name] = String(value);
+      }
+    }
+    const templateParameters = await intrinsicResolver.resolveParameters(template, userParameters);
+    // `resolveParameters` output wins for template-declared parameters — it
+    // carries the deploy-coerced values (a Number-typed nested input becomes
+    // a number, like deploy) — while raw nested inputs survive for any name
+    // the template does not declare.
+    mergedParameters = { ...parameters, ...templateParameters };
+    parametersBound = true;
+  } catch (error) {
+    logger.debug(
+      `Diff parameter binding for stack ${stackName} is partial: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  // 2) Evaluate `Conditions` and prune condition-false resources, so a
+  //    condition-false resource is neither reported as "to create" nor
+  //    diffed against state (matching deploy's `filterResourcesByCondition`
+  //    step — a condition-false resource still in state correctly falls
+  //    through to the DELETE path, exactly like deploy). ONLY when parameter
+  //    binding succeeded: the resolver downgrades a condition it cannot
+  //    evaluate (e.g. a Ref to the unbound parameter) to FALSE, so running
+  //    this after a binding failure would prune condition-gated resources
+  //    and report phantom DELETEs — the raw-template fallback must stay
+  //    whole-template in that case.
+  let effectiveTemplate = template;
+  let conditions: Record<string, boolean> | undefined;
+  if (parametersBound) {
+    try {
+      conditions = await intrinsicResolver.evaluateConditions({
+        template,
+        resources: currentState.resources,
+        stateBackend,
+        stackName,
+        bestEffort: true,
+        ...(mergedParameters && { parameters: mergedParameters }),
+      });
+      effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
+    } catch (error) {
+      logger.debug(
+        `Diff condition evaluation for stack ${stackName} skipped: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
   const resolveFn = (value: unknown): Promise<unknown> =>
     intrinsicResolver.resolve(value, {
-      template,
+      template: effectiveTemplate,
       resources: currentState.resources,
       stateBackend,
       stackName,
@@ -193,9 +261,14 @@ export async function computeStackDiff(
       // parameter map to the child engine via `DeployEngineOptions.parameters`
       // (`NestedStackProvider.extractParameters`), so resolving here too makes
       // the recursive diff match what the deploy actually wrote to state.
-      ...(parameters && { parameters }),
+      // Template-declared parameter defaults are merged in as well (issue
+      // #1027) so `Ref` / `Fn::Sub` / `Fn::FindInMap` over parameters
+      // resolve like they do on deploy.
+      ...(mergedParameters && { parameters: mergedParameters }),
+      // Evaluated conditions so `Fn::If` resolves in property values.
+      ...(conditions && { conditions }),
     });
-  return diffCalculator.calculateDiff(currentState, template, resolveFn);
+  return diffCalculator.calculateDiff(currentState, effectiveTemplate, resolveFn);
 }
 
 /**
