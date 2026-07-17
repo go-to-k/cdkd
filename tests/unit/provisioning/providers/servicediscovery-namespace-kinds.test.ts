@@ -278,6 +278,30 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
       });
     });
 
+    it('propagates a FAIL operation on UpdateHttpNamespace as ProvisioningError', async () => {
+      mockSend
+        .mockResolvedValueOnce({ OperationId: 'op-upd' })
+        .mockResolvedValueOnce({
+          Operation: { Status: 'FAIL', ErrorMessage: 'update rejected' },
+        });
+
+      await expect(
+        provider.update('MyHttpNs', 'ns-http-1', HTTP_NS, { Description: 'x' }, {})
+      ).rejects.toThrow(/update rejected/);
+    });
+
+    it('makes no AWS call for a shape-only tag diff (Tags: [] vs absent)', async () => {
+      const result = await provider.update(
+        'MyHttpNs',
+        'ns-http-1',
+        HTTP_NS,
+        { Tags: [] },
+        {} // previous had no Tags key — JSON differs but no actual work
+      );
+      expect(result).toEqual({ physicalId: 'ns-http-1', wasReplaced: false });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('throws (does not swallow) when a tag API call fails', async () => {
       mockSend
         .mockResolvedValueOnce({ Namespace: { Id: 'ns-http-1', Arn: 'arn:http' } })
@@ -333,6 +357,74 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
       const tagCmd = mockSend.mock.calls[1][0];
       expect(tagCmd).toBeInstanceOf(TagResourceCommand);
       expect(tagCmd.input).toEqual({ ResourceARN: 'arn:pub', Tags: [{ Key: 'a', Value: '1' }] });
+    });
+  });
+
+  describe('update — PrivateDnsNamespace tag sync (issue #1044 review fix)', () => {
+    it('applies a Tags-only change via Untag/TagResource instead of silently no-oping', async () => {
+      mockSend
+        .mockResolvedValueOnce({ Namespace: { Id: 'ns-priv-1', Arn: 'arn:priv' } }) // GetNamespace (ARN)
+        .mockResolvedValueOnce({}) // UntagResource
+        .mockResolvedValueOnce({}); // TagResource
+
+      const result = await provider.update(
+        'MyPrivNs',
+        'ns-priv-1',
+        'AWS::ServiceDiscovery::PrivateDnsNamespace',
+        { Tags: [{ Key: 'keep', Value: 'v2' }] },
+        {
+          Tags: [
+            { Key: 'keep', Value: 'v1' },
+            { Key: 'drop', Value: 'x' },
+          ],
+        }
+      );
+
+      expect(result).toEqual({ physicalId: 'ns-priv-1', wasReplaced: false });
+      const untagCmd = mockSend.mock.calls[1][0];
+      expect(untagCmd).toBeInstanceOf(UntagResourceCommand);
+      expect(untagCmd.input).toEqual({ ResourceARN: 'arn:priv', TagKeys: ['drop'] });
+      const tagCmd = mockSend.mock.calls[2][0];
+      expect(tagCmd).toBeInstanceOf(TagResourceCommand);
+      expect(tagCmd.input).toEqual({
+        ResourceARN: 'arn:priv',
+        Tags: [{ Key: 'keep', Value: 'v2' }],
+      });
+    });
+  });
+
+  describe('import — kind filter (issue #1044 review fix)', () => {
+    function makeImportInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyNs',
+        resourceType: HTTP_NS,
+        cdkPath: 'MyStack/MyNs',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: { Name: 'shared-name' } as Record<string, unknown>,
+        ...overrides,
+      };
+    }
+
+    it('refuses to adopt an explicit id whose namespace is a different kind', async () => {
+      mockSend.mockResolvedValueOnce({
+        Namespace: { Id: 'ns-1', Type: 'DNS_PUBLIC' },
+      });
+      const result = await provider.import!(makeImportInput({ knownPhysicalId: 'ns-1' }));
+      expect(result).toBeNull();
+    });
+
+    it('skips a same-named namespace of a different kind during the list walk', async () => {
+      mockSend.mockResolvedValueOnce({
+        Namespaces: [
+          // Same Name but DNS_PUBLIC — must NOT be adopted for HttpNamespace.
+          { Id: 'ns-wrong', Arn: 'arn:wrong', Name: 'shared-name', Type: 'DNS_PUBLIC' },
+          { Id: 'ns-right', Arn: 'arn:right', Name: 'shared-name', Type: 'HTTP' },
+        ],
+        NextToken: undefined,
+      });
+      const result = await provider.import!(makeImportInput());
+      expect(result?.physicalId).toBe('ns-right');
     });
   });
 

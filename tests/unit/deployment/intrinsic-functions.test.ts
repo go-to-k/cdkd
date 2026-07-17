@@ -33,6 +33,18 @@ const mockEc2Send = vi.fn().mockResolvedValue({
   ],
 });
 
+// Mock ServiceDiscovery client (for the namespace HostedZoneId live fetch,
+// reached via dynamic import in constructAttribute — vitest intercepts
+// dynamic imports through the same module mock).
+const sdMockSend = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/client-servicediscovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-servicediscovery')>();
+  return {
+    ...actual,
+    ServiceDiscoveryClient: vi.fn().mockImplementation(() => ({ send: sdMockSend })),
+  };
+});
+
 // Mock AWS clients (for STS in pseudo parameter resolution and EC2 for GetAZs)
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -1385,6 +1397,18 @@ describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
       expected: 'arn:aws:servicediscovery:us-east-1:123456789012:namespace/ns-abc123',
     },
     {
+      type: 'AWS::ServiceDiscovery::HttpNamespace',
+      physicalId: 'ns-http123',
+      attribute: 'Arn',
+      expected: 'arn:aws:servicediscovery:us-east-1:123456789012:namespace/ns-http123',
+    },
+    {
+      type: 'AWS::ServiceDiscovery::PublicDnsNamespace',
+      physicalId: 'ns-pub123',
+      attribute: 'Arn',
+      expected: 'arn:aws:servicediscovery:us-east-1:123456789012:namespace/ns-pub123',
+    },
+    {
       type: 'AWS::ServiceDiscovery::Service',
       physicalId: 'srv-abc123',
       attribute: 'Arn',
@@ -1483,6 +1507,25 @@ describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
       ctx
     );
     expect(result).toBe('arn:aws:events:us-east-1:123456789012:rule/my-rule');
+  });
+
+  // Namespace HostedZoneId is NOT constructible — the resolver must fetch it
+  // live via GetNamespace and NEVER fall back to the namespace id (a wrong
+  // value silently baked into dependent resources). Issue #1044 review.
+  it('PublicDnsNamespace HostedZoneId is fetched live via GetNamespace', async () => {
+    sdMockSend.mockResolvedValueOnce({
+      Namespace: { Properties: { DnsProperties: { HostedZoneId: 'Z123LIVE' } } },
+    });
+    const ctx = makeContext('AWS::ServiceDiscovery::PublicDnsNamespace', 'ns-pub123');
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Target', 'HostedZoneId'] }, ctx);
+    expect(result).toBe('Z123LIVE');
+  });
+
+  it('Namespace HostedZoneId resolves to undefined (not physicalId) when the fetch fails', async () => {
+    sdMockSend.mockRejectedValueOnce(new Error('transient'));
+    const ctx = makeContext('AWS::ServiceDiscovery::PrivateDnsNamespace', 'ns-abc123');
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Target', 'HostedZoneId'] }, ctx);
+    expect(result).toBeUndefined();
   });
 });
 

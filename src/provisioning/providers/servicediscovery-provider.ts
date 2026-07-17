@@ -146,7 +146,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.updateNamespace(logicalId, physicalId, resourceType, properties);
+        return this.updateNamespace(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::ServiceDiscovery::HttpNamespace':
         return this.updateHttpNamespace(
           logicalId,
@@ -298,6 +304,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * `Name` and `Vpc` are immutable; the deploy engine's
    * replacement-detection layer routes those through DELETE+CREATE
    * before this method is ever called, so we do not validate them here.
+   * Tags ride on the separate `TagResource` / `UntagResource` APIs
+   * (see {@link syncNamespaceTags} — wired in with issue #1044 so a
+   * Tags-only change is no longer silently dropped, the ECR #981 class).
    *
    * Empty-string Description is intentionally allowed through (`!== undefined`
    * gate, not truthy) so `cdkd drift --revert` can clear a console-side ADD.
@@ -306,7 +315,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -322,23 +332,24 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       namespaceChange.Properties = soaProperties;
     }
 
-    if (Object.keys(namespaceChange).length === 0) {
-      this.logger.debug(`No mutable diff for PrivateDnsNamespace ${logicalId}, skipping update`);
-      return { physicalId, wasReplaced: false };
-    }
-
     try {
-      const response = await client.send(
-        new UpdatePrivateDnsNamespaceCommand({
-          Id: physicalId,
-          Namespace: namespaceChange,
-        })
-      );
+      if (Object.keys(namespaceChange).length > 0) {
+        const response = await client.send(
+          new UpdatePrivateDnsNamespaceCommand({
+            Id: physicalId,
+            Namespace: namespaceChange,
+          })
+        );
 
-      const operationId = response.OperationId;
-      if (operationId) {
-        await this.pollOperation(operationId, logicalId, resourceType);
+        const operationId = response.OperationId;
+        if (operationId) {
+          await this.pollOperation(operationId, logicalId, resourceType);
+        }
+      } else {
+        this.logger.debug(`No mutable namespace-body diff for PrivateDnsNamespace ${logicalId}`);
       }
+
+      await this.syncNamespaceTags(logicalId, physicalId, properties, previousProperties);
 
       this.logger.debug(`Successfully updated private DNS namespace ${logicalId}`);
 
@@ -1005,14 +1016,20 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const oldTags = previousProperties['Tags'] as Tag[] | undefined;
     if (JSON.stringify(newTags) === JSON.stringify(oldTags)) return;
 
-    const arn = await this.resolveNamespaceArn(physicalId);
-
     // Untag keys present in the old set but absent from the new set.
     // `newTags === undefined` is treated as "remove all old tags".
     const newKeys = new Set((newTags ?? []).map((t) => t.Key).filter((k): k is string => !!k));
     const removedKeys = (oldTags ?? [])
       .map((t) => t.Key)
       .filter((k): k is string => !!k && !newKeys.has(k));
+    const hasAdds = !!newTags && newTags.length > 0;
+
+    // A shape-only diff with no actual work (e.g. `Tags: []` vs absent)
+    // must not spend a GetNamespace/STS round-trip resolving the ARN.
+    if (removedKeys.length === 0 && !hasAdds) return;
+
+    const arn = await this.resolveNamespaceArn(physicalId);
+
     if (removedKeys.length > 0) {
       await this.getClient().send(
         new UntagResourceCommand({ ResourceARN: arn, TagKeys: removedKeys })
@@ -1020,7 +1037,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
     // Apply added / changed tags. Skip the call when the new set is empty
     // (a pure removal has nothing left to add).
-    if (newTags && newTags.length > 0) {
+    if (hasAdds) {
       await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: newTags }));
     }
     this.logger.debug(`Updated tags for namespace ${logicalId} (${physicalId})`);
@@ -1326,12 +1343,34 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Map each namespace CFn type to its Cloud Map `Namespace.Type` value so
+   * the import walk never adopts a same-named namespace of a different kind
+   * (Cloud Map names are NOT unique across kinds; adopting the wrong one
+   * would make a later destroy delete the wrong resource).
+   */
+  private static readonly NAMESPACE_KIND_BY_TYPE: Record<string, string> = {
+    'AWS::ServiceDiscovery::PrivateDnsNamespace': 'DNS_PRIVATE',
+    'AWS::ServiceDiscovery::HttpNamespace': 'HTTP',
+    'AWS::ServiceDiscovery::PublicDnsNamespace': 'DNS_PUBLIC',
+  };
+
   private async importNamespaceResource(
     input: ResourceImportInput
   ): Promise<ResourceImportResult | null> {
+    const expectedKind = ServiceDiscoveryProvider.NAMESPACE_KIND_BY_TYPE[input.resourceType];
+
     if (input.knownPhysicalId) {
       try {
-        await this.getClient().send(new GetNamespaceCommand({ Id: input.knownPhysicalId }));
+        const resp = await this.getClient().send(
+          new GetNamespaceCommand({ Id: input.knownPhysicalId })
+        );
+        if (expectedKind && resp.Namespace?.Type && resp.Namespace.Type !== expectedKind) {
+          this.logger.debug(
+            `Namespace ${input.knownPhysicalId} is kind ${resp.Namespace.Type}, expected ${expectedKind} for ${input.resourceType} — refusing to adopt`
+          );
+          return null;
+        }
         return { physicalId: input.knownPhysicalId, attributes: {} };
       } catch (err) {
         if (err instanceof NamespaceNotFound) return null;
@@ -1349,6 +1388,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       );
       for (const ns of list.Namespaces ?? []) {
         if (!ns.Id || !ns.Arn) continue;
+        if (expectedKind && ns.Type && ns.Type !== expectedKind) continue;
         if (desiredName && ns.Name === desiredName) {
           return { physicalId: ns.Id, attributes: {} };
         }

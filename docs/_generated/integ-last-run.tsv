@@ -236,5 +236,5 @@ bench-cdk-sample	2026-07-17T10:16:57Z	PASS	520	standard	broad for #1041 register
 dlm-lifecycle-policy	2026-07-17T07:27:24Z	PASS	72	verify.sh	re-run post review fixes; deploy+update+destroy clean, 0 orphans
 codecommit	2026-07-17T10:28:12Z	PASS	59	verify.sh	re-run on final code post-review fixes (null-id delete + retry-safe rename); 3 phases clean 0 orphans
 budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-rebase (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans
-servicediscovery-namespaces	2026-07-17T11:52:24Z	PASS	113	verify.sh	1044 first run: example.com reserved by R53; fixed domain, clean deploy+destroy, hosted zone gone
-lambda	2026-07-17T11:54:32Z	PASS	76	verify.sh	broad integ for #1044 (register-providers.ts cross-cutting); 9 deleted, 0 errors, 0 orphans
+servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
+lambda	2026-07-17T12:12:19Z	PASS	91	verify.sh	broad integ re-run for #1044 review fixes (resolver is cross-cutting); 9 deleted, 0 errors, 0 orphans
