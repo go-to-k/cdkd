@@ -1,3 +1,10 @@
+# [0.240.0](https://github.com/go-to-k/cdkd/compare/v0.239.0...v0.240.0) (2026-07-17)
+
+
+### Features
+
+* **providers:** add SDK Provider for AWS::CodeCommit::Repository ([#1059](https://github.com/go-to-k/cdkd/issues/1059)) ([5116904](https://github.com/go-to-k/cdkd/commit/5116904da3728e25454a2e6029fe0a9de33a0fcc))
+
 # [0.239.0](https://github.com/go-to-k/cdkd/compare/v0.238.6...v0.239.0) (2026-07-17)
 
 
