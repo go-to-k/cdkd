@@ -427,6 +427,54 @@ describe('FSxFileSystemProvider update', () => {
     ).resolves.toMatchObject({ physicalId: FS_ID, wasReplaced: false });
   });
 
+  it('does not return before the confirmed new action becomes visible in Describe (lagging replica)', async () => {
+    const now = new Date();
+    routeSend({
+      // The response CONFIRMS a new action was created...
+      UpdateFileSystemCommand: {
+        FileSystem: {
+          FileSystemId: FS_ID,
+          AdministrativeActions: [
+            { AdministrativeActionType: 'FILE_SYSTEM_UPDATE', Status: 'PENDING', RequestTime: now },
+          ],
+        },
+      },
+      DescribeFileSystemsCommand: [
+        // ...but a lagging Describe replica shows NO actions while already
+        // AVAILABLE — the wait must NOT return here...
+        { FileSystems: [availableFs({ AdministrativeActions: [] })] },
+        // ...and only returns once the action is observed terminal.
+        {
+          FileSystems: [
+            availableFs({
+              AdministrativeActions: [
+                {
+                  AdministrativeActionType: 'FILE_SYSTEM_UPDATE',
+                  Status: 'COMPLETED',
+                  RequestTime: now,
+                },
+              ],
+            }),
+          ],
+        },
+      ],
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...LUSTRE_PROPS,
+        LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
+      },
+      { ...LUSTRE_PROPS, LustreConfiguration: { DeploymentType: 'SCRATCH_2' } }
+    );
+
+    // The lagging empty round must have forced a second Describe.
+    expect(callsOf(DescribeFileSystemsCommand).length).toBeGreaterThanOrEqual(2);
+  });
+
   it('hard-fails when the FILE_SYSTEM_UPDATE administrative action reports FAILED', async () => {
     routeSend({
       UpdateFileSystemCommand: {},

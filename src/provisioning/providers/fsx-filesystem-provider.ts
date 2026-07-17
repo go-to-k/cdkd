@@ -561,7 +561,13 @@ export class FSxFileSystemProvider implements ResourceProvider {
           physicalId,
           logicalId,
           resourceType,
-          actionThresholdMs
+          actionThresholdMs,
+          // When the update response CONFIRMED a newly-created action, the
+          // wait must actually observe an in-threshold action at least once
+          // before returning — a lagging Describe read replica could
+          // otherwise yield an empty filtered list (inProgress=false) and
+          // return prematurely with the pre-update config.
+          respPendingActions.length > 0
         );
       }
 
@@ -800,15 +806,26 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * whose `RequestTime` is at or after the threshold are considered — a
    * PAST failed update must not fail this one's retry. An action without a
    * `RequestTime` is conservatively tracked.
+   *
+   * `requireActionObservation` guards the eventual-consistency race: when
+   * the UpdateFileSystem response confirmed a newly-created action, the
+   * wait refuses to return until an in-threshold action has been observed
+   * in at least one Describe response — a lagging read replica could
+   * otherwise briefly show none and cause a premature return with the
+   * pre-update config. Terminal actions stay in the history, so the
+   * observation is guaranteed to eventually succeed (bounded by
+   * `maxWaitMs`).
    */
   private async waitForUpdateActionComplete(
     fileSystemId: string,
     logicalId: string,
     resourceType: string,
-    actionThresholdMs: number
+    actionThresholdMs: number,
+    requireActionObservation: boolean
   ): Promise<FileSystem> {
     const startTime = Date.now();
     const transientState = { count: 0 };
+    let seenTrackedAction = false;
 
     while (Date.now() - startTime < this.maxWaitMs) {
       const fs = await this.describeForPoll(fileSystemId, transientState);
@@ -819,6 +836,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
             a.AdministrativeActionType === 'FILE_SYSTEM_UPDATE' &&
             (a.RequestTime === undefined || a.RequestTime.getTime() >= actionThresholdMs)
         );
+        if (updateActions.length > 0) seenTrackedAction = true;
         const failed = updateActions.find((a) => a.Status === 'FAILED');
         if (failed) {
           const detail = failed.FailureDetails?.Message ?? 'no failure details reported';
@@ -832,7 +850,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
         const inProgress = updateActions.some(
           (a) => a.Status === 'PENDING' || a.Status === 'IN_PROGRESS'
         );
-        if (!inProgress && fs.Lifecycle === 'AVAILABLE') return fs;
+        const observationSatisfied = !requireActionObservation || seenTrackedAction;
+        if (!inProgress && observationSatisfied && fs.Lifecycle === 'AVAILABLE') return fs;
 
         this.logger.debug(
           `FSx FileSystem ${fileSystemId} update in progress (lifecycle: ${fs.Lifecycle ?? 'unknown'}), waiting...`
