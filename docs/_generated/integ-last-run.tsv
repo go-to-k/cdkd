@@ -238,4 +238,4 @@ budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-reb
 servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
 lambda	2026-07-17T12:12:19Z	PASS	91	verify.sh	broad integ re-run for #1044 review fixes (resolver is cross-cutting); 9 deleted, 0 errors, 0 orphans
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
-bench-cdk-sample	2026-07-17T12:15:48Z	PASS	420	standard	39 created / 37 deleted + 2 retained loggroups hand-cleaned; 0 errors 0 orphans (broad for agentcore-tools PR)
+bench-cdk-sample	2026-07-17T12:58:46Z	PASS	300	standard	post-rebase re-run for PR 1062 gates; 39 created / 37 deleted + 2 retained loggroups hand-cleaned; 0 errors 0 orphans
