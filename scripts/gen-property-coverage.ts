@@ -45,11 +45,18 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+// NOTE: same-directory import uses `.ts` (not `.js`) — Node 24 native type
+// stripping resolves imports literally when the script runs directly via
+// `node scripts/gen-property-coverage.ts`; see the matching note in
+// audit-provider-coverage.ts.
+import { parseRegisteredTypes } from './audit-provider-coverage.ts';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
+const REGISTER_PROVIDERS_FILE = resolve(repoRoot, 'src/provisioning/register-providers.ts');
 const OUT_FILE = resolve(
   repoRoot,
   'src/provisioning/property-coverage.generated.ts'
@@ -89,13 +96,20 @@ function loadFixture(resourceType: string): SchemaFixture | null {
  *     ])],
  *   ]);
  */
-interface ParsedProvider {
+export interface ParsedProvider {
   handled: Map<string, Set<string>>;
   byDesign: Map<string, Map<string, string>>;
 }
 
 function parseProvider(filePath: string): ParsedProvider {
-  const sourceText = readFileSync(filePath, 'utf8');
+  return parseProviderSource(readFileSync(filePath, 'utf8'), filePath);
+}
+
+/**
+ * Source-string variant of {@link parseProvider}. Exported for unit tests so
+ * they can feed synthetic provider declarations without touching disk.
+ */
+export function parseProviderSource(sourceText: string, filePath = 'provider.ts'): ParsedProvider {
   const sourceFile = ts.createSourceFile(
     filePath,
     sourceText,
@@ -142,10 +156,10 @@ function extractTypeToSetMap(
     const setNode = entry.elements[1];
     const typeStr = stringLiteralValue(typeNode);
     if (!typeStr) continue;
-    const innerArr = unwrapSetConstructor(setNode);
-    if (!innerArr) continue;
+    const innerElements = setConstructorElements(setNode);
+    if (!innerElements) continue;
     const props = new Set<string>();
-    for (const el of innerArr.elements) {
+    for (const el of innerElements) {
       const s = stringLiteralValue(el);
       if (s !== null) props.add(s);
     }
@@ -194,15 +208,26 @@ function unwrapMapConstructor(
   return arg;
 }
 
-function unwrapSetConstructor(
-  expr: ts.Expression
-): ts.ArrayLiteralExpression | null {
+/**
+ * Return the element expressions of a `new Set([...])` constructor call.
+ *
+ * An argless `new Set()` / `new Set<string>()` is a legitimate empty
+ * declaration and returns `[]` — before issue #1034 it returned `null`,
+ * which silently dropped a zero-property provider (e.g. the
+ * WaitConditionHandle no-op provider) from the generated map. `null` is
+ * reserved for expressions that are not a parseable Set constructor at
+ * all (not a `new Set`, or a non-literal argument like a spread from a
+ * variable) — those still skip the entry, and the registry cross-check
+ * in {@link findMissingCoverageTypes} turns the skip into a hard error.
+ */
+function setConstructorElements(expr: ts.Expression): readonly ts.Expression[] | null {
   if (!ts.isNewExpression(expr)) return null;
   if (!ts.isIdentifier(expr.expression)) return null;
   if (expr.expression.text !== 'Set') return null;
   const arg = expr.arguments?.[0];
-  if (!arg || !ts.isArrayLiteralExpression(arg)) return null;
-  return arg;
+  if (arg === undefined) return [];
+  if (!ts.isArrayLiteralExpression(arg)) return null;
+  return arg.elements;
 }
 
 function stringLiteralValue(node: ts.Node | undefined): string | null {
@@ -212,73 +237,6 @@ function stringLiteralValue(node: ts.Node | undefined): string | null {
   }
   return null;
 }
-
-// Walk every provider .ts file, merging their declarations into one combined map.
-const providerFiles = readdirSync(PROVIDERS_DIR)
-  .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
-  .map((f) => join(PROVIDERS_DIR, f));
-
-const combinedHandled = new Map<string, Set<string>>();
-const combinedByDesign = new Map<string, Map<string, string>>();
-
-for (const path of providerFiles) {
-  const parsed = parseProvider(path);
-  for (const [type, props] of parsed.handled) {
-    if (!combinedHandled.has(type)) combinedHandled.set(type, new Set());
-    const target = combinedHandled.get(type)!;
-    for (const p of props) target.add(p);
-  }
-  for (const [type, props] of parsed.byDesign) {
-    if (!combinedByDesign.has(type)) combinedByDesign.set(type, new Map());
-    const target = combinedByDesign.get(type)!;
-    for (const [p, r] of props) target.set(p, r);
-  }
-}
-
-// Only types with both a fixture AND a handledProperties declaration land
-// in the output. (A registered Tier 1 type without a fixture cannot be
-// judged here; a fixture without a handled declaration would be a
-// declaration bug — surface as an empty entry so the pre-flight rejects
-// every prop as silent drop, matching the test layer's expectations.)
-const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
-
-interface PerTypeCoverage {
-  handled: string[];
-  silentDrop: Array<[prop: string, rationale: string]>;
-}
-
-const coverageByType = new Map<string, PerTypeCoverage>();
-let totalHandled = 0;
-let totalDrops = 0;
-
-const allTypes = new Set<string>(combinedHandled.keys());
-for (const type of allTypes) {
-  const fixture = loadFixture(type);
-  if (!fixture) continue; // No CFn schema fixture — skip (covered by other test guards).
-
-  const handled = combinedHandled.get(type) ?? new Set<string>();
-  const byDesign = combinedByDesign.get(type) ?? new Map<string, string>();
-  const readOnly = new Set(fixture.readOnlyProperties);
-
-  const silentDrop: Array<[string, string]> = [];
-  for (const prop of [...fixture.properties].sort((a, b) => a.localeCompare(b))) {
-    if (handled.has(prop)) continue;
-    if (readOnly.has(prop)) continue;
-    const rationale = byDesign.get(prop) ?? NOT_IMPLEMENTED_RATIONALE;
-    silentDrop.push([prop, rationale]);
-  }
-
-  coverageByType.set(type, {
-    handled: [...handled].sort((a, b) => a.localeCompare(b)),
-    silentDrop,
-  });
-  totalHandled += handled.size;
-  totalDrops += silentDrop.length;
-}
-
-const sortedEntries = [...coverageByType.entries()].sort(([a], [b]) =>
-  a.localeCompare(b)
-);
 
 const renderHandled = (handled: string[]): string => {
   if (handled.length === 0) return 'new Set<string>()';
@@ -296,7 +254,117 @@ const renderSilentDrop = (
     .join('\n')}\n      ])`;
 };
 
-const body = sortedEntries
+/**
+ * Registry-vs-output cross-check (issue #1034): every type registered in
+ * `register-providers.ts` that HAS a CFn schema fixture on disk MUST end up
+ * in the generated coverage map. A miss means the provider's
+ * `handledProperties` declaration is absent or unparseable by this script
+ * (the seen-live case: an argless `new Set<string>()` before
+ * {@link setConstructorElements} learned to accept it) — previously a silent
+ * one-type shrink of the output, now a hard error. Types without a fixture
+ * are exempt (they cannot be judged here; other test guards cover them).
+ *
+ * Pure and exported for unit tests; the caller resolves the three sets.
+ */
+export function findMissingCoverageTypes(
+  registeredTypes: ReadonlySet<string>,
+  hasFixture: (resourceType: string) => boolean,
+  outputTypes: ReadonlySet<string>
+): string[] {
+  return [...registeredTypes]
+    .filter((t) => hasFixture(t) && !outputTypes.has(t))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+// Only types with both a fixture AND a handledProperties declaration land
+// in the output. (A registered Tier 1 type without a fixture cannot be
+// judged here; a fixture without a handled declaration would be a
+// declaration bug — surface as an empty entry so the pre-flight rejects
+// every prop as silent drop, matching the test layer's expectations.)
+const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
+
+interface PerTypeCoverage {
+  handled: string[];
+  silentDrop: Array<[prop: string, rationale: string]>;
+}
+
+function main(): void {
+  // Walk every provider .ts file, merging their declarations into one combined map.
+  const providerFiles = readdirSync(PROVIDERS_DIR)
+    .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+    .map((f) => join(PROVIDERS_DIR, f));
+
+  const combinedHandled = new Map<string, Set<string>>();
+  const combinedByDesign = new Map<string, Map<string, string>>();
+
+  for (const path of providerFiles) {
+    const parsed = parseProvider(path);
+    for (const [type, props] of parsed.handled) {
+      if (!combinedHandled.has(type)) combinedHandled.set(type, new Set());
+      const target = combinedHandled.get(type)!;
+      for (const p of props) target.add(p);
+    }
+    for (const [type, props] of parsed.byDesign) {
+      if (!combinedByDesign.has(type)) combinedByDesign.set(type, new Map());
+      const target = combinedByDesign.get(type)!;
+      for (const [p, r] of props) target.set(p, r);
+    }
+  }
+
+  const coverageByType = new Map<string, PerTypeCoverage>();
+  let totalHandled = 0;
+  let totalDrops = 0;
+
+  const allTypes = new Set<string>(combinedHandled.keys());
+  for (const type of allTypes) {
+    const fixture = loadFixture(type);
+    if (!fixture) continue; // No CFn schema fixture — skip (covered by other test guards).
+
+    const handled = combinedHandled.get(type) ?? new Set<string>();
+    const byDesign = combinedByDesign.get(type) ?? new Map<string, string>();
+    const readOnly = new Set(fixture.readOnlyProperties);
+
+    const silentDrop: Array<[string, string]> = [];
+    for (const prop of [...fixture.properties].sort((a, b) => a.localeCompare(b))) {
+      if (handled.has(prop)) continue;
+      if (readOnly.has(prop)) continue;
+      const rationale = byDesign.get(prop) ?? NOT_IMPLEMENTED_RATIONALE;
+      silentDrop.push([prop, rationale]);
+    }
+
+    coverageByType.set(type, {
+      handled: [...handled].sort((a, b) => a.localeCompare(b)),
+      silentDrop,
+    });
+    totalHandled += handled.size;
+    totalDrops += silentDrop.length;
+  }
+
+  // Fail loudly (before writing) when a registered type with a fixture is
+  // missing from the output — see findMissingCoverageTypes.
+  const registered = parseRegisteredTypes(readFileSync(REGISTER_PROVIDERS_FILE, 'utf8'));
+  const missing = findMissingCoverageTypes(
+    registered,
+    (t) => loadFixture(t) !== null,
+    new Set(coverageByType.keys())
+  );
+  if (missing.length > 0) {
+    console.error(
+      `[gen-property-coverage] ${missing.length} registered type(s) with a CFn schema ` +
+        `fixture have no parsed handledProperties declaration — the provider's ` +
+        `declaration is missing or in a shape this script cannot parse ` +
+        `(expected \`new Map<...>([['AWS::X::Y', new Set([...])], ...])\`; ` +
+        `an empty set may be argless \`new Set()\` or \`new Set([])\`):`
+    );
+    for (const t of missing) console.error(`  - ${t}`);
+    process.exit(1);
+  }
+
+  const sortedEntries = [...coverageByType.entries()].sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
+
+  const body = sortedEntries
   .map(
     ([type, cov]) =>
       `  [
@@ -347,12 +415,22 @@ ${body}
 ]);
 `;
 
-// Atomic write: Ctrl-C between open and close would otherwise leave the
-// generated module truncated and break the next build's module load.
-const tmp = `${OUT_FILE}.tmp`;
-writeFileSync(tmp, content);
-renameSync(tmp, OUT_FILE);
-console.log(
-  `Wrote property coverage for ${coverageByType.size} Tier 1 types ` +
-    `(${totalHandled} handled, ${totalDrops} silent-drop) to ${OUT_FILE}.`
-);
+  // Atomic write: Ctrl-C between open and close would otherwise leave the
+  // generated module truncated and break the next build's module load.
+  const tmp = `${OUT_FILE}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, OUT_FILE);
+  console.log(
+    `Wrote property coverage for ${coverageByType.size} Tier 1 types ` +
+      `(${totalHandled} handled, ${totalDrops} silent-drop) to ${OUT_FILE}.`
+  );
+}
+
+const isMainModule = (): boolean => {
+  if (!process.argv[1]) return false;
+  return resolve(process.argv[1]) === __filename;
+};
+
+if (isMainModule()) {
+  main();
+}
