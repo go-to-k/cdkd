@@ -116,7 +116,9 @@
     "AWS::SSM::Parameter",
     "AWS::Scheduler::Schedule",
     "AWS::SecretsManager::Secret",
+    "AWS::ServiceDiscovery::HttpNamespace",
     "AWS::ServiceDiscovery::PrivateDnsNamespace",
+    "AWS::ServiceDiscovery::PublicDnsNamespace",
     "AWS::ServiceDiscovery::Service",
     "AWS::StepFunctions::StateMachine",
     "AWS::WAFv2::WebACL"
@@ -4652,6 +4654,18 @@
       }
     },
     {
+      "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
+      "integs": [
+        "servicediscovery-namespaces"
+      ],
+      "signals": {
+        "servicediscovery-namespaces": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
       "integs": [
         "drift-revert-vpc",
@@ -4668,6 +4682,18 @@
         ],
         "servicediscovery": [
           "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PublicDnsNamespace",
+      "integs": [
+        "servicediscovery-namespaces"
+      ],
+      "signals": {
+        "servicediscovery-namespaces": [
+          "l1",
+          "literal"
         ]
       }
     },

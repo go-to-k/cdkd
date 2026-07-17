@@ -2283,9 +2283,23 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::ServiceDiscovery::HttpNamespace',
+    {
+      handled: new Set<string>(['Description', 'Name', 'Tags']),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::ServiceDiscovery::PrivateDnsNamespace',
     {
       handled: new Set<string>(['Description', 'Name', 'Properties', 'Tags', 'Vpc']),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
+    'AWS::ServiceDiscovery::PublicDnsNamespace',
+    {
+      handled: new Set<string>(['Description', 'Name', 'Properties', 'Tags']),
       silentDrop: new Map<string, string>(),
     },
   ],

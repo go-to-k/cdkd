@@ -1,0 +1,21 @@
+{
+  "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "Arn",
+    "Description",
+    "Id",
+    "Name",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

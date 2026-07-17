@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **120**
+- Classified types (cached schema): **122**
 - Fully enriched: **5**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **101**
-- Types with allow-listed (not-a-gap) attributes: **4**
+- SDK-fallback gaps (informational, #614 path only): **103**
+- Types with allow-listed (not-a-gap) attributes: **6**
 
 ## Pure-CC latent gaps
 
@@ -120,7 +120,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::S3Vectors::VectorBucket` | `CreationTime`, `VectorBucketArn` |
 | `AWS::Scheduler::Schedule` | `Arn` |
 | `AWS::SecretsManager::Secret` | `Id` |
+| `AWS::ServiceDiscovery::HttpNamespace` | `Arn` |
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | `Arn`, `HostedZoneId`, `Id` |
+| `AWS::ServiceDiscovery::PublicDnsNamespace` | `Arn`, `HostedZoneId` |
 | `AWS::ServiceDiscovery::Service` | `Arn`, `Id` |
 | `AWS::SNS::Subscription` | `Arn` |
 | `AWS::SNS::Topic` | `TopicArn` |
@@ -244,7 +246,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::S3Vectors::VectorBucket` | yes | sdk-fallback-gap | `CreationTime` (GAP), `VectorBucketArn` (GAP) |
 | `AWS::Scheduler::Schedule` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::SecretsManager::Secret` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::ServiceDiscovery::HttpNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `HostedZoneId` (GAP), `Id` (GAP) |
+| `AWS::ServiceDiscovery::PublicDnsNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `HostedZoneId` (GAP), `Id` (allow) |
 | `AWS::ServiceDiscovery::Service` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |
 | `AWS::SNS::Subscription` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::SNS::Topic` | yes | sdk-fallback-gap | `TopicArn` (GAP) |

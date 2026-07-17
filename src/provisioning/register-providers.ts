@@ -224,6 +224,8 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // Service Discovery
   const serviceDiscoveryProvider = new ServiceDiscoveryProvider();
   registry.register('AWS::ServiceDiscovery::PrivateDnsNamespace', serviceDiscoveryProvider);
+  registry.register('AWS::ServiceDiscovery::HttpNamespace', serviceDiscoveryProvider);
+  registry.register('AWS::ServiceDiscovery::PublicDnsNamespace', serviceDiscoveryProvider);
   registry.register('AWS::ServiceDiscovery::Service', serviceDiscoveryProvider);
 
   // Bedrock

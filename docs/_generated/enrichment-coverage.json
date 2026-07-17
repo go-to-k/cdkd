@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 120,
+    "classifiedCount": 122,
     "enriched": 5,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 101,
-    "allowListedTypes": 4
+    "sdkFallbackGap": 103,
+    "allowListedTypes": 6
   },
   "types": [
     {
@@ -2638,6 +2638,30 @@
       ]
     },
     {
+      "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
       "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
       "bucket": "sdk-fallback-gap",
       "sdkBacked": true,
@@ -2665,6 +2689,36 @@
         "Arn",
         "HostedZoneId",
         "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PublicDnsNamespace",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "HostedZoneId",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "HostedZoneId",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "HostedZoneId"
       ]
     },
     {
