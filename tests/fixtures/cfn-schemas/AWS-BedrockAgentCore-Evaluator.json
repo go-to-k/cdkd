@@ -1,0 +1,30 @@
+{
+  "resourceType": "AWS::BedrockAgentCore::Evaluator",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "CreatedAt",
+    "Description",
+    "EvaluatorArn",
+    "EvaluatorConfig",
+    "EvaluatorId",
+    "EvaluatorName",
+    "KmsKeyArn",
+    "Level",
+    "Status",
+    "Tags",
+    "UpdatedAt"
+  ],
+  "readOnlyProperties": [
+    "CreatedAt",
+    "EvaluatorArn",
+    "EvaluatorId",
+    "Status",
+    "UpdatedAt"
+  ],
+  "createOnlyProperties": [
+    "EvaluatorName"
+  ],
+  "primaryIdentifier": [
+    "EvaluatorArn"
+  ]
+}

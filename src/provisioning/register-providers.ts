@@ -31,6 +31,9 @@ import { ApiGatewayV2Provider } from './providers/apigatewayv2-provider.js';
 import { CloudFrontOAIProvider } from './providers/cloudfront-oai-provider.js';
 import { CloudFrontDistributionProvider } from './providers/cloudfront-distribution-provider.js';
 import { AgentCoreRuntimeProvider } from './providers/agentcore-runtime-provider.js';
+import { AgentCoreBrowserProvider } from './providers/agentcore-browser-provider.js';
+import { AgentCoreCodeInterpreterProvider } from './providers/agentcore-code-interpreter-provider.js';
+import { AgentCoreEvaluatorProvider } from './providers/agentcore-evaluator-provider.js';
 import { StepFunctionsProvider } from './providers/stepfunctions-provider.js';
 import { ECSProvider } from './providers/ecs-provider.js';
 import { ELBv2Provider } from './providers/elbv2-provider.js';
@@ -230,6 +233,12 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // Bedrock
   registry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());
+  registry.register('AWS::BedrockAgentCore::Browser', new AgentCoreBrowserProvider());
+  registry.register(
+    'AWS::BedrockAgentCore::CodeInterpreter',
+    new AgentCoreCodeInterpreterProvider()
+  );
+  registry.register('AWS::BedrockAgentCore::Evaluator', new AgentCoreEvaluatorProvider());
 
   // AppSync
   const appSyncProvider = new AppSyncProvider();

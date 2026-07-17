@@ -1,0 +1,20 @@
+{
+  "resourceType": "AWS::BedrockAgentCore::Browser",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "BrowserArn",
+    "BrowserId",
+    "Name",
+    "Status"
+  ],
+  "readOnlyProperties": [
+    "BrowserArn",
+    "BrowserId",
+    "Name",
+    "Status"
+  ],
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "BrowserArn"
+  ]
+}

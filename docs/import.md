@@ -402,6 +402,12 @@ have no taggable identity either. Provide the physical id via
 - AWS::CloudFormation::CustomResource
 - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - AWS::BedrockAgentCore::Runtime (has `ListTagsForResource`; could grow auto-lookup later)
+- AWS::BedrockAgentCore::Evaluator (accepts the evaluator ARN or bare id; an id is resolved to the canonical ARN via `GetEvaluator`)
+
+Note: `AWS::BedrockAgentCore::Browser` / `AWS::BedrockAgentCore::CodeInterpreter`
+are adopt-only singletons pointing at the AWS-managed defaults; their import is
+a live auto-lookup (`GetBrowser` / `GetCodeInterpreter`) that needs no
+`--resource` override at all.
 
 ### Cloud Control API fallback
 

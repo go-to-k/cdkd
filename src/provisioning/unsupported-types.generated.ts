@@ -26,8 +26,6 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::AppSync::ApiCache',
   'AWS::AutoScalingPlans::ScalingPlan',
   'AWS::Bedrock::ModelInvocationJob',
-  'AWS::BedrockAgentCore::Browser',
-  'AWS::BedrockAgentCore::CodeInterpreter',
   'AWS::BedrockAgentCore::TokenVault',
   'AWS::Cloud9::EnvironmentEC2',
   'AWS::CloudFormation::Macro',

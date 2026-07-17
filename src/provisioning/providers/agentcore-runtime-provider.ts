@@ -24,52 +24,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { getLogger } from '../../utils/logger.js';
-
-/**
- * Recursively convert PascalCase object keys to camelCase.
- * Only converts keys of plain objects; string values, arrays of strings,
- * and other primitives are left untouched.
- */
-function pascalToCamelCaseKeys(value: unknown): unknown {
-  if (value === null || value === undefined) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map(pascalToCamelCaseKeys);
-  }
-  if (typeof value === 'object') {
-    const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      const camelKey = key.charAt(0).toLowerCase() + key.slice(1);
-      result[camelKey] = pascalToCamelCaseKeys(val);
-    }
-    return result;
-  }
-  return value;
-}
-
-/**
- * Recursively convert camelCase object keys to PascalCase. Inverse of
- * `pascalToCamelCaseKeys`. Used by `readCurrentState` to re-shape AWS
- * SDK responses back into the CFn property names cdkd state stores.
- */
-function camelToPascalCaseKeys(value: unknown): unknown {
-  if (value === null || value === undefined) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map(camelToPascalCaseKeys);
-  }
-  if (typeof value === 'object') {
-    const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      const pascalKey = key.charAt(0).toUpperCase() + key.slice(1);
-      result[pascalKey] = camelToPascalCaseKeys(val);
-    }
-    return result;
-  }
-  return value;
-}
+import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-convert.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
