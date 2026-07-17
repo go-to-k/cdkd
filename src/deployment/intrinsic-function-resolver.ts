@@ -1504,13 +1504,36 @@ export class IntrinsicFunctionResolver {
       }
     }
 
-    // ServiceDiscovery PrivateDnsNamespace (physicalId is the namespace id)
-    if (resourceType === 'AWS::ServiceDiscovery::PrivateDnsNamespace') {
+    // ServiceDiscovery namespaces (physicalId is the namespace id). All
+    // three kinds share the ARN shape; the DNS kinds additionally expose
+    // `HostedZoneId` (the Route 53 hosted zone AWS creates alongside the
+    // namespace), which is NOT constructible — fetch it live and return
+    // `undefined` on a miss rather than falling back to the namespace id
+    // (a silently wrong value baked into dependent resources).
+    if (
+      resourceType === 'AWS::ServiceDiscovery::PrivateDnsNamespace' ||
+      resourceType === 'AWS::ServiceDiscovery::HttpNamespace' ||
+      resourceType === 'AWS::ServiceDiscovery::PublicDnsNamespace'
+    ) {
       switch (attributeName) {
         case 'Arn':
           return `arn:${partition}:servicediscovery:${region}:${accountId}:namespace/${physicalId}`;
         case 'Id':
           return physicalId;
+        case 'HostedZoneId': {
+          try {
+            const { ServiceDiscoveryClient, GetNamespaceCommand } =
+              await import('@aws-sdk/client-servicediscovery');
+            const sd = new ServiceDiscoveryClient({ region: this.resolverRegion });
+            const resp = await sd.send(new GetNamespaceCommand({ Id: physicalId }));
+            return resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
+          } catch (error) {
+            this.logger.warn(
+              `Failed to fetch HostedZoneId for namespace ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+            return undefined;
+          }
+        }
         default:
           return physicalId;
       }

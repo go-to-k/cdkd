@@ -1,0 +1,24 @@
+{
+  "resourceType": "AWS::ServiceDiscovery::PublicDnsNamespace",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "Arn",
+    "Description",
+    "HostedZoneId",
+    "Id",
+    "Name",
+    "Properties",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "HostedZoneId",
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

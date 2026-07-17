@@ -337,6 +337,8 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::Lambda::LayerVersion
 - AWS::ServiceDiscovery::Service
 - AWS::ServiceDiscovery::PrivateDnsNamespace
+- AWS::ServiceDiscovery::HttpNamespace
+- AWS::ServiceDiscovery::PublicDnsNamespace
 - AWS::S3Express::DirectoryBucket
 - AWS::S3Tables::TableBucket
 - AWS::S3Tables::Namespace

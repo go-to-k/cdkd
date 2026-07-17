@@ -1,8 +1,14 @@
 import {
   ServiceDiscoveryClient,
+  CreateHttpNamespaceCommand,
   CreatePrivateDnsNamespaceCommand,
+  CreatePublicDnsNamespaceCommand,
+  UpdateHttpNamespaceCommand,
   UpdatePrivateDnsNamespaceCommand,
+  UpdatePublicDnsNamespaceCommand,
   DeleteNamespaceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   CreateServiceCommand,
   UpdateServiceCommand,
   DeleteServiceCommand,
@@ -21,7 +27,9 @@ import {
   type DnsConfigChange,
   type HealthCheckCustomConfig,
   type HealthCheckConfig,
+  type HttpNamespaceChange,
   type PrivateDnsNamespaceChange,
+  type PublicDnsNamespaceChange,
   type ServiceChange,
   type Tag,
   type ServiceTypeOption,
@@ -45,11 +53,16 @@ import type {
  *
  * Implements resource provisioning for:
  * - AWS::ServiceDiscovery::PrivateDnsNamespace
+ * - AWS::ServiceDiscovery::HttpNamespace
+ * - AWS::ServiceDiscovery::PublicDnsNamespace
  * - AWS::ServiceDiscovery::Service
  *
- * WHY: CreatePrivateDnsNamespace is async (returns OperationId) but we handle
- * the polling ourselves, avoiding the CC API's generic polling overhead and
- * giving us direct control over the operation lifecycle.
+ * WHY: the Create*Namespace APIs are async (they return an OperationId) but we
+ * handle the polling ourselves, avoiding the CC API's generic polling overhead
+ * and giving us direct control over the operation lifecycle. HttpNamespace and
+ * PublicDnsNamespace are `ProvisioningType: NON_PROVISIONABLE`, so Cloud
+ * Control cannot handle them at all — this SDK provider is the only route
+ * (issue #1044).
  */
 export class ServiceDiscoveryProvider implements ResourceProvider {
   private client?: ServiceDiscoveryClient;
@@ -61,6 +74,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     [
       'AWS::ServiceDiscovery::PrivateDnsNamespace',
       new Set(['Name', 'Vpc', 'Description', 'Tags', 'Properties']),
+    ],
+    ['AWS::ServiceDiscovery::HttpNamespace', new Set(['Name', 'Description', 'Tags'])],
+    [
+      'AWS::ServiceDiscovery::PublicDnsNamespace',
+      new Set(['Name', 'Description', 'Tags', 'Properties']),
     ],
     [
       'AWS::ServiceDiscovery::Service',
@@ -104,6 +122,10 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
         return this.createNamespace(logicalId, resourceType, properties);
+      case 'AWS::ServiceDiscovery::HttpNamespace':
+        return this.createHttpNamespace(logicalId, resourceType, properties);
+      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
+        return this.createPublicDnsNamespace(logicalId, resourceType, properties);
       case 'AWS::ServiceDiscovery::Service':
         return this.createService(logicalId, resourceType, properties);
       default:
@@ -124,7 +146,29 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.updateNamespace(logicalId, physicalId, resourceType, properties);
+        return this.updateNamespace(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::ServiceDiscovery::HttpNamespace':
+        return this.updateHttpNamespace(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
+        return this.updatePublicDnsNamespace(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::ServiceDiscovery::Service':
         return this.updateService(
           logicalId,
@@ -152,6 +196,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
+      case 'AWS::ServiceDiscovery::HttpNamespace':
+      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
         return this.deleteNamespace(logicalId, physicalId, resourceType, context);
       case 'AWS::ServiceDiscovery::Service':
         return this.deleteService(logicalId, physicalId, resourceType, context);
@@ -202,11 +248,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     // detected as drift on the very first run after deploy). PR #201
     // follow-up: also added `Properties` to the handledProperties set so
     // the deploy engine doesn't fall back to CC API on this resource type.
-    const propsBag = properties['Properties'] as Record<string, unknown> | undefined;
-    const dnsProps = propsBag?.['DnsProperties'] as Record<string, unknown> | undefined;
-    const soa = dnsProps?.['SOA'] as { TTL?: number } | undefined;
-    const inputProperties =
-      soa?.TTL !== undefined ? { DnsProperties: { SOA: { TTL: Number(soa.TTL) } } } : undefined;
+    const inputProperties = this.extractSoaTtlProperties(properties);
 
     try {
       const response = await client.send(
@@ -262,6 +304,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * `Name` and `Vpc` are immutable; the deploy engine's
    * replacement-detection layer routes those through DELETE+CREATE
    * before this method is ever called, so we do not validate them here.
+   * Tags ride on the separate `TagResource` / `UntagResource` APIs
+   * (see {@link syncNamespaceTags} — wired in with issue #1044 so a
+   * Tags-only change is no longer silently dropped, the ECR #981 class).
    *
    * Empty-string Description is intentionally allowed through (`!== undefined`
    * gate, not truthy) so `cdkd drift --revert` can clear a console-side ADD.
@@ -270,7 +315,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -281,34 +327,29 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       namespaceChange.Description = properties['Description'] as string;
     }
 
-    const propsBag = properties['Properties'] as Record<string, unknown> | undefined;
-    const dnsProps = propsBag?.['DnsProperties'] as Record<string, unknown> | undefined;
-    const soa = dnsProps?.['SOA'] as { TTL?: number } | undefined;
-    if (soa?.TTL !== undefined) {
-      namespaceChange.Properties = {
-        DnsProperties: {
-          SOA: { TTL: Number(soa.TTL) },
-        },
-      };
-    }
-
-    if (Object.keys(namespaceChange).length === 0) {
-      this.logger.debug(`No mutable diff for PrivateDnsNamespace ${logicalId}, skipping update`);
-      return { physicalId, wasReplaced: false };
+    const soaProperties = this.extractSoaTtlProperties(properties);
+    if (soaProperties) {
+      namespaceChange.Properties = soaProperties;
     }
 
     try {
-      const response = await client.send(
-        new UpdatePrivateDnsNamespaceCommand({
-          Id: physicalId,
-          Namespace: namespaceChange,
-        })
-      );
+      if (Object.keys(namespaceChange).length > 0) {
+        const response = await client.send(
+          new UpdatePrivateDnsNamespaceCommand({
+            Id: physicalId,
+            Namespace: namespaceChange,
+          })
+        );
 
-      const operationId = response.OperationId;
-      if (operationId) {
-        await this.pollOperation(operationId, logicalId, resourceType);
+        const operationId = response.OperationId;
+        if (operationId) {
+          await this.pollOperation(operationId, logicalId, resourceType);
+        }
+      } else {
+        this.logger.debug(`No mutable namespace-body diff for PrivateDnsNamespace ${logicalId}`);
       }
+
+      await this.syncNamespaceTags(logicalId, physicalId, properties, previousProperties);
 
       this.logger.debug(`Successfully updated private DNS namespace ${logicalId}`);
 
@@ -326,13 +367,18 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Delete a Cloud Map namespace (shared by PrivateDnsNamespace,
+   * HttpNamespace, and PublicDnsNamespace — `DeleteNamespace` is
+   * kind-agnostic and operation-based for all three).
+   */
   private async deleteNamespace(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting private DNS namespace ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting Cloud Map namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
 
     try {
@@ -343,7 +389,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         await this.pollOperation(operationId, logicalId, resourceType);
       }
 
-      this.logger.debug(`Successfully deleted private DNS namespace ${logicalId}`);
+      this.logger.debug(`Successfully deleted Cloud Map namespace ${logicalId}`);
     } catch (error) {
       if (error instanceof NamespaceNotFound) {
         const clientRegion = await this.getClient().config.region();
@@ -357,9 +403,278 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         this.logger.debug(`Namespace ${physicalId} does not exist, skipping deletion`);
         return;
       }
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete private DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Cloud Map namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::ServiceDiscovery::HttpNamespace ─────────────────────────
+
+  private async createHttpNamespace(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating HTTP namespace ${logicalId}`);
+    const client = this.getClient();
+
+    const name = properties['Name'] as string;
+    const description = properties['Description'] as string | undefined;
+    const tags = properties['Tags'] as Tag[] | undefined;
+
+    if (!name) {
+      throw new ProvisioningError(
+        `Name is required for HttpNamespace ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await client.send(
+        new CreateHttpNamespaceCommand({
+          Name: name,
+          ...(description && { Description: description }),
+          ...(tags && tags.length > 0 && { Tags: tags }),
+        })
+      );
+
+      const operationId = response.OperationId;
+      if (!operationId) {
+        throw new Error('CreateHttpNamespace did not return OperationId');
+      }
+
+      const namespaceId = await this.pollOperation(operationId, logicalId, resourceType);
+      const arn = await this.resolveNamespaceArn(namespaceId);
+
+      this.logger.debug(`Successfully created HTTP namespace ${logicalId}: ${namespaceId}`);
+
+      return {
+        physicalId: namespaceId,
+        attributes: {
+          Id: namespaceId,
+          Arn: arn,
+        },
+      };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create HTTP namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Update an HTTP namespace.
+   *
+   * `UpdateHttpNamespace` exposes exactly one mutable field: `Description`
+   * (the SDK's `HttpNamespaceChange` shape). `Name` is createOnly — the
+   * replacement-detection layer routes a Name change through DELETE+CREATE
+   * before this method is ever called. Tags ride on the separate
+   * `TagResource` / `UntagResource` APIs (see {@link syncNamespaceTags}).
+   *
+   * Empty-string Description is intentionally allowed through
+   * (`!== undefined` gate, not truthy) so `cdkd drift --revert` can clear a
+   * console-side ADD.
+   */
+  private async updateHttpNamespace(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating HTTP namespace ${logicalId}: ${physicalId}`);
+    const client = this.getClient();
+
+    try {
+      if (properties['Description'] !== undefined) {
+        const namespaceChange: HttpNamespaceChange = {
+          Description: properties['Description'] as string,
+        };
+        const response = await client.send(
+          new UpdateHttpNamespaceCommand({
+            Id: physicalId,
+            Namespace: namespaceChange,
+          })
+        );
+
+        const operationId = response.OperationId;
+        if (operationId) {
+          await this.pollOperation(operationId, logicalId, resourceType);
+        }
+      }
+
+      await this.syncNamespaceTags(logicalId, physicalId, properties, previousProperties);
+
+      this.logger.debug(`Successfully updated HTTP namespace ${logicalId}`);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update HTTP namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::ServiceDiscovery::PublicDnsNamespace ────────────────────
+
+  private async createPublicDnsNamespace(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating public DNS namespace ${logicalId}`);
+    const client = this.getClient();
+
+    const name = properties['Name'] as string;
+    const description = properties['Description'] as string | undefined;
+    const tags = properties['Tags'] as Tag[] | undefined;
+
+    if (!name) {
+      throw new ProvisioningError(
+        `Name is required for PublicDnsNamespace ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    // Same mutable nested field as PrivateDnsNamespace:
+    // `Properties.DnsProperties.SOA.TTL` — pass it through so a templated
+    // TTL is applied instead of AWS's default.
+    const inputProperties = this.extractSoaTtlProperties(properties);
+
+    try {
+      const response = await client.send(
+        new CreatePublicDnsNamespaceCommand({
+          Name: name,
+          ...(description && { Description: description }),
+          ...(tags && tags.length > 0 && { Tags: tags }),
+          ...(inputProperties && { Properties: inputProperties }),
+        })
+      );
+
+      const operationId = response.OperationId;
+      if (!operationId) {
+        throw new Error('CreatePublicDnsNamespace did not return OperationId');
+      }
+
+      const namespaceId = await this.pollOperation(operationId, logicalId, resourceType);
+
+      // PublicDnsNamespace exposes `HostedZoneId` as a CFn attribute (AWS
+      // creates a public Route 53 hosted zone alongside the namespace);
+      // GetNamespace returns both the Arn and the HostedZoneId.
+      let arn: string | undefined;
+      let hostedZoneId: string | undefined;
+      try {
+        const nsResp = await client.send(new GetNamespaceCommand({ Id: namespaceId }));
+        arn = nsResp.Namespace?.Arn;
+        hostedZoneId = nsResp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
+      } catch (err) {
+        this.logger.debug(
+          `GetNamespace(${namespaceId}) after create failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (!arn) {
+        arn = await this.buildNamespaceArn(namespaceId);
+      }
+
+      this.logger.debug(`Successfully created public DNS namespace ${logicalId}: ${namespaceId}`);
+
+      return {
+        physicalId: namespaceId,
+        attributes: {
+          Id: namespaceId,
+          Arn: arn,
+          ...(hostedZoneId && { HostedZoneId: hostedZoneId }),
+        },
+      };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create public DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Update a public DNS namespace.
+   *
+   * `UpdatePublicDnsNamespace` exposes two mutable surfaces (the SDK's
+   * `PublicDnsNamespaceChange` shape): `Description` and
+   * `Properties.DnsProperties.SOA.TTL`. `Name` is createOnly — replacement
+   * is routed through DELETE+CREATE upstream. Tags ride on the separate
+   * `TagResource` / `UntagResource` APIs (see {@link syncNamespaceTags}).
+   */
+  private async updatePublicDnsNamespace(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating public DNS namespace ${logicalId}: ${physicalId}`);
+    const client = this.getClient();
+
+    const namespaceChange: PublicDnsNamespaceChange = {};
+
+    if (properties['Description'] !== undefined) {
+      namespaceChange.Description = properties['Description'] as string;
+    }
+
+    const soaProperties = this.extractSoaTtlProperties(properties);
+    if (soaProperties) {
+      namespaceChange.Properties = soaProperties;
+    }
+
+    try {
+      if (Object.keys(namespaceChange).length > 0) {
+        const response = await client.send(
+          new UpdatePublicDnsNamespaceCommand({
+            Id: physicalId,
+            Namespace: namespaceChange,
+          })
+        );
+
+        const operationId = response.OperationId;
+        if (operationId) {
+          await this.pollOperation(operationId, logicalId, resourceType);
+        }
+      }
+
+      await this.syncNamespaceTags(logicalId, physicalId, properties, previousProperties);
+
+      this.logger.debug(`Successfully updated public DNS namespace ${logicalId}`);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update public DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -648,6 +963,87 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   // ─── Helpers ──────────────────────────────────────────────────────
 
   /**
+   * Extract the CFn `Properties.DnsProperties.SOA.TTL` nested field (the only
+   * mutable entry in the namespace `Properties` bag, shared by the private
+   * and public DNS namespace kinds) into the SDK's input shape. Returns
+   * `undefined` when the template does not set a TTL.
+   */
+  private extractSoaTtlProperties(
+    properties: Record<string, unknown>
+  ): { DnsProperties: { SOA: { TTL: number } } } | undefined {
+    const propsBag = properties['Properties'] as Record<string, unknown> | undefined;
+    const dnsProps = propsBag?.['DnsProperties'] as Record<string, unknown> | undefined;
+    const soa = dnsProps?.['SOA'] as { TTL?: number } | undefined;
+    return soa?.TTL !== undefined
+      ? { DnsProperties: { SOA: { TTL: Number(soa.TTL) } } }
+      : undefined;
+  }
+
+  /**
+   * Resolve a namespace's ARN — authoritative via `GetNamespace`, with a
+   * deterministic STS-based construction as fallback so a transient read
+   * failure right after create does not fail the whole resource.
+   */
+  private async resolveNamespaceArn(namespaceId: string): Promise<string> {
+    try {
+      const resp = await this.getClient().send(new GetNamespaceCommand({ Id: namespaceId }));
+      if (resp.Namespace?.Arn) return resp.Namespace.Arn;
+    } catch (err) {
+      this.logger.debug(
+        `GetNamespace(${namespaceId}) failed while resolving ARN: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    return this.buildNamespaceArn(namespaceId);
+  }
+
+  /**
+   * Diff-and-apply namespace tags via `TagResource` / `UntagResource`.
+   *
+   * `TagResource` is additive-only, so a tag dropped from the template
+   * (partial removal) — or the entire `Tags` property removed (full removal,
+   * `newTags === undefined`) — would survive on AWS unless we explicitly
+   * `UntagResource` the removed keys (the ECR #981 regression class).
+   * Failures THROW (never warn-swallow) so cdkd state is never written
+   * as-if-applied; the next deploy retries naturally.
+   */
+  private async syncNamespaceTags(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<void> {
+    const newTags = properties['Tags'] as Tag[] | undefined;
+    const oldTags = previousProperties['Tags'] as Tag[] | undefined;
+    if (JSON.stringify(newTags) === JSON.stringify(oldTags)) return;
+
+    // Untag keys present in the old set but absent from the new set.
+    // `newTags === undefined` is treated as "remove all old tags".
+    const newKeys = new Set((newTags ?? []).map((t) => t.Key).filter((k): k is string => !!k));
+    const removedKeys = (oldTags ?? [])
+      .map((t) => t.Key)
+      .filter((k): k is string => !!k && !newKeys.has(k));
+    const hasAdds = !!newTags && newTags.length > 0;
+
+    // A shape-only diff with no actual work (e.g. `Tags: []` vs absent)
+    // must not spend a GetNamespace/STS round-trip resolving the ARN.
+    if (removedKeys.length === 0 && !hasAdds) return;
+
+    const arn = await this.resolveNamespaceArn(physicalId);
+
+    if (removedKeys.length > 0) {
+      await this.getClient().send(
+        new UntagResourceCommand({ ResourceARN: arn, TagKeys: removedKeys })
+      );
+    }
+    // Apply added / changed tags. Skip the call when the new set is empty
+    // (a pure removal has nothing left to add).
+    if (hasAdds) {
+      await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: newTags }));
+    }
+    this.logger.debug(`Updated tags for namespace ${logicalId} (${physicalId})`);
+  }
+
+  /**
    * Poll a Service Discovery operation until it completes.
    * Returns the target resource ID from the operation result.
    */
@@ -695,6 +1091,54 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     );
   }
 
+  // ─── Attribute resolution ─────────────────────────────────────────
+
+  /**
+   * Resolve a `Fn::GetAtt` attribute live from AWS (used by `cdkd orphan`'s
+   * sibling-reference rewriting and other post-deploy attribute reads).
+   *
+   * Namespace kinds resolve `Id` / `Arn` (plus `HostedZoneId` for the DNS
+   * namespace kinds, read from `GetNamespace`'s
+   * `Properties.DnsProperties.HostedZoneId`); Services resolve `Id` / `Arn` /
+   * `Name` via `GetService`. Returns `undefined` for unknown attributes and
+   * for gone resources.
+   */
+  async getAttribute(
+    physicalId: string,
+    resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    switch (resourceType) {
+      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
+      case 'AWS::ServiceDiscovery::HttpNamespace':
+      case 'AWS::ServiceDiscovery::PublicDnsNamespace': {
+        if (attributeName === 'Id') return physicalId;
+        if (attributeName !== 'Arn' && attributeName !== 'HostedZoneId') return undefined;
+        try {
+          const resp = await this.getClient().send(new GetNamespaceCommand({ Id: physicalId }));
+          if (attributeName === 'Arn') return resp.Namespace?.Arn;
+          return resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
+        } catch (err) {
+          if (err instanceof NamespaceNotFound) return undefined;
+          throw err;
+        }
+      }
+      case 'AWS::ServiceDiscovery::Service': {
+        if (attributeName === 'Id') return physicalId;
+        if (attributeName !== 'Arn' && attributeName !== 'Name') return undefined;
+        try {
+          const resp = await this.getClient().send(new GetServiceCommand({ Id: physicalId }));
+          return attributeName === 'Arn' ? resp.Service?.Arn : resp.Service?.Name;
+        } catch (err) {
+          if (err instanceof ServiceNotFound) return undefined;
+          throw err;
+        }
+      }
+      default:
+        return undefined;
+    }
+  }
+
   // ─── Import dispatch ──────────────────────────────────────────────
 
   /**
@@ -736,7 +1180,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   ): Promise<Record<string, unknown> | undefined> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.readNamespace(physicalId);
+      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
+        return this.readNamespace(physicalId, { includeProperties: true });
+      case 'AWS::ServiceDiscovery::HttpNamespace':
+        // HttpNamespace has no CFn `Properties` bag (no hosted zone / SOA).
+        return this.readNamespace(physicalId, { includeProperties: false });
       case 'AWS::ServiceDiscovery::Service':
         return this.readService(physicalId);
       default:
@@ -763,7 +1211,10 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     return [];
   }
 
-  private async readNamespace(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readNamespace(
+    physicalId: string,
+    options: { includeProperties: boolean }
+  ): Promise<Record<string, unknown> | undefined> {
     let ns;
     try {
       const resp = await this.getClient().send(new GetNamespaceCommand({ Id: physicalId }));
@@ -777,15 +1228,18 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (ns.Name !== undefined) result['Name'] = ns.Name;
     result['Description'] = ns.Description ?? '';
-    // Properties.DnsProperties.SOA.TTL is the only mutable nested field
-    // (PR #195's update path round-trips it). Surface it on read too so
-    // the comparator can detect a console-side TTL change. Always emit
-    // the Properties placeholder for v3 baseline parity.
-    const soa = ns.Properties?.DnsProperties?.SOA;
-    if (soa?.TTL !== undefined) {
-      result['Properties'] = { DnsProperties: { SOA: { TTL: soa.TTL } } };
-    } else {
-      result['Properties'] = {};
+    if (options.includeProperties) {
+      // Properties.DnsProperties.SOA.TTL is the only mutable nested field
+      // (PR #195's update path round-trips it). Surface it on read too so
+      // the comparator can detect a console-side TTL change. Always emit
+      // the Properties placeholder for v3 baseline parity. HttpNamespace
+      // skips this — it has no CFn `Properties` bag.
+      const soa = ns.Properties?.DnsProperties?.SOA;
+      if (soa?.TTL !== undefined) {
+        result['Properties'] = { DnsProperties: { SOA: { TTL: soa.TTL } } };
+      } else {
+        result['Properties'] = {};
+      }
     }
     if (ns.Arn) await this.attachTags(result, ns.Arn);
     return result;
@@ -879,6 +1333,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
+      case 'AWS::ServiceDiscovery::HttpNamespace':
+      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
         return this.importNamespaceResource(input);
       case 'AWS::ServiceDiscovery::Service':
         return this.importServiceResource(input);
@@ -887,12 +1343,34 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Map each namespace CFn type to its Cloud Map `Namespace.Type` value so
+   * the import walk never adopts a same-named namespace of a different kind
+   * (Cloud Map names are NOT unique across kinds; adopting the wrong one
+   * would make a later destroy delete the wrong resource).
+   */
+  private static readonly NAMESPACE_KIND_BY_TYPE: Record<string, string> = {
+    'AWS::ServiceDiscovery::PrivateDnsNamespace': 'DNS_PRIVATE',
+    'AWS::ServiceDiscovery::HttpNamespace': 'HTTP',
+    'AWS::ServiceDiscovery::PublicDnsNamespace': 'DNS_PUBLIC',
+  };
+
   private async importNamespaceResource(
     input: ResourceImportInput
   ): Promise<ResourceImportResult | null> {
+    const expectedKind = ServiceDiscoveryProvider.NAMESPACE_KIND_BY_TYPE[input.resourceType];
+
     if (input.knownPhysicalId) {
       try {
-        await this.getClient().send(new GetNamespaceCommand({ Id: input.knownPhysicalId }));
+        const resp = await this.getClient().send(
+          new GetNamespaceCommand({ Id: input.knownPhysicalId })
+        );
+        if (expectedKind && resp.Namespace?.Type && resp.Namespace.Type !== expectedKind) {
+          this.logger.debug(
+            `Namespace ${input.knownPhysicalId} is kind ${resp.Namespace.Type}, expected ${expectedKind} for ${input.resourceType} — refusing to adopt`
+          );
+          return null;
+        }
         return { physicalId: input.knownPhysicalId, attributes: {} };
       } catch (err) {
         if (err instanceof NamespaceNotFound) return null;
@@ -910,6 +1388,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       );
       for (const ns of list.Namespaces ?? []) {
         if (!ns.Id || !ns.Arn) continue;
+        if (expectedKind && ns.Type && ns.Type !== expectedKind) continue;
         if (desiredName && ns.Name === desiredName) {
           return { physicalId: ns.Id, attributes: {} };
         }

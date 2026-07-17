@@ -166,6 +166,8 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Cache** | AWS::ElastiCache::CacheCluster | SDK Provider | ✅ |
 | **Cache** | AWS::ElastiCache::SubnetGroup | SDK Provider | ✅ |
 | **Discovery** | AWS::ServiceDiscovery::PrivateDnsNamespace | SDK Provider | ✅ |
+| **Discovery** | AWS::ServiceDiscovery::HttpNamespace | SDK Provider | ✅ |
+| **Discovery** | AWS::ServiceDiscovery::PublicDnsNamespace | SDK Provider | ✅ |
 | **Discovery** | AWS::ServiceDiscovery::Service | SDK Provider | ✅ |
 | **GraphQL** | AWS::AppSync::GraphQLApi | SDK Provider | ✅ |
 | **GraphQL** | AWS::AppSync::GraphQLSchema | SDK Provider | ✅ |

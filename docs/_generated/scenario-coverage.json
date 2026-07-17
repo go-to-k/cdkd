@@ -1547,6 +1547,11 @@
       "scenarios": []
     },
     {
+      "name": "servicediscovery-namespaces",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "ses-identity",
       "annotated": true,
       "scenarios": []

@@ -101,11 +101,27 @@ describe('ServiceDiscoveryProvider — import', () => {
   });
 
   it('returns null for unsupported resource types', async () => {
+    // Instance is the one ServiceDiscovery type this provider does NOT
+    // handle (HttpNamespace / PublicDnsNamespace gained support in #1044).
     const result = await provider.import!(
-      makeServiceInput({ resourceType: 'AWS::ServiceDiscovery::HttpNamespace' })
+      makeServiceInput({ resourceType: 'AWS::ServiceDiscovery::Instance' })
     );
     expect(result).toBeNull();
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  describe('HttpNamespace / PublicDnsNamespace', () => {
+    it.each([
+      ['AWS::ServiceDiscovery::HttpNamespace'],
+      ['AWS::ServiceDiscovery::PublicDnsNamespace'],
+    ])('verifies explicit Id via GetNamespace for %s', async (resourceType) => {
+      mockSend.mockResolvedValueOnce({ Namespace: { Id: 'ns-abc' } });
+      const result = await provider.import!(
+        makeNamespaceInput({ resourceType, knownPhysicalId: 'ns-abc' })
+      );
+      expect(result).toEqual({ physicalId: 'ns-abc', attributes: {} });
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetNamespaceCommand);
+    });
   });
 });
 
@@ -118,6 +134,8 @@ describe('ServiceDiscoveryProvider — update', () => {
 
   it.each([
     ['AWS::ServiceDiscovery::PrivateDnsNamespace'],
+    ['AWS::ServiceDiscovery::HttpNamespace'],
+    ['AWS::ServiceDiscovery::PublicDnsNamespace'],
     ['AWS::ServiceDiscovery::Service'],
   ])(
     'no-op silent success for %s when properties carry no mutable fields',
