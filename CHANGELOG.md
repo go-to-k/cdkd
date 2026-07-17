@@ -1,3 +1,10 @@
+## [0.238.3](https://github.com/go-to-k/cdkd/compare/v0.238.2...v0.238.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **diff:** bind template Parameters and evaluate Conditions like deploy; skip condition-false Outputs ([#1033](https://github.com/go-to-k/cdkd/issues/1033)) ([14a84c3](https://github.com/go-to-k/cdkd/commit/14a84c386d2ec3140b76b5cd15e48fc3ac4dcd5e))
+
 ## [0.238.2](https://github.com/go-to-k/cdkd/compare/v0.238.1...v0.238.2) (2026-07-16)
 
 
