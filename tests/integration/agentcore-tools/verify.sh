@@ -25,7 +25,7 @@ cd "$(dirname "$0")"
 STACK="CdkdAgentcoreToolsExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
-EVALUATOR_NAME="cdkd-integ-agentcore-evaluator"
+EVALUATOR_NAME="cdkd_integ_agentcore_evaluator"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 

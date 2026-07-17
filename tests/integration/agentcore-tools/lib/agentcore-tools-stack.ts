@@ -64,7 +64,7 @@ export class AgentcoreToolsStack extends cdk.Stack {
     const evaluator = new cdk.CfnResource(this, 'CodeEvaluator', {
       type: 'AWS::BedrockAgentCore::Evaluator',
       properties: {
-        EvaluatorName: 'cdkd-integ-agentcore-evaluator',
+        EvaluatorName: 'cdkd_integ_agentcore_evaluator',
         Description: isUpdate ? 'cdkd integ evaluator (updated)' : 'cdkd integ evaluator',
         Level: isUpdate ? 'SESSION' : 'TRACE',
         EvaluatorConfig: {
