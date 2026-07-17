@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 118,
+    "classifiedCount": 119,
     "enriched": 4,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 100,
-    "allowListedTypes": 2
+    "sdkFallbackGap": 101,
+    "allowListedTypes": 3
   },
   "types": [
     {
@@ -619,6 +619,48 @@
       "gaps": [
         "Arn",
         "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::CodeCommit::Repository",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "CloneUrlHttp",
+        "CloneUrlSsh",
+        "Id",
+        "Name"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "CloneUrlHttp",
+          "status": "gap"
+        },
+        {
+          "name": "CloneUrlSsh",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "Name",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "CloneUrlHttp",
+        "CloneUrlSsh",
+        "Name"
       ]
     },
     {

@@ -312,6 +312,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::CloudTrail::Trail
 - AWS::CloudWatch::Alarm
 - AWS::CodeBuild::Project
+- AWS::CodeCommit::Repository
 - AWS::ECR::Repository
 - AWS::ElasticLoadBalancingV2::LoadBalancer
 - AWS::ElasticLoadBalancingV2::TargetGroup

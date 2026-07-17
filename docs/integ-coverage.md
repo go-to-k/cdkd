@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**114 / 118 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**115 / 119 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -31,7 +31,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::RDS::DBProxy` | rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
 
-## Covered providers (114)
+## Covered providers (115)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -61,6 +61,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::CloudTrail::Trail` | [`infra-security`](../tests/integration/infra-security/) (l2,literal) |
 | `AWS::CloudWatch::Alarm` | [`cloudwatch`](../tests/integration/cloudwatch/) (l2,literal)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`deep-getatt-chains`](../tests/integration/deep-getatt-chains/) (l1)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
 | `AWS::CodeBuild::Project` | [`ci-cd`](../tests/integration/ci-cd/) (l2,literal) |
+| `AWS::CodeCommit::Repository` | [`codecommit`](../tests/integration/codecommit/) (literal) |
 | `AWS::Cognito::UserPool` | [`api-cognito`](../tests/integration/api-cognito/) (l2)<br>[`cognito`](../tests/integration/cognito/) (l1,l2,literal)<br>[`cognito-custom-attribute-add`](../tests/integration/cognito-custom-attribute-add/) (l2)<br>[`cognito-identity-pool`](../tests/integration/cognito-identity-pool/) (l2)<br>[`cognito-lambda-triggers`](../tests/integration/cognito-lambda-triggers/) (l2,literal)<br>[`cognito-resource-server`](../tests/integration/cognito-resource-server/) (l2)<br>[`cognito-userpool-user-ref`](../tests/integration/cognito-userpool-user-ref/) (l2)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal)<br>[`serverless-api`](../tests/integration/serverless-api/) (l2) |
 | `AWS::DLM::LifecyclePolicy` | [`dlm-lifecycle-policy`](../tests/integration/dlm-lifecycle-policy/) (literal) |
 | `AWS::DocDB::DBCluster` | [`docdb-neptune`](../tests/integration/docdb-neptune/) (l1) |

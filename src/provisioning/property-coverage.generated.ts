@@ -611,6 +611,22 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::CodeCommit::Repository',
+    {
+      handled: new Set<string>(['KmsKeyId', 'RepositoryDescription', 'RepositoryName', 'Tags']),
+      silentDrop: new Map<string, string>([
+        [
+          'Code',
+          'CFn-only seed-content orchestration (S3 zip unpacked into an initial commit on a chosen branch); not wired in v1 — pre-flight rejects templates carrying it so nothing is silently dropped; a follow-up could implement it via CreateCommit/PutFile',
+        ],
+        [
+          'Triggers',
+          'repository trigger management not wired in v1 — pre-flight rejects templates carrying it so nothing is silently dropped; a follow-up could implement it via PutRepositoryTriggers',
+        ],
+      ]),
+    },
+  ],
+  [
     'AWS::Cognito::UserPool',
     {
       handled: new Set<string>([

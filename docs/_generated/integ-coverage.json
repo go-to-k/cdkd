@@ -26,6 +26,7 @@
     "AWS::CloudTrail::Trail",
     "AWS::CloudWatch::Alarm",
     "AWS::CodeBuild::Project",
+    "AWS::CodeCommit::Repository",
     "AWS::Cognito::UserPool",
     "AWS::DLM::LifecyclePolicy",
     "AWS::DocDB::DBCluster",
@@ -623,6 +624,17 @@
       "signals": {
         "ci-cd": [
           "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CodeCommit::Repository",
+      "integs": [
+        "codecommit"
+      ],
+      "signals": {
+        "codecommit": [
           "literal"
         ]
       }

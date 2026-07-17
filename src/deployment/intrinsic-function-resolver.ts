@@ -286,6 +286,20 @@ export function cfnRefValueFromPhysicalId(
       return selectionId;
     }
   }
+  // AWS::CodeCommit::Repository: CFn's `Ref` returns the repository ID (a
+  // GUID, docs-verified), but every CodeCommit API is name-based (there is no
+  // lookup-by-id API), so the SDK provider stores the repository NAME as the
+  // physical id. The provider's `create()` / `import()` store the
+  // `RepositoryId` attribute, recovered here via `stateLookup` for CFn `Ref`
+  // parity. Falls through to the raw physical id (the name) when the
+  // attribute is absent — same graceful degradation as the cases below
+  // (issue #1045).
+  if (resourceType === 'AWS::CodeCommit::Repository' && stateLookup) {
+    const repositoryId = stateLookup(['RepositoryId']);
+    if (repositoryId) {
+      return repositoryId;
+    }
+  }
   // AWS::WAFv2::WebACL is the inverse of the usual divergence: CFn's `Ref` IS
   // the pipe-joined compound `name|id|scope` (docs-explicit, e.g.
   // `my-webacl-name|1234a1a-...|REGIONAL`), which matches the CC identifier —

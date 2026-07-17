@@ -63,6 +63,7 @@ import { EFSProvider } from './providers/efs-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
 import { CodeBuildProvider } from './providers/codebuild-provider.js';
+import { CodeCommitRepositoryProvider } from './providers/codecommit-repository-provider.js';
 import { DLMLifecyclePolicyProvider } from './providers/dlm-lifecycle-policy-provider.js';
 import { S3VectorsProvider } from './providers/s3-vectors-provider.js';
 import { S3DirectoryBucketProvider } from './providers/s3-directory-bucket-provider.js';
@@ -272,6 +273,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // CodeBuild
   registry.register('AWS::CodeBuild::Project', new CodeBuildProvider());
+
+  // CodeCommit
+  registry.register('AWS::CodeCommit::Repository', new CodeCommitRepositoryProvider());
 
   // DLM (Data Lifecycle Manager) — NON_PROVISIONABLE in the CFn registry, so
   // no Cloud Control fallback exists (issue #1040).

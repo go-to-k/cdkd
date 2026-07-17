@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **118**
+- Classified types (cached schema): **119**
 - Fully enriched: **4**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **100**
-- Types with allow-listed (not-a-gap) attributes: **2**
+- SDK-fallback gaps (informational, #614 path only): **101**
+- Types with allow-listed (not-a-gap) attributes: **3**
 
 ## Pure-CC latent gaps
 
@@ -51,6 +51,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudTrail::Trail` | `Arn`, `SnsTopicArn` |
 | `AWS::CloudWatch::Alarm` | `Arn` |
 | `AWS::CodeBuild::Project` | `Arn`, `Id` |
+| `AWS::CodeCommit::Repository` | `Arn`, `CloneUrlHttp`, `CloneUrlSsh`, `Name` |
 | `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL`, `UserPoolId` |
 | `AWS::DLM::LifecyclePolicy` | `Arn` |
 | `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `Id`, `ReadEndpoint` |
@@ -159,6 +160,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |
+| `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Id` (allow), `Name` (GAP) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (GAP) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (GAP), `ReadEndpoint` (GAP) |
