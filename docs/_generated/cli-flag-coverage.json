@@ -74,6 +74,7 @@
       "flag": "--force",
       "integs": [
         "acm-certificate",
+        "agentcore-tools",
         "alb",
         "apigw-gateway-response",
         "apigw-usage-plan-key",
@@ -253,6 +254,7 @@
       "flag": "--output",
       "integs": [
         "acm-certificate",
+        "agentcore-tools",
         "alb",
         "apigateway",
         "apigw-gateway-response",
@@ -437,6 +439,7 @@
       "flag": "--region",
       "integs": [
         "acm-certificate",
+        "agentcore-tools",
         "alb",
         "apigateway",
         "apigw-gateway-response",
@@ -634,6 +637,7 @@
       "flag": "--state-bucket",
       "integs": [
         "acm-certificate",
+        "agentcore-tools",
         "alb",
         "apigateway",
         "apigw-gateway-response",
@@ -835,6 +839,7 @@
     {
       "flag": "--yes",
       "integs": [
+        "agentcore-tools",
         "apigateway",
         "apigw-gateway-response",
         "apigw-stage-throttling",
@@ -1008,6 +1013,7 @@
     "--backup-plan-id",
     "--backup-vault-name",
     "--bearer-token",
+    "--browser-id",
     "--bucket",
     "--budget-name",
     "--build-arg",
@@ -1017,6 +1023,7 @@
     "--client-id",
     "--cluster",
     "--clusters",
+    "--code-interpreter-id",
     "--configuration-profile-id",
     "--configuration-set-name",
     "--container-host",
@@ -1039,6 +1046,7 @@
     "--entries",
     "--env-vars",
     "--environment-id",
+    "--evaluator-id",
     "--event",
     "--event-bus-name",
     "--event-source-arn",

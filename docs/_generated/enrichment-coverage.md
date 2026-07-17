@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **122**
+- Classified types (cached schema): **125**
 - Fully enriched: **5**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **103**
-- Types with allow-listed (not-a-gap) attributes: **6**
+- SDK-fallback gaps (informational, #614 path only): **106**
+- Types with allow-listed (not-a-gap) attributes: **9**
 
 ## Pure-CC latent gaps
 
@@ -43,6 +43,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::AppSync::GraphQLSchema` | `Id` |
 | `AWS::AppSync::Resolver` | `ResolverArn` |
 | `AWS::AutoScaling::AutoScalingGroup` | `AutoScalingGroupARN` |
+| `AWS::BedrockAgentCore::Browser` | `BrowserId`, `Name`, `Status` |
+| `AWS::BedrockAgentCore::CodeInterpreter` | `CodeInterpreterId`, `Status` |
+| `AWS::BedrockAgentCore::Evaluator` | `CreatedAt`, `EvaluatorId`, `Status`, `UpdatedAt` |
 | `AWS::BedrockAgentCore::Runtime` | `AgentRuntimeArn`, `AgentRuntimeId`, `AgentRuntimeVersion`, `CreatedAt`, `FailureReason`, `LastUpdatedAt`, `Status`, `WorkloadIdentityDetails` |
 | `AWS::CertificateManager::Certificate` | `Id` |
 | `AWS::CloudFormation::Stack` | `ChangeSetId`, `CreationTime`, `LastUpdateTime`, `Outputs`, `ParentId`, `RootId`, `StackId`, `StackStatus` |
@@ -153,6 +156,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::AppSync::GraphQLSchema` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::AppSync::Resolver` | yes | sdk-fallback-gap | `ResolverArn` (GAP) |
 | `AWS::AutoScaling::AutoScalingGroup` | yes | sdk-fallback-gap | `AutoScalingGroupARN` (GAP) |
+| `AWS::BedrockAgentCore::Browser` | yes | sdk-fallback-gap | `BrowserArn` (allow), `BrowserId` (GAP), `Name` (GAP), `Status` (GAP) |
+| `AWS::BedrockAgentCore::CodeInterpreter` | yes | sdk-fallback-gap | `CodeInterpreterArn` (allow), `CodeInterpreterId` (GAP), `Status` (GAP) |
+| `AWS::BedrockAgentCore::Evaluator` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `EvaluatorArn` (allow), `EvaluatorId` (GAP), `Status` (GAP), `UpdatedAt` (GAP) |
 | `AWS::BedrockAgentCore::Runtime` | yes | sdk-fallback-gap | `AgentRuntimeArn` (GAP), `AgentRuntimeId` (GAP), `AgentRuntimeVersion` (GAP), `CreatedAt` (GAP), `FailureReason` (GAP), `LastUpdatedAt` (GAP), `Status` (GAP), `WorkloadIdentityDetails` (GAP) |
 | `AWS::Budgets::Budget` | yes | enriched | `Id` (allow) |
 | `AWS::CertificateManager::Certificate` | yes | sdk-fallback-gap | `Id` (GAP) |
