@@ -1,3 +1,10 @@
+## [0.238.4](https://github.com/go-to-k/cdkd/compare/v0.238.3...v0.238.4) (2026-07-17)
+
+
+### Bug Fixes
+
+* **state:** stop persisting template Parameter names into resource dependencies ([#1037](https://github.com/go-to-k/cdkd/issues/1037)) ([27e196b](https://github.com/go-to-k/cdkd/commit/27e196b629b2a1f62706dd41ed08c94855c59b2c))
+
 ## [0.238.3](https://github.com/go-to-k/cdkd/compare/v0.238.2...v0.238.3) (2026-07-17)
 
 
