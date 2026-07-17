@@ -1,3 +1,10 @@
+# [0.242.0](https://github.com/go-to-k/cdkd/compare/v0.241.0...v0.242.0) (2026-07-17)
+
+
+### Features
+
+* **providers:** add SDK Providers for ServiceDiscovery HttpNamespace / PublicDnsNamespace ([#1061](https://github.com/go-to-k/cdkd/issues/1061)) ([86d0ad9](https://github.com/go-to-k/cdkd/commit/86d0ad951597a293af6fe21b8ef45c9a6a8b1765))
+
 # [0.241.0](https://github.com/go-to-k/cdkd/compare/v0.240.0...v0.241.0) (2026-07-17)
 
 
