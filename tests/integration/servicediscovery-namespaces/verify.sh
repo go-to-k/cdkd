@@ -22,7 +22,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 HTTP_NS_NAME="cdkd-integ-http-ns"
-PUBLIC_NS_NAME="cdkd-integ-ns.example.com"
+PUBLIC_NS_NAME="cdkd-integ-ns.cdkd-integ-test.com"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below

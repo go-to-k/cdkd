@@ -37,7 +37,9 @@ export class ServiceDiscoveryNamespacesStack extends cdk.Stack {
       this,
       'PublicDnsNamespace',
       {
-        name: 'cdkd-integ-ns.example.com',
+        // NOTE: not *.example.com — Route 53 rejects hosted-zone creation
+        // for AWS-reserved domains ("is reserved by AWS!", InvalidDomainName).
+        name: 'cdkd-integ-ns.cdkd-integ-test.com',
         description: 'cdkd integ public DNS namespace',
         properties: {
           dnsProperties: {
