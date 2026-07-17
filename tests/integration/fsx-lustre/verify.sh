@@ -130,7 +130,7 @@ cleanup
 
 state_json() {
   node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
-    --region "${REGION}" --json 2>/dev/null
+    --stack-region "${REGION}" --json 2>/dev/null
 }
 
 output_value() {

@@ -438,14 +438,17 @@ export class ProviderRegistry {
   /**
    * Walk every resource in the template and identify top-level CFn
    * properties cdkd's SDK provider would silently drop on write. As of
-   * issue [#614](https://github.com/go-to-k/cdkd/issues/614), this method
-   * **no longer throws** — silent drops now auto-route the resource through
-   * Cloud Control API by default (see {@link getProviderFor}). The method
-   * is retained on the name `validateResourceProperties` so existing deploy
-   * call sites continue to work; it now emits info-level routing decisions
+   * issue [#614](https://github.com/go-to-k/cdkd/issues/614), silent drops
+   * auto-route the resource through Cloud Control API by default (see
+   * {@link getProviderFor}) — the method emits info-level routing decisions
    * for each silent-drop resource, plus warn-level lines for resources
    * where the user explicitly opted into the silent drop via
-   * `--allow-unsupported-properties`.
+   * `--allow-unsupported-properties`. The ONE remaining throw path is the
+   * CC-route viability guard: when the auto-route target cannot manage the
+   * type (`NON_PROVISIONABLE` or a provider-level `disableCcApiFallback`
+   * opt-out — e.g. AWS::FSx::FileSystem's Windows/ONTAP/OpenZFS blocks),
+   * this rejects pre-flight with a clear per-property error instead of
+   * letting provisioning fail opaquely.
    *
    * Must be called AFTER {@link validateResourceTypes} — type-level errors
    * are still hard rejects. For a type allowed via `--allow-unsupported-types`,
@@ -470,11 +473,13 @@ export class ProviderRegistry {
    * Info-log every silent-drop routing decision (auto-route via CC API) and
    * warn-log every silent drop the user explicitly opted into via
    * `--allow-unsupported-properties` (forced SDK path, the property will
-   * be dropped). Pure side-effect — does not mutate state and never throws.
+   * be dropped). Does not mutate state; throws ONLY for the CC-route
+   * viability guard (un-allowed silent drops on a type Cloud Control cannot
+   * manage — see {@link buildUnroutableSilentDropMessage}).
    *
    * Issue [#614](https://github.com/go-to-k/cdkd/issues/614). Replaces the
    * pre-v0.16x throw path: silent drops are now a routing signal, not an
-   * error.
+   * error (except the viability guard above).
    *
    * When the optional `provisionedBy` (from existing state) is `'cc-api'`,
    * the auto-route info line is demoted to `debug` — the resource has been

@@ -255,6 +255,43 @@ describe('FSxFileSystemProvider create', () => {
   });
 });
 
+describe('FSxFileSystemProvider create transient poll tolerance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('absorbs a transient throttle mid-poll instead of failing the create', async () => {
+    const throttle = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: [
+        { FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'CREATING' }] },
+        throttle,
+        { FileSystems: [availableFs()] },
+      ],
+    });
+
+    const result = await newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS });
+    expect(result.physicalId).toBe(FS_ID);
+    // No rollback delete was issued.
+    expect(callsOf(DeleteFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('propagates a non-transient poll error (after rollback)', async () => {
+    const denied = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: denied,
+      DeleteFileSystemCommand: {},
+    });
+
+    await expect(newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })).rejects.toThrow(
+      /not authorized/
+    );
+    expect(callsOf(DeleteFileSystemCommand)).toHaveLength(1);
+  });
+});
+
 describe('FSxFileSystemProvider update', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -280,7 +317,15 @@ describe('FSxFileSystemProvider update', () => {
       { ...LUSTRE_PROPS }
     );
 
-    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(result).toMatchObject({ physicalId: FS_ID, wasReplaced: false });
+    // The update result re-derives the attribute set so the engine's state
+    // write keeps GetAtt-served attributes fresh across updates.
+    expect(result.attributes).toEqual({
+      ResourceARN: FS_ARN,
+      DNSName: DNS_NAME,
+      LustreMountName: MOUNT_NAME,
+      FileSystemId: FS_ID,
+    });
     const [update] = callsOf(UpdateFileSystemCommand);
     expect(update.input).toEqual({
       FileSystemId: FS_ID,
@@ -288,7 +333,82 @@ describe('FSxFileSystemProvider update', () => {
     });
   });
 
-  it('sends StorageCapacity growth as a number', async () => {
+  it('waits for the FILE_SYSTEM_UPDATE administrative action to complete before returning', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: [
+        {
+          FileSystems: [
+            availableFs({
+              AdministrativeActions: [
+                { AdministrativeActionType: 'FILE_SYSTEM_UPDATE', Status: 'IN_PROGRESS' },
+                // Ignored: storage optimization runs for hours post-grow.
+                { AdministrativeActionType: 'STORAGE_OPTIMIZATION', Status: 'IN_PROGRESS' },
+              ],
+            }),
+          ],
+        },
+        {
+          FileSystems: [
+            availableFs({
+              AdministrativeActions: [
+                { AdministrativeActionType: 'FILE_SYSTEM_UPDATE', Status: 'COMPLETED' },
+                { AdministrativeActionType: 'STORAGE_OPTIMIZATION', Status: 'IN_PROGRESS' },
+              ],
+            }),
+          ],
+        },
+      ],
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...LUSTRE_PROPS,
+        LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
+      },
+      { ...LUSTRE_PROPS, LustreConfiguration: { DeploymentType: 'SCRATCH_2' } }
+    );
+
+    // First Describe saw IN_PROGRESS -> must poll again before returning.
+    expect(callsOf(DescribeFileSystemsCommand).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('hard-fails when the FILE_SYSTEM_UPDATE administrative action reports FAILED', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            AdministrativeActions: [
+              {
+                AdministrativeActionType: 'FILE_SYSTEM_UPDATE',
+                Status: 'FAILED',
+                FailureDetails: { Message: 'update rejected' },
+              },
+            ],
+          }),
+        ],
+      },
+    });
+
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        {
+          ...LUSTRE_PROPS,
+          LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
+        },
+        { ...LUSTRE_PROPS, LustreConfiguration: { DeploymentType: 'SCRATCH_2' } }
+      )
+    ).rejects.toThrow(/FILE_SYSTEM_UPDATE administrative action.*update rejected/);
+  });
+
+  it('applies StorageType / FileSystemTypeVersion / NetworkType / MetadataConfiguration changes in one UpdateFileSystem', async () => {
     routeSend({
       UpdateFileSystemCommand: {},
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
@@ -298,10 +418,46 @@ describe('FSxFileSystemProvider update', () => {
       'MyFs',
       FS_ID,
       RESOURCE_TYPE,
+      {
+        ...LUSTRE_PROPS,
+        StorageType: 'INTELLIGENT_TIERING',
+        FileSystemTypeVersion: '2.15',
+        NetworkType: 'DUAL_STACK',
+        LustreConfiguration: {
+          DeploymentType: 'SCRATCH_2',
+          MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: '6000' },
+        },
+      },
+      { ...LUSTRE_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      StorageType: 'INTELLIGENT_TIERING',
+      FileSystemTypeVersion: '2.15',
+      NetworkType: 'DUAL_STACK',
+      LustreConfiguration: {
+        MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
+      },
+    });
+  });
+
+  it('sends StorageCapacity growth as a number', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
       { ...LUSTRE_PROPS, StorageCapacity: '2400' },
       { ...LUSTRE_PROPS }
     );
 
+    expect(result).toMatchObject({ physicalId: FS_ID, wasReplaced: false });
     const [update] = callsOf(UpdateFileSystemCommand);
     expect(update.input).toEqual({ FileSystemId: FS_ID, StorageCapacity: 2400 });
   });
@@ -313,6 +469,19 @@ describe('FSxFileSystemProvider update', () => {
         FS_ID,
         RESOURCE_TYPE,
         { ...LUSTRE_PROPS, SubnetIds: ['subnet-999'] },
+        { ...LUSTRE_PROPS }
+      )
+    ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('rejects an ADDED createOnly property (undefined -> defined KmsKeyId) without calling AWS', async () => {
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        { ...LUSTRE_PROPS, KmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abc' },
         { ...LUSTRE_PROPS }
       )
     ).rejects.toThrow(ResourceUpdateNotSupportedError);
@@ -609,6 +778,12 @@ describe('FSxFileSystemProvider import', () => {
     });
 
     expect(result?.physicalId).toBe(FS_ID);
+    // The second page request must forward the first page's NextToken —
+    // without this assertion a broken pagination loop would still pass
+    // (page 2 is served regardless of input by the mock queue).
+    const describes = callsOf(DescribeFileSystemsCommand);
+    expect(describes).toHaveLength(2);
+    expect(describes[1].input['NextToken']).toBe('page2');
   });
 
   it('returns null when neither an id nor a matching tag is found', async () => {

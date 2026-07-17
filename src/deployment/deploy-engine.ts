@@ -2825,11 +2825,24 @@ export class DeployEngine {
             );
           }
 
+          // Attributes: prefer the update result's fresh set; when the
+          // provider returned none AND the resource was updated IN PLACE,
+          // carry the previously-stored (create-time) attributes forward —
+          // an in-place update never invalidates them, and dropping them
+          // would degrade every later Fn::GetAtt on this resource to the
+          // physical-id fallback (observed live: an FSx update wiped
+          // LustreMountName / DNSName and the stack outputs regressed to
+          // the file-system id). A REPLACED resource must NOT inherit the
+          // old resource's attributes — its create result is authoritative
+          // (and absent attributes stay absent).
+          const carriedAttributes =
+            result.attributes ?? (result.wasReplaced ? undefined : currentResource.attributes);
+
           stateResources[logicalId] = {
             physicalId: result.physicalId,
             resourceType,
             properties: resolvedProps,
-            ...(result.attributes && { attributes: result.attributes }),
+            ...(carriedAttributes && { attributes: carriedAttributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
             provisionedBy: resultProvisionedBy,

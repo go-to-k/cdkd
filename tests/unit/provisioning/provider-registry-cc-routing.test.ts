@@ -268,11 +268,17 @@ describe('ProviderRegistry.findAutoRouteHits', () => {
 });
 
 describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallback)', () => {
-  // AWS::FSx::FileSystem is the canonical Tier 1 + NON_PROVISIONABLE type:
-  // its SDK provider deliberately leaves the Windows/ONTAP/OpenZFS config
-  // blocks unhandled (silent-drop entries in the generated coverage map),
-  // and Cloud Control has NO handlers for the type — so the #614 auto-route
-  // is not viable and must become a clear pre-flight error.
+  // AWS::FSx::FileSystem is the canonical case: its SDK provider
+  // deliberately leaves the Windows/ONTAP/OpenZFS config blocks unhandled
+  // (silent-drop entries in the generated coverage map), and Cloud Control
+  // has NO handlers for the type (NON_PROVISIONABLE in the CFn registry) —
+  // so the #614 auto-route is not viable and must become a clear pre-flight
+  // error. NOTE the enforcement mechanism is the provider's
+  // `disableCcApiFallback` opt-out (mirrored by `fsxStub` below), NOT
+  // `isNonProvisionable()` — the runtime Tier 3 set excludes SDK-covered
+  // types by design, so it returns false for this type once the provider is
+  // registered. The `isNonProvisionable` OR-branch in the guard covers only
+  // the mid-transition window before the coverage regen runs.
   const FSX = 'AWS::FSx::FileSystem';
 
   const fsxStub = (): ResourceProvider =>

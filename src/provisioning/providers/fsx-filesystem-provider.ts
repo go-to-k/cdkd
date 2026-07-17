@@ -228,7 +228,15 @@ export class FSxFileSystemProvider implements ResourceProvider {
     // create but DIFFER between the old and new file system during a
     // property-driven REPLACEMENT — hash ONLY the immutable (createOnly)
     // inputs in a fixed order (same rationale as EFSProvider's
-    // CreationToken derivation).
+    // CreationToken derivation in efs-provider.ts).
+    //
+    // NOTE the hash deliberately covers only the REGISTRY-createOnly
+    // top-level properties, not the provider-classified immutable Lustre
+    // sub-properties (DeploymentType / ImportPath / ...). Those changes are
+    // rejected by update() with a --replace pointer, and the deploy
+    // engine's --replace replacement is DELETE → wait-for-gone → CREATE,
+    // so the old file system (and its token) no longer exists when the new
+    // create runs — no token collision is possible on that path.
     const tokenHash = createHash('sha256')
       .update(
         [
@@ -397,14 +405,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
     // Defensive guard: registry-createOnly top-level changes should have
     // been routed through DELETE+CREATE by the replacement-detection layer.
+    // An undefined→defined transition (property ADDED post-create) is a
+    // change too — do not require both sides to be present.
     for (const key of TOP_LEVEL_IMMUTABLE_PROPS) {
       const next = properties[key];
       const prev = previousProperties[key];
-      if (
-        next !== undefined &&
-        prev !== undefined &&
-        JSON.stringify(next) !== JSON.stringify(prev)
-      ) {
+      if (JSON.stringify(next ?? null) !== JSON.stringify(prev ?? null)) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
@@ -500,6 +506,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
         typeVersionChanged ||
         networkTypeChanged;
 
+      let updatedFs: FileSystem | undefined;
+
       if (needsUpdateCall) {
         await this.getClient().send(
           new UpdateFileSystemCommand({
@@ -520,11 +528,15 @@ export class FSxFileSystemProvider implements ResourceProvider {
           })
         );
 
-        // UpdateFileSystem is async — wait until the file system settles
-        // back to AVAILABLE so the next read sees final values. (Storage /
-        // throughput optimization continues in the background via
-        // AdministrativeActions, but Lifecycle returns to AVAILABLE.)
-        await this.waitForFileSystemAvailable(physicalId, logicalId, resourceType);
+        // UpdateFileSystem applies the change via an ASYNC administrative
+        // action (`AdministrativeActions[].Type: FILE_SYSTEM_UPDATE`) — the
+        // Lifecycle can report AVAILABLE while the config change has not
+        // propagated to the Describe view yet (observed live: a
+        // DataCompressionType NONE -> LZ4 change still read NONE seconds
+        // after UpdateFileSystem returned). Wait until the update action
+        // completes so the next read (drift compare, verify scripts) sees
+        // the final values — CloudFormation waits the same way.
+        updatedFs = await this.waitForUpdateActionComplete(physicalId, logicalId, resourceType);
       }
 
       if (tagsChanged) {
@@ -535,9 +547,24 @@ export class FSxFileSystemProvider implements ResourceProvider {
         );
       }
 
+      // Re-derive the attribute set so the deploy engine's state write keeps
+      // GetAtt-served attributes (DNSName / LustreMountName / ResourceARN)
+      // fresh across updates — an update result without attributes would
+      // otherwise degrade Fn::GetAtt to the physical-id fallback.
+      if (!updatedFs) {
+        const resp = await this.getClient().send(
+          new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
+        );
+        updatedFs = resp.FileSystems?.[0];
+      }
+
       this.logger.debug(`Successfully updated FSx FileSystem ${logicalId}`);
 
-      return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        ...(updatedFs && { attributes: this.buildAttributes(updatedFs) }),
+      };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
@@ -574,6 +601,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
     const toSet: Tag[] = [];
     for (const [key, value] of next) {
+      if (key === undefined) continue;
       if (prev.get(key) !== value) toSet.push({ Key: key, Value: value });
     }
     const toRemove: string[] = [];
@@ -641,21 +669,60 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
   // ─── Lifecycle polling ─────────────────────────────────────────────
 
+  /**
+   * Issue the polling `DescribeFileSystems` with bounded tolerance for
+   * TRANSIENT errors (throttling / 5xx / connection resets): up to
+   * `maxConsecutiveTransient` consecutive failures are absorbed (with the
+   * normal poll delay) before the error propagates. A 5-10 minute create
+   * poll at 15s intervals would otherwise turn a single throttle into a
+   * spurious failure + best-effort rollback cycle. Non-transient errors
+   * (incl. FileSystemNotFound) propagate immediately.
+   */
+  private async describeForPoll(
+    fileSystemId: string,
+    transientState: { count: number },
+    maxConsecutiveTransient = 5
+  ): Promise<FileSystem | undefined> {
+    try {
+      const response = await this.getClient().send(
+        new DescribeFileSystemsCommand({ FileSystemIds: [fileSystemId] })
+      );
+      transientState.count = 0;
+      return response.FileSystems?.[0];
+    } catch (error) {
+      const name = error instanceof Error ? error.name : '';
+      const msg = error instanceof Error ? error.message : String(error);
+      const transient =
+        name === 'ThrottlingException' ||
+        name === 'ServiceLimitExceeded' ||
+        name === 'InternalServerError' ||
+        name === 'TimeoutError' ||
+        /rate exceeded|too many requests|timed? ?out|ECONNRESET|EPIPE|socket hang up/i.test(msg);
+      if (transient && transientState.count < maxConsecutiveTransient) {
+        transientState.count += 1;
+        this.logger.debug(
+          `Transient DescribeFileSystems error while polling ${fileSystemId} (${transientState.count}/${maxConsecutiveTransient}): ${msg} — retrying`
+        );
+        // Signal "no data this round" — the caller's loop delay applies.
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   private async waitForFileSystemAvailable(
     fileSystemId: string,
     logicalId: string,
     resourceType: string
   ): Promise<FileSystem> {
     const startTime = Date.now();
+    const transientState = { count: 0 };
 
     while (Date.now() - startTime < this.maxWaitMs) {
-      const response = await this.getClient().send(
-        new DescribeFileSystemsCommand({ FileSystemIds: [fileSystemId] })
-      );
-      const fs = response.FileSystems?.[0];
+      const fs = await this.describeForPoll(fileSystemId, transientState);
       const lifecycle = fs?.Lifecycle;
 
-      if (lifecycle === 'AVAILABLE') return fs!;
+      if (fs && lifecycle === 'AVAILABLE') return fs;
 
       if (lifecycle === 'FAILED' || lifecycle === 'MISCONFIGURED') {
         const detail = fs?.FailureDetails?.Message ?? 'no failure details reported';
@@ -681,26 +748,94 @@ export class FSxFileSystemProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * Wait until the async `FILE_SYSTEM_UPDATE` administrative action kicked
+   * off by `UpdateFileSystem` completes (and the Lifecycle is AVAILABLE).
+   * `STORAGE_OPTIMIZATION` actions are intentionally ignored — they can run
+   * for hours after a capacity grow, and CloudFormation does not wait for
+   * them either (`UPDATED_OPTIMIZING` counts as done). A FAILED update
+   * action is a hard error carrying the action's failure message.
+   */
+  private async waitForUpdateActionComplete(
+    fileSystemId: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<FileSystem> {
+    const startTime = Date.now();
+    const transientState = { count: 0 };
+
+    while (Date.now() - startTime < this.maxWaitMs) {
+      const fs = await this.describeForPoll(fileSystemId, transientState);
+
+      if (fs) {
+        const updateActions = (fs.AdministrativeActions ?? []).filter(
+          (a) => a.AdministrativeActionType === 'FILE_SYSTEM_UPDATE'
+        );
+        const failed = updateActions.find((a) => a.Status === 'FAILED');
+        if (failed) {
+          const detail = failed.FailureDetails?.Message ?? 'no failure details reported';
+          throw new ProvisioningError(
+            `FSx FileSystem ${fileSystemId} update failed (FILE_SYSTEM_UPDATE administrative action): ${detail}`,
+            resourceType,
+            logicalId,
+            fileSystemId
+          );
+        }
+        const inProgress = updateActions.some(
+          (a) => a.Status === 'PENDING' || a.Status === 'IN_PROGRESS'
+        );
+        if (!inProgress && fs.Lifecycle === 'AVAILABLE') return fs;
+
+        this.logger.debug(
+          `FSx FileSystem ${fileSystemId} update in progress (lifecycle: ${fs.Lifecycle ?? 'unknown'}), waiting...`
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+    }
+
+    throw new ProvisioningError(
+      `Timed out waiting for FSx FileSystem ${fileSystemId} update to complete (${Math.round(this.maxWaitMs / 60000)} min)`,
+      resourceType,
+      logicalId,
+      fileSystemId
+    );
+  }
+
   private async waitForFileSystemDeleted(
     fileSystemId: string,
     logicalId: string,
     resourceType: string
   ): Promise<void> {
     const startTime = Date.now();
+    const transientState = { count: 0 };
 
     while (Date.now() - startTime < this.maxWaitMs) {
       let fs: FileSystem | undefined;
+      let sawResponse = true;
       try {
-        const response = await this.getClient().send(
-          new DescribeFileSystemsCommand({ FileSystemIds: [fileSystemId] })
-        );
-        fs = response.FileSystems?.[0];
+        fs = await this.describeForPoll(fileSystemId, transientState);
+        if (fs === undefined && transientState.count > 0) {
+          // Transient error absorbed — not a "gone" signal.
+          sawResponse = false;
+        }
       } catch (error) {
         if (error instanceof FileSystemNotFound) return;
-        throw error;
+        const cause = error instanceof Error ? error : undefined;
+        throw new ProvisioningError(
+          `Failed to poll FSx FileSystem ${fileSystemId} deletion: ${error instanceof Error ? error.message : String(error)}`,
+          resourceType,
+          logicalId,
+          fileSystemId,
+          cause
+        );
       }
 
-      if (!fs) return;
+      if (!fs && sawResponse) return;
+      if (!fs) {
+        await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+        continue;
+      }
 
       if (fs.Lifecycle === 'FAILED') {
         const detail = fs.FailureDetails?.Message ?? 'no failure details reported';
