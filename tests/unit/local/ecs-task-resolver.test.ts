@@ -1596,3 +1596,205 @@ describe('parseVolume intrinsic Host.SourcePath (Gap 6 of #286)', () => {
     expect(needs.needsEnvOrSecretSubstitution).toBe(false);
   });
 });
+
+describe('custom-named cdkd asset repo classification (issue #1025)', () => {
+  const pseudo = {
+    accountId: '123456789012',
+    region: 'us-east-1',
+    partition: 'aws',
+    urlSuffix: 'amazonaws.com',
+  };
+
+  it('classifies an Fn::Sub placeholder-host URI targeting the marker-named repo as cdk-asset', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub':
+            '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/my-custom-repo:abcdef1234567890',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: pseudo,
+      cdkAssetContainerRepo: 'my-custom-repo',
+    });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('cdk-asset');
+    if (img.kind === 'cdk-asset') {
+      expect(img.assetHash).toBe('abcdef1234567890');
+    }
+  });
+
+  it('classifies the same URI WITHOUT the marker context as ecr (post-substitution)', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub':
+            '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/my-custom-repo:abcdef1234567890',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], { pseudoParameters: pseudo });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.uri).toBe(
+        '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-custom-repo:abcdef1234567890'
+      );
+    }
+  });
+
+  it('classifies a concrete literal URI targeting the marker-named repo as cdk-asset', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-custom-repo:abc1234567',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'my-custom-repo',
+    });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('cdk-asset');
+    if (img.kind === 'cdk-asset') {
+      expect(img.assetHash).toBe('abc1234567');
+    }
+  });
+
+  it('matches the combined name:tag@digest form Docker accepts (digest stripped first, then tag)', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image:
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-custom-repo:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'my-custom-repo',
+    });
+    expect(r.containers[0]!.image.kind).toBe('cdk-asset');
+  });
+
+  it('matches a namespaced repo name (contains /) with a trailing tag', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: '123456789012.dkr.ecr.us-east-1.amazonaws.com/team/assets-repo:abc1234567',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'team/assets-repo',
+    });
+    expect(r.containers[0]!.image.kind).toBe('cdk-asset');
+  });
+
+  it('does NOT match a different repo name in the marker context (stays ecr)', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-custom-repo:abc1234567',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'some-other-repo',
+    });
+    expect(r.containers[0]!.image.kind).toBe('ecr');
+  });
+
+  it('does NOT classify a non-ECR public image as cdk-asset even when its path matches the marker name (host guard)', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({ image: 'docker.io/nginx/foo:latest' }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'nginx/foo',
+    });
+    expect(r.containers[0]!.image.kind).toBe('public');
+  });
+
+  it('still classifies the conventional cdkd-container-assets- shape with no marker context', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image:
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkd-container-assets-123456789012-us-east-1:deadbeefcafe',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('cdk-asset');
+    if (img.kind === 'cdk-asset') {
+      expect(img.assetHash).toBe('deadbeefcafe');
+    }
+  });
+
+  it('still classifies the CDK-bootstrap cdk-<qualifier>-container-assets- shape with no marker context', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image:
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdk-hnb659fds-container-assets-123456789012-us-east-1:deadbeefcafe',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    expect(r.containers[0]!.image.kind).toBe('cdk-asset');
+  });
+
+  it('matches the marker-named repo through a trailing @<digest>', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image:
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-custom-repo@sha256:0123456789abcdef',
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      cdkAssetContainerRepo: 'my-custom-repo',
+    });
+    expect(r.containers[0]!.image.kind).toBe('cdk-asset');
+  });
+
+  describe('detectEcsImageResolutionNeeds.needsAssetRepoMarker', () => {
+    it('flags a non-conventional ECR image (concrete host)', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({
+          image: '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-custom-repo:abc1234567',
+        }),
+      });
+      const needs = detectEcsImageResolutionNeeds(stack);
+      expect(needs.needsAssetRepoMarker).toBe(true);
+    });
+
+    it('flags a non-conventional ECR image (Fn::Sub placeholder host)', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({
+          image: {
+            'Fn::Sub':
+              '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/my-custom-repo:abc1234567',
+          },
+        }),
+      });
+      const needs = detectEcsImageResolutionNeeds(stack);
+      expect(needs.needsAssetRepoMarker).toBe(true);
+    });
+
+    it('does NOT flag conventional cdk-asset shapes', () => {
+      const stack = buildStack('S1', {
+        A: makeTaskDef({
+          image:
+            '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkd-container-assets-123456789012-us-east-1:deadbeefcafe',
+        }),
+        B: makeTaskDef({
+          image: {
+            'Fn::Sub':
+              '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:deadbeefcafe',
+          },
+        }),
+      });
+      const needs = detectEcsImageResolutionNeeds(stack);
+      expect(needs.needsAssetRepoMarker).toBe(false);
+    });
+
+    it('does NOT flag public images', () => {
+      const stack = buildStack('S1', {
+        A: makeTaskDef({ image: 'nginx:alpine' }),
+        B: makeTaskDef({ image: 'docker.io/nginx/foo:latest' }),
+        C: makeTaskDef({ image: 'public.ecr.aws/nginx/nginx:alpine' }),
+      });
+      const needs = detectEcsImageResolutionNeeds(stack);
+      expect(needs.needsAssetRepoMarker).toBe(false);
+    });
+  });
+});

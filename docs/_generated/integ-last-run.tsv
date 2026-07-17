@@ -217,7 +217,6 @@ backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bar
 bench-cdk-sample	2026-07-03T11:11:09Z	PASS	578	standard	broad for #995 intrinsic-resolver change; 39 created/37 del+2 retain 0 err
 asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: legacy notice, bootstrap storage+marker, cdkd-assets detect, deleted-repo hard error, clean destroy
 asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean
-local-run-task-cdkd-assets	2026-07-15T10:33:43Z	PASS	15	verify.sh	re-run after sidecar add; docker sweep clean
 asset-auto-create	2026-07-16T14:11:56Z	PASS	149	verify.sh	3 phases incl. --skip-assets no-auto-create leg (PR 1008 review fix-back), 0 orphans
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 ses-identity	2026-07-16T15:54:15Z	PASS	182	verify.sh	new fixture, 3 phases clean, orph clean
@@ -230,3 +229,4 @@ wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review
 lambda	2026-07-16T17:11:44Z	PASS	78	verify.sh	broad refresh for intrinsic-resolver+deploy-engine edit (issue-1017), orph clean
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
 multi-resource	2026-07-17T05:02:58Z	PASS	79	standard	broad refresh for deploy-engine edit (#1032): 17 created/deleted, 0 errors, log groups swept
+local-run-task-cdkd-assets	2026-07-16T17:53:49Z	PASS	95	verify.sh	classifier regression for issue-1025 marker-based repo match; docker sweep clean

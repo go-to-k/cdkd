@@ -43,6 +43,7 @@ import {
   type RunEcsTaskOptions,
 } from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
+import { loadBootstrapContainerRepo } from './local-state-loader.js';
 import { createLocalStateProvider } from './local-state-source.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
@@ -460,7 +461,8 @@ async function buildEcsImageResolutionContext(
   if (
     !needs.needsPseudoParameters &&
     !needs.needsStateResources &&
-    !needs.needsEnvOrSecretSubstitution
+    !needs.needsEnvOrSecretSubstitution &&
+    !needs.needsAssetRepoMarker
   ) {
     return undefined;
   }
@@ -521,6 +523,30 @@ async function buildEcsImageResolutionContext(
       'Container Environment / Secrets entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
         'Pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed) to substitute them against deployed state. Without a state source these entries are dropped (per-key warnings will follow).'
     );
+  }
+
+  // Issue #1025: a container Image targets an ECR repo whose name does not
+  // match the conventional container-assets shapes. When the stack was
+  // deployed via cdkd (`--from-state`), the region may have been
+  // bootstrapped with `cdkd bootstrap --container-repo <name>` — read the
+  // bootstrap marker (best-effort, never fails the run) so the classifier
+  // can recognize images in the custom-named repo as cdk assets and take
+  // the local cdk.out-build fast path instead of an ECR pull. Gated on
+  // `--from-state` only: `--from-cfn-stack` stacks were deployed via
+  // CloudFormation, whose asset repos use conventional names the regex
+  // already matches.
+  if (needs.needsAssetRepoMarker && options.fromState) {
+    const containerRepo = await loadBootstrapContainerRepo(candidate.region, {
+      statePrefix: options.statePrefix,
+      ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+      ...(options.region !== undefined && { region: options.region }),
+      ...(options.profile !== undefined && { profile: options.profile }),
+      logPrefix: '--from-state',
+    });
+    if (containerRepo !== undefined) {
+      ctx.cdkAssetContainerRepo = containerRepo;
+    }
   }
 
   return ctx;
