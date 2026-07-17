@@ -17,6 +17,9 @@
     "AWS::AppSync::GraphQLSchema",
     "AWS::AppSync::Resolver",
     "AWS::AutoScaling::AutoScalingGroup",
+    "AWS::BedrockAgentCore::Browser",
+    "AWS::BedrockAgentCore::CodeInterpreter",
+    "AWS::BedrockAgentCore::Evaluator",
     "AWS::BedrockAgentCore::Runtime",
     "AWS::Budgets::Budget",
     "AWS::CertificateManager::Certificate",
@@ -470,6 +473,39 @@
         ],
         "remove-protection": [
           "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Browser",
+      "integs": [
+        "agentcore-tools"
+      ],
+      "signals": {
+        "agentcore-tools": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::CodeInterpreter",
+      "integs": [
+        "agentcore-tools"
+      ],
+      "signals": {
+        "agentcore-tools": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Evaluator",
+      "integs": [
+        "agentcore-tools"
+      ],
+      "signals": {
+        "agentcore-tools": [
           "literal"
         ]
       }
@@ -2712,6 +2748,7 @@
     {
       "resourceType": "AWS::IAM::Role",
       "integs": [
+        "agentcore-tools",
         "appsync",
         "batch",
         "cc-api-fallback",
@@ -2768,6 +2805,9 @@
         "vpc-lambda-cr-race"
       ],
       "signals": {
+        "agentcore-tools": [
+          "l2"
+        ],
         "appsync": [
           "l2"
         ],
@@ -3115,6 +3155,7 @@
     {
       "resourceType": "AWS::Lambda::Function",
       "integs": [
+        "agentcore-tools",
         "api-cognito",
         "apigateway",
         "apigw-stage-throttling",
@@ -3210,6 +3251,9 @@
         "vpc-lambda-cr-race"
       ],
       "signals": {
+        "agentcore-tools": [
+          "l2"
+        ],
         "api-cognito": [
           "l2"
         ],

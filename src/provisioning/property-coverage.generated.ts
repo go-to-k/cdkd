@@ -401,6 +401,34 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::BedrockAgentCore::Browser',
+    {
+      handled: new Set<string>(),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
+    'AWS::BedrockAgentCore::CodeInterpreter',
+    {
+      handled: new Set<string>(),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
+    'AWS::BedrockAgentCore::Evaluator',
+    {
+      handled: new Set<string>([
+        'Description',
+        'EvaluatorConfig',
+        'EvaluatorName',
+        'KmsKeyArn',
+        'Level',
+        'Tags',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::BedrockAgentCore::Runtime',
     {
       handled: new Set<string>([

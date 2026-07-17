@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-17T11:42:35.378Z",
+  "generatedAt": "2026-07-17T12:32:48.618Z",
   "summary": {
-    "tier1Count": 122,
-    "tier2Count": 1350,
-    "tier3Count": 167,
+    "tier1Count": 125,
+    "tier2Count": 1349,
+    "tier3Count": 165,
     "totalCount": 1639
   },
   "tier1": [
@@ -25,6 +25,9 @@
     "AWS::AppSync::GraphQLSchema",
     "AWS::AppSync::Resolver",
     "AWS::AutoScaling::AutoScalingGroup",
+    "AWS::BedrockAgentCore::Browser",
+    "AWS::BedrockAgentCore::CodeInterpreter",
+    "AWS::BedrockAgentCore::Evaluator",
     "AWS::BedrockAgentCore::Runtime",
     "AWS::Budgets::Budget",
     "AWS::CertificateManager::Certificate",
@@ -286,7 +289,6 @@
     "AWS::BedrockAgentCore::CodeInterpreterCustom",
     "AWS::BedrockAgentCore::ConfigurationBundle",
     "AWS::BedrockAgentCore::Dataset",
-    "AWS::BedrockAgentCore::Evaluator",
     "AWS::BedrockAgentCore::Gateway",
     "AWS::BedrockAgentCore::GatewayTarget",
     "AWS::BedrockAgentCore::Harness",
@@ -1497,8 +1499,6 @@
     "AWS::AppSync::ApiCache",
     "AWS::AutoScalingPlans::ScalingPlan",
     "AWS::Bedrock::ModelInvocationJob",
-    "AWS::BedrockAgentCore::Browser",
-    "AWS::BedrockAgentCore::CodeInterpreter",
     "AWS::BedrockAgentCore::TokenVault",
     "AWS::Cloud9::EnvironmentEC2",
     "AWS::CloudFormation::CustomResource",

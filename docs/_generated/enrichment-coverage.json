@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 122,
+    "classifiedCount": 125,
     "enriched": 5,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 103,
-    "allowListedTypes": 6
+    "sdkFallbackGap": 106,
+    "allowListedTypes": 9
   },
   "types": [
     {
@@ -349,6 +349,114 @@
       ],
       "gaps": [
         "AutoScalingGroupARN"
+      ]
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Browser",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "BrowserArn",
+        "BrowserId",
+        "Name",
+        "Status"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "BrowserArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "BrowserId",
+          "status": "gap"
+        },
+        {
+          "name": "Name",
+          "status": "gap"
+        },
+        {
+          "name": "Status",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "BrowserId",
+        "Name",
+        "Status"
+      ]
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::CodeInterpreter",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CodeInterpreterArn",
+        "CodeInterpreterId",
+        "Status"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CodeInterpreterArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "CodeInterpreterId",
+          "status": "gap"
+        },
+        {
+          "name": "Status",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CodeInterpreterId",
+        "Status"
+      ]
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Evaluator",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CreatedAt",
+        "EvaluatorArn",
+        "EvaluatorId",
+        "Status",
+        "UpdatedAt"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CreatedAt",
+          "status": "gap"
+        },
+        {
+          "name": "EvaluatorArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "EvaluatorId",
+          "status": "gap"
+        },
+        {
+          "name": "Status",
+          "status": "gap"
+        },
+        {
+          "name": "UpdatedAt",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CreatedAt",
+        "EvaluatorId",
+        "Status",
+        "UpdatedAt"
       ]
     },
     {

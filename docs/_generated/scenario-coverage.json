@@ -304,6 +304,11 @@
       "scenarios": []
     },
     {
+      "name": "agentcore-tools",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "alb",
       "annotated": true,
       "scenarios": []
