@@ -40,7 +40,9 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    if [ -n "${STATE_BUCKET:-}" ]; then
+      node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes >/dev/null 2>&1
+    fi
   fi
   # Delete any leftover lifecycle policy carrying the fixture's constant tag
   # (the policy id is service-generated, so look it up by tag).

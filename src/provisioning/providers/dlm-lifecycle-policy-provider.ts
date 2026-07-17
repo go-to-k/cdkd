@@ -186,15 +186,26 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       }
 
       // The create response only carries PolicyId; fetch the ARN for the
-      // `Fn::GetAtt Arn` attribute cache.
-      const arn = await this.fetchPolicyArn(response.PolicyId);
+      // `Fn::GetAtt Arn` attribute cache. Best-effort: a failure here MUST
+      // NOT fail the create — the policy already exists, and the deploy
+      // engine's outer withRetry would re-invoke create() and mint a SECOND
+      // policy (DLM has no idempotency token). getAttribute() resolves the
+      // Arn lazily on first Fn::GetAtt when the cache is empty.
+      let arn = '';
+      try {
+        arn = await this.fetchPolicyArn(response.PolicyId);
+      } catch (err) {
+        this.logger.warn(
+          `Created DLM Lifecycle Policy ${response.PolicyId} but could not fetch its ARN: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
 
       this.logger.debug(
         `Successfully created DLM Lifecycle Policy ${logicalId}: ${response.PolicyId}`
       );
       return {
         physicalId: response.PolicyId,
-        attributes: { Arn: arn },
+        attributes: arn ? { Arn: arn } : {},
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -249,7 +260,16 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       const newTags = this.cfnTagsToMap(properties['Tags']) ?? {};
       const oldTags = this.cfnTagsToMap(previousProperties['Tags']) ?? {};
       const arn = await this.fetchPolicyArn(physicalId);
-      if (JSON.stringify(newTags) !== JSON.stringify(oldTags) && arn) {
+      const tagsChanged = JSON.stringify(newTags) !== JSON.stringify(oldTags);
+      if (tagsChanged && !arn) {
+        // GetLifecyclePolicy returned a Policy without PolicyArn — should not
+        // happen in practice, but silently skipping the tag diff would leave
+        // AWS-side tags stale with no signal.
+        this.logger.warn(
+          `Skipping tag update for DLM Lifecycle Policy ${physicalId}: GetLifecyclePolicy returned no PolicyArn`
+        );
+      }
+      if (tagsChanged && arn) {
         const removedKeys = Object.keys(oldTags).filter((k) => !(k in newTags));
         if (removedKeys.length > 0) {
           await this.getClient().send(
@@ -276,7 +296,9 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: { Arn: arn },
+        // Omit Arn when the read-back lacked PolicyArn so a previously-good
+        // cached attribute is not clobbered with an empty string.
+        attributes: arn ? { Arn: arn } : {},
       };
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;

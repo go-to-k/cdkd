@@ -162,6 +162,21 @@ describe('DLMLifecyclePolicyProvider create', () => {
     expect(create.input).not.toHaveProperty('Tags');
   });
 
+  it('does NOT fail the create when the post-create ARN fetch fails (no duplicate on retry)', async () => {
+    // A throw here would surface as a retryable ProvisioningError and the
+    // engine's outer withRetry would re-invoke create() — minting a SECOND
+    // policy (DLM has no idempotency token). The fetch is best-effort.
+    routeSend({
+      CreateLifecyclePolicyCommand: { PolicyId: POLICY_ID },
+      GetLifecyclePolicyCommand: new Error('ThrottlingException'),
+    });
+
+    const result = await provider.create('MyPolicy', RESOURCE_TYPE, { State: 'ENABLED' });
+
+    expect(result.physicalId).toBe(POLICY_ID);
+    expect(result.attributes).toEqual({});
+  });
+
   it('wraps create failures in ProvisioningError', async () => {
     routeSend({ CreateLifecyclePolicyCommand: new Error('boom') });
 
@@ -283,6 +298,42 @@ describe('DLMLifecyclePolicyProvider update', () => {
     expect(callsOf(TagResourceCommand)).toHaveLength(0);
   });
 
+  it('warns and skips tag operations when GetLifecyclePolicy returns no PolicyArn', async () => {
+    routeSend({
+      UpdateLifecyclePolicyCommand: {},
+      GetLifecyclePolicyCommand: { Policy: { PolicyId: POLICY_ID } }, // no PolicyArn
+    });
+
+    const result = await provider.update(
+      'MyPolicy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { State: 'ENABLED', Tags: [{ Key: 'a', Value: '1' }] },
+      { State: 'ENABLED' }
+    );
+
+    // No tag calls were attempted (nothing to address them against) and the
+    // update still succeeds — but never silently: the branch logs a warning.
+    // The Arn attribute is omitted (not clobbered with '') so a previously
+    // cached value in state survives.
+    expect(callsOf(TagResourceCommand)).toHaveLength(0);
+    expect(callsOf(UntagResourceCommand)).toHaveLength(0);
+    expect(result.attributes).toEqual({});
+  });
+
+  it('rejects a DefaultPolicy transition from unset to set with ResourceUpdateNotSupportedError', async () => {
+    await expect(
+      provider.update(
+        'MyPolicy',
+        POLICY_ID,
+        RESOURCE_TYPE,
+        { State: 'ENABLED', DefaultPolicy: 'VOLUME' },
+        { State: 'ENABLED' }
+      )
+    ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('rejects a DefaultPolicy change with ResourceUpdateNotSupportedError', async () => {
     await expect(
       provider.update(
@@ -369,9 +420,20 @@ describe('DLMLifecyclePolicyProvider getAttribute', () => {
     await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn')).resolves.toBe(POLICY_ARN);
   });
 
-  it('returns the physicalId for Id without an API call', async () => {
+  it('returns the physicalId for Id / PolicyId without an API call', async () => {
     await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Id')).resolves.toBe(POLICY_ID);
+    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'PolicyId')).resolves.toBe(
+      POLICY_ID
+    );
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('wraps Arn lookup failures in ProvisioningError', async () => {
+    routeSend({ GetLifecyclePolicyCommand: new Error('boom') });
+
+    await expect(provider.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn')).rejects.toThrow(
+      ProvisioningError
+    );
   });
 
   it('rejects unknown attributes', async () => {
@@ -425,6 +487,22 @@ describe('DLMLifecyclePolicyProvider readCurrentState / drift', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('returns undefined when the response carries no Policy', async () => {
+    routeSend({ GetLifecyclePolicyCommand: {} });
+
+    await expect(
+      provider.readCurrentState(POLICY_ID, 'MyPolicy', RESOURCE_TYPE)
+    ).resolves.toBeUndefined();
+  });
+
+  it('rethrows non-NotFound errors', async () => {
+    routeSend({ GetLifecyclePolicyCommand: new Error('throttled') });
+
+    await expect(provider.readCurrentState(POLICY_ID, 'MyPolicy', RESOURCE_TYPE)).rejects.toThrow(
+      'throttled'
+    );
+  });
+
   it('declares the non-read-back paths as drift-unknown', () => {
     const paths = provider.getDriftUnknownPaths(RESOURCE_TYPE);
     expect(paths).toContain('PolicyDetails');
@@ -473,6 +551,20 @@ describe('DLMLifecyclePolicyProvider import', () => {
     routeSend({ GetLifecyclePolicyCommand: notFound() });
 
     await expect(provider.import(makeInput({ knownPhysicalId: POLICY_ID }))).resolves.toBeNull();
+  });
+
+  it('explicit override: returns null when the response Policy has no PolicyId', async () => {
+    routeSend({ GetLifecyclePolicyCommand: { Policy: {} } });
+
+    await expect(provider.import(makeInput({ knownPhysicalId: POLICY_ID }))).resolves.toBeNull();
+  });
+
+  it('explicit override: rethrows non-NotFound errors', async () => {
+    routeSend({ GetLifecyclePolicyCommand: new Error('access denied') });
+
+    await expect(provider.import(makeInput({ knownPhysicalId: POLICY_ID }))).rejects.toThrow(
+      'access denied'
+    );
   });
 
   it('tag lookup: matches aws:cdk:path in the GetLifecyclePolicies summary tag map', async () => {
