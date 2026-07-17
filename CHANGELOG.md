@@ -1,3 +1,10 @@
+# [0.241.0](https://github.com/go-to-k/cdkd/compare/v0.240.0...v0.241.0) (2026-07-17)
+
+
+### Features
+
+* **providers:** add SDK Provider for AWS::Budgets::Budget ([#1060](https://github.com/go-to-k/cdkd/issues/1060)) ([e5a40e3](https://github.com/go-to-k/cdkd/commit/e5a40e31187cb4a3622a4e367e40f7087d50c542))
+
 # [0.240.0](https://github.com/go-to-k/cdkd/compare/v0.239.0...v0.240.0) (2026-07-17)
 
 
