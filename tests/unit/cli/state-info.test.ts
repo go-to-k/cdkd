@@ -53,6 +53,21 @@ vi.mock('../../../src/utils/aws-clients.ts', () => {
   };
 });
 
+// Mock the region-corrected-client rebuild helper (issue #1054). Default is
+// `null` ("bucket already in the client's region — keep the original client"),
+// which preserves the pre-existing behavior for every test that doesn't care.
+// The cross-region regression tests override it to return a sentinel client
+// and assert the raw S3 traffic goes there instead of the original client.
+const mockRebuildClientForBucketRegion =
+  vi.fn<(client: unknown, bucket: string, opts: unknown) => Promise<unknown>>();
+vi.mock('../../../src/utils/bucket-region-client.js', () => ({
+  rebuildClientForBucketRegion: (
+    client: unknown,
+    bucket: string,
+    opts: unknown
+  ): Promise<unknown> => mockRebuildClientForBucketRegion(client, bucket, opts),
+}));
+
 // Mock S3StateBackend so verifyBucketExists is the only relevant call.
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
@@ -102,20 +117,23 @@ async function runStateInfo(args: string[]): Promise<string> {
  * Helper to script S3 responses for the three command types issued by
  * `state info`: `GetBucketLocation`, `ListObjectsV2`, `GetObject`.
  */
-function scriptS3({
-  region,
-  keys,
-  schemaVersion,
-  markers = {},
-}: {
-  region: string | null;
-  keys: string[];
-  schemaVersion?: number | 'malformed' | 'no-body';
-  /** Bootstrap markers by region: body string returned for `cdkd-bootstrap/{region}.json`. */
-  markers?: Record<string, string>;
-}): void {
+function scriptS3(
+  {
+    region,
+    keys,
+    schemaVersion,
+    markers = {},
+  }: {
+    region: string | null;
+    keys: string[];
+    schemaVersion?: number | 'malformed' | 'no-body';
+    /** Bootstrap markers by region: body string returned for `cdkd-bootstrap/{region}.json`. */
+    markers?: Record<string, string>;
+  },
+  sendMock: typeof mockS3Send = mockS3Send
+): void {
   const markerKeys = Object.keys(markers).map((r) => `cdkd-bootstrap/${r}.json`);
-  mockS3Send.mockImplementation(async (command) => {
+  sendMock.mockImplementation(async (command) => {
     if (command instanceof GetBucketLocationCommand) {
       if (region === null) {
         throw Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' });
@@ -165,6 +183,9 @@ describe('cdkd state info', () => {
     mockS3Send.mockReset();
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue();
+    mockRebuildClientForBucketRegion.mockReset();
+    // Default: bucket is in the client's region — no rebuild, keep original.
+    mockRebuildClientForBucketRegion.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -395,5 +416,95 @@ describe('cdkd state info', () => {
     expect(out).toContain(
       'Asset storage:   legacy (CDK bootstrap) — run cdkd bootstrap to opt in'
     );
+  });
+
+  describe('cross-region state bucket (issue #1054)', () => {
+    it('routes every raw S3 read through the region-corrected client and destroys only the replacement', async () => {
+      mockResolveWithSource.mockResolvedValue({
+        bucket: 'cdkd-state-other-region',
+        source: 'cli-flag',
+      });
+      // Sentinel replacement client returned by rebuildClientForBucketRegion —
+      // simulates the state bucket living in a different region than the
+      // ambient AWS_REGION / --region client.
+      const sentinelSend =
+        vi.fn<
+          (command: {
+            constructor: { name: string };
+            input: Record<string, unknown>;
+          }) => Promise<unknown>
+        >();
+      const sentinelDestroy = vi.fn();
+      mockRebuildClientForBucketRegion.mockResolvedValue({
+        send: sentinelSend,
+        destroy: sentinelDestroy,
+      });
+      const marker = JSON.stringify({
+        assetBucket: 'cdkd-assets-123456789012-us-east-1',
+        containerRepo: 'cdkd-container-assets-123456789012-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      });
+      scriptS3(
+        {
+          region: 'us-east-1',
+          keys: ['cdkd/StackA/us-east-1/state.json'],
+          schemaVersion: 8,
+          markers: { 'us-east-1': marker },
+        },
+        sentinelSend
+      );
+
+      const out = await runStateInfo(['info']);
+
+      // All four helpers succeeded via the sentinel: GetBucketLocation
+      // (region), ListObjectsV2 (stack count + markers), GetObject (schema
+      // version + marker body).
+      expect(out).toContain('Region:          us-east-1 (auto-detected via GetBucketLocation)');
+      expect(out).toContain('Schema version:  8');
+      expect(out).toContain('Stacks:          1');
+      expect(out).toContain('Asset storage:   cdkd-assets mode in 1 region(s)');
+      // The traffic went to the SENTINEL client — not the original
+      // ambient-region client (which would 301 with PermanentRedirect on a
+      // cross-region bucket).
+      expect(sentinelSend).toHaveBeenCalled();
+      expect(mockS3Send).not.toHaveBeenCalled();
+      // The helper was invoked with the original shared client + the
+      // ExportIndexStore-style options (never destroy the shared client).
+      expect(mockRebuildClientForBucketRegion).toHaveBeenCalledTimes(1);
+      expect(mockRebuildClientForBucketRegion).toHaveBeenCalledWith(
+        expect.objectContaining({ send: mockS3Send }),
+        'cdkd-state-other-region',
+        expect.objectContaining({
+          reuseClientCredentials: true,
+          tolerateNonStandardClient: true,
+        })
+      );
+      // Only the replacement is destroyed; the shared original is left to
+      // awsClients.destroy().
+      expect(sentinelDestroy).toHaveBeenCalledTimes(1);
+      expect(mockS3Destroy).not.toHaveBeenCalled();
+    });
+
+    it('keeps using the original client when the helper returns null (same region)', async () => {
+      mockResolveWithSource.mockResolvedValue({
+        bucket: 'cdkd-state-same-region',
+        source: 'cli-flag',
+      });
+      mockRebuildClientForBucketRegion.mockResolvedValue(null);
+      scriptS3({
+        region: 'us-east-1',
+        keys: ['cdkd/StackA/us-east-1/state.json'],
+        schemaVersion: 2,
+      });
+
+      const out = await runStateInfo(['info']);
+
+      expect(out).toContain('Stacks:          1');
+      // No rebuild — the original client carried all the traffic and was
+      // never destroyed by the state-info flow itself.
+      expect(mockS3Send).toHaveBeenCalled();
+      expect(mockS3Destroy).not.toHaveBeenCalled();
+    });
   });
 });

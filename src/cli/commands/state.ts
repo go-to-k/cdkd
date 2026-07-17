@@ -4,6 +4,7 @@ import {
   GetBucketLocationCommand,
   GetObjectCommand,
   ListObjectsV2Command,
+  type S3Client,
 } from '@aws-sdk/client-s3';
 import {
   commonOptions,
@@ -45,6 +46,7 @@ import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
+import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 
 /**
  * Detail row for a single stack when --long is requested.
@@ -1412,16 +1414,19 @@ function formatBucketSource(source: StateBucketSource): string {
  * not-yet-bootstrapped bucket. (Bucket existence is verified separately
  * via {@link setupStateBackend}, so getting here implies the bucket is
  * reachable; `GetBucketLocation` failing is most often a permissions gap.)
+ *
+ * Takes the (region-corrected) S3 client directly — see the issue #1054 note
+ * in {@link stateInfoCommand}. Before that fix this call was made with the
+ * ambient-region client, so a cross-region state bucket silently degraded to
+ * `undefined` ("Region: unknown") here; with the corrected client it now
+ * succeeds and reports the bucket's actual region.
  */
-async function detectBucketRegion(
-  awsClients: AwsClients,
-  bucket: string
-): Promise<string | undefined> {
+async function detectBucketRegion(s3: S3Client, bucket: string): Promise<string | undefined> {
   try {
-    const resp = await awsClients.s3.send(
+    const resp = await s3.send(
       new GetBucketLocationCommand({
         Bucket: bucket,
-        ...(await expectedOwnerParam(awsClients.s3)),
+        ...(await expectedOwnerParam(s3)),
       })
     );
     // S3 returns `null`/empty for us-east-1 (historical quirk).
@@ -1447,16 +1452,12 @@ async function detectBucketRegion(
  * Returns the full set of state-file keys; the count is the unique-stacks
  * tally we want for the `Stacks:` line.
  */
-async function listStateFileKeys(
-  awsClients: AwsClients,
-  bucket: string,
-  prefix: string
-): Promise<string[]> {
+async function listStateFileKeys(s3: S3Client, bucket: string, prefix: string): Promise<string[]> {
   const keys: string[] = [];
   let continuationToken: string | undefined;
   const searchPrefix = `${prefix}/`;
   do {
-    const resp = await awsClients.s3.send(
+    const resp = await s3.send(
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: searchPrefix,
@@ -1480,17 +1481,17 @@ async function listStateFileKeys(
  * want a cosmetic command to crash on an unexpected payload.
  */
 async function readSchemaVersion(
-  awsClients: AwsClients,
+  s3: S3Client,
   bucket: string,
   keys: string[]
 ): Promise<number | 'unknown'> {
   if (keys.length === 0) return 'unknown';
   try {
-    const resp = await awsClients.s3.send(
+    const resp = await s3.send(
       new GetObjectCommand({
         Bucket: bucket,
         Key: keys[0]!,
-        ...(await expectedOwnerParam(awsClients.s3)),
+        ...(await expectedOwnerParam(s3)),
       })
     );
     if (!resp.Body) return 'unknown';
@@ -1520,16 +1521,13 @@ interface AssetStorageInfo {
  * cosmetic command and should not crash on an unexpected payload (deploy
  * hard-errors on the same marker instead).
  */
-async function listAssetStorageMarkers(
-  awsClients: AwsClients,
-  bucket: string
-): Promise<AssetStorageInfo[]> {
+async function listAssetStorageMarkers(s3: S3Client, bucket: string): Promise<AssetStorageInfo[]> {
   const logger = getLogger();
   const entries: AssetStorageInfo[] = [];
   let continuationToken: string | undefined;
   const keys: string[] = [];
   do {
-    const resp = await awsClients.s3.send(
+    const resp = await s3.send(
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: BOOTSTRAP_MARKER_PREFIX,
@@ -1553,11 +1551,11 @@ async function listAssetStorageMarkers(
   for (const key of keys) {
     const region = key.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length);
     try {
-      const resp = await awsClients.s3.send(
+      const resp = await s3.send(
         new GetObjectCommand({
           Bucket: bucket,
           Key: key,
-          ...(await expectedOwnerParam(awsClients.s3)),
+          ...(await expectedOwnerParam(s3)),
         })
       );
       const body = (await resp.Body?.transformToString()) ?? '';
@@ -1635,6 +1633,11 @@ async function stateInfoCommand(options: {
   });
   setAwsClients(awsClients);
 
+  // Set only when the state bucket lives in a different region than the
+  // ambient client — destroyed in the outer `finally` (the original shared
+  // `awsClients.s3` is never destroyed here; `awsClients.destroy()` owns it).
+  let regionCorrectedS3: S3Client | null = null;
+
   try {
     const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
     const resolved = await resolveStateBucketWithDefaultAndSource(options.stateBucket, region);
@@ -1644,10 +1647,33 @@ async function stateInfoCommand(options: {
     const stateBackend = new S3StateBackend(awsClients.s3, { bucket, prefix });
     await stateBackend.verifyBucketExists();
 
-    const detectedRegion = await detectBucketRegion(awsClients, bucket);
-    const stateFileKeys = await listStateFileKeys(awsClients, bucket, prefix);
-    const schemaVersion = await readSchemaVersion(awsClients, bucket, stateFileKeys);
-    const assetStorage = await listAssetStorageMarkers(awsClients, bucket);
+    // Region-correct the S3 client before the raw bucket reads below (issue
+    // #1054): the four helpers issue ListObjectsV2 / GetObject /
+    // GetBucketLocation directly, and the ambient-region `awsClients.s3`
+    // 301s with PermanentRedirect when the state bucket lives in another
+    // region. Every other state-bucket consumer already rebuilds via
+    // `rebuildClientForBucketRegion` (S3StateBackend / LockManager /
+    // ExportIndexStore, issue #827) — this mirrors ExportIndexStore's option
+    // choices: reuse the shared client's resolved credentials, do NOT
+    // destroy the original (shared `AwsClients.s3`), and gracefully degrade
+    // when the client is a non-standard test double. The helper returns
+    // `null` when no rebuild is needed (bucket already in the client's
+    // region), so the original client is kept in that case.
+    regionCorrectedS3 = await rebuildClientForBucketRegion(awsClients.s3, bucket, {
+      reuseClientCredentials: true,
+      tolerateNonStandardClient: true,
+      onRebuild: ({ bucketRegion, currentRegion }) => {
+        logger.debug(
+          `State bucket '${bucket}' is in '${bucketRegion}' (state-info client was '${String(currentRegion)}'); building a region-corrected S3 client for info reads.`
+        );
+      },
+    });
+    const infoS3 = regionCorrectedS3 ?? awsClients.s3;
+
+    const detectedRegion = await detectBucketRegion(infoS3, bucket);
+    const stateFileKeys = await listStateFileKeys(infoS3, bucket, prefix);
+    const schemaVersion = await readSchemaVersion(infoS3, bucket, stateFileKeys);
+    const assetStorage = await listAssetStorageMarkers(infoS3, bucket);
 
     if (options.json) {
       const json: StateInfoJson = {
@@ -1683,6 +1709,9 @@ async function stateInfoCommand(options: {
     }
     process.stdout.write(`${lines.join('\n')}\n`);
   } finally {
+    // Destroy only the region-corrected replacement (if any) — the original
+    // `awsClients.s3` is shared and owned by `awsClients.destroy()`.
+    regionCorrectedS3?.destroy();
     awsClients.destroy();
   }
 }
