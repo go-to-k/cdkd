@@ -149,8 +149,11 @@ handler_function_name() {
 
 # --- Phase 1: deploy WITHOUT marker (legacy destinations) -------------------
 echo "==> Phase 1: deploy without marker (legacy: CDK bootstrap destinations)"
+# --no-auto-asset-storage: since issue #1007 a --yes deploy into an
+# un-opted-in region AUTO-CREATES the asset storage instead of publishing
+# to the legacy CDK bootstrap destinations this phase asserts.
 DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --no-auto-asset-storage --yes 2>&1)
 echo "${DEPLOY_OUT}" | tail -3
 echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}" ||
   { echo "FAIL: legacy-mode deploy did not print the gc-hazard notice" >&2; exit 1; }

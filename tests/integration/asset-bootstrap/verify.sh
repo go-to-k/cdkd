@@ -123,9 +123,15 @@ GC_NOTICE="may garbage-collect"
 
 # --- Phase 1: deploy WITHOUT marker (legacy mode) -------------------------
 echo "==> Phase 1: deploy without marker (legacy mode expected)"
+# --no-auto-asset-storage: since issue #1007 a --yes deploy into an
+# un-opted-in region AUTO-CREATES the asset storage instead of falling
+# back to legacy mode — this phase tests the legacy fallback + gc notice,
+# so auto-create must be disabled (the auto-create path has its own
+# fixture, asset-auto-create).
 DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --no-auto-asset-storage \
   --yes 2>&1)
 echo "${DEPLOY_OUT}" | tail -3
 
