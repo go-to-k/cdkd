@@ -235,5 +235,5 @@ asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker gu
 asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
 bench-cdk-sample	2026-07-17T07:09:48Z	PASS	906	standard	39 created / 37 deleted 2 retained 0 errors; log-group sweep clean; integ-broad for DLM provider PR
 dlm-lifecycle-policy	2026-07-17T07:27:24Z	PASS	72	verify.sh	re-run post review fixes; deploy+update+destroy clean, 0 orphans
-codecommit	2026-07-17T10:13:02Z	PASS	58	verify.sh	new CodeCommit provider (#1045): create+Ref-GUID parity, in-place rename (repo id survived), tag untag, destroy clean 0 orphans
 lambda	2026-07-17T10:15:29Z	PASS	77	verify.sh	broad refresh for register-providers+intrinsic-resolver edit (#1045): 9 del 0 err, orph clean
+codecommit	2026-07-17T10:28:12Z	PASS	59	verify.sh	re-run on final code post-review fixes (null-id delete + retry-safe rename); 3 phases clean 0 orphans
