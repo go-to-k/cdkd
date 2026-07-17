@@ -203,6 +203,28 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |
 
+## Not planned (deprecated services)
+
+Some Tier 3 (`NON_PROVISIONABLE`) types belong to AWS services or platforms
+that are deprecated or retired. cdkd will **not** add SDK Providers for
+these — please do not file support requests for them. Use the listed
+successor instead.
+
+| Resource Type | Reason |
+|---------------|--------|
+| `AWS::WAF::*` (WAF Classic) | Support ended 2025-09-30; superseded by `AWS::WAFv2::*`, which cdkd already supports (SDK Provider for `WebACL`, Cloud Control for the rest). |
+| `AWS::WAFRegional::*` | Same WAF Classic family, same end of support (2025-09-30). |
+| `AWS::CodeStar::GitHubRepository` | AWS CodeStar was discontinued 2024-07-31. |
+| `AWS::AppMesh::*` | App Mesh EOL announced for 2026-09-30; superseded by ECS Service Connect / VPC Lattice. |
+| `AWS::Elasticsearch::Domain` | Legacy namespace superseded by `AWS::OpenSearchService::Domain` (supported via Cloud Control). |
+| `AWS::RDS::DBSecurityGroup` / `AWS::RDS::DBSecurityGroupIngress` | EC2-Classic-only constructs; EC2-Classic retired 2022-08-15 — use VPC security groups. |
+| `AWS::ElastiCache::SecurityGroup` / `AWS::ElastiCache::SecurityGroupIngress` | Same EC2-Classic-only family, unusable since the EC2-Classic retirement. |
+| `AWS::Redshift::ClusterSecurityGroup` / `AWS::Redshift::ClusterSecurityGroupIngress` | Same EC2-Classic-only family, unusable since the EC2-Classic retirement. |
+
+All other Tier 3 types remain in the "no provider yet" bucket — the
+pre-flight error's 1-click GitHub issue link is the right way to request
+support for those.
+
 ## Adding a new SDK Provider
 
 When you add a new SDK Provider in `src/provisioning/providers/` and
