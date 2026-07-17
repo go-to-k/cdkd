@@ -3,8 +3,8 @@
   "generatedAt": "2026-07-17T09:38:01.364Z",
   "summary": {
     "tier1Count": 119,
-    "tier2Count": 1348,
-    "tier3Count": 172,
+    "tier2Count": 1350,
+    "tier3Count": 170,
     "totalCount": 1639
   },
   "tier1": [
@@ -597,6 +597,7 @@
     "AWS::EC2::RouteServerAssociation",
     "AWS::EC2::RouteServerEndpoint",
     "AWS::EC2::RouteServerPeer",
+    "AWS::EC2::RouteServerPropagation",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::EC2::SecurityGroupVpcAssociation",
     "AWS::EC2::SnapshotBlockPublicAccess",
@@ -704,6 +705,7 @@
     "AWS::EventSchemas::RegistryPolicy",
     "AWS::EventSchemas::Schema",
     "AWS::Events::ApiDestination",
+    "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::Endpoint",
     "AWS::Events::EventBusPolicy",
@@ -1524,7 +1526,6 @@
     "AWS::EC2::ClientVpnRoute",
     "AWS::EC2::ClientVpnTargetNetworkAssociation",
     "AWS::EC2::NetworkInterfacePermission",
-    "AWS::EC2::RouteServerPropagation",
     "AWS::EC2::VPNGatewayRoutePropagation",
     "AWS::EMR::Cluster",
     "AWS::EMR::InstanceFleetConfig",
@@ -1533,7 +1534,6 @@
     "AWS::ElastiCache::SecurityGroupIngress",
     "AWS::ElasticLoadBalancingV2::ListenerCertificate",
     "AWS::Elasticsearch::Domain",
-    "AWS::Events::Archive",
     "AWS::FSx::FileSystem",
     "AWS::FSx::Snapshot",
     "AWS::FSx::StorageVirtualMachine",

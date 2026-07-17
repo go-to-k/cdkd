@@ -58,6 +58,13 @@ function toSdkTagMap(tags: CfnTag[] | undefined): Record<string, string> | undef
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Order-independent equality for two SDK tag maps. */
+function tagMapsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  if (aKeys.length !== Object.keys(b).length) return false;
+  return aKeys.every((k) => b[k] === a[k]);
+}
+
 /**
  * AWS CodeCommit Repository Provider
  *
@@ -217,9 +224,23 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     try {
       const newName = properties['RepositoryName'] as string | undefined;
       if (newName && newName !== physicalId) {
-        await this.getClient().send(
-          new UpdateRepositoryNameCommand({ oldName: physicalId, newName })
-        );
+        try {
+          await this.getClient().send(
+            new UpdateRepositoryNameCommand({ oldName: physicalId, newName })
+          );
+        } catch (err) {
+          // Retry safety: the deploy engine's outer `withRetry` re-invokes
+          // update() with the OLD physicalId. If a previous attempt already
+          // renamed the repository and then failed on a later step, the
+          // rename call now sees a gone oldName. Probe the NEW name — if it
+          // exists, the rename already happened; continue instead of
+          // turning a transient retry into a permanent failure.
+          if (!(err instanceof RepositoryDoesNotExistException)) throw err;
+          await this.getRepositoryMetadata(newName); // throws if truly gone
+          this.logger.debug(
+            `Rename ${physicalId} -> ${newName} already applied by a previous attempt`
+          );
+        }
         currentName = newName;
         this.logger.debug(`Renamed CodeCommit Repository ${physicalId} -> ${newName}`);
       }
@@ -258,15 +279,18 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // dropped from the template (partial removal) — or the entire `Tags`
       // property removed (full removal, `newTags === undefined`) — would
       // survive on AWS unless we explicitly `UntagResource` the removed keys.
+      // The diff compares the SDK-shaped tag MAPS (key-sorted by
+      // construction order-independence) so a pure re-order of the CFn
+      // `Tags` list does not trigger needless API churn.
       const newTags = properties['Tags'] as CfnTag[] | undefined;
       const oldTags = previousProperties['Tags'] as CfnTag[] | undefined;
+      const newTagMap = toSdkTagMap(newTags) ?? {};
+      const oldTagMap = toSdkTagMap(oldTags) ?? {};
       let metadata: RepositoryMetadata | undefined;
-      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+      if (!tagMapsEqual(newTagMap, oldTagMap)) {
         metadata = await this.getRepositoryMetadata(currentName);
         const repoArn = metadata?.Arn;
         if (repoArn) {
-          const newTagMap = toSdkTagMap(newTags) ?? {};
-          const oldTagMap = toSdkTagMap(oldTags) ?? {};
           // Untag keys present in the old set but absent from the new set.
           // `newTags === undefined` is treated as "remove all old tags".
           const removedKeys = Object.keys(oldTagMap).filter((k) => !(k in newTagMap));
@@ -283,6 +307,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             );
           }
           this.logger.debug(`Updated tags for ${currentName}`);
+        } else {
+          // GetRepository returning metadata without an Arn is unexpected;
+          // surface it instead of silently dropping the tag reconcile.
+          this.logger.warn(
+            `Could not resolve ARN for CodeCommit Repository ${currentName}; tag update skipped`
+          );
         }
       }
 
@@ -310,9 +340,15 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   /**
    * Delete a CodeCommit Repository
    *
-   * `DeleteRepository` is idempotent on the AWS side, but a
-   * `RepositoryDoesNotExistException` is still treated as idempotent success
-   * (after the shared region check) for defense in depth.
+   * `DeleteRepository` is idempotent on the AWS side: for an
+   * already-deleted repository it does NOT throw — it returns a null
+   * `repositoryId`. That silent-success shape would bypass the shared
+   * region check entirely (the exact scenario `assertRegionMatch` exists
+   * for: a client pointed at region B while the state says the repo lives
+   * in region A), so a null `repositoryId` runs the region check before
+   * being treated as idempotent success. A
+   * `RepositoryDoesNotExistException` is additionally handled (same
+   * check) for defense in depth.
    */
   async delete(
     logicalId: string,
@@ -323,9 +359,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting CodeCommit Repository ${logicalId}: ${physicalId}`);
 
+    let deletedRepositoryId: string | undefined;
     try {
-      await this.getClient().send(new DeleteRepositoryCommand({ repositoryName: physicalId }));
-      this.logger.debug(`Successfully deleted CodeCommit Repository ${logicalId}`);
+      const response = await this.getClient().send(
+        new DeleteRepositoryCommand({ repositoryName: physicalId })
+      );
+      deletedRepositoryId = response.repositoryId;
     } catch (error) {
       if (error instanceof RepositoryDoesNotExistException) {
         const clientRegion = await this.getClient().config.region();
@@ -348,6 +387,17 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         cause
       );
     }
+
+    if (!deletedRepositoryId) {
+      // Repository did not exist — verify we were even looking in the right
+      // region before calling this an idempotent success. Outside the try
+      // block so a region-mismatch error propagates unwrapped.
+      const clientRegion = await this.getClient().config.region();
+      assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
+      this.logger.debug(`CodeCommit Repository ${physicalId} does not exist, skipping deletion`);
+      return;
+    }
+    this.logger.debug(`Successfully deleted CodeCommit Repository ${logicalId}`);
   }
 
   /**

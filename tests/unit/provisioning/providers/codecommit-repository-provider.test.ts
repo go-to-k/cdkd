@@ -135,6 +135,44 @@ describe('CodeCommitRepositoryProvider', () => {
         provider.create('MyRepo', 'AWS::CodeCommit::Repository', { RepositoryName: 'my-repo' })
       ).rejects.toBeInstanceOf(ProvisioningError);
     });
+
+    it('wraps a metadata-less CreateRepository response in ProvisioningError', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', { RepositoryName: 'my-repo' })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+    });
+
+    it('coerces tag-value edge shapes: number/boolean stringified, invalid keys skipped, nullish value -> empty string', async () => {
+      mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() });
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Tags: [
+          { Key: 'num', Value: 42 },
+          { Key: 'bool', Value: true },
+          { Key: 'nullish', Value: null },
+          { Key: '', Value: 'dropped' },
+          { Value: 'no-key' },
+          { Key: 'obj', Value: { Ref: 'X' } },
+        ],
+      });
+
+      const cmd = mockSend.mock.calls[0][0];
+      expect(cmd.input.tags).toEqual({ num: '42', bool: 'true', nullish: '', obj: '' });
+    });
+
+    it('omits the tags field entirely when every entry is invalid', async () => {
+      mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() });
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Tags: [{ Value: 'no-key' }],
+      });
+
+      expect('tags' in mockSend.mock.calls[0][0].input).toBe(false);
+    });
   });
 
   describe('update', () => {
@@ -200,6 +238,67 @@ describe('CodeCommitRepositoryProvider', () => {
       expect(getCmd.input).toEqual({ repositoryName: 'new-name' });
       expect(result.physicalId).toBe('new-name');
       expect(result.wasReplaced).toBe(false);
+    });
+
+    it('rename + description change: every follow-up call targets the NEW name (rename runs first)', async () => {
+      mockSend
+        .mockResolvedValueOnce({}) // UpdateRepositoryName
+        .mockResolvedValueOnce({}) // UpdateRepositoryDescription
+        .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) });
+
+      const result = await provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::CodeCommit::Repository',
+        { RepositoryName: 'new-name', RepositoryDescription: 'new desc' },
+        { RepositoryName: 'my-repo', RepositoryDescription: 'old desc' }
+      );
+
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(UpdateRepositoryNameCommand);
+      const descCmd = mockSend.mock.calls[1][0];
+      expect(descCmd).toBeInstanceOf(UpdateRepositoryDescriptionCommand);
+      expect(descCmd.input.repositoryName).toBe('new-name');
+      const getCmd = mockSend.mock.calls[2][0];
+      expect(getCmd).toBeInstanceOf(GetRepositoryCommand);
+      expect(getCmd.input.repositoryName).toBe('new-name');
+      expect(result.physicalId).toBe('new-name');
+    });
+
+    it('rename retry-safety: NotFound on rename + newName already exists -> treated as already applied', async () => {
+      mockSend
+        .mockRejectedValueOnce(notFound()) // UpdateRepositoryName (old name gone — prior attempt renamed)
+        .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) }) // GetRepository(newName) probe
+        .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryName: 'new-name' }) }); // final GetRepository
+
+      const result = await provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::CodeCommit::Repository',
+        { RepositoryName: 'new-name' },
+        { RepositoryName: 'my-repo' }
+      );
+
+      const probeCmd = mockSend.mock.calls[1][0];
+      expect(probeCmd).toBeInstanceOf(GetRepositoryCommand);
+      expect(probeCmd.input.repositoryName).toBe('new-name');
+      expect(result.physicalId).toBe('new-name');
+      expect(result.wasReplaced).toBe(false);
+    });
+
+    it('rename retry-safety: NotFound on rename + newName also missing -> fails', async () => {
+      mockSend
+        .mockRejectedValueOnce(notFound()) // UpdateRepositoryName
+        .mockRejectedValueOnce(notFound()); // GetRepository(newName) probe
+
+      await expect(
+        provider.update(
+          'MyRepo',
+          'my-repo',
+          'AWS::CodeCommit::Repository',
+          { RepositoryName: 'new-name' },
+          { RepositoryName: 'my-repo' }
+        )
+      ).rejects.toBeInstanceOf(ProvisioningError);
     });
 
     it('updates the encryption key when KmsKeyId changed', async () => {
@@ -298,6 +397,33 @@ describe('CodeCommitRepositoryProvider', () => {
       expect(tagCalls).toHaveLength(0);
     });
 
+    it('a pure re-order of the Tags list is NOT a tag change (no Untag/Tag churn)', async () => {
+      mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() }); // final GetRepository only
+
+      await provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::CodeCommit::Repository',
+        {
+          RepositoryName: 'my-repo',
+          Tags: [
+            { Key: 'b', Value: '2' },
+            { Key: 'a', Value: '1' },
+          ],
+        },
+        {
+          RepositoryName: 'my-repo',
+          Tags: [
+            { Key: 'a', Value: '1' },
+            { Key: 'b', Value: '2' },
+          ],
+        }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetRepositoryCommand);
+    });
+
     it('no-ops (single GetRepository only) when nothing changed', async () => {
       mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() });
 
@@ -339,6 +465,37 @@ describe('CodeCommitRepositoryProvider', () => {
       const cmd = mockSend.mock.calls[0][0];
       expect(cmd).toBeInstanceOf(DeleteRepositoryCommand);
       expect(cmd.input).toEqual({ repositoryName: 'my-repo' });
+    });
+
+    it('treats a null repositoryId (already-deleted repo) as idempotent success when regions match', async () => {
+      // DeleteRepository does NOT throw for a missing repository — it
+      // returns a null repositoryId. The region check must still run on
+      // that path (it is the main not-found shape for this API).
+      mockSend.mockResolvedValueOnce({});
+
+      await expect(
+        provider.delete('MyRepo', 'my-repo', 'AWS::CodeCommit::Repository', undefined, {
+          expectedRegion: 'us-east-1',
+        })
+      ).resolves.toBeUndefined();
+    });
+
+    it('refuses the null-repositoryId success when the client region does not match the state region', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await expect(
+        provider.delete('MyRepo', 'my-repo', 'AWS::CodeCommit::Repository', undefined, {
+          expectedRegion: 'ap-northeast-1',
+        })
+      ).rejects.toThrow(/region/i);
+    });
+
+    it('null repositoryId with no DeleteContext is treated as success (no region to verify against)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await expect(
+        provider.delete('MyRepo', 'my-repo', 'AWS::CodeCommit::Repository')
+      ).resolves.toBeUndefined();
     });
 
     it('treats RepositoryDoesNotExist as idempotent success when regions match', async () => {
@@ -474,6 +631,31 @@ describe('CodeCommitRepositoryProvider', () => {
         physicalId: 'my-repo',
         attributes: expect.objectContaining({ RepositoryId: REPO_ID }),
       });
+    });
+
+    it('tag-based lookup paginates ListRepositories via nextToken', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositories: [{ repositoryName: 'other' }], nextToken: 't1' }) // page 1
+        .mockResolvedValueOnce({
+          repositoryMetadata: metadata({
+            repositoryName: 'other',
+            Arn: 'arn:aws:codecommit:us-east-1:123456789012:other',
+          }),
+        })
+        .mockResolvedValueOnce({ tags: {} }) // other: no match
+        .mockResolvedValueOnce({ repositories: [{ repositoryName: 'my-repo' }] }) // page 2 (no nextToken)
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ tags: { 'aws:cdk:path': 'MyStack/MyRepo/Resource' } });
+
+      const result = await provider.import(makeInput());
+
+      const page1 = mockSend.mock.calls[0][0];
+      expect(page1).toBeInstanceOf(ListRepositoriesCommand);
+      expect('nextToken' in page1.input).toBe(false);
+      const page2 = mockSend.mock.calls[3][0];
+      expect(page2).toBeInstanceOf(ListRepositoriesCommand);
+      expect(page2.input.nextToken).toBe('t1');
+      expect(result?.physicalId).toBe('my-repo');
     });
 
     it('tag-based lookup with no match: returns null', async () => {

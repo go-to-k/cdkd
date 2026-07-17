@@ -24,6 +24,10 @@ export class CodeCommitStack extends cdk.Stack {
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
 
+    // KmsKeyId is deliberately NOT exercised here (a dedicated KMS key adds
+    // cost + a 7-day pending-deletion tail for a property that is unit-tested
+    // on both create and update paths); the repo uses the AWS-managed
+    // aws/codecommit key.
     const repo = new codecommit.Repository(this, 'Repo', {
       // Phase 2 renames the repository — an IN-PLACE UpdateRepositoryName,
       // not a replacement (the repository ID must survive).
