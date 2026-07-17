@@ -1,0 +1,28 @@
+{
+  "resourceType": "AWS::CodeCommit::Repository",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "Arn",
+    "CloneUrlHttp",
+    "CloneUrlSsh",
+    "Code",
+    "Id",
+    "KmsKeyId",
+    "Name",
+    "RepositoryDescription",
+    "RepositoryName",
+    "Tags",
+    "Triggers"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "CloneUrlHttp",
+    "CloneUrlSsh",
+    "Id",
+    "Name"
+  ],
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

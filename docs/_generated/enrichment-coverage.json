@@ -622,6 +622,48 @@
       ]
     },
     {
+      "resourceType": "AWS::CodeCommit::Repository",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "CloneUrlHttp",
+        "CloneUrlSsh",
+        "Id",
+        "Name"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "CloneUrlHttp",
+          "status": "gap"
+        },
+        {
+          "name": "CloneUrlSsh",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "Name",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "CloneUrlHttp",
+        "CloneUrlSsh",
+        "Name"
+      ]
+    },
+    {
       "resourceType": "AWS::Cognito::UserPool",
       "bucket": "sdk-fallback-gap",
       "sdkBacked": true,

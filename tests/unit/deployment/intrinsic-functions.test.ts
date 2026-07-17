@@ -3231,6 +3231,59 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe(compound);
   });
 
+  // AWS::CodeCommit::Repository (issue #1045): CFn `Ref` returns the
+  // repository ID (a GUID), but every CodeCommit API is name-based so the SDK
+  // provider stores the repository NAME as the physical id. The ID is
+  // recovered from the `RepositoryId` attribute the provider stores at
+  // create/import time.
+  it('Ref to a CodeCommit Repository resolves to the RepositoryId attribute, not the name', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::CodeCommit::Repository', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: 'my-repo',
+          resourceType: 'AWS::CodeCommit::Repository',
+          properties: { RepositoryName: 'my-repo' },
+          attributes: {
+            Arn: 'arn:aws:codecommit:us-east-1:123456789012:my-repo',
+            RepositoryId: '12a345b6-bbb7-4bb6-90b0-8c9577a2d2b9',
+          },
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe('12a345b6-bbb7-4bb6-90b0-8c9577a2d2b9');
+  });
+
+  // Defensive: a CodeCommit Repository whose state carries no RepositoryId
+  // attribute (torn / imported-by-hand state) falls back to the repository
+  // name rather than emitting a broken value.
+  it('Ref to a CodeCommit Repository with no RepositoryId attribute falls back to the name', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::CodeCommit::Repository', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: 'my-repo',
+          resourceType: 'AWS::CodeCommit::Repository',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'R' }, context);
+    expect(result).toBe('my-repo');
+  });
+
   // The SDK-compound path must NOT consult the state lookup — its physical id
   // has a pipe, so the after-pipe extraction returns the table name directly
   // even when the properties carry a different / stale TableName. Guards that

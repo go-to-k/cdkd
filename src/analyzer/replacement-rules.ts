@@ -335,6 +335,22 @@ export class ReplacementRulesRegistry {
       updateableProperties: new Set(['DisplayName', 'Subscription', 'KmsMasterKeyId', 'Tags']),
     });
 
+    // CodeCommit Repository
+    this.rules.set('AWS::CodeCommit::Repository', {
+      replacementProperties: new Set([]),
+      updateableProperties: new Set([
+        // CFn docs: every property is "Update requires: No interruption" and
+        // the registry schema's createOnlyProperties is EMPTY — including
+        // RepositoryName (CFn renames in place via UpdateRepositoryName;
+        // classifying a rename as replacement would DELETE the repository
+        // and its entire git history). Docs-verified 2026-07-17 (issue #1045).
+        'RepositoryName',
+        'RepositoryDescription',
+        'KmsKeyId',
+        'Tags',
+      ]),
+    });
+
     // ECR Repository
     this.rules.set('AWS::ECR::Repository', {
       replacementProperties: new Set([

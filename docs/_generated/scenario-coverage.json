@@ -464,6 +464,11 @@
       "scenarios": []
     },
     {
+      "name": "codecommit",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "codedeploy-lambda-deployment-group",
       "annotated": false,
       "scenarios": []

@@ -51,6 +51,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudTrail::Trail` | `Arn`, `SnsTopicArn` |
 | `AWS::CloudWatch::Alarm` | `Arn` |
 | `AWS::CodeBuild::Project` | `Arn`, `Id` |
+| `AWS::CodeCommit::Repository` | `Arn`, `CloneUrlHttp`, `CloneUrlSsh`, `Name` |
 | `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL`, `UserPoolId` |
 | `AWS::DLM::LifecyclePolicy` | `Arn` |
 | `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `Id`, `ReadEndpoint` |
@@ -159,6 +160,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |
+| `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Id` (allow), `Name` (GAP) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (GAP) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (GAP), `ReadEndpoint` (GAP) |
