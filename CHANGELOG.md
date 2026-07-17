@@ -1,3 +1,10 @@
+## [0.238.6](https://github.com/go-to-k/cdkd/compare/v0.238.5...v0.238.6) (2026-07-17)
+
+
+### Bug Fixes
+
+* **state:** region-correct the raw S3 reads in state info (PermanentRedirect on cross-region state bucket) ([#1055](https://github.com/go-to-k/cdkd/issues/1055)) ([7cfdd40](https://github.com/go-to-k/cdkd/commit/7cfdd401f34489f8cdbd7b454006574eaa2ff78a))
+
 ## [0.238.5](https://github.com/go-to-k/cdkd/compare/v0.238.4...v0.238.5) (2026-07-17)
 
 
