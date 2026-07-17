@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 118,
+    "classifiedCount": 119,
     "enriched": 4,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 100,
-    "allowListedTypes": 2
+    "sdkFallbackGap": 101,
+    "allowListedTypes": 3
   },
   "types": [
     {

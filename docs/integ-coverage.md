@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**114 / 118 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**115 / 119 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -31,7 +31,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::RDS::DBProxy` | rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
 
-## Covered providers (114)
+## Covered providers (115)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|

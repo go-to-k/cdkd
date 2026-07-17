@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **118**
+- Classified types (cached schema): **119**
 - Fully enriched: **4**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **100**
-- Types with allow-listed (not-a-gap) attributes: **2**
+- SDK-fallback gaps (informational, #614 path only): **101**
+- Types with allow-listed (not-a-gap) attributes: **3**
 
 ## Pure-CC latent gaps
 
