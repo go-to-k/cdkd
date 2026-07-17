@@ -653,6 +653,26 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::DLM::LifecyclePolicy',
+    {
+      handled: new Set<string>([
+        'CopyTags',
+        'CreateInterval',
+        'CrossRegionCopyTargets',
+        'DefaultPolicy',
+        'Description',
+        'Exclusions',
+        'ExecutionRoleArn',
+        'ExtendDeletion',
+        'PolicyDetails',
+        'RetainInterval',
+        'State',
+        'Tags',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::DocDB::DBCluster',
     {
       handled: new Set<string>([

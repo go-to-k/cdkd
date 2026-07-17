@@ -27,6 +27,7 @@
     "AWS::CloudWatch::Alarm",
     "AWS::CodeBuild::Project",
     "AWS::Cognito::UserPool",
+    "AWS::DLM::LifecyclePolicy",
     "AWS::DocDB::DBCluster",
     "AWS::DocDB::DBInstance",
     "AWS::DocDB::DBSubnetGroup",
@@ -670,6 +671,17 @@
         ],
         "serverless-api": [
           "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::DLM::LifecyclePolicy",
+      "integs": [
+        "dlm-lifecycle-policy"
+      ],
+      "signals": {
+        "dlm-lifecycle-policy": [
+          "literal"
         ]
       }
     },
@@ -2682,6 +2694,7 @@
         "deep-getatt-chains",
         "destroy-interrupt",
         "diff-intrinsic-target-change",
+        "dlm-lifecycle-policy",
         "drift-revert",
         "eventbridge",
         "eventbridge-pipes",
@@ -2753,6 +2766,10 @@
         ],
         "diff-intrinsic-target-change": [
           "l2"
+        ],
+        "dlm-lifecycle-policy": [
+          "l2",
+          "literal"
         ],
         "drift-revert": [
           "l2"

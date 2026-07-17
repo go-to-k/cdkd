@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **117**
+- Classified types (cached schema): **118**
 - Fully enriched: **4**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **99**
-- Types with allow-listed (not-a-gap) attributes: **1**
+- SDK-fallback gaps (informational, #614 path only): **100**
+- Types with allow-listed (not-a-gap) attributes: **2**
 
 ## Pure-CC latent gaps
 
@@ -52,6 +52,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudWatch::Alarm` | `Arn` |
 | `AWS::CodeBuild::Project` | `Arn`, `Id` |
 | `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL`, `UserPoolId` |
+| `AWS::DLM::LifecyclePolicy` | `Arn` |
 | `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `Id`, `ReadEndpoint` |
 | `AWS::DocDB::DBInstance` | `Endpoint`, `Id`, `Port` |
 | `AWS::DocDB::DBSubnetGroup` | `Id` |
@@ -159,6 +160,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (GAP) |
+| `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (GAP), `ReadEndpoint` (GAP) |
 | `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Id` (GAP), `Port` (GAP) |
 | `AWS::DocDB::DBSubnetGroup` | yes | sdk-fallback-gap | `Id` (GAP) |
