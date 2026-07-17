@@ -1,3 +1,10 @@
+## [0.238.5](https://github.com/go-to-k/cdkd/compare/v0.238.4...v0.238.5) (2026-07-17)
+
+
+### Bug Fixes
+
+* **local:** recognize custom-named cdkd container-asset repos in run-task image classification ([#1031](https://github.com/go-to-k/cdkd/issues/1031)) ([ae138a7](https://github.com/go-to-k/cdkd/commit/ae138a71986b295df44e67bddefd15becf04fc7c))
+
 ## [0.238.4](https://github.com/go-to-k/cdkd/compare/v0.238.3...v0.238.4) (2026-07-17)
 
 
