@@ -103,8 +103,8 @@ STATE_P1="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P1}" --region 
   --query 'Policy.State' --output text)"
 DESC_P1="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P1}" --region "${REGION}" \
   --query 'Policy.Description' --output text)"
-if [ "${STATE_P1}" != "ENABLED" ] || [ "${DESC_P1}" != "cdkd integ policy (baseline)" ]; then
-  echo "FAIL: Phase 1 expected ENABLED/'cdkd integ policy (baseline)', got '${STATE_P1}'/'${DESC_P1}'" >&2
+if [ "${STATE_P1}" != "ENABLED" ] || [ "${DESC_P1}" != "cdkd integ policy baseline" ]; then
+  echo "FAIL: Phase 1 expected ENABLED/'cdkd integ policy baseline', got '${STATE_P1}'/'${DESC_P1}'" >&2
   exit 1
 fi
 ENV_TAG_P1="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P1}" --region "${REGION}" \
@@ -143,8 +143,8 @@ STATE_P2="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P2}" --region 
   --query 'Policy.State' --output text)"
 DESC_P2="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P2}" --region "${REGION}" \
   --query 'Policy.Description' --output text)"
-if [ "${STATE_P2}" != "DISABLED" ] || [ "${DESC_P2}" != "cdkd integ policy (updated)" ]; then
-  echo "FAIL: Phase 2 expected DISABLED/'cdkd integ policy (updated)', got '${STATE_P2}'/'${DESC_P2}'" >&2
+if [ "${STATE_P2}" != "DISABLED" ] || [ "${DESC_P2}" != "cdkd integ policy updated" ]; then
+  echo "FAIL: Phase 2 expected DISABLED/'cdkd integ policy updated', got '${STATE_P2}'/'${DESC_P2}'" >&2
   exit 1
 fi
 ENV_TAG_P2="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P2}" --region "${REGION}" \

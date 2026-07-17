@@ -52,7 +52,7 @@ export class DlmLifecyclePolicyStack extends cdk.Stack {
     });
 
     const policy = new dlm.CfnLifecyclePolicy(this, 'Policy', {
-      description: isUpdate ? 'cdkd integ policy (updated)' : 'cdkd integ policy (baseline)',
+      description: isUpdate ? 'cdkd integ policy updated' : 'cdkd integ policy baseline',
       executionRoleArn: role.roleArn,
       state: isUpdate ? 'DISABLED' : 'ENABLED',
       policyDetails: {
