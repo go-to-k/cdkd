@@ -2687,6 +2687,7 @@
         "eventbridge-pipes",
         "eventbridge-scheduler",
         "export",
+        "gc-custom-asset-names",
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -2767,6 +2768,9 @@
         ],
         "export": [
           "l2",
+          "literal"
+        ],
+        "gc-custom-asset-names": [
           "literal"
         ],
         "glue-update-hardening": [
@@ -3100,6 +3104,7 @@
         "export",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "gc-custom-asset-names",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "kinesis-esm-filter",
@@ -3263,6 +3268,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "gc-custom-asset-names": [
+          "l2",
+          "literal"
         ],
         "iam-propagation-stress": [
           "l2"
