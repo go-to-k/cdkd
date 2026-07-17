@@ -1370,6 +1370,60 @@ describe('cdkd import', () => {
     });
   });
 
+  describe('dependencies persisted to state (#1032)', () => {
+    it('filters template Parameter names from imported dependencies', async () => {
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: { Env: { Type: 'String', Default: 'dev' } },
+        Resources: {
+          MyQueue: {
+            Type: 'AWS::SQS::Queue',
+            Properties: { QueueName: 'q' },
+            Metadata: { 'aws:cdk:path': 'S/MyQueue' },
+          },
+          MyBucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: {
+              BucketName: { Ref: 'Env' },
+              Tag: { Ref: 'MyQueue' },
+            },
+            Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+          },
+        },
+      };
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => ({
+        import: vi.fn(async () =>
+          t === 'AWS::S3::Bucket'
+            ? { physicalId: 'bucket-phys', attributes: {} }
+            : { physicalId: 'queue-phys', attributes: {} }
+        ),
+      }));
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=bucket-phys',
+        '--resource',
+        'MyQueue=queue-phys',
+        '--yes',
+      ]);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { dependencies: string[] }> },
+      ];
+      // The Ref to the Env parameter is dropped; the resource edge survives.
+      expect(state.resources['MyBucket']?.dependencies).toEqual(['MyQueue']);
+      expect(state.resources['MyQueue']?.dependencies).toEqual([]);
+    });
+  });
+
   describe('--migrate-from-cloudformation', () => {
     const oneResource = () =>
       template({

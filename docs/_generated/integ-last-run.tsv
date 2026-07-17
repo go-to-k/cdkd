@@ -228,5 +228,5 @@ apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix li
 lambda	2026-07-16T17:48:04Z	PASS	75	verify.sh	broad refresh for register-providers edit (issue-1020), orph clean
 wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review-nit JSDoc edit, orph clean
 lambda	2026-07-16T17:11:44Z	PASS	78	verify.sh	broad refresh for intrinsic-resolver+deploy-engine edit (issue-1017), orph clean
-multi-resource	2026-07-16T18:00:49Z	PASS	53	standard	broad refresh for deploy-engine edit (#1027/#1028): 17 created/deleted, 0 errors, log groups swept
-raw-cfn-conditions-params	2026-07-16T18:10:00Z	PASS	73	verify.sh	re-run on rebased tree (post #1029 merge): all 5 phases, destroy clean
+raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
+multi-resource	2026-07-17T05:02:58Z	PASS	79	standard	broad refresh for deploy-engine edit (#1032): 17 created/deleted, 0 errors, log groups swept

@@ -2960,6 +2960,12 @@ export class DeployEngine {
    * Uses TemplateParser.extractDependencies() to capture Ref, Fn::GetAtt,
    * and DependsOn dependencies. This ensures the state contains complete
    * dependency information for correct deletion ordering (not just DependsOn).
+   *
+   * Template Parameter names are filtered out (issue #1032): a `Ref` to a
+   * CFn Parameter is not a provisioning-order edge, and the destroy-side
+   * graph build (which reconstructs a pseudo-template from state with no
+   * `Parameters` section) would warn `depends on <Param>, but <Param> not
+   * found in template` for every parameter-referencing resource.
    */
   private extractAllDependencies(
     template: CloudFormationTemplate | undefined,
@@ -2968,8 +2974,11 @@ export class DeployEngine {
     const resource = template?.Resources?.[logicalId];
     if (!resource) return undefined;
     const parser = new TemplateParser();
-    const deps = parser.extractDependencies(resource);
-    return deps.size > 0 ? [...deps] : undefined;
+    const parameterNames = new Set(Object.keys(template?.Parameters ?? {}));
+    const deps = [...parser.extractDependencies(resource)].filter(
+      (dep) => !parameterNames.has(dep)
+    );
+    return deps.length > 0 ? deps : undefined;
   }
 
   /**
