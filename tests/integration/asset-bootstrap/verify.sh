@@ -17,11 +17,15 @@
 #            the re-bootstrap fix (never a silent legacy fallback).
 #   Cleanup: destroy the stack, delete marker + asset bucket + repo.
 #
-# NOTE: cleanup deletes the account's CANONICAL cdkd asset storage
-# (cdkd-assets-{account}-{region} + repo + marker) — safe on the dedicated
-# test account while PR 1 storage holds no objects, but once PR 2 publishes
-# real assets there, re-point this fixture at a dedicated marker/bucket or
-# gate the deletion on the bucket being empty.
+# SAFETY NOTE (issue #1052): this fixture exercises the region's CANONICAL
+# default-named cdkd asset storage (cdkd-assets-{account}-{region} + repo +
+# marker), so it must only run in a region whose marker does not exist yet.
+# A pre-run guard fails fast when the region already carries a bootstrap
+# marker (it belongs to live storage this fixture must not delete — pick a
+# marker-free region via AWS_REGION). The guard makes the EXIT-trap cleanup
+# safe: any marker/bucket/repo present at exit was created by THIS run.
+# The pre-run cleanup pass deletes only stack-scoped leftovers and never
+# touches asset storage.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -43,7 +47,12 @@ ASSET_BUCKET="cdkd-assets-${ACCOUNT_ID}-${REGION}"
 CONTAINER_REPO="cdkd-container-assets-${ACCOUNT_ID}-${REGION}"
 
 cleanup() {
-  echo "==> Cleanup: dropping stack state/resources + asset storage + marker"
+  # $1 = "prerun" skips the asset-storage deletion: a marker/bucket/repo
+  # that exists BEFORE this run is live storage we must not delete (the
+  # guard below fails fast on it instead). Without the arg (EXIT trap),
+  # asset storage is cleaned too — the guard guarantees anything present
+  # at exit was created by this run.
+  echo "==> Cleanup: dropping stack state/resources${1:+ (stack-scoped only)}"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -55,13 +64,17 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
-    aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
   fi
-  # The PR-1 asset bucket is never written to (redirection is PR 2), so a
-  # plain delete-bucket suffices; --force also clears any future objects.
-  aws s3 rb "s3://${ASSET_BUCKET}" --force >/dev/null 2>&1 || true
-  aws ecr delete-repository --repository-name "${CONTAINER_REPO}" \
-    --region "${REGION}" --force >/dev/null 2>&1 || true
+  if [ "${1:-}" != "prerun" ]; then
+    if [ -n "${STATE_BUCKET:-}" ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
+    fi
+    # The PR-1 asset bucket is never written to (redirection is PR 2), so a
+    # plain delete-bucket suffices; --force also clears any future objects.
+    aws s3 rb "s3://${ASSET_BUCKET}" --force >/dev/null 2>&1 || true
+    aws ecr delete-repository --repository-name "${CONTAINER_REPO}" \
+      --region "${REGION}" --force >/dev/null 2>&1 || true
+  fi
   # Lambda deploys leave no log group here (the function is never invoked),
   # but sweep defensively per the fixture template.
   aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STACK}" \
@@ -89,16 +102,36 @@ if [ ! -d node_modules ]; then
   pnpm install --ignore-workspace --prefer-offline
 fi
 
-echo "==> Pre-run cleanup"
-cleanup
+echo "==> Pre-run cleanup (stack-scoped only)"
+cleanup prerun
+
+# Own-marker guard (issue #1052): this fixture bootstraps and then DELETES
+# the region's default-named asset storage, so a pre-existing marker means
+# the region's storage is genuinely in use (real assets may live there since
+# #1002 PR 2) — never delete it. Fail fast and let the caller pick a
+# marker-free region.
+if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+  echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
+  echo "      This fixture creates AND deletes the region's default-named storage;" >&2
+  echo "      run it in a region without cdkd asset storage (e.g. AWS_REGION=us-west-2)." >&2
+  echo "      If this is a leftover from a previous crashed run of this fixture, clean it" >&2
+  echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
+  exit 1
+fi
 
 GC_NOTICE="may garbage-collect"
 
 # --- Phase 1: deploy WITHOUT marker (legacy mode) -------------------------
 echo "==> Phase 1: deploy without marker (legacy mode expected)"
+# --no-auto-asset-storage: since issue #1007 a --yes deploy into an
+# un-opted-in region AUTO-CREATES the asset storage instead of falling
+# back to legacy mode — this phase tests the legacy fallback + gc notice,
+# so auto-create must be disabled (the auto-create path has its own
+# fixture, asset-auto-create).
 DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --no-auto-asset-storage \
   --yes 2>&1)
 echo "${DEPLOY_OUT}" | tail -3
 

@@ -215,9 +215,6 @@ launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAt
 dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
 backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
 bench-cdk-sample	2026-07-03T11:11:09Z	PASS	578	standard	broad for #995 intrinsic-resolver change; 39 created/37 del+2 retain 0 err
-asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: legacy notice, bootstrap storage+marker, cdkd-assets detect, deleted-repo hard error, clean destroy
-asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean
-asset-auto-create	2026-07-16T14:11:56Z	PASS	149	verify.sh	3 phases incl. --skip-assets no-auto-create leg (PR 1008 review fix-back), 0 orphans
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 ses-identity	2026-07-16T15:54:15Z	PASS	182	verify.sh	new fixture, 3 phases clean, orph clean
 eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
@@ -232,3 +229,6 @@ multi-resource	2026-07-17T05:02:58Z	PASS	79	standard	broad refresh for deploy-en
 local-run-task-cdkd-assets	2026-07-16T17:53:49Z	PASS	95	verify.sh	classifier regression for issue-1025 marker-based repo match; docker sweep clean
 gc-custom-asset-names	2026-07-16T17:50:46Z	PASS	188	verify.sh	us-west-2 (us-east-1 marker in use); bootstrap custom names + publish + gc + teardown clean
 gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run after review hardening (own-marker guard); clean
+asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
+asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
+asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
