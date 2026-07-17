@@ -1063,17 +1063,24 @@ function buildStackState(
 ): StackState {
   const resources: Record<string, ResourceState> =
     selectiveMode && existingState ? { ...existingState.resources } : {};
+  // Template Parameter names are not provisioning-order edges — filter them
+  // from the persisted dependencies (issue #1032), mirroring the deploy
+  // engine's extractAllDependencies. Without this, destroy's state-derived
+  // graph build warns `depends on <Param>, but <Param> not found in template`.
+  const parameterNames = new Set(Object.keys(template.Parameters ?? {}));
   for (const row of rows) {
     if (row.outcome !== 'imported' || !row.physicalId) continue;
     const tmplResource = template.Resources[row.logicalId];
     if (!tmplResource) continue;
-    const deps = templateParser.extractDependencies(tmplResource);
+    const deps = [...templateParser.extractDependencies(tmplResource)].filter(
+      (dep) => !parameterNames.has(dep)
+    );
     resources[row.logicalId] = {
       physicalId: row.physicalId,
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
       attributes: {},
-      dependencies: [...deps],
+      dependencies: deps,
       // v7+ (#614): every imported resource is owned by its SDK Provider
       // (the import() method lives on SDK Providers). Explicit so the
       // post-import drift / destroy paths route through the SDK provider
