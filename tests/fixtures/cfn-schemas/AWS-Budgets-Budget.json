@@ -1,0 +1,19 @@
+{
+  "resourceType": "AWS::Budgets::Budget",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "Budget",
+    "Id",
+    "NotificationsWithSubscribers",
+    "ResourceTags"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "NotificationsWithSubscribers"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

@@ -48,6 +48,7 @@
     "@aws-sdk/client-auto-scaling": "^3.1045.0",
     "@aws-sdk/client-bedrock-agentcore": "^3.1017.0",
     "@aws-sdk/client-bedrock-agentcore-control": "^3.1017.0",
+    "@aws-sdk/client-budgets": "^3.1088.0",
     "@aws-sdk/client-cloudcontrol": "^3.0.0",
     "@aws-sdk/client-cloudformation": "^3.1017.0",
     "@aws-sdk/client-cloudfront": "^3.1017.0",

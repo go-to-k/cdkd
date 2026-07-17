@@ -214,7 +214,6 @@ sns-inline-subscription	2026-07-03T09:04:10Z	PASS	47	verify.sh	inline sub create
 launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAtt value change propagates to NO_CHANGE ASG same deploy; destroy clean
 dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
 backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
-bench-cdk-sample	2026-07-03T11:11:09Z	PASS	578	standard	broad for #995 intrinsic-resolver change; 39 created/37 del+2 retain 0 err
 asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: legacy notice, bootstrap storage+marker, cdkd-assets detect, deleted-repo hard error, clean destroy
 asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean
 asset-auto-create	2026-07-16T14:11:56Z	PASS	149	verify.sh	3 phases incl. --skip-assets no-auto-create leg (PR 1008 review fix-back), 0 orphans
@@ -233,7 +232,8 @@ gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run 
 asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
 asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
 asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
-bench-cdk-sample	2026-07-17T07:09:48Z	PASS	906	standard	39 created / 37 deleted 2 retained 0 errors; log-group sweep clean; integ-broad for DLM provider PR
+bench-cdk-sample	2026-07-17T10:16:57Z	PASS	520	standard	broad for #1041 register-providers edit: 39 created/37 del+2 retain 0 err, log groups swept
 dlm-lifecycle-policy	2026-07-17T07:27:24Z	PASS	72	verify.sh	re-run post review fixes; deploy+update+destroy clean, 0 orphans
 lambda	2026-07-17T10:15:29Z	PASS	77	verify.sh	broad refresh for register-providers+intrinsic-resolver edit (#1045): 9 del 0 err, orph clean
 codecommit	2026-07-17T10:28:12Z	PASS	59	verify.sh	re-run on final code post-review fixes (null-id delete + retry-safe rename); 3 phases clean 0 orphans
+budgets	2026-07-17T09:19:14Z	PASS	60	verify.sh	new fixture #1041: create+in-place notif/subscriber reconcile+destroy clean, 0 orphans

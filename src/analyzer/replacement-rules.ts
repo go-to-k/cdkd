@@ -63,6 +63,28 @@ export function attributeTypeChangedForSharedAttribute(
 }
 
 /**
+ * Conditional-replacement predicate for `AWS::Budgets::Budget.Budget`.
+ *
+ * The budget name (`Budget.BudgetName`, nested) is the physical id and is
+ * createOnly — only a name change forces replacement; every other edit
+ * inside the `Budget` block (limit, period, type, filters) is an in-place
+ * `UpdateBudget`. A one-sided explicit name (added or removed) is treated as
+ * a change: the other side's effective name was the cdkd-generated fallback,
+ * which cannot match a user-supplied name.
+ */
+export function budgetNameChanged(oldValue: unknown, newValue: unknown): boolean {
+  const nameOf = (value: unknown): string | undefined => {
+    if (value === null || typeof value !== 'object') return undefined;
+    const name = (value as Record<string, unknown>)['BudgetName'];
+    return typeof name === 'string' ? name : undefined;
+  };
+  const oldName = nameOf(oldValue);
+  const newName = nameOf(newValue);
+  if (oldName === undefined && newName === undefined) return false;
+  return oldName !== newName;
+}
+
+/**
  * Replacement rules registry
  *
  * Maps resource types to their replacement rules
@@ -469,6 +491,22 @@ export class ReplacementRulesRegistry {
         'DataType',
         'Tags',
       ]),
+    });
+
+    // Budgets Budget — the budget NAME is the physical id and is createOnly
+    // (a rename must be delete + recreate: UpdateBudget addresses the budget
+    // BY name, so an in-place rename would silently create nothing and
+    // diverge state from AWS). The name lives NESTED at Budget.BudgetName, so
+    // a conditional rule inspects the top-level `Budget` value: only a
+    // BudgetName change forces replacement — limit / period / type edits are
+    // in-place `UpdateBudget` calls. NotificationsWithSubscribers is
+    // createOnly for CloudFormation, but cdkd's provider reconciles it
+    // in place (CreateNotification / DeleteNotification / CreateSubscriber /
+    // DeleteSubscriber), hence updateable here.
+    this.rules.set('AWS::Budgets::Budget', {
+      replacementProperties: new Set<string>(),
+      updateableProperties: new Set(['NotificationsWithSubscribers', 'ResourceTags']),
+      conditionalReplacements: new Map([['Budget', budgetNameChanged]]),
     });
 
     // CloudWatch Alarm — AlarmName is immutable (CFn "Update requires:

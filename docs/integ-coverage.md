@@ -53,6 +53,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::AppSync::Resolver` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AutoScaling::AutoScalingGroup` | [`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l1,literal)<br>[`launchtemplate-asg-inplace`](../tests/integration/launchtemplate-asg-inplace/) (l2)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
 | `AWS::BedrockAgentCore::Runtime` | [`bedrock-agentcore`](../tests/integration/bedrock-agentcore/) (literal) |
+| `AWS::Budgets::Budget` | [`budgets`](../tests/integration/budgets/) (literal) |
 | `AWS::CertificateManager::Certificate` | [`acm-certificate`](../tests/integration/acm-certificate/) (l2) |
 | `AWS::CloudFormation::Stack` | [`export-nested-stack`](../tests/integration/export-nested-stack/) (literal)<br>[`import-nested-stack`](../tests/integration/import-nested-stack/) (literal)<br>[`nested-stack`](../tests/integration/nested-stack/) (literal)<br>[`nested-stack-3level`](../tests/integration/nested-stack-3level/) (literal)<br>[`nested-stack-deep`](../tests/integration/nested-stack-deep/) (literal) |
 | `AWS::CloudFormation::WaitConditionHandle` | [`wait-condition-handle`](../tests/integration/wait-condition-handle/) (literal) |

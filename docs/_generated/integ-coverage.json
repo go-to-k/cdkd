@@ -18,6 +18,7 @@
     "AWS::AppSync::Resolver",
     "AWS::AutoScaling::AutoScalingGroup",
     "AWS::BedrockAgentCore::Runtime",
+    "AWS::Budgets::Budget",
     "AWS::CertificateManager::Certificate",
     "AWS::CloudFormation::Stack",
     "AWS::CloudFormation::WaitConditionHandle",
@@ -478,6 +479,17 @@
       ],
       "signals": {
         "bedrock-agentcore": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Budgets::Budget",
+      "integs": [
+        "budgets"
+      ],
+      "signals": {
+        "budgets": [
           "literal"
         ]
       }

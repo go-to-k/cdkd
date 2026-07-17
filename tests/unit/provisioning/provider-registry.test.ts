@@ -44,19 +44,19 @@ describe('ProviderRegistry pre-flight (validateResourceTypes)', () => {
     const registry = new ProviderRegistry();
     let message = '';
     try {
+      // AWS::AppMesh::Route replaced AWS::Budgets::Budget as the second
+      // sample here when the Budgets SDK provider shipped (issue #1041).
       registry.validateResourceTypes(
-        new Set(['AWS::AppMesh::Mesh', 'AWS::Budgets::Budget', 'AWS::S3::Bucket'])
+        new Set(['AWS::AppMesh::Mesh', 'AWS::AppMesh::Route', 'AWS::S3::Bucket'])
       );
     } catch (e) {
       message = (e as Error).message;
     }
     // Both unsupported types named individually with their per-type reason + link.
     expect(message).toContain('AWS::AppMesh::Mesh');
-    expect(message).toContain('AWS::Budgets::Budget');
+    expect(message).toContain('AWS::AppMesh::Route');
     // The re-run hint comma-joins them (load-bearing for copy-paste UX).
-    expect(message).toMatch(
-      /--allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget/
-    );
+    expect(message).toMatch(/--allow-unsupported-types AWS::AppMesh::Mesh,AWS::AppMesh::Route/);
   });
 });
 
