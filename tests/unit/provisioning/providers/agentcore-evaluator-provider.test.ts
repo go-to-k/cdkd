@@ -156,6 +156,27 @@ describe('AgentCoreEvaluatorProvider', () => {
       });
     });
 
+    it('should wire KmsKeyArn into the create input', async () => {
+      mockSend.mockResolvedValueOnce({
+        evaluatorArn: EVALUATOR_ARN,
+        evaluatorId: EVALUATOR_ID,
+        status: 'ACTIVE',
+        createdAt: new Date('2026-07-17T00:00:00Z'),
+      });
+
+      await provider.create('MyEvaluator', 'AWS::BedrockAgentCore::Evaluator', {
+        EvaluatorName: 'my-evaluator',
+        EvaluatorConfig: CODE_BASED_CONFIG,
+        Level: 'TRACE',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555',
+      });
+
+      const createCall = mockSend.mock.calls[0][0];
+      expect(createCall.input.kmsKeyArn).toBe(
+        'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555'
+      );
+    });
+
     it('should convert the CFn tag list to the SDK tag map', async () => {
       mockSend.mockResolvedValueOnce({
         evaluatorArn: EVALUATOR_ARN,
@@ -289,6 +310,87 @@ describe('AgentCoreEvaluatorProvider', () => {
       expect(tagCall.constructor.name).toBe('TagResourceCommand');
       expect(tagCall.input.resourceArn).toBe(EVALUATOR_ARN);
       expect(tagCall.input.tags).toEqual({ env: 'prod', new: 'yes' });
+    });
+
+    it('should untag everything (and never call TagResource) when Tags is removed entirely', async () => {
+      mockSend.mockResolvedValue({
+        evaluatorArn: EVALUATOR_ARN,
+        evaluatorId: EVALUATOR_ID,
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-07-17T01:00:00Z'),
+      });
+
+      await provider.update(
+        'MyEvaluator',
+        EVALUATOR_ARN,
+        'AWS::BedrockAgentCore::Evaluator',
+        { EvaluatorConfig: CODE_BASED_CONFIG, Level: 'TRACE' },
+        {
+          EvaluatorConfig: CODE_BASED_CONFIG,
+          Level: 'TRACE',
+          Tags: [
+            { Key: 'env', Value: 'test' },
+            { Key: 'team', Value: 'agents' },
+          ],
+        }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const untagCall = mockSend.mock.calls[1][0];
+      expect(untagCall.constructor.name).toBe('UntagResourceCommand');
+      expect(untagCall.input.tagKeys.sort()).toEqual(['env', 'team']);
+    });
+
+    it('should only call TagResource when tags are added to a previously untagged evaluator', async () => {
+      mockSend.mockResolvedValue({
+        evaluatorArn: EVALUATOR_ARN,
+        evaluatorId: EVALUATOR_ID,
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-07-17T01:00:00Z'),
+      });
+
+      await provider.update(
+        'MyEvaluator',
+        EVALUATOR_ARN,
+        'AWS::BedrockAgentCore::Evaluator',
+        {
+          EvaluatorConfig: CODE_BASED_CONFIG,
+          Level: 'TRACE',
+          Tags: [{ Key: 'env', Value: 'test' }],
+        },
+        { EvaluatorConfig: CODE_BASED_CONFIG, Level: 'TRACE' }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const tagCall = mockSend.mock.calls[1][0];
+      expect(tagCall.constructor.name).toBe('TagResourceCommand');
+      expect(tagCall.input.tags).toEqual({ env: 'test' });
+    });
+
+    it('should wire KmsKeyArn into the update input', async () => {
+      mockSend.mockResolvedValueOnce({
+        evaluatorArn: EVALUATOR_ARN,
+        evaluatorId: EVALUATOR_ID,
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-07-17T01:00:00Z'),
+      });
+
+      await provider.update(
+        'MyEvaluator',
+        EVALUATOR_ARN,
+        'AWS::BedrockAgentCore::Evaluator',
+        {
+          EvaluatorConfig: CODE_BASED_CONFIG,
+          Level: 'TRACE',
+          KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555',
+        },
+        { EvaluatorConfig: CODE_BASED_CONFIG, Level: 'TRACE' }
+      );
+
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.input.kmsKeyArn).toBe(
+        'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555'
+      );
     });
 
     it('should not call tag APIs when tags are unchanged', async () => {
