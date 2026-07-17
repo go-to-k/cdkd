@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**72 / 72 canonical scenarios** have at least one integ fixture exercising them. **152 / 231 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**74 / 74 canonical scenarios** have at least one integ fixture exercising them. **155 / 231 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (72 scenarios)
+## Per-scenario coverage (74 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -35,6 +35,8 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `cc-api-getatt-enrichment-opensearch-domain` | CC-API attribute enrichment for `AWS::OpenSearchService::Domain` (no SDK provider): `Fn::GetAtt(<Domain>, DomainEndpoint / Arn)` must resolve to the real `*.es.amazonaws.com` endpoint / `arn:aws:es:...:domain/...` ARN via DescribeDomain, not fall through to the physicalId (the domain name). | [`opensearch-domain-getatt`](../tests/integration/opensearch-domain-getatt/) |
 | `cc-api-getatt-enrichment-redshift-cluster` | CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id). | [`redshift-cluster-getatt`](../tests/integration/redshift-cluster-getatt/) |
 | `cdk-defensive-vpc-deps-relax` | CDK-defensive route DependsOn relaxation for VPC Lambda parallelization. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) |
+| `cdkd-asset-storage` | cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011). | [`asset-auto-create`](../tests/integration/asset-auto-create/)<br>[`asset-bootstrap`](../tests/integration/asset-bootstrap/)<br>[`asset-migration`](../tests/integration/asset-migration/)<br>[`gc-custom-asset-names`](../tests/integration/gc-custom-asset-names/) |
+| `cdkd-gc` | `cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012). | [`gc-custom-asset-names`](../tests/integration/gc-custom-asset-names/) |
 | `cfn-macro-expansion` | CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`. | [`macro-expansion`](../tests/integration/macro-expansion/) |
 | `cloudfront-oai-attribute-enrichment` | CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly). | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) |
 | `conditions-and-if` | CloudFormation Conditions section + resource-level `Condition:` key + `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` evaluated by cdkd itself. Two deploys flip a CDK-context-driven CfnParameter Default so the SAME stack is asserted in both settings: condition-gated resource creation (PRESENT vs ABSENT on AWS), `Fn::If` property + tag branch values reaching AWS, and `Fn::If` -> `AWS::NoValue` genuinely OMITTING a property. | [`conditions-and-if`](../tests/integration/conditions-and-if/) |
@@ -103,7 +105,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`destroy-interrupt`](../tests/integration/destroy-interrupt/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](../tests/integration/throttle-wide-dag/) |
 
-## Un-annotated fixtures (79)
+## Un-annotated fixtures (76)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
@@ -111,9 +113,6 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`apigw-stage-throttling`](../tests/integration/apigw-stage-throttling/)
 - [`apigw-usage-plan-key`](../tests/integration/apigw-usage-plan-key/)
 - [`appconfig`](../tests/integration/appconfig/)
-- [`asset-auto-create`](../tests/integration/asset-auto-create/)
-- [`asset-bootstrap`](../tests/integration/asset-bootstrap/)
-- [`asset-migration`](../tests/integration/asset-migration/)
 - [`aws-custom-resource`](../tests/integration/aws-custom-resource/)
 - [`backup`](../tests/integration/backup/)
 - [`bootstrap-free-region`](../tests/integration/bootstrap-free-region/)

@@ -21,6 +21,14 @@
       "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization."
     },
     {
+      "tag": "cdkd-asset-storage",
+      "description": "cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011)."
+    },
+    {
+      "tag": "cdkd-gc",
+      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012)."
+    },
+    {
       "tag": "cfn-macro-expansion",
       "description": "CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`."
     },
@@ -344,18 +352,24 @@
     },
     {
       "name": "asset-auto-create",
-      "annotated": false,
-      "scenarios": []
+      "annotated": true,
+      "scenarios": [
+        "cdkd-asset-storage"
+      ]
     },
     {
       "name": "asset-bootstrap",
-      "annotated": false,
-      "scenarios": []
+      "annotated": true,
+      "scenarios": [
+        "cdkd-asset-storage"
+      ]
     },
     {
       "name": "asset-migration",
-      "annotated": false,
-      "scenarios": []
+      "annotated": true,
+      "scenarios": [
+        "cdkd-asset-storage"
+      ]
     },
     {
       "name": "aws-custom-resource",
@@ -798,7 +812,10 @@
     {
       "name": "gc-custom-asset-names",
       "annotated": true,
-      "scenarios": []
+      "scenarios": [
+        "cdkd-asset-storage",
+        "cdkd-gc"
+      ]
     },
     {
       "name": "getstackoutput-crossregion",
@@ -1692,6 +1709,23 @@
       ]
     },
     {
+      "scenario": "cdkd-asset-storage",
+      "description": "cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011).",
+      "fixtures": [
+        "asset-auto-create",
+        "asset-bootstrap",
+        "asset-migration",
+        "gc-custom-asset-names"
+      ]
+    },
+    {
+      "scenario": "cdkd-gc",
+      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012).",
+      "fixtures": [
+        "gc-custom-asset-names"
+      ]
+    },
+    {
       "scenario": "cfn-macro-expansion",
       "description": "CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`.",
       "fixtures": [
@@ -2211,9 +2245,6 @@
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
     "appconfig",
-    "asset-auto-create",
-    "asset-bootstrap",
-    "asset-migration",
     "aws-custom-resource",
     "backup",
     "bootstrap-free-region",

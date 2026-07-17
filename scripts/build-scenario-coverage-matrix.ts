@@ -274,6 +274,12 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local invoke-agentcore` Bedrock AgentCore Runtime: HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws` protocols + inbound JWT auth verification + container artifact + CodeConfiguration managed-runtime source build.',
   'local-agentcore-from-state':
     '`cdkd local invoke-agentcore --from-state` end-to-end against a real-AWS deployed AgentCore Runtime — verifies the cdkd-port-specific 3-arg `createLocalStateProvider` shim resolves intrinsic-valued env vars (e.g. `Ref: <S3 bucket>`) against cdkd state after a real `cdkd deploy`.',
+
+  // ---- cdkd-owned asset storage / gc patterns ----
+  'cdkd-asset-storage':
+    'cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011).',
+  'cdkd-gc':
+    '`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012).',
 };
 
 interface ScenarioCoverageReport {
