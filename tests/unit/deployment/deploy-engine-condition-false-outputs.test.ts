@@ -211,6 +211,31 @@ describe('DeployEngine - condition-false Outputs are skipped (#1028)', () => {
     });
   });
 
+  it('removes a previously-persisted condition-false output and updates the exports index without it', async () => {
+    // Condition flip true -> false: the prior deploy persisted the output +
+    // export; this deploy must drop both from state AND from the exports
+    // index (the no-change path's outputsChanged handling).
+    conditionsHolder.value = { IsProd: false };
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({
+        ProdTopicArn: 'arn:prod',
+        'prod:TopicArn': 'arn:prod',
+        AlwaysOut: 'always-value',
+      }),
+      etag: 'etag-old',
+    });
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.outputs).toEqual({ AlwaysOut: 'always-value' });
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith(stackName, 'us-east-1', {
+      AlwaysOut: 'always-value',
+    });
+  });
+
   it('keeps an Output whose condition name is unknown (filterResourcesByCondition parity)', async () => {
     conditionsHolder.value = {};
     mockStateBackend.getState.mockResolvedValue({ state: makeState({}), etag: 'etag-old' });

@@ -566,6 +566,34 @@ describe('computeStackDiff', () => {
       expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
     });
 
+    it('keeps condition-gated resources when a required parameter cannot be bound (no phantom DELETE)', async () => {
+      // The resolver downgrades an unevaluable condition (Ref to the unbound
+      // parameter) to FALSE — so condition evaluation must be skipped
+      // entirely on a binding failure, or a condition-gated resource in
+      // state would be pruned and reported as a spurious DELETE.
+      const template: CloudFormationTemplate = {
+        Parameters: { Req: { Type: 'String' } },
+        Conditions: { IsX: { 'Fn::Equals': [{ Ref: 'Req' }, 'x'] } },
+        Resources: {
+          Gated: {
+            Type: 'AWS::SSM::Parameter',
+            Condition: 'IsX',
+            Properties: { Value: 'v' },
+          },
+        },
+      };
+      const state = st('S', { Gated: res('AWS::SSM::Parameter', { Value: 'v' }) });
+      const changes = await computeStackDiff(
+        state,
+        template,
+        'us-east-1',
+        'S',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(changes.get('Gated')!.changeType).not.toBe('DELETE');
+    });
+
     it('falls back to the raw-template diff when a required parameter cannot be bound', async () => {
       const template: CloudFormationTemplate = {
         Parameters: { Req: { Type: 'String' } },
