@@ -266,3 +266,108 @@ describe('ProviderRegistry.findAutoRouteHits', () => {
     expect(hits).toEqual([]);
   });
 });
+
+describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallback)', () => {
+  // AWS::FSx::FileSystem is the canonical Tier 1 + NON_PROVISIONABLE type:
+  // its SDK provider deliberately leaves the Windows/ONTAP/OpenZFS config
+  // blocks unhandled (silent-drop entries in the generated coverage map),
+  // and Cloud Control has NO handlers for the type — so the #614 auto-route
+  // is not viable and must become a clear pre-flight error.
+  const FSX = 'AWS::FSx::FileSystem';
+
+  const fsxStub = (): ResourceProvider =>
+    ({ ...stubSdkProvider(), disableCcApiFallback: true }) as ResourceProvider;
+
+  it('getProviderFor throws a clear error instead of CC-routing a NON_PROVISIONABLE type', () => {
+    const registry = new ProviderRegistry();
+    registry.register(FSX, fsxStub());
+    expect(() =>
+      registry.getProviderFor({
+        resourceType: FSX,
+        properties: { FileSystemType: 'WINDOWS', WindowsConfiguration: { ThroughputCapacity: 8 } },
+      })
+    ).toThrow(/cannot fall back to Cloud Control API/);
+  });
+
+  it('validateResourceProperties rejects pre-flight with the property rationale and escape hatch', () => {
+    const registry = new ProviderRegistry();
+    registry.register(FSX, fsxStub());
+    expect(() =>
+      registry.validateResourceProperties([
+        {
+          logicalId: 'Fs',
+          resourceType: FSX,
+          properties: { FileSystemType: 'WINDOWS', WindowsConfiguration: { ThroughputCapacity: 8 } },
+        },
+      ])
+    ).toThrow(
+      /Fs: AWS::FSx::FileSystem uses properties[\s\S]*WindowsConfiguration[\s\S]*--allow-unsupported-properties AWS::FSx::FileSystem:WindowsConfiguration/
+    );
+  });
+
+  it('does not throw for a Lustre-only FSx template (no silent drops)', () => {
+    const registry = new ProviderRegistry();
+    const provider = fsxStub();
+    registry.register(FSX, provider);
+    const decision = registry.getProviderFor({
+      resourceType: FSX,
+      properties: {
+        FileSystemType: 'LUSTRE',
+        StorageCapacity: 1200,
+        SubnetIds: ['subnet-1'],
+        LustreConfiguration: { DeploymentType: 'SCRATCH_2' },
+      },
+    });
+    expect(decision.provider).toBe(provider);
+    expect(decision.provisionedBy).toBe('sdk');
+    expect(() =>
+      registry.validateResourceProperties([
+        {
+          logicalId: 'Fs',
+          resourceType: FSX,
+          properties: { FileSystemType: 'LUSTRE', LustreConfiguration: {} },
+        },
+      ])
+    ).not.toThrow();
+  });
+
+  it('an --allow-unsupported-properties override still forces the SDK path (accepted drop)', () => {
+    const registry = new ProviderRegistry();
+    const provider = fsxStub();
+    registry.register(FSX, provider);
+    registry.allowUnsupportedProperties([`${FSX}:WindowsConfiguration`]);
+    const decision = registry.getProviderFor({
+      resourceType: FSX,
+      properties: { WindowsConfiguration: { ThroughputCapacity: 8 } },
+    });
+    expect(decision.provider).toBe(provider);
+    expect(decision.provisionedBy).toBe('sdk');
+    expect(() =>
+      registry.validateResourceProperties([
+        {
+          logicalId: 'Fs',
+          resourceType: FSX,
+          properties: { WindowsConfiguration: { ThroughputCapacity: 8 } },
+        },
+      ])
+    ).not.toThrow();
+  });
+
+  it('a provider-level disableCcApiFallback opt-out also blocks the auto-route (CC-provisionable type)', () => {
+    const fx = pickSilentDropFixture();
+    const registry = new ProviderRegistry();
+    const provider = { ...stubSdkProvider(), disableCcApiFallback: true } as ResourceProvider;
+    registry.register(fx.resourceType, provider);
+    expect(() =>
+      registry.getProviderFor({
+        resourceType: fx.resourceType,
+        properties: { [fx.property]: 'x' },
+      })
+    ).toThrow(/disableCcApiFallback/);
+    expect(() =>
+      registry.validateResourceProperties([
+        { logicalId: 'X', resourceType: fx.resourceType, properties: { [fx.property]: 'x' } },
+      ])
+    ).toThrow(/disableCcApiFallback/);
+  });
+});

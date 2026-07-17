@@ -108,6 +108,18 @@ const toBoolean = (v: unknown): boolean | undefined => {
  * slow FSx creates don't require a manual `--resource-timeout`.
  */
 export class FSxFileSystemProvider implements ResourceProvider {
+  /**
+   * Cloud Control has NO handlers for this type (`ProvisioningType:
+   * NON_PROVISIONABLE` in the CFn registry), so the deploy engine's #614
+   * silent-drop auto-route MUST NOT send a Windows/ONTAP/OpenZFS template
+   * to CC — it would fail at provisioning time with an opaque
+   * UnsupportedActionException. With this opt-out the ProviderRegistry
+   * rejects such templates pre-flight with a clear error instead.
+   * (The runtime Tier 3 set cannot express this: it excludes SDK-covered
+   * types by design, so `isNonProvisionable()` is false for this type.)
+   */
+  readonly disableCcApiFallback = true;
+
   private client: FSxClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('FSxFileSystemProvider');
