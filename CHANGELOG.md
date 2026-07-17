@@ -1,3 +1,10 @@
+# [0.239.0](https://github.com/go-to-k/cdkd/compare/v0.238.6...v0.239.0) (2026-07-17)
+
+
+### Features
+
+* **providers:** add SDK Provider for AWS::DLM::LifecyclePolicy ([#1056](https://github.com/go-to-k/cdkd/issues/1056)) ([78959c3](https://github.com/go-to-k/cdkd/commit/78959c3ebc05786abf31b80d7ed1545c99f7c200))
+
 ## [0.238.6](https://github.com/go-to-k/cdkd/compare/v0.238.5...v0.238.6) (2026-07-17)
 
 
