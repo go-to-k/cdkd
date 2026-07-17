@@ -6,7 +6,13 @@
 #
 #   Guard:   the target region must have neither the CDK bootstrap SSM
 #            parameter nor the CDK bootstrap asset bucket, and no cdkd
-#            bootstrap marker (pre-run cleanup removes one if present).
+#            bootstrap marker — a pre-existing marker means the region's
+#            default-named asset storage is genuinely in use (real assets
+#            may live there since #1002 PR 2), so the fixture fails fast
+#            instead of deleting it (issue #1052). The guard makes the
+#            EXIT-trap cleanup safe: any marker/bucket/repo present at
+#            exit was created by THIS run. The pre-run cleanup pass only
+#            deletes stack-scoped leftovers.
 #   Phase 1: deploy with --yes and NO prior bootstrap -> the auto-create
 #            info line + bucket/repo/marker creation appear in the deploy
 #            output; no legacy `cdk gc` notice; Lambda Code.S3Bucket points
@@ -45,7 +51,12 @@ CONTAINER_REPO="cdkd-container-assets-${ACCOUNT_ID}-${REGION}"
 CDK_SSM_PARAM="/cdk-bootstrap/hnb659fds/version"
 
 cleanup() {
-  echo "==> Cleanup: dropping stack state/resources + asset storage + marker"
+  # $1 = "prerun" skips the asset-storage deletion: a marker/bucket/repo
+  # that exists BEFORE this run is live storage we must not delete (the
+  # marker guard below fails fast on it instead). Without the arg (EXIT
+  # trap), asset storage is cleaned too — the guard guarantees anything
+  # present at exit was created by this run (issue #1052).
+  echo "==> Cleanup: dropping stack state/resources${1:+ (stack-scoped only)}"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -55,13 +66,17 @@ cleanup() {
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
-    aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
   fi
-  # Canonical per-region cdkd asset storage on the dedicated test account —
-  # objects are content-addressed and re-publishable, so force-remove.
-  aws s3 rb "s3://${ASSET_BUCKET}" --force >/dev/null 2>&1 || true
-  aws ecr delete-repository --repository-name "${CONTAINER_REPO}" \
-    --region "${REGION}" --force >/dev/null 2>&1 || true
+  if [ "${1:-}" != "prerun" ]; then
+    if [ -n "${STATE_BUCKET:-}" ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
+    fi
+    # Storage created by THIS run (auto-create) — objects are
+    # content-addressed and re-publishable, so force-remove.
+    aws s3 rb "s3://${ASSET_BUCKET}" --force >/dev/null 2>&1 || true
+    aws ecr delete-repository --repository-name "${CONTAINER_REPO}" \
+      --region "${REGION}" --force >/dev/null 2>&1 || true
+  fi
   aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STACK}" \
     --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null |
     tr '\t' '\n' | while read -r lg; do
@@ -94,13 +109,24 @@ if aws s3api head-bucket --bucket "cdk-hnb659fds-assets-${ACCOUNT_ID}-${REGION}"
 fi
 echo "    OK: ${REGION} is cdk-bootstrap-free"
 
+# Own-marker guard (issue #1052): a pre-existing cdkd bootstrap marker means
+# the region's default-named asset storage is genuinely in use — this
+# fixture creates AND deletes that storage, so never proceed over it.
+if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+  echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
+  echo "      Pick a marker-free region via CDKD_AUTO_CREATE_REGION." >&2
+  echo "      If this is a leftover from a previous crashed run of this fixture, clean it" >&2
+  echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
+  exit 1
+fi
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   pnpm install --ignore-workspace --prefer-offline
 fi
 
-echo "==> Pre-run cleanup"
-cleanup
+echo "==> Pre-run cleanup (stack-scoped only)"
+cleanup prerun
 
 GC_NOTICE="may garbage-collect"
 AUTO_CREATE_LINE="Creating cdkd asset storage for region '${REGION}'"

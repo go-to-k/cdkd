@@ -19,10 +19,15 @@
 #            pushes to cdkd-container-assets-* and Lambda pulls it from there.
 #   Phase 6: destroy everything, sweep log groups, delete marker + storage.
 #
-# NOTE: cleanup deletes the account's CANONICAL cdkd asset storage
-# (cdkd-assets-{account}-{region} + repo + marker) — fine on the dedicated
-# test account: assets are content-addressed and re-publishable, and no
-# deployed stack survives this run.
+# SAFETY NOTE (issue #1052): this fixture opts the region into cdkd asset
+# storage and DELETES the default-named storage on exit. A pre-run guard
+# fails fast when the region already carries a cdkd bootstrap marker —
+# that marker belongs to live storage (real assets may live there since
+# #1002 PR 2) that this fixture must not delete; pick a marker-free region
+# via AWS_REGION. The guard makes the EXIT-trap cleanup safe: any
+# marker/bucket/repo present at exit was created by THIS run (assets are
+# content-addressed and re-publishable, and no deployed stack survives the
+# run). The pre-run cleanup pass only deletes stack-scoped leftovers.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -45,7 +50,12 @@ CDKD_BUCKET="cdkd-assets-${ACCOUNT_ID}-${REGION}"
 CDKD_REPO="cdkd-container-assets-${ACCOUNT_ID}-${REGION}"
 
 cleanup() {
-  echo "==> Cleanup: dropping stacks + asset storage + marker"
+  # $1 = "prerun" skips the asset-storage deletion: a marker/bucket/repo
+  # that exists BEFORE this run is live storage we must not delete (the
+  # marker guard below fails fast on it instead). Without the arg (EXIT
+  # trap), asset storage is cleaned too — the guard guarantees anything
+  # present at exit was created by this run (issue #1052).
+  echo "==> Cleanup: dropping stacks${1:+ (stack-scoped only)}"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
     for s in "${IMAGE_STACK}" "${STACK}"; do
@@ -63,12 +73,16 @@ cleanup() {
       --query 'Contents[].Key' --output text 2>/dev/null | tr '\t' '\n' | while read -r key; do
       [ -n "${key}" ] && aws s3 rm "s3://${STATE_BUCKET}/${key}" >/dev/null 2>&1
     done
-    aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
   fi
-  # Canonical cdkd asset storage — content-addressed, re-publishable.
-  aws s3 rb "s3://${CDKD_BUCKET}" --force >/dev/null 2>&1 || true
-  aws ecr delete-repository --repository-name "${CDKD_REPO}" \
-    --region "${REGION}" --force >/dev/null 2>&1 || true
+  if [ "${1:-}" != "prerun" ]; then
+    if [ -n "${STATE_BUCKET:-}" ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null 2>&1 || true
+    fi
+    # Storage created by THIS run — content-addressed, re-publishable.
+    aws s3 rb "s3://${CDKD_BUCKET}" --force >/dev/null 2>&1 || true
+    aws ecr delete-repository --repository-name "${CDKD_REPO}" \
+      --region "${REGION}" --force >/dev/null 2>&1 || true
+  fi
   # Functional invokes create /aws/lambda/* log groups — sweep them.
   aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/CdkdAssetMigration" \
     --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null |
@@ -95,8 +109,20 @@ if [ ! -d node_modules ]; then
   pnpm install --ignore-workspace --prefer-offline
 fi
 
-echo "==> Pre-run cleanup"
-cleanup
+echo "==> Pre-run cleanup (stack-scoped only)"
+cleanup prerun
+
+# Own-marker guard (issue #1052): this fixture opts the region in and then
+# deletes the default-named asset storage — never proceed over a
+# pre-existing marker (it belongs to live storage).
+if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
+  echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
+  echo "      This fixture bootstraps AND deletes the region's default-named storage;" >&2
+  echo "      run it in a CDK-bootstrapped region without a cdkd marker (via AWS_REGION)." >&2
+  echo "      If this is a leftover from a previous crashed run of this fixture, clean it" >&2
+  echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
+  exit 1
+fi
 
 GC_NOTICE="may garbage-collect"
 
