@@ -10,12 +10,15 @@
 #   1. Deploy the cluster (+ minimal VPC + EMR default roles). Assert via
 #      `aws emr describe-cluster` that it is WAITING/RUNNING, that the
 #      MasterPublicDNS output (Fn::GetAtt) matches AWS, that the baseline
-#      tags/StepConcurrencyLevel/VisibleToAllUsers reached AWS, and that
-#      state routes it via the SDK provider (provisionedBy=sdk).
+#      tags / StepConcurrencyLevel / AutoTerminationPolicy reached AWS, and
+#      that state routes it via the SDK provider (provisionedBy=sdk).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: StepConcurrencyLevel 1 -> 5
-#      (ModifyCluster) + VisibleToAllUsers true -> false
-#      (SetVisibleToAllUsers) + tag value change AND tag removal (AddTags /
-#      RemoveTags). Assert the ClusterId is UNCHANGED (in-place, no replace).
+#      (ModifyCluster) + AutoTerminationPolicy IdleTimeout 3600 -> 7200
+#      (PutAutoTerminationPolicy) + tag value change AND tag removal (AddTags
+#      / RemoveTags). Assert the ClusterId is UNCHANGED (in-place, no replace).
+#      (VisibleToAllUsers is intentionally NOT exercised — AWS deprecated it,
+#      so SetVisibleToAllUsers(false) is a no-op; the provider still issues the
+#      call and its unit tests cover the mapping.)
 #   3. Destroy + assert the cluster is TERMINATED (an EMR cluster bills per
 #      instance-hour, so a leftover is never acceptable) with no ACTIVE
 #      cluster carrying the fixture tag, and the cdkd state file is removed.

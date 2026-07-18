@@ -74,7 +74,14 @@ const MUTABLE_TOP_LEVEL_PROPS = new Set<string>([
   'AutoTerminationPolicy',
 ]);
 
-const toNumber = (v: unknown): number | undefined => (v === undefined ? undefined : Number(v));
+const toNumber = (v: unknown): number | undefined => {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  // A non-numeric template value (e.g. an unresolved intrinsic that slipped
+  // through) coerces to NaN; forwarding NaN to the SDK is worse than dropping
+  // the field, so treat it as absent.
+  return Number.isNaN(n) ? undefined : n;
+};
 
 const toBoolean = (v: unknown): boolean | undefined => {
   if (v === undefined) return undefined;
@@ -183,9 +190,18 @@ export class EMRClusterProvider implements ResourceProvider {
    * `max(getMinResourceTimeoutMs(), globalCliDefault)` so EMR's slow
    * create/terminate polling fits inside the resource deadline without the
    * user passing `--resource-timeout`.
+   *
+   * Return the poll ceiling PLUS one poll interval (not exactly `maxWaitMs`):
+   * the deploy engine's `withResourceDeadline` is a non-cancelling
+   * `Promise.race`, so if the external deadline were exactly equal to the
+   * internal poll ceiling the two could fire together and the external one
+   * could win — leaving the internal timeout + best-effort rollback terminate
+   * un-run and (if the CLI then exits) a live cluster billing. The extra
+   * interval guarantees the internal `waitForCluster*` timeout fires first and
+   * the rollback path always runs.
    */
   getMinResourceTimeoutMs(): number {
-    return this.maxWaitMs;
+    return this.maxWaitMs + this.pollIntervalMs;
   }
 
   // ─── CREATE ────────────────────────────────────────────────────────
@@ -205,58 +221,61 @@ export class EMRClusterProvider implements ResourceProvider {
 
     this.logger.debug(`Creating EMR Cluster ${logicalId}`);
 
-    const tags = properties['Tags'] as Tag[] | undefined;
-    const input = {
-      Name: properties['Name'] as string,
-      ReleaseLabel: properties['ReleaseLabel'] as string | undefined,
-      ServiceRole: properties['ServiceRole'] as string | undefined,
-      JobFlowRole: properties['JobFlowRole'] as string | undefined,
-      LogUri: properties['LogUri'] as string | undefined,
-      LogEncryptionKmsKeyId: properties['LogEncryptionKmsKeyId'] as string | undefined,
-      AdditionalInfo: properties['AdditionalInfo'] as string | undefined,
-      AutoScalingRole: properties['AutoScalingRole'] as string | undefined,
-      ScaleDownBehavior: properties['ScaleDownBehavior'] as
-        | import('@aws-sdk/client-emr').ScaleDownBehavior
-        | undefined,
-      CustomAmiId: properties['CustomAmiId'] as string | undefined,
-      OSReleaseLabel: properties['OSReleaseLabel'] as string | undefined,
-      SecurityConfiguration: properties['SecurityConfiguration'] as string | undefined,
-      EbsRootVolumeSize: toNumber(properties['EbsRootVolumeSize']),
-      EbsRootVolumeIops: toNumber(properties['EbsRootVolumeIops']),
-      EbsRootVolumeThroughput: toNumber(properties['EbsRootVolumeThroughput']),
-      StepConcurrencyLevel: toNumber(properties['StepConcurrencyLevel']),
-      VisibleToAllUsers: toBoolean(properties['VisibleToAllUsers']),
-      Applications: properties['Applications'] as
-        | import('@aws-sdk/client-emr').Application[]
-        | undefined,
-      Configurations: properties['Configurations'] as
-        | import('@aws-sdk/client-emr').Configuration[]
-        | undefined,
-      BootstrapActions: properties['BootstrapActions'] as
-        | import('@aws-sdk/client-emr').BootstrapActionConfig[]
-        | undefined,
-      Steps: properties['Steps'] as import('@aws-sdk/client-emr').StepConfig[] | undefined,
-      KerberosAttributes: properties['KerberosAttributes'] as
-        | import('@aws-sdk/client-emr').KerberosAttributes
-        | undefined,
-      PlacementGroupConfigs: properties['PlacementGroupConfigs'] as
-        | import('@aws-sdk/client-emr').PlacementGroupConfig[]
-        | undefined,
-      ManagedScalingPolicy: this.toManagedScalingPolicy(
-        properties['ManagedScalingPolicy'] as Record<string, unknown> | undefined
-      ),
-      AutoTerminationPolicy: this.toAutoTerminationPolicy(
-        properties['AutoTerminationPolicy'] as Record<string, unknown> | undefined
-      ),
-      Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
-      Instances: this.toJobFlowInstancesConfig(
-        properties['Instances'] as Record<string, unknown> | undefined
-      ),
-    };
-
     let clusterId: string | undefined;
 
     try {
+      // Build the RunJobFlow input INSIDE the try so a malformed template value
+      // (e.g. a bad Instances shape) surfaces as a wrapped ProvisioningError
+      // rather than a raw throw.
+      const tags = properties['Tags'] as Tag[] | undefined;
+      const input = {
+        Name: properties['Name'] as string,
+        ReleaseLabel: properties['ReleaseLabel'] as string | undefined,
+        ServiceRole: properties['ServiceRole'] as string | undefined,
+        JobFlowRole: properties['JobFlowRole'] as string | undefined,
+        LogUri: properties['LogUri'] as string | undefined,
+        LogEncryptionKmsKeyId: properties['LogEncryptionKmsKeyId'] as string | undefined,
+        AdditionalInfo: properties['AdditionalInfo'] as string | undefined,
+        AutoScalingRole: properties['AutoScalingRole'] as string | undefined,
+        ScaleDownBehavior: properties['ScaleDownBehavior'] as
+          | import('@aws-sdk/client-emr').ScaleDownBehavior
+          | undefined,
+        CustomAmiId: properties['CustomAmiId'] as string | undefined,
+        OSReleaseLabel: properties['OSReleaseLabel'] as string | undefined,
+        SecurityConfiguration: properties['SecurityConfiguration'] as string | undefined,
+        EbsRootVolumeSize: toNumber(properties['EbsRootVolumeSize']),
+        EbsRootVolumeIops: toNumber(properties['EbsRootVolumeIops']),
+        EbsRootVolumeThroughput: toNumber(properties['EbsRootVolumeThroughput']),
+        StepConcurrencyLevel: toNumber(properties['StepConcurrencyLevel']),
+        VisibleToAllUsers: toBoolean(properties['VisibleToAllUsers']),
+        Applications: properties['Applications'] as
+          | import('@aws-sdk/client-emr').Application[]
+          | undefined,
+        Configurations: properties['Configurations'] as
+          | import('@aws-sdk/client-emr').Configuration[]
+          | undefined,
+        BootstrapActions: properties['BootstrapActions'] as
+          | import('@aws-sdk/client-emr').BootstrapActionConfig[]
+          | undefined,
+        Steps: properties['Steps'] as import('@aws-sdk/client-emr').StepConfig[] | undefined,
+        KerberosAttributes: properties['KerberosAttributes'] as
+          | import('@aws-sdk/client-emr').KerberosAttributes
+          | undefined,
+        PlacementGroupConfigs: properties['PlacementGroupConfigs'] as
+          | import('@aws-sdk/client-emr').PlacementGroupConfig[]
+          | undefined,
+        ManagedScalingPolicy: this.toManagedScalingPolicy(
+          properties['ManagedScalingPolicy'] as Record<string, unknown> | undefined
+        ),
+        AutoTerminationPolicy: this.toAutoTerminationPolicy(
+          properties['AutoTerminationPolicy'] as Record<string, unknown> | undefined
+        ),
+        Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
+        Instances: this.toJobFlowInstancesConfig(
+          properties['Instances'] as Record<string, unknown> | undefined
+        ),
+      };
+
       const response = await this.getClient().send(new RunJobFlowCommand(input));
       clusterId = response.JobFlowId;
       if (!clusterId) {
@@ -283,6 +302,18 @@ export class EMRClusterProvider implements ResourceProvider {
       // Best-effort terminate it here.
       if (clusterId !== undefined) {
         try {
+          // If the template requested Instances.TerminationProtected: true the
+          // cluster is PROTECTED, and TerminateJobFlows would 400 with a
+          // ValidationException — leaving a live billing cluster, the exact
+          // outcome this rollback exists to prevent. Flip protection off first
+          // (idempotent — EMR accepts it when already false), mirroring the
+          // delete path, then terminate.
+          await this.getClient().send(
+            new SetTerminationProtectionCommand({
+              JobFlowIds: [clusterId],
+              TerminationProtected: false,
+            })
+          );
           await this.getClient().send(new TerminateJobFlowsCommand({ JobFlowIds: [clusterId] }));
           this.logger.warn(`Rolled back partially-created EMR Cluster ${clusterId}`);
         } catch (cleanupError) {
@@ -414,18 +445,22 @@ export class EMRClusterProvider implements ResourceProvider {
   ): ManagedScalingPolicy | undefined {
     if (!config) return undefined;
     const limits = config['ComputeLimits'] as Record<string, unknown> | undefined;
+    // ComputeLimits is required for a valid managed-scaling policy. Without it
+    // there is nothing to PutManagedScalingPolicy — return undefined so both
+    // create (no ManagedScalingPolicy set) and update (routes to
+    // RemoveManagedScalingPolicy) do the right thing instead of sending an
+    // empty policy AWS rejects.
+    if (!limits) return undefined;
     return {
-      ComputeLimits: limits
-        ? {
-            UnitType: limits['UnitType'] as
-              | import('@aws-sdk/client-emr').ComputeLimitsUnitType
-              | undefined,
-            MinimumCapacityUnits: toNumber(limits['MinimumCapacityUnits']),
-            MaximumCapacityUnits: toNumber(limits['MaximumCapacityUnits']),
-            MaximumOnDemandCapacityUnits: toNumber(limits['MaximumOnDemandCapacityUnits']),
-            MaximumCoreCapacityUnits: toNumber(limits['MaximumCoreCapacityUnits']),
-          }
-        : undefined,
+      ComputeLimits: {
+        UnitType: limits['UnitType'] as
+          | import('@aws-sdk/client-emr').ComputeLimitsUnitType
+          | undefined,
+        MinimumCapacityUnits: toNumber(limits['MinimumCapacityUnits']),
+        MaximumCapacityUnits: toNumber(limits['MaximumCapacityUnits']),
+        MaximumOnDemandCapacityUnits: toNumber(limits['MaximumOnDemandCapacityUnits']),
+        MaximumCoreCapacityUnits: toNumber(limits['MaximumCoreCapacityUnits']),
+      },
       UtilizationPerformanceIndex: toNumber(config['UtilizationPerformanceIndex']),
       ScalingStrategy: config['ScalingStrategy'] as
         | import('@aws-sdk/client-emr').ScalingStrategy

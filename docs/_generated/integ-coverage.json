@@ -1547,6 +1547,7 @@
         "ec2-vpc",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "emr-cluster",
         "fsx-lustre",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1604,6 +1605,10 @@
         ],
         "elasticache-replicationgroup-getatt": [
           "l2"
+        ],
+        "emr-cluster": [
+          "l2",
+          "literal"
         ],
         "fsx-lustre": [
           "literal"

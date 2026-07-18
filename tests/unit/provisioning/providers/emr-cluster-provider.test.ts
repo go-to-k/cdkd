@@ -214,15 +214,20 @@ describe('EMRClusterProvider create', () => {
     routeSend({
       RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
       DescribeClusterCommand: [clusterOf('STARTING'), clusterOf('TERMINATED_WITH_ERRORS')],
+      SetTerminationProtectionCommand: {},
       TerminateJobFlowsCommand: {},
     });
 
     await expect(newProvider().create('MyCluster', RESOURCE_TYPE, { ...BASE_PROPS })).rejects.toThrow(
       ProvisioningError
     );
-    // Rolled back to avoid billing.
+    // Rolled back to avoid billing: flip protection off, then terminate.
     expect(callsOf(TerminateJobFlowsCommand)).toHaveLength(1);
     expect(callsOf(TerminateJobFlowsCommand)[0]!.input['JobFlowIds']).toEqual([CLUSTER_ID]);
+    const names = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+    expect(names.indexOf('SetTerminationProtectionCommand')).toBeLessThan(
+      names.indexOf('TerminateJobFlowsCommand')
+    );
   });
 
   it('errors when RunJobFlow returns no JobFlowId (and does not attempt a rollback terminate)', async () => {
@@ -555,5 +560,147 @@ describe('EMRClusterProvider getAttribute', () => {
     routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
     const result = await newProvider().getAttribute(CLUSTER_ID, RESOURCE_TYPE, 'Nope');
     expect(result).toBeUndefined();
+  });
+});
+
+/** A transient throttling error the poll loop should absorb (up to its budget). */
+function throttle(): Error {
+  const e = new Error('Rate exceeded');
+  e.name = 'ThrottlingException';
+  return e;
+}
+
+describe('EMRClusterProvider polling + error paths', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('absorbs transient DescribeCluster throttles under the budget during a create poll', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      // 3 consecutive throttles (< maxConsecutiveTransient=5) then WAITING.
+      DescribeClusterCommand: [throttle(), throttle(), throttle(), clusterOf('WAITING')],
+    });
+    const result = await newProvider().create('MyCluster', RESOURCE_TYPE, { ...BASE_PROPS });
+    expect(result.physicalId).toBe(CLUSTER_ID);
+  });
+
+  it('rethrows when consecutive DescribeCluster throttles exceed the budget, and rolls back', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: throttle(), // always throttles → exceeds budget
+      SetTerminationProtectionCommand: {},
+      TerminateJobFlowsCommand: {},
+    });
+    await expect(
+      newProvider().create('MyCluster', RESOURCE_TYPE, { ...BASE_PROPS })
+    ).rejects.toThrow(ProvisioningError);
+    expect(callsOf(TerminateJobFlowsCommand)).toHaveLength(1);
+  });
+
+  it('rolls back on a create timeout, flipping SetTerminationProtection(false) BEFORE terminating', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: clusterOf('STARTING'), // never reaches WAITING
+      SetTerminationProtectionCommand: {},
+      TerminateJobFlowsCommand: {},
+    });
+    await expect(
+      newProvider({ maxWaitMs: 30 }).create('MyCluster', RESOURCE_TYPE, {
+        ...BASE_PROPS,
+        // A PROTECTED cluster: a naive rollback terminate would 400 and leak billing.
+        Instances: { ...BASE_PROPS.Instances, TerminationProtected: true },
+      })
+    ).rejects.toThrow(/Timed out/);
+
+    expect(callsOf(SetTerminationProtectionCommand)[0]!.input).toEqual({
+      JobFlowIds: [CLUSTER_ID],
+      TerminationProtected: false,
+    });
+    const names = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+    expect(names.indexOf('SetTerminationProtectionCommand')).toBeLessThan(
+      names.indexOf('TerminateJobFlowsCommand')
+    );
+  });
+
+  it('treats an InvalidRequestException raised DURING the termination poll as gone', async () => {
+    routeSend({
+      // pre-check WAITING (proceeds to terminate), then the poll read IREs (gone).
+      DescribeClusterCommand: [clusterOf('WAITING'), invalidRequest()],
+      TerminateJobFlowsCommand: {},
+    });
+    await expect(
+      newProvider().delete('MyCluster', CLUSTER_ID, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+      })
+    ).resolves.toBeUndefined();
+    expect(callsOf(TerminateJobFlowsCommand)).toHaveLength(1);
+  });
+
+  it('wraps a non-NotFound describe error in the delete pre-check (no terminate)', async () => {
+    routeSend({ DescribeClusterCommand: new Error('AccessDenied') });
+    await expect(
+      newProvider().delete('MyCluster', CLUSTER_ID, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+      })
+    ).rejects.toThrow(/before deletion/);
+    expect(callsOf(TerminateJobFlowsCommand)).toHaveLength(0);
+  });
+
+  it('wraps a TerminateJobFlows failure in a ProvisioningError', async () => {
+    routeSend({
+      DescribeClusterCommand: clusterOf('WAITING'),
+      TerminateJobFlowsCommand: new Error('boom'),
+    });
+    await expect(
+      newProvider().delete('MyCluster', CLUSTER_ID, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+      })
+    ).rejects.toThrow(/Failed to terminate/);
+  });
+
+  it('succeeds on an update even when the post-update attribute refresh fails (best-effort)', async () => {
+    routeSend({
+      ModifyClusterCommand: {},
+      DescribeClusterCommand: new Error('transient describe failure'),
+    });
+    const result = await newProvider().update(
+      'MyCluster',
+      CLUSTER_ID,
+      RESOURCE_TYPE,
+      { ...BASE_PROPS, StepConcurrencyLevel: 5 },
+      { ...BASE_PROPS, StepConcurrencyLevel: 1 }
+    );
+    expect(result).toEqual({ physicalId: CLUSTER_ID, wasReplaced: false });
+    expect(callsOf(ModifyClusterCommand)).toHaveLength(1);
+  });
+
+  it('removes the managed-scaling policy when the desired policy has no ComputeLimits', async () => {
+    routeSend({
+      RemoveManagedScalingPolicyCommand: {},
+      DescribeClusterCommand: clusterOf('WAITING'),
+    });
+    const policy = { ComputeLimits: { UnitType: 'Instances', MinimumCapacityUnits: 1, MaximumCapacityUnits: 4 } };
+    await newProvider().update(
+      'MyCluster',
+      CLUSTER_ID,
+      RESOURCE_TYPE,
+      { ...BASE_PROPS, ManagedScalingPolicy: {} }, // present but empty → not a valid Put
+      { ...BASE_PROPS, ManagedScalingPolicy: policy }
+    );
+    expect(callsOf(RemoveManagedScalingPolicyCommand)).toHaveLength(1);
+    expect(callsOf(PutManagedScalingPolicyCommand)).toHaveLength(0);
+  });
+
+  it('drops a non-numeric StepConcurrencyLevel instead of forwarding NaN to RunJobFlow', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: [clusterOf('WAITING')],
+    });
+    await newProvider().create('MyCluster', RESOURCE_TYPE, {
+      ...BASE_PROPS,
+      StepConcurrencyLevel: 'not-a-number',
+    });
+    expect(callsOf(RunJobFlowCommand)[0]!.input['StepConcurrencyLevel']).toBeUndefined();
   });
 });
