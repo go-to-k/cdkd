@@ -850,6 +850,30 @@ describe('CodeCommitRepositoryProvider', () => {
       expect(result?.Tags).toEqual([]);
     });
 
+    it('detects drift on a changed tag value', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ tags: { env: 'prod' } }); // AWS has env=prod
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      const drifts = calculateResourceDrift(
+        {
+          RepositoryName: 'my-repo',
+          Tags: [{ Key: 'env', Value: 'dev' }], // state has env=dev
+        },
+        current!,
+        { ignorePaths: provider.getDriftUnknownPaths('AWS::CodeCommit::Repository') }
+      );
+      expect(drifts).toEqual([
+        { path: 'Tags', stateValue: [{ Key: 'env', Value: 'dev' }], awsValue: [{ Key: 'env', Value: 'prod' }] },
+      ]);
+    });
+
     it('returns undefined when the repository no longer exists (drift-unknown)', async () => {
       mockSend.mockRejectedValueOnce(notFound());
 
@@ -859,6 +883,34 @@ describe('CodeCommitRepositoryProvider', () => {
         'AWS::CodeCommit::Repository'
       );
 
+      expect(current).toBeUndefined();
+    });
+
+    it('returns undefined when GetRepository resolves with no metadata (drift-unknown)', async () => {
+      mockSend.mockResolvedValueOnce({}); // no repositoryMetadata
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      expect(current).toBeUndefined();
+      expect(mockSend).toHaveBeenCalledTimes(1); // no ListTagsForResource
+    });
+
+    it('treats a repo deleted BETWEEN GetRepository and ListTagsForResource as drift-unknown', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository succeeds
+        .mockRejectedValueOnce(notFound()); // ListTagsForResource: repo gone mid-read
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      // Must not abort the whole drift run — reported as drift-unknown.
       expect(current).toBeUndefined();
     });
 

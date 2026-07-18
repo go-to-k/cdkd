@@ -456,7 +456,18 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * Returns `undefined` when the repository no longer exists (or
    * `GetRepository` returns no metadata) so the caller reports it as
    * drift-unknown rather than throwing — mirrors the optional `import`
-   * method's incremental opt-in shape.
+   * method's incremental opt-in shape. A repository deleted BETWEEN the
+   * `GetRepository` and `ListTagsForResource` calls (a race with a
+   * concurrent destroy) is handled the same way rather than aborting the
+   * whole `cdkd drift` run.
+   *
+   * Caveat: `KmsKeyId` is returned as AWS resolves it — the full key ARN.
+   * On the normal drift path the baseline is `observedProperties` (captured
+   * via this same method at deploy time), so ARN == ARN and there is no
+   * phantom drift; but on the `properties`-fallback path (older state with
+   * no `observedProperties`) a template that set `KmsKeyId` as an alias or
+   * bare key id would phantom-drift against the returned ARN. This is a
+   * general fallback-path limitation shared with other providers.
    */
   async readCurrentState(
     physicalId: string,
@@ -472,7 +483,26 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     }
     if (!metadata) return undefined;
 
-    const result: Record<string, unknown> = {
+    // Tags via ListTagsForResource (needs the repository ARN — CodeCommit's
+    // tag map is a flat `Record<string, string>`, normalized back to the CFn
+    // list shape). GetRepository does not return tags inline. `?? []` when
+    // the ARN is somehow absent so `Tags` is always emitted. A repo deleted
+    // between the two reads throws NotFound here — treat that as drift-unknown
+    // (return undefined) instead of letting one racing delete abort the run.
+    let tags: Array<{ Key: string; Value: string }> = [];
+    if (metadata.Arn) {
+      try {
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ resourceArn: metadata.Arn })
+        );
+        tags = normalizeAwsTagsToCfn(tagsResp.tags);
+      } catch (err) {
+        if (err instanceof RepositoryDoesNotExistException) return undefined;
+        throw err;
+      }
+    }
+
+    return {
       RepositoryName: metadata.repositoryName ?? '',
       RepositoryDescription: metadata.repositoryDescription ?? '',
       // AWS always assigns an encryption key (the AWS-managed
@@ -480,22 +510,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // effectively never undefined; the `?? ''` placeholder satisfies the
       // always-emit convention for this mutable field regardless.
       KmsKeyId: metadata.kmsKeyId ?? '',
-      // Tags via ListTagsForResource (needs the repository ARN — CodeCommit's
-      // tag map is a flat `Record<string, string>`, normalized back to the CFn
-      // list shape). GetRepository does not return tags inline. `?? []` when
-      // the ARN is somehow absent so `Tags` is always emitted.
-      Tags: metadata.Arn
-        ? normalizeAwsTagsToCfn(
-            (
-              await this.getClient().send(
-                new ListTagsForResourceCommand({ resourceArn: metadata.Arn })
-              )
-            ).tags
-          )
-        : [],
+      Tags: tags,
     };
-
-    return result;
   }
 
   /**
