@@ -24,9 +24,14 @@ One stack with a single resource:
    interruption" (the registry schema's `createOnlyProperties` is empty), so
    an UPDATE with a new name must issue `UpdateRepositoryName` — verified by
    asserting the repository ID survives the rename.
-4. **Update**: `UpdateRepositoryDescription`, plus tag change AND tag
+4. **Drift** (issue #1065): `readCurrentState` maps `GetRepository` +
+   `ListTagsForResource` back to the flat CFn `RepositoryDescription` /
+   `KmsKeyId` / `Tags` inputs. A freshly-deployed repo reports zero drift; an
+   out-of-band `UpdateRepositoryDescription` is detected as drift (exit 1),
+   then reverted so state and AWS realign.
+5. **Update**: `UpdateRepositoryDescription`, plus tag change AND tag
    REMOVAL via `UntagResource` (the ECR issue #981 regression class).
-5. **Destroy**: `DeleteRepository` + state cleanup.
+6. **Destroy**: `DeleteRepository` + state cleanup.
 
 ## Run
 
@@ -34,9 +39,11 @@ One stack with a single resource:
 STATE_BUCKET=<your-cdkd-state-bucket> ./verify.sh
 ```
 
-Phases: (1) deploy + assert description/tags/Ref-id, (2) `CDKD_TEST_UPDATE=true`
-re-deploy with rename + description change + `env` tag change + `team` tag
-removal, (3) destroy + assert the repository and state file are gone.
+Phases: (1) deploy + assert description/tags/Ref-id, (1b) drift clean after
+deploy → out-of-band description change detected as drift → revert,
+(2) `CDKD_TEST_UPDATE=true` re-deploy with rename + description change + `env`
+tag change + `team` tag removal, (3) destroy + assert the repository and state
+file are gone.
 
 If Phase 1 fails with a new-customer access error, the AWS account has not
 been (re-)enabled for CodeCommit — the provider cannot be integ-verified on
