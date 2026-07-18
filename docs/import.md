@@ -441,6 +441,11 @@ the SDK provider exists for create / update / delete / readCurrentState
 but has not yet been wired for `import()`. Track-able via a follow-up
 that adds tag-based auto-lookup over `DescribeAutoScalingGroups`.
 
+`AWS::EMR::Cluster` is likewise unsupported for import in its initial
+provider — create / update / delete are implemented, but `import()` is
+not yet wired. Track-able via a follow-up that adds tag-based auto-lookup
+over `ListClusters` + `DescribeCluster`.
+
 ### Adding a new entry
 
 When adding `import()` support to a provider, add the resource type to

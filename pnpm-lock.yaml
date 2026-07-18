@@ -89,6 +89,9 @@ importers:
       '@aws-sdk/client-elasticache':
         specifier: ^3.1018.0
         version: 3.1018.0
+      '@aws-sdk/client-emr':
+        specifier: ^3.1088.0
+        version: 3.1089.0
       '@aws-sdk/client-eventbridge':
         specifier: ^3.1017.0
         version: 3.1018.0
@@ -473,6 +476,10 @@ packages:
 
   '@aws-sdk/client-elasticache@3.1018.0':
     resolution: {integrity: sha512-SPkP6CZ8C6CPZmyz0CithnX+Q/GztW0AbjbuUyQkycHSkEAZ7H+DeH+CzzwN1/8rWMd7WJEF7CjE5WFatYh4Qg==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-emr@3.1089.0':
+    resolution: {integrity: sha512-SMMIF0bncxwH6TZ12srnLn1hzqFk76VvofKMcpWyVknIaGLkhvlZ2m3cT3QAjA/wW6IGcE2K2BzpE8aNZR20mw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-eventbridge@3.1018.0':
@@ -6026,6 +6033,17 @@ snapshots:
       tslib: 2.8.1
     transitivePeerDependencies:
       - aws-crt
+
+  '@aws-sdk/client-emr@3.1089.0':
+    dependencies:
+      '@aws-sdk/core': 3.975.3
+      '@aws-sdk/credential-provider-node': 3.972.70
+      '@aws-sdk/types': 3.974.2
+      '@smithy/core': 3.29.4
+      '@smithy/fetch-http-handler': 5.6.6
+      '@smithy/node-http-handler': 4.9.6
+      '@smithy/types': 4.16.1
+      tslib: 2.8.1
 
   '@aws-sdk/client-eventbridge@3.1018.0':
     dependencies:

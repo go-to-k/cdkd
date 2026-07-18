@@ -764,6 +764,11 @@
       ]
     },
     {
+      "name": "emr-cluster",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "event-driven",
       "annotated": true,
       "scenarios": []
