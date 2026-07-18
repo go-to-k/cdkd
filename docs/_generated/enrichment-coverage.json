@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 126,
+    "classifiedCount": 127,
     "enriched": 5,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 107,
-    "allowListedTypes": 10
+    "sdkFallbackGap": 108,
+    "allowListedTypes": 11
   },
   "types": [
     {
@@ -1624,6 +1624,30 @@
         "TargetGroupArn",
         "TargetGroupFullName",
         "TargetGroupName"
+      ]
+    },
+    {
+      "resourceType": "AWS::EMR::Cluster",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id",
+        "MasterPublicDNS"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "MasterPublicDNS",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "MasterPublicDNS"
       ]
     },
     {

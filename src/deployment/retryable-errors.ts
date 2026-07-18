@@ -159,6 +159,17 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // deployment latency; cdkd retries. Surfaced by tests/integration/
   // propagation-races-2 (the fresh-instance-profile EC2 launch race edge).
   'Invalid IAM Instance Profile',
+  // EMR RunJobFlow: cdkd's fast SDK path creates the
+  // AWS::IAM::InstanceProfile (the cluster's JobFlowRole) only ~1s before
+  // RunJobFlow references it, but the instance profile takes a few seconds to
+  // propagate to EMR's validation layer, so EMR rejects the create with
+  // `Invalid InstanceProfile: <name>.` (note the ONE-WORD "InstanceProfile"
+  // and no "IAM" — the EC2 pattern above does NOT match this phrasing).
+  // Anchored on "Invalid InstanceProfile" so a genuinely typo'd / deleted
+  // profile only burns the bounded retries before surfacing. CloudFormation
+  // tolerates this via deployment latency; cdkd retries. Surfaced by
+  // tests/integration/emr-cluster (fresh EMR default-role instance profile).
+  'Invalid InstanceProfile',
   // CloudWatch Logs SubscriptionFilter: Kinesis stream eventual consistency
   // or SubscriptionFilter role propagation. CW Logs probes the destination
   // by delivering a test message; if the stream is freshly ACTIVE or the

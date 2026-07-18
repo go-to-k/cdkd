@@ -65,6 +65,7 @@ import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsume
 import { SchedulerScheduleProvider } from './providers/scheduler-schedule-provider.js';
 import { EFSProvider } from './providers/efs-provider.js';
 import { FSxFileSystemProvider } from './providers/fsx-filesystem-provider.js';
+import { EMRClusterProvider } from './providers/emr-cluster-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
 import { CodeBuildProvider } from './providers/codebuild-provider.js';
@@ -283,6 +284,13 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // Windows / ONTAP / OpenZFS config blocks are unhandledByDesign and
   // rejected by the property-coverage pre-flight.
   registry.register('AWS::FSx::FileSystem', new FSxFileSystemProvider());
+
+  // EMR — NON_PROVISIONABLE in the CFn registry, so no Cloud Control
+  // fallback exists (issue #1043). RunJobFlow-backed create + limited
+  // mutable update surface (termination protection / visibility /
+  // step concurrency / managed-scaling / auto-termination / tags);
+  // everything else is createOnly → replacement.
+  registry.register('AWS::EMR::Cluster', new EMRClusterProvider());
 
   // Firehose
   registry.register('AWS::KinesisFirehose::DeliveryStream', new FirehoseProvider());
