@@ -4228,6 +4228,7 @@
       "integs": [
         "bench-sdk",
         "cloudwatch",
+        "codecommit",
         "composite-stack",
         "conditions-and-if",
         "deep-getatt-chains",
@@ -4262,6 +4263,9 @@
           "l2"
         ],
         "cloudwatch": [
+          "l2"
+        ],
+        "codecommit": [
           "l2"
         ],
         "composite-stack": [
@@ -4360,12 +4364,16 @@
     {
       "resourceType": "AWS::SNS::TopicPolicy",
       "integs": [
+        "codecommit",
         "iam-propagation-stress",
         "migrate-from-cfn",
         "replacement-fanout",
         "sns-sqs-event"
       ],
       "signals": {
+        "codecommit": [
+          "l2"
+        ],
         "iam-propagation-stress": [
           "literal"
         ],

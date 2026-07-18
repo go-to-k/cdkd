@@ -6,10 +6,12 @@
 # This verifies the new SDK provider end to end.
 #
 # Phases:
-#   1. Deploy a repository with description + Tags env=dev, team=platform.
-#      Assert AWS reports the repo, its description, both tags, and that the
-#      stack outputs carry the repository ID (Ref parity — a GUID, not the
-#      name) + ARN + clone URL.
+#   1. Deploy a repository with description + Tags env=dev, team=platform, a
+#      `Code` seed (the seed/ dir committed to the initial commit on main), and
+#      a `Triggers` entry notifying an SNS topic. Assert AWS reports the repo,
+#      its description, both tags, the seeded file (GetFile), the trigger
+#      (GetRepositoryTriggers), and that the stack outputs carry the repository
+#      ID (Ref parity — a GUID, not the name) + ARN + clone URL.
 #   2. Re-deploy (CDKD_TEST_UPDATE=true) with the repository RENAMED (CFn
 #      marks RepositoryName "Update requires: No interruption" — must be an
 #      in-place UpdateRepositoryName, NOT delete+create: the repository ID
@@ -31,6 +33,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 REPO="cdkdcodecommitexample-repo"
 REPO_RENAMED="cdkdcodecommitexample-repo-renamed"
+TOPIC="cdkdcodecommitexample-triggers"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
@@ -41,6 +44,11 @@ cleanup() {
   fi
   aws codecommit delete-repository --repository-name "${REPO}" --region "${REGION}" >/dev/null 2>&1 || true
   aws codecommit delete-repository --repository-name "${REPO_RENAMED}" --region "${REGION}" >/dev/null 2>&1 || true
+  local acct
+  acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
+  if [ -n "${acct}" ]; then
+    aws sns delete-topic --topic-arn "arn:aws:sns:${REGION}:${acct}:${TOPIC}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -102,6 +110,22 @@ case "${OUT_ID}" in
   "${REPO}") echo "FAIL: Ref output is the repository NAME, expected the GUID id" >&2; exit 1 ;;
 esac
 echo "    Ref resolves to the repository ID (CFn parity)"
+
+# Code seed: the seed/ directory's README.md must be in the initial commit.
+echo "==> Phase 1: assert the Code seed committed README.md (GetFile)"
+if ! aws codecommit get-file --repository-name "${REPO}" --file-path README.md \
+  --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: seed file README.md not found in the repository (Code seed did not commit)" >&2; exit 1
+fi
+echo "    Code seed committed README.md on the initial commit"
+
+# Triggers: the SNS-backed trigger must be present via GetRepositoryTriggers.
+echo "==> Phase 1: assert the Triggers entry applied (GetRepositoryTriggers)"
+TRIGGER_NAME="$(aws codecommit get-repository-triggers --repository-name "${REPO}" \
+  --region "${REGION}" --query 'triggers[0].name' --output text)"
+echo "    trigger name: ${TRIGGER_NAME}"
+[ "${TRIGGER_NAME}" = "commit-notify" ] || { echo "FAIL: expected trigger 'commit-notify', got '${TRIGGER_NAME}'" >&2; exit 1; }
+echo "    Triggers entry applied via PutRepositoryTriggers"
 
 # --- Phase 1b: drift detection (readCurrentState) ----------------------
 # The provider's readCurrentState maps GetRepository + ListTagsForResource
@@ -165,9 +189,15 @@ if aws codecommit get-repository --repository-name "${REPO_RENAMED}" --region "$
   echo "FAIL: repo ${REPO_RENAMED} still exists after destroy" >&2; exit 1
 fi
 echo "    repo deleted"
+ACCT="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
+if [ -n "${ACCT}" ] && aws sns get-topic-attributes \
+  --topic-arn "arn:aws:sns:${REGION}:${ACCT}:${TOPIC}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: SNS topic ${TOPIC} still exists after destroy" >&2; exit 1
+fi
+echo "    SNS trigger topic deleted"
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
   echo "FAIL: state file still exists after destroy" >&2; exit 1
 fi
 echo "    cdkd state removed"
 
-echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity), in-place rename + tag untag on update, clean destroy, 3 phases passed"
+echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity+Code seed+SNS trigger), in-place rename + tag untag on update, clean destroy, 3 phases passed"
