@@ -350,7 +350,7 @@ describe('CodeCommitRepositoryProvider', () => {
       });
     });
 
-    it('omits optional customData/branches when absent', async () => {
+    it('omits optional customData but ALWAYS emits branches ([]) when absent (CodeCommit rejects null branches)', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
         .mockResolvedValueOnce({ configurationId: 'cfg-1' });
@@ -366,10 +366,13 @@ describe('CodeCommitRepositoryProvider', () => {
         ],
       });
 
+      // branches defaults to [] (all branches) — PutRepositoryTriggers fails
+      // with "branch name list cannot be null" if the field is absent.
       expect(mockSend.mock.calls[1][0].input.triggers[0]).toEqual({
         name: 't',
         destinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
         events: ['createReference', 'deleteReference'],
+        branches: [],
       });
     });
 

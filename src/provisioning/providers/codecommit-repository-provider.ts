@@ -115,14 +115,20 @@ function scalarToString(value: unknown): string {
 
 /**
  * Convert the CFn `Triggers` list shape to the CodeCommit SDK's
- * `RepositoryTrigger[]` (PascalCase → camelCase). `CustomData` / `Branches`
- * are only emitted when present so a re-order / equality comparison stays
- * stable, and `Events` / `Branches` are coerced to string arrays.
+ * `RepositoryTrigger[]` (PascalCase → camelCase). `Branches` is ALWAYS
+ * emitted (defaulting to `[]` when the template omits it) — CodeCommit's
+ * `PutRepositoryTriggers` rejects a trigger whose `branches` is null with
+ * "Repository trigger branch name list cannot be null", and an empty array
+ * means "all branches" (matching CFn's default when `Branches` is absent).
+ * `CustomData` is truly optional (emitted only when present) so a re-order /
+ * equality comparison stays stable. `Events` / `Branches` are coerced to
+ * string arrays.
  */
 function toSdkTriggers(triggers: CfnTrigger[] | undefined): RepositoryTrigger[] {
   if (!triggers || triggers.length === 0) return [];
   return triggers.map((t) => {
     const events: unknown[] = Array.isArray(t?.Events) ? t.Events : [];
+    const branches: unknown[] = Array.isArray(t?.Branches) ? t.Branches : [];
     const trigger: RepositoryTrigger = {
       name: scalarToString(t?.Name),
       destinationArn: scalarToString(t?.DestinationArn),
@@ -130,13 +136,10 @@ function toSdkTriggers(triggers: CfnTrigger[] | undefined): RepositoryTrigger[] 
       // are the same wire strings (`all` / `createReference` / ...), so the
       // coerced strings are cast to the enum type.
       events: events.map((e) => scalarToString(e)) as RepositoryTriggerEventEnum[],
+      branches: branches.map((b) => scalarToString(b)),
     };
     if (t?.CustomData !== undefined && t.CustomData !== null) {
       trigger.customData = scalarToString(t.CustomData);
-    }
-    if (Array.isArray(t?.Branches)) {
-      const branches: unknown[] = t.Branches;
-      trigger.branches = branches.map((b) => scalarToString(b));
     }
     return trigger;
   });

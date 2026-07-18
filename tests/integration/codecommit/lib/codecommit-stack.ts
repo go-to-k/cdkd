@@ -1,9 +1,14 @@
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as codecommit from 'aws-cdk-lib/aws-codecommit';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as iam from 'aws-cdk-lib/aws-iam';
+
+// The fixture runs as an ES module (`node` loads the .ts app via ESM), so
+// `__dirname` is undefined — derive it from import.meta.url.
+const thisDir = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Integ probe for the AWS::CodeCommit::Repository SDK provider (issues #1045,
@@ -66,7 +71,7 @@ export class CodeCommitStack extends cdk.Stack {
       description: isUpdate ? 'updated description' : 'initial description',
       // `Code` (create-only): the seed/ directory is zipped as a CDK file
       // asset and unpacked into the repository's initial commit on `main`.
-      code: codecommit.Code.fromDirectory(path.join(__dirname, '..', 'seed'), 'main'),
+      code: codecommit.Code.fromDirectory(path.join(thisDir, '..', 'seed'), 'main'),
     });
 
     // `Triggers` (mutable): notify the SNS topic on every repository event.
