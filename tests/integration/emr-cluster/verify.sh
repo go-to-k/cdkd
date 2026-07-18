@@ -96,9 +96,27 @@ cleanup() {
     --filters "Name=tag:Name,Values=${STACK}/Vpc" \
     --query 'Vpcs[].VpcId' --output text 2>/dev/null); do
     echo "    deleting leftover VPC ${vpcid}"
-    for sg in $(aws ec2 describe-security-groups --region "${REGION}" \
+    # EMR auto-creates ElasticMapReduce-master / -slave security groups in the
+    # cluster's VPC (NOT part of the CDK template, so cdkd's destroy never
+    # touches them) and they reference EACH OTHER, so a plain delete-security-
+    # group fails with DependencyViolation and orphans the whole VPC. Revoke
+    # every ingress/egress rule on all non-default SGs FIRST, then delete.
+    sgs="$(aws ec2 describe-security-groups --region "${REGION}" \
       --filters "Name=vpc-id,Values=${vpcid}" \
-      --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null); do
+      --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null)"
+    for sg in ${sgs}; do
+      ingress="$(aws ec2 describe-security-groups --region "${REGION}" --group-ids "${sg}" \
+        --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null)"
+      [ -n "${ingress}" ] && [ "${ingress}" != "[]" ] && \
+        aws ec2 revoke-security-group-ingress --region "${REGION}" --group-id "${sg}" \
+          --ip-permissions "${ingress}" >/dev/null 2>&1
+      egress="$(aws ec2 describe-security-groups --region "${REGION}" --group-ids "${sg}" \
+        --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null)"
+      [ -n "${egress}" ] && [ "${egress}" != "[]" ] && \
+        aws ec2 revoke-security-group-egress --region "${REGION}" --group-id "${sg}" \
+          --ip-permissions "${egress}" >/dev/null 2>&1
+    done
+    for sg in ${sgs}; do
       aws ec2 delete-security-group --group-id "${sg}" --region "${REGION}" >/dev/null 2>&1
     done
     for subnet in $(aws ec2 describe-subnets --region "${REGION}" \
@@ -168,9 +186,9 @@ if [ -z "${CID_P1}" ]; then
 fi
 echo "    cluster id: ${CID_P1}"
 
-read -r STATE_P1 STEP_P1 VISIBLE_P1 DNS_AWS <<EOF
+read -r STATE_P1 STEP_P1 DNS_AWS <<EOF
 $(aws emr describe-cluster --cluster-id "${CID_P1}" --region "${REGION}" \
-  --query 'Cluster.[Status.State,StepConcurrencyLevel,VisibleToAllUsers,MasterPublicDnsName]' \
+  --query 'Cluster.[Status.State,StepConcurrencyLevel,MasterPublicDnsName]' \
   --output text)
 EOF
 
@@ -184,11 +202,13 @@ if [ "${STEP_P1}" != "1" ]; then
   echo "FAIL: Phase 1 expected StepConcurrencyLevel 1, got '${STEP_P1}'" >&2
   exit 1
 fi
-if [ "${VISIBLE_P1}" != "True" ] && [ "${VISIBLE_P1}" != "true" ]; then
-  echo "FAIL: Phase 1 expected VisibleToAllUsers true, got '${VISIBLE_P1}'" >&2
+IDLE_P1="$(aws emr get-auto-termination-policy --cluster-id "${CID_P1}" --region "${REGION}" \
+  --query 'AutoTerminationPolicy.IdleTimeout' --output text 2>/dev/null)"
+if [ "${IDLE_P1}" != "3600" ]; then
+  echo "FAIL: Phase 1 expected AutoTerminationPolicy IdleTimeout 3600, got '${IDLE_P1}'" >&2
   exit 1
 fi
-echo "    baseline StepConcurrencyLevel=1, VisibleToAllUsers=true"
+echo "    baseline StepConcurrencyLevel=1, AutoTerminationPolicy IdleTimeout=3600"
 
 # Fn::GetAtt MasterPublicDNS output must match the AWS-side value.
 if [ -z "${DNS_OUT}" ] || [ "${DNS_OUT}" != "${DNS_AWS}" ]; then
@@ -217,7 +237,7 @@ fi
 echo "    cluster routed via SDK provider (provisionedBy=sdk)"
 
 # --- Phase 2: in-place update ------------------------------------------
-echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (step concurrency, visibility, tags)"
+echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (step concurrency, auto-termination, tags)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -228,16 +248,16 @@ if [ "${CID_P1}" != "${CID_P2}" ]; then
 fi
 echo "    cluster identity preserved (${CID_P2}) — in-place update"
 
-read -r STEP_P2 VISIBLE_P2 <<EOF
-$(aws emr describe-cluster --cluster-id "${CID_P2}" --region "${REGION}" \
-  --query 'Cluster.[StepConcurrencyLevel,VisibleToAllUsers]' --output text)
-EOF
+STEP_P2="$(aws emr describe-cluster --cluster-id "${CID_P2}" --region "${REGION}" \
+  --query 'Cluster.StepConcurrencyLevel' --output text)"
 if [ "${STEP_P2}" != "5" ]; then
-  echo "FAIL: Phase 2 expected StepConcurrencyLevel 5, got '${STEP_P2}'" >&2
+  echo "FAIL: Phase 2 expected StepConcurrencyLevel 5 (ModifyCluster), got '${STEP_P2}'" >&2
   exit 1
 fi
-if [ "${VISIBLE_P2}" != "False" ] && [ "${VISIBLE_P2}" != "false" ]; then
-  echo "FAIL: Phase 2 expected VisibleToAllUsers false, got '${VISIBLE_P2}'" >&2
+IDLE_P2="$(aws emr get-auto-termination-policy --cluster-id "${CID_P2}" --region "${REGION}" \
+  --query 'AutoTerminationPolicy.IdleTimeout' --output text 2>/dev/null)"
+if [ "${IDLE_P2}" != "7200" ]; then
+  echo "FAIL: Phase 2 expected AutoTerminationPolicy IdleTimeout 7200 (PutAutoTerminationPolicy), got '${IDLE_P2}'" >&2
   exit 1
 fi
 ENV_TAG_P2="$(aws emr describe-cluster --cluster-id "${CID_P2}" --region "${REGION}" \
@@ -252,7 +272,7 @@ if [ "${DROPME_P2}" != "None" ] && [ -n "${DROPME_P2}" ]; then
   echo "FAIL: Phase 2 expected tag 'dropme' to be REMOVED (RemoveTags), still '${DROPME_P2}'" >&2
   exit 1
 fi
-echo "    update reached AWS (StepConcurrencyLevel 5, VisibleToAllUsers false, env=changed, dropme removed)"
+echo "    update reached AWS (StepConcurrencyLevel 5, AutoTerminationPolicy IdleTimeout 7200, env=changed, dropme removed)"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (EMR termination takes a few minutes)"

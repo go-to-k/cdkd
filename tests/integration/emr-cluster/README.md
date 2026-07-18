@@ -28,10 +28,12 @@ EMR clusters).
    value, and that state routes the resource via the SDK provider
    (`provisionedBy=sdk`).
 2. **Update** (`CDKD_TEST_UPDATE=true`): `StepConcurrencyLevel` `1 -> 5`
-   (`ModifyCluster`), `VisibleToAllUsers` `true -> false`
-   (`SetVisibleToAllUsers`), tag value change AND tag removal (`AddTags` /
-   `RemoveTags`). Asserts the `ClusterId` is unchanged (in-place, no
-   replacement).
+   (`ModifyCluster`), `AutoTerminationPolicy.IdleTimeout` `3600 -> 7200`
+   (`PutAutoTerminationPolicy`), tag value change AND tag removal (`AddTags`
+   / `RemoveTags`). Asserts the `ClusterId` is unchanged (in-place, no
+   replacement). (`VisibleToAllUsers` is deliberately not exercised — AWS
+   deprecated it, so `SetVisibleToAllUsers(false)` is a no-op; the provider
+   still issues the call and its unit tests cover the mapping.)
 3. **Destroy** and assert the cluster is `TERMINATED` and the VPC / state
    are gone. A leftover running EMR cluster is never acceptable (per
    instance-hour billing) — the cleanup trap disables termination

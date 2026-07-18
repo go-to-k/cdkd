@@ -18,16 +18,21 @@ import type { Construct } from 'constructs';
  *
  * Smallest / cheapest legal shape: a single master node (1x m5.xlarge, no
  * core/task), `emr-7.9.0`, in a public subnet (no NAT). An
- * `AutoTerminationPolicy` idle-timeout of 1 hour bounds the worst-case cost
- * if a destroy is ever skipped — long enough not to race the normal
- * deploy/verify/destroy window, short enough to cap an orphan.
+ * `AutoTerminationPolicy` idle-timeout of 1 hour (baseline) bounds the
+ * worst-case cost if a destroy is ever skipped — long enough not to race the
+ * normal deploy/verify/destroy window, short enough to cap an orphan.
  *
  * UPDATE phase (CDKD_TEST_UPDATE=true) exercises the LIMITED mutable surface:
  *   - StepConcurrencyLevel 1 -> 5 (ModifyCluster)
- *   - VisibleToAllUsers true -> false (SetVisibleToAllUsers)
+ *   - AutoTerminationPolicy IdleTimeout 3600 -> 7200 (PutAutoTerminationPolicy)
  *   - Tag value change + tag REMOVAL (AddTags / RemoveTags)
  * All near-instant API calls against the SAME running cluster — the ClusterId
  * must stay unchanged (no replacement).
+ *
+ * NOTE: `VisibleToAllUsers` is intentionally NOT toggled/asserted here — AWS
+ * deprecated it, so `SetVisibleToAllUsers(false)` is a no-op and the value
+ * stays `true` (the provider still issues the call; its unit tests cover the
+ * mapping). An integ assertion on its effect would be permanently red.
  */
 export class EmrClusterStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -69,11 +74,11 @@ export class EmrClusterStack extends cdk.Stack {
       releaseLabel: 'emr-7.9.0',
       serviceRole: serviceRole.roleArn,
       jobFlowRole: instanceProfile.ref,
-      visibleToAllUsers: !isUpdate,
       stepConcurrencyLevel: isUpdate ? 5 : 1,
-      // Cap orphan cost if a destroy is ever skipped. 1h is well beyond the
-      // normal deploy+verify+destroy window, so it never races the test.
-      autoTerminationPolicy: { idleTimeout: 3600 },
+      // Cap orphan cost if a destroy is ever skipped. 1h/2h are well beyond
+      // the normal deploy+verify+destroy window, so it never races the test.
+      // The UPDATE phase bumps it to exercise PutAutoTerminationPolicy.
+      autoTerminationPolicy: { idleTimeout: isUpdate ? 7200 : 3600 },
       instances: {
         ec2SubnetId: vpc.publicSubnets[0].subnetId,
         // Single-node cluster: master only, stays alive with no steps.
