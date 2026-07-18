@@ -19,6 +19,12 @@ the SDK provider.
    `aws dlm get-lifecycle-policy` that the configuration reached AWS and
    that state routes the resource via the SDK provider
    (`provisionedBy=sdk`).
+1b. **Drift (zero)**: assert `cdkd drift` exits 0 on the freshly-deployed
+   policy. `GetLifecyclePolicy` returns `PolicyDetails` with server-injected
+   defaults (e.g. `PolicyLanguage: SIMPLIFIED`) the template never set; the
+   provider's `readCurrentState` + `getDriftUnknownPaths` exclude those so
+   they never register as phantom drift (issue #1067). A no-op deploy must
+   be drift-free.
 2. **Update** (`CDKD_TEST_UPDATE=true`): description change + State
    `ENABLED -> DISABLED` (UpdateLifecyclePolicy), tag value change AND
    tag removal (TagResource / UntagResource — the #981 regression
