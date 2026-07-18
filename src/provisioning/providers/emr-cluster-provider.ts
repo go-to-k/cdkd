@@ -3,6 +3,9 @@ import {
   RunJobFlowCommand,
   TerminateJobFlowsCommand,
   DescribeClusterCommand,
+  ListClustersCommand,
+  ListInstanceGroupsCommand,
+  ListInstanceFleetsCommand,
   SetTerminationProtectionCommand,
   SetVisibleToAllUsersCommand,
   ModifyClusterCommand,
@@ -16,6 +19,8 @@ import {
   type Cluster,
   type ClusterState,
   type JobFlowInstancesConfig,
+  type InstanceGroup,
+  type InstanceFleet,
   type InstanceGroupConfig,
   type InstanceFleetConfig,
   type InstanceRoleType,
@@ -27,10 +32,17 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -59,6 +71,19 @@ const TERMINAL_STATES: ReadonlySet<ClusterState> = new Set<ClusterState>([
   'TERMINATED',
   'TERMINATED_WITH_ERRORS',
 ]);
+
+/**
+ * Cluster states that mean "the cluster is alive" — the `ListClusters` filter
+ * used by `import()` discovery so a long-gone `TERMINATED*` cluster is never
+ * adopted. Everything except the two `TERMINAL_STATES`.
+ */
+const NON_TERMINATED_STATES: readonly ClusterState[] = [
+  'STARTING',
+  'BOOTSTRAPPING',
+  'RUNNING',
+  'WAITING',
+  'TERMINATING',
+];
 
 /**
  * Top-level CFn properties that map to a MUTABLE EMR API surface. Every other
@@ -937,5 +962,305 @@ export class EMRClusterProvider implements ResourceProvider {
       default:
         return undefined;
     }
+  }
+
+  // ─── IMPORT ────────────────────────────────────────────────────────
+
+  /**
+   * Adopt an existing EMR cluster into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <logicalId>=j-XXXX` override (`knownPhysicalId`) → verify
+   *     via `DescribeCluster`. There is no template name property that equals
+   *     the physical id — a cluster's id (`j-...`) is service-generated, while
+   *     the template `Name` is only the display name — so no name fallback
+   *     applies (`resolveExplicitPhysicalId(..., null)`).
+   *  2. Tag-based lookup: `ListClusters` filtered to the non-terminated states
+   *     (a `TERMINATED*` cluster is gone and must never be adopted), then a
+   *     `DescribeCluster` per candidate to read `Tags` (the list summaries do
+   *     NOT carry tags) and match `aws:cdk:path`.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, null);
+    if (explicit) {
+      const cluster = await this.describeClusterOrNull(explicit);
+      // A cluster that has aged out of DescribeCluster (returns null) or that
+      // is already terminated is not adoptable — report not-found so the
+      // import command marks it skipped rather than writing dead state.
+      if (!cluster || (cluster.Status?.State && TERMINAL_STATES.has(cluster.Status.State))) {
+        return null;
+      }
+      return { physicalId: explicit, attributes: this.buildAttributes(cluster) };
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListClustersCommand({
+          ClusterStates: [...NON_TERMINATED_STATES],
+          ...(marker && { Marker: marker }),
+        })
+      );
+      for (const summary of list.Clusters ?? []) {
+        if (!summary.Id) continue;
+        const cluster = await this.describeClusterOrNull(summary.Id);
+        if (!cluster) continue;
+        if (matchesCdkPath(cluster.Tags, input.cdkPath)) {
+          return { physicalId: summary.Id, attributes: this.buildAttributes(cluster) };
+        }
+      }
+      marker = list.Marker;
+    } while (marker);
+
+    return null;
+  }
+
+  /**
+   * `DescribeCluster` that maps a not-found (`InvalidRequestException` — the
+   * cluster id is unknown in this region / aged out of Describe) to `null`
+   * instead of throwing, so `import()` can treat it as "no match" rather than
+   * aborting the whole adoption run.
+   */
+  private async describeClusterOrNull(clusterId: string): Promise<Cluster | undefined> {
+    try {
+      const resp = await this.getClient().send(
+        new DescribeClusterCommand({ ClusterId: clusterId })
+      );
+      return resp.Cluster;
+    } catch (err) {
+      if (err instanceof InvalidRequestException) return undefined;
+      throw err;
+    }
+  }
+
+  // ─── DRIFT (readCurrentState) ──────────────────────────────────────
+
+  /**
+   * Read the currently-deployed properties for `cdkd drift` and to seed the
+   * `observedProperties` baseline right after `cdkd import`.
+   *
+   * The bulk of the work is reversing the flatten that `create()` applies to
+   * the CFn `Instances` block: `DescribeCluster` reports the cluster's
+   * `InstanceCollectionType`, and the instance groups / fleets themselves come
+   * from `ListInstanceGroups` / `ListInstanceFleets` as FLAT arrays with a
+   * per-entry `InstanceGroupType` / `InstanceFleetType` discriminator — the
+   * exact inverse of the role-keyed CFn `MasterInstanceGroup` /
+   * `CoreInstanceGroup` / `TaskInstanceGroups` (+ `*InstanceFleet(s)`) shape.
+   * `reverseInstancesToCfn` re-buckets them and folds in the flat
+   * `Ec2InstanceAttributes` (subnet / key name / security groups).
+   *
+   * Scope: the reversible property set — the reverse-mapped `Instances` block,
+   * `Tags` (via `normalizeAwsTagsToCfn`, `aws:*` stripped), and the top-level
+   * scalar fields `DescribeCluster` returns directly. Create-only sub-config
+   * that AWS does not read back faithfully (`ManagedScalingPolicy` /
+   * `AutoTerminationPolicy` — separate Get* APIs; `BootstrapActions` / `Steps`
+   * / `KerberosAttributes` / `Configurations` nesting / `AdditionalInfo` /
+   * `PlacementGroupConfigs`; `Instances` EBS / auto-scaling sub-specs) is
+   * declared in `getDriftUnknownPaths` so the drift comparator skips it on the
+   * `properties`-fallback path instead of firing a guaranteed false positive.
+   * On the normal path the baseline is `observedProperties` (captured via this
+   * same method), so observed == current and there is no phantom drift.
+   *
+   * Returns `undefined` when the cluster is gone (`InvalidRequestException`)
+   * so the caller reports drift-unknown rather than throwing — mirrors the
+   * optional `import` method's incremental opt-in shape.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const cluster = await this.describeClusterOrNull(physicalId);
+    if (!cluster) return undefined;
+
+    let instanceGroups: InstanceGroup[] = [];
+    let instanceFleets: InstanceFleet[] = [];
+    if (cluster.InstanceCollectionType === 'INSTANCE_FLEET') {
+      instanceFleets = await this.listInstanceFleets(physicalId);
+    } else {
+      instanceGroups = await this.listInstanceGroups(physicalId);
+    }
+
+    const out: Record<string, unknown> = {
+      Name: cluster.Name ?? '',
+      ReleaseLabel: cluster.ReleaseLabel ?? '',
+      ServiceRole: cluster.ServiceRole ?? '',
+      LogUri: cluster.LogUri ?? '',
+      LogEncryptionKmsKeyId: cluster.LogEncryptionKmsKeyId ?? '',
+      AutoScalingRole: cluster.AutoScalingRole ?? '',
+      ScaleDownBehavior: cluster.ScaleDownBehavior ?? '',
+      CustomAmiId: cluster.CustomAmiId ?? '',
+      OSReleaseLabel: cluster.OSReleaseLabel ?? '',
+      SecurityConfiguration: cluster.SecurityConfiguration ?? '',
+      EbsRootVolumeSize: cluster.EbsRootVolumeSize,
+      EbsRootVolumeIops: cluster.EbsRootVolumeIops,
+      EbsRootVolumeThroughput: cluster.EbsRootVolumeThroughput,
+      StepConcurrencyLevel: cluster.StepConcurrencyLevel,
+      VisibleToAllUsers: cluster.VisibleToAllUsers ?? false,
+      JobFlowRole: cluster.Ec2InstanceAttributes?.IamInstanceProfile ?? '',
+      Applications: cluster.Applications ?? [],
+      Tags: normalizeAwsTagsToCfn(cluster.Tags),
+      Instances: this.reverseInstancesToCfn(cluster, instanceGroups, instanceFleets),
+    };
+    return out;
+  }
+
+  /**
+   * State property paths this provider cannot read back from AWS faithfully,
+   * skipped by the drift comparator to avoid a guaranteed false positive on
+   * the `properties`-fallback path. See `readCurrentState`'s docstring.
+   */
+  getDriftUnknownPaths(_resourceType: string): string[] {
+    return [
+      'AdditionalInfo',
+      // Returned by readCurrentState for a richer observedProperties baseline,
+      // but skipped by the comparator: AWS augments each entry with a resolved
+      // `Version`/`AdditionalInfo` the template usually omits, which would fire
+      // false-positive drift on the `properties`-fallback path.
+      'Applications',
+      'AutoTerminationPolicy',
+      'BootstrapActions',
+      'Configurations',
+      'KerberosAttributes',
+      'ManagedScalingPolicy',
+      'PlacementGroupConfigs',
+      'Steps',
+    ];
+  }
+
+  private async listInstanceGroups(clusterId: string): Promise<InstanceGroup[]> {
+    const groups: InstanceGroup[] = [];
+    let marker: string | undefined;
+    do {
+      const resp = await this.getClient().send(
+        new ListInstanceGroupsCommand({ ClusterId: clusterId, ...(marker && { Marker: marker }) })
+      );
+      groups.push(...(resp.InstanceGroups ?? []));
+      marker = resp.Marker;
+    } while (marker);
+    return groups;
+  }
+
+  private async listInstanceFleets(clusterId: string): Promise<InstanceFleet[]> {
+    const fleets: InstanceFleet[] = [];
+    let marker: string | undefined;
+    do {
+      const resp = await this.getClient().send(
+        new ListInstanceFleetsCommand({ ClusterId: clusterId, ...(marker && { Marker: marker }) })
+      );
+      fleets.push(...(resp.InstanceFleets ?? []));
+      marker = resp.Marker;
+    } while (marker);
+    return fleets;
+  }
+
+  /**
+   * Reverse of `toJobFlowInstancesConfig` — re-bucket the flat SDK
+   * `InstanceGroup[]` / `InstanceFleet[]` (each carrying a role discriminator)
+   * back into the role-keyed CFn `Instances` shape, and fold in the flat
+   * `Ec2InstanceAttributes` (subnet / key name / security groups).
+   *
+   * Only the primary topology fields per group / fleet are reversed (role,
+   * type, count / capacity, market, bid price, name, custom AMI). Lossy
+   * sub-specs (EBS block-device / auto-scaling for groups; per-instance-type
+   * specs for fleets) are intentionally NOT reconstructed — they are covered
+   * by the drift baseline being `observedProperties` on the normal path.
+   */
+  private reverseInstancesToCfn(
+    cluster: Cluster,
+    instanceGroups: InstanceGroup[],
+    instanceFleets: InstanceFleet[]
+  ): Record<string, unknown> {
+    const ec2 = cluster.Ec2InstanceAttributes;
+    const instances: Record<string, unknown> = {};
+
+    const taskGroups: Record<string, unknown>[] = [];
+    for (const g of instanceGroups) {
+      const cfn = this.reverseInstanceGroup(g);
+      switch (g.InstanceGroupType) {
+        case 'MASTER':
+          instances['MasterInstanceGroup'] = cfn;
+          break;
+        case 'CORE':
+          instances['CoreInstanceGroup'] = cfn;
+          break;
+        case 'TASK':
+          taskGroups.push(cfn);
+          break;
+      }
+    }
+    if (taskGroups.length > 0) instances['TaskInstanceGroups'] = taskGroups;
+
+    const taskFleets: Record<string, unknown>[] = [];
+    for (const f of instanceFleets) {
+      const cfn = this.reverseInstanceFleet(f);
+      switch (f.InstanceFleetType) {
+        case 'MASTER':
+          instances['MasterInstanceFleet'] = cfn;
+          break;
+        case 'CORE':
+          instances['CoreInstanceFleet'] = cfn;
+          break;
+        case 'TASK':
+          taskFleets.push(cfn);
+          break;
+      }
+    }
+    if (taskFleets.length > 0) instances['TaskInstanceFleets'] = taskFleets;
+
+    if (ec2?.Ec2KeyName !== undefined) instances['Ec2KeyName'] = ec2.Ec2KeyName;
+    if (ec2?.Ec2SubnetId !== undefined) instances['Ec2SubnetId'] = ec2.Ec2SubnetId;
+    if (ec2?.RequestedEc2SubnetIds !== undefined) {
+      instances['Ec2SubnetIds'] = ec2.RequestedEc2SubnetIds;
+    }
+    if (ec2?.EmrManagedMasterSecurityGroup !== undefined) {
+      instances['EmrManagedMasterSecurityGroup'] = ec2.EmrManagedMasterSecurityGroup;
+    }
+    if (ec2?.EmrManagedSlaveSecurityGroup !== undefined) {
+      instances['EmrManagedSlaveSecurityGroup'] = ec2.EmrManagedSlaveSecurityGroup;
+    }
+    if (ec2?.ServiceAccessSecurityGroup !== undefined) {
+      instances['ServiceAccessSecurityGroup'] = ec2.ServiceAccessSecurityGroup;
+    }
+    if (ec2?.AdditionalMasterSecurityGroups !== undefined) {
+      instances['AdditionalMasterSecurityGroups'] = ec2.AdditionalMasterSecurityGroups;
+    }
+    if (ec2?.AdditionalSlaveSecurityGroups !== undefined) {
+      instances['AdditionalSlaveSecurityGroups'] = ec2.AdditionalSlaveSecurityGroups;
+    }
+    if (cluster.TerminationProtected !== undefined) {
+      instances['TerminationProtected'] = cluster.TerminationProtected;
+    }
+    if (cluster.UnhealthyNodeReplacement !== undefined) {
+      instances['UnhealthyNodeReplacement'] = cluster.UnhealthyNodeReplacement;
+    }
+
+    return instances;
+  }
+
+  private reverseInstanceGroup(g: InstanceGroup): Record<string, unknown> {
+    const out: Record<string, unknown> = {
+      InstanceType: g.InstanceType ?? '',
+      // CFn's `InstanceCount` maps to the requested (not running) count so a
+      // mid-resize read does not report transient drift.
+      InstanceCount: g.RequestedInstanceCount ?? 0,
+    };
+    if (g.Name !== undefined) out['Name'] = g.Name;
+    if (g.Market !== undefined) out['Market'] = g.Market;
+    if (g.BidPrice !== undefined) out['BidPrice'] = g.BidPrice;
+    if (g.CustomAmiId !== undefined) out['CustomAmiId'] = g.CustomAmiId;
+    return out;
+  }
+
+  private reverseInstanceFleet(f: InstanceFleet): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (f.Name !== undefined) out['Name'] = f.Name;
+    if (f.TargetOnDemandCapacity !== undefined) {
+      out['TargetOnDemandCapacity'] = f.TargetOnDemandCapacity;
+    }
+    if (f.TargetSpotCapacity !== undefined) out['TargetSpotCapacity'] = f.TargetSpotCapacity;
+    return out;
   }
 }
