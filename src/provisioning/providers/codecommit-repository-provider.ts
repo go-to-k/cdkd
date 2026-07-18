@@ -17,7 +17,11 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  CDK_PATH_TAG,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -425,6 +429,104 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       default:
         return undefined;
     }
+  }
+
+  /**
+   * Read the currently-deployed properties for `cdkd drift`.
+   *
+   * Maps the CodeCommit read side back to the flat CFn inputs cdkd stores
+   * in state:
+   *   - `repositoryName`        -> `RepositoryName`
+   *   - `repositoryDescription` -> `RepositoryDescription` (placeholder `''`)
+   *   - `kmsKeyId`              -> `KmsKeyId`
+   *   - `ListTagsForResource`   -> `Tags` (CFn `[{Key, Value}]` list)
+   *
+   * Every user-controllable top-level key `update()` can mutate is emitted
+   * ALWAYS — with a `?? ''` / `?? []` placeholder when AWS returns the field
+   * as undefined / empty (docs/provider-development.md §3b). Omitting the key
+   * on the empty path would let a resource deployed WITHOUT a description
+   * never carry `RepositoryDescription` in `observedProperties`, making a
+   * console-side ADD of a description invisible to drift forever. `Tags` are
+   * returned in the CFn list shape and the comparator canonicalizes tag lists
+   * order-independently (`drift-normalize.ts`), so a tag reorder never
+   * surfaces as phantom drift. `aws:*` tags (CDK's `aws:cdk:path` etc.) are
+   * dropped by `normalizeAwsTagsToCfn` so a CDK-deployed repository does not
+   * report drift on the metadata tag cdkd never templated.
+   *
+   * Returns `undefined` when the repository no longer exists (or
+   * `GetRepository` returns no metadata) so the caller reports it as
+   * drift-unknown rather than throwing — mirrors the optional `import`
+   * method's incremental opt-in shape. A repository deleted BETWEEN the
+   * `GetRepository` and `ListTagsForResource` calls (a race with a
+   * concurrent destroy) is handled the same way rather than aborting the
+   * whole `cdkd drift` run.
+   *
+   * Caveat: `KmsKeyId` is returned as AWS resolves it — the full key ARN.
+   * On the normal drift path the baseline is `observedProperties` (captured
+   * via this same method at deploy time), so ARN == ARN and there is no
+   * phantom drift; but on the `properties`-fallback path (older state with
+   * no `observedProperties`) a template that set `KmsKeyId` as an alias or
+   * bare key id would phantom-drift against the returned ARN. This is a
+   * general fallback-path limitation shared with other providers.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let metadata: RepositoryMetadata | undefined;
+    try {
+      metadata = await this.getRepositoryMetadata(physicalId);
+    } catch (err) {
+      if (err instanceof RepositoryDoesNotExistException) return undefined;
+      throw err;
+    }
+    if (!metadata) return undefined;
+
+    // Tags via ListTagsForResource (needs the repository ARN — CodeCommit's
+    // tag map is a flat `Record<string, string>`, normalized back to the CFn
+    // list shape). GetRepository does not return tags inline. `?? []` when
+    // the ARN is somehow absent so `Tags` is always emitted. A repo deleted
+    // between the two reads throws NotFound here — treat that as drift-unknown
+    // (return undefined) instead of letting one racing delete abort the run.
+    let tags: Array<{ Key: string; Value: string }> = [];
+    if (metadata.Arn) {
+      try {
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ resourceArn: metadata.Arn })
+        );
+        tags = normalizeAwsTagsToCfn(tagsResp.tags);
+      } catch (err) {
+        if (err instanceof RepositoryDoesNotExistException) return undefined;
+        throw err;
+      }
+    }
+
+    return {
+      RepositoryName: metadata.repositoryName ?? '',
+      RepositoryDescription: metadata.repositoryDescription ?? '',
+      // AWS always assigns an encryption key (the AWS-managed
+      // `aws/codecommit` key when none was requested), so `kmsKeyId` is
+      // effectively never undefined; the `?? ''` placeholder satisfies the
+      // always-emit convention for this mutable field regardless.
+      KmsKeyId: metadata.kmsKeyId ?? '',
+      Tags: tags,
+    };
+  }
+
+  /**
+   * State property paths this provider cannot read back from AWS, skipped by
+   * the drift comparator to avoid a guaranteed false positive.
+   *
+   * `Code` (create-only S3-zip seed content unpacked into an initial commit)
+   * and `Triggers` (repository trigger management, not wired) are both
+   * `unhandledByDesign` — normally rejected pre-flight, but a state written
+   * under `--allow-unsupported-properties` could still carry them, and neither
+   * is read back by `readCurrentState`, so exclude both defensively to avoid a
+   * guaranteed false-positive drift on every run.
+   */
+  getDriftUnknownPaths(_resourceType: string): string[] {
+    return ['Code', 'Triggers'];
   }
 
   /**

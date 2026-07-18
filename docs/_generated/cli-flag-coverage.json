@@ -1166,6 +1166,7 @@
     "--quiet",
     "--receipt-handle",
     "--recursive",
+    "--repository-description",
     "--repository-name",
     "--repository-names",
     "--require-approval",

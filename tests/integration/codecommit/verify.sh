@@ -103,6 +103,34 @@ case "${OUT_ID}" in
 esac
 echo "    Ref resolves to the repository ID (CFn parity)"
 
+# --- Phase 1b: drift detection (readCurrentState) ----------------------
+# The provider's readCurrentState maps GetRepository + ListTagsForResource
+# back to the flat CFn RepositoryDescription / KmsKeyId / Tags cdkd stores.
+# A freshly-deployed repo must report ZERO drift; a direct AWS-side mutation
+# must be detected as drift (exit 1). Revert afterwards so Phase 2's
+# template-vs-state UPDATE assertions stay consistent.
+echo "==> Phase 1b: drift is clean right after deploy (exit 0 expected)"
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after clean deploy, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    no drift on a freshly-deployed repository"
+
+echo "==> Phase 1b: mutate the description on AWS, expect drift (exit 1 expected)"
+aws codecommit update-repository-description --repository-name "${REPO}" \
+  --repository-description "drifted out of band" --region "${REGION}"
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 1 ] || { echo "FAIL: expected drift (exit 1) after out-of-band description change, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    out-of-band description change detected as drift"
+
+echo "==> Phase 1b: revert the AWS-side description so state and AWS realign"
+aws codecommit update-repository-description --repository-name "${REPO}" \
+  --repository-description "initial description" --region "${REGION}"
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after reverting the description, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    drift clean again after revert"
+
 # --- Phase 2: UPDATE (rename + description + tags) ----------------------
 echo "==> Phase 2: re-deploy with rename + description change + tag change/removal (UPDATE)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \

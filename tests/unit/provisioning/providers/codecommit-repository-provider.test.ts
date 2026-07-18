@@ -47,6 +47,7 @@ import {
   RepositoryDoesNotExistException,
 } from '@aws-sdk/client-codecommit';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
+import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 
 const REPO_ARN = 'arn:aws:codecommit:us-east-1:123456789012:my-repo';
 const REPO_ID = '12a345b6-bbb7-4bb6-90b0-8c9577a2d2b9';
@@ -672,6 +673,253 @@ describe('CodeCommitRepositoryProvider', () => {
       const result = await provider.import(makeInput());
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('readCurrentState (drift)', () => {
+    it('maps the read side back to the flat CFn inputs (description, kmsKeyId, tags)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          repositoryMetadata: metadata({
+            repositoryDescription: 'a description',
+            kmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/k1',
+          }),
+        }) // GetRepository
+        .mockResolvedValueOnce({ tags: { env: 'test', 'aws:cdk:path': 'MyStack/MyRepo/Resource' } }); // ListTagsForResource
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetRepositoryCommand);
+      const tagsCmd = mockSend.mock.calls[1][0];
+      expect(tagsCmd).toBeInstanceOf(ListTagsForResourceCommand);
+      expect(tagsCmd.input).toEqual({ resourceArn: REPO_ARN });
+      expect(current).toEqual({
+        RepositoryName: 'my-repo',
+        RepositoryDescription: 'a description',
+        KmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/k1',
+        // `aws:cdk:path` is dropped by normalizeAwsTagsToCfn.
+        Tags: [{ Key: 'env', Value: 'test' }],
+      });
+    });
+
+    it('detects drift on a changed field (description differs from state)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          repositoryMetadata: metadata({ repositoryDescription: 'aws-side desc' }),
+        })
+        .mockResolvedValueOnce({ tags: {} });
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      const drifts = calculateResourceDrift(
+        { RepositoryName: 'my-repo', RepositoryDescription: 'state desc' },
+        current!,
+        { ignorePaths: provider.getDriftUnknownPaths('AWS::CodeCommit::Repository') }
+      );
+      expect(drifts).toEqual([
+        { path: 'RepositoryDescription', stateValue: 'state desc', awsValue: 'aws-side desc' },
+      ]);
+    });
+
+    it('reports zero drift on a no-op (state matches AWS-current)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          repositoryMetadata: metadata({ repositoryDescription: 'same' }),
+        })
+        .mockResolvedValueOnce({ tags: { env: 'test' } });
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      const drifts = calculateResourceDrift(
+        {
+          RepositoryName: 'my-repo',
+          RepositoryDescription: 'same',
+          Tags: [{ Key: 'env', Value: 'test' }],
+        },
+        current!,
+        { ignorePaths: provider.getDriftUnknownPaths('AWS::CodeCommit::Repository') }
+      );
+      expect(drifts).toEqual([]);
+    });
+
+    it('a tag re-order between state and AWS-current is NOT phantom drift', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ tags: { b: '2', a: '1' } }); // AWS order differs
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      const drifts = calculateResourceDrift(
+        {
+          RepositoryName: 'my-repo',
+          Tags: [
+            { Key: 'a', Value: '1' },
+            { Key: 'b', Value: '2' },
+          ],
+        },
+        current!,
+        { ignorePaths: provider.getDriftUnknownPaths('AWS::CodeCommit::Repository') }
+      );
+      expect(drifts).toEqual([]);
+    });
+
+    it('does NOT surface create-only Code as drift (getDriftUnknownPaths)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ tags: {} });
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      // A state written under --allow-unsupported-properties could carry Code;
+      // GetRepository never returns it, so it must be ignored, not drift.
+      const drifts = calculateResourceDrift(
+        {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'seed', Key: 'seed.zip' } },
+        },
+        current!,
+        { ignorePaths: provider.getDriftUnknownPaths('AWS::CodeCommit::Repository') }
+      );
+      expect(drifts).toEqual([]);
+      expect(provider.getDriftUnknownPaths('AWS::CodeCommit::Repository')).toEqual([
+        'Code',
+        'Triggers',
+      ]);
+    });
+
+    it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+      // Repository exists but every optional field is undefined / empty.
+      mockSend
+        .mockResolvedValueOnce({
+          repositoryMetadata: {
+            repositoryName: 'my-repo',
+            repositoryId: REPO_ID,
+            Arn: REPO_ARN,
+            // no repositoryDescription, no kmsKeyId, no clone URLs
+          },
+        }) // GetRepository
+        .mockResolvedValueOnce({ tags: {} }); // ListTagsForResource
+
+      const result = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      expect(Object.keys(result ?? {}).sort()).toEqual(
+        ['KmsKeyId', 'RepositoryDescription', 'RepositoryName', 'Tags'].sort()
+      );
+      expect(result?.RepositoryName).toBe('my-repo');
+      expect(result?.RepositoryDescription).toBe(''); // string placeholder
+      expect(result?.KmsKeyId).toBe(''); // string placeholder
+      expect(result?.Tags).toEqual([]); // array placeholder
+    });
+
+    it('emits Tags: [] even when the ARN is absent (never omits the key)', async () => {
+      mockSend.mockResolvedValueOnce({
+        repositoryMetadata: { repositoryName: 'my-repo' }, // no Arn -> no ListTagsForResource
+      });
+
+      const result = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1); // no ListTagsForResource call
+      expect(result?.Tags).toEqual([]);
+    });
+
+    it('detects drift on a changed tag value', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ tags: { env: 'prod' } }); // AWS has env=prod
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      const drifts = calculateResourceDrift(
+        {
+          RepositoryName: 'my-repo',
+          Tags: [{ Key: 'env', Value: 'dev' }], // state has env=dev
+        },
+        current!,
+        { ignorePaths: provider.getDriftUnknownPaths('AWS::CodeCommit::Repository') }
+      );
+      expect(drifts).toEqual([
+        { path: 'Tags', stateValue: [{ Key: 'env', Value: 'dev' }], awsValue: [{ Key: 'env', Value: 'prod' }] },
+      ]);
+    });
+
+    it('returns undefined when the repository no longer exists (drift-unknown)', async () => {
+      mockSend.mockRejectedValueOnce(notFound());
+
+      const current = await provider.readCurrentState(
+        'gone',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      expect(current).toBeUndefined();
+    });
+
+    it('returns undefined when GetRepository resolves with no metadata (drift-unknown)', async () => {
+      mockSend.mockResolvedValueOnce({}); // no repositoryMetadata
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      expect(current).toBeUndefined();
+      expect(mockSend).toHaveBeenCalledTimes(1); // no ListTagsForResource
+    });
+
+    it('treats a repo deleted BETWEEN GetRepository and ListTagsForResource as drift-unknown', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository succeeds
+        .mockRejectedValueOnce(notFound()); // ListTagsForResource: repo gone mid-read
+
+      const current = await provider.readCurrentState(
+        'my-repo',
+        'MyRepo',
+        'AWS::CodeCommit::Repository'
+      );
+
+      // Must not abort the whole drift run — reported as drift-unknown.
+      expect(current).toBeUndefined();
+    });
+
+    it('propagates non-NotFound errors', async () => {
+      mockSend.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(
+        provider.readCurrentState('my-repo', 'MyRepo', 'AWS::CodeCommit::Repository')
+      ).rejects.toThrow('boom');
     });
   });
 
