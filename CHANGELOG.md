@@ -1,3 +1,10 @@
+# [0.244.0](https://github.com/go-to-k/cdkd/compare/v0.243.0...v0.244.0) (2026-07-18)
+
+
+### Features
+
+* **providers:** add SDK Provider for AWS::FSx::FileSystem (Lustre) ([#1063](https://github.com/go-to-k/cdkd/issues/1063)) ([ba5dc8f](https://github.com/go-to-k/cdkd/commit/ba5dc8f7e69f310a99b6e7e5a3e9e673320b7281))
+
 # [0.243.0](https://github.com/go-to-k/cdkd/compare/v0.242.0...v0.243.0) (2026-07-17)
 
 
