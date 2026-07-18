@@ -161,6 +161,15 @@ describe('isRetryableTransientError', () => {
         'Value (arn:aws:iam::123456789012:instance-profile/MyStack-InstanceProfile) for parameter Invalid IAM Instance Profile ARN is invalid',
         'EC2 fresh-instance-profile ARN propagation',
       ],
+      // EMR RunJobFlow fresh-instance-profile propagation race (emr-cluster):
+      // the cluster's JobFlowRole instance profile was created ~1s earlier in
+      // the same deploy, and EMR rejects RunJobFlow with the ONE-WORD
+      // "Invalid InstanceProfile: <name>." (no "IAM") before the profile
+      // propagates to EMR's validation layer.
+      [
+        'Failed to create EMR Cluster Cluster: Invalid InstanceProfile: MyStack-EmrEc2InstanceProfile.',
+        'EMR fresh-instance-profile propagation',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });
