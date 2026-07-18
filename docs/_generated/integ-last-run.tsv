@@ -233,6 +233,7 @@ asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-mark
 asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
 asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
 codecommit	2026-07-17T10:28:12Z	PASS	59	verify.sh	re-run on final code post-review fixes (null-id delete + retry-safe rename); 3 phases clean 0 orphans
+dlm-lifecycle-policy	2026-07-17T07:27:24Z	PASS	72	verify.sh	re-run post review fixes; deploy+update+destroy clean, 0 orphans
 budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-rebase (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans
 servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
 lambda	2026-07-17T12:12:19Z	PASS	91	verify.sh	broad integ re-run for #1044 review fixes (resolver is cross-cutting); 9 deleted, 0 errors, 0 orphans
@@ -242,3 +243,4 @@ fsx-lustre	2026-07-18T00:50:49Z	PASS	900	verify.sh	deploy+update(incl tag remova
 bench-cdk-sample	2026-07-18T03:53:42Z	PASS		standard	deploy 0-err + destroy 37 deleted/2 retained(by-design LogGroups)/0 errors, 0 orphans
 emr-cluster	2026-07-18T04:17:17Z	PASS		verify.sh	post-review-fixes: deploy+update+destroy clean, 12 deleted 0 errors, TERMINATED, 0 orphans
 dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
+codecommit	2026-07-18T18:43:22Z	PASS	150	verify.sh	issue #1065 drift: Phase1b drift round-trip + rename/untag update, 3 phases clean 0 orphans
