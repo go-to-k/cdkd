@@ -125,7 +125,10 @@ function scalarToString(value: unknown): string {
  * string arrays.
  */
 function toSdkTriggers(triggers: CfnTrigger[] | undefined): RepositoryTrigger[] {
-  if (!triggers || triggers.length === 0) return [];
+  // CFn always resolves `Triggers` to a list, but guard defensively against a
+  // non-array (hand-written / malformed template) so update()'s unguarded call
+  // site can't hit a raw `.map is not a function` TypeError.
+  if (!Array.isArray(triggers) || triggers.length === 0) return [];
   return triggers.map((t) => {
     const events: unknown[] = Array.isArray(t?.Events) ? t.Events : [];
     const branches: unknown[] = Array.isArray(t?.Branches) ? t.Branches : [];
@@ -760,6 +763,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         ? code.BranchName
         : DEFAULT_SEED_BRANCH;
 
+    // The S3 client is bound to the deploy region (`AWS_REGION`). CDK always
+    // uploads a `Code` asset to the same-region bootstrap bucket, so a
+    // cross-region `Code.S3.Bucket` (PermanentRedirect) is not expected here.
     const obj = await this.getS3Client().send(
       new GetObjectCommand({ Bucket: bucket, Key: key, ...(versionId && { VersionId: versionId }) })
     );

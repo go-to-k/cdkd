@@ -313,6 +313,56 @@ describe('CodeCommitRepositoryProvider', () => {
 
       expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
     });
+
+    it('rejects a Code.S3 with a missing Key and rolls back the repository', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({}); // DeleteRepository (rollback)
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'b' } }, // no Key
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
+    });
+
+    it('rolls back when the S3 GetObject returns an empty body', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({}); // DeleteRepository (rollback)
+      mockS3Send.mockResolvedValueOnce({ Body: undefined }); // empty body
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'b', Key: 'k.zip' } },
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
+    });
+
+    it('still surfaces the original error when the rollback DeleteRepository also fails', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockRejectedValueOnce(new Error('cleanup boom')); // DeleteRepository (rollback) fails
+      mockS3Send.mockRejectedValueOnce(new Error('seed download failed'));
+
+      // The cleanup failure is swallowed; the ORIGINAL post-create error is
+      // re-thrown (wrapped as ProvisioningError). Message carries the seed
+      // failure, not the cleanup failure.
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'b', Key: 'k.zip' } },
+        })
+      ).rejects.toThrow(/seed download failed/);
+
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
+    });
   });
 
   describe('create with Triggers', () => {
@@ -373,6 +423,31 @@ describe('CodeCommitRepositoryProvider', () => {
         destinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
         events: ['createReference', 'deleteReference'],
         branches: [],
+      });
+    });
+
+    it('coerces non-string trigger field shapes (number/boolean scalar -> string; object -> "")', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ configurationId: 'cfg-1' });
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Triggers: [
+          {
+            Name: 42, // number -> '42'
+            DestinationArn: { Ref: 'Topic' }, // object -> ''
+            Branches: ['main', 7], // mixed -> ['main', '7']
+            Events: ['all', true], // boolean -> 'true'
+          },
+        ],
+      });
+
+      expect(mockSend.mock.calls[1][0].input.triggers[0]).toEqual({
+        name: '42',
+        destinationArn: '',
+        events: ['all', 'true'],
+        branches: ['main', '7'],
       });
     });
 
