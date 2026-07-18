@@ -1,0 +1,42 @@
+{
+  "resourceType": "AWS::FSx::FileSystem",
+  "generatedAt": "2026-07-17",
+  "properties": [
+    "BackupId",
+    "DNSName",
+    "FileSystemType",
+    "FileSystemTypeVersion",
+    "Id",
+    "KmsKeyId",
+    "LustreConfiguration",
+    "LustreMountName",
+    "NetworkType",
+    "OntapConfiguration",
+    "OpenZFSConfiguration",
+    "ResourceARN",
+    "RootVolumeId",
+    "SecurityGroupIds",
+    "StorageCapacity",
+    "StorageType",
+    "SubnetIds",
+    "Tags",
+    "WindowsConfiguration"
+  ],
+  "readOnlyProperties": [
+    "DNSName",
+    "Id",
+    "LustreMountName",
+    "ResourceARN",
+    "RootVolumeId"
+  ],
+  "createOnlyProperties": [
+    "BackupId",
+    "FileSystemType",
+    "KmsKeyId",
+    "SecurityGroupIds",
+    "SubnetIds"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

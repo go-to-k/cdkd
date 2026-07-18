@@ -69,6 +69,7 @@
     "@aws-sdk/client-elasticache": "^3.1018.0",
     "@aws-sdk/client-eventbridge": "^3.1017.0",
     "@aws-sdk/client-firehose": "^3.1018.0",
+    "@aws-sdk/client-fsx": "^3.1088.0",
     "@aws-sdk/client-glue": "^3.1018.0",
     "@aws-sdk/client-iam": "^3.0.0",
     "@aws-sdk/client-kinesis": "^3.1018.0",

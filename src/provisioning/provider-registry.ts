@@ -63,7 +63,11 @@ export interface AutoRouteHit {
  * 3. SDK Provider registered, no silent-drop properties (after the
  *    `--allow-unsupported-properties` override filter) → SDK Provider.
  * 4. SDK Provider registered, silent-drop properties present, NOT all
- *    in the allow set → Cloud Control (auto-route, info-logged).
+ *    in the allow set → Cloud Control (auto-route, info-logged). When the
+ *    CC route is NOT viable — the type is `NON_PROVISIONABLE` (no CC
+ *    handlers, e.g. AWS::FSx::FileSystem) or the provider sets
+ *    `disableCcApiFallback` (e.g. NestedStackProvider) — throw the clear
+ *    pre-flight error instead of failing opaquely at provisioning time.
  * 5. SDK Provider registered, silent-drop properties present, ALL in
  *    the allow set → SDK Provider (the user explicitly accepted the
  *    silent drop, warn-logged).
@@ -71,10 +75,12 @@ export interface AutoRouteHit {
  * 7. `--allow-unsupported-types` escape hatch → Cloud Control optimistically.
  * 8. Otherwise → throw (no provider available).
  *
- * Tier 3 (`NON_PROVISIONABLE`) types are rejected earlier by
- * {@link validateResourceTypes}; the silent-drop auto-route only fires for
- * Tier 1 types whose SDK Provider declares `handledProperties` and where
- * Cloud Control is guaranteed to be a viable alternative.
+ * SDK-provider-less Tier 3 (`NON_PROVISIONABLE`) types are rejected earlier
+ * by {@link validateResourceTypes}. A Tier 1 type that is ALSO
+ * NON_PROVISIONABLE (SDK provider registered for a type Cloud Control cannot
+ * manage — e.g. AWS::FSx::FileSystem, AWS::DLM::LifecyclePolicy) passes the
+ * type check but has no viable CC auto-route; rule 4's viability guard turns
+ * that case into a clear pre-flight error.
  */
 /**
  * Types exempt from the sticky `provisionedBy: 'cc-api'` routing rule.
@@ -233,6 +239,17 @@ export class ProviderRegistry {
         this.logger.debug(`Using specific SDK provider for ${resourceType}`);
         return { provider: specificProvider, provisionedBy: 'sdk' };
       }
+      // The CC auto-route target must actually be able to manage the type.
+      // Providers for NON_PROVISIONABLE types (no Cloud Control handlers)
+      // declare `disableCcApiFallback` — e.g. FSxFileSystemProvider, whose
+      // Windows/ONTAP/OpenZFS config blocks are deliberately unhandled;
+      // routing them to CC would fail at provisioning time with an opaque
+      // UnsupportedActionException. Throw the clear error here instead.
+      // (`isNonProvisionable` additionally covers the mid-transition window
+      // where a provider is registered but the Tier 3 regen hasn't run.)
+      if (isNonProvisionable(resourceType) || specificProvider.disableCcApiFallback === true) {
+        throw new Error(this.buildUnroutableSilentDropMessage(resourceType, actionableDrops));
+      }
       // Silent drops exist that the user has NOT opted into via the override
       // → auto-route through Cloud Control (which forwards the full property
       // map to AWS, closing the silent-drop bug). Closes issue #614.
@@ -267,6 +284,35 @@ export class ProviderRegistry {
     throw new Error(
       `No provider available for resource type: ${resourceType}. ` +
         `This resource type is not supported by Cloud Control API and no SDK provider is registered.`
+    );
+  }
+
+  /**
+   * Error message for a resource whose template uses SDK-provider-unhandled
+   * properties on a type where the Cloud Control auto-route (issue #614) is
+   * NOT viable — `ProvisioningType: NON_PROVISIONABLE` (no CC handlers) or a
+   * provider-level `disableCcApiFallback` opt-out. Includes each property's
+   * `unhandledByDesign` rationale so the user sees WHY it is unhandled, plus
+   * the `--allow-unsupported-properties` escape hatch (which forces the SDK
+   * path and accepts the drop — the provider may still reject the resource
+   * if the property is load-bearing, e.g. a non-Lustre FSx variant config).
+   */
+  private buildUnroutableSilentDropMessage(
+    resourceType: string,
+    drops: ReadonlyArray<{ property: string; rationale: string }>
+  ): string {
+    const details = drops.map((d) => `  - ${d.property}: ${d.rationale}`).join('\n');
+    const overrideHint = drops.map((d) => `${resourceType}:${d.property}`).join(',');
+    const reason = isNonProvisionable(resourceType)
+      ? 'ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it'
+      : "the type's SDK provider opts out of the Cloud Control fallback (disableCcApiFallback)";
+    return (
+      `${resourceType} uses properties cdkd's SDK Provider does not handle, and ` +
+      `this type cannot fall back to Cloud Control API (${reason}):\n` +
+      `${details}\n` +
+      `Remove the properties, or force the SDK provider path and accept the drop via ` +
+      `--allow-unsupported-properties ${overrideHint} ` +
+      `(the provider may still reject the resource if the property is required).`
     );
   }
 
@@ -392,14 +438,17 @@ export class ProviderRegistry {
   /**
    * Walk every resource in the template and identify top-level CFn
    * properties cdkd's SDK provider would silently drop on write. As of
-   * issue [#614](https://github.com/go-to-k/cdkd/issues/614), this method
-   * **no longer throws** — silent drops now auto-route the resource through
-   * Cloud Control API by default (see {@link getProviderFor}). The method
-   * is retained on the name `validateResourceProperties` so existing deploy
-   * call sites continue to work; it now emits info-level routing decisions
+   * issue [#614](https://github.com/go-to-k/cdkd/issues/614), silent drops
+   * auto-route the resource through Cloud Control API by default (see
+   * {@link getProviderFor}) — the method emits info-level routing decisions
    * for each silent-drop resource, plus warn-level lines for resources
    * where the user explicitly opted into the silent drop via
-   * `--allow-unsupported-properties`.
+   * `--allow-unsupported-properties`. The ONE remaining throw path is the
+   * CC-route viability guard: when the auto-route target cannot manage the
+   * type (`NON_PROVISIONABLE` or a provider-level `disableCcApiFallback`
+   * opt-out — e.g. AWS::FSx::FileSystem's Windows/ONTAP/OpenZFS blocks),
+   * this rejects pre-flight with a clear per-property error instead of
+   * letting provisioning fail opaquely.
    *
    * Must be called AFTER {@link validateResourceTypes} — type-level errors
    * are still hard rejects. For a type allowed via `--allow-unsupported-types`,
@@ -424,11 +473,13 @@ export class ProviderRegistry {
    * Info-log every silent-drop routing decision (auto-route via CC API) and
    * warn-log every silent drop the user explicitly opted into via
    * `--allow-unsupported-properties` (forced SDK path, the property will
-   * be dropped). Pure side-effect — does not mutate state and never throws.
+   * be dropped). Does not mutate state; throws ONLY for the CC-route
+   * viability guard (un-allowed silent drops on a type Cloud Control cannot
+   * manage — see {@link buildUnroutableSilentDropMessage}).
    *
    * Issue [#614](https://github.com/go-to-k/cdkd/issues/614). Replaces the
    * pre-v0.16x throw path: silent drops are now a routing signal, not an
-   * error.
+   * error (except the viability guard above).
    *
    * When the optional `provisionedBy` (from existing state) is `'cc-api'`,
    * the auto-route info line is demoted to `debug` — the resource has been
@@ -463,6 +514,19 @@ export class ProviderRegistry {
       }
 
       if (autoRouted.length > 0) {
+        // The CC auto-route is only viable when Cloud Control can actually
+        // manage the type. For a NON_PROVISIONABLE type (or a provider that
+        // opted out of CC fallback) the route would fail at provisioning
+        // time with an opaque error — reject pre-flight with the clear one.
+        const provider = this.providers.get(resourceType);
+        if (isNonProvisionable(resourceType) || provider?.disableCcApiFallback === true) {
+          throw new Error(
+            `${logicalId}: ${this.buildUnroutableSilentDropMessage(
+              resourceType,
+              drops.filter((d) => autoRouted.includes(d.property))
+            )}`
+          );
+        }
         const propList = autoRouted.join(', ');
         const overrideHint = autoRouted.map((p) => `${resourceType}:${p}`).join(',');
         const message =

@@ -66,6 +66,7 @@
     "AWS::ElasticLoadBalancingV2::TargetGroup",
     "AWS::Events::EventBus",
     "AWS::Events::Rule",
+    "AWS::FSx::FileSystem",
     "AWS::Glue::Connection",
     "AWS::Glue::Crawler",
     "AWS::Glue::Database",
@@ -950,6 +951,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1016,6 +1018,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "fsx-lustre": [
           "l2"
         ],
         "infra-security": [
@@ -1086,6 +1091,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1152,6 +1158,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "fsx-lustre": [
           "l2"
         ],
         "infra-security": [
@@ -1244,6 +1253,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1310,6 +1320,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "fsx-lustre": [
           "l2"
         ],
         "infra-security": [
@@ -1380,6 +1393,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1448,6 +1462,9 @@
         "elasticache-replicationgroup-getatt": [
           "l2"
         ],
+        "fsx-lustre": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -1513,6 +1530,7 @@
         "ec2-vpc",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "propagation-races-2",
@@ -1569,6 +1587,9 @@
         ],
         "elasticache-replicationgroup-getatt": [
           "l2"
+        ],
+        "fsx-lustre": [
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -1649,6 +1670,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1715,6 +1737,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "fsx-lustre": [
           "l2"
         ],
         "infra-security": [
@@ -1796,6 +1821,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1862,6 +1888,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "fsx-lustre": [
           "l2"
         ],
         "infra-security": [
@@ -1932,6 +1961,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -2001,6 +2031,10 @@
         ],
         "elasticache-replicationgroup-getatt": [
           "l2"
+        ],
+        "fsx-lustre": [
+          "l2",
+          "literal"
         ],
         "infra-security": [
           "l2"
@@ -2073,6 +2107,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "fsx-lustre",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -2139,6 +2174,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "fsx-lustre": [
           "l2"
         ],
         "infra-security": [
@@ -2597,6 +2635,17 @@
         ],
         "scheduled-task": [
           "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::FSx::FileSystem",
+      "integs": [
+        "fsx-lustre"
+      ],
+      "signals": {
+        "fsx-lustre": [
+          "literal"
         ]
       }
     },

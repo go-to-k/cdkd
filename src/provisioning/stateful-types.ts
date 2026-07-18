@@ -48,6 +48,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::DynamoDB::GlobalTable',
   // Filesystem / blob.
   'AWS::EFS::FileSystem',
+  'AWS::FSx::FileSystem',
   'AWS::S3::Bucket', // conditional — see isStatefulRecreateTarget
   'AWS::ECR::Repository',
   // Streaming.

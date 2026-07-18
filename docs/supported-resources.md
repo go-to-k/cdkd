@@ -196,6 +196,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Storage** | AWS::S3Tables::Namespace | SDK Provider | ✅ |
 | **Storage** | AWS::S3Tables::Table | SDK Provider | ✅ |
 | **Storage** | AWS::S3Vectors::VectorBucket | SDK Provider | ✅ |
+| **Storage** | AWS::FSx::FileSystem (Lustre variant only — `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; the `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration` blocks are rejected by the property-coverage pre-flight; async create/delete polled to `AVAILABLE`/gone with a self-reported 1h resource timeout) | SDK Provider | ✅ |
 | **Audit** | AWS::CloudTrail::Trail | SDK Provider | ✅ |
 | **Backup** | AWS::DLM::LifecyclePolicy | SDK Provider | ✅ |
 | **CI/CD** | AWS::CodeBuild::Project | SDK Provider | ✅ |

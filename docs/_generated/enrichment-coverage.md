@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **125**
+- Classified types (cached schema): **126**
 - Fully enriched: **5**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **106**
-- Types with allow-listed (not-a-gap) attributes: **9**
+- SDK-fallback gaps (informational, #614 path only): **107**
+- Types with allow-listed (not-a-gap) attributes: **10**
 
 ## Pure-CC latent gaps
 
@@ -88,6 +88,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `LoadBalancerArns`, `TargetGroupArn`, `TargetGroupFullName`, `TargetGroupName` |
 | `AWS::Events::EventBus` | `Arn` |
 | `AWS::Events::Rule` | `Arn` |
+| `AWS::FSx::FileSystem` | `DNSName`, `LustreMountName`, `ResourceARN`, `RootVolumeId` |
 | `AWS::Glue::Connection` | `Id` |
 | `AWS::Glue::SecurityConfiguration` | `Id` |
 | `AWS::Glue::Table` | `Id` |
@@ -205,6 +206,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | yes | sdk-fallback-gap | `LoadBalancerArns` (GAP), `TargetGroupArn` (GAP), `TargetGroupFullName` (GAP), `TargetGroupName` (GAP) |
 | `AWS::Events::EventBus` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Events::Rule` | yes | sdk-fallback-gap | `Arn` (GAP) |
+| `AWS::FSx::FileSystem` | yes | sdk-fallback-gap | `DNSName` (GAP), `Id` (allow), `LustreMountName` (GAP), `ResourceARN` (GAP), `RootVolumeId` (GAP) |
 | `AWS::Glue::Connection` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::Glue::Crawler` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Database` | yes | no-computed-attr | _(none)_ |

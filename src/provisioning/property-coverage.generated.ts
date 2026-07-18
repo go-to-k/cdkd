@@ -1401,6 +1401,38 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::FSx::FileSystem',
+    {
+      handled: new Set<string>([
+        'BackupId',
+        'FileSystemType',
+        'FileSystemTypeVersion',
+        'KmsKeyId',
+        'LustreConfiguration',
+        'NetworkType',
+        'SecurityGroupIds',
+        'StorageCapacity',
+        'StorageType',
+        'SubnetIds',
+        'Tags',
+      ]),
+      silentDrop: new Map<string, string>([
+        [
+          'OntapConfiguration',
+          'FSx for NetApp ONTAP variant — the file system is only a container for SVMs/volumes (separate AWS::FSx::StorageVirtualMachine / AWS::FSx::Volume types, both still unsupported), so shipping it alone would be misleading; only the Lustre variant is supported in v1. Follow-up to issue #1042.',
+        ],
+        [
+          'OpenZFSConfiguration',
+          'FSx for OpenZFS variant — root-volume semantics (RootVolumeId, child AWS::FSx::Volume trees) are not implemented in v1; only the Lustre variant is supported. Follow-up to issue #1042.',
+        ],
+        [
+          'WindowsConfiguration',
+          'FSx for Windows File Server variant — requires Active Directory wiring and Windows-specific update/delete semantics (final backups, throughput tiers) that v1 does not implement; only the Lustre variant (the CDK L2) is supported. Follow-up to issue #1042.',
+        ],
+      ]),
+    },
+  ],
+  [
     'AWS::Glue::Connection',
     {
       handled: new Set<string>(['CatalogId', 'ConnectionInput']),

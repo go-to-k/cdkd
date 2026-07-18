@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 125,
+    "classifiedCount": 126,
     "enriched": 5,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 106,
-    "allowListedTypes": 9
+    "sdkFallbackGap": 107,
+    "allowListedTypes": 10
   },
   "types": [
     {
@@ -1660,6 +1660,48 @@
       ],
       "gaps": [
         "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::FSx::FileSystem",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DNSName",
+        "Id",
+        "LustreMountName",
+        "ResourceARN",
+        "RootVolumeId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "DNSName",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "LustreMountName",
+          "status": "gap"
+        },
+        {
+          "name": "ResourceARN",
+          "status": "gap"
+        },
+        {
+          "name": "RootVolumeId",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "DNSName",
+        "LustreMountName",
+        "ResourceARN",
+        "RootVolumeId"
       ]
     },
     {

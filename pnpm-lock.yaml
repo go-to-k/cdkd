@@ -95,6 +95,9 @@ importers:
       '@aws-sdk/client-firehose':
         specifier: ^3.1018.0
         version: 3.1018.0
+      '@aws-sdk/client-fsx':
+        specifier: ^3.1088.0
+        version: 3.1088.0
       '@aws-sdk/client-glue':
         specifier: ^3.1018.0
         version: 3.1018.0
@@ -478,6 +481,10 @@ packages:
 
   '@aws-sdk/client-firehose@3.1018.0':
     resolution: {integrity: sha512-ZlOQQqXIpaAM9PHX9lkruui1lr9km3afD6JlPJu4DwnbPCVs6J4Oh8106DbvgmqgN5+n2Z1SW/5unI+LKMw+Qg==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-fsx@3.1088.0':
+    resolution: {integrity: sha512-tjV0gaqYJWGiziWFROmmOs7hRpKDGIFlKy0AZFW0LG+qeCmGlro9qkt4t86cRMfzpxkkrYdrB7Hu80UYLKKx6g==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-glue@3.1018.0':
@@ -6108,6 +6115,17 @@ snapshots:
       tslib: 2.8.1
     transitivePeerDependencies:
       - aws-crt
+
+  '@aws-sdk/client-fsx@3.1088.0':
+    dependencies:
+      '@aws-sdk/core': 3.975.3
+      '@aws-sdk/credential-provider-node': 3.972.69
+      '@aws-sdk/types': 3.974.2
+      '@smithy/core': 3.29.4
+      '@smithy/fetch-http-handler': 5.6.6
+      '@smithy/node-http-handler': 4.9.6
+      '@smithy/types': 4.16.1
+      tslib: 2.8.1
 
   '@aws-sdk/client-glue@3.1018.0':
     dependencies:

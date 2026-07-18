@@ -64,6 +64,7 @@ import { KinesisStreamProvider } from './providers/kinesis-provider.js';
 import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsumer-provider.js';
 import { SchedulerScheduleProvider } from './providers/scheduler-schedule-provider.js';
 import { EFSProvider } from './providers/efs-provider.js';
+import { FSxFileSystemProvider } from './providers/fsx-filesystem-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
 import { CodeBuildProvider } from './providers/codebuild-provider.js';
@@ -276,6 +277,12 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::EFS::FileSystem', efsProvider);
   registry.register('AWS::EFS::MountTarget', efsProvider);
   registry.register('AWS::EFS::AccessPoint', efsProvider);
+
+  // FSx — NON_PROVISIONABLE in the CFn registry, so no Cloud Control
+  // fallback exists (issue #1042). Lustre variant only in v1; the
+  // Windows / ONTAP / OpenZFS config blocks are unhandledByDesign and
+  // rejected by the property-coverage pre-flight.
+  registry.register('AWS::FSx::FileSystem', new FSxFileSystemProvider());
 
   // Firehose
   registry.register('AWS::KinesisFirehose::DeliveryStream', new FirehoseProvider());

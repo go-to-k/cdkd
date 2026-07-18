@@ -62,7 +62,6 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::EMR::Cluster',
   'AWS::EMR::InstanceFleetConfig',
   'AWS::EMR::InstanceGroupConfig',
-  'AWS::FSx::FileSystem',
   'AWS::FSx::Snapshot',
   'AWS::FSx::StorageVirtualMachine',
   'AWS::FSx::Volume',

@@ -823,6 +823,11 @@
       "scenarios": []
     },
     {
+      "name": "fsx-lustre",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "full-stack-demo",
       "annotated": true,
       "scenarios": [
