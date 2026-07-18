@@ -1,3 +1,10 @@
+# [0.246.0](https://github.com/go-to-k/cdkd/compare/v0.245.0...v0.246.0) (2026-07-18)
+
+
+### Features
+
+* **providers:** add readCurrentState/drift for AWS::CodeCommit::Repository ([#1074](https://github.com/go-to-k/cdkd/issues/1074)) ([7d5664b](https://github.com/go-to-k/cdkd/commit/7d5664b57cae434e563b0efaf90165971b916627))
+
 # [0.245.0](https://github.com/go-to-k/cdkd/compare/v0.244.0...v0.245.0) (2026-07-18)
 
 
