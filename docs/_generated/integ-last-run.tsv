@@ -240,3 +240,4 @@ lambda	2026-07-17T12:12:19Z	PASS	91	verify.sh	broad integ re-run for #1044 revie
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
 bench-cdk-sample	2026-07-17T15:58:45Z	PASS	420	standard	39 created / 37 deleted + 2 retained loggroups hand-cleaned; 0 errors 0 orphans (PR 1063 broad gate)
 fsx-lustre	2026-07-17T16:22:08Z	PASS	1100	verify.sh	deploy+update(LZ4,tags)+destroy clean, 0 orphans (3rd run, post threshold-scoped update-wait fix)
+fsx-lustre	2026-07-18T00:50:49Z	PASS	900	verify.sh	deploy+update(incl tag removal)+destroy clean, 0 orphans (4th run, covers de7494ba observe-confirmed-action fix)
