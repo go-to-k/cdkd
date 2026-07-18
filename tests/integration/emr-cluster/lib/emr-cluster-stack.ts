@@ -13,6 +13,7 @@ import type { Construct } from 'constructs';
  *
  * covers: AWS::EMR::Cluster
  * covers: AWS::EC2::VPC
+ * covers: AWS::EC2::SecurityGroup
  * covers: AWS::IAM::Role
  * covers: AWS::IAM::InstanceProfile
  *
@@ -69,6 +70,22 @@ export class EmrClusterStack extends cdk.Stack {
       roles: [ec2Role.roleName],
     });
 
+    // Explicit EMR-managed security group. Providing one stops EMR from
+    // auto-creating its own `ElasticMapReduce-master` / `-slave` groups — those
+    // are NOT part of the CDK template, so cdkd's destroy can't delete them and
+    // they'd block the VPC teardown (leaving a partial-destroy error). We use
+    // ONE shared group for BOTH master and slave: EMR then adds only SELF-
+    // referencing rules to it (ingress from itself), which do NOT block
+    // `DeleteSecurityGroup` — so cdkd deletes it cleanly as a template resource
+    // and the VPC delete succeeds with zero errors. (Two distinct managed
+    // groups would cross-reference each other and mutually block deletion,
+    // since cdkd's SG delete does not revoke rules first.)
+    const emrSg = new ec2.SecurityGroup(this, 'EmrSg', {
+      vpc,
+      description: 'cdkd integ EMR managed SG (shared master/slave)',
+      allowAllOutbound: true,
+    });
+
     const cluster = new emr.CfnCluster(this, 'Cluster', {
       name: 'cdkd-integ-emr',
       releaseLabel: 'emr-7.9.0',
@@ -81,6 +98,9 @@ export class EmrClusterStack extends cdk.Stack {
       autoTerminationPolicy: { idleTimeout: isUpdate ? 7200 : 3600 },
       instances: {
         ec2SubnetId: vpc.publicSubnets[0].subnetId,
+        // Provide the managed SG for both roles (see EmrSg comment above).
+        emrManagedMasterSecurityGroup: emrSg.securityGroupId,
+        emrManagedSlaveSecurityGroup: emrSg.securityGroupId,
         // Single-node cluster: master only, stays alive with no steps.
         keepJobFlowAliveWhenNoSteps: true,
         terminationProtected: false,
