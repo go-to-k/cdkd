@@ -662,9 +662,11 @@ The hook `.claude/hooks/provider-integ-gate.sh` blocks `git commit` when a new `
 
 [`docs/cli-flag-coverage.md`](cli-flag-coverage.md) lists every CLI flag declared in `src/cli/options.ts` and the integ fixtures whose `verify.sh` exercises it. Generated via `vp run cli-flag-coverage`.
 
-**This is a visibility report, NOT a CI gate.** Many cdkd flags (`--dry-run`, `--verbose`, `--profile`, etc.) are tested adequately at the unit-test level rather than via an integ shell invocation — surfacing those as "uncovered" would produce >50% false-positive noise. The "no integ verify.sh mention" section is a question for the reviewer ("does THIS flag warrant a real-AWS test?"), not an answer.
+**The coverage numbers are a visibility report, NOT a CI gate.** Many cdkd flags (`--dry-run`, `--verbose`, `--profile`, etc.) are tested adequately at the unit-test level rather than via an integ shell invocation — surfacing those as "uncovered" would produce >50% false-positive noise. The "no integ verify.sh mention" section is a question for the reviewer ("does THIS flag warrant a real-AWS test?"), not an answer.
 
-Contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where the CI gate IS appropriate because every registered provider is expected to have real-AWS verification.
+Contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where a coverage gate IS appropriate because every registered provider is expected to have real-AWS verification.
+
+**CI hard-fails on staleness** (issue #1071): the `check-build-test` job in `.github/workflows/ci.yml` runs `vp run cli-flag-coverage` and fails on a non-empty `git diff` of the regenerated `docs/cli-flag-coverage.md` / `docs/_generated/cli-flag-coverage.json`, so a forgotten regeneration cannot reach main. Same staleness shape as the integ-coverage / scenario-coverage matrices — it guards freshness of the generated file, not coverage %.
 
 ### Scenario Coverage (visibility report)
 
