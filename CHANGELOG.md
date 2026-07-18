@@ -1,3 +1,10 @@
+# [0.245.0](https://github.com/go-to-k/cdkd/compare/v0.244.0...v0.245.0) (2026-07-18)
+
+
+### Features
+
+* **providers:** add SDK Provider for AWS::EMR::Cluster ([#1064](https://github.com/go-to-k/cdkd/issues/1064)) ([c209dd5](https://github.com/go-to-k/cdkd/commit/c209dd5e8d17e61c7a4689c199d3e4553f97d101))
+
 # [0.244.0](https://github.com/go-to-k/cdkd/compare/v0.243.0...v0.244.0) (2026-07-18)
 
 
