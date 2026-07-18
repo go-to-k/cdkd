@@ -9,6 +9,12 @@
 #      role). Assert via `aws dlm get-lifecycle-policy` that the policy is
 #      ENABLED with the baseline description and carries the templated tags,
 #      and that state routes it via the SDK provider (provisionedBy=sdk).
+#   1b. Assert `cdkd drift` reports ZERO drift on the freshly-deployed policy
+#      (exit 0). GetLifecyclePolicy returns PolicyDetails with server-injected
+#      defaults (e.g. PolicyLanguage: SIMPLIFIED) the template never set; the
+#      provider's readCurrentState + getDriftUnknownPaths must exclude those so
+#      they never surface as phantom drift (issue #1067). This is the whole
+#      point of the drift caveat — a no-op deploy MUST be drift-free.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: description change + State
 #      ENABLED -> DISABLED (UpdateLifecyclePolicy), tag value change AND tag
 #      removal (TagResource / UntagResource — the #981 regression class).
@@ -128,6 +134,24 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
   exit 1
 fi
 echo "    policy routed via SDK provider (provisionedBy=sdk)"
+
+# --- Phase 1b: zero-drift assertion (server-default guard, issue #1067) --
+echo "==> Phase 1b: assert cdkd drift reports NO drift on the freshly-deployed policy"
+# `cdkd drift` exits 0 when in sync, 1 when drift is detected. GetLifecyclePolicy
+# returns PolicyDetails with server-injected defaults (e.g. PolicyLanguage:
+# SIMPLIFIED, PolicyType/ResourceTypes/per-schedule defaults) that the template
+# never set. The provider's readCurrentState surfaces only
+# Description/State/ExecutionRoleArn/Tags and lists PolicyDetails + the
+# default-policy shorthand fields in getDriftUnknownPaths, so those server
+# defaults must NOT register as phantom drift. A freshly-deployed, unmodified
+# policy MUST be drift-free — that is the whole point of issue #1067.
+if node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
+  echo "    cdkd drift reports zero drift (server-injected PolicyDetails defaults handled)"
+else
+  echo "FAIL: cdkd drift reported drift on a freshly-deployed DLM policy (expected none) — server-injected PolicyDetails defaults are leaking as phantom drift" >&2
+  exit 1
+fi
 
 # --- Phase 2: in-place update (state/description/tags) ------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (DISABLED, tag change + removal)"
