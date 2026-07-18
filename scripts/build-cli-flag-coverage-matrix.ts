@@ -272,7 +272,7 @@ function renderMarkdown(report: FlagCoverageReport): string {
   );
   lines.push('');
   lines.push(
-    'See the script docstring for the design rationale; this matrix is intentionally not wired to CI hard-fail (contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where the CI gate IS appropriate because every registered provider is expected to have real-AWS verification).'
+    'See the script docstring for the design rationale; the *coverage numbers* here are intentionally not wired to a CI hard-fail (contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where a coverage gate IS appropriate because every registered provider is expected to have real-AWS verification). CI does, however, run a *staleness* check on this generated file — `vp run cli-flag-coverage` followed by `git diff --exit-code` — so the matrix cannot silently drift; that guards freshness, not coverage %.'
   );
   lines.push('');
   if (report.uncovered.length > 0) {

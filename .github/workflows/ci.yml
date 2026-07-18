@@ -38,6 +38,25 @@ jobs:
             exit 1
           fi
 
+      # Issue #1071 — fail CI when docs/cli-flag-coverage.md or
+      # docs/_generated/cli-flag-coverage.json is stale relative to the
+      # declared CLI flags (src/cli/options.ts) + tests/integration/*/verify.sh.
+      # Same `vp run ... && git diff --exit-code` shape as the
+      # integ-coverage step above. This is a STALENESS guard only (the
+      # generated file must track its inputs); it deliberately does NOT
+      # hard-fail on low coverage % — many flags are unit-tested rather
+      # than exercised in an integ verify.sh (see the report's own
+      # "VISIBILITY report, not a CI gate" note). Closes the gap where the
+      # matrix had not been regenerated since PR #504 and drifted silently.
+      - name: cli-flag-coverage matrix is up-to-date
+        run: |
+          vp run cli-flag-coverage
+          if ! git diff --quiet -- docs/cli-flag-coverage.md docs/_generated/cli-flag-coverage.json; then
+            echo "::error::cli-flag-coverage matrix is stale — run \`vp run cli-flag-coverage\` and commit the regenerated docs/cli-flag-coverage.md + docs/_generated/cli-flag-coverage.json"
+            git --no-pager diff -- docs/cli-flag-coverage.md docs/_generated/cli-flag-coverage.json
+            exit 1
+          fi
+
       # Issue #398 — fail CI when the cached three-tier provider-coverage
       # audit (docs/_generated/provider-coverage.json) Tier 1 list drifts
       # from src/provisioning/register-providers.ts. Offline check (<1s,
