@@ -163,11 +163,10 @@ high.
 
 ### Dev Dependencies
 
-- `esbuild` - Build tool
-- `vitest` - Testing framework
-- `eslint` - Linting
-- `prettier` - Formatting
-- `typescript` - Type checking
+- `vite-plus` - Unified dev toolchain (`vp`): bundles Vitest (tests), Oxlint (linting), Oxfmt (formatting), and the tsdown-based `vp pack` bundler
+- `typescript` - TypeScript 7 native compiler (`tsc`) for typecheck
+- `typescript-v6` - npm alias of typescript@6; provides the stable JS compiler API for the codegen scripts (TS7 ships it only under `typescript/unstable/*`)
+- `semantic-release` - Automated releases
 
 ## Node.js Version
 

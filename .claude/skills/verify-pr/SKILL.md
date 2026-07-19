@@ -18,7 +18,7 @@ Run each check and report pass/fail:
    ```
    `git worktree add` does NOT copy `node_modules`, so a fresh worktree's
    `vp run typecheck` / `lint` / `build` and `vp run test` all fail
-   with `tsgo: command not found` / `Cannot find package 'vitest'` etc. —
+   with `tsc: command not found` / `Cannot find package 'vitest'` etc. —
    but the failure is easy to miss when the output is piped to `tail` (the
    exit code reflects `tail`, not `vp`, and the failure line gets
    buried). If the pre-flight skips by way of an existing `node_modules`,
