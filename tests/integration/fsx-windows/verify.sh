@@ -78,14 +78,18 @@ CLEANUP_TAG_VALUE="fsx-windows"
 # defaults to the first label, "corp".
 AD_DOMAIN="corp.cdkd-integ.com"
 
-# How long to wait for the DELETED DIRECTORY RECORD to disappear. This is
-# ADVISORY: two ~96-minute live runs (2026-07-19/20) both spent the full
-# former 2400s budget here without the record going away, and it vanished
-# only some time after the script exited. Since exceeding this no longer
-# fails the run (a still-Deleting directory is deletion-accepted and
-# progressing), a long budget would be pure dead time on every run — so it
-# is short, just long enough to catch a fast completion or a Failed stage.
-DIR_RECORD_WAIT_SECONDS=600
+# How long to wait to CONFIRM the delete was accepted — i.e. to observe
+# the directory reach `Deleting` (or vanish outright). The wait returns as
+# soon as it sees that, so this budget is spent only when the delete did
+# NOT take, which is a genuine failure worth waiting to be sure of. It is
+# therefore generous rather than tight: run #4 failed because the first
+# post-delete read still reported the pre-delete `Active` stage, and the
+# transition needs room.
+#
+# It is NOT a budget for the record to disappear. Two ~96-minute runs
+# showed that outlives the fixture entirely — see "Why Phase 6 does not
+# wait for the record to disappear" in the README.
+DIR_RECORD_WAIT_SECONDS=1800
 # How long to wait for the directory's ENIs to be RELEASED. This one is
 # load-bearing — Phase 7 cannot delete the VPC until they are gone — so it
 # gets the real budget.
@@ -97,37 +101,49 @@ DIR_CLEANUP_WAIT_SECONDS=120
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Run an `aws ... --output text` list query, distinguishing a genuine
+# EMPTY result from an API FAILURE. Prints newline-separated ids.
+# Returns 0 when the query succeeded (even with no results), 1 when the
+# call itself failed.
+#
+# This distinction is load-bearing for every leak assertion below. The
+# previous `... 2>/dev/null | tr ...` form collapsed a throttle or an
+# expired credential into an empty list, which reads as "nothing left" —
+# turning a real leak into a green assertion. Same inverted-semantics
+# class as the existence probes further down.
+aws_query_ids() {
+  local out rc
+  out="$("$@" --output text 2>&1)" && rc=0 || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "    WARNING: AWS list query failed (treating as UNKNOWN, not empty): ${out}" >&2
+    return 1
+  fi
+  printf '%s' "${out}" | tr '\t' '\n' | sed '/^$/d'
+  return 0
+}
+
 # List file system ids carrying the fixture's constant tag.
 tagged_fs_ids() {
-  aws fsx describe-file-systems --region "${REGION}" \
-    --query "FileSystems[?Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].FileSystemId" \
-    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+  aws_query_ids aws fsx describe-file-systems --region "${REGION}" \
+    --query "FileSystems[?Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].FileSystemId"
 }
 
-# List directory ids for the fixture's domain (the Directory Service API
-# has no tag filter on DescribeDirectories, and the domain name is unique
-# to this fixture).
-# Stage=='Deleted' is excluded for the same reason directory_state treats
-# it as gone: AWS keeps returning a deleted directory successfully for a
-# while, and counting those would both re-issue pointless deletes in
-# cleanup and make the post-delete "no directory remains" assertion fire
-# on a directory that is already gone.
-# Directories that still need action from us. Excludes Deleting as well as
+# Directories for the fixture's domain that still need action from us (the
+# Directory Service API has no tag filter on DescribeDirectories, and the
+# domain name is unique to this fixture). Excludes Deleting as well as
 # Deleted: a Deleting directory has already had its delete accepted and
 # will finish on its own, so counting it would both re-issue pointless
-# deletes in cleanup and contradict the Phase 6 verdict below, which
+# deletes in cleanup and contradict the Phase 6 verdict, which
 # deliberately tolerates that state.
 fixture_live_directory_ids() {
-  aws ds describe-directories --region "${REGION}" \
-    --query "DirectoryDescriptions[?Name=='${AD_DOMAIN}' && Stage!='Deleted' && Stage!='Deleting'].DirectoryId" \
-    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+  aws_query_ids aws ds describe-directories --region "${REGION}" \
+    --query "DirectoryDescriptions[?Name=='${AD_DOMAIN}' && Stage!='Deleted' && Stage!='Deleting'].DirectoryId"
 }
 
-# Tri-state existence probes. A bare `if ! aws ... >/dev/null 2>&1` treats
-# ANY nonzero exit as "gone", so a throttle / expired credential / network
-# blip would report a live, billing file system or directory as deleted.
-# Require the not-found error specifically.
-#   0 = gone, 1 = still exists, 2 = indeterminate (API error)
+# A bare `if ! aws ... >/dev/null 2>&1` treats ANY nonzero exit as "gone",
+# so a throttle / expired credential / network blip would report a live,
+# billing resource as deleted. Require the not-found error specifically.
+#
 # FSx and Directory Service signal "deleted" DIFFERENTLY. Verified against
 # the API models rather than assumed symmetric:
 #
@@ -163,22 +179,28 @@ fs_state() {
   esac
 }
 
-directory_state() {
+# Echo the directory's raw Stage, or the sentinel `__GONE__` (record
+# removed / not found) or `__ERROR__` (the call itself failed). Always
+# exits 0 so callers can drive their own state machine off the value.
+directory_stage() {
   local dir_id="$1" out rc
   out="$(aws ds describe-directories --directory-ids "${dir_id}" \
     --region "${REGION}" --query 'DirectoryDescriptions[0].Stage' \
     --output text 2>&1)" && rc=0 || rc=$?
   if [ "${rc}" -eq 0 ]; then
     case "${out}" in
-      Deleted) return 0 ;;
-      Failed) return 3 ;;
-      *) return 1 ;;
+      # `Deleted` means released; `None`/empty is the projection over an
+      # empty result list, i.e. the record is already gone.
+      Deleted | None | '') echo '__GONE__' ;;
+      *) echo "${out}" ;;
     esac
+    return 0
   fi
   case "${out}" in
-    *EntityDoesNotExist* | *DirectoryDoesNotExist*) return 0 ;;
-    *) return 2 ;;
+    *EntityDoesNotExist* | *DirectoryDoesNotExist*) echo '__GONE__' ;;
+    *) echo '__ERROR__' ;;
   esac
+  return 0
 }
 
 wait_fs_gone() {
@@ -197,27 +219,66 @@ wait_fs_gone() {
 }
 
 # $2 = seconds to wait (default DIR_RECORD_WAIT_SECONDS). Returns:
-#   0 = gone (Stage=Deleted or not found)
-#   3 = Stage=Failed (loud)
-#   4 = deadline reached while still Deleting (accepted + progressing)
-#   1 = deadline reached in some other / undetermined state (loud)
+#   0 = gone (record removed / Stage=Deleted)
+#   4 = confirmed Deleting — the delete was accepted and is progressing
+#   3 = Stage=Failed after leaving the initial stage (loud)
+#   1 = never left its initial stage, or ended in an unexpected one (loud)
+#
+# READ-AFTER-WRITE: `DeleteDirectory` returns before the stage flips, so
+# the first poll still reports the PRE-delete stage (`Active`). Failing on
+# that stale read is what broke run #4 — the same class the EMR providers
+# hit, where `waitForGroupReady` read the PRE-modify state on poll #1.
+# Mirroring that fix (`hasLeftInitialState` in
+# emr-instance-group-config-provider.ts): remember the stage seen first,
+# and do not apply the "unexpected stage" verdict until the directory is
+# observed LEAVING it.
+#
+# Crucially this does NOT swallow a genuine failure. As in the provider, a
+# directory that never leaves its initial stage falls through to the
+# deadline and FAILS — that is an un-accepted delete, exactly the case the
+# arm exists for. The tolerance only suppresses the verdict while the read
+# is still plausibly stale.
+#
+# Returning as soon as `Deleting` is observed also means the budget is
+# spent only in the broken case, so it can be generous without costing
+# wall clock on the happy path.
 wait_directory_gone() {
-  local dir_id="$1" budget="${2:-${DIR_RECORD_WAIT_SECONDS}}" rc last_stage
+  local dir_id="$1" budget="${2:-${DIR_RECORD_WAIT_SECONDS}}"
   local deadline=$((SECONDS + budget))
+  local stage initial='' left=0 start=${SECONDS}
   while [ ${SECONDS} -lt ${deadline} ]; do
-    directory_state "${dir_id}" && return 0 || rc=$?
-    if [ "${rc}" -eq 3 ]; then
-      echo "    ERROR: directory ${dir_id} reached Stage=Failed during deletion" >&2
-      return 3
-    fi
+    stage="$(directory_stage "${dir_id}")"
+    case "${stage}" in
+      __GONE__)
+        echo "    directory ${dir_id}: record gone after $((SECONDS - start))s"
+        return 0
+        ;;
+      __ERROR__)
+        # Transient: never treat an API failure as a state transition.
+        ;;
+      *)
+        if [ -z "${initial}" ]; then
+          initial="${stage}"
+          echo "    directory ${dir_id}: initial stage ${stage}"
+        elif [ "${stage}" != "${initial}" ] && [ ${left} -eq 0 ]; then
+          left=1
+          echo "    directory ${dir_id}: left ${initial} -> ${stage} after $((SECONDS - start))s"
+        fi
+        if [ "${stage}" = 'Deleting' ]; then
+          echo "    directory ${dir_id}: Deleting confirmed after $((SECONDS - start))s"
+          return 4
+        fi
+        if [ ${left} -eq 1 ] && [ "${stage}" = 'Failed' ]; then
+          echo "    ERROR: directory ${dir_id} reached Stage=Failed during deletion" >&2
+          return 3
+        fi
+        ;;
+    esac
     sleep 20
   done
-  # Distinguish "AWS accepted the delete and is working on it" from
-  # "stuck in some state we did not expect".
-  last_stage="$(aws ds describe-directories --directory-ids "${dir_id}" \
-    --region "${REGION}" --query 'DirectoryDescriptions[0].Stage' \
-    --output text 2>/dev/null || true)"
-  [ "${last_stage}" = "Deleting" ] && return 4
+  if [ ${left} -eq 0 ] && [ -n "${initial}" ]; then
+    echo "    ERROR: directory ${dir_id} never left Stage=${initial} in ${budget}s — the delete was not accepted" >&2
+  fi
   return 1
 }
 
@@ -235,18 +296,22 @@ wait_directory_gone() {
 # fails OPEN, leaving Phase 7 to surface any real problem rather than
 # blocking the run on a string match.
 directory_eni_ids() {
-  aws ec2 describe-network-interfaces --region "${REGION}" \
+  aws_query_ids aws ec2 describe-network-interfaces --region "${REGION}" \
     --filters "Name=vpc-id,Values=${VPC_ID}" \
-    --query "NetworkInterfaces[?contains(Description, '$1')].NetworkInterfaceId" \
-    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+    --query "NetworkInterfaces[?contains(Description, '$1')].NetworkInterfaceId"
 }
 
 wait_directory_enis_released() {
-  local dir_id="$1" remaining
+  local dir_id="$1" remaining rc start=${SECONDS}
   local deadline=$((SECONDS + DIR_ENI_WAIT_SECONDS))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    remaining="$(directory_eni_ids "${dir_id}")"
-    [ -z "${remaining}" ] && return 0
+    remaining="$(directory_eni_ids "${dir_id}")" && rc=0 || rc=$?
+    # A FAILED query must never count as "released" — that would wave the
+    # run past the one gate protecting Phase 7. Keep polling instead.
+    if [ "${rc}" -eq 0 ] && [ -z "${remaining}" ]; then
+      echo "    directory ${dir_id}: ENIs released after $((SECONDS - start))s"
+      return 0
+    fi
     sleep 20
   done
   return 1
@@ -263,9 +328,8 @@ wait_directory_enis_released() {
 # guaranteed to carry the fixture tag. A tag-based query can come back
 # empty and make the assertion below "pass" over a billing backup.
 backup_ids_for_fs() {
-  aws fsx describe-backups --region "${REGION}" \
-    --query "Backups[?FileSystem.FileSystemId=='$1'].BackupId" \
-    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+  aws_query_ids aws fsx describe-backups --region "${REGION}" \
+    --query "Backups[?FileSystem.FileSystemId=='$1'].BackupId"
 }
 
 # AWS OMITS AutomaticBackupRetentionDays from DescribeFileSystems when
@@ -577,7 +641,10 @@ assert_backups_disabled "${RETENTION_P3}" || exit 1
 # The retention field is only a PROXY. The invariant that actually costs
 # money is "no backup exists for this file system" — assert that directly,
 # keyed on FileSystemId (backups carry no fixture tags).
-BACKUPS_P3="$(backup_ids_for_fs "${FS_ID_P3}")"
+BACKUPS_P3="$(backup_ids_for_fs "${FS_ID_P3}")" || {
+  echo "FAIL: could not list FSx backups (AWS API error)" >&2
+  exit 1
+}
 if [ -n "${BACKUPS_P3}" ]; then
   echo "FAIL: Phase 3 expected no backups for ${FS_ID_P3}, found: ${BACKUPS_P3}" >&2
   exit 1
@@ -691,7 +758,10 @@ case ${FS_RC} in
     exit 1
     ;;
 esac
-LEFTOVERS="$(tagged_fs_ids)"
+LEFTOVERS="$(tagged_fs_ids)" || {
+  echo "FAIL: could not list FSx file systems (AWS API error) — refusing to assume none remain" >&2
+  exit 1
+}
 if [ -n "${LEFTOVERS}" ]; then
   echo "FAIL: FSx file system(s) with tag ${CLEANUP_TAG_KEY}=${CLEANUP_TAG_VALUE} still exist: ${LEFTOVERS}" >&2
   exit 1
@@ -701,11 +771,17 @@ echo "    file system deleted (by id and by fixture tag)"
 # cdkd deletes with API defaults (CloudFormation parity), and the Windows
 # default is to take a FINAL backup — chargeable, and invisible to the
 # file-system assertions above.
-LEFTOVER_BACKUPS="$(backup_ids_for_fs "${FS_ID_P4}")"
+LEFTOVER_BACKUPS="$(backup_ids_for_fs "${FS_ID_P4}")" || {
+  echo "FAIL: could not list FSx backups (AWS API error) — refusing to assume none remain" >&2
+  exit 1
+}
 if [ -n "${LEFTOVER_BACKUPS}" ]; then
   echo "    final backup(s) left by DeleteFileSystem: ${LEFTOVER_BACKUPS} — deleting"
   delete_backups_for_fs "${FS_ID_P4}"
-  REMAINING_BACKUPS="$(backup_ids_for_fs "${FS_ID_P4}")"
+  REMAINING_BACKUPS="$(backup_ids_for_fs "${FS_ID_P4}")" || {
+    echo "FAIL: could not re-list FSx backups (AWS API error)" >&2
+    exit 1
+  }
   if [ -n "${REMAINING_BACKUPS}" ]; then
     echo "FAIL: FSx backup(s) still exist after cleanup: ${REMAINING_BACKUPS}" >&2
     exit 1
@@ -723,30 +799,44 @@ echo "==> Phase 6: delete the Managed Microsoft AD (~10 min)"
 # directory in Deleting completes on its own and nothing the fixture does
 # can speed it. The end-of-run sweeps below and in cleanup() are the
 # authority on whether anything chargeable was actually left behind.
-aws ds delete-directory --directory-id "${DIRECTORY_ID}" --region "${REGION}" >/dev/null
+# A delete that AWS has already accepted (a retry, or cleanup having got
+# there first) reports EntityDoesNotExist / a client error rather than
+# succeeding. That is not a failure of this phase, so do not let `set -e`
+# abort on it — the wait below decides the verdict from observed state.
+if ! DEL_ERR="$(aws ds delete-directory --directory-id "${DIRECTORY_ID}" \
+  --region "${REGION}" 2>&1 >/dev/null)"; then
+  echo "    note: delete-directory returned an error (continuing, state is the authority): ${DEL_ERR}"
+fi
+
 wait_directory_gone "${DIRECTORY_ID}" && DIR_RC=0 || DIR_RC=$?
 case ${DIR_RC} in
   0)
     echo "    Managed AD record is gone"
     ;;
   4)
-    echo "WARNING: Managed AD ${DIRECTORY_ID} still Deleting after ${DIR_RECORD_WAIT_SECONDS}s — AWS teardown outlives this fixture; the account sweep below is the authority" >&2
+    echo "WARNING: Managed AD ${DIRECTORY_ID} is still Deleting — deletion is accepted and progressing, but AWS teardown outlives this fixture; the sweeps are the authority on leaks" >&2
     ;;
   3)
     echo "FAIL: directory ${DIRECTORY_ID} reached Stage=Failed while deleting" >&2
     exit 1
     ;;
   *)
-    echo "FAIL: directory ${DIRECTORY_ID} is in neither a deleted nor a Deleting state after delete-directory" >&2
+    echo "FAIL: directory ${DIRECTORY_ID} never reached a deleted or Deleting state — the delete was not accepted" >&2
     exit 1
     ;;
 esac
 
-# Live (non-Deleted, non-Deleting) directories are always a failure: that
-# means a delete never took.
-REMAINING_DIRS="$(fixture_live_directory_ids)"
+# Any OTHER live directory on this domain is a failure. Our own is
+# excluded: it has just been confirmed gone or Deleting above, and a
+# lagging list read could still show it as live — the same stale-read trap
+# that broke the verdict above.
+REMAINING_DIRS="$(fixture_live_directory_ids)" || {
+  echo "FAIL: could not list directories for ${AD_DOMAIN} (AWS API error) — refusing to assume none remain" >&2
+  exit 1
+}
+REMAINING_DIRS="$(printf '%s\n' "${REMAINING_DIRS}" | grep -v "^${DIRECTORY_ID}$" | sed '/^$/d' || true)"
 if [ -n "${REMAINING_DIRS}" ]; then
-  echo "FAIL: directory/directories for ${AD_DOMAIN} are still live: ${REMAINING_DIRS}" >&2
+  echo "FAIL: other directory/directories for ${AD_DOMAIN} are still live: ${REMAINING_DIRS}" >&2
   exit 1
 fi
 
@@ -778,10 +868,20 @@ case "${VPC_ERR}" in
 esac
 echo "    VPC deleted"
 
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
+if STATE_ERR="$(aws s3api head-object --bucket "${STATE_BUCKET}" \
+  --key "${STATE_KEY}" 2>&1 >/dev/null)"; then
   echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
   exit 1
 fi
+# Only a genuine not-found proves removal; any other error (throttle,
+# AccessDenied, expired credentials) must not read as "deleted".
+case "${STATE_ERR}" in
+  *404* | *Not\ Found* | *NoSuchKey*) ;;
+  *)
+    echo "FAIL: could not determine whether ${STATE_KEY} was removed (S3 API error): ${STATE_ERR}" >&2
+    exit 1
+    ;;
+esac
 echo "    cdkd state removed"
 
 echo "[verify] PASS — AWS::FSx::FileSystem Windows variant: AD-joined create + in-place update (incl. tag removal) + delete + destroy all passed"

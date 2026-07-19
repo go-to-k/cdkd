@@ -151,6 +151,29 @@ All resources for the directory have been released"), so the branch is
 legitimate — but across two runs the record went from `Deleting` straight
 to absent. Treat that branch as belt-and-braces, not as the expected path.
 
+### Read-after-write: the first probe reports the PRE-delete stage
+
+`DeleteDirectory` returns before the stage flips, so the first
+`DescribeDirectories` after it still reports `Active`. Failing on that
+stale read is what broke run #4 — and it is the same class the EMR
+providers hit, where `waitForGroupReady` read the pre-`Modify` state on
+poll #1.
+
+The wait mirrors that fix (`hasLeftInitialState` in
+`src/provisioning/providers/emr-instance-group-config-provider.ts`): it
+remembers the stage seen first and does not apply the "unexpected stage"
+verdict until the directory is observed **leaving** it.
+
+Crucially this does **not** swallow a genuine failure — exactly as in the
+provider, a directory that never leaves its initial stage falls through to
+the deadline and **fails**, because that is an un-accepted delete. The
+tolerance only suppresses the verdict while the read is still plausibly
+stale. An API error is never counted as a transition either.
+
+Because the wait returns as soon as `Deleting` is observed, the budget is
+spent only in the broken case — so it can be generous without costing
+wall clock on the happy path.
+
 ### The ENI gate is the one wait that is load-bearing
 
 Phase 7 runs `cdkd destroy`, which deletes the VPC — and its subnets

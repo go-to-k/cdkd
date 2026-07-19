@@ -52,11 +52,30 @@ CLEANUP_TAG_VALUE="fsx-ontap"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Run an `aws ... --output text` list query, distinguishing a genuine
+# EMPTY result from an API FAILURE. Prints newline-separated ids.
+# Returns 0 when the query succeeded (even with no results), 1 when the
+# call itself failed.
+#
+# This distinction is load-bearing for the leak assertions below: the
+# previous `... 2>/dev/null | tr ...` form collapsed a throttle or an
+# expired credential into an empty list, which reads as "nothing left" —
+# turning a real leak into a green assertion.
+aws_query_ids() {
+  local out rc
+  out="$("$@" --output text 2>&1)" && rc=0 || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "    WARNING: AWS list query failed (treating as UNKNOWN, not empty): ${out}" >&2
+    return 1
+  fi
+  printf '%s' "${out}" | tr '\t' '\n' | sed '/^$/d'
+  return 0
+}
+
 # List file system ids carrying the fixture's constant tag.
 tagged_fs_ids() {
-  aws fsx describe-file-systems --region "${REGION}" \
-    --query "FileSystems[?Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].FileSystemId" \
-    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+  aws_query_ids aws fsx describe-file-systems --region "${REGION}" \
+    --query "FileSystems[?Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].FileSystemId"
 }
 
 # Tri-state existence probe. A bare `if ! aws ... >/dev/null 2>&1` treats
@@ -119,9 +138,8 @@ wait_fs_gone() {
 # guaranteed to carry the fixture tag. A tag-based query can come back
 # empty and make the assertion below "pass" over a billing backup.
 backup_ids_for_fs() {
-  aws fsx describe-backups --region "${REGION}" \
-    --query "Backups[?FileSystem.FileSystemId=='$1'].BackupId" \
-    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+  aws_query_ids aws fsx describe-backups --region "${REGION}" \
+    --query "Backups[?FileSystem.FileSystemId=='$1'].BackupId"
 }
 
 # AWS OMITS AutomaticBackupRetentionDays from DescribeFileSystems when
@@ -299,7 +317,10 @@ assert_backups_disabled "${RETENTION_P1}" || exit 1
 # The retention field is only a PROXY. The invariant that actually costs
 # money is "no backup exists for this file system" — assert that directly,
 # keyed on FileSystemId (backups carry no fixture tags).
-BACKUPS_P1="$(backup_ids_for_fs "${FS_ID_P1}")"
+BACKUPS_P1="$(backup_ids_for_fs "${FS_ID_P1}")" || {
+  echo "FAIL: could not list FSx backups (AWS API error)" >&2
+  exit 1
+}
 if [ -n "${BACKUPS_P1}" ]; then
   echo "FAIL: Phase 1 expected no backups for ${FS_ID_P1}, found: ${BACKUPS_P1}" >&2
   exit 1
@@ -387,7 +408,10 @@ case ${FS_RC} in
 esac
 echo "    file system deleted (by id)"
 
-LEFTOVERS="$(tagged_fs_ids)"
+LEFTOVERS="$(tagged_fs_ids)" || {
+  echo "FAIL: could not list FSx file systems (AWS API error) — refusing to assume none remain" >&2
+  exit 1
+}
 if [ -n "${LEFTOVERS}" ]; then
   echo "FAIL: FSx file system(s) with tag ${CLEANUP_TAG_KEY}=${CLEANUP_TAG_VALUE} still exist after destroy: ${LEFTOVERS}" >&2
   exit 1
@@ -397,11 +421,17 @@ echo "    no file system with the fixture tag remains"
 # cdkd deletes with API defaults (CloudFormation parity), and the ONTAP
 # default is to take a FINAL backup — which bills per GB-month on 1 TiB
 # and is invisible to the file-system assertions above.
-LEFTOVER_BACKUPS="$(backup_ids_for_fs "${FS_ID_P2}")"
+LEFTOVER_BACKUPS="$(backup_ids_for_fs "${FS_ID_P2}")" || {
+  echo "FAIL: could not list FSx backups (AWS API error) — refusing to assume none remain" >&2
+  exit 1
+}
 if [ -n "${LEFTOVER_BACKUPS}" ]; then
   echo "    final backup(s) left by DeleteFileSystem: ${LEFTOVER_BACKUPS} — deleting"
   delete_backups_for_fs "${FS_ID_P2}"
-  REMAINING_BACKUPS="$(backup_ids_for_fs "${FS_ID_P2}")"
+  REMAINING_BACKUPS="$(backup_ids_for_fs "${FS_ID_P2}")" || {
+    echo "FAIL: could not re-list FSx backups (AWS API error)" >&2
+    exit 1
+  }
   if [ -n "${REMAINING_BACKUPS}" ]; then
     echo "FAIL: FSx backup(s) still exist after cleanup: ${REMAINING_BACKUPS}" >&2
     exit 1
@@ -409,10 +439,20 @@ if [ -n "${LEFTOVER_BACKUPS}" ]; then
 fi
 echo "    no chargeable backup remains"
 
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
+if STATE_ERR="$(aws s3api head-object --bucket "${STATE_BUCKET}" \
+  --key "${STATE_KEY}" 2>&1 >/dev/null)"; then
   echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
   exit 1
 fi
+# Only a genuine not-found proves removal; any other error (throttle,
+# AccessDenied, expired credentials) must not read as "deleted".
+case "${STATE_ERR}" in
+  *404* | *Not\ Found* | *NoSuchKey*) ;;
+  *)
+    echo "FAIL: could not determine whether ${STATE_KEY} was removed (S3 API error): ${STATE_ERR}" >&2
+    exit 1
+    ;;
+esac
 echo "    cdkd state removed"
 
 echo "[verify] PASS — AWS::FSx::FileSystem ONTAP variant: deploy + in-place update (incl. tag removal) + destroy all passed"
