@@ -87,6 +87,24 @@ EOF
 {"additions":460,"deletions":321,"changedFiles":11,"headRefOid":"rul1234567890","headRefName":"docs/claude-md-trim","files":[{"path":"CLAUDE.md"},{"path":".claude/rules/architecture.md"},{"path":".claude/rules/code-layout.md"},{"path":".claude/rules/state-schema.md"},{"path":".claude/rules/providers.md"},{"path":".claude/rules/synthesis.md"},{"path":".claude/rules/assets.md"},{"path":".claude/rules/analyzer.md"},{"path":".claude/rules/cli-internals.md"},{"path":".claude/rules/testing.md"},{"path":".claude/rules/hooks.md"}]}
 EOF
     ;;
+  lockfile-inflated)
+    # PR #1082 shape: 2784 raw LOC but 2747 of it is root-level
+    # pnpm-lock.yaml churn. Adjusted loc = 37 (< 300) with fc = 9
+    # (< 10) → inline tier → pass-through. Pre-fix the hook computed
+    # raw LOC → 3-axis → spurious block.
+    cat <<'EOF'
+{"additions":1651,"deletions":1133,"changedFiles":9,"headRefOid":"lck1234567890","headRefName":"chore/lockfile-heavy","files":[{"path":"pnpm-lock.yaml","additions":1614,"deletions":1133},{"path":"package.json","additions":8,"deletions":0},{"path":"vite.config.ts","additions":4,"deletions":0},{"path":"CLAUDE.md","additions":4,"deletions":0},{"path":"CONTRIBUTING.md","additions":2,"deletions":0},{"path":".mise.toml","additions":2,"deletions":0},{"path":"scripts/a.ts","additions":6,"deletions":0},{"path":"scripts/b.ts","additions":6,"deletions":0},{"path":".claude/skills/verify-pr/SKILL.md","additions":5,"deletions":0}]}
+EOF
+    ;;
+  autogen-inflated-manyfiles)
+    # 3000 raw LOC, 2900 under docs/_generated/** — adjusted loc = 100,
+    # but fc = 12 (>= 10) still forces 3-axis: fc is intentionally NOT
+    # adjusted for auto-generated files (a many-file diff stays
+    # cross-cutting). Gate must still block on a stale marker.
+    cat <<'EOF'
+{"additions":2500,"deletions":500,"changedFiles":12,"headRefOid":"agn1234567890","headRefName":"feat/autogen-heavy","files":[{"path":"docs/_generated/integ-coverage.json","additions":2400,"deletions":500},{"path":"src/a.ts","additions":10,"deletions":0},{"path":"src/b.ts","additions":10,"deletions":0},{"path":"src/c.ts","additions":10,"deletions":0},{"path":"src/d.ts","additions":10,"deletions":0},{"path":"src/e.ts","additions":10,"deletions":0},{"path":"src/f.ts","additions":10,"deletions":0},{"path":"src/g.ts","additions":10,"deletions":0},{"path":"src/h.ts","additions":10,"deletions":0},{"path":"src/i.ts","additions":10,"deletions":0},{"path":"src/j.ts","additions":10,"deletions":0},{"path":"src/k.ts","additions":10,"deletions":0}]}
+EOF
+    ;;
   fail)
     # Simulate gh failure.
     exit 1
@@ -215,6 +233,21 @@ run_case "gh pr view passes" 0 \
 run_case "small PR (inline) passes regardless of marker" 0 \
   small stale "" \
   "gh pr merge 100"
+
+# 4b. Lockfile-inflated PR (PR #1082 shape): 2784 raw LOC but only 37
+# after subtracting root-level pnpm-lock.yaml churn → inline tier →
+# pass-through even on a stale marker. Pins the auto-gen LOC exclusion
+# (and its `(^|/)` anchoring for ROOT-level lockfiles).
+run_case "lockfile-inflated PR (inline after exclusion) passes on stale marker" 0 \
+  lockfile-inflated stale "" \
+  "gh pr merge 1082"
+
+# 4c. Auto-gen-inflated PR that still has fc >= 10: loc adjusts to 100
+# but the file count alone keeps it 3-axis (fc is NOT adjusted) →
+# block on stale marker.
+run_case "autogen-inflated PR with fc>=10 still 3-axis → block on stale" 2 \
+  autogen-inflated-manyfiles stale "" \
+  "gh pr merge 404"
 
 # --- Medium / 1-reviewer tier -----------------------------------------
 

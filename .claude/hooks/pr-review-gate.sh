@@ -167,6 +167,26 @@ if [ -z "$loc" ] || [ -z "$fc" ]; then
   exit 0
 fi
 
+# Subtract auto-generated LOC before computing the tier — mirrors
+# /review-pr SKILL.md step 1 (added there after PR #404). Generated
+# artifacts under docs/_generated/** and lockfiles inflate LOC without
+# adding reviewer surface (reviewers audit the script that produced
+# them, not the output line-by-line). Without this the hook and the
+# skill disagree: PR #1082 was 37 substantive LOC (inline tier per the
+# skill) but 2784 raw LOC (3-axis per the pre-fix hook) because
+# pnpm-lock.yaml carried 2747 of them. `(^|/)` anchors match the
+# lockfiles both at repo root (cdkd's actual layout) and in subdirs.
+# `fc` is intentionally NOT adjusted — a many-file diff is still
+# cross-cutting even when some files are generated.
+autogen_excl=$(printf '%s' "$pr_json" | jq -r \
+  '[.files[] | select(.path | test("^docs/_generated/|(^|/)pnpm-lock\\.yaml$|(^|/)package-lock\\.json$|(^|/)yarn\\.lock$")) | (.additions // 0) + (.deletions // 0)] | add // 0' \
+  2>/dev/null || echo 0)
+case "$autogen_excl" in
+  ''|*[!0-9]*) autogen_excl=0 ;;  # fail-open to raw loc on parse oddity
+esac
+loc=$((loc - autogen_excl))
+if [ "$loc" -lt 0 ]; then loc=0; fi
+
 # --- Compute final tier per the /review-pr heuristic. ------------------
 # Reference: .claude/skills/review-pr/SKILL.md (steps 2-4). Logic
 # duplicated here in Bash for hook-time evaluation; the duplication
@@ -294,7 +314,7 @@ pr_label="${pr_number:-<current-branch-PR>}"
 sha_short=$(printf '%s' "$head_sha" | cut -c1-7)
 
 cat >&2 <<EOF_HEAD
-Blocked by pr-review-gate: PR #${pr_label} (${loc} LOC, ${fc} files) requires \`${final_tier}\` review before merge.
+Blocked by pr-review-gate: PR #${pr_label} (${loc} LOC excl. auto-generated files, ${fc} files) requires \`${final_tier}\` review before merge.
 
 PR HEAD sha: ${sha_short:-<unknown>}
 Marker state: $(if [ -n "$recorded_sha" ]; then printf 'bound to %s (mismatch)' "$(printf '%s' "$recorded_sha" | cut -c1-7)"; else printf 'unset'; fi)
