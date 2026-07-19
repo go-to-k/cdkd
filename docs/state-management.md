@@ -491,6 +491,9 @@ const arn = bucketState.attributes['Arn'];
 
 1. **Cloud Control API**: Automatically collected from `GetResource` response
 2. **SDK Provider**: Provider explicitly returns in `create()` / `update()`
+3. **`cdkd import`**: Provider returns them from `import()`, so an adopted
+   resource carries the same attribute snapshot a deployed one does. Providers
+   whose `import()` returns no attributes leave the map empty (`{}`).
 
 ```typescript
 // IAM Role Provider example

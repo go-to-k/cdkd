@@ -128,6 +128,17 @@ interface ImportRow {
   outcome: ImportOutcome;
   physicalId?: string;
   reason?: string;
+  /**
+   * Provider-returned attribute snapshot for `Fn::GetAtt` resolution
+   * (issue #1098). Populated only on the `imported` outcome, and only when
+   * the provider's `import()` returned an `attributes` map — providers that
+   * omit it leave this `undefined` and the state row keeps `{}`.
+   *
+   * Persisting it makes an adopted resource state-shape-identical to one
+   * created by `cdkd deploy`, which already stores a create-time attribute
+   * snapshot. Same staleness class as deploy, not a new one.
+   */
+  attributes?: Record<string, unknown>;
 }
 
 /**
@@ -879,6 +890,7 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
       resourceType: resource.Type,
       outcome: 'imported',
       physicalId: result.physicalId,
+      ...(result.attributes !== undefined && { attributes: result.attributes }),
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1079,7 +1091,10 @@ function buildStackState(
       physicalId: row.physicalId,
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
-      attributes: {},
+      // Issue #1098: persist the provider-returned attribute snapshot so an
+      // adopted resource can back `Fn::GetAtt` the same way a deployed one
+      // does. Providers whose `import()` returns no attributes keep `{}`.
+      attributes: row.attributes ?? {},
       dependencies: deps,
       // v7+ (#614): every imported resource is owned by its SDK Provider
       // (the import() method lives on SDK Providers). Explicit so the

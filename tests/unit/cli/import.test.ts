@@ -772,6 +772,70 @@ describe('cdkd import', () => {
     });
   });
 
+  describe('provider-returned attributes (issue #1098)', () => {
+    it('persists provider-returned attributes into the written state', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({
+          physicalId: 'my-bucket-name',
+          attributes: {
+            Arn: 'arn:aws:s3:::my-bucket-name',
+            DomainName: 'my-bucket-name.s3.amazonaws.com',
+          },
+        })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      // Pre-fix this was hardcoded `{}`, so an adopted resource could not
+      // back `Fn::GetAtt` the way a deployed one can.
+      expect(state.resources['MyBucket']!.attributes).toEqual({
+        Arn: 'arn:aws:s3:::my-bucket-name',
+        DomainName: 'my-bucket-name.s3.amazonaws.com',
+      });
+    });
+
+    it('leaves attributes as {} when the provider returns none', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      // No `attributes` key at all — the optional field is absent.
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'my-bucket-name' })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyBucket']!.attributes).toEqual({});
+    });
+  });
+
   describe('--resource-mapping-inline', () => {
     const oneResource = () =>
       template({
