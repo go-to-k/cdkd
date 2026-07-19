@@ -150,24 +150,36 @@ wait_directory_gone() {
 # to TAKE a final backup. AutomaticBackupRetentionDays 0 only disables
 # SCHEDULED backups, so a final backup outlives the run and bills per
 # GB-month. Sweep them explicitly.
-fixture_backup_ids() {
+#
+# Selection is by FileSystemId, NOT by the fixture tag: CopyTagsToBackups
+# defaults to false, so the backup's persisted FileSystem metadata is not
+# guaranteed to carry the fixture tag. A tag-based query can come back
+# empty and make the assertion below "pass" over a billing backup.
+backup_ids_for_fs() {
   aws fsx describe-backups --region "${REGION}" \
-    --query "Backups[?FileSystem.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].BackupId" \
+    --query "Backups[?FileSystem.FileSystemId=='$1'].BackupId" \
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
-delete_fixture_backups() {
-  for bid in $(fixture_backup_ids); do
-    echo "    deleting FSx backup ${bid}"
-    aws fsx delete-backup --backup-id "${bid}" --region "${REGION}" >/dev/null 2>&1
+delete_backups_for_fs() {
+  local bid
+  for bid in $(backup_ids_for_fs "$1"); do
+    echo "    deleting FSx backup ${bid} (file system $1)"
+    if ! aws fsx delete-backup --backup-id "${bid}" --region "${REGION}" >/dev/null 2>&1; then
+      echo "    WARNING: possible leak — failed to delete FSx backup ${bid}" >&2
+    fi
   done
 }
 
 delete_fixture_directories() {
+  local dirid
   for dirid in $(fixture_directory_ids); do
     echo "    deleting Managed AD ${dirid} (${AD_DOMAIN})"
     aws ds delete-directory --directory-id "${dirid}" --region "${REGION}" >/dev/null 2>&1
-    wait_directory_gone "${dirid}"
+    if ! wait_directory_gone "${dirid}"; then
+      echo "    WARNING: possible leak — Managed AD ${dirid} did not disappear before the timeout" >&2
+      echo "    WARNING: a Standard Managed AD bills per hour — check 'aws ds describe-directories'" >&2
+    fi
   done
 }
 
@@ -180,13 +192,19 @@ cleanup() {
   fi
   # Order matters: the file system leaves the domain first, then the
   # directory goes, then the VPC (both hold ENIs in the fixture subnets).
+  # Each failure is announced loudly — cleanup runs under `set +eu`, so a
+  # swallowed error here is exactly the signal that something leaked.
   for fsid in $(tagged_fs_ids); do
     echo "    deleting leftover FSx file system ${fsid}"
     aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" >/dev/null 2>&1
-    wait_fs_gone "${fsid}"
+    if wait_fs_gone "${fsid}"; then
+      # Only once the file system is gone can its final backup be reaped.
+      delete_backups_for_fs "${fsid}"
+    else
+      echo "    WARNING: possible leak — FSx file system ${fsid} did not disappear before the timeout" >&2
+      echo "    WARNING: its final backup (if any) was NOT swept — check 'aws fsx describe-backups'" >&2
+    fi
   done
-  # After the file systems are gone their final backups can be reaped.
-  delete_fixture_backups
   delete_fixture_directories
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
@@ -223,11 +241,18 @@ cleanup() {
   set -eu
 }
 
-# INT/TERM as well as EXIT: bash does NOT run an EXIT trap when the script
-# is killed by an untrapped SIGINT. This run holds TWO per-hour-billed
-# resources (a Standard Managed AD and a Windows file system) for 80-110
-# minutes, so a Ctrl-C or harness timeout would otherwise leak both.
-trap cleanup EXIT INT TERM
+# INT/TERM need their OWN handlers that EXIT. Bash does not run an EXIT
+# trap when killed by an untrapped SIGINT, but `trap cleanup INT` alone is
+# just as wrong: a signal handler RETURNS to the interrupted point, so the
+# script would clean up and then resume into the next phase — deleting the
+# file system and directory concurrently with a still-running `node deploy`
+# child (the harness signals the script PID, not the child) and potentially
+# exiting 0, reporting PASS on a run that was torn down mid-flight. This
+# run holds TWO per-hour-billed resources for 80-110 minutes, so getting
+# this wrong is expensive in both directions.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -287,14 +312,28 @@ echo "    vpc ${VPC_ID}, subnets ${SUBNET_A} / ${SUBNET_B}"
 # complexity pattern (8-64 chars with upper + lower + digit + symbol).
 AD_PASSWORD="Cdkd-$(openssl rand -hex 12)-Aa1!"
 echo "==> Phase 2: create the Managed Microsoft AD (Standard edition; this takes ~20-40 min)"
-DIRECTORY_ID="$(aws ds create-microsoft-ad \
-  --name "${AD_DOMAIN}" \
-  --password "${AD_PASSWORD}" \
-  --edition Standard \
-  --description "cdkd integ fsx-windows" \
-  --vpc-settings "VpcId=${VPC_ID},SubnetIds=${SUBNET_A},${SUBNET_B}" \
-  --region "${REGION}" \
-  --query 'DirectoryId' --output text)"
+# The request is piped in as JSON rather than passed on argv: a
+# `--password` flag would put the AD admin password in the process table
+# where any local user can read it via `ps`. The values reach `node` as
+# environment variables (not argv) for the same reason.
+DIRECTORY_ID="$(
+  AD_NAME="${AD_DOMAIN}" AD_PW="${AD_PASSWORD}" AD_VPC="${VPC_ID}" \
+    AD_SUB_A="${SUBNET_A}" AD_SUB_B="${SUBNET_B}" node -e '
+      process.stdout.write(
+        JSON.stringify({
+          Name: process.env.AD_NAME,
+          Password: process.env.AD_PW,
+          Edition: "Standard",
+          Description: "cdkd integ fsx-windows",
+          VpcSettings: {
+            VpcId: process.env.AD_VPC,
+            SubnetIds: [process.env.AD_SUB_A, process.env.AD_SUB_B],
+          },
+        })
+      );
+    ' | aws ds create-microsoft-ad --cli-input-json file:///dev/stdin \
+      --region "${REGION}" --query 'DirectoryId' --output text
+)"
 if [ -z "${DIRECTORY_ID}" ] || [ "${DIRECTORY_ID}" = "None" ]; then
   echo "FAIL: create-microsoft-ad returned no DirectoryId" >&2
   exit 1
@@ -448,8 +487,10 @@ echo "==> Phase 5: re-deploy with FSX_AD_ID unset — cdkd deletes the file syst
 env -u CDKD_TEST_UPDATE -u FSX_AD_ID node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-fs_state "${FS_ID_P4}"
-case $? in
+# `set -e` would abort on a bare `fs_state` returning 1/2, making the
+# non-zero branches below unreachable — capture the status explicitly.
+fs_state "${FS_ID_P4}" && FS_RC=0 || FS_RC=$?
+case ${FS_RC} in
   0) ;;
   1)
     echo "FAIL: FSx file system ${FS_ID_P4} still exists after cdkd removed it from the template" >&2
@@ -470,11 +511,11 @@ echo "    file system deleted (by id and by fixture tag)"
 # cdkd deletes with API defaults (CloudFormation parity), and the Windows
 # default is to take a FINAL backup — chargeable, and invisible to the
 # file-system assertions above.
-LEFTOVER_BACKUPS="$(fixture_backup_ids)"
+LEFTOVER_BACKUPS="$(backup_ids_for_fs "${FS_ID_P4}")"
 if [ -n "${LEFTOVER_BACKUPS}" ]; then
   echo "    final backup(s) left by DeleteFileSystem: ${LEFTOVER_BACKUPS} — deleting"
-  delete_fixture_backups
-  REMAINING_BACKUPS="$(fixture_backup_ids)"
+  delete_backups_for_fs "${FS_ID_P4}"
+  REMAINING_BACKUPS="$(backup_ids_for_fs "${FS_ID_P4}")"
   if [ -n "${REMAINING_BACKUPS}" ]; then
     echo "FAIL: FSx backup(s) still exist after cleanup: ${REMAINING_BACKUPS}" >&2
     exit 1

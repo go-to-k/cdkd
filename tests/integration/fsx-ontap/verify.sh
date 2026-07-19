@@ -91,16 +91,24 @@ wait_fs_gone() {
 # TAKE a final backup. AutomaticBackupRetentionDays 0 only disables
 # SCHEDULED backups, so a final backup outlives the run and bills per
 # GB-month on 1 TiB. Sweep them explicitly.
-fixture_backup_ids() {
+#
+# Selection is by FileSystemId, NOT by the fixture tag: CopyTagsToBackups
+# defaults to false, so the backup's persisted FileSystem metadata is not
+# guaranteed to carry the fixture tag. A tag-based query can come back
+# empty and make the assertion below "pass" over a billing backup.
+backup_ids_for_fs() {
   aws fsx describe-backups --region "${REGION}" \
-    --query "Backups[?FileSystem.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].BackupId" \
+    --query "Backups[?FileSystem.FileSystemId=='$1'].BackupId" \
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
-delete_fixture_backups() {
-  for bid in $(fixture_backup_ids); do
-    echo "    deleting FSx backup ${bid}"
-    aws fsx delete-backup --backup-id "${bid}" --region "${REGION}" >/dev/null 2>&1
+delete_backups_for_fs() {
+  local bid
+  for bid in $(backup_ids_for_fs "$1"); do
+    echo "    deleting FSx backup ${bid} (file system $1)"
+    if ! aws fsx delete-backup --backup-id "${bid}" --region "${REGION}" >/dev/null 2>&1; then
+      echo "    WARNING: possible leak — failed to delete FSx backup ${bid}" >&2
+    fi
   done
 }
 
@@ -112,14 +120,20 @@ cleanup() {
       --stack-region "${REGION}" --yes >/dev/null 2>&1
   fi
   # Delete any leftover file system carrying the fixture's constant tag and
-  # wait until it is gone (its ENIs block the VPC teardown below).
+  # wait until it is gone (its ENIs block the VPC teardown below). Each
+  # failure is announced loudly — cleanup runs under `set +eu`, so a
+  # swallowed error here is exactly the signal that something leaked.
   for fsid in $(tagged_fs_ids); do
     echo "    deleting leftover FSx file system ${fsid}"
     aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" >/dev/null 2>&1
-    wait_fs_gone "${fsid}"
+    if wait_fs_gone "${fsid}"; then
+      # Only once the file system is gone can its final backup be reaped.
+      delete_backups_for_fs "${fsid}"
+    else
+      echo "    WARNING: possible leak — FSx file system ${fsid} did not disappear before the timeout" >&2
+      echo "    WARNING: its final backup (if any) was NOT swept — check 'aws fsx describe-backups'" >&2
+    fi
   done
-  # After the file systems are gone their final backups can be reaped.
-  delete_fixture_backups
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:Name,Values=${STACK}/Vpc" \
@@ -155,10 +169,16 @@ cleanup() {
   set -eu
 }
 
-# INT/TERM as well as EXIT: bash does NOT run an EXIT trap when the script
-# is killed by an untrapped SIGINT, and a Ctrl-C mid-run would otherwise
-# leak a 1 TiB SSD file system that bills per hour.
-trap cleanup EXIT INT TERM
+# INT/TERM need their OWN handlers that EXIT. Bash does not run an EXIT
+# trap when killed by an untrapped SIGINT, but `trap cleanup INT` alone is
+# just as wrong: a signal handler RETURNS to the interrupted point, so the
+# script would clean up and then resume into the next phase — deleting the
+# file system concurrently with a still-running `node deploy` child (the
+# harness signals the script PID, not the child) and potentially exiting 0,
+# reporting PASS on a run that was torn down mid-flight.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -290,8 +310,10 @@ echo "    update reached AWS (WeeklyMaintenanceStartTime 2:06:00, env=changed, d
 echo "==> Phase 3: destroy (ONTAP deletion takes ~10 min)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-fs_state "${FS_ID_P2}"
-case $? in
+# `set -e` would abort on a bare `fs_state` returning 1/2, making the
+# non-zero branches below unreachable — capture the status explicitly.
+fs_state "${FS_ID_P2}" && FS_RC=0 || FS_RC=$?
+case ${FS_RC} in
   0) ;;
   1)
     echo "FAIL: FSx file system ${FS_ID_P2} still exists after destroy" >&2
@@ -314,11 +336,11 @@ echo "    no file system with the fixture tag remains"
 # cdkd deletes with API defaults (CloudFormation parity), and the ONTAP
 # default is to take a FINAL backup — which bills per GB-month on 1 TiB
 # and is invisible to the file-system assertions above.
-LEFTOVER_BACKUPS="$(fixture_backup_ids)"
+LEFTOVER_BACKUPS="$(backup_ids_for_fs "${FS_ID_P2}")"
 if [ -n "${LEFTOVER_BACKUPS}" ]; then
   echo "    final backup(s) left by DeleteFileSystem: ${LEFTOVER_BACKUPS} — deleting"
-  delete_fixture_backups
-  REMAINING_BACKUPS="$(fixture_backup_ids)"
+  delete_backups_for_fs "${FS_ID_P2}"
+  REMAINING_BACKUPS="$(backup_ids_for_fs "${FS_ID_P2}")"
   if [ -n "${REMAINING_BACKUPS}" ]; then
     echo "FAIL: FSx backup(s) still exist after cleanup: ${REMAINING_BACKUPS}" >&2
     exit 1
