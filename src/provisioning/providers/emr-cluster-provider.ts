@@ -1008,9 +1008,11 @@ export class EMRClusterProvider implements ResourceProvider {
         summary.Id ? await this.describeClusterOrNull(summary.Id) : undefined,
       tagsOf: (cluster) => cluster.Tags,
     });
-    if (!match?.summary.Id) return null;
+    if (!match) return null;
 
-    return { physicalId: match.summary.Id, attributes: this.buildAttributes(match.detail) };
+    // `Id` is non-null by construction: `describe` returns `undefined` for a
+    // summary without one, so the walk never yields it as a match.
+    return { physicalId: match.summary.Id!, attributes: this.buildAttributes(match.detail) };
   }
 
   /**

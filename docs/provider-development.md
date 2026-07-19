@@ -751,12 +751,23 @@ return { physicalId: match.summary.Id, attributes: {} };
 
 Both `listPage` and `describe` are individually retried with exponential
 backoff (0.5s → 1s → 2s → 4s → 5s) on throttling errors only. The
-classifier (`isThrottlingLikeError`) reuses the deploy engine's
-`THROTTLING_ERROR_NAMES` / `RETRYABLE_HTTP_STATUS_CODES` tables but is
-deliberately NARROWER than `isRetryableTransientError`: on a read-only
-walk, `does not exist` / `not authorized to perform` are terminal, and
-retrying them would burn the full backoff budget per candidate before
-surfacing the real error.
+classifier (`isThrottlingLikeError`) delegates the error + `.cause` walk
+to the deploy engine's `isThrottlingError` and only adds the
+`Rate exceeded` message backstop, but its POLICY is deliberately NARROWER
+than `isRetryableTransientError`: on a read-only walk, `does not exist` /
+`not authorized to perform` are terminal, and retrying them would burn
+the full backoff budget per candidate before surfacing the real error.
+
+Because that backoff is per-call, the walk also enforces its own limits
+and throws `ImportTagWalkLimitError` (whose message points at the
+`--resource <logicalId>=<physicalId>` escape hatch):
+
+| `retry` option | Default | Guards against |
+| --- | --- | --- |
+| `maxWalkMs` | 10 min | A sustained throttle turning into `(pages + candidates) x ~12.5s` of near-silent retrying |
+| `maxPages` | 1,000 | A service returning a non-advancing pagination token, looping forever |
+| `isInterrupted` / `onInterrupted` | unset | Ctrl-C during a throttled sleep going unhonored (same seam `withRetry` uses on the deploy path) |
+| `logger` | process logger | Silent retries — defaults so a throttled walk and every skipped candidate show up under `--verbose` |
 
 Providers whose tag API does not fit the shape (map-shaped tags,
 lowercase `key`/`value`, filter-based one-shot lookups, batch tag fetch)

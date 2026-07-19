@@ -175,9 +175,13 @@ describe('EMRInstanceFleetConfigProvider create', () => {
       AddInstanceFleetCommand: { InstanceFleetId: FLEET_ID },
       ListInstanceFleetsCommand: fleetOf('SUSPENDED', 0),
     });
+    // The error must carry the service's own state-change reason — that is the
+    // whole point of failing fast rather than timing out with a generic message.
     await expect(
       newProvider({ maxWaitMs: 60_000 }).create('Fleet', RESOURCE_TYPE, BASE_PROPS)
-    ).rejects.toThrow(/failed state SUSPENDED/);
+    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    // Fail-fast means ONE poll, not a spin until the 5s vitest timeout fires.
+    expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(1);
   });
 
   it('times out when the fleet never reaches RUNNING', async () => {

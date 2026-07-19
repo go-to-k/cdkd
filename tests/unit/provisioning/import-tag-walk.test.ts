@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   importTagWalk,
   isThrottlingLikeError,
+  ImportTagWalkLimitError,
 } from '../../../src/provisioning/import-tag-walk.js';
 
 const CDK_PATH = 'MyStack/MyConstruct/Resource';
@@ -210,5 +211,129 @@ describe('importTagWalk', () => {
       })
     ).rejects.toThrow(/AccessDeniedException/);
     expect(describe).toHaveBeenCalledTimes(1);
+  });
+
+  // The backoff schedule is the only numeric contract in the module; without
+  // this, zeroing DEFAULT_INITIAL_DELAY_MS or dropping the cap keeps the suite
+  // green. withRetry sleeps in <=1000ms slices, so sum the slices per attempt.
+  it('backs off on the documented 0.5s -> 1s -> 2s -> 4s -> 5s schedule', async () => {
+    const perAttempt: number[] = [];
+    let pending = 0;
+    const describe = vi.fn().mockImplementation(async () => {
+      if (pending > 0) perAttempt.push(pending);
+      pending = 0;
+      throw throttlingError();
+    });
+
+    await expect(
+      importTagWalk<Summary, unknown>({
+        cdkPath: CDK_PATH,
+        listPage: async () => ({ items: [{ id: 'a' }] }),
+        describe,
+        tagsOf: () => undefined,
+        retry: {
+          maxRetries: 5,
+          sleep: async (ms) => {
+            pending += ms;
+          },
+        },
+      })
+    ).rejects.toThrow(/Rate exceeded/);
+
+    expect(perAttempt).toEqual([500, 1000, 2000, 4000, 5000]);
+    expect(describe).toHaveBeenCalledTimes(6);
+  });
+
+  it('treats an undefined items array as an empty page (empty AWS account)', async () => {
+    const describe = vi.fn();
+    const match = await importTagWalk<Summary, unknown>({
+      cdkPath: CDK_PATH,
+      listPage: async () => ({ items: undefined }),
+      describe,
+      tagsOf: () => undefined,
+      ...noSleep,
+    });
+    expect(match).toBeNull();
+    expect(describe).not.toHaveBeenCalled();
+  });
+
+  it('walks every page and returns null when nothing matches across them', async () => {
+    const listPage = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [{ id: 'p1' }], nextMarker: 'm2' })
+      .mockResolvedValueOnce({ items: [{ id: 'p2' }], nextMarker: 'm3' })
+      .mockResolvedValueOnce({ items: [{ id: 'p3' }] });
+
+    const match = await importTagWalk<Summary, { Tags: Array<{ Key: string; Value: string }> }>({
+      cdkPath: CDK_PATH,
+      listPage,
+      describe: async () => ({ Tags: [{ Key: 'aws:cdk:path', Value: 'other' }] }),
+      tagsOf: (d) => d.Tags,
+      ...noSleep,
+    });
+
+    expect(match).toBeNull();
+    expect(listPage).toHaveBeenCalledTimes(3);
+  });
+
+  // EMR DescribeCluster legitimately omits Tags on an untagged cluster.
+  it('skips a candidate whose tagsOf returns undefined without throwing', async () => {
+    const match = await importTagWalk<Summary, { Tags?: Array<{ Key: string; Value: string }> }>({
+      cdkPath: CDK_PATH,
+      listPage: async () => ({ items: [{ id: 'untagged' }, { id: 'b' }] }),
+      describe: async (s) =>
+        s.id === 'untagged' ? {} : { Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] },
+      tagsOf: (d) => d.Tags,
+      ...noSleep,
+    });
+    expect(match?.summary.id).toBe('b');
+  });
+
+  it('aborts with ImportTagWalkLimitError when the walk exceeds its time budget', async () => {
+    await expect(
+      importTagWalk<Summary, unknown>({
+        cdkPath: CDK_PATH,
+        logicalId: 'MyDb',
+        // Every page advances, so only the deadline can stop this walk.
+        listPage: async () => ({ items: [{ id: 'a' }], nextMarker: 'next' }),
+        describe: async () => ({}),
+        tagsOf: () => undefined,
+        retry: { sleep: async () => {}, maxWalkMs: -1 },
+      })
+    ).rejects.toThrow(ImportTagWalkLimitError);
+  });
+
+  it('aborts when a non-advancing pagination token would loop forever', async () => {
+    const listPage = vi.fn().mockResolvedValue({ items: [], nextMarker: 'stuck' });
+
+    await expect(
+      importTagWalk<Summary, unknown>({
+        cdkPath: CDK_PATH,
+        logicalId: 'MyDb',
+        listPage,
+        describe: async () => ({}),
+        tagsOf: () => undefined,
+        retry: { sleep: async () => {}, maxPages: 3 },
+      })
+    ).rejects.toThrow(/after 3 pages/);
+    expect(listPage).toHaveBeenCalledTimes(3);
+  });
+
+  it('honors an interrupt raised while backing off', async () => {
+    await expect(
+      importTagWalk<Summary, unknown>({
+        cdkPath: CDK_PATH,
+        listPage: async () => ({ items: [{ id: 'a' }] }),
+        describe: async () => {
+          throw throttlingError();
+        },
+        tagsOf: () => undefined,
+        retry: {
+          sleep: async () => {},
+          isInterrupted: () => true,
+          onInterrupted: () => new Error('Interrupted by SIGINT'),
+        },
+      })
+    ).rejects.toThrow(/Interrupted by SIGINT/);
   });
 });

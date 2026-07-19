@@ -1160,8 +1160,10 @@ export class DocDBProvider implements ResourceProvider {
           : undefined,
       tagsOf: (tags) => tags,
     });
-    if (!match?.summary.DBInstanceIdentifier) return null;
-    return { physicalId: match.summary.DBInstanceIdentifier, attributes: {} };
+    if (!match) return null;
+    // Non-null by construction: `describe` returns `undefined` for a summary
+    // without both fields, so the walk never yields it as a match.
+    return { physicalId: match.summary.DBInstanceIdentifier!, attributes: {} };
   }
 
   private async importDBCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -1192,8 +1194,10 @@ export class DocDBProvider implements ResourceProvider {
           : undefined,
       tagsOf: (tags) => tags,
     });
-    if (!match?.summary.DBClusterIdentifier) return null;
-    return { physicalId: match.summary.DBClusterIdentifier, attributes: {} };
+    if (!match) return null;
+    // Non-null by construction: `describe` returns `undefined` for a summary
+    // without both fields, so the walk never yields it as a match.
+    return { physicalId: match.summary.DBClusterIdentifier!, attributes: {} };
   }
 
   private async importDBSubnetGroup(
@@ -1226,8 +1230,10 @@ export class DocDBProvider implements ResourceProvider {
           : undefined,
       tagsOf: (tags) => tags,
     });
-    if (!match?.summary.DBSubnetGroupName) return null;
-    return { physicalId: match.summary.DBSubnetGroupName, attributes: {} };
+    if (!match) return null;
+    // Non-null by construction: `describe` returns `undefined` for a summary
+    // without both fields, so the walk never yields it as a match.
+    return { physicalId: match.summary.DBSubnetGroupName!, attributes: {} };
   }
 
   /**
