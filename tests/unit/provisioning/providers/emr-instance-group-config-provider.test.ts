@@ -249,6 +249,49 @@ describe('EMRInstanceGroupConfigProvider update', () => {
     expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(3);
   });
 
+  // Recovery scenario: the group is SUSPENDED (a previous resize could not
+  // complete) and the user re-runs `cdkd deploy` to fix it. The pre-resize read
+  // lag means poll #1 still reports SUSPENDED — enforcing FAILED_STATES there
+  // would abort the very resize that recovers the group, EVERY time, leaving it
+  // permanently unrecoverable through cdkd.
+  it('recovers a SUSPENDED group: the stale SUSPENDED poll must not abort the resize', async () => {
+    routeSend({
+      ModifyInstanceGroupsCommand: {},
+      ListInstanceGroupsCommand: [
+        groupOf('SUSPENDED', 2), // stale pre-modify read — must NOT fail the wait
+        groupOf('RESIZING', 2),
+        groupOf('RUNNING', 5), // recovery complete
+      ],
+    });
+
+    const next = { ...BASE_PROPS, InstanceCount: 5 };
+    await expect(
+      newProvider().update('Grp', GROUP_ID, RESOURCE_TYPE, next, BASE_PROPS)
+    ).resolves.toMatchObject({ wasReplaced: false });
+
+    expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(3);
+  });
+
+  // The other half of the same rule: once the group has been observed LEAVING
+  // its initial state, a genuine SUSPENDED must still fail fast — that is the
+  // #1092 item 2 behavior, and tolerance must not swallow it.
+  it('still fails fast when a resize transitions into SUSPENDED', async () => {
+    routeSend({
+      ModifyInstanceGroupsCommand: {},
+      ListInstanceGroupsCommand: [
+        groupOf('RUNNING', 2), // stale pre-resize
+        groupOf('RESIZING', 2), // left the initial state
+        groupOf('SUSPENDED', 2), // resize genuinely failed
+      ],
+    });
+
+    const next = { ...BASE_PROPS, InstanceCount: 5 };
+    await expect(
+      newProvider({ maxWaitMs: 60_000 }).update('Grp', GROUP_ID, RESOURCE_TYPE, next, BASE_PROPS)
+    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(3);
+  });
+
   it('applies an added AutoScalingPolicy via PutAutoScalingPolicy', async () => {
     routeSend({ PutAutoScalingPolicyCommand: {} });
     const policy = { Constraints: { MinCapacity: 1, MaxCapacity: 4 }, Rules: [] };

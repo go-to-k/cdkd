@@ -299,7 +299,11 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
             physicalId,
             logicalId,
             resourceType,
-            toNumber(properties['InstanceCount']) ?? 0
+            toNumber(properties['InstanceCount']) ?? 0,
+            // Resize path: tolerate a stale pre-modify failed state so a
+            // deploy that RECOVERS a SUSPENDED group is not aborted by the
+            // read lag. See waitForGroupReady's docstring.
+            true
           );
         }
       }
@@ -440,26 +444,55 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
    * would return before the resize even starts. Waiting on the running count
    * reaching the requested target settles both create (0 -> N provisioning)
    * and resize (M -> N add/remove) correctly.
+   *
+   * `toleratesStaleFailedState` MUST be true on the resize path and false on
+   * create. It exists for the RECOVERY case: `SUSPENDED` (a resize that could
+   * not complete) is precisely the state a user re-runs `cdkd deploy` to fix,
+   * but the same pre-resize read lag documented above means the first poll
+   * after `ModifyInstanceGroups` still reports `SUSPENDED`. Enforcing
+   * {@link FAILED_STATES} on that stale read would abort the very resize that
+   * recovers the group, on every attempt, making the state permanently
+   * unrecoverable through cdkd.
+   *
+   * So on a resize the failed-state check is suppressed until the group is
+   * observed LEAVING whatever state it started in; from then on it is enforced
+   * normally (a resize that transitions RUNNING -> RESIZING -> SUSPENDED still
+   * fails fast, which is the case #1092 item 2 is about). A group that never
+   * leaves its initial state falls through to the `maxWaitMs` timeout — the
+   * pre-fix behavior, and strictly better than an unrecoverable resource.
+   *
+   * Note the asymmetry that makes this specific to failed states: a stale
+   * pre-resize `RUNNING` is harmless because the instance-count mismatch keeps
+   * the loop polling. A stale `SUSPENDED` is terminal.
    */
   private async waitForGroupReady(
     clusterId: string,
     groupId: string,
     logicalId: string,
     resourceType: string,
-    expectedCount: number
+    expectedCount: number,
+    toleratesStaleFailedState = false
   ): Promise<void> {
     const startTime = Date.now();
     const transientState = { count: 0 };
+    let initialState: InstanceGroupState | undefined;
+    let hasLeftInitialState = false;
 
     while (Date.now() - startTime < this.maxWaitMs) {
       const group = await this.findGroupForPoll(clusterId, groupId, transientState);
       const state = group?.Status?.State;
 
+      if (state) {
+        if (initialState === undefined) initialState = state;
+        else if (state !== initialState) hasLeftInitialState = true;
+      }
+
       if (state && READY_STATES.has(state) && group?.RunningInstanceCount === expectedCount) {
         return;
       }
 
-      if (state && FAILED_STATES.has(state)) {
+      const enforceFailedStates = !toleratesStaleFailedState || hasLeftInitialState;
+      if (state && enforceFailedStates && FAILED_STATES.has(state)) {
         const reason =
           group?.Status?.StateChangeReason?.Message ?? 'no state-change reason reported';
         throw new ProvisioningError(
@@ -467,6 +500,13 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
           resourceType,
           logicalId,
           groupId
+        );
+      }
+
+      if (state && !enforceFailedStates && FAILED_STATES.has(state)) {
+        this.logger.debug(
+          `EMR instance group ${groupId} still reads ${state} from before the resize; ` +
+            `waiting for it to leave that state before treating it as failed`
         );
       }
 

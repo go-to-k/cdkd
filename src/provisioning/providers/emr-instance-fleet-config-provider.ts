@@ -311,7 +311,11 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         logicalId,
         resourceType,
         newTarget,
-        newTarget >= prevTarget
+        newTarget >= prevTarget,
+        // Resize path: tolerate a stale pre-modify failed state so a deploy
+        // that RECOVERS a SUSPENDED fleet is not aborted by the read lag.
+        // See waitForFleetReady's docstring.
+        true
       );
 
       this.logger.debug(`Successfully updated EMR instance fleet ${logicalId}`);
@@ -441,6 +445,26 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
    *
    * A `targetCapacity` of 0 on the up path (never valid for a real create —
    * at least one target must be > 0) degrades to a State-only wait.
+   *
+   * `toleratesStaleFailedState` MUST be true on the resize path and false on
+   * create. It exists for the RECOVERY case: `SUSPENDED` (a resize that could
+   * not complete) is precisely the state a user re-runs `cdkd deploy` to fix,
+   * but the same pre-resize read lag documented above means the first poll
+   * after `ModifyInstanceFleet` still reports `SUSPENDED`. Enforcing
+   * {@link FAILED_STATES} on that stale read would abort the very resize that
+   * recovers the fleet, on every attempt, making the state permanently
+   * unrecoverable through cdkd.
+   *
+   * So on a resize the failed-state check is suppressed until the fleet is
+   * observed LEAVING whatever state it started in; from then on it is enforced
+   * normally (a resize that transitions RUNNING -> RESIZING -> SUSPENDED still
+   * fails fast, which is the case #1092 item 2 is about). A fleet that never
+   * leaves its initial state falls through to the `maxWaitMs` timeout — the
+   * pre-fix behavior, and strictly better than an unrecoverable resource.
+   *
+   * Note the asymmetry that makes this specific to failed states: a stale
+   * pre-resize `RUNNING` is harmless because the capacity check keeps the loop
+   * polling. A stale `SUSPENDED` is terminal.
    */
   private async waitForFleetReady(
     clusterId: string,
@@ -448,10 +472,13 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     targetCapacity: number,
-    atLeast: boolean
+    atLeast: boolean,
+    toleratesStaleFailedState = false
   ): Promise<void> {
     const startTime = Date.now();
     const transientState = { count: 0 };
+    let initialState: InstanceFleetState | undefined;
+    let hasLeftInitialState = false;
 
     while (Date.now() - startTime < this.maxWaitMs) {
       const fleet = await this.findFleetForPoll(clusterId, fleetId, transientState);
@@ -460,9 +487,15 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         (fleet?.ProvisionedOnDemandCapacity ?? 0) + (fleet?.ProvisionedSpotCapacity ?? 0);
       const capacityReady = atLeast ? provisioned >= targetCapacity : provisioned <= targetCapacity;
 
+      if (state) {
+        if (initialState === undefined) initialState = state;
+        else if (state !== initialState) hasLeftInitialState = true;
+      }
+
       if (state && READY_STATES.has(state) && capacityReady) return;
 
-      if (state && FAILED_STATES.has(state)) {
+      const enforceFailedStates = !toleratesStaleFailedState || hasLeftInitialState;
+      if (state && enforceFailedStates && FAILED_STATES.has(state)) {
         const reason =
           fleet?.Status?.StateChangeReason?.Message ?? 'no state-change reason reported';
         throw new ProvisioningError(
@@ -470,6 +503,13 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
           resourceType,
           logicalId,
           fleetId
+        );
+      }
+
+      if (state && !enforceFailedStates && FAILED_STATES.has(state)) {
+        this.logger.debug(
+          `EMR instance fleet ${fleetId} still reads ${state} from before the resize; ` +
+            `waiting for it to leave that state before treating it as failed`
         );
       }
 
