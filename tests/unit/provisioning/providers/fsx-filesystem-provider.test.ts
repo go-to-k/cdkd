@@ -1016,6 +1016,58 @@ describe('FSxFileSystemProvider WINDOWS variant', () => {
     expect(create.input['OpenZFSConfiguration']).toBeUndefined();
   });
 
+  it('maps FsrmConfiguration on create (incl. FsrmServiceEnabled boolean coercion)', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create('MyFs', RESOURCE_TYPE, {
+      ...WINDOWS_PROPS,
+      WindowsConfiguration: {
+        ...WINDOWS_PROPS.WindowsConfiguration,
+        FsrmConfiguration: {
+          FsrmServiceEnabled: 'true',
+          EventLogDestination: 'application',
+        },
+      },
+    });
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(create.input['WindowsConfiguration']).toMatchObject({
+      FsrmConfiguration: { FsrmServiceEnabled: true, EventLogDestination: 'application' },
+    });
+  });
+
+  it('applies an FsrmConfiguration change via UpdateFileSystem (mutable Windows sub-property)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...WINDOWS_PROPS,
+        WindowsConfiguration: {
+          ...WINDOWS_PROPS.WindowsConfiguration,
+          FsrmConfiguration: { FsrmServiceEnabled: true },
+        },
+      },
+      { ...WINDOWS_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      WindowsConfiguration: {
+        FsrmConfiguration: { FsrmServiceEnabled: true, EventLogDestination: undefined },
+      },
+    });
+  });
+
   it('applies a mutable ThroughputCapacity change plus a SelfManagedAD update via UpdateFileSystem', async () => {
     routeSend({
       UpdateFileSystemCommand: {},
@@ -1094,6 +1146,9 @@ describe('FSxFileSystemProvider ONTAP variant', () => {
       RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
       DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 3000 },
     });
+    // No sibling variant blocks leak onto the create call.
+    expect(create.input['WindowsConfiguration']).toBeUndefined();
+    expect(create.input['OpenZFSConfiguration']).toBeUndefined();
   });
 
   it('translates a RouteTableIds change into Add/Remove deltas on UpdateFileSystem', async () => {
@@ -1204,6 +1259,9 @@ describe('FSxFileSystemProvider OPENZFS variant', () => {
         UserAndGroupQuotas: [{ Type: 'USER', Id: 0, StorageCapacityQuotaGiB: 10 }],
       },
     });
+    // No sibling variant blocks leak onto the create call.
+    expect(create.input['WindowsConfiguration']).toBeUndefined();
+    expect(create.input['OntapConfiguration']).toBeUndefined();
   });
 
   it('applies a mutable ThroughputCapacity + ReadCacheConfiguration change via UpdateFileSystem', async () => {
@@ -1235,6 +1293,71 @@ describe('FSxFileSystemProvider OPENZFS variant', () => {
         ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 50 },
       },
     });
+  });
+
+  it('translates an OpenZFS RouteTableIds change into Add/Remove deltas on UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-aaa', 'rtb-ccc'],
+        },
+      },
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+        },
+      }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: {
+        AddRouteTableIds: ['rtb-ccc'],
+        RemoveRouteTableIds: ['rtb-bbb'],
+      },
+    });
+  });
+
+  it('is a no-op when OpenZFS RouteTableIds are only reordered (no Add/Remove delta)', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-bbb', 'rtb-aaa'],
+        },
+      },
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+        },
+      }
+    );
+
+    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
   });
 
   it('rejects a changed RootVolumeConfiguration (immutable via UpdateFileSystem) with a --replace pointer', async () => {
