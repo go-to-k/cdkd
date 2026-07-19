@@ -1,3 +1,10 @@
+# [0.250.0](https://github.com/go-to-k/cdkd/compare/v0.249.0...v0.250.0) (2026-07-19)
+
+
+### Features
+
+* **providers:** add SDK Providers for AWS::EMR::InstanceFleetConfig / InstanceGroupConfig ([#1087](https://github.com/go-to-k/cdkd/issues/1087)) ([0075ef8](https://github.com/go-to-k/cdkd/commit/0075ef8314e1220d9cf8e1c8f3f42d1b6ab51c72))
+
 # [0.249.0](https://github.com/go-to-k/cdkd/compare/v0.248.0...v0.249.0) (2026-07-19)
 
 
