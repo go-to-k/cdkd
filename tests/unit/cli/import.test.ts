@@ -1447,10 +1447,15 @@ describe('cdkd import', () => {
         etag: '"e"',
       });
       mockHasProvider.mockReturnValue(true);
-      // Provider returns NO attributes (the AWS::SSM::Parameter class of
-      // provider). Pre-fix `row.attributes ?? {}` clobbered the good map.
+      // Provider returns an EXPLICIT empty map — the realistic shape. Almost
+      // every shipped provider spells it `attributes: {}` rather than
+      // omitting the field (ssm-parameter-provider.ts:495 / :516,
+      // s3-bucket-provider.ts, lambda-function-provider.ts, ...), so a stub
+      // returning `{ physicalId }` alone would exercise a path no real
+      // provider reaches. `{}` is not `undefined`, which is why
+      // buildStackState normalizes empty-to-absent before the coalesce.
       mockGetProvider.mockReturnValue({
-        import: vi.fn(async () => ({ physicalId: 'bucket-name' })),
+        import: vi.fn(async () => ({ physicalId: 'bucket-name', attributes: {} })),
       });
 
       await runImport([
@@ -1490,7 +1495,8 @@ describe('cdkd import', () => {
       });
       mockHasProvider.mockReturnValue(true);
       mockGetProvider.mockReturnValue({
-        import: vi.fn(async () => ({ physicalId: 'new-bucket-name' })),
+        // Explicit `{}` — the shape virtually every shipped provider returns.
+        import: vi.fn(async () => ({ physicalId: 'new-bucket-name', attributes: {} })),
       });
 
       await runImport([
@@ -1520,7 +1526,9 @@ describe('cdkd import', () => {
       mockHasProvider.mockReturnValue(true);
       mockGetProvider.mockImplementation((t: string) => {
         if (t === 'AWS::S3::Bucket') {
-          return { import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket' })) };
+          return {
+            import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+          };
         }
         return { import: vi.fn(async () => null) };
       });

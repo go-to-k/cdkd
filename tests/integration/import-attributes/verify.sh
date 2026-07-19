@@ -57,6 +57,22 @@ CLI="node ${LOCAL_DIST}"
 
 if [ -z "${STATE_BUCKET:-}" ]; then echo "FAIL: STATE_BUCKET required" >&2; exit 1; fi
 
+# Establish that the state bucket exists BEFORE any state probe runs. This is
+# load-bearing, not defensive: `head-object` reports a missing bucket and a
+# missing key identically (`An error occurred (404) ... Not Found`), so
+# without this the post-destroy "state file is gone" assertion would pass
+# trivially against a typo'd or not-yet-bootstrapped bucket. Checking once
+# here lets state_object_state() treat a 404 as a genuinely absent key.
+#
+# This deliberately aborts the run on an account that has never been
+# bootstrapped, rather than proceeding to a deploy that would fail later with
+# a murkier error.
+if ! bucket_err="$(aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>&1 >/dev/null)"; then
+  echo "FAIL: state bucket '${STATE_BUCKET}' is not reachable: ${bucket_err}" >&2
+  echo "      (run \`cdkd bootstrap\` first, or check STATE_BUCKET / credentials)" >&2
+  exit 1
+fi
+
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
 
@@ -95,19 +111,20 @@ policy_state() {
 # "state was dropped" (orphan) and "state was cleared" (destroy) assertions,
 # where a bare `if aws s3api head-object ... 2>/dev/null` would let an S3
 # throttle or a permissions error masquerade as a successful deletion.
+#
+# `head-object` cannot distinguish "key missing" from "BUCKET missing" — S3
+# renders both as `An error occurred (404) ... Not Found`, with no
+# NoSuchBucket token to match on. So the bucket's existence is established
+# ONCE up front (see the STATE_BUCKET precheck below) and this helper may
+# then read a 404 as a genuinely absent key.
 state_object_state() {
   local key="$1" err
   if err="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" 2>&1 >/dev/null)"; then
     echo present
     return 0
   fi
-  # Deliberately narrow: a `NoSuchBucket` error also carries a 404, so a
-  # typo'd STATE_BUCKET would otherwise read as "the state object is gone"
-  # and pass the post-destroy assertion. Only a missing KEY counts as absent;
-  # a missing bucket falls through to UNDETERMINED.
   case "${err}" in
-    *NoSuchBucket*) ;;
-    *NoSuchKey*|*"Not Found"*)
+    *404*|*"Not Found"*|*NoSuchKey*)
       echo absent
       return 0
       ;;
@@ -240,7 +257,8 @@ echo "==> Phase 6: KEY ASSERTION — imported attributes are persisted"
 # returns `attributes: { PolicyArn: <arn> }`. Pre-fix, `buildStackState`
 # hardcoded `attributes: {}` and dropped it, so BOTH checks below fail against
 # a pre-fix binary: the map is empty, and `PolicyArn` is absent. Post-fix,
-# `row.attributes ?? {}` threads the provider's map into the state row.
+# `rowAttributes ?? priorAttributes ?? {}` threads the provider's map into the
+# state row.
 # ---------------------------------------------------------------------------
 ATTR_COUNT="$(printf '%s' "${STATE_JSON}" | python3 -c \
   'import sys, json; print(len(json.load(sys.stdin)["state"]["resources"]["Policy"].get("attributes") or {}))')"

@@ -1099,15 +1099,24 @@ function buildStackState(
     const prior = existingState?.resources[row.logicalId];
     const priorAttributes =
       prior && prior.physicalId === row.physicalId ? prior.attributes : undefined;
+    // Normalize "no attributes" to `undefined` BEFORE the coalesce below.
+    // Almost no provider omits the field: across src/provisioning/providers
+    // the overwhelming majority of `import()` return sites spell it
+    // `attributes: {}` explicitly (ssm-parameter, s3-bucket,
+    // lambda-function, ...), and `{}` is not `undefined`, so a plain
+    // `row.attributes ?? priorAttributes` would leave the fallback
+    // unreachable in production and still wipe a good stored map.
+    const rowAttributes =
+      row.attributes && Object.keys(row.attributes).length > 0 ? row.attributes : undefined;
     resources[row.logicalId] = {
       physicalId: row.physicalId,
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
       // Issue #1098: persist the provider-returned attribute snapshot so an
       // adopted resource can back `Fn::GetAtt` the same way a deployed one
-      // does. Providers whose `import()` returns no attributes fall back to
-      // the same-physical-id stored map, then to `{}`.
-      attributes: row.attributes ?? priorAttributes ?? {},
+      // does. A provider that returns no attributes (absent OR `{}`) falls
+      // back to the same-physical-id stored map, then to `{}`.
+      attributes: rowAttributes ?? priorAttributes ?? {},
       dependencies: deps,
       // v7+ (#614): every imported resource is owned by its SDK Provider
       // (the import() method lives on SDK Providers). Explicit so the

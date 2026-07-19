@@ -374,6 +374,21 @@ describe('SchedulerScheduleProvider', () => {
       expect(result?.physicalId).toBe('my-sched');
     });
 
+    // `cdkd import` now PERSISTS the returned attribute map (issue #1098), so
+    // an empty-string placeholder is no longer harmless. The intrinsic
+    // resolver treats any non-undefined flat attribute as a hit
+    // (resolveGetAtt in src/deployment/intrinsic-function-resolver.ts), so a
+    // stored `Arn: ''` would shadow constructAttribute's fallback and make
+    // Fn::GetAtt resolve to the empty string. Omit the key instead.
+    it('omits Arn entirely when the read-back has no Arn (never stores an empty string)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      const result = await provider.import({ ...baseInput, knownPhysicalId: 'my-sched' });
+
+      expect(result).toEqual({ physicalId: 'my-sched', attributes: {} });
+      expect(result?.attributes).not.toHaveProperty('Arn');
+    });
+
     it('returns null when the named schedule does not exist', async () => {
       mockSend.mockRejectedValueOnce(notFound());
 

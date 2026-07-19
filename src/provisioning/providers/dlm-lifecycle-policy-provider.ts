@@ -465,7 +465,12 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         return response.Policy?.PolicyId
           ? {
               physicalId: input.knownPhysicalId,
-              attributes: { Arn: response.Policy.PolicyArn ?? '' },
+              // Omit Arn when the read-back lacked PolicyArn, matching
+              // create() / update(). Persisting `''` would be worse than
+              // omitting it: the intrinsic resolver treats any non-undefined
+              // flat attribute as a hit, so an empty string beats
+              // constructAttribute's fallback and Fn::GetAtt resolves to ''.
+              attributes: response.Policy.PolicyArn ? { Arn: response.Policy.PolicyArn } : {},
             }
           : null;
       } catch (err) {

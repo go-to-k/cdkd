@@ -158,10 +158,11 @@ export class SchedulerScheduleProvider implements ResourceProvider {
 
       return {
         physicalId: name,
-        attributes: {
-          // CFn's only GetAtt for the type. CreateSchedule always returns it.
-          Arn: response.ScheduleArn ?? '',
-        },
+        // CFn's only GetAtt for the type. CreateSchedule always returns it in
+        // practice; if it ever does not, omit the key rather than storing ''
+        // (an empty string would satisfy the resolver's flat-attribute lookup
+        // and shadow constructAttribute's fallback).
+        attributes: response.ScheduleArn ? { Arn: response.ScheduleArn } : {},
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -214,7 +215,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: { Arn: response.ScheduleArn ?? '' },
+        attributes: response.ScheduleArn ? { Arn: response.ScheduleArn } : {},
       };
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
@@ -400,7 +401,11 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       );
       return {
         physicalId: explicit,
-        attributes: { Arn: response.Arn ?? '' },
+        // Omit Arn rather than persisting `''` when the read-back lacks it:
+        // the intrinsic resolver treats any non-undefined flat attribute as
+        // a hit, so an empty string would beat constructAttribute's fallback
+        // and Fn::GetAtt would resolve to ''.
+        attributes: response.Arn ? { Arn: response.Arn } : {},
       };
     } catch (error) {
       if (error instanceof ResourceNotFoundException) return null;
