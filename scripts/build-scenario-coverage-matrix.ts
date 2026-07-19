@@ -151,6 +151,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).',
   'migrate-from-bare-cfn':
     '`cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire.',
+  'selective-import-attribute-persistence':
+    'Selective `cdkd import --resource <LogicalId>=<physical>` adoption of an already-deployed resource whose provider `import()` returns a NON-EMPTY `attributes` map, asserting the map is persisted into the state row (issue #1098: `buildStackState` hardcoded `attributes: {}` and dropped it, leaving an adopted resource with no `Fn::GetAtt` backing while a deployed one had it). Uses `AWS::IAM::ManagedPolicy` (`import()` -> `{ PolicyArn }`) after a `cdkd state orphan` drops state while leaving the AWS resource live. Distinct from `migrate-from-cfn-handover`, which covers the CFn retirement path rather than the state-row shape.',
   'nested-stack-migrate-from-cfn':
     'CloudFormation → cdkd RECURSIVE nested-stack migration via `--migrate-from-cloudformation` (recursive DescribeStackResources walk, per-child v6 state writes, recursive DeletionPolicy: Retain injection, parent-side DeleteStack cascade). See #464 PR A.',
   'nested-stack-deep-deploy-cascade':

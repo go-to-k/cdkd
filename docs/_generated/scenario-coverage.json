@@ -261,6 +261,10 @@
       "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`)."
     },
     {
+      "tag": "selective-import-attribute-persistence",
+      "description": "Selective `cdkd import --resource <LogicalId>=<physical>` adoption of an already-deployed resource whose provider `import()` returns a NON-EMPTY `attributes` map, asserting the map is persisted into the state row (issue #1098: `buildStackState` hardcoded `attributes: {}` and dropped it, leaving an adopted resource with no `Fn::GetAtt` backing while a deployed one had it). Uses `AWS::IAM::ManagedPolicy` (`import()` -> `{ PolicyArn }`) after a `cdkd state orphan` drops state while leaving the AWS resource live. Distinct from `migrate-from-cfn-handover`, which covers the CFn retirement path rather than the state-row shape."
+    },
+    {
       "tag": "sg-circular-dependency",
       "description": "Circular Security Group reference (SG-A ingress from SG-B AND SG-B ingress from SG-A) modeled via standalone AWS::EC2::SecurityGroupIngress resources. DAG builder must not raise a false cycle; destroy must revoke both ingress rules BEFORE deleting either SG (SecurityGroup-after-SecurityGroupIngress implicit-delete-dep) or AWS rejects DeleteSecurityGroup with DependencyViolation."
     },
@@ -901,6 +905,13 @@
       "name": "iam-role-prefixed-name-update",
       "annotated": false,
       "scenarios": []
+    },
+    {
+      "name": "import-attributes",
+      "annotated": true,
+      "scenarios": [
+        "selective-import-attribute-persistence"
+      ]
     },
     {
       "name": "import-nested-stack",
@@ -2214,6 +2225,13 @@
       "description": "Heterogeneous SDK-Provider <-> Cloud Control API routing in ONE stack (a silent-drop top-level property flips a resource to the CC path per #614) with `Fn::GetAtt` cross-references crossing the boundary in BOTH directions — SDK-routed consumer reads a CC-routed producer attribute AND CC-routed consumer reads an SDK-routed producer attribute. Exercises the constructAttribute fallback for CC-API physical-id shapes (memory `feedback_silent_drop_forces_cc_api_routing`) and the CC delete path bypassing the SDK provider delete() (memory `feedback_cc_api_routing_bypasses_sdk_delete_logic`).",
       "fixtures": [
         "sdk-ccapi-crossref"
+      ]
+    },
+    {
+      "scenario": "selective-import-attribute-persistence",
+      "description": "Selective `cdkd import --resource <LogicalId>=<physical>` adoption of an already-deployed resource whose provider `import()` returns a NON-EMPTY `attributes` map, asserting the map is persisted into the state row (issue #1098: `buildStackState` hardcoded `attributes: {}` and dropped it, leaving an adopted resource with no `Fn::GetAtt` backing while a deployed one had it). Uses `AWS::IAM::ManagedPolicy` (`import()` -> `{ PolicyArn }`) after a `cdkd state orphan` drops state while leaving the AWS resource live. Distinct from `migrate-from-cfn-handover`, which covers the CFn retirement path rather than the state-row shape.",
+      "fixtures": [
+        "import-attributes"
       ]
     },
     {
