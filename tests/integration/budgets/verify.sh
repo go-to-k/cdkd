@@ -54,6 +54,8 @@ cleanup() {
 }
 
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -169,5 +171,5 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/n
 fi
 echo "    state file removed"
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS — AWS::Budgets::Budget create / in-place update (notification + subscriber reconcile) / destroy all verified"

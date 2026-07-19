@@ -96,6 +96,8 @@ cleanup() {
 }
 
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 # Triage helper: dump cdkd events RESOURCE_FAILED lines on a deploy failure so a
 # CI run shows exactly which race edge failed + the AWS error.

@@ -92,7 +92,9 @@ cleanup() {
 # Install the trap BEFORE any mktemp/cp so a SIGINT in the pre-boot window
 # still triggers restore_source + cleanup. The trap body is null-safe for
 # the unset-backup case via the [[ -n ... ]] guards in restore_source / cleanup.
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 SERVER_CJS_BACKUP="$(mktemp)"
 DOCKERFILE_BACKUP="$(mktemp)"

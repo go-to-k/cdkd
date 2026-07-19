@@ -83,6 +83,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -100,7 +102,7 @@ fi
 echo "==> Checking Docker is available"
 if ! docker info >/dev/null 2>&1; then
   echo "[verify] SKIP: Docker daemon not available (docker info failed); the docker-image-asset integ requires a running Docker daemon to build + push the image."
-  trap - EXIT
+  trap - EXIT INT TERM
   exit 0
 fi
 echo "    OK: Docker daemon is reachable"

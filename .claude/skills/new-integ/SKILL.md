@@ -131,8 +131,24 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      (`${AWS_REGION:-us-east-1}`), `STATE_KEY`, and
      `LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"`.
    - Require `STATE_BUCKET` (fail fast if unset) and the built `dist/cli.js`.
-   - Define a `cleanup()` and `trap cleanup EXIT`; run it once up-front as a
-     pre-run cleanup. cleanup must `node "${LOCAL_DIST}" state destroy`, delete
+   - Define a `cleanup()` and arm it on EXIT **and both signals**; run it once
+     up-front as a pre-run cleanup:
+
+     ```bash
+     trap cleanup EXIT
+     trap '(exit 130); cleanup; exit 130' INT
+     trap '(exit 143); cleanup; exit 143' TERM
+     ```
+
+     `trap cleanup EXIT INT TERM` is NOT equivalent and must never be used — a
+     bash signal handler returns to the interrupted point, so the script resumes
+     the interrupted phase and can `exit 0`, reporting PASS while resources leak.
+     The `(exit N)` seed is also load-bearing: inside a handler `$?` is the
+     interrupted command's status, so a `cleanup` opening with `rc=$?` would
+     otherwise see 0 and skip teardown. Disarm with `trap - EXIT INT TERM`.
+     Enforced by `tests/unit/scripts/integ-verify-signal-traps.test.ts` (#1097).
+
+     cleanup must `node "${LOCAL_DIST}" state destroy`, delete
      the AWS resources by deterministic name, remove the `state.json` + `lock.json`,
      and **sweep `/aws/lambda/${STACK}*` log groups** (Lambda auto-creates them on
      invoke and neither CFn nor cdkd deletes them — leaving them counts as an

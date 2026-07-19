@@ -72,6 +72,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 1: install + build cdkd (root) + fixture deps"
 (cd "${REPO_ROOT}" && pnpm install)
@@ -256,5 +258,5 @@ echo "[verify] step 5 ok: state gone, no orphan SSM parameters"
 # Sweep the events sidecar (deliberately survives destroy) so nothing lingers.
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"

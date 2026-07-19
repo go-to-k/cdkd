@@ -37,7 +37,9 @@ cleanup() {
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   exit ${rc}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then

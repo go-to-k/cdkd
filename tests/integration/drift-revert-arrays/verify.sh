@@ -62,6 +62,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
@@ -118,5 +120,5 @@ echo "[verify] step 6 ok: AWS reverted to template, drift clean"
 echo "[verify] step 7: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"

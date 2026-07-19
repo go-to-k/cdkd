@@ -75,7 +75,9 @@ cleanup() {
   fi
   set -eu
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 if [ ! -f "${LOCAL_DIST}" ]; then
   fail "local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first"

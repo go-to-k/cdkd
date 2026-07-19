@@ -36,6 +36,8 @@ cleanup() {
   $CDKD destroy --region "${REGION}" --state-bucket "${BUCKET}" --force || true
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "=== Deploying stack ${STACK} (no-wait) ==="
 CDKD_NO_WAIT=true $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"

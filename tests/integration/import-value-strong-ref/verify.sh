@@ -40,7 +40,9 @@ cleanup() {
   ${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   exit ${rc}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
@@ -230,4 +232,4 @@ echo "    all state files removed (✓)"
 
 echo ""
 echo "==> All import-value-strong-ref smoke tests passed"
-trap - EXIT
+trap - EXIT INT TERM

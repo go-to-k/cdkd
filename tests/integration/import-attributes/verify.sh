@@ -185,8 +185,8 @@ echo "==> Pre-flight ok"
 # exit 0 reporting PASS. Each signal handler therefore exits explicitly with
 # the conventional 128+signo code.
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 1: cdkd deploy ${STACK}"

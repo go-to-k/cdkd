@@ -198,6 +198,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 1: install + build cdkd (root) + fixture deps"
 (cd "${REPO_ROOT}" && pnpm install)
@@ -390,5 +392,5 @@ if echo "${REMAINING}" | grep -E -q '\.(jsonl|json)$'; then
 fi
 echo "[verify] step 8 ok: events sidecar removed"
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"

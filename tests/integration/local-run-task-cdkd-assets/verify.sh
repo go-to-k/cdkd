@@ -77,6 +77,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd local run-task ${TASK_PATH} (custom-qualifier fromAsset image)"
 # --detach so the one-shot container is left in place for a docker-logs read.

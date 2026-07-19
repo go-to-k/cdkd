@@ -40,7 +40,9 @@ cleanup() {
   aws ssm delete-parameter --region "${AWS_REGION}" --name "${DESTROY_PARAM}" >/dev/null 2>&1 || true
   exit ${rc}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
@@ -143,4 +145,4 @@ echo "    retain param manually deleted, AWS clean (✓)"
 
 echo ""
 echo "==> All deletion-policy-retain checks passed"
-trap - EXIT
+trap - EXIT INT TERM

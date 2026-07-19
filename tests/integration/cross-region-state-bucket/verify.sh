@@ -107,6 +107,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: create temporary state bucket in ${BUCKET_REGION}"
 if [ "${BUCKET_REGION}" = "us-east-1" ]; then
@@ -184,5 +186,5 @@ echo "[verify] step 7 ok"
 echo "[verify] step 8: remove temporary state bucket"
 aws s3 rb "s3://${STATE_BUCKET}" --region "${BUCKET_REGION}" --force
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"

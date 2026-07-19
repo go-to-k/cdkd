@@ -21,6 +21,8 @@ cleanup() {
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null

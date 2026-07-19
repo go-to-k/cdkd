@@ -42,7 +42,9 @@ cleanup() {
   set -e
   exit "${rc}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then echo "FAIL: STATE_BUCKET required" >&2; exit 1; fi
 if [ ! -f "${LOCAL_DIST}" ]; then echo "FAIL: build dist first (vp run build)" >&2; exit 1; fi
@@ -133,4 +135,4 @@ echo "    OK: 0 orphans (state + SSM params + domain all gone)"
 
 echo ""
 echo "==> opensearch-domain-getatt test passed: GetAtt DomainEndpoint/Arn resolved to the real values, clean destroy 0 orphans"
-trap - EXIT
+trap - EXIT INT TERM
