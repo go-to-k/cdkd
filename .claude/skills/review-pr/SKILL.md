@@ -31,11 +31,11 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    ```bash
    excluded=$(gh pr view <N> --json files \
-     -q '[.files[] | select(.path | test("^docs/_generated/|/pnpm-lock\\.yaml$|/package-lock\\.json$|/yarn\\.lock$")) | .additions + .deletions] | add // 0')
+     -q '[.files[] | select(.path | test("^docs/_generated/|(^|/)pnpm-lock\\.yaml$|(^|/)package-lock\\.json$|(^|/)yarn\\.lock$")) | .additions + .deletions] | add // 0')
    loc=$(( a + d - excluded ))
    ```
 
-   Caught in PR #404 (issue #392): 4286 raw LOC → 3-axis tier, but ~2900 LOC was auto-generated `docs/_generated/integ-coverage.json` + `docs/integ-coverage.md`. Substantive surface was ~1100 LOC, which is squarely 1-reviewer tier. Auto-gen exclusion produces the right answer without sacrificing rigor on the substantive code. Note: `fc` is NOT adjusted — a 12-file diff is still cross-cutting even when 2 of the files are generated.
+   Caught in PR #404 (issue #392): 4286 raw LOC → 3-axis tier, but ~2900 LOC was auto-generated `docs/_generated/integ-coverage.json` + `docs/integ-coverage.md`. Substantive surface was ~1100 LOC, which is squarely 1-reviewer tier. Auto-gen exclusion produces the right answer without sacrificing rigor on the substantive code. Note: `fc` is NOT adjusted — a 12-file diff is still cross-cutting even when 2 of the files are generated. The lockfile patterns are `(^|/)`-anchored because cdkd's `pnpm-lock.yaml` lives at the repo ROOT — a bare `/pnpm-lock\.yaml$` pattern silently never matched it (caught on PR #1082, whose 2747-LOC lockfile churn pushed a 37-LOC toolchain PR into 3-axis). The same exclusion now also lives in `.claude/hooks/pr-review-gate.sh` (it previously computed raw LOC, disagreeing with this skill) — keep the two regexes in sync when editing.
 
 2. **Determine the base tier** from `(loc, fc)` per the heuristic:
 
