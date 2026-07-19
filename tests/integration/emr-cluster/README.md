@@ -75,6 +75,30 @@ EMR clusters).
    cluster in a shared account cannot false-fail the run), and the cleanup
    trap disables termination protection and terminates any that remain.
 
+## Cleanup invariants
+
+Two properties of `verify.sh` are load-bearing and easy to break by
+"tidying":
+
+- **The tag-scoped cluster sweep in `cleanup()` must run BEFORE `cdkd
+  state destroy`.** Phase 3 deliberately opens a window (between `cdkd
+  orphan` and `cdkd import`) where the cluster is live in AWS but absent
+  from cdkd state. Nothing state-driven can clean it up there — only the
+  sweep, which finds the cluster by name + tag. With `state destroy`
+  first, an interrupted run leaves it to skip the untracked cluster and
+  then block indefinitely on `delete-vpc`, because the running cluster's
+  EC2 instances / ENIs hold the subnets, while the cluster keeps billing.
+  (Observed live: an interrupted run wedged there for 18+ minutes.)
+- **`INT` / `TERM` have their own handlers that exit explicitly**
+  (`trap 'cleanup; exit 130' INT`). A bare `trap cleanup INT` would run
+  cleanup and then *return to the interrupted point*, letting the script
+  resume and potentially exit 0 — reporting PASS for a killed run.
+
+The post-destroy leak assertions also distinguish "resource is gone" from
+"the API call failed": a throttled `emr list-clusters` or `s3api
+head-object` must never read as "nothing leaked". Both retry and then
+hard-fail as *undetermined* rather than passing.
+
 ## Timing
 
 EMR cluster creation to `WAITING` takes ~5-15 minutes and termination a

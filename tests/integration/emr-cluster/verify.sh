@@ -63,17 +63,31 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Ids of ACTIVE (not terminated) clusters named like the fixture and carrying
 # the fixture's constant tag.
-active_tagged_cluster_ids() {
-  local ids id
+# Ids of ACTIVE clusters named like the fixture and carrying its constant tag.
+# Returns NON-ZERO if any underlying AWS call fails, so a caller can tell
+# "no leftover clusters" apart from "could not determine". This matters for
+# the post-destroy leak assertion: a throttled / failed `list-clusters` prints
+# nothing, and a naive caller would read that as "nothing leaked" and pass.
+strict_active_tagged_cluster_ids() {
+  local ids id tags
   ids="$(aws emr list-clusters --active --region "${REGION}" \
-    --query "Clusters[?Name=='${CLUSTER_NAME}'].Id" --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d')"
+    --query "Clusters[?Name=='${CLUSTER_NAME}'].Id" --output text)" || return 1
+  ids="$(printf '%s' "${ids}" | tr '\t' '\n' | sed '/^$/d')"
   for id in ${ids}; do
-    if aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
+    tags="$(aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
       --query "Cluster.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']" \
-      --output text 2>/dev/null | grep -q .; then
+      --output text)" || return 1
+    if printf '%s' "${tags}" | grep -q .; then
       echo "${id}"
     fi
   done
+}
+
+# Best-effort variant for cleanup(), where a transient API failure should not
+# abort the teardown — the EXIT trap runs with `set +eu` and any leftover is
+# caught by the next run's pre-run cleanup.
+active_tagged_cluster_ids() {
+  strict_active_tagged_cluster_ids 2>/dev/null || true
 }
 
 cluster_state() {
@@ -98,10 +112,17 @@ wait_cluster_terminated() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
-      --stack-region "${REGION}" --yes >/dev/null 2>&1
-  fi
+  # ORDER MATTERS — the tag-scoped cluster sweep MUST run before
+  # `state destroy`. The sweep finds the cluster by NAME + TAG, so it works
+  # whether or not the cluster is still tracked in cdkd state; `state destroy`
+  # only knows what state records. Phase 3 deliberately creates a window (the
+  # `cdkd orphan` -> `cdkd import` gap) where the cluster is LIVE but ABSENT
+  # from state, and an interrupted run can leave the fixture exactly there.
+  # With `state destroy` first, it would skip the untracked cluster, walk
+  # straight into the VPC teardown, and block indefinitely on `delete-vpc`
+  # because the running cluster's EC2 instances / ENIs hold the subnets — the
+  # terminate below would never be reached while the cluster kept billing.
+  # (Observed live: an interrupted run wedged here for 18+ minutes.)
   # Terminate any leftover active cluster (disable termination protection
   # first, defensively) and wait until it is gone — its ENIs / EC2 instances
   # block the VPC teardown below and it bills per instance-hour.
@@ -112,6 +133,10 @@ cleanup() {
     aws emr terminate-clusters --cluster-ids "${cid}" --region "${REGION}" >/dev/null 2>&1
     wait_cluster_terminated "${cid}"
   done
+  if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+      --stack-region "${REGION}" --yes >/dev/null 2>&1
+  fi
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:Name,Values=${STACK}/Vpc" \
@@ -165,7 +190,16 @@ cleanup() {
   set -eu
 }
 
+# INT / TERM need their OWN handlers that exit explicitly. A bare
+# `trap cleanup INT` would run cleanup and then RETURN to the interrupted
+# point, letting the script resume and potentially exit 0 — i.e. report PASS
+# for a run that was killed partway through. The explicit `exit 130` / `143`
+# (128 + signal) also make a harness timeout distinguishable from a real
+# failure. Cleanup is idempotent, so the re-entry via the EXIT trap is a
+# fast no-op once the sweep above has already run.
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -339,6 +373,15 @@ fi
 RES_COUNT_PRE="$(state_query 'Object.keys(st.resources).length')"
 echo "    cluster logical id: ${CLUSTER_LID} (${RES_COUNT_PRE} resource rows in state)"
 
+# !! INVARIANT — from here until the `cdkd import` below succeeds, the cluster
+# !! is LIVE IN AWS BUT ABSENT FROM cdkd STATE, and it is billing per
+# !! instance-hour. Nothing state-driven (`cdkd destroy` / `cdkd state
+# !! destroy`) can clean it up in this window. The ONLY thing that recovers an
+# !! interrupted run here is cleanup()'s tag-scoped sweep, which finds the
+# !! cluster by name + `cdkd-integ` tag rather than through state — which is
+# !! exactly why that sweep must stay ORDERED BEFORE `state destroy` in
+# !! cleanup(). Do not "tidy" that ordering back; see the comment there.
+#
 # `orphan` takes a CONSTRUCT path, not a logical id — `Cluster` here is the
 # construct id from lib/emr-cluster-stack.ts (`new emr.CfnCluster(this,
 # 'Cluster')`), a source-level fact, whereas CLUSTER_LID above is a synth
@@ -447,17 +490,46 @@ if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WIT
 fi
 echo "    cluster ${FINAL_STATE} (by id)"
 
-LEFTOVERS="$(active_tagged_cluster_ids)"
+# Leak assertion — use the STRICT lookup so a throttled `emr list-clusters`
+# cannot masquerade as "no leftover clusters". Retry a few times before
+# giving up, then hard-fail rather than pass on an undetermined result.
+LEFTOVERS=""
+LEAK_CHECK_OK=false
+for attempt in 1 2 3; do
+  if LEFTOVERS="$(strict_active_tagged_cluster_ids)"; then
+    LEAK_CHECK_OK=true
+    break
+  fi
+  echo "    warn: 'aws emr list-clusters --active' failed (attempt ${attempt}/3), retrying" >&2
+  sleep 5
+done
+if [ "${LEAK_CHECK_OK}" != "true" ]; then
+  echo "FAIL: could not determine whether ACTIVE EMR clusters remain (AWS API calls failed 3x)" >&2
+  echo "      refusing to report PASS on an unverified leak check — check the account manually" >&2
+  exit 1
+fi
 if [ -n "${LEFTOVERS}" ]; then
   echo "FAIL: ACTIVE EMR cluster(s) with tag ${CLEANUP_TAG_KEY}=${CLEANUP_TAG_VALUE} still exist after destroy: ${LEFTOVERS}" >&2
   exit 1
 fi
-echo "    no active cluster with the fixture tag remains"
+echo "    no active cluster with the fixture tag remains (verified, not inferred from a failed call)"
 
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
+# Distinguish "the object is genuinely gone" (404) from "the call failed"
+# (throttle / expired credentials / network). The naive
+# `if aws s3api head-object ... >/dev/null 2>&1` form reads ANY failure as
+# "gone" and would silently pass this leak assertion on a throttle.
+HEAD_ERR="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1 >/dev/null)" \
+  && HEAD_RC=0 || HEAD_RC=$?
+if [ "${HEAD_RC}" -eq 0 ]; then
   echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
   exit 1
 fi
-echo "    cdkd state removed"
+if ! printf '%s' "${HEAD_ERR}" | grep -qiE '404|Not Found'; then
+  echo "FAIL: could not determine whether ${STATE_KEY} still exists — head-object failed with:" >&2
+  echo "      ${HEAD_ERR}" >&2
+  echo "      refusing to report PASS on an unverified leak check" >&2
+  exit 1
+fi
+echo "    cdkd state removed (confirmed via a 404, not an ambiguous error)"
 
 echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + import round-trip (orphan -> import -> observedProperties from live AWS) + destroy (TERMINATED) all passed"
