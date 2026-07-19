@@ -4,7 +4,7 @@
 [![Downloads](https://img.shields.io/npm/dw/@go-to-k/cdkd.svg)](https://www.npmjs.com/package/@go-to-k/cdkd)
 [![License: Apache-2.0](https://img.shields.io/npm/l/@go-to-k/cdkd.svg)](./LICENSE)
 
-Drop-in CDK CLI for existing CDK apps: up to 15x faster deploys via AWS SDK instead of CloudFormation.
+Drop-in CDK CLI for existing CDK apps: up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation.
 
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is.
 - **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits.
