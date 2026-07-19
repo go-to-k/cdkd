@@ -77,7 +77,6 @@ local-run-task-multi-container	2026-06-21T11:00:28Z	PASS	11	verify.sh	sweep-4..8
 local-start-agentcore	2026-06-21T19:11:23Z	PASS	70	verify.sh	staleness re-run (15d); warm HTTP contract ping+invocations+session-id, /ws bridge, --sigv4-signed forward; aws-cdk-lib 2.260 OK; 0 container leak
 local-start-alb	2026-06-21T11:00:28Z	PASS	21	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-start-alb-from-state	2026-06-21T10:44:49Z	PASS	88	verify.sh	fixed verify.sh assertion (state.json only, ignore #885 deployments/); deploy+destroy clean 29 del 0 err
-local-start-api	2026-06-21T19:10:37Z	PASS	29	verify.sh	fresh re-run with Docker up (prior env-FAIL); HTTP/REST/FunctionURL routes + JWT authz + --watch source reload; 0 container leak
 local-start-api-container	2026-06-21T14:49:02Z	PASS	14	verify.sh	sweep-G local re-run (rc=0)
 local-start-api-rest-v1-non-proxy	2026-06-21T14:49:21Z	PASS	17	verify.sh	sweep-G local re-run (rc=0)
 local-start-api-websocket	2026-06-21T14:52:36Z	PASS	193	verify.sh	sweep-G; retry rc=0 (arm64 qemu multi-container RIE; env-limited not cdkd bug if FAIL)
@@ -250,3 +249,4 @@ bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
 lambda	2026-07-19T15:42:32Z	PASS	83	verify.sh	broad integ for import-tag-walk retry widening; 9 deleted 0 errors 0 orphans
 emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
+local-start-api	2026-07-19T18:27:53Z	PASS	22	verify.sh	rc ok, 0 docker orphans; swept verify.sh (#1097 pattern 1)
