@@ -845,7 +845,11 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
           {
             InstanceGroupType: 'MASTER',
             InstanceType: 'm5.xlarge',
+            // Requested != Running (mid-resize): CFn `InstanceCount` must map to
+            // the REQUESTED count, not the running one, or a resize transiently
+            // reports drift. The differing values make the mapping load-bearing.
             RequestedInstanceCount: 1,
+            RunningInstanceCount: 5,
             Name: 'Master',
             Market: 'ON_DEMAND',
           },
@@ -864,6 +868,8 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
       Name: 'Master',
       Market: 'ON_DEMAND',
     });
+    // InstanceCount is the REQUESTED count (1), never the running count (5).
+    expect(instances['MasterInstanceGroup']['InstanceCount']).toBe(1);
     expect(instances['CoreInstanceGroup']).toMatchObject({ InstanceCount: 2 });
     expect(instances['TaskInstanceGroups']).toHaveLength(1);
     expect(instances['TaskInstanceGroups'][0]).toMatchObject({ InstanceCount: 3 });
@@ -912,5 +918,53 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
     routeSend({ DescribeClusterCommand: invalidRequest() });
     const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
     expect(state).toBeUndefined();
+  });
+
+  it('getDriftUnknownPaths lists the create-only + lossy-reverse paths', () => {
+    const paths = newProvider().getDriftUnknownPaths(RESOURCE_TYPE);
+
+    // Top-level create-only sub-config AWS does not read back faithfully.
+    for (const p of [
+      'AdditionalInfo',
+      'Applications',
+      'AutoTerminationPolicy',
+      'BootstrapActions',
+      'Configurations',
+      'KerberosAttributes',
+      'ManagedScalingPolicy',
+      'PlacementGroupConfigs',
+      'Steps',
+    ]) {
+      expect(paths).toContain(p);
+    }
+
+    // `Instances.*` sub-fields reverseInstancesToCfn intentionally omits — must
+    // be skipped or they phantom-drift on the `properties`-fallback path.
+    for (const p of [
+      'Instances.HadoopVersion',
+      'Instances.KeepJobFlowAliveWhenNoSteps',
+      'Instances.Placement',
+      'Instances.MasterInstanceGroup.EbsConfiguration',
+      'Instances.MasterInstanceGroup.AutoScalingPolicy',
+      'Instances.MasterInstanceGroup.Configurations',
+      'Instances.CoreInstanceGroup.EbsConfiguration',
+      'Instances.CoreInstanceGroup.AutoScalingPolicy',
+      'Instances.CoreInstanceGroup.Configurations',
+      'Instances.MasterInstanceFleet.InstanceTypeConfigs',
+      'Instances.MasterInstanceFleet.LaunchSpecifications',
+      'Instances.MasterInstanceFleet.ResizeSpecifications',
+      'Instances.CoreInstanceFleet.InstanceTypeConfigs',
+      'Instances.CoreInstanceFleet.LaunchSpecifications',
+      'Instances.CoreInstanceFleet.ResizeSpecifications',
+      // Task groups/fleets are arrays → ignored whole (leaf comparison).
+      'Instances.TaskInstanceGroups',
+      'Instances.TaskInstanceFleets',
+    ]) {
+      expect(paths).toContain(p);
+    }
+
+    // The whole `Instances` block must NOT be blanket-ignored — mutable
+    // primary topology (e.g. InstanceCount resize) still needs drift coverage.
+    expect(paths).not.toContain('Instances');
   });
 });

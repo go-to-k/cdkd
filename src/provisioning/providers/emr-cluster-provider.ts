@@ -1111,6 +1111,24 @@ export class EMRClusterProvider implements ResourceProvider {
    * State property paths this provider cannot read back from AWS faithfully,
    * skipped by the drift comparator to avoid a guaranteed false positive on
    * the `properties`-fallback path. See `readCurrentState`'s docstring.
+   *
+   * NOTE on the `Instances.*` entries: `reverseInstancesToCfn` deliberately
+   * reconstructs only the primary topology per group / fleet (role, type,
+   * count / capacity, market, bid price, name, custom AMI) — the lossy
+   * sub-specs `create()` reads (`EbsConfiguration` / `AutoScalingPolicy` /
+   * per-group `Configurations`; per-fleet `InstanceTypeConfigs` /
+   * `LaunchSpecifications` / `ResizeSpecifications`) and the top-level
+   * `Instances` fields AWS does not report back (`HadoopVersion` /
+   * `Placement` / `KeepJobFlowAliveWhenNoSteps`) are NOT reconstructed. On the
+   * NORMAL drift path both the `observedProperties` baseline and the current
+   * snapshot go through this same lossy reverse, so these paths are absent
+   * from both sides and never drift — ignoring them there is a no-op. On the
+   * `properties`-fallback path (no `observedProperties`) the baseline is the
+   * full template `Instances`, which DOES carry these sub-fields, so without
+   * the skip every one would fire guaranteed false-positive drift. The two
+   * `Task*` arrays are ignored WHOLE (the comparator compares arrays as leaves,
+   * so an element sub-field cannot be path-targeted); Master/Core groups and
+   * fleets are single objects, so their lossy sub-fields are targeted directly.
    */
   getDriftUnknownPaths(_resourceType: string): string[] {
     return [
@@ -1123,6 +1141,28 @@ export class EMRClusterProvider implements ResourceProvider {
       'AutoTerminationPolicy',
       'BootstrapActions',
       'Configurations',
+      // Top-level Instances fields readCurrentState cannot reconstruct.
+      'Instances.HadoopVersion',
+      'Instances.KeepJobFlowAliveWhenNoSteps',
+      'Instances.Placement',
+      // Master/Core instance-group lossy sub-specs (single objects → targeted).
+      'Instances.CoreInstanceGroup.AutoScalingPolicy',
+      'Instances.CoreInstanceGroup.Configurations',
+      'Instances.CoreInstanceGroup.EbsConfiguration',
+      'Instances.MasterInstanceGroup.AutoScalingPolicy',
+      'Instances.MasterInstanceGroup.Configurations',
+      'Instances.MasterInstanceGroup.EbsConfiguration',
+      // Master/Core instance-fleet lossy sub-specs (single objects → targeted).
+      'Instances.CoreInstanceFleet.InstanceTypeConfigs',
+      'Instances.CoreInstanceFleet.LaunchSpecifications',
+      'Instances.CoreInstanceFleet.ResizeSpecifications',
+      'Instances.MasterInstanceFleet.InstanceTypeConfigs',
+      'Instances.MasterInstanceFleet.LaunchSpecifications',
+      'Instances.MasterInstanceFleet.ResizeSpecifications',
+      // Task groups/fleets are arrays → the comparator compares them as leaves,
+      // so the lossy element sub-fields force the whole array to be skipped.
+      'Instances.TaskInstanceFleets',
+      'Instances.TaskInstanceGroups',
       'KerberosAttributes',
       'ManagedScalingPolicy',
       'PlacementGroupConfigs',
