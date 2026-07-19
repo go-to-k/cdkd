@@ -1,3 +1,10 @@
+# [0.249.0](https://github.com/go-to-k/cdkd/compare/v0.248.0...v0.249.0) (2026-07-19)
+
+
+### Features
+
+* **providers:** FSx FileSystem Windows / ONTAP / OpenZFS variants ([#1068](https://github.com/go-to-k/cdkd/issues/1068)) ([#1085](https://github.com/go-to-k/cdkd/issues/1085)) ([ea12729](https://github.com/go-to-k/cdkd/commit/ea1272908c05ab9056effe3a7dc179754f384265))
+
 # [0.248.0](https://github.com/go-to-k/cdkd/compare/v0.247.0...v0.248.0) (2026-07-19)
 
 
