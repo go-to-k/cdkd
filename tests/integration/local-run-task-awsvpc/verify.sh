@@ -41,8 +41,8 @@ cleanup() {
     | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "==> Pre-test orphan sweep"
 cleanup
@@ -64,8 +64,8 @@ ${CDKD} synth >/dev/null
 
 OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
-trap 'rm -f "${OUT_FILE}"; cleanup; exit 130' INT
-trap 'rm -f "${OUT_FILE}"; cleanup; exit 143' TERM
+trap 'rm -f "${OUT_FILE}"; (exit 130); cleanup; exit 130' INT
+trap 'rm -f "${OUT_FILE}"; (exit 143); cleanup; exit 143' TERM
 
 echo "==> Starting awsvpc task via --detach (output captured)"
 ${CDKD} local run-task CdkdLocalRunTaskAwsvpcFixture/AwsvpcTask \

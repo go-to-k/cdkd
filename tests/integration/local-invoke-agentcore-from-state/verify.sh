@@ -59,8 +59,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy ${STACK}"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose

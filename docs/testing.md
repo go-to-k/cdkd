@@ -398,8 +398,8 @@ paths as well, in the exiting form:
 ```bash
 cleanup() { ... }             # destroy + state/orphan sweep
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 ```
 
 Two forms are wrong and both let a run leak billable resources:
@@ -412,6 +412,19 @@ Two forms are wrong and both let a run leak billable resources:
   next one and can `exit 0` — reporting PASS. Worse, when only the script PID
   is signalled the `node deploy` child survives, so `cleanup` deletes resources
   concurrently with a live deploy.
+
+The `(exit N)` seed is load-bearing, not decoration. Many fixtures' `cleanup`
+opens with `rc=$?` and gates the whole teardown on it:
+
+```bash
+cleanup() { rc=$?; if [ "${rc}" -eq 0 ]; then exit 0; fi; ...destroy...; }
+```
+
+Inside a signal handler `$?` is the **interrupted command's** status, not the
+signal. Without the seed, an interrupted run can see `rc=0`, skip the teardown
+entirely and exit 0 — reintroducing the very bug the signal trap was added to
+prevent. `(exit N)` sets `$?` to the signal's code, so both `rc=$?` and
+`${1:-$?}` cleanups tear down correctly.
 
 A disarm must release the signal traps too — `trap - EXIT INT TERM`, not
 `trap - EXIT` — otherwise a Ctrl-C after the fixture's own successful teardown

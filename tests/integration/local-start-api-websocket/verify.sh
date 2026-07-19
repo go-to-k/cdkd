@@ -78,8 +78,8 @@ cleanup() {
   rm -f "$(pwd)/.ws-client.mjs"
 }
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 echo "==> Starting cdkd local start-api on port ${PORT}"
 ${CDKD} local start-api \
@@ -400,14 +400,17 @@ echo "==> All WebSocket assertions passed"
 # round-trip + wss.close cleanup). A wedged shutdown that hits the
 # 120s SIGKILL would pass verify.sh silently pre-PR; this assertion
 # fires post-cleanup to catch that regression.
-trap '
-cleanup
-if [[ -n "${SIGTERM_ELAPSED}" ]]; then
-  echo "==> Stage: stage_sigterm_fast (elapsed=${SIGTERM_ELAPSED}s)"
-  if [[ "${SIGTERM_ELAPSED}" -ge 7 ]]; then
-    echo "FAIL: stage_sigterm_fast — server took ${SIGTERM_ELAPSED}s to exit (expected <7s, $(($SIGTERM_ELAPSED - 5))s past the 5s drain ceiling)."
-    exit 1
+cleanup_and_assert_sigterm_fast() {
+  cleanup
+  if [[ -n "${SIGTERM_ELAPSED}" ]]; then
+    echo "==> Stage: stage_sigterm_fast (elapsed=${SIGTERM_ELAPSED}s)"
+    if [[ "${SIGTERM_ELAPSED}" -ge 7 ]]; then
+      echo "FAIL: stage_sigterm_fast — server took ${SIGTERM_ELAPSED}s to exit (expected <7s, $(($SIGTERM_ELAPSED - 5))s past the 5s drain ceiling)."
+      exit 1
+    fi
+    echo "PASS: stage_sigterm_fast — server exited within ${SIGTERM_ELAPSED}s"
   fi
-  echo "PASS: stage_sigterm_fast — server exited within ${SIGTERM_ELAPSED}s"
-fi
-' EXIT INT TERM
+}
+trap cleanup_and_assert_sigterm_fast EXIT
+trap '(exit 130); cleanup_and_assert_sigterm_fast; exit 130' INT
+trap '(exit 143); cleanup_and_assert_sigterm_fast; exit 143' TERM

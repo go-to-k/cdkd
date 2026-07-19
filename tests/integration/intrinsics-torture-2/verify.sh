@@ -56,8 +56,8 @@ cleanup() {
   exit ${rc}
 }
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 # Triage helper: dump state + synth on a deploy failure so the failing
 # resource + error are visible for diagnosis.
