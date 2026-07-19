@@ -772,6 +772,137 @@ describe('cdkd import', () => {
     });
   });
 
+  describe('provider-returned attributes (issue #1098)', () => {
+    it('persists provider-returned attributes into the written state', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({
+          physicalId: 'my-bucket-name',
+          attributes: {
+            Arn: 'arn:aws:s3:::my-bucket-name',
+            DomainName: 'my-bucket-name.s3.amazonaws.com',
+          },
+        })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      // Pre-fix this was hardcoded `{}`, so an adopted resource could not
+      // back `Fn::GetAtt` the way a deployed one can.
+      expect(state.resources['MyBucket']!.attributes).toEqual({
+        Arn: 'arn:aws:s3:::my-bucket-name',
+        DomainName: 'my-bucket-name.s3.amazonaws.com',
+      });
+    });
+
+    it('leaves attributes as {} when the provider returns none', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      // No `attributes` key at all — the optional field is absent.
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'my-bucket-name' })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyBucket']!.attributes).toEqual({});
+    });
+
+    // Second-order effect of persisting attributes. `resolveImportedProperties`
+    // runs the real IntrinsicFunctionResolver against `stackState.resources`
+    // and overwrites each imported resource's persisted `properties`, so a
+    // populated `attributes` map changes what a downstream `Fn::GetAtt`
+    // resolves to.
+    //
+    // AWS::CodeCommit::Repository is the discriminating case: its physicalId
+    // is the repository NAME, and `constructAttribute` has no branch for the
+    // type, so its terminal `default: return physicalId` silently produced
+    // the bare name where an ARN belongs. Observed values for this exact
+    // input: pre-fix `{"Queues":["my-repo"]}`, post-fix
+    // `{"Queues":["arn:aws:codecommit:us-east-1:123456789012:my-repo"]}`.
+    // The fix is therefore a CORRECTION of a silently-wrong persisted
+    // property, and it converges import's stored shape on what `cdkd deploy`
+    // would have written.
+    it('populated attributes let a downstream Fn::GetAtt resolve into persisted properties', async () => {
+      const tmpl = template({
+        MyRepo: {
+          Type: 'AWS::CodeCommit::Repository',
+          Properties: { RepositoryName: 'my-repo' },
+          Metadata: { 'aws:cdk:path': 'S/MyRepo' },
+        },
+        MyPolicy: {
+          Type: 'AWS::SQS::QueuePolicy',
+          Properties: { Queues: [{ 'Fn::GetAtt': ['MyRepo', 'Arn'] }] },
+          Metadata: { 'aws:cdk:path': 'S/MyPolicy' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::CodeCommit::Repository') {
+          return {
+            import: vi.fn(async () => ({
+              physicalId: 'my-repo',
+              attributes: { Arn: 'arn:aws:codecommit:us-east-1:123456789012:my-repo' },
+            })),
+          };
+        }
+        return { import: vi.fn(async () => ({ physicalId: 'policy-1' })) };
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        {
+          resources: Record<
+            string,
+            { properties: Record<string, unknown>; attributes: Record<string, unknown> }
+          >;
+        },
+      ];
+      // Pre-fix this was the bare physical id `'my-repo'` (constructAttribute's
+      // `default: return physicalId` fallback), silently persisting a name
+      // where the template asked for an ARN.
+      expect(state.resources['MyPolicy']!.properties).toEqual({
+        Queues: ['arn:aws:codecommit:us-east-1:123456789012:my-repo'],
+      });
+      // The imported producer itself carries the attribute map that made it
+      // resolvable.
+      expect(state.resources['MyRepo']!.attributes).toEqual({
+        Arn: 'arn:aws:codecommit:us-east-1:123456789012:my-repo',
+      });
+    });
+  });
+
   describe('--resource-mapping-inline', () => {
     const oneResource = () =>
       template({
@@ -1294,6 +1425,132 @@ describe('cdkd import', () => {
       expect(state.resources['MyBucket']?.physicalId).toBe('new-bucket-name');
       expect(state.resources['MyQueue']?.physicalId).toBe('queue-arn');
       expect(state.resources['MyTopic']?.physicalId).toBe('topic-arn');
+    });
+
+    // Attribute carry-over on re-import. A re-imported row REPLACES the whole
+    // ResourceState, so without the same-physical-id fallback in
+    // buildStackState a provider whose import() returns no attributes would
+    // wipe a map that a prior deploy / import had populated.
+    it('re-importing at the SAME physical id preserves previously-stored attributes', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({
+          MyBucket: {
+            physicalId: 'bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            // Populated by a prior `cdkd deploy`.
+            attributes: { Arn: 'arn:aws:s3:::bucket-name' },
+            dependencies: [],
+          },
+        }),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      // Provider returns an EXPLICIT empty map — the realistic shape. Almost
+      // every shipped provider spells it `attributes: {}` rather than
+      // omitting the field (ssm-parameter-provider.ts:495 / :516,
+      // s3-bucket-provider.ts, lambda-function-provider.ts, ...), so a stub
+      // returning `{ physicalId }` alone would exercise a path no real
+      // provider reaches. `{}` is not `undefined`, which is why
+      // buildStackState normalizes empty-to-absent before the coalesce.
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'bucket-name', attributes: {} })),
+      });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=bucket-name',
+        '--force',
+        '--yes',
+      ]);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyBucket']!.attributes).toEqual({
+        Arn: 'arn:aws:s3:::bucket-name',
+      });
+    });
+
+    it('re-importing at a DIFFERENT physical id does NOT carry stale attributes over', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({
+          MyBucket: {
+            physicalId: 'old-bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            // These describe the OLD physical bucket.
+            attributes: { Arn: 'arn:aws:s3:::old-bucket-name' },
+            dependencies: [],
+          },
+        }),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        // Explicit `{}` — the shape virtually every shipped provider returns.
+        import: vi.fn(async () => ({ physicalId: 'new-bucket-name', attributes: {} })),
+      });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=new-bucket-name',
+        '--force',
+        '--yes',
+      ]);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { physicalId: string; attributes: Record<string, unknown> }> },
+      ];
+      // Carrying `old-bucket-name`'s Arn onto the new physical id would feed
+      // a stale value to Fn::GetAtt — worse than an empty map.
+      expect(state.resources['MyBucket']!.physicalId).toBe('new-bucket-name');
+      expect(state.resources['MyBucket']!.attributes).toEqual({});
+    });
+
+    it('selective merge leaves an unlisted existing resource\'s own attributes intact', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({ state: existingState(), etag: '"e"' });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') {
+          return {
+            import: vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} })),
+          };
+        }
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=cdkd-test-my-bucket',
+        '--yes',
+      ]);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      // MyQueue / MyTopic were never re-imported (the loop `continue`s on a
+      // non-`imported` outcome), so their maps come through untouched.
+      expect(state.resources['MyQueue']!.attributes).toEqual({ Arn: 'queue-arn' });
+      expect(state.resources['MyTopic']!.attributes).toEqual({ TopicArn: 'topic-arn' });
     });
 
     it('forwards migrateLegacy when the existing state was loaded from the v1 layout', async () => {

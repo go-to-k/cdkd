@@ -491,6 +491,20 @@ const arn = bucketState.attributes['Arn'];
 
 1. **Cloud Control API**: Automatically collected from `GetResource` response
 2. **SDK Provider**: Provider explicitly returns in `create()` / `update()`
+3. **`cdkd import`**: Provider returns them from `import()`, so an adopted
+   resource carries the same attribute snapshot a deployed one does. When a
+   provider's `import()` returns no attributes — whether it omits the field
+   or returns an empty `{}`, which is what most providers do — cdkd falls
+   back to the map already in state, but only if the resource is being
+   re-imported at the *same* physical id. A re-import that repoints a logical
+   id at a different physical resource never inherits the old one's
+   attributes. With neither source the map is empty (`{}`).
+
+   Providers deliberately **omit** an attribute key rather than storing an
+   empty string when a read-back cannot supply the value: the intrinsic
+   resolver treats any non-`undefined` stored attribute as a hit, so a
+   persisted `''` would shadow its computed fallback and make `Fn::GetAtt`
+   resolve to the empty string.
 
 ```typescript
 // IAM Role Provider example

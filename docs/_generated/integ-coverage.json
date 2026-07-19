@@ -2914,10 +2914,14 @@
     {
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
-        "iam-managed-policy"
+        "iam-managed-policy",
+        "import-attributes"
       ],
       "signals": {
         "iam-managed-policy": [
+          "literal"
+        ],
+        "import-attributes": [
           "literal"
         ]
       }
@@ -4658,6 +4662,7 @@
         "eventbridge",
         "export-nested-stack",
         "getstackoutput-crossregion",
+        "import-attributes",
         "import-nested-stack",
         "import-value-strong-ref",
         "importvalue-chain",
@@ -4746,6 +4751,9 @@
         "getstackoutput-crossregion": [
           "l1",
           "l2"
+        ],
+        "import-attributes": [
+          "literal"
         ],
         "import-nested-stack": [
           "l2",

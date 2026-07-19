@@ -792,7 +792,18 @@ Notes:
 - **Return `null`, don't throw**, when nothing matches — `cdkd import` treats `null` as "not deployed yet", not as a failure
 - `attributes: {}` is fine for most types — the deploy-time `Fn::GetAtt`
   resolver reconstructs missing attributes via `constructAttribute`
-  (see `src/deployment/intrinsic-function-resolver.ts`)
+  (see `src/deployment/intrinsic-function-resolver.ts`). `cdkd import`
+  persists whatever map you return, but an empty map is treated as "no
+  attributes" and falls back to the same-physical-id map already in state,
+  so returning `{}` never clobbers a good snapshot from a prior deploy.
+- **Never store an empty-string placeholder for an attribute you could not
+  read back — omit the key instead.** Write
+  `attributes: arn ? { Arn: arn } : {}`, not
+  `attributes: { Arn: arn ?? '' }`. The resolver treats any non-`undefined`
+  stored attribute as a hit, so a persisted `''` shadows
+  `constructAttribute`'s fallback and makes `Fn::GetAtt` resolve to the
+  empty string. This applies to `create()` / `update()` / `import()` alike —
+  keep the three consistent within a provider.
 - Tests for `import` go in the same file as the create/update/delete
   tests, with three cases: explicit-override path, tag-based lookup
   hit, tag-based lookup miss (returns `null`)

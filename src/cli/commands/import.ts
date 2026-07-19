@@ -128,6 +128,17 @@ interface ImportRow {
   outcome: ImportOutcome;
   physicalId?: string;
   reason?: string;
+  /**
+   * Provider-returned attribute snapshot for `Fn::GetAtt` resolution
+   * (issue #1098). Populated only on the `imported` outcome, and only when
+   * the provider's `import()` returned an `attributes` map — providers that
+   * omit it leave this `undefined` and the state row keeps `{}`.
+   *
+   * Persisting it makes an adopted resource state-shape-identical to one
+   * created by `cdkd deploy`, which already stores a create-time attribute
+   * snapshot. Same staleness class as deploy, not a new one.
+   */
+  attributes?: Record<string, unknown>;
 }
 
 /**
@@ -879,6 +890,7 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
       resourceType: resource.Type,
       outcome: 'imported',
       physicalId: result.physicalId,
+      ...(result.attributes !== undefined && { attributes: result.attributes }),
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1075,11 +1087,36 @@ function buildStackState(
     const deps = [...templateParser.extractDependencies(tmplResource)].filter(
       (dep) => !parameterNames.has(dep)
     );
+    // Attribute carry-over: a re-imported row REPLACES the whole
+    // ResourceState, so a resource that already had a populated attribute
+    // map (from a prior `cdkd deploy` or import) would have it wiped when
+    // the provider's `import()` returns no attributes. Fall back to the
+    // stored map — but ONLY when the physical id is unchanged. Attributes
+    // describe a specific AWS resource, so carrying them across a
+    // re-import that repoints the logical id at a DIFFERENT physical id
+    // (`--resource X=<other>` with `--force`) would resurrect stale facts
+    // about the old resource and hand them to `Fn::GetAtt`.
+    const prior = existingState?.resources[row.logicalId];
+    const priorAttributes =
+      prior && prior.physicalId === row.physicalId ? prior.attributes : undefined;
+    // Normalize "no attributes" to `undefined` BEFORE the coalesce below.
+    // Almost no provider omits the field: across src/provisioning/providers
+    // the overwhelming majority of `import()` return sites spell it
+    // `attributes: {}` explicitly (ssm-parameter, s3-bucket,
+    // lambda-function, ...), and `{}` is not `undefined`, so a plain
+    // `row.attributes ?? priorAttributes` would leave the fallback
+    // unreachable in production and still wipe a good stored map.
+    const rowAttributes =
+      row.attributes && Object.keys(row.attributes).length > 0 ? row.attributes : undefined;
     resources[row.logicalId] = {
       physicalId: row.physicalId,
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
-      attributes: {},
+      // Issue #1098: persist the provider-returned attribute snapshot so an
+      // adopted resource can back `Fn::GetAtt` the same way a deployed one
+      // does. A provider that returns no attributes (absent OR `{}`) falls
+      // back to the same-physical-id stored map, then to `{}`.
+      attributes: rowAttributes ?? priorAttributes ?? {},
       dependencies: deps,
       // v7+ (#614): every imported resource is owned by its SDK Provider
       // (the import() method lives on SDK Providers). Explicit so the

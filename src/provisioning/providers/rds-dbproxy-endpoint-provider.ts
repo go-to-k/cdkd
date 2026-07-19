@@ -541,20 +541,25 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
       );
       const ep = describe.DBProxyEndpoints?.[0];
+      // Only include keys the read-back actually resolved. Persisting `''`
+      // is worse than omitting: the intrinsic resolver treats any
+      // non-undefined flat attribute as a hit, so an empty string shadows
+      // constructAttribute's fallback and Fn::GetAtt resolves to ''.
+      // `IsDefault` is a genuine boolean, so `false` is a real value and is
+      // kept whenever the endpoint was found at all.
       return {
         physicalId,
         attributes: {
-          Endpoint: ep?.Endpoint ?? '',
-          DBProxyEndpointArn: ep?.DBProxyEndpointArn ?? '',
-          IsDefault: ep?.IsDefault ?? false,
-          VpcId: ep?.VpcId ?? '',
+          ...(ep?.Endpoint && { Endpoint: ep.Endpoint }),
+          ...(ep?.DBProxyEndpointArn && { DBProxyEndpointArn: ep.DBProxyEndpointArn }),
+          ...(ep && { IsDefault: ep.IsDefault ?? false }),
+          ...(ep?.VpcId && { VpcId: ep.VpcId }),
         },
       };
     } catch {
-      return {
-        physicalId,
-        attributes: { Endpoint: '', DBProxyEndpointArn: '', IsDefault: false, VpcId: '' },
-      };
+      // Describe failed — we know nothing about the attributes. Return an
+      // empty map rather than a set of empty-string placeholders.
+      return { physicalId, attributes: {} };
     }
   }
 
