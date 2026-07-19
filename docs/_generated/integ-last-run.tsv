@@ -244,4 +244,4 @@ codecommit	2026-07-18T19:00:09Z	PASS	150	verify.sh	issue #1065 drift (post-rebas
 emr-cluster	2026-07-19T08:46:11Z	PASS	528	verify.sh	issue #1069 import(): deploy+in-place-update+destroy clean, 12 deleted 0 errors, cluster TERMINATED, 0 orphans
 bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
-fsx-openzfs	2026-07-19T15:27:20Z	PASS	1400	verify.sh	clean drift phase added (#1089); destroy 8 deleted 0 errors, 0 orphans
+fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
