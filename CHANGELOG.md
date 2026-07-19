@@ -1,3 +1,10 @@
+## [0.252.2](https://github.com/go-to-k/cdkd/compare/v0.252.1...v0.252.2) (2026-07-19)
+
+
+### Bug Fixes
+
+* **import:** persist provider-returned attributes into state ([#1099](https://github.com/go-to-k/cdkd/issues/1099)) ([fabda6c](https://github.com/go-to-k/cdkd/commit/fabda6ced63808fe46ce1ae70f3707927f19cf29))
+
 ## [0.252.1](https://github.com/go-to-k/cdkd/compare/v0.252.0...v0.252.1) (2026-07-19)
 
 
