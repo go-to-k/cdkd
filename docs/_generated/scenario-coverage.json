@@ -853,7 +853,17 @@
       "scenarios": []
     },
     {
+      "name": "fsx-ontap",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "fsx-openzfs",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "fsx-windows",
       "annotated": true,
       "scenarios": []
     },

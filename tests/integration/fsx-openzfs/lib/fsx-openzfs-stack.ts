@@ -13,9 +13,10 @@ import type { Construct } from 'constructs';
  *
  * OpenZFS is the CHEAPEST non-Lustre variant to stand up (SINGLE_AZ_1, no
  * Active Directory, one subnet, 64 GiB / 64 MB/s — the smallest legal
- * config), so it is the variant chosen for the live integ. Windows / ONTAP
- * are unit-tested and share this fixture's integ-verified create-poll /
- * delete-poll path.
+ * config), so it is the variant chosen as the cheapest live integ. Windows
+ * and ONTAP have their own per-variant fixtures (`fsx-windows` /
+ * `fsx-ontap`, issue #1088); this one remains the cheap smoke test of the
+ * shared create-poll / delete-poll path.
  *
  * covers: AWS::FSx::FileSystem
  * covers: AWS::EC2::VPC

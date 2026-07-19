@@ -957,7 +957,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1035,7 +1037,13 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-ontap": [
+          "l2"
+        ],
         "fsx-openzfs": [
+          "l2"
+        ],
+        "fsx-windows": [
           "l2"
         ],
         "infra-security": [
@@ -1109,7 +1117,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1187,7 +1197,13 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-ontap": [
+          "l2"
+        ],
         "fsx-openzfs": [
+          "l2"
+        ],
+        "fsx-windows": [
           "l2"
         ],
         "infra-security": [
@@ -1283,7 +1299,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1361,7 +1379,13 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-ontap": [
+          "l2"
+        ],
         "fsx-openzfs": [
+          "l2"
+        ],
+        "fsx-windows": [
           "l2"
         ],
         "infra-security": [
@@ -1435,7 +1459,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1513,7 +1539,13 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-ontap": [
+          "l2"
+        ],
         "fsx-openzfs": [
+          "l2"
+        ],
+        "fsx-windows": [
           "l2"
         ],
         "infra-security": [
@@ -1734,7 +1766,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1812,7 +1846,13 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-ontap": [
+          "l2"
+        ],
         "fsx-openzfs": [
+          "l2"
+        ],
+        "fsx-windows": [
           "l2"
         ],
         "infra-security": [
@@ -1897,7 +1937,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1975,7 +2017,13 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-ontap": [
+          "l2"
+        ],
         "fsx-openzfs": [
+          "l2"
+        ],
+        "fsx-windows": [
           "l2"
         ],
         "infra-security": [
@@ -2049,7 +2097,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -2132,7 +2182,15 @@
           "l2",
           "literal"
         ],
+        "fsx-ontap": [
+          "l2",
+          "literal"
+        ],
         "fsx-openzfs": [
+          "l2",
+          "literal"
+        ],
+        "fsx-windows": [
           "l2",
           "literal"
         ],
@@ -2210,7 +2268,9 @@
         "emr-cluster",
         "emr-instance-configs",
         "fsx-lustre",
+        "fsx-ontap",
         "fsx-openzfs",
+        "fsx-windows",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -2288,7 +2348,13 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-ontap": [
+          "l2"
+        ],
         "fsx-openzfs": [
+          "l2"
+        ],
+        "fsx-windows": [
           "l2"
         ],
         "infra-security": [
@@ -2780,13 +2846,21 @@
       "resourceType": "AWS::FSx::FileSystem",
       "integs": [
         "fsx-lustre",
-        "fsx-openzfs"
+        "fsx-ontap",
+        "fsx-openzfs",
+        "fsx-windows"
       ],
       "signals": {
         "fsx-lustre": [
           "literal"
         ],
+        "fsx-ontap": [
+          "literal"
+        ],
         "fsx-openzfs": [
+          "literal"
+        ],
+        "fsx-windows": [
           "literal"
         ]
       }
