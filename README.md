@@ -8,7 +8,7 @@ Drop-in CDK CLI for existing CDK apps: up to 15x faster deploys via AWS SDK inst
 
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
-- **Local execution**: run your functions and APIs locally, with env vars resolved from your deployed stack instead of hand-written `.env` files.
+- **Local execution**: run your functions and APIs locally, with env vars, secrets, and resource references resolved from your deployed stack instead of hand-written `.env` files.
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
