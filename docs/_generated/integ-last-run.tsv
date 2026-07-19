@@ -245,4 +245,4 @@ emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run
 fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
 lambda	2026-07-19T16:55:31Z	PASS	85	verify.sh	re-run vs final SUSPENDED-tolerance code; 9 deleted 0 errors 0 orphans
 drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
-import-attributes	2026-07-19T17:16:52Z	PASS	39	verify.sh	new fixture for #1098; import attributes persisted (PolicyArn); destroy 1 del 0 err, 0 orphans
+import-attributes	2026-07-19T17:42:14Z	PASS	39	verify.sh	PR #1099 post-rebase re-verify; attributes persisted (PolicyArn); destroy 1 del 0 err, 0 orphans
