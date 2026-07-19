@@ -166,6 +166,20 @@ describe('EMRInstanceFleetConfigProvider create', () => {
     );
   });
 
+  // Issue #1092 item 2: a SUSPENDED fleet can no longer add or remove
+  // instances, so the wait must fail fast instead of polling to maxWaitMs.
+  // Without SUSPENDED in FAILED_STATES this rejects with a timeout message
+  // (only after burning the whole wait budget), not "failed state SUSPENDED".
+  it('fails fast when the fleet enters SUSPENDED (resize could not complete)', async () => {
+    routeSend({
+      AddInstanceFleetCommand: { InstanceFleetId: FLEET_ID },
+      ListInstanceFleetsCommand: fleetOf('SUSPENDED', 0),
+    });
+    await expect(
+      newProvider({ maxWaitMs: 60_000 }).create('Fleet', RESOURCE_TYPE, BASE_PROPS)
+    ).rejects.toThrow(/failed state SUSPENDED/);
+  });
+
   it('times out when the fleet never reaches RUNNING', async () => {
     routeSend({
       AddInstanceFleetCommand: { InstanceFleetId: FLEET_ID },

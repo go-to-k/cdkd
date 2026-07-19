@@ -719,6 +719,51 @@ async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
 }
 ```
 
+#### Throttle-tolerant tag walk (`importTagWalk`)
+
+Step 2 above is an inherent **N+1** read pattern — one `ListTags*` /
+`Describe*` per candidate — which is exactly what AWS rate-limits on a
+busy account. Hand-rolled loops have no backoff, so a single throttled
+call aborts the whole `cdkd import` run (issue
+[#1091](https://github.com/go-to-k/cdkd/issues/1091)).
+
+New providers should route the walk through the shared helper in
+[src/provisioning/import-tag-walk.ts](../src/provisioning/import-tag-walk.ts)
+instead of writing the loop by hand:
+
+```typescript
+import { importTagWalk } from '../import-tag-walk.js';
+
+const match = await importTagWalk({
+  cdkPath: input.cdkPath,          // empty/undefined short-circuits to null, no API call
+  logicalId: input.logicalId,      // used only in retry log lines
+  listPage: async (token) => {
+    const list = await this.client.send(new ListCommand({ ...(token && { NextToken: token }) }));
+    return { items: list.Items, nextMarker: list.NextToken };
+  },
+  describe: async (item) =>
+    item.Id ? await this.client.send(new ListTagsCommand({ ResourceId: item.Id })) : undefined,
+  tagsOf: (tags) => tags.Tags,     // return undefined to skip a candidate
+});
+if (!match?.summary.Id) return null;
+return { physicalId: match.summary.Id, attributes: {} };
+```
+
+Both `listPage` and `describe` are individually retried with exponential
+backoff (0.5s → 1s → 2s → 4s → 5s) on throttling errors only. The
+classifier (`isThrottlingLikeError`) reuses the deploy engine's
+`THROTTLING_ERROR_NAMES` / `RETRYABLE_HTTP_STATUS_CODES` tables but is
+deliberately NARROWER than `isRetryableTransientError`: on a read-only
+walk, `does not exist` / `not authorized to perform` are terminal, and
+retrying them would burn the full backoff budget per candidate before
+surfacing the real error.
+
+Providers whose tag API does not fit the shape (map-shaped tags,
+lowercase `key`/`value`, filter-based one-shot lookups, batch tag fetch)
+can keep their own loop; `isThrottlingLikeError` is exported for reuse.
+The EMR Cluster + DocDB providers are the migrated reference callers;
+the remaining `aws:cdk:path` walkers are migrated incrementally.
+
 Reference implementations to copy from:
 
 - **Tag[] array, name field present**: `s3-bucket-provider.ts`, `iam-role-provider.ts`, `dynamodb-table-provider.ts`, `kinesis-provider.ts`, `firehose-provider.ts`, `eventbridge-rule-provider.ts`, `wafv2-provider.ts`, `route53-provider.ts`, `elasticache-provider.ts`

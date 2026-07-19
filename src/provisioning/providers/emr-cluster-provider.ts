@@ -32,11 +32,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -978,7 +975,9 @@ export class EMRClusterProvider implements ResourceProvider {
    *  2. Tag-based lookup: `ListClusters` filtered to the non-terminated states
    *     (a `TERMINATED*` cluster is gone and must never be adopted), then a
    *     `DescribeCluster` per candidate to read `Tags` (the list summaries do
-   *     NOT carry tags) and match `aws:cdk:path`.
+   *     NOT carry tags) and match `aws:cdk:path`. The walk runs through the
+   *     shared `importTagWalk` helper, so each list page / describe is retried
+   *     with exponential backoff when AWS throttles the N+1 read burst.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, null);
@@ -993,28 +992,25 @@ export class EMRClusterProvider implements ResourceProvider {
       return { physicalId: explicit, attributes: this.buildAttributes(cluster) };
     }
 
-    if (!input.cdkPath) return null;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListClustersCommand({
+            ClusterStates: [...NON_TERMINATED_STATES],
+            ...(marker && { Marker: marker }),
+          })
+        );
+        return { items: list.Clusters, nextMarker: list.Marker };
+      },
+      describe: async (summary) =>
+        summary.Id ? await this.describeClusterOrNull(summary.Id) : undefined,
+      tagsOf: (cluster) => cluster.Tags,
+    });
+    if (!match?.summary.Id) return null;
 
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListClustersCommand({
-          ClusterStates: [...NON_TERMINATED_STATES],
-          ...(marker && { Marker: marker }),
-        })
-      );
-      for (const summary of list.Clusters ?? []) {
-        if (!summary.Id) continue;
-        const cluster = await this.describeClusterOrNull(summary.Id);
-        if (!cluster) continue;
-        if (matchesCdkPath(cluster.Tags, input.cdkPath)) {
-          return { physicalId: summary.Id, attributes: this.buildAttributes(cluster) };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
-
-    return null;
+    return { physicalId: match.summary.Id, attributes: this.buildAttributes(match.detail) };
   }
 
   /**

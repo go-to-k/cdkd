@@ -33,10 +33,19 @@ const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const READY_STATES: ReadonlySet<InstanceFleetState> = new Set<InstanceFleetState>(['RUNNING']);
 
 /**
- * Instance-fleet states that mean "the fleet is gone" — a hard error during a
- * create/resize wait (it will never reach RUNNING).
+ * Instance-fleet states that mean "the fleet will never reach the requested
+ * capacity" — a hard error during a create/resize wait.
+ *
+ * `TERMINATED` means the fleet is gone. `SUSPENDED` means a resize could not
+ * complete: the existing instances keep running but AWS can no longer add or
+ * remove any, so the wait would poll to the full `maxWaitMs` timeout instead of
+ * failing fast with the service's own state-change reason. Mirrors the
+ * instance-group provider's ARRESTED/TERMINATED/ENDED set (issue #1092 item 2).
  */
-const FAILED_STATES: ReadonlySet<InstanceFleetState> = new Set<InstanceFleetState>(['TERMINATED']);
+const FAILED_STATES: ReadonlySet<InstanceFleetState> = new Set<InstanceFleetState>([
+  'SUSPENDED',
+  'TERMINATED',
+]);
 
 const toNumber = (v: unknown): number | undefined => {
   if (v === undefined) return undefined;

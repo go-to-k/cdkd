@@ -811,6 +811,44 @@ describe('EMRClusterProvider import', () => {
     expect(result).toBeNull();
   });
 
+  // Issue #1091: the tag walk is an N+1 DescribeCluster burst, exactly the
+  // shape AWS rate-limits. Before the shared importTagWalk helper a single
+  // throttled DescribeCluster aborted the whole import run.
+  it('retries a throttled DescribeCluster mid-walk and still finds the match', async () => {
+    const throttled = new Error('Rate exceeded') as Error & {
+      name: string;
+      $metadata: { httpStatusCode: number };
+    };
+    throttled.name = 'ThrottlingException';
+    throttled.$metadata = { httpStatusCode: 400 };
+
+    routeSend({
+      ListClustersCommand: { Clusters: [{ Id: CLUSTER_ID }] },
+      DescribeClusterCommand: [
+        throttled,
+        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] }),
+      ],
+    });
+
+    const result = await newProvider().import(importInput());
+
+    expect(result?.physicalId).toBe(CLUSTER_ID);
+    expect(callsOf(DescribeClusterCommand)).toHaveLength(2);
+  });
+
+  it('does not retry a non-throttling DescribeCluster error during the walk', async () => {
+    const denied = new Error('AccessDeniedException: nope') as Error & { name: string };
+    denied.name = 'AccessDeniedException';
+
+    routeSend({
+      ListClustersCommand: { Clusters: [{ Id: CLUSTER_ID }] },
+      DescribeClusterCommand: denied,
+    });
+
+    await expect(newProvider().import(importInput())).rejects.toThrow(/AccessDeniedException/);
+    expect(callsOf(DescribeClusterCommand)).toHaveLength(1);
+  });
+
   it('returns null when neither an explicit id nor a cdkPath is available', async () => {
     routeSend({});
     const result = await newProvider().import(importInput({ cdkPath: '' }));

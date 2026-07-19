@@ -14,7 +14,12 @@
  *      tag — every CDK-deployed resource carries one.
  *
  * Step 1 + 2 are generic enough to live here. Step 3 needs per-service
- * `List*` + `ListTags*` calls and lives in each provider.
+ * `List*` + `ListTags*` calls, so the CALLS live in each provider — but the
+ * loop around them (pagination, per-candidate describe, tag match, and the
+ * throttle backoff the N+1 read burst needs) is shared in
+ * `./import-tag-walk.ts`. Providers whose tag API does not fit that helper's
+ * callback shape keep their own loop and may reuse its `isThrottlingLikeError`
+ * classifier directly.
  */
 
 import type { ResourceImportInput } from '../types/resource.js';
