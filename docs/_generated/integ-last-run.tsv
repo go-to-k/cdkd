@@ -243,6 +243,5 @@ codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+dri
 codecommit	2026-07-18T19:00:09Z	PASS	150	verify.sh	issue #1065 drift (post-rebase re-run, mid-read guard); 3 phases + drift round-trip clean 0 orphans
 emr-cluster	2026-07-19T08:46:11Z	PASS	528	verify.sh	issue #1069 import(): deploy+in-place-update+destroy clean, 12 deleted 0 errors, cluster TERMINATED, 0 orphans
 fsx-openzfs	2026-07-19T10:17:23Z	PASS	1310	verify.sh	issue #1068 OpenZFS variant: deploy+update(ThroughputCapacity 64->128, tag removal)+destroy clean, filesystem GONE, 0 orphans
-bench-cdk-sample	2026-07-19T10:40:06Z	PASS	340	standard	integ-broad for #1085 FSx variants; 39 created/deleted, 0 errors; log groups swept by orchestrator
 bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
