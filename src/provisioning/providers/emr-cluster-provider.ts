@@ -982,7 +982,7 @@ export class EMRClusterProvider implements ResourceProvider {
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, null);
     if (explicit) {
-      const cluster = await this.describeClusterOrNull(explicit);
+      const cluster = await this.describeClusterOrUndefined(explicit);
       // A cluster that has aged out of DescribeCluster (returns null) or that
       // is already terminated is not adoptable — report not-found so the
       // import command marks it skipped rather than writing dead state.
@@ -1005,7 +1005,7 @@ export class EMRClusterProvider implements ResourceProvider {
         return { items: list.Clusters, nextMarker: list.Marker };
       },
       describe: async (summary) =>
-        summary.Id ? await this.describeClusterOrNull(summary.Id) : undefined,
+        summary.Id ? await this.describeClusterOrUndefined(summary.Id) : undefined,
       tagsOf: (cluster) => cluster.Tags,
     });
     if (!match) return null;
@@ -1017,11 +1017,20 @@ export class EMRClusterProvider implements ResourceProvider {
 
   /**
    * `DescribeCluster` that maps a not-found (`InvalidRequestException` — the
-   * cluster id is unknown in this region / aged out of Describe) to `null`
-   * instead of throwing, so `import()` can treat it as "no match" rather than
-   * aborting the whole adoption run.
+   * cluster id is unknown in this region / aged out of Describe) to
+   * `undefined` instead of throwing, so `import()` can treat it as "no match"
+   * rather than aborting the whole adoption run.
+   *
+   * `undefined`, NOT `null`, is load-bearing: `importTagWalk` skips a candidate
+   * on `detail === undefined`, and an actual `null` would flow into `tagsOf`
+   * and `TypeError`. Also note the mapping is BROAD — `InvalidRequestException`
+   * covers more than not-found, so a genuine failure here degrades to "no
+   * match" and a subsequent deploy would CREATE a duplicate cluster rather than
+   * adopt the existing one. The walk logs each skip at debug so the case is at
+   * least visible under `--verbose`; narrowing the mapping needs a
+   * message/code-level discriminator AWS does not currently document.
    */
-  private async describeClusterOrNull(clusterId: string): Promise<Cluster | undefined> {
+  private async describeClusterOrUndefined(clusterId: string): Promise<Cluster | undefined> {
     try {
       const resp = await this.getClient().send(
         new DescribeClusterCommand({ ClusterId: clusterId })
@@ -1070,7 +1079,7 @@ export class EMRClusterProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | undefined> {
-    const cluster = await this.describeClusterOrNull(physicalId);
+    const cluster = await this.describeClusterOrUndefined(physicalId);
     if (!cluster) return undefined;
 
     let instanceGroups: InstanceGroup[] = [];

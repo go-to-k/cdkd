@@ -169,6 +169,23 @@ describe('EMRInstanceGroupConfigProvider create', () => {
     );
   });
 
+  // Issue #1092 item 2, group half: SUSPENDED IS a valid InstanceGroupState (a
+  // resize that could not complete — instances keep running but AWS can add or
+  // remove none), so the wait must fail fast rather than poll to maxWaitMs.
+  // Symmetric with the instance-fleet provider's SUSPENDED test.
+  it('fails fast when the group enters SUSPENDED (resize could not complete)', async () => {
+    routeSend({
+      AddInstanceGroupsCommand: { InstanceGroupIds: [GROUP_ID] },
+      ListInstanceGroupsCommand: groupOf('SUSPENDED', 0),
+    });
+    // The error must carry the service's own state-change reason.
+    await expect(
+      newProvider({ maxWaitMs: 60_000 }).create('Grp', RESOURCE_TYPE, BASE_PROPS)
+    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    // Fail-fast means ONE poll, not a spin until the vitest timeout fires.
+    expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(1);
+  });
+
   it('times out when the group never reaches RUNNING', async () => {
     routeSend({
       AddInstanceGroupsCommand: { InstanceGroupIds: [GROUP_ID] },

@@ -34,14 +34,21 @@ const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const READY_STATES: ReadonlySet<InstanceGroupState> = new Set<InstanceGroupState>(['RUNNING']);
 
 /**
- * Instance-group states that mean "the group is gone / failed" — a hard
- * error during a create/resize wait (an ARRESTED group failed to provision;
- * TERMINATED/ENDED mean it will never reach RUNNING).
+ * Instance-group states that mean "the group will never reach the requested
+ * size" — a hard error during a create/resize wait.
+ *
+ * `ARRESTED` means the group failed to provision; `TERMINATED`/`ENDED` mean it
+ * is gone. `SUSPENDED` means a resize could not complete: the existing
+ * instances keep running but AWS can no longer add or remove any, so the wait
+ * would poll to the full `maxWaitMs` timeout instead of failing fast with the
+ * service's own state-change reason — the exact defect fixed on the
+ * instance-fleet side in issue #1092 item 2, which applies verbatim here.
  */
 const FAILED_STATES: ReadonlySet<InstanceGroupState> = new Set<InstanceGroupState>([
   'ARRESTED',
-  'TERMINATED',
   'ENDED',
+  'SUSPENDED',
+  'TERMINATED',
 ]);
 
 const toNumber = (v: unknown): number | undefined => {

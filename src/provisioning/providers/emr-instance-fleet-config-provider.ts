@@ -39,8 +39,12 @@ const READY_STATES: ReadonlySet<InstanceFleetState> = new Set<InstanceFleetState
  * `TERMINATED` means the fleet is gone. `SUSPENDED` means a resize could not
  * complete: the existing instances keep running but AWS can no longer add or
  * remove any, so the wait would poll to the full `maxWaitMs` timeout instead of
- * failing fast with the service's own state-change reason. Mirrors the
- * instance-group provider's ARRESTED/TERMINATED/ENDED set (issue #1092 item 2).
+ * failing fast with the service's own state-change reason (issue #1092 item 2).
+ *
+ * This is the fleet-state ANALOGUE of the instance-group provider's failed set,
+ * not a copy of it: the two enums differ. `ARRESTED` and `ENDED` are
+ * `InstanceGroupState` members that do not exist for fleets, so `TERMINATED` is
+ * the only state the two sets share.
  */
 const FAILED_STATES: ReadonlySet<InstanceFleetState> = new Set<InstanceFleetState>([
   'SUSPENDED',
