@@ -138,12 +138,13 @@ parsing → synthesis → asset publishing → per-stack deploy), see
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
-- **AWS CDK Bootstrap: not required.** `cdkd bootstrap` (once per account) creates
-  everything cdkd needs, and per-region asset storage is added automatically on the
-  first `cdkd deploy` into each region. Existing setups, legacy-mode opt-outs, and
-  how this relates to `cdk bootstrap`: see
-  [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
 - **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
+
+AWS CDK's `cdk bootstrap` is not required. Instead, run `cdkd bootstrap` once per
+account: it creates everything cdkd needs, and per-region asset storage is added
+automatically on the first `cdkd deploy` into each region. Existing setups,
+legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
+[Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
 
 ## Installation
 
