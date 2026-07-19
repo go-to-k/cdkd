@@ -161,6 +161,31 @@ backup_ids_for_fs() {
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
+# AWS OMITS AutomaticBackupRetentionDays from DescribeFileSystems when
+# automatic backups are disabled, rather than echoing 0 — and the CLI
+# renders the absent field as "None". This was observed live on the ONTAP
+# variant (2026-07-20): retention AND DailyAutomaticBackupStartTime both
+# came back absent, while a sibling property in the same config block
+# (WeeklyMaintenanceStartTime) came back set, and describe-backups for the
+# file system returned zero backups.
+#
+# The Windows variant was NOT observed live, so this does not assume
+# symmetry with ONTAP — it accepts BOTH spellings, which is correct
+# whichever way the Windows API serializes it. What was verified for
+# Windows specifically: the field is optional in WindowsFileSystem-
+# Configuration (so omission is representable), and the create-time default
+# is 30 — so a template that failed to carry the property would report 30,
+# which this still rejects. The check keeps its regression-detection power.
+assert_backups_disabled() {
+  case "$1" in
+    None | none | null | "" | 0) return 0 ;;
+    *)
+      echo "FAIL: expected automatic backups DISABLED (absent or 0), got '$1'" >&2
+      return 1
+      ;;
+  esac
+}
+
 delete_backups_for_fs() {
   local bid
   for bid in $(backup_ids_for_fs "$1"); do
@@ -392,8 +417,14 @@ if [ "${THROUGHPUT_P3}" != "8" ]; then
   echo "FAIL: Phase 3 expected ThroughputCapacity 8, got '${THROUGHPUT_P3}'" >&2
   exit 1
 fi
-if [ "${RETENTION_P3}" != "0" ]; then
-  echo "FAIL: Phase 3 expected AutomaticBackupRetentionDays 0 (no chargeable backups), got '${RETENTION_P3}'" >&2
+assert_backups_disabled "${RETENTION_P3}" || exit 1
+
+# The retention field is only a PROXY. The invariant that actually costs
+# money is "no backup exists for this file system" — assert that directly,
+# keyed on FileSystemId (backups carry no fixture tags).
+BACKUPS_P3="$(backup_ids_for_fs "${FS_ID_P3}")"
+if [ -n "${BACKUPS_P3}" ]; then
+  echo "FAIL: Phase 3 expected no backups for ${FS_ID_P3}, found: ${BACKUPS_P3}" >&2
   exit 1
 fi
 if [ "${MAINT_P3}" != "1:05:00" ]; then

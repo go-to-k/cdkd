@@ -39,8 +39,9 @@ the CloudFormation schema — the service constraints are stricter):
 1. **Deploy** the baseline file system and assert via
    `aws fsx describe-file-systems` that it is `AVAILABLE` with the
    templated config (SINGLE_AZ_1, 1024 GiB, `ThroughputCapacity: 128`,
-   `AutomaticBackupRetentionDays: 0`, `WeeklyMaintenanceStartTime:
-   1:05:00`), that the `ResourceARN` output (`Fn::GetAtt`) matches the
+   automatic backups disabled, `WeeklyMaintenanceStartTime: 1:05:00`),
+   that no backup exists for the file system, that the `ResourceARN`
+   output (`Fn::GetAtt`) matches the
    AWS-side value, and that state routes the resource via the SDK
    provider (`provisionedBy=sdk`). ONTAP file systems expose no top-level
    `DNSName` (their endpoints live under `OntapConfiguration.Endpoints`),
@@ -56,6 +57,18 @@ the CloudFormation schema — the service constraints are stricter):
    force-deletes any file system carrying the fixture's constant tag
    (`cdkd-integ=fsx-ontap`), and is armed on `INT` / `TERM` as well as
    `EXIT` so a Ctrl-C mid-run cannot leak it.
+
+### Asserting "backups are disabled"
+
+AWS **omits** `AutomaticBackupRetentionDays` from `DescribeFileSystems`
+when automatic backups are disabled rather than echoing `0`, and the AWS
+CLI renders the absent field as `None` (observed live on this fixture,
+2026-07-20). `verify.sh` therefore accepts absent-or-`0`. That costs
+nothing in rigour: the create-time default is **30**, so a template that
+failed to carry the property would report `30`, which is still rejected.
+The retention field is only a proxy anyway — the assertion that actually
+protects the bill is the `describe-backups` check keyed on
+`FileSystem.FileSystemId`.
 
 ### Final backups
 

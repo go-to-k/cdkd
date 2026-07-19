@@ -68,7 +68,8 @@ service constraints are stricter):
    `Active`.
 3. **Deploy** with `FSX_AD_ID` set → cdkd creates the AD-joined file
    system. Asserts `AVAILABLE`, `SINGLE_AZ_1` / `SSD` / 32 GiB / 8 MBps /
-   retention 0 / maintenance `1:05:00`, that
+   automatic backups disabled / maintenance `1:05:00`, that no backup
+   exists for the file system, that
    `WindowsConfiguration.ActiveDirectoryId` is the directory from phase
    2, that the `DNSName` / `ResourceARN` `Fn::GetAtt` outputs match AWS
    (and that `DNSName` sits under the fixture domain, which witnesses the
@@ -92,6 +93,21 @@ The cleanup trap runs the same teardown in the same order (file system →
 final backups → directory → VPC → state), and is armed on `INT` / `TERM`
 as well as `EXIT`, so a Ctrl-C or harness timeout mid-run cannot leak the
 two per-hour-billed resources.
+
+### Asserting "backups are disabled"
+
+AWS **omits** `AutomaticBackupRetentionDays` from `DescribeFileSystems`
+when automatic backups are disabled rather than echoing `0`, and the AWS
+CLI renders the absent field as `None`. This was observed live on the
+**ONTAP** variant (2026-07-20); the Windows variant has not been observed
+live, so `verify.sh` does not assume symmetry — it accepts absent-or-`0`,
+which is correct whichever way the Windows API serializes it. What *was*
+verified for Windows specifically: the field is optional in
+`WindowsFileSystemConfiguration` (so omission is representable) and the
+create-time default is **30**, so a template that failed to carry the
+property would report `30`, which is still rejected. The retention field
+is only a proxy anyway — the assertion that actually protects the bill is
+the `describe-backups` check keyed on `FileSystem.FileSystemId`.
 
 ### Final backups
 

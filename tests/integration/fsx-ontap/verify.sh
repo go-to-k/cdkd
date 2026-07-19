@@ -102,6 +102,28 @@ backup_ids_for_fs() {
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
+# AWS OMITS AutomaticBackupRetentionDays from DescribeFileSystems when
+# automatic backups are disabled, rather than echoing 0 — and the CLI
+# renders the absent field as "None". Observed live on ONTAP SINGLE_AZ_1
+# (2026-07-20): retention AND DailyAutomaticBackupStartTime both came back
+# absent, while a sibling property in the same config block
+# (WeeklyMaintenanceStartTime) came back set, and describe-backups for the
+# file system returned zero backups. The field is optional in every
+# variant's response shape, so treat absent and 0 as the same state.
+#
+# This does NOT weaken the regression the check exists for: the create-time
+# default is 30 for Windows, ONTAP and OpenZFS alike, so a template that
+# failed to carry the property would report 30 — which this still rejects.
+assert_backups_disabled() {
+  case "$1" in
+    None | none | null | "" | 0) return 0 ;;
+    *)
+      echo "FAIL: expected automatic backups DISABLED (absent or 0), got '$1'" >&2
+      return 1
+      ;;
+  esac
+}
+
 delete_backups_for_fs() {
   local bid
   for bid in $(backup_ids_for_fs "$1"); do
@@ -243,8 +265,14 @@ if [ "${THROUGHPUT_P1}" != "128" ]; then
   echo "FAIL: Phase 1 expected ThroughputCapacity 128, got '${THROUGHPUT_P1}'" >&2
   exit 1
 fi
-if [ "${RETENTION_P1}" != "0" ]; then
-  echo "FAIL: Phase 1 expected AutomaticBackupRetentionDays 0 (no chargeable backups), got '${RETENTION_P1}'" >&2
+assert_backups_disabled "${RETENTION_P1}" || exit 1
+
+# The retention field is only a PROXY. The invariant that actually costs
+# money is "no backup exists for this file system" — assert that directly,
+# keyed on FileSystemId (backups carry no fixture tags).
+BACKUPS_P1="$(backup_ids_for_fs "${FS_ID_P1}")"
+if [ -n "${BACKUPS_P1}" ]; then
+  echo "FAIL: Phase 1 expected no backups for ${FS_ID_P1}, found: ${BACKUPS_P1}" >&2
   exit 1
 fi
 if [ "${MAINT_P1}" != "1:05:00" ]; then
