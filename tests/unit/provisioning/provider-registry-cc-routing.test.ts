@@ -268,47 +268,59 @@ describe('ProviderRegistry.findAutoRouteHits', () => {
 });
 
 describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallback)', () => {
-  // AWS::FSx::FileSystem is the canonical case: its SDK provider
-  // deliberately leaves the Windows/ONTAP/OpenZFS config blocks unhandled
-  // (silent-drop entries in the generated coverage map), and Cloud Control
-  // has NO handlers for the type (NON_PROVISIONABLE in the CFn registry) —
-  // so the #614 auto-route is not viable and must become a clear pre-flight
-  // error. NOTE the enforcement mechanism is the provider's
-  // `disableCcApiFallback` opt-out (mirrored by `fsxStub` below), NOT
-  // `isNonProvisionable()` — the runtime Tier 3 set excludes SDK-covered
-  // types by design, so it returns false for this type once the provider is
-  // registered. The `isNonProvisionable` OR-branch in the guard covers only
-  // the mid-transition window before the coverage regen runs.
+  // AWS::FSx::FileSystem sets `disableCcApiFallback = true` (Cloud Control has
+  // NO handlers for the type — NON_PROVISIONABLE in the CFn registry) but, as
+  // of issue #1068, its SDK provider handles ALL four variant config blocks
+  // (Lustre / Windows / ONTAP / OpenZFS), so there are no silent-drop entries
+  // left to trip the guard — every variant template SDK-routes cleanly. The
+  // guard itself (a `disableCcApiFallback` provider whose template DOES carry
+  // a silent-drop property must fail pre-flight rather than CC-route) is
+  // exercised generically below via `pickSilentDropFixture()`.
   const FSX = 'AWS::FSx::FileSystem';
 
   const fsxStub = (): ResourceProvider =>
     ({ ...stubSdkProvider(), disableCcApiFallback: true }) as ResourceProvider;
 
-  it('getProviderFor throws a clear error instead of CC-routing a NON_PROVISIONABLE type', () => {
+  it('SDK-routes every FSx variant now that all config blocks are handled (issue #1068)', () => {
     const registry = new ProviderRegistry();
-    registry.register(FSX, fsxStub());
-    expect(() =>
-      registry.getProviderFor({
+    const provider = fsxStub();
+    registry.register(FSX, provider);
+    for (const [fileSystemType, block] of [
+      ['WINDOWS', 'WindowsConfiguration'],
+      ['ONTAP', 'OntapConfiguration'],
+      ['OPENZFS', 'OpenZFSConfiguration'],
+    ] as const) {
+      const decision = registry.getProviderFor({
         resourceType: FSX,
-        properties: { FileSystemType: 'WINDOWS', WindowsConfiguration: { ThroughputCapacity: 8 } },
-      })
-    ).toThrow(/cannot fall back to Cloud Control API/);
+        properties: { FileSystemType: fileSystemType, [block]: { ThroughputCapacity: 8 } },
+      });
+      expect(decision.provider).toBe(provider);
+      expect(decision.provisionedBy).toBe('sdk');
+    }
   });
 
-  it('validateResourceProperties rejects pre-flight with the property rationale and escape hatch', () => {
+  it('does not reject any FSx variant template pre-flight (no silent drops)', () => {
     const registry = new ProviderRegistry();
     registry.register(FSX, fsxStub());
     expect(() =>
       registry.validateResourceProperties([
         {
-          logicalId: 'Fs',
+          logicalId: 'Win',
           resourceType: FSX,
           properties: { FileSystemType: 'WINDOWS', WindowsConfiguration: { ThroughputCapacity: 8 } },
         },
+        {
+          logicalId: 'Ontap',
+          resourceType: FSX,
+          properties: { FileSystemType: 'ONTAP', OntapConfiguration: { DeploymentType: 'MULTI_AZ_1' } },
+        },
+        {
+          logicalId: 'Zfs',
+          resourceType: FSX,
+          properties: { FileSystemType: 'OPENZFS', OpenZFSConfiguration: { ThroughputCapacity: 64 } },
+        },
       ])
-    ).toThrow(
-      /Fs: AWS::FSx::FileSystem uses properties[\s\S]*WindowsConfiguration[\s\S]*--allow-unsupported-properties AWS::FSx::FileSystem:WindowsConfiguration/
-    );
+    ).not.toThrow();
   });
 
   it('does not throw for a Lustre-only FSx template (no silent drops)', () => {
@@ -332,28 +344,6 @@ describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallbac
           logicalId: 'Fs',
           resourceType: FSX,
           properties: { FileSystemType: 'LUSTRE', LustreConfiguration: {} },
-        },
-      ])
-    ).not.toThrow();
-  });
-
-  it('an --allow-unsupported-properties override still forces the SDK path (accepted drop)', () => {
-    const registry = new ProviderRegistry();
-    const provider = fsxStub();
-    registry.register(FSX, provider);
-    registry.allowUnsupportedProperties([`${FSX}:WindowsConfiguration`]);
-    const decision = registry.getProviderFor({
-      resourceType: FSX,
-      properties: { WindowsConfiguration: { ThroughputCapacity: 8 } },
-    });
-    expect(decision.provider).toBe(provider);
-    expect(decision.provisionedBy).toBe('sdk');
-    expect(() =>
-      registry.validateResourceProperties([
-        {
-          logicalId: 'Fs',
-          resourceType: FSX,
-          properties: { WindowsConfiguration: { ThroughputCapacity: 8 } },
         },
       ])
     ).not.toThrow();

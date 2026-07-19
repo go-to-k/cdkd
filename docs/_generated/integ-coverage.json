@@ -954,6 +954,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1026,6 +1027,9 @@
           "l2"
         ],
         "fsx-lustre": [
+          "l2"
+        ],
+        "fsx-openzfs": [
           "l2"
         ],
         "infra-security": [
@@ -1098,6 +1102,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1170,6 +1175,9 @@
           "l2"
         ],
         "fsx-lustre": [
+          "l2"
+        ],
+        "fsx-openzfs": [
           "l2"
         ],
         "infra-security": [
@@ -1264,6 +1272,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1336,6 +1345,9 @@
           "l2"
         ],
         "fsx-lustre": [
+          "l2"
+        ],
+        "fsx-openzfs": [
           "l2"
         ],
         "infra-security": [
@@ -1408,6 +1420,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1480,6 +1493,9 @@
           "l2"
         ],
         "fsx-lustre": [
+          "l2"
+        ],
+        "fsx-openzfs": [
           "l2"
         ],
         "infra-security": [
@@ -1694,6 +1710,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1766,6 +1783,9 @@
           "l2"
         ],
         "fsx-lustre": [
+          "l2"
+        ],
+        "fsx-openzfs": [
           "l2"
         ],
         "infra-security": [
@@ -1849,6 +1869,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -1923,6 +1944,9 @@
         "fsx-lustre": [
           "l2"
         ],
+        "fsx-openzfs": [
+          "l2"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -1993,6 +2017,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -2071,6 +2096,10 @@
           "l2",
           "literal"
         ],
+        "fsx-openzfs": [
+          "l2",
+          "literal"
+        ],
         "infra-security": [
           "l2"
         ],
@@ -2144,6 +2173,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fsx-lustre",
+        "fsx-openzfs",
         "infra-security",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
@@ -2216,6 +2246,9 @@
           "l2"
         ],
         "fsx-lustre": [
+          "l2"
+        ],
+        "fsx-openzfs": [
           "l2"
         ],
         "infra-security": [
@@ -2691,10 +2724,14 @@
     {
       "resourceType": "AWS::FSx::FileSystem",
       "integs": [
-        "fsx-lustre"
+        "fsx-lustre",
+        "fsx-openzfs"
       ],
       "signals": {
         "fsx-lustre": [
+          "literal"
+        ],
+        "fsx-openzfs": [
           "literal"
         ]
       }
