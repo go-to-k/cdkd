@@ -1,3 +1,10 @@
+# [0.248.0](https://github.com/go-to-k/cdkd/compare/v0.247.0...v0.248.0) (2026-07-19)
+
+
+### Features
+
+* **providers:** wire import() for AWS::EMR::Cluster (ListClusters + DescribeCluster) ([#1080](https://github.com/go-to-k/cdkd/issues/1080)) ([e9d935a](https://github.com/go-to-k/cdkd/commit/e9d935a78ce0a64e46a6770a163c4dd2078483dc))
+
 # [0.247.0](https://github.com/go-to-k/cdkd/compare/v0.246.0...v0.247.0) (2026-07-19)
 
 
