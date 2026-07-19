@@ -1,0 +1,27 @@
+{
+  "resourceType": "AWS::EMR::InstanceFleetConfig",
+  "generatedAt": "2026-07-19",
+  "properties": [
+    "ClusterId",
+    "Id",
+    "InstanceFleetType",
+    "InstanceTypeConfigs",
+    "LaunchSpecifications",
+    "Name",
+    "ResizeSpecifications",
+    "TargetOnDemandCapacity",
+    "TargetSpotCapacity"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "ClusterId",
+    "InstanceFleetType",
+    "LaunchSpecifications",
+    "Name"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

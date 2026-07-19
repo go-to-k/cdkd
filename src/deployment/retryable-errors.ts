@@ -170,6 +170,16 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // tolerates this via deployment latency; cdkd retries. Surfaced by
   // tests/integration/emr-cluster (fresh EMR default-role instance profile).
   'Invalid InstanceProfile',
+  // EMR RunJobFlow / AddInstanceGroups / AddInstanceFleet: the SAME
+  // just-created-instance-profile propagation race as `Invalid InstanceProfile`
+  // above, but EMR surfaces it with a DIFFERENT sentence when the profile
+  // exists yet its role membership has not propagated to EMR's authorization
+  // layer: `Failed to authorize instance profile <arn>.` (seen on the
+  // emr-instance-configs integ's fresh cluster create — the EC2 role +
+  // instance profile were created ~1s before RunJobFlow). Anchored on the
+  // full "Failed to authorize instance profile" phrasing so a genuinely
+  // mis-scoped profile only burns the bounded retries before surfacing.
+  'Failed to authorize instance profile',
   // CloudWatch Logs SubscriptionFilter: Kinesis stream eventual consistency
   // or SubscriptionFilter role propagation. CW Logs probes the destination
   // by delivering a test message; if the stream is freshly ACTIVE or the

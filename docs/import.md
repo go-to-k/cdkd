@@ -442,6 +442,14 @@ the SDK provider exists for create / update / delete / readCurrentState
 but has not yet been wired for `import()`. Track-able via a follow-up
 that adds tag-based auto-lookup over `DescribeAutoScalingGroups`.
 
+`AWS::EMR::InstanceGroupConfig` / `AWS::EMR::InstanceFleetConfig` are
+likewise currently unsupported for import — the SDK providers exist for
+create / update / delete but not `import()`. They are cluster
+sub-resources without a per-resource `aws:cdk:path` tag (they are listed
+via `ListInstanceGroups` / `ListInstanceFleets` under a parent
+`ClusterId`), so a future override-only `import()` keyed on the group /
+fleet id (`ig-XXXX` / `if-XXXX`) is the natural follow-up.
+
 ### Adding a new entry
 
 When adding `import()` support to a provider, add the resource type to

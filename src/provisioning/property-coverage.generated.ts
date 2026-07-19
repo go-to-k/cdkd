@@ -1401,6 +1401,41 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::EMR::InstanceFleetConfig',
+    {
+      handled: new Set<string>([
+        'ClusterId',
+        'InstanceFleetType',
+        'InstanceTypeConfigs',
+        'LaunchSpecifications',
+        'Name',
+        'ResizeSpecifications',
+        'TargetOnDemandCapacity',
+        'TargetSpotCapacity',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
+    'AWS::EMR::InstanceGroupConfig',
+    {
+      handled: new Set<string>([
+        'AutoScalingPolicy',
+        'BidPrice',
+        'Configurations',
+        'CustomAmiId',
+        'EbsConfiguration',
+        'InstanceCount',
+        'InstanceRole',
+        'InstanceType',
+        'JobFlowId',
+        'Market',
+        'Name',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::Events::EventBus',
     {
       handled: new Set<string>([

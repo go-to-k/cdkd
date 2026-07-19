@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 127,
-    "enriched": 5,
+    "classifiedCount": 129,
+    "enriched": 7,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 108,
-    "allowListedTypes": 11
+    "allowListedTypes": 13
   },
   "types": [
     {
@@ -1649,6 +1649,40 @@
       "gaps": [
         "MasterPublicDNS"
       ]
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceFleetConfig",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceGroupConfig",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
     },
     {
       "resourceType": "AWS::Events::EventBus",

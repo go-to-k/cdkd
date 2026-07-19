@@ -12,6 +12,8 @@
   "AWS::Glue::Connection": "drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise.",
   "AWS::Glue::Trigger": "drift coverage only; Trigger has DEACTIVATED-ACTIVATED state-machine semantics in update() that warrant a real-AWS integ — file follow-up.",
 
+  "AWS::EMR::InstanceFleetConfig": "A cluster's instance-collection type is fixed at create (instance groups XOR instance fleets), so a single cost-bounded EMR cluster cannot exercise both InstanceGroupConfig and InstanceFleetConfig. The emr-instance-configs integ covers InstanceGroupConfig (the CDK-default group-based case); InstanceFleetConfig is structurally identical (same AddInstanceFleet create-poll / no-standalone-delete / best-effort-scale-to-0-for-TASK design, different API) and is covered by unit tests. Add a fleet-based integ if a real-AWS fleet-specific bug surfaces.",
+
   "AWS::Kinesis::StreamConsumer": "immutable type (every property change replaces); unit roundtrip suffices. Add integ if a Lambda EFO consumer pattern bug surfaces.",
 
   "AWS::S3Tables::Namespace": "existing s3-tables integ exercises only TableBucket. Namespace + Table are sub-resources sharing the same provider; unit roundtrip + parent-bucket integ suffice for now.",

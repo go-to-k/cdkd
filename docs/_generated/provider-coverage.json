@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-18T01:57:04.040Z",
+  "generatedAt": "2026-07-19T10:05:46.370Z",
   "summary": {
-    "tier1Count": 127,
+    "tier1Count": 129,
     "tier2Count": 1352,
-    "tier3Count": 164,
+    "tier3Count": 162,
     "totalCount": 1643
   },
   "tier1": [
@@ -68,6 +68,8 @@
     "AWS::EFS::FileSystem",
     "AWS::EFS::MountTarget",
     "AWS::EMR::Cluster",
+    "AWS::EMR::InstanceFleetConfig",
+    "AWS::EMR::InstanceGroupConfig",
     "AWS::ElastiCache::CacheCluster",
     "AWS::ElastiCache::SubnetGroup",
     "AWS::ElasticLoadBalancingV2::Listener",
@@ -1534,8 +1536,6 @@
     "AWS::EC2::ClientVpnTargetNetworkAssociation",
     "AWS::EC2::NetworkInterfacePermission",
     "AWS::EC2::VPNGatewayRoutePropagation",
-    "AWS::EMR::InstanceFleetConfig",
-    "AWS::EMR::InstanceGroupConfig",
     "AWS::ElastiCache::SecurityGroup",
     "AWS::ElastiCache::SecurityGroupIngress",
     "AWS::ElasticLoadBalancingV2::ListenerCertificate",

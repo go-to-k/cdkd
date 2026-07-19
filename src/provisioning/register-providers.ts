@@ -66,6 +66,8 @@ import { SchedulerScheduleProvider } from './providers/scheduler-schedule-provid
 import { EFSProvider } from './providers/efs-provider.js';
 import { FSxFileSystemProvider } from './providers/fsx-filesystem-provider.js';
 import { EMRClusterProvider } from './providers/emr-cluster-provider.js';
+import { EMRInstanceGroupConfigProvider } from './providers/emr-instance-group-config-provider.js';
+import { EMRInstanceFleetConfigProvider } from './providers/emr-instance-fleet-config-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
 import { CodeBuildProvider } from './providers/codebuild-provider.js';
@@ -292,6 +294,16 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // step concurrency / managed-scaling / auto-termination / tags);
   // everything else is createOnly → replacement.
   registry.register('AWS::EMR::Cluster', new EMRClusterProvider());
+
+  // EMR InstanceGroupConfig / InstanceFleetConfig — also NON_PROVISIONABLE
+  // (issue #1070). These add a standalone instance group / fleet to an
+  // EXISTING cluster (referenced by JobFlowId / ClusterId) via
+  // AddInstanceGroups / AddInstanceFleet, with a limited mutable update
+  // surface (resize + config); delete has no standalone AWS API, so it is a
+  // no-op that relies on the parent cluster's TerminateJobFlows (best-effort
+  // scale-to-0 for TASK groups/fleets).
+  registry.register('AWS::EMR::InstanceGroupConfig', new EMRInstanceGroupConfigProvider());
+  registry.register('AWS::EMR::InstanceFleetConfig', new EMRInstanceFleetConfigProvider());
 
   // Firehose
   registry.register('AWS::KinesisFirehose::DeliveryStream', new FirehoseProvider());

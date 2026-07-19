@@ -769,6 +769,11 @@
       "scenarios": []
     },
     {
+      "name": "emr-instance-configs",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "event-driven",
       "annotated": true,
       "scenarios": []
