@@ -147,8 +147,6 @@ s3-object-lock	2026-06-27T16:08:39Z	PASS	46	verify.sh	Object Lock GOVERNANCE cre
 secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
 local-start-cloudfront	2026-06-27T16:36:59Z	PASS	5	verify.sh	local serve pipeline + watch + SPA fallback, no AWS
 custom-resource-provider	2026-06-27T16:56:19Z	PASS	293	standard	CR framework (onEvent/isComplete/waiter SFN); destroy 17 del 0 err
-microservices	2026-06-27T16:58:43Z	PASS	53	standard	2 lambda svc + SQS DLQ + SSM params; destroy 19 del 0 err
-multi-stack-deps	2026-06-27T17:02:31Z	PASS	62	standard	3 stacks Network/Data/App cross-stack refs; destroy 13 del total 0 err
 cross-stack-references	2026-06-27T17:37:40Z	PASS	25	standard	ImportValue strong-ref + Fn::GetStackOutput; 2 stacks destroy 0 err
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
@@ -251,3 +249,5 @@ export	2026-07-19T19:12:00Z	PASS	302	verify.sh	rc ok, CFn stack deleted, orph cl
 drift-revert	2026-07-19T19:15:52Z	PASS	93	verify.sh	rc ok, 13 deleted, orph clean
 drift-revert-vpc	2026-07-19T19:20:48Z	PASS	242	verify.sh	rc ok, 21 deleted, orph clean
 remove-protection	2026-07-19T19:44:06Z	PASS	1351	verify.sh	rc ok, 11 deleted, ASG orphan terminated, orph clean
+multi-stack-deps	2026-07-19T19:48:39Z	PASS	63	standard	rc ok, 3 stacks 13 res, all destroyed, orph clean
+microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
