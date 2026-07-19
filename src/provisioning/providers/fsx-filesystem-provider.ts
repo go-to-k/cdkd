@@ -24,6 +24,9 @@ import {
   type OpenZFSCreateRootVolumeConfiguration,
   type OpenZFSUserOrGroupQuota,
   type OpenZFSReadCacheConfiguration,
+  type WindowsFileSystemConfiguration,
+  type OntapFileSystemConfiguration,
+  type OpenZFSFileSystemConfiguration,
   type FileSystem,
   type FileSystemType,
   type StorageType,
@@ -140,11 +143,43 @@ const VARIANT_CONFIG_KEY: Record<string, string> = {
   OPENZFS: 'OpenZFSConfiguration',
 };
 
-const VARIANT_MUTABLE_SUBPROPS: Record<string, ReadonlySet<string>> = {
+/**
+ * Identity of the resource + variant block an `apply*UpdateField` call is
+ * mapping, carried so the unreachable-`default:` guard can name the exact
+ * missing mapping (see {@link FSxFileSystemProvider.unmappedMutableSubprop}).
+ */
+interface VariantFieldContext {
+  resourceType: string;
+  logicalId: string;
+  configKey: string;
+}
+
+/**
+ * Exported so a unit test can assert every declared-mutable sub-property has
+ * a matching `apply*UpdateField` case — the invariant the unreachable
+ * `default:` guard enforces at runtime.
+ */
+export const VARIANT_MUTABLE_SUBPROPS: Record<string, ReadonlySet<string>> = {
   LustreConfiguration: LUSTRE_MUTABLE_SUBPROPS,
   WindowsConfiguration: WINDOWS_MUTABLE_SUBPROPS,
   OntapConfiguration: ONTAP_MUTABLE_SUBPROPS,
   OpenZFSConfiguration: OPENZFS_MUTABLE_SUBPROPS,
+};
+
+/**
+ * Copy `value` into `target[key]` only when AWS actually returned it, so the
+ * snapshot carries no `undefined`-valued keys.
+ *
+ * The drift comparator walks the BASELINE's keys (`observedProperties`, or
+ * `properties` when a resource predates observed-capture), not the AWS side —
+ * so an omitted key here is not itself phantom drift. It matters because this
+ * snapshot BECOMES the next baseline: `deploy-engine` stores it as
+ * `observedProperties`, and an explicit `Foo: undefined` would then be walked
+ * as a real key on every later comparison. Omitting is also what keeps the
+ * emitted shape a faithful subset of the CFn input shape.
+ */
+const putIfDefined = (target: Record<string, unknown>, key: string, value: unknown): void => {
+  if (value !== undefined) target[key] = value;
 };
 
 /**
@@ -939,14 +974,15 @@ export class FSxFileSystemProvider implements ResourceProvider {
           `AWS FSx FileSystem ${configKey}.${key} is immutable on AWS — UpdateFileSystem cannot change it after creation. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
         );
       }
+      const ctx: VariantFieldContext = { resourceType, logicalId, configKey };
       const applied =
         configKey === 'LustreConfiguration'
-          ? this.applyLustreUpdateField(key, nextVal, diff)
+          ? this.applyLustreUpdateField(ctx, key, nextVal, diff)
           : configKey === 'WindowsConfiguration'
-            ? this.applyWindowsUpdateField(key, nextVal, diff)
+            ? this.applyWindowsUpdateField(ctx, key, nextVal, diff)
             : configKey === 'OntapConfiguration'
-              ? this.applyOntapUpdateField(key, nextVal, prevVal, diff)
-              : this.applyOpenZFSUpdateField(key, nextVal, prevVal, diff);
+              ? this.applyOntapUpdateField(ctx, key, nextVal, prevVal, diff)
+              : this.applyOpenZFSUpdateField(ctx, key, nextVal, prevVal, diff);
       // A pure RouteTableIds reorder yields no Add/Remove delta — do not
       // trigger a no-op UpdateFileSystem call for it.
       if (applied) hasMutableDiff = true;
@@ -954,7 +990,24 @@ export class FSxFileSystemProvider implements ResourceProvider {
     return { diff, hasMutableDiff };
   }
 
+  /**
+   * A sub-property listed in a `*_MUTABLE_SUBPROPS` set with no matching
+   * `apply*UpdateField` case. Reaching here is a cdkd bug, not user error:
+   * `computeVariantConfigDiff` already accepted the key as mutable, so
+   * falling through would issue a no-op `UpdateFileSystem` (`hasMutableDiff`
+   * true, empty diff) and silently drop the user's change. Fail loudly
+   * instead so the missing mapping surfaces the moment it is added.
+   */
+  private unmappedMutableSubprop(ctx: VariantFieldContext, key: string): never {
+    throw new ProvisioningError(
+      `AWS FSx FileSystem ${ctx.configKey}.${key} is declared mutable but has no UpdateFileSystem mapping in cdkd. This is a cdkd bug — please report it at https://github.com/go-to-k/cdkd/issues`,
+      ctx.resourceType,
+      ctx.logicalId
+    );
+  }
+
   private applyLustreUpdateField(
+    ctx: VariantFieldContext,
     key: string,
     next: unknown,
     diff: Record<string, unknown>
@@ -994,11 +1047,14 @@ export class FSxFileSystemProvider implements ResourceProvider {
           : undefined;
         break;
       }
+      default:
+        this.unmappedMutableSubprop(ctx, key);
     }
     return true;
   }
 
   private applyWindowsUpdateField(
+    ctx: VariantFieldContext,
     key: string,
     next: unknown,
     diff: Record<string, unknown>
@@ -1033,11 +1089,14 @@ export class FSxFileSystemProvider implements ResourceProvider {
           next as Record<string, unknown> | undefined
         );
         break;
+      default:
+        this.unmappedMutableSubprop(ctx, key);
     }
     return true;
   }
 
   private applyOntapUpdateField(
+    ctx: VariantFieldContext,
     key: string,
     next: unknown,
     prev: unknown,
@@ -1068,11 +1127,14 @@ export class FSxFileSystemProvider implements ResourceProvider {
         if (remove) out.RemoveRouteTableIds = remove;
         return add !== undefined || remove !== undefined;
       }
+      default:
+        this.unmappedMutableSubprop(ctx, key);
     }
     return true;
   }
 
   private applyOpenZFSUpdateField(
+    ctx: VariantFieldContext,
     key: string,
     next: unknown,
     prev: unknown,
@@ -1109,6 +1171,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
         if (remove) out.RemoveRouteTableIds = remove;
         return add !== undefined || remove !== undefined;
       }
+      default:
+        this.unmappedMutableSubprop(ctx, key);
     }
     return true;
   }
@@ -1462,28 +1526,186 @@ export class FSxFileSystemProvider implements ResourceProvider {
     }
   }
 
+  // ─── readCurrentState variant reverse-mappers ──────────────────────
+  //
+  // Each maps a `DescribeFileSystems` variant block back to the flat CFn
+  // `*Configuration` input shape cdkd stores in state. Read-only fields the
+  // template never carries (`Endpoints`, `RootVolumeId`, `EndpointIpAddress`,
+  // `RemoteAdministrationEndpoint`, `PreferredFileServerIp`,
+  // `MaintenanceOperationsInProgress`) are deliberately NOT mapped — surfacing
+  // them would add AWS-only keys the state baseline can never match. Inputs
+  // AWS does not return at all stay in `getDriftUnknownPaths`.
+
+  /** Map the read-side `WindowsConfiguration` back to CFn input shape. */
+  private readWindowsConfiguration(
+    windows: WindowsFileSystemConfiguration
+  ): Record<string, unknown> {
+    const config: Record<string, unknown> = {};
+    putIfDefined(config, 'ActiveDirectoryId', windows.ActiveDirectoryId);
+    putIfDefined(config, 'DeploymentType', windows.DeploymentType);
+    putIfDefined(config, 'PreferredSubnetId', windows.PreferredSubnetId);
+    putIfDefined(config, 'ThroughputCapacity', windows.ThroughputCapacity);
+    putIfDefined(config, 'WeeklyMaintenanceStartTime', windows.WeeklyMaintenanceStartTime);
+    putIfDefined(config, 'DailyAutomaticBackupStartTime', windows.DailyAutomaticBackupStartTime);
+    putIfDefined(config, 'AutomaticBackupRetentionDays', windows.AutomaticBackupRetentionDays);
+    putIfDefined(config, 'CopyTagsToBackups', windows.CopyTagsToBackups);
+
+    // CFn takes Aliases as a plain name list; the API returns objects
+    // carrying a per-alias lifecycle state.
+    if (windows.Aliases !== undefined) {
+      config['Aliases'] = windows.Aliases.map((alias) => alias.Name).filter(
+        (name): name is string => name !== undefined
+      );
+    }
+
+    if (windows.SelfManagedActiveDirectoryConfiguration) {
+      const ad = windows.SelfManagedActiveDirectoryConfiguration;
+      const adConfig: Record<string, unknown> = {};
+      putIfDefined(adConfig, 'DomainName', ad.DomainName);
+      putIfDefined(
+        adConfig,
+        'OrganizationalUnitDistinguishedName',
+        ad.OrganizationalUnitDistinguishedName
+      );
+      putIfDefined(adConfig, 'FileSystemAdministratorsGroup', ad.FileSystemAdministratorsGroup);
+      putIfDefined(adConfig, 'UserName', ad.UserName);
+      putIfDefined(adConfig, 'DnsIps', ad.DnsIps ? [...ad.DnsIps] : undefined);
+      putIfDefined(adConfig, 'DomainJoinServiceAccountSecret', ad.DomainJoinServiceAccountSecret);
+      // `Password` is write-only — never returned (see getDriftUnknownPaths).
+      if (Object.keys(adConfig).length > 0) {
+        config['SelfManagedActiveDirectoryConfiguration'] = adConfig;
+      }
+    }
+
+    if (windows.AuditLogConfiguration) {
+      const audit: Record<string, unknown> = {};
+      putIfDefined(
+        audit,
+        'FileAccessAuditLogLevel',
+        windows.AuditLogConfiguration.FileAccessAuditLogLevel
+      );
+      putIfDefined(
+        audit,
+        'FileShareAccessAuditLogLevel',
+        windows.AuditLogConfiguration.FileShareAccessAuditLogLevel
+      );
+      putIfDefined(audit, 'AuditLogDestination', windows.AuditLogConfiguration.AuditLogDestination);
+      if (Object.keys(audit).length > 0) config['AuditLogConfiguration'] = audit;
+    }
+
+    const diskIops = this.readDiskIopsConfiguration(windows.DiskIopsConfiguration);
+    if (diskIops) config['DiskIopsConfiguration'] = diskIops;
+
+    if (windows.FsrmConfiguration) {
+      const fsrm: Record<string, unknown> = {};
+      putIfDefined(fsrm, 'FsrmServiceEnabled', windows.FsrmConfiguration.FsrmServiceEnabled);
+      putIfDefined(fsrm, 'EventLogDestination', windows.FsrmConfiguration.EventLogDestination);
+      if (Object.keys(fsrm).length > 0) config['FsrmConfiguration'] = fsrm;
+    }
+
+    return config;
+  }
+
+  /** Map the read-side `OntapConfiguration` back to CFn input shape. */
+  private readOntapConfiguration(ontap: OntapFileSystemConfiguration): Record<string, unknown> {
+    const config: Record<string, unknown> = {};
+    putIfDefined(config, 'DeploymentType', ontap.DeploymentType);
+    putIfDefined(config, 'AutomaticBackupRetentionDays', ontap.AutomaticBackupRetentionDays);
+    putIfDefined(config, 'DailyAutomaticBackupStartTime', ontap.DailyAutomaticBackupStartTime);
+    putIfDefined(config, 'WeeklyMaintenanceStartTime', ontap.WeeklyMaintenanceStartTime);
+    putIfDefined(config, 'EndpointIpAddressRange', ontap.EndpointIpAddressRange);
+    putIfDefined(config, 'PreferredSubnetId', ontap.PreferredSubnetId);
+    putIfDefined(config, 'ThroughputCapacity', ontap.ThroughputCapacity);
+    putIfDefined(config, 'ThroughputCapacityPerHAPair', ontap.ThroughputCapacityPerHAPair);
+    putIfDefined(config, 'HAPairs', ontap.HAPairs);
+    putIfDefined(
+      config,
+      'RouteTableIds',
+      ontap.RouteTableIds ? [...ontap.RouteTableIds] : undefined
+    );
+    putIfDefined(config, 'EndpointIpv6AddressRange', ontap.EndpointIpv6AddressRange);
+    // `FsxAdminPassword` is write-only — the API never echoes it back (see
+    // getDriftUnknownPaths).
+
+    const diskIops = this.readDiskIopsConfiguration(ontap.DiskIopsConfiguration);
+    if (diskIops) config['DiskIopsConfiguration'] = diskIops;
+
+    return config;
+  }
+
+  /** Map the read-side `OpenZFSConfiguration` back to CFn input shape. */
+  private readOpenZFSConfiguration(
+    openzfs: OpenZFSFileSystemConfiguration
+  ): Record<string, unknown> {
+    const config: Record<string, unknown> = {};
+    putIfDefined(config, 'DeploymentType', openzfs.DeploymentType);
+    putIfDefined(config, 'AutomaticBackupRetentionDays', openzfs.AutomaticBackupRetentionDays);
+    putIfDefined(config, 'CopyTagsToBackups', openzfs.CopyTagsToBackups);
+    putIfDefined(config, 'CopyTagsToVolumes', openzfs.CopyTagsToVolumes);
+    putIfDefined(config, 'DailyAutomaticBackupStartTime', openzfs.DailyAutomaticBackupStartTime);
+    putIfDefined(config, 'WeeklyMaintenanceStartTime', openzfs.WeeklyMaintenanceStartTime);
+    putIfDefined(config, 'ThroughputCapacity', openzfs.ThroughputCapacity);
+    putIfDefined(config, 'PreferredSubnetId', openzfs.PreferredSubnetId);
+    putIfDefined(config, 'EndpointIpAddressRange', openzfs.EndpointIpAddressRange);
+    putIfDefined(
+      config,
+      'RouteTableIds',
+      openzfs.RouteTableIds ? [...openzfs.RouteTableIds] : undefined
+    );
+    putIfDefined(config, 'EndpointIpv6AddressRange', openzfs.EndpointIpv6AddressRange);
+    // RootVolumeConfiguration lives on the root VOLUME (DescribeFileSystems
+    // returns only its id) — it stays in getDriftUnknownPaths.
+
+    const diskIops = this.readDiskIopsConfiguration(openzfs.DiskIopsConfiguration);
+    if (diskIops) config['DiskIopsConfiguration'] = diskIops;
+
+    if (openzfs.ReadCacheConfiguration) {
+      const readCache: Record<string, unknown> = {};
+      putIfDefined(readCache, 'SizingMode', openzfs.ReadCacheConfiguration.SizingMode);
+      putIfDefined(readCache, 'SizeGiB', openzfs.ReadCacheConfiguration.SizeGiB);
+      if (Object.keys(readCache).length > 0) config['ReadCacheConfiguration'] = readCache;
+    }
+
+    return config;
+  }
+
+  /** Shared `DiskIopsConfiguration` reverse-mapper (Windows / ONTAP / OpenZFS). */
+  private readDiskIopsConfiguration(
+    diskIops: DiskIopsConfiguration | undefined
+  ): Record<string, unknown> | undefined {
+    if (!diskIops) return undefined;
+    const out: Record<string, unknown> = {};
+    putIfDefined(out, 'Mode', diskIops.Mode);
+    putIfDefined(out, 'Iops', diskIops.Iops);
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
   /**
    * State property paths this provider cannot read back from AWS:
    *  - `SecurityGroupIds` — `DescribeFileSystems` returns network
    *    interface ids, never the original security group list.
    *  - `BackupId` — creation-source input, not surfaced on the deployed
    *    file system.
-   *  - `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration`
-   *    — `readCurrentState` maps only the Lustre block back to CFn shape
-   *    today, so drift on the non-Lustre variant blocks is not yet computed;
-   *    marking them unknown avoids a guaranteed false positive on every run
-   *    (variant-config drift is a follow-up). Only the block matching the
-   *    file system's type is ever present in state, so listing all three is
-   *    harmless.
+   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`
+   *    / `OntapConfiguration.FsxAdminPassword` — write-only credentials; the
+   *    API never echoes them back.
+   *  - `OpenZFSConfiguration.RootVolumeConfiguration` — configured on the
+   *    root VOLUME, not the file system; `DescribeFileSystems` returns only
+   *    `RootVolumeId`, so reading it back would need a separate
+   *    `DescribeVolumes` call (out of scope here).
+   *
+   * The whole-block `WindowsConfiguration` / `OntapConfiguration` /
+   * `OpenZFSConfiguration` entries are gone as of the variant reverse-mappers
+   * — only the individually-unreadable leaves above stay unknown.
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::FSx::FileSystem') return [];
     return [
       'SecurityGroupIds',
       'BackupId',
-      'WindowsConfiguration',
-      'OntapConfiguration',
-      'OpenZFSConfiguration',
+      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
+      'OntapConfiguration.FsxAdminPassword',
+      'OpenZFSConfiguration.RootVolumeConfiguration',
     ];
   }
 
@@ -1492,7 +1714,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * via `DescribeFileSystems`. Lustre data-repository fields (`ImportPath`
    * / `ExportPath` / `AutoImportPolicy` / `ImportedFileChunkSize`) are
    * mapped back from the nested `DataRepositoryConfiguration` the API
-   * returns. Returns `undefined` when the file system is gone.
+   * returns. The Windows / ONTAP / OpenZFS variant blocks are reverse-mapped
+   * by their respective `read*Configuration` helpers; the few inputs AWS
+   * never returns stay listed in {@link getDriftUnknownPaths}. At most one
+   * variant block is ever present (they key off `FileSystemType`).
+   * Returns `undefined` when the file system is gone.
    */
   async readCurrentState(
     physicalId: string,
@@ -1514,77 +1740,65 @@ export class FSxFileSystemProvider implements ResourceProvider {
     if (!fs) return undefined;
 
     const result: Record<string, unknown> = {};
-    if (fs.FileSystemType !== undefined) result['FileSystemType'] = fs.FileSystemType;
-    if (fs.StorageCapacity !== undefined) result['StorageCapacity'] = fs.StorageCapacity;
-    if (fs.StorageType !== undefined) result['StorageType'] = fs.StorageType;
-    if (fs.SubnetIds !== undefined) result['SubnetIds'] = [...fs.SubnetIds];
-    if (fs.KmsKeyId !== undefined) result['KmsKeyId'] = fs.KmsKeyId;
-    if (fs.FileSystemTypeVersion !== undefined) {
-      result['FileSystemTypeVersion'] = fs.FileSystemTypeVersion;
-    }
-    if (fs.NetworkType !== undefined) result['NetworkType'] = fs.NetworkType;
+    putIfDefined(result, 'FileSystemType', fs.FileSystemType);
+    putIfDefined(result, 'StorageCapacity', fs.StorageCapacity);
+    putIfDefined(result, 'StorageType', fs.StorageType);
+    putIfDefined(result, 'SubnetIds', fs.SubnetIds ? [...fs.SubnetIds] : undefined);
+    putIfDefined(result, 'KmsKeyId', fs.KmsKeyId);
+    putIfDefined(result, 'FileSystemTypeVersion', fs.FileSystemTypeVersion);
+    putIfDefined(result, 'NetworkType', fs.NetworkType);
 
     const lustre = fs.LustreConfiguration;
     if (lustre) {
       const config: Record<string, unknown> = {};
-      if (lustre.WeeklyMaintenanceStartTime !== undefined) {
-        config['WeeklyMaintenanceStartTime'] = lustre.WeeklyMaintenanceStartTime;
-      }
-      if (lustre.DeploymentType !== undefined) config['DeploymentType'] = lustre.DeploymentType;
-      if (lustre.PerUnitStorageThroughput !== undefined) {
-        config['PerUnitStorageThroughput'] = lustre.PerUnitStorageThroughput;
-      }
-      if (lustre.DailyAutomaticBackupStartTime !== undefined) {
-        config['DailyAutomaticBackupStartTime'] = lustre.DailyAutomaticBackupStartTime;
-      }
-      if (lustre.AutomaticBackupRetentionDays !== undefined) {
-        config['AutomaticBackupRetentionDays'] = lustre.AutomaticBackupRetentionDays;
-      }
-      if (lustre.CopyTagsToBackups !== undefined) {
-        config['CopyTagsToBackups'] = lustre.CopyTagsToBackups;
-      }
-      if (lustre.DriveCacheType !== undefined) config['DriveCacheType'] = lustre.DriveCacheType;
-      if (lustre.DataCompressionType !== undefined) {
-        config['DataCompressionType'] = lustre.DataCompressionType;
-      }
-      if (lustre.EfaEnabled !== undefined) config['EfaEnabled'] = lustre.EfaEnabled;
-      if (lustre.ThroughputCapacity !== undefined) {
-        config['ThroughputCapacity'] = lustre.ThroughputCapacity;
-      }
+      putIfDefined(config, 'WeeklyMaintenanceStartTime', lustre.WeeklyMaintenanceStartTime);
+      putIfDefined(config, 'DeploymentType', lustre.DeploymentType);
+      putIfDefined(config, 'PerUnitStorageThroughput', lustre.PerUnitStorageThroughput);
+      putIfDefined(config, 'DailyAutomaticBackupStartTime', lustre.DailyAutomaticBackupStartTime);
+      putIfDefined(config, 'AutomaticBackupRetentionDays', lustre.AutomaticBackupRetentionDays);
+      putIfDefined(config, 'CopyTagsToBackups', lustre.CopyTagsToBackups);
+      putIfDefined(config, 'DriveCacheType', lustre.DriveCacheType);
+      putIfDefined(config, 'DataCompressionType', lustre.DataCompressionType);
+      putIfDefined(config, 'EfaEnabled', lustre.EfaEnabled);
+      putIfDefined(config, 'ThroughputCapacity', lustre.ThroughputCapacity);
+
       if (lustre.MetadataConfiguration) {
         const metadata: Record<string, unknown> = {};
-        if (lustre.MetadataConfiguration.Mode !== undefined) {
-          metadata['Mode'] = lustre.MetadataConfiguration.Mode;
-        }
-        if (lustre.MetadataConfiguration.Iops !== undefined) {
-          metadata['Iops'] = lustre.MetadataConfiguration.Iops;
-        }
+        putIfDefined(metadata, 'Mode', lustre.MetadataConfiguration.Mode);
+        putIfDefined(metadata, 'Iops', lustre.MetadataConfiguration.Iops);
         if (Object.keys(metadata).length > 0) config['MetadataConfiguration'] = metadata;
       }
       if (lustre.DataReadCacheConfiguration) {
         const readCache: Record<string, unknown> = {};
-        if (lustre.DataReadCacheConfiguration.SizingMode !== undefined) {
-          readCache['SizingMode'] = lustre.DataReadCacheConfiguration.SizingMode;
-        }
-        if (lustre.DataReadCacheConfiguration.SizeGiB !== undefined) {
-          readCache['SizeGiB'] = lustre.DataReadCacheConfiguration.SizeGiB;
-        }
+        putIfDefined(readCache, 'SizingMode', lustre.DataReadCacheConfiguration.SizingMode);
+        putIfDefined(readCache, 'SizeGiB', lustre.DataReadCacheConfiguration.SizeGiB);
         if (Object.keys(readCache).length > 0) config['DataReadCacheConfiguration'] = readCache;
       }
       // Data-repository fields live under DataRepositoryConfiguration on
       // the read side but are flat LustreConfiguration inputs in CFn.
       const dataRepo = lustre.DataRepositoryConfiguration;
       if (dataRepo) {
-        if (dataRepo.ImportPath !== undefined) config['ImportPath'] = dataRepo.ImportPath;
-        if (dataRepo.ExportPath !== undefined) config['ExportPath'] = dataRepo.ExportPath;
-        if (dataRepo.AutoImportPolicy !== undefined) {
-          config['AutoImportPolicy'] = dataRepo.AutoImportPolicy;
-        }
-        if (dataRepo.ImportedFileChunkSize !== undefined) {
-          config['ImportedFileChunkSize'] = dataRepo.ImportedFileChunkSize;
-        }
+        putIfDefined(config, 'ImportPath', dataRepo.ImportPath);
+        putIfDefined(config, 'ExportPath', dataRepo.ExportPath);
+        putIfDefined(config, 'AutoImportPolicy', dataRepo.AutoImportPolicy);
+        putIfDefined(config, 'ImportedFileChunkSize', dataRepo.ImportedFileChunkSize);
       }
       if (Object.keys(config).length > 0) result['LustreConfiguration'] = config;
+    }
+
+    if (fs.WindowsConfiguration) {
+      const config = this.readWindowsConfiguration(fs.WindowsConfiguration);
+      if (Object.keys(config).length > 0) result['WindowsConfiguration'] = config;
+    }
+
+    if (fs.OntapConfiguration) {
+      const config = this.readOntapConfiguration(fs.OntapConfiguration);
+      if (Object.keys(config).length > 0) result['OntapConfiguration'] = config;
+    }
+
+    if (fs.OpenZFSConfiguration) {
+      const config = this.readOpenZFSConfiguration(fs.OpenZFSConfiguration);
+      if (Object.keys(config).length > 0) result['OpenZFSConfiguration'] = config;
     }
 
     result['Tags'] = normalizeAwsTagsToCfn(fs.Tags);
