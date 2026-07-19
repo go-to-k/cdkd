@@ -90,18 +90,43 @@ active_tagged_cluster_ids() {
   strict_active_tagged_cluster_ids 2>/dev/null || true
 }
 
-cluster_state() {
+# Cluster state, assertion-grade: prints the state and returns 0, or returns
+# non-zero with the AWS error on stderr.
+#
+# There is deliberately NO best-effort variant that swallows the failure. The
+# swallowing form is a trap in assertion position: `X="$(probe ...)"` under
+# `set -e` aborts the script at the ASSIGNMENT, so the FAIL branch never runs,
+# the diagnostic never prints, and the exit code is the AWS CLI's rather than
+# ours. Callers use the `&& rc=0 || rc=$?` form and report properly; the two
+# polling callers pass `2>/dev/null` at the call site when they genuinely
+# tolerate "don't know".
+strict_cluster_state() {
   aws emr describe-cluster --cluster-id "$1" --region "${REGION}" \
-    --query 'Cluster.Status.State' --output text 2>/dev/null
+    --query 'Cluster.Status.State' --output text
 }
 
+# Poll until the cluster reaches a terminal state. Returns non-zero on
+# timeout OR if the state could never be read.
+#
+# An API failure must NOT read as TERMINATED: the old `[ -z "${st}" ]` branch
+# returned success on a throttle, so cleanup would walk into the VPC teardown
+# with a live cluster still holding ENIs and silently orphan the VPC. Billing
+# is already stopped by the preceding terminate, so this is a teardown-
+# completeness bug rather than a cost leak — but it must be loud.
 wait_cluster_terminated() {
   local id="$1"
   local deadline=$((SECONDS + 1800))
-  local st
+  local st rc
   while [ ${SECONDS} -lt ${deadline} ]; do
-    st="$(cluster_state "${id}")"
-    if [ "${st}" = "TERMINATED" ] || [ "${st}" = "TERMINATED_WITH_ERRORS" ] || [ -z "${st}" ]; then
+    st="$(strict_cluster_state "${id}" 2>/dev/null)" && rc=0 || rc=$?
+    if [ ${rc} -ne 0 ]; then
+      # DescribeCluster failing for an id that existed usually means it aged
+      # out of the API — treat as gone ONLY after re-confirming it is not in
+      # the active list; otherwise keep polling.
+      if ! strict_active_tagged_cluster_ids 2>/dev/null | grep -qx "${id}"; then
+        return 0
+      fi
+    elif [ "${st}" = "TERMINATED" ] || [ "${st}" = "TERMINATED_WITH_ERRORS" ]; then
       return 0
     fi
     sleep 15
@@ -126,17 +151,34 @@ cleanup() {
   # Terminate any leftover active cluster (disable termination protection
   # first, defensively) and wait until it is gone — its ENIs / EC2 instances
   # block the VPC teardown below and it bills per instance-hour.
+  cluster_wait_failed=false
   for cid in $(active_tagged_cluster_ids); do
     echo "    terminating leftover EMR cluster ${cid}"
     aws emr modify-cluster-attributes --cluster-id "${cid}" --no-termination-protected \
       --region "${REGION}" >/dev/null 2>&1
     aws emr terminate-clusters --cluster-ids "${cid}" --region "${REGION}" >/dev/null 2>&1
-    wait_cluster_terminated "${cid}"
+    if ! wait_cluster_terminated "${cid}"; then
+      cluster_wait_failed=true
+      echo "    WARNING: could not confirm EMR cluster ${cid} reached TERMINATED" >&2
+      echo "             (timed out, or DescribeCluster kept failing)" >&2
+    fi
   done
+
+  state_destroy_ok=true
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
-      --stack-region "${REGION}" --yes >/dev/null 2>&1
+      --stack-region "${REGION}" --yes >/dev/null 2>&1 || state_destroy_ok=false
   fi
+
+  # Skip the VPC sweep if a cluster may still be alive — its ENIs / EC2
+  # instances would make every delete below fail anyway, and blindly deleting
+  # subnets/SGs around a live cluster just produces a half-torn VPC that is
+  # harder to reason about than an intact one.
+  if [ "${cluster_wait_failed}" = "true" ]; then
+    echo "    WARNING: skipping the VPC sweep — a cluster may still be running." >&2
+    echo "             Re-run verify.sh (its pre-run cleanup retries) or check:" >&2
+    echo "             aws emr list-clusters --active --region ${REGION}" >&2
+  else
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:Name,Values=${STACK}/Vpc" \
@@ -183,9 +225,26 @@ cleanup() {
     done
     aws ec2 delete-vpc --vpc-id "${vpcid}" --region "${REGION}" >/dev/null 2>&1
   done
+  fi
+
+  # The lock is always safe to drop — it only blocks the next run.
   if [ -n "${STATE_BUCKET:-}" ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  fi
+
+  # state.json is NOT safe to drop blindly. There is no IAM-role sweep in this
+  # cleanup, so if `state destroy` failed partway the state file is the only
+  # record of what actually leaked — deleting it destroys the evidence and
+  # leaves orphans nothing points at. Keep it whenever the teardown was not
+  # confirmed clean.
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    if [ "${state_destroy_ok}" = "true" ] && [ "${cluster_wait_failed}" != "true" ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    else
+      echo "    WARNING: leaving ${STATE_KEY} in place — teardown was not confirmed clean." >&2
+      echo "             It is the only record of what may have leaked. Inspect with:" >&2
+      echo "             aws s3 cp s3://${STATE_BUCKET}/${STATE_KEY} -" >&2
+    fi
   fi
   set -eu
 }
@@ -233,11 +292,31 @@ output_value() {
 # `undefined` / `null` result prints as the empty string so callers can test
 # with `[ -z ... ]`). Keeps the Phase 3 assertions readable instead of
 # repeating a 200-char `node -e` per check.
+#
+# A missing / unreadable state payload is reported as an explicit diagnostic
+# rather than a bare JSON parse trace. Callers assign in the `X="$(state_query
+# ...)"` form, which under `set -e` aborts at the assignment — so without this
+# message the run would die with no indication of which step failed or why.
+# (`state_json` itself swallows stderr, so "no state" and "AWS call failed"
+# both arrive here as empty input.)
 state_query() {
   state_json | node -e '
 let s = "";
 process.stdin.on("data", (d) => (s += d)).on("end", () => {
-  const st = JSON.parse(s).state;
+  if (s.trim() === "") {
+    process.stderr.write(
+      "state_query: cdkd state show returned nothing — the state record is missing " +
+      "or the AWS call failed (expression: " + process.argv[1] + ")\n"
+    );
+    process.exit(1);
+  }
+  let st;
+  try {
+    st = JSON.parse(s).state;
+  } catch {
+    process.stderr.write("state_query: could not parse state show output as JSON\n");
+    process.exit(1);
+  }
   const v = new Function("st", "return (" + process.argv[1] + ");")(st);
   process.stdout.write(v === undefined || v === null ? "" : String(v));
 });' "$1"
@@ -373,6 +452,23 @@ fi
 RES_COUNT_PRE="$(state_query 'Object.keys(st.resources).length')"
 echo "    cluster logical id: ${CLUSTER_LID} (${RES_COUNT_PRE} resource rows in state)"
 
+# Capture one SIBLING row's identity so the post-import check can prove the
+# selective merge preserved it byte-for-byte. A row-count check alone is not
+# enough: `buildStackState` merges via shallow spread, so a bug that corrupts
+# a sibling's physicalId or properties keeps the count intact and passes.
+VPC_LID="$(state_query 'Object.keys(st.resources).find((k) => st.resources[k].resourceType === "AWS::EC2::VPC") || ""')"
+if [ -z "${VPC_LID}" ]; then
+  echo "FAIL: no AWS::EC2::VPC row found in state — needed as the sibling-preservation witness" >&2
+  exit 1
+fi
+VPC_PHYS_PRE="$(state_query 'st.resources["'"${VPC_LID}"'"]?.physicalId')"
+VPC_PROPS_PRE="$(state_query 'JSON.stringify(st.resources["'"${VPC_LID}"'"]?.properties)')"
+if [ -z "${VPC_PHYS_PRE}" ]; then
+  echo "FAIL: sibling VPC row ${VPC_LID} has no physicalId before the round-trip" >&2
+  exit 1
+fi
+echo "    sibling witness: ${VPC_LID} -> ${VPC_PHYS_PRE}"
+
 # !! INVARIANT — from here until the `cdkd import` below succeeds, the cluster
 # !! is LIVE IN AWS BUT ABSENT FROM cdkd STATE, and it is billing per
 # !! instance-hour. Nothing state-driven (`cdkd destroy` / `cdkd state
@@ -388,8 +484,16 @@ echo "    cluster logical id: ${CLUSTER_LID} (${RES_COUNT_PRE} resource rows in 
 # output read back from state. They happen to match today (a direct stack
 # child gets no hash suffix) but are not the same thing.
 #
-# Synth with the SAME env as Phase 2 so the template cdkd imports against
-# matches the cluster actually running in AWS.
+# SYNTH MODE — deliberately BASELINE (no CDKD_TEST_UPDATE), unlike Phase 2.
+# This is what makes the observedProperties assertions below meaningful. The
+# baseline template says StepConcurrencyLevel 1 / env=test / dropme=yes, while
+# the LIVE cluster is at 5 / changed / no-dropme after Phase 2. So a bug that
+# seeded `observedProperties` from the template instead of from AWS would
+# produce the template's values and FAIL. Under CDKD_TEST_UPDATE=true the two
+# are byte-identical and the assertions would pass either way — i.e. they
+# would not test anything. The `properties` assertions below pin this
+# divergence explicitly so re-adding CDKD_TEST_UPDATE here breaks loudly
+# rather than silently hollowing out the phase.
 #
 # FLAG NOTE: `orphan` accepts TWO different region flags. `--stack-region`
 # selects the STATE RECORD to operate on; `--region` is the deprecated
@@ -397,9 +501,12 @@ echo "    cluster logical id: ${CLUSTER_LID} (${RES_COUNT_PRE} resource rows in 
 # highest-precedence region source, NOT a no-op). We pass `--stack-region`
 # because it names precisely what this call needs and matches the
 # `state show` / `state destroy` invocations above that read the same record.
-# The AWS region itself arrives via AWS_REGION. Verified against
-# `cdkd orphan --help` and src/cli/options.ts.
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/Cluster" \
+# The AWS region itself arrives via AWS_REGION, pinned explicitly here so the
+# synth / AWS region cannot fall back to the ambient profile when the caller
+# left AWS_REGION unset (REGION defaults to us-east-1 in that case, and the
+# two must not diverge). Verified against `cdkd orphan --help` and
+# src/cli/options.ts (deprecatedRegionOption, lines 71-73).
+AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" orphan "${STACK}/Cluster" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes
 
 if [ -n "$(cluster_logical_id)" ]; then
@@ -414,8 +521,14 @@ fi
 echo "    cluster row dropped from state (${RES_COUNT_PRE} -> ${RES_COUNT_ORPHANED} rows)"
 
 # `orphan` must NOT touch AWS — the cluster has to still be running for the
-# re-adoption to mean anything.
-STATE_ORPHANED="$(cluster_state "${CID_P2}")"
+# re-adoption to mean anything. Use the STRICT probe: the best-effort one
+# would abort the script at this assignment on an API failure, so this FAIL
+# branch would never print.
+STATE_ORPHANED="$(strict_cluster_state "${CID_P2}" 2>/dev/null)" && ORPH_RC=0 || ORPH_RC=$?
+if [ ${ORPH_RC} -ne 0 ]; then
+  echo "FAIL: could not read cluster ${CID_P2} state after 'cdkd orphan' (DescribeCluster failed)" >&2
+  exit 1
+fi
 if [ "${STATE_ORPHANED}" != "WAITING" ] && [ "${STATE_ORPHANED}" != "RUNNING" ]; then
   echo "FAIL: cluster ${CID_P2} is '${STATE_ORPHANED}' after 'cdkd orphan' — orphan must leave AWS untouched" >&2
   exit 1
@@ -435,7 +548,7 @@ echo "    re-adopting via cdkd import --resource ${CLUSTER_LID}=${CID_P2}"
 # 'us-east-1'`, and since the option is never declared the env var is the
 # only live source. Set it explicitly here so the binding does not depend on
 # how verify.sh itself was invoked. Verified against `cdkd import --help`.
-AWS_REGION="${REGION}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" import "${STACK}" \
+AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" import "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --resource "${CLUSTER_LID}=${CID_P2}" --yes
 
@@ -457,46 +570,124 @@ if [ "${PROV_IMPORTED}" != "sdk" ]; then
 fi
 echo "    re-adopted: physicalId=${CID_IMPORTED}, type=${TYPE_IMPORTED}, provisionedBy=${PROV_IMPORTED}"
 
+# `attributes` are the provider's import() return value, persisted into state
+# by PR #1099 (issue #1098 — filed off this fixture's first draft, which could
+# only assert an empty map because import discarded them). EMR's
+# buildAttributes emits `Id` and `MasterPublicDNS` from DescribeCluster, so
+# these are AWS-sourced values and must match the live cluster.
+ATTR_ID="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.attributes?.Id')"
+if [ "${ATTR_ID}" != "${CID_P2}" ]; then
+  echo "FAIL: imported attributes.Id is '${ATTR_ID}', expected the live cluster id '${CID_P2}'" >&2
+  echo "      (empty means import() attributes were not persisted — regression of PR #1099)" >&2
+  exit 1
+fi
+ATTR_DNS="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.attributes?.MasterPublicDNS')"
+if [ -z "${ATTR_DNS}" ] || [ "${ATTR_DNS}" != "${DNS_AWS}" ]; then
+  echo "FAIL: imported attributes.MasterPublicDNS is '${ATTR_DNS}', expected '${DNS_AWS}' from AWS" >&2
+  exit 1
+fi
+echo "    attributes persisted from import(): Id=${ATTR_ID}, MasterPublicDNS=${ATTR_DNS}"
+
 # Selective mode is a MERGE — the unlisted sibling rows must all survive.
 RES_COUNT_POST="$(state_query 'Object.keys(st.resources).length')"
 if [ "${RES_COUNT_POST}" != "${RES_COUNT_PRE}" ]; then
   echo "FAIL: selective import should restore the row count to ${RES_COUNT_PRE}, got ${RES_COUNT_POST}" >&2
   exit 1
 fi
-echo "    unlisted sibling rows preserved by the selective merge (${RES_COUNT_POST} rows)"
+# ...and the count alone is not enough. `buildStackState` merges via shallow
+# spread, so a bug that corrupts a surviving sibling keeps the count intact.
+# Assert the witness row is byte-identical to its pre-orphan self.
+VPC_PHYS_POST="$(state_query 'st.resources["'"${VPC_LID}"'"]?.physicalId')"
+if [ "${VPC_PHYS_POST}" != "${VPC_PHYS_PRE}" ]; then
+  echo "FAIL: selective import mutated sibling ${VPC_LID}: physicalId '${VPC_PHYS_PRE}' -> '${VPC_PHYS_POST}'" >&2
+  exit 1
+fi
+VPC_PROPS_POST="$(state_query 'JSON.stringify(st.resources["'"${VPC_LID}"'"]?.properties)')"
+if [ "${VPC_PROPS_POST}" != "${VPC_PROPS_PRE}" ]; then
+  echo "FAIL: selective import mutated sibling ${VPC_LID} properties" >&2
+  echo "      before: ${VPC_PROPS_PRE}" >&2
+  echo "      after:  ${VPC_PROPS_POST}" >&2
+  exit 1
+fi
+echo "    unlisted sibling rows preserved (${RES_COUNT_POST} rows; ${VPC_LID} identity + properties unchanged)"
 
 # `observedProperties` is seeded post-import by the provider's
 # `readCurrentState` against the LIVE cluster. These values must reflect the
-# Phase 2 UPDATE (StepConcurrencyLevel 5), which proves the baseline came from
-# AWS and not from the synthesized template.
+# Phase 2 UPDATE values rather than the baseline template's — see the SYNTH
+# MODE note above.
+#
+# STEP 1 — pin the divergence. Assert `properties` (straight from the
+# BASELINE template) really does hold the pre-update values. Without this the
+# observed-vs-template distinction rests on a comment, and re-adding
+# CDKD_TEST_UPDATE to the import above would silently collapse the two into
+# the same values, leaving the assertions below passing while testing nothing.
+# This makes that regression fail loudly instead.
+PROP_STEP="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.properties?.StepConcurrencyLevel')"
+if [ "${PROP_STEP}" != "1" ]; then
+  echo "FAIL: properties.StepConcurrencyLevel is '${PROP_STEP}', expected 1 from the BASELINE template." >&2
+  echo "      The import must synth WITHOUT CDKD_TEST_UPDATE, otherwise template and AWS" >&2
+  echo "      agree and the observedProperties assertions below stop discriminating." >&2
+  exit 1
+fi
+PROP_ENV_TAG="$(state_query '(st.resources["'"${CLUSTER_LID}"'"]?.properties?.Tags ?? []).find((t) => t.Key === "env")?.Value')"
+if [ "${PROP_ENV_TAG}" != "test" ]; then
+  echo "FAIL: properties Tags env is '${PROP_ENV_TAG}', expected 'test' from the BASELINE template" >&2
+  exit 1
+fi
+echo "    template divergence pinned (properties: StepConcurrencyLevel=1, env=test)"
+
+# STEP 2 — the DISCRIMINATING assertions. Each expected value differs from
+# what `properties` holds, so a readCurrentState that echoed the template
+# would fail here.
 OBS_STEP="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.StepConcurrencyLevel')"
 if [ "${OBS_STEP}" != "5" ]; then
   echo "FAIL: observedProperties.StepConcurrencyLevel is '${OBS_STEP}', expected 5 from the live cluster" >&2
-  echo "      (empty means readCurrentState did not run or was swallowed post-import)" >&2
+  echo "      (template says 1; empty means readCurrentState did not run or was swallowed)" >&2
   exit 1
 fi
+# Tags come back through normalizeAwsTagsToCfn. Phase 2 changed `env` and
+# REMOVED `dropme`; the baseline template still carries env=test + dropme=yes,
+# so both directions discriminate.
+OBS_ENV_TAG="$(state_query '(st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.Tags ?? []).find((t) => t.Key === "env")?.Value')"
+if [ "${OBS_ENV_TAG}" != "changed" ]; then
+  echo "FAIL: observedProperties Tags env is '${OBS_ENV_TAG}', expected 'changed' (template says 'test')" >&2
+  exit 1
+fi
+OBS_DROPME="$(state_query '(st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.Tags ?? []).find((t) => t.Key === "dropme")?.Value')"
+if [ -n "${OBS_DROPME}" ]; then
+  echo "FAIL: observedProperties still carries tag dropme='${OBS_DROPME}'. AWS removed it in Phase 2;" >&2
+  echo "      only the BASELINE template still has it, so this came from the template, not AWS." >&2
+  exit 1
+fi
+# A field the template NEVER carries in either synth mode (verified against
+# cdk.out): the fixture does not set VisibleToAllUsers, but DescribeCluster
+# always reports it. Structurally AWS-only, so it holds even if someone later
+# re-aligns the template with the live cluster.
+OBS_VISIBLE="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.VisibleToAllUsers')"
+if [ "${OBS_VISIBLE}" != "true" ]; then
+  echo "FAIL: observedProperties.VisibleToAllUsers is '${OBS_VISIBLE}', expected 'true' from DescribeCluster" >&2
+  echo "      (this key is absent from the template entirely — it can ONLY come from AWS)" >&2
+  exit 1
+fi
+
+# STEP 3 — shape assertions. These values are identical in template and AWS,
+# so they do NOT discriminate template-vs-AWS; they check that the reverse
+# mapping produced the right SHAPE (ListInstanceGroups -> role-keyed CFn
+# block), which is the bulk of readCurrentState's work.
 OBS_RELEASE="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.ReleaseLabel')"
 if [ "${OBS_RELEASE}" != "emr-7.9.0" ]; then
   echo "FAIL: observedProperties.ReleaseLabel is '${OBS_RELEASE}', expected 'emr-7.9.0'" >&2
   exit 1
 fi
-# The reverse-mapped Instances block (ListInstanceGroups -> role-keyed CFn
-# shape) is the bulk of readCurrentState's work — assert it round-tripped.
 OBS_MASTER_TYPE="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.Instances?.MasterInstanceGroup?.InstanceType')"
 if [ "${OBS_MASTER_TYPE}" != "m5.xlarge" ]; then
   echo "FAIL: observedProperties.Instances.MasterInstanceGroup.InstanceType is '${OBS_MASTER_TYPE}', expected 'm5.xlarge'" >&2
   exit 1
 fi
-# Tags come back through normalizeAwsTagsToCfn — Phase 2 set env=changed and
-# removed `dropme`, so the observed baseline must agree with AWS, not the
-# baseline template.
-OBS_ENV_TAG="$(state_query '(st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.Tags ?? []).find((t) => t.Key === "env")?.Value')"
-if [ "${OBS_ENV_TAG}" != "changed" ]; then
-  echo "FAIL: observedProperties Tags env is '${OBS_ENV_TAG}', expected 'changed' (the live post-update value)" >&2
-  exit 1
-fi
 echo "    observedProperties seeded from the LIVE cluster by readCurrentState"
-echo "      (StepConcurrencyLevel=5, ReleaseLabel=emr-7.9.0, MasterInstanceGroup.InstanceType=m5.xlarge, env=changed)"
+echo "      discriminating: StepConcurrencyLevel=5 (tmpl 1), env=changed (tmpl test),"
+echo "                      dropme absent (tmpl present), VisibleToAllUsers=true (tmpl absent)"
+echo "      shape:          ReleaseLabel=emr-7.9.0, MasterInstanceGroup.InstanceType=m5.xlarge"
 
 # --- Phase 4: destroy ----------------------------------------------------
 # Runs THROUGH the state record Phase 3 re-adopted — a broken import would
@@ -504,7 +695,14 @@ echo "      (StepConcurrencyLevel=5, ReleaseLabel=emr-7.9.0, MasterInstanceGroup
 echo "==> Phase 4: destroy via the re-adopted state record (EMR termination takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-FINAL_STATE="$(cluster_state "${CID_P2}")"
+# Strict probe: a DescribeCluster failure must not abort at the assignment
+# (best-effort variant) nor be read as "terminated".
+FINAL_STATE="$(strict_cluster_state "${CID_P2}" 2>/dev/null)" && FINAL_RC=0 || FINAL_RC=$?
+if [ ${FINAL_RC} -ne 0 ]; then
+  echo "FAIL: could not read cluster ${CID_P2} state after destroy (DescribeCluster failed)" >&2
+  echo "      refusing to report PASS on an unverified termination check" >&2
+  exit 1
+fi
 if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
   echo "FAIL: EMR cluster ${CID_P2} not terminated after destroy (state '${FINAL_STATE}')" >&2
   exit 1
