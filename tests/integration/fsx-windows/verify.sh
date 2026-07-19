@@ -96,14 +96,40 @@ fixture_directory_ids() {
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
+# Tri-state existence probes. A bare `if ! aws ... >/dev/null 2>&1` treats
+# ANY nonzero exit as "gone", so a throttle / expired credential / network
+# blip would report a live, billing file system or directory as deleted.
+# Require the not-found error specifically.
+#   0 = gone, 1 = still exists, 2 = indeterminate (API error)
+fs_state() {
+  local fs_id="$1" err
+  if err="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
+    --region "${REGION}" 2>&1 >/dev/null)"; then
+    return 1
+  fi
+  case "${err}" in
+    *FileSystemNotFound*) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+directory_state() {
+  local dir_id="$1" err
+  if err="$(aws ds describe-directories --directory-ids "${dir_id}" \
+    --region "${REGION}" 2>&1 >/dev/null)"; then
+    return 1
+  fi
+  case "${err}" in
+    *EntityDoesNotExist* | *DirectoryDoesNotExist*) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
 wait_fs_gone() {
   local fs_id="$1"
   local deadline=$((SECONDS + 1800))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    if ! aws fsx describe-file-systems --file-system-ids "${fs_id}" \
-      --region "${REGION}" >/dev/null 2>&1; then
-      return 0
-    fi
+    fs_state "${fs_id}" && return 0
     sleep 15
   done
   return 1
@@ -113,13 +139,28 @@ wait_directory_gone() {
   local dir_id="$1"
   local deadline=$((SECONDS + 2400))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    if ! aws ds describe-directories --directory-ids "${dir_id}" \
-      --region "${REGION}" >/dev/null 2>&1; then
-      return 0
-    fi
+    directory_state "${dir_id}" && return 0
     sleep 20
   done
   return 1
+}
+
+# Final backups: cdkd's delete sends a bare DeleteFileSystem with no
+# SkipFinalBackup (CloudFormation parity), and the Windows API default is
+# to TAKE a final backup. AutomaticBackupRetentionDays 0 only disables
+# SCHEDULED backups, so a final backup outlives the run and bills per
+# GB-month. Sweep them explicitly.
+fixture_backup_ids() {
+  aws fsx describe-backups --region "${REGION}" \
+    --query "Backups[?FileSystem.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].BackupId" \
+    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+}
+
+delete_fixture_backups() {
+  for bid in $(fixture_backup_ids); do
+    echo "    deleting FSx backup ${bid}"
+    aws fsx delete-backup --backup-id "${bid}" --region "${REGION}" >/dev/null 2>&1
+  done
 }
 
 delete_fixture_directories() {
@@ -144,6 +185,8 @@ cleanup() {
     aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" >/dev/null 2>&1
     wait_fs_gone "${fsid}"
   done
+  # After the file systems are gone their final backups can be reaped.
+  delete_fixture_backups
   delete_fixture_directories
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
@@ -180,7 +223,11 @@ cleanup() {
   set -eu
 }
 
-trap cleanup EXIT
+# INT/TERM as well as EXIT: bash does NOT run an EXIT trap when the script
+# is killed by an untrapped SIGINT. This run holds TWO per-hour-billed
+# resources (a Standard Managed AD and a Windows file system) for 80-110
+# minutes, so a Ctrl-C or harness timeout would otherwise leak both.
+trap cleanup EXIT INT TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -189,6 +236,13 @@ fi
 
 if [ ! -f "${LOCAL_DIST}" ]; then
   echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2
+  exit 1
+fi
+
+# The Managed AD admin password is generated per run; fail fast with a
+# clear message rather than 2 minutes into the VPC deploy.
+if ! command -v openssl >/dev/null 2>&1; then
+  echo "FAIL: openssl is required to generate the Managed AD admin password" >&2
   exit 1
 fi
 
@@ -394,16 +448,39 @@ echo "==> Phase 5: re-deploy with FSX_AD_ID unset — cdkd deletes the file syst
 env -u CDKD_TEST_UPDATE -u FSX_AD_ID node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-if aws fsx describe-file-systems --file-system-ids "${FS_ID_P4}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: FSx file system ${FS_ID_P4} still exists after cdkd removed it from the template" >&2
-  exit 1
-fi
+fs_state "${FS_ID_P4}"
+case $? in
+  0) ;;
+  1)
+    echo "FAIL: FSx file system ${FS_ID_P4} still exists after cdkd removed it from the template" >&2
+    exit 1
+    ;;
+  *)
+    echo "FAIL: could not determine whether ${FS_ID_P4} was deleted (FSx API error)" >&2
+    exit 1
+    ;;
+esac
 LEFTOVERS="$(tagged_fs_ids)"
 if [ -n "${LEFTOVERS}" ]; then
   echo "FAIL: FSx file system(s) with tag ${CLEANUP_TAG_KEY}=${CLEANUP_TAG_VALUE} still exist: ${LEFTOVERS}" >&2
   exit 1
 fi
 echo "    file system deleted (by id and by fixture tag)"
+
+# cdkd deletes with API defaults (CloudFormation parity), and the Windows
+# default is to take a FINAL backup — chargeable, and invisible to the
+# file-system assertions above.
+LEFTOVER_BACKUPS="$(fixture_backup_ids)"
+if [ -n "${LEFTOVER_BACKUPS}" ]; then
+  echo "    final backup(s) left by DeleteFileSystem: ${LEFTOVER_BACKUPS} — deleting"
+  delete_fixture_backups
+  REMAINING_BACKUPS="$(fixture_backup_ids)"
+  if [ -n "${REMAINING_BACKUPS}" ]; then
+    echo "FAIL: FSx backup(s) still exist after cleanup: ${REMAINING_BACKUPS}" >&2
+    exit 1
+  fi
+fi
+echo "    no chargeable backup remains"
 
 # --- Phase 6: delete the Managed AD -------------------------------------
 echo "==> Phase 6: delete the Managed Microsoft AD (~10 min)"
@@ -423,10 +500,17 @@ echo "    Managed AD deleted (by id and by domain name)"
 echo "==> Phase 7: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}" >/dev/null 2>&1; then
+if VPC_ERR="$(aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}" 2>&1 >/dev/null)"; then
   echo "FAIL: VPC ${VPC_ID} still exists after destroy" >&2
   exit 1
 fi
+case "${VPC_ERR}" in
+  *InvalidVpcID.NotFound*) ;;
+  *)
+    echo "FAIL: could not determine whether ${VPC_ID} was deleted (EC2 API error): ${VPC_ERR}" >&2
+    exit 1
+    ;;
+esac
 echo "    VPC deleted"
 
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then

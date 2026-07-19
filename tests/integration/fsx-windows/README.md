@@ -89,7 +89,27 @@ service constraints are stricter):
    gone.
 
 The cleanup trap runs the same teardown in the same order (file system →
-directory → VPC → state) so an interrupted run leaves nothing behind.
+final backups → directory → VPC → state), and is armed on `INT` / `TERM`
+as well as `EXIT`, so a Ctrl-C or harness timeout mid-run cannot leak the
+two per-hour-billed resources.
+
+### Final backups
+
+`AutomaticBackupRetentionDays: 0` only disables **scheduled** backups.
+cdkd's delete sends a bare `DeleteFileSystem` with no `SkipFinalBackup`
+(deliberate CloudFormation parity — CFn exposes no such property), and
+the Windows API default is to take a **final backup** that outlives the
+file system and bills per GB-month. `verify.sh` therefore sweeps and
+asserts on backups explicitly after the delete; the file-system
+assertions alone would not catch this.
+
+### Not concurrency-safe
+
+The pre-run cleanup deletes any file system tagged
+`cdkd-integ=fsx-windows` and any directory named `corp.cdkd-integ.com` in
+the region. Do not run two copies of this fixture against the same
+account+region simultaneously — the second run's pre-cleanup would
+destroy the first run's live directory.
 
 ## Timing
 

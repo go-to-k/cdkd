@@ -59,17 +59,49 @@ tagged_fs_ids() {
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
+# Tri-state existence probe. A bare `if ! aws ... >/dev/null 2>&1` treats
+# ANY nonzero exit as "gone", so a throttle / expired credential / network
+# blip would report a live, billing file system as deleted. Require the
+# not-found error specifically.
+#   0 = gone, 1 = still exists, 2 = indeterminate (API error)
+fs_state() {
+  local fs_id="$1" err
+  if err="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
+    --region "${REGION}" 2>&1 >/dev/null)"; then
+    return 1
+  fi
+  case "${err}" in
+    *FileSystemNotFound*) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
 wait_fs_gone() {
   local fs_id="$1"
   local deadline=$((SECONDS + 1800))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    if ! aws fsx describe-file-systems --file-system-ids "${fs_id}" \
-      --region "${REGION}" >/dev/null 2>&1; then
-      return 0
-    fi
+    fs_state "${fs_id}" && return 0
     sleep 15
   done
   return 1
+}
+
+# Final backups: cdkd's delete sends a bare DeleteFileSystem with no
+# SkipFinalBackup (CloudFormation parity), and the ONTAP API default is to
+# TAKE a final backup. AutomaticBackupRetentionDays 0 only disables
+# SCHEDULED backups, so a final backup outlives the run and bills per
+# GB-month on 1 TiB. Sweep them explicitly.
+fixture_backup_ids() {
+  aws fsx describe-backups --region "${REGION}" \
+    --query "Backups[?FileSystem.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']].BackupId" \
+    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+}
+
+delete_fixture_backups() {
+  for bid in $(fixture_backup_ids); do
+    echo "    deleting FSx backup ${bid}"
+    aws fsx delete-backup --backup-id "${bid}" --region "${REGION}" >/dev/null 2>&1
+  done
 }
 
 cleanup() {
@@ -86,6 +118,8 @@ cleanup() {
     aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" >/dev/null 2>&1
     wait_fs_gone "${fsid}"
   done
+  # After the file systems are gone their final backups can be reaped.
+  delete_fixture_backups
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:Name,Values=${STACK}/Vpc" \
@@ -121,7 +155,10 @@ cleanup() {
   set -eu
 }
 
-trap cleanup EXIT
+# INT/TERM as well as EXIT: bash does NOT run an EXIT trap when the script
+# is killed by an untrapped SIGINT, and a Ctrl-C mid-run would otherwise
+# leak a 1 TiB SSD file system that bills per hour.
+trap cleanup EXIT INT TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -148,6 +185,11 @@ state_json() {
 
 output_value() {
   state_json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write((j.state.outputs&&j.state.outputs[process.argv[1]])||"")})' "$1"
+}
+
+fs_field() {
+  aws fsx describe-file-systems --file-system-ids "$1" --region "${REGION}" \
+    --query "FileSystems[0].$2" --output text
 }
 
 # --- Phase 1: deploy baseline ------------------------------------------
@@ -199,10 +241,8 @@ fi
 echo "    Fn::GetAtt output matches AWS (ResourceARN)"
 
 # Baseline tags reached AWS.
-ENV_TAG_P1="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P1}" --region "${REGION}" \
-  --query "FileSystems[0].Tags[?Key=='env'].Value | [0]" --output text)"
-DROPME_P1="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P1}" --region "${REGION}" \
-  --query "FileSystems[0].Tags[?Key=='dropme'].Value | [0]" --output text)"
+ENV_TAG_P1="$(fs_field "${FS_ID_P1}" "Tags[?Key=='env'].Value | [0]")"
+DROPME_P1="$(fs_field "${FS_ID_P1}" "Tags[?Key=='dropme'].Value | [0]")"
 if [ "${ENV_TAG_P1}" != "test" ] || [ "${DROPME_P1}" != "yes" ]; then
   echo "FAIL: Phase 1 expected tags env=test dropme=yes, got env='${ENV_TAG_P1}' dropme='${DROPME_P1}'" >&2
   exit 1
@@ -229,16 +269,13 @@ if [ "${FS_ID_P1}" != "${FS_ID_P2}" ]; then
 fi
 echo "    file system identity preserved (${FS_ID_P2}) — in-place update"
 
-MAINT_P2="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" \
-  --query 'FileSystems[0].OntapConfiguration.WeeklyMaintenanceStartTime' --output text)"
+MAINT_P2="$(fs_field "${FS_ID_P2}" 'OntapConfiguration.WeeklyMaintenanceStartTime')"
 if [ "${MAINT_P2}" != "2:06:00" ]; then
   echo "FAIL: Phase 2 expected WeeklyMaintenanceStartTime 2:06:00, got '${MAINT_P2}'" >&2
   exit 1
 fi
-ENV_TAG_P2="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" \
-  --query "FileSystems[0].Tags[?Key=='env'].Value | [0]" --output text)"
-DROPME_P2="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" \
-  --query "FileSystems[0].Tags[?Key=='dropme'].Value | [0]" --output text)"
+ENV_TAG_P2="$(fs_field "${FS_ID_P2}" "Tags[?Key=='env'].Value | [0]")"
+DROPME_P2="$(fs_field "${FS_ID_P2}" "Tags[?Key=='dropme'].Value | [0]")"
 if [ "${ENV_TAG_P2}" != "changed" ]; then
   echo "FAIL: Phase 2 expected tag env=changed, got '${ENV_TAG_P2}'" >&2
   exit 1
@@ -253,10 +290,18 @@ echo "    update reached AWS (WeeklyMaintenanceStartTime 2:06:00, env=changed, d
 echo "==> Phase 3: destroy (ONTAP deletion takes ~10 min)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: FSx file system ${FS_ID_P2} still exists after destroy" >&2
-  exit 1
-fi
+fs_state "${FS_ID_P2}"
+case $? in
+  0) ;;
+  1)
+    echo "FAIL: FSx file system ${FS_ID_P2} still exists after destroy" >&2
+    exit 1
+    ;;
+  *)
+    echo "FAIL: could not determine whether ${FS_ID_P2} was deleted (FSx API error)" >&2
+    exit 1
+    ;;
+esac
 echo "    file system deleted (by id)"
 
 LEFTOVERS="$(tagged_fs_ids)"
@@ -265,6 +310,21 @@ if [ -n "${LEFTOVERS}" ]; then
   exit 1
 fi
 echo "    no file system with the fixture tag remains"
+
+# cdkd deletes with API defaults (CloudFormation parity), and the ONTAP
+# default is to take a FINAL backup — which bills per GB-month on 1 TiB
+# and is invisible to the file-system assertions above.
+LEFTOVER_BACKUPS="$(fixture_backup_ids)"
+if [ -n "${LEFTOVER_BACKUPS}" ]; then
+  echo "    final backup(s) left by DeleteFileSystem: ${LEFTOVER_BACKUPS} — deleting"
+  delete_fixture_backups
+  REMAINING_BACKUPS="$(fixture_backup_ids)"
+  if [ -n "${REMAINING_BACKUPS}" ]; then
+    echo "FAIL: FSx backup(s) still exist after cleanup: ${REMAINING_BACKUPS}" >&2
+    exit 1
+  fi
+fi
+echo "    no chargeable backup remains"
 
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
   echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2

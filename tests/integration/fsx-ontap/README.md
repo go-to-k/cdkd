@@ -54,7 +54,24 @@ the CloudFormation schema — the service constraints are stricter):
    cdkd state file is removed. A leftover FSx file system is never
    acceptable (per-hour billing on 1 TiB of SSD) — the cleanup trap
    force-deletes any file system carrying the fixture's constant tag
-   (`cdkd-integ=fsx-ontap`).
+   (`cdkd-integ=fsx-ontap`), and is armed on `INT` / `TERM` as well as
+   `EXIT` so a Ctrl-C mid-run cannot leak it.
+
+### Final backups
+
+`AutomaticBackupRetentionDays: 0` only disables **scheduled** backups.
+cdkd's delete sends a bare `DeleteFileSystem` with no `SkipFinalBackup`
+(deliberate CloudFormation parity — CFn exposes no such property), and
+the ONTAP API default is to take a **final backup** that outlives the
+file system and bills per GB-month on 1 TiB. `verify.sh` therefore sweeps
+and asserts on backups explicitly after the destroy; the file-system
+assertions alone would not catch this.
+
+### Not concurrency-safe
+
+The pre-run cleanup deletes any file system tagged `cdkd-integ=fsx-ontap`
+in the region. Do not run two copies of this fixture against the same
+account+region simultaneously.
 
 ## Timing
 

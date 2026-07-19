@@ -66,6 +66,14 @@ import type { Construct } from 'constructs';
  *     `applyWindowsUpdateField` mapping.
  *   - Tag value change + tag REMOVAL (TagResource / UntagResource).
  * Both must keep the FileSystemId unchanged (no replacement).
+ *
+ * Known coverage boundary: because `WeeklyMaintenanceStartTime` is
+ * metadata-only, `UpdateFileSystem` reports no pending administrative
+ * action, so this fixture does NOT exercise the provider's asynchronous
+ * admin-action wait. That branch is variant-agnostic and is covered live
+ * by `fsx-openzfs`, whose UPDATE scales ThroughputCapacity. Likewise
+ * `SelfManagedActiveDirectoryConfiguration` is out of scope — a
+ * self-managed AD would require real domain controllers.
  */
 export class FsxWindowsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -115,6 +123,13 @@ export class FsxWindowsStack extends cdk.Stack {
         // The UPDATE phase moves this; see the class doc for why it is
         // the chosen mutable sub-property.
         weeklyMaintenanceStartTime: isUpdate ? '2:06:00' : '1:05:00',
+        // AUTOMATIC is the default (SSD IOPS scale with capacity), so this
+        // costs nothing — but stating it explicitly is what exercises the
+        // provider's shared `toDiskIopsConfiguration` mapping, which no
+        // FSx fixture covered before.
+        diskIopsConfiguration: {
+          mode: 'AUTOMATIC',
+        },
       },
     });
     fileSystem.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
