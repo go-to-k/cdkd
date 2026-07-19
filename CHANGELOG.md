@@ -1,3 +1,10 @@
+# [0.251.0](https://github.com/go-to-k/cdkd/compare/v0.250.0...v0.251.0) (2026-07-19)
+
+
+### Features
+
+* **providers:** FSx variant drift read-back + apply*UpdateField default guard ([#1095](https://github.com/go-to-k/cdkd/issues/1095)) ([18f690f](https://github.com/go-to-k/cdkd/commit/18f690fafe18c91a9a40cf6aaf1d285e3debe3da))
+
 # [0.250.0](https://github.com/go-to-k/cdkd/compare/v0.249.0...v0.250.0) (2026-07-19)
 
 
