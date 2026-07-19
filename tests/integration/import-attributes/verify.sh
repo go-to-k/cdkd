@@ -101,8 +101,13 @@ state_object_state() {
     echo present
     return 0
   fi
+  # Deliberately narrow: a `NoSuchBucket` error also carries a 404, so a
+  # typo'd STATE_BUCKET would otherwise read as "the state object is gone"
+  # and pass the post-destroy assertion. Only a missing KEY counts as absent;
+  # a missing bucket falls through to UNDETERMINED.
   case "${err}" in
-    *404*|*"Not Found"*|*NoSuchKey*|*NotFound*|*"does not exist"*)
+    *NoSuchBucket*) ;;
+    *NoSuchKey*|*"Not Found"*)
       echo absent
       return 0
       ;;

@@ -1087,14 +1087,27 @@ function buildStackState(
     const deps = [...templateParser.extractDependencies(tmplResource)].filter(
       (dep) => !parameterNames.has(dep)
     );
+    // Attribute carry-over: a re-imported row REPLACES the whole
+    // ResourceState, so a resource that already had a populated attribute
+    // map (from a prior `cdkd deploy` or import) would have it wiped when
+    // the provider's `import()` returns no attributes. Fall back to the
+    // stored map — but ONLY when the physical id is unchanged. Attributes
+    // describe a specific AWS resource, so carrying them across a
+    // re-import that repoints the logical id at a DIFFERENT physical id
+    // (`--resource X=<other>` with `--force`) would resurrect stale facts
+    // about the old resource and hand them to `Fn::GetAtt`.
+    const prior = existingState?.resources[row.logicalId];
+    const priorAttributes =
+      prior && prior.physicalId === row.physicalId ? prior.attributes : undefined;
     resources[row.logicalId] = {
       physicalId: row.physicalId,
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
       // Issue #1098: persist the provider-returned attribute snapshot so an
       // adopted resource can back `Fn::GetAtt` the same way a deployed one
-      // does. Providers whose `import()` returns no attributes keep `{}`.
-      attributes: row.attributes ?? {},
+      // does. Providers whose `import()` returns no attributes fall back to
+      // the same-physical-id stored map, then to `{}`.
+      attributes: row.attributes ?? priorAttributes ?? {},
       dependencies: deps,
       // v7+ (#614): every imported resource is owned by its SDK Provider
       // (the import() method lives on SDK Providers). Explicit so the

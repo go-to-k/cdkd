@@ -492,8 +492,12 @@ const arn = bucketState.attributes['Arn'];
 1. **Cloud Control API**: Automatically collected from `GetResource` response
 2. **SDK Provider**: Provider explicitly returns in `create()` / `update()`
 3. **`cdkd import`**: Provider returns them from `import()`, so an adopted
-   resource carries the same attribute snapshot a deployed one does. Providers
-   whose `import()` returns no attributes leave the map empty (`{}`).
+   resource carries the same attribute snapshot a deployed one does. When a
+   provider's `import()` returns no attributes, cdkd falls back to the map
+   already in state — but only if the resource is being re-imported at the
+   *same* physical id, so a re-import that repoints a logical id at a
+   different physical resource never inherits the old one's attributes. With
+   neither source the map is empty (`{}`).
 
 ```typescript
 // IAM Role Provider example
