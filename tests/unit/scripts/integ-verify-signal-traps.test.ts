@@ -17,15 +17,17 @@ import {
 const INTEG_ROOT = join(import.meta.dirname, '../../../tests/integration');
 
 /**
- * Fixtures whose verify.sh is owned by an in-flight PR at the time of the
- * #1097 sweep, so the sweep deliberately skipped them to avoid a cross-lane
- * collision. Each entry is asserted to still be NON-compliant below, so the
- * exception self-expires: once the owning PR lands the correct form, this test
- * fails and forces the entry to be deleted rather than silently lingering.
+ * Fixtures whose verify.sh is owned by an in-flight PR, so the sweep skips them
+ * to avoid a cross-lane collision. Each entry is asserted to still be
+ * NON-compliant below, so the exception self-expires: once the owning PR lands
+ * the correct form, this test fails and forces the entry to be deleted rather
+ * than silently lingering.
+ *
+ * Empty today. `emr-cluster` was the one entry; PR #1101 merged mid-review with
+ * the un-seeded `trap 'cleanup; exit 130' INT` form, so this PR rebased onto it
+ * and swept it like the rest.
  */
-const PENDING_OTHER_PR: Record<string, string> = {
-  'emr-cluster': 'PR #1101 (EMR import round-trip) rewrites this verify.sh',
-};
+const PENDING_OTHER_PR: Record<string, string> = {};
 
 function readFixtures() {
   return readdirSync(INTEG_ROOT, { withFileTypes: true })

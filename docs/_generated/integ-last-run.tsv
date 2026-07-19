@@ -79,7 +79,6 @@ local-start-alb	2026-06-21T11:00:28Z	PASS	21	verify.sh	sweep-4..8 staleness re-r
 local-start-alb-from-state	2026-06-21T10:44:49Z	PASS	88	verify.sh	fixed verify.sh assertion (state.json only, ignore #885 deployments/); deploy+destroy clean 29 del 0 err
 local-start-api-container	2026-06-21T14:49:02Z	PASS	14	verify.sh	sweep-G local re-run (rc=0)
 local-start-api-rest-v1-non-proxy	2026-06-21T14:49:21Z	PASS	17	verify.sh	sweep-G local re-run (rc=0)
-local-start-api-websocket	2026-06-21T14:52:36Z	PASS	193	verify.sh	sweep-G; retry rc=0 (arm64 qemu multi-container RIE; env-limited not cdkd bug if FAIL)
 local-start-service	2026-06-21T14:52:59Z	PASS	21	verify.sh	sweep-G local re-run (rc=0)
 local-start-service-watch-fast	2026-06-21T14:56:24Z	PASS	203	verify.sh	sweep-G local re-run (rc=0)
 log-pipeline	2026-06-21T11:00:28Z	PASS	62	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -250,3 +249,4 @@ emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run
 lambda	2026-07-19T15:42:32Z	PASS	83	verify.sh	broad integ for import-tag-walk retry widening; 9 deleted 0 errors 0 orphans
 emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
 local-start-api	2026-07-19T18:27:53Z	PASS	22	verify.sh	rc ok, 0 docker orphans; swept verify.sh (#1097 pattern 1)
+local-start-api-websocket	2026-07-19T18:46:28Z	PASS	103	verify.sh	rc ok, 0 docker orphans; validates restructured multi-line trap (#1097)
