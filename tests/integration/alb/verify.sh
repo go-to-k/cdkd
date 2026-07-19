@@ -28,7 +28,9 @@ cleanup() {
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   exit ${rc}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "==> Installing fixture deps"
 [ -d node_modules ] || vp install --prefer-offline
@@ -83,4 +85,4 @@ echo "    state file removed (✓)"
 
 echo ""
 echo "==> All alb checks passed (incl. #609 ListenerAttributes backfill assertion)"
-trap - EXIT
+trap - EXIT INT TERM

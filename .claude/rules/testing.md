@@ -19,6 +19,26 @@ paths:
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
 - Examples verified with real AWS deployments (see `tests/integration/` for full list)
 
+### `verify.sh` signal traps (mandatory)
+
+A fixture that provisions real AWS resources must arm its `cleanup` trap on the
+signal paths too, in the **exiting** form:
+
+```bash
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+```
+
+`trap cleanup EXIT INT TERM` is NOT equivalent and must never be used: a bash
+signal handler returns to the interrupted point, so the script resumes the
+interrupted phase after cleanup and can `exit 0` — reporting PASS while
+`cleanup` raced a still-live deploy. Omitting `INT` / `TERM` entirely leaks the
+stack on Ctrl-C or a harness timeout. Disarm with `trap - EXIT INT TERM`.
+
+Enforced by `tests/unit/scripts/integ-verify-signal-traps.test.ts` (issue #1097);
+the user-facing writeup is in [docs/testing.md](../../docs/testing.md).
+
 ## UPDATE Testing
 
 - Environment variable `CDKD_TEST_UPDATE=true` enables UPDATE test mode

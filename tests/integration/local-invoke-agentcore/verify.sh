@@ -456,6 +456,8 @@ cleanup_watch() {
   rm -f "${AGENT_SRC_BAK}" "${WATCH_LOG}" "${WATCH_EVENT}"
 }
 trap 'cleanup_watch; rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}" "${A2A_EVENT}"' EXIT
+trap 'cleanup_watch; rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}" "${A2A_EVENT}"; exit 130' INT
+trap 'cleanup_watch; rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}" "${A2A_EVENT}"; exit 143' TERM
 
 echo '{"loop":true}' > "${WATCH_EVENT}"
 # Background the watch session with stdin pinned to /dev/null (non-TTY one-shot

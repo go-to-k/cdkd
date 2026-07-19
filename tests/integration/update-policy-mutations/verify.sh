@@ -77,7 +77,9 @@ cleanup() {
   aws ssm delete-parameter --region "${AWS_REGION}" --name "${STABLE_PARAM}" >/dev/null 2>&1 || true
   exit ${rc}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # --- helpers (BSD-portable) ------------------------------------------
 bucket_exists() {
@@ -247,4 +249,4 @@ echo "    0 leftover resources (✓)"
 
 echo ""
 echo "==> All update-policy-mutations checks passed"
-trap - EXIT
+trap - EXIT INT TERM

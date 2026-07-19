@@ -48,6 +48,8 @@ cleanup() {
   rm -f "${OUT_FILE}" "${ROOT_BODY}" "${MISS_BODY}"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 fail() {
   echo "FAIL: $*" >&2

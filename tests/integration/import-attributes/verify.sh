@@ -187,6 +187,8 @@ echo "==> Pre-flight ok"
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 1: cdkd deploy ${STACK}"

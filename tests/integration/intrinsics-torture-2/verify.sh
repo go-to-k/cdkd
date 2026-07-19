@@ -55,7 +55,9 @@ cleanup() {
   done
   exit ${rc}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Triage helper: dump state + synth on a deploy failure so the failing
 # resource + error are visible for diagnosis.
@@ -231,4 +233,4 @@ if [[ ${FAIL_COUNT} -ne 0 ]]; then
 fi
 echo "==> All ${PASS_COUNT} checks passed"
 echo "==> intrinsics-torture-2 result: PASS"
-trap - EXIT
+trap - EXIT INT TERM

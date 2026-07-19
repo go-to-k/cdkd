@@ -33,6 +33,8 @@ cleanup() {
     | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Pre-test orphan sweep — a failed previous run can leak cdkd-local-*
 # containers / networks, and the new per-replica subnet-isolation assertion
@@ -62,6 +64,8 @@ ${CDKD} synth >/dev/null
 # Capture the service output so we can grep for the boot banner.
 OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
+trap 'rm -f "${OUT_FILE}"; cleanup; exit 130' INT
+trap 'rm -f "${OUT_FILE}"; cleanup; exit 143' TERM
 
 echo "==> Booting service (DesiredCount=2)"
 ${CDKD} local start-service CdkdLocalStartServiceFixture:WebService \

@@ -127,6 +127,8 @@ cleanup() {
 }
 
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -224,6 +226,8 @@ echo "    OK: state Code points at s3://${ASSET_BUCKET}/${CODE_KEY} and the obje
 # Functional assertion: the deployed Lambda actually runs the uploaded asset.
 OUT_FILE="$(mktemp)"
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
+trap 'rm -f "${OUT_FILE}"; cleanup; exit 130' INT
+trap 'rm -f "${OUT_FILE}"; cleanup; exit 143' TERM
 aws lambda invoke \
   --function-name "${FN_NAME}" --region "${REGION}" \
   --cli-binary-format raw-in-base64-out \

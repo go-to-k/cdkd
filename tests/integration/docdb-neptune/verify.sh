@@ -68,6 +68,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy"
 ${CLI} deploy "${STACK}" \
@@ -97,5 +99,5 @@ echo "[verify] step 5 ok: state cleared"
 
 # AWS-side orphan auditing is delegated to /run-integ's /cleanup pass.
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"

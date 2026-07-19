@@ -77,6 +77,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
@@ -415,5 +417,5 @@ for lid in sorted(deleted):
     ;;
 esac
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS (variant=${VARIANT})"

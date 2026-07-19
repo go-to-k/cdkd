@@ -66,7 +66,9 @@ cleanup() {
   rm -f "${OUT_FILE}"
   exit "${rc}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 fail() {
   echo "[verify] FAIL: $*" >&2

@@ -114,7 +114,9 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" --region "${REGION}" 2>/dev/null || true
   exit "${rc}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)

@@ -86,7 +86,9 @@ cleanup() {
   aws ssm delete-parameter --name "${C_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
   exit ${rc}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Resolve a single export entry's value from the exports index JSON on stdin.
 # Args: <export-name>. Prints the value or empty string.
@@ -402,4 +404,4 @@ echo "    exports index purged of ChainTopicArn + ChainDerivedValue (✓)"
 
 echo ""
 echo "==> All importvalue-chain smoke tests passed"
-trap - EXIT
+trap - EXIT INT TERM

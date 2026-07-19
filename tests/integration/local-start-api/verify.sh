@@ -76,7 +76,9 @@ cleanup() {
   fi
   rm -f "${LOG_FILE}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "==> Starting cdkd local start-api on port ${PORT} (with --watch: watch-source model)"
 ${CDKD} local start-api \

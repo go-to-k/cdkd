@@ -77,6 +77,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy (a wrong-Tags-shape crash on any type fails here)"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
@@ -218,5 +220,5 @@ echo "[verify]   ok: clean deploy is drift-free (no tag-order false positive)"
 echo "[verify] step 6: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"

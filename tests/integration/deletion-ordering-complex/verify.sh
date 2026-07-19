@@ -180,6 +180,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)
@@ -290,5 +292,5 @@ if [ "${ORPHANS}" -ne 0 ]; then
 fi
 echo "[verify] step 6 ok: no orphan AWS resources (LB / TG / SG / subnets / IGW / VPC / EC2 all gone)"
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"

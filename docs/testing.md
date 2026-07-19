@@ -389,6 +389,37 @@ EOF
 vp run build
 ```
 
+### Fixture convention: `verify.sh` signal traps
+
+Every fixture that provisions real AWS resources arms a `cleanup` trap so a
+failed run tears its resources down. That trap MUST be armed for the signal
+paths as well, in the exiting form:
+
+```bash
+cleanup() { ... }             # destroy + state/orphan sweep
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+```
+
+Two forms are wrong and both let a run leak billable resources:
+
+- **No `INT` / `TERM` handler.** Ctrl-C or a harness timeout terminates the
+  script without running the `EXIT` trap, so the stack survives.
+- **`trap cleanup EXIT INT TERM`** (the bare-function form). A bash signal
+  handler *returns to the interrupted point* instead of exiting, so `cleanup`
+  runs and the script then **resumes the interrupted phase**, walks into the
+  next one and can `exit 0` — reporting PASS. Worse, when only the script PID
+  is signalled the `node deploy` child survives, so `cleanup` deletes resources
+  concurrently with a live deploy.
+
+A disarm must release the signal traps too — `trap - EXIT INT TERM`, not
+`trap - EXIT` — otherwise a Ctrl-C after the fixture's own successful teardown
+re-runs `cleanup`.
+
+`tests/unit/scripts/integ-verify-signal-traps.test.ts` enforces this across the
+whole fixture tree (issue #1097).
+
 ## 3. Deploy Using cdkd
 
 ```bash

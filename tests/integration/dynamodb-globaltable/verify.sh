@@ -92,6 +92,8 @@ cleanup() {
   exit "${rc}"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "[verify] step 2: cdkd deploy (baseline — no UPDATE flags)"
 unset CDKD_TEST_UPDATE
@@ -363,5 +365,5 @@ if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
 fi
 echo "[verify] step 16b ok: cdkd state cleared"
 
-trap - EXIT
+trap - EXIT INT TERM
 echo "[verify] PASS"
