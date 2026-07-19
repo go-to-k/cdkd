@@ -1,3 +1,10 @@
+# [0.247.0](https://github.com/go-to-k/cdkd/compare/v0.246.0...v0.247.0) (2026-07-19)
+
+
+### Features
+
+* **providers:** CodeCommit Repository Code seed-content + Triggers support ([#1075](https://github.com/go-to-k/cdkd/issues/1075)) ([3871aa1](https://github.com/go-to-k/cdkd/commit/3871aa18b9af7d6d70f599b266258c51cdf9d650))
+
 # [0.246.0](https://github.com/go-to-k/cdkd/compare/v0.245.0...v0.246.0) (2026-07-18)
 
 
