@@ -410,6 +410,103 @@ describe('cdkd drift', () => {
     expect(output).not.toContain('Code');
   });
 
+  // Issue #1096 item 1. These drive the REAL command path (runDriftForStack ->
+  // calculateResourceDrift), not calculateResourceDrift directly, so they
+  // actually exercise the `provider.getDriftUnorderedPaths` call site and the
+  // `useObserved` baseline branch. Deleting either the provider call or the
+  // `unorderedPaths` argument in src/cli/commands/drift.ts must fail these.
+  it('sorts plain-string arrays declared by getDriftUnorderedPaths (observedProperties baseline)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Fs1: makeResource({
+          physicalId: 'fs-1',
+          resourceType: 'AWS::FSx::FileSystem',
+          properties: {
+            WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] },
+          },
+          // Present => the observed baseline branch (unionWalkObjects: true).
+          observedProperties: {
+            WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] },
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // AWS returns the same set in a different order.
+      readCurrentState: async () => ({
+        WindowsConfiguration: { Aliases: ['b.example.com', 'a.example.com'] },
+      }),
+      getDriftUnorderedPaths: () => ['WindowsConfiguration.Aliases'],
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+  });
+
+  it('sorts plain-string arrays declared by getDriftUnorderedPaths (properties-fallback baseline)', async () => {
+    // The load-bearing case for putting the sort in the shared normalizer.
+    // observedProperties is ABSENT, so the baseline is the user's TEMPLATE
+    // order. Sorting only inside the provider's readCurrentState would
+    // manufacture drift here instead of removing it.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Fs1: makeResource({
+          physicalId: 'fs-1',
+          resourceType: 'AWS::FSx::FileSystem',
+          // Template order, deployed before observed-capture.
+          properties: {
+            WindowsConfiguration: { Aliases: ['b.example.com', 'a.example.com'] },
+          },
+          // observedProperties intentionally omitted.
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] },
+      }),
+      getDriftUnorderedPaths: () => ['WindowsConfiguration.Aliases'],
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+  });
+
+  it('still reports a reorder as drift when the provider declares no unordered paths', async () => {
+    // Negative control for the two tests above: identical fixture minus the
+    // getDriftUnorderedPaths declaration. Proves the clean result there comes
+    // from the declaration being threaded through, not from some other
+    // normalization pass swallowing the reorder.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Fs1: makeResource({
+          physicalId: 'fs-1',
+          resourceType: 'AWS::FSx::FileSystem',
+          properties: {
+            WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] },
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        WindowsConfiguration: { Aliases: ['b.example.com', 'a.example.com'] },
+      }),
+      // No getDriftUnorderedPaths.
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    expect(output).toContain('WindowsConfiguration.Aliases');
+  });
+
   it('silently skips `Custom::*` resource types (drift not applicable, issue #323)', async () => {
     // Originally: when a stack contains a `Custom::*` resource (e.g.
     // CDK's S3 auto-delete-objects helper), the provider has no

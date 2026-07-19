@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { canonicalizeUnorderedArraysAtPaths } from '../../../../src/analyzer/drift-normalize.js';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -871,12 +872,63 @@ describe('FSxFileSystemProvider readCurrentState', () => {
 
   it('declares the plain-string unordered-set paths the id/ARN heuristic cannot cover', () => {
     // RouteTableIds are deliberately absent: their `rtb-` elements already
-    // match canonicalizeIdArraysDeep's heuristic.
+    // match canonicalizeIdArraysDeep's heuristic. DnsIps is deliberately
+    // absent too — AWS documents no set semantics for it and DNS resolver
+    // lists are conventionally preference-ordered, so sorting it would HIDE
+    // a real reorder rather than remove a false positive (issue #1096).
     expect(newProvider().getDriftUnorderedPaths(RESOURCE_TYPE)).toEqual([
       'WindowsConfiguration.Aliases',
-      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps',
     ]);
     expect(newProvider().getDriftUnorderedPaths('AWS::S3::Bucket')).toEqual([]);
+  });
+
+  it('declared unordered paths actually match the shape readCurrentState emits', async () => {
+    // Guards against the assertion above going tautological: a misspelled
+    // path ('Alias') would still satisfy a literal-array comparison but would
+    // silently no-op here, because this drives the REAL readCurrentState
+    // output through the REAL canonicalizer with the provider's own paths.
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'WINDOWS',
+            StorageCapacity: 32,
+            SubnetIds: ['subnet-111'],
+            WindowsConfiguration: {
+              ThroughputCapacity: 32,
+              // AWS-side order is NOT alphabetical, so a working
+              // canonicalizer must visibly reorder this.
+              Aliases: [
+                { Name: 'share.example.com', Lifecycle: 'AVAILABLE' },
+                { Name: 'files.example.com', Lifecycle: 'AVAILABLE' },
+              ],
+              SelfManagedActiveDirectoryConfiguration: {
+                DomainName: 'corp.example.com',
+                DnsIps: ['10.0.0.2', '10.0.0.1'],
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const provider = newProvider();
+    const state = await provider.readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const canonical = canonicalizeUnorderedArraysAtPaths(
+      state,
+      provider.getDriftUnorderedPaths(RESOURCE_TYPE)
+    ) as Record<string, unknown>;
+    const windows = canonical['WindowsConfiguration'] as Record<string, unknown>;
+
+    // Declared path => sorted.
+    expect(windows['Aliases']).toEqual(['files.example.com', 'share.example.com']);
+    // Undeclared path => left in AWS order (the C3 decision, asserted so a
+    // future re-add of DnsIps has to update this test deliberately).
+    expect(
+      (windows['SelfManagedActiveDirectoryConfiguration'] as Record<string, unknown>)['DnsIps']
+    ).toEqual(['10.0.0.2', '10.0.0.1']);
   });
 });
 

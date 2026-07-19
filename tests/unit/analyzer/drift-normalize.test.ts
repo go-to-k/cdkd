@@ -3,6 +3,7 @@ import {
   canonicalizeIdArraysDeep,
   canonicalizeTagListsDeep,
   canonicalizeUnorderedArraysAtPaths,
+  matchesPathPrefix,
 } from '../../../src/analyzer/drift-normalize.js';
 
 describe('canonicalizeTagListsDeep', () => {
@@ -150,8 +151,25 @@ describe('canonicalizeUnorderedArraysAtPaths', () => {
     expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: ['b', 1] });
   });
 
-  it('does not sort a single-element array at a declared path', () => {
-    expect(canonicalizeUnorderedArraysAtPaths({ P: ['only'] }, ['P'])).toEqual({ P: ['only'] });
+  it('leaves an empty array at a declared path unchanged', () => {
+    expect(canonicalizeUnorderedArraysAtPaths({ P: [] }, ['P'])).toEqual({ P: [] });
+  });
+
+  it('does not sort an array sitting at a PREFIX of a declared path', () => {
+    // 'A.B' is a prefix of the declared 'A.B.C' but is not itself declared:
+    // neither exact-equal nor `<entry>.`-prefixed, so it must be left alone.
+    const v = { A: { B: ['z', 'a'] } };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['A.B.C'])).toEqual({ A: { B: ['z', 'a'] } });
+  });
+
+  it('does not sort the inner lists of an array-of-arrays at a declared path', () => {
+    // Array elements inherit the parent path, so without the nested-array
+    // guard the INNER lists would be sorted even though the outer array's
+    // elements are not plain strings.
+    const v = { P: [['b', 'a'], ['d', 'c']] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({
+      P: [['b', 'a'], ['d', 'c']],
+    });
   });
 
   it('is a no-op when no paths are declared', () => {
@@ -169,5 +187,31 @@ describe('canonicalizeUnorderedArraysAtPaths', () => {
   it('passes scalars through unchanged', () => {
     expect(canonicalizeUnorderedArraysAtPaths('x', ['P'])).toBe('x');
     expect(canonicalizeUnorderedArraysAtPaths(null, ['P'])).toBe(null);
+  });
+});
+
+describe('matchesPathPrefix (shared by both provider-declared path lists)', () => {
+  // This matcher is the single implementation behind getDriftUnknownPaths
+  // (via isIgnoredPath) and getDriftUnorderedPaths. Both are documented as
+  // reading the same way, so the rule is pinned here once.
+  it('matches an exactly-equal path', () => {
+    expect(matchesPathPrefix('Code', ['Code'])).toBe(true);
+  });
+
+  it('matches anything beneath a declared entry (every entry is a subtree)', () => {
+    expect(matchesPathPrefix('Code.S3Bucket', ['Code'])).toBe(true);
+    expect(matchesPathPrefix('A.B.C.D', ['A.B'])).toBe(true);
+  });
+
+  it('does not match a sibling that merely shares a string prefix', () => {
+    expect(matchesPathPrefix('CodeSigningConfigArn', ['Code'])).toBe(false);
+  });
+
+  it('does not match a path that is only a PREFIX of a declared entry', () => {
+    expect(matchesPathPrefix('A.B', ['A.B.C'])).toBe(false);
+  });
+
+  it('does not match against an empty entry list', () => {
+    expect(matchesPathPrefix('Code', [])).toBe(false);
   });
 });

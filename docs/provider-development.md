@@ -1083,14 +1083,15 @@ When your `readCurrentState` emits a plain-string array that is semantically an 
 ```typescript
 getDriftUnorderedPaths(resourceType: string): string[] {
   if (resourceType !== 'AWS::FSx::FileSystem') return [];
-  return [
-    'WindowsConfiguration.Aliases',                                        // DNS alias names
-    'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps', // plain IPv4 strings
-  ];
+  return ['WindowsConfiguration.Aliases'];   // DNS alias names
 }
 ```
 
-Path matching is the same exact-match + `entry + '.'` prefix rule as `getDriftUnknownPaths()`, so an entry can name a leaf or a whole subtree. Only arrays whose every element is a plain string are sorted; anything else at a declared path is left alone.
+Path matching uses the same shared `matchesPathPrefix` rule as `getDriftUnknownPaths()` (exact match, or entry followed by `.`). **Every entry is a subtree declaration** — `'WindowsConfiguration.Aliases'` covers that path *and everything beneath it*; there is no leaf-only form. Only arrays whose every element is a plain string are sorted, and a nested array inside a declared path is left alone, so a mis-declared path can never reorder object, mixed-type, or array-valued elements.
+
+One semantic divergence from `getDriftUnknownPaths()`, required for this pass to work: the comparator compares arrays wholesale and never descends into elements, so an ignore-path can never cross an array. This normalizer *does* descend into array elements, giving each the parent's path. A path like `'Items.Aliases'` is therefore meaningful for `getDriftUnorderedPaths()` (it reaches an `Aliases` array inside each `Items` element) while being inert as an ignore-path. The divergence is strictly more permissive.
+
+**Only declare a path AWS documents — or you can demonstrate — as order-insensitive.** The failure modes are not symmetric: an undeclared unordered set produces a *visible* false positive the user can see and correct, but declaring an order-*significant* list silently hides real drift, which is the worse failure for a drift tool. FSx's `SelfManagedActiveDirectoryConfiguration.DnsIps` is left undeclared for exactly this reason (DNS resolver lists are conventionally preference-ordered and AWS documents no set semantics), as is ElastiCache's `PreferredAvailabilityZones` (documented as positionally aligned to node index).
 
 **Do NOT sort inside the reverse-mapper instead.** It looks like a one-liner, but it breaks the `properties` fallback baseline: `runDriftForStack` uses `observedProperties` as the baseline only when present and falls back to the template `properties` otherwise, so for a resource deployed before observed-capture the baseline would be the user's TEMPLATE order while the read side is sorted — manufacturing drift instead of removing it. The normalizer runs on both comparison sides, which is exactly the property needed.
 

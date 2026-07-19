@@ -250,7 +250,11 @@ describe('calculateResourceDrift', () => {
   });
 
   describe('unorderedPaths (provider-declared plain-string sets)', () => {
-    const FSX_UNORDERED = [
+    // Illustrative paths for exercising the generic mechanism (a leaf and a
+    // deeper nested one) -- NOT FSxFileSystemProvider's actual declaration,
+    // which is Aliases only. The provider's real list is asserted in
+    // tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts.
+    const UNORDERED_PATHS = [
       'WindowsConfiguration.Aliases',
       'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps',
     ];
@@ -274,7 +278,7 @@ describe('calculateResourceDrift', () => {
       expect(
         calculateResourceDrift(observed, aws, {
           unionWalkObjects: true,
-          unorderedPaths: FSX_UNORDERED,
+          unorderedPaths: UNORDERED_PATHS,
         })
       ).toEqual([]);
     });
@@ -298,7 +302,7 @@ describe('calculateResourceDrift', () => {
       expect(
         calculateResourceDrift(templateProperties, aws, {
           unionWalkObjects: false,
-          unorderedPaths: FSX_UNORDERED,
+          unorderedPaths: UNORDERED_PATHS,
         })
       ).toEqual([]);
     });
@@ -306,7 +310,7 @@ describe('calculateResourceDrift', () => {
     it('still reports drift on a real membership change at a declared path', () => {
       const state = { WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] } };
       const aws = { WindowsConfiguration: { Aliases: ['a.example.com', 'c.example.com'] } };
-      const drifts = calculateResourceDrift(state, aws, { unorderedPaths: FSX_UNORDERED });
+      const drifts = calculateResourceDrift(state, aws, { unorderedPaths: UNORDERED_PATHS });
       expect(drifts).toHaveLength(1);
       expect(drifts[0]?.path).toBe('WindowsConfiguration.Aliases');
     });
@@ -315,7 +319,7 @@ describe('calculateResourceDrift', () => {
       // Guard against over-normalizing an order-significant scalar list.
       const state = { OrderedList: ['first', 'second'] };
       const aws = { OrderedList: ['second', 'first'] };
-      const drifts = calculateResourceDrift(state, aws, { unorderedPaths: FSX_UNORDERED });
+      const drifts = calculateResourceDrift(state, aws, { unorderedPaths: UNORDERED_PATHS });
       expect(drifts).toHaveLength(1);
       expect(drifts[0]?.path).toBe('OrderedList');
     });

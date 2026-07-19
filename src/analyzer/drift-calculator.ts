@@ -28,6 +28,7 @@ import {
   canonicalizeIdArraysDeep,
   canonicalizeTagListsDeep,
   canonicalizeUnorderedArraysAtPaths,
+  matchesPathPrefix,
 } from './drift-normalize.js';
 
 /**
@@ -120,12 +121,15 @@ export function calculateResourceDrift(
   return drifts;
 }
 
+/**
+ * Thin alias over the shared {@link matchesPathPrefix} rule, kept as a named
+ * function because "ignored" is what the path list means at these call sites.
+ * Sharing the implementation with `getDriftUnorderedPaths` is deliberate: both
+ * lists are provider-declared and documented as reading the same way, so they
+ * must not be able to drift apart.
+ */
 function isIgnoredPath(path: string, ignorePaths: readonly string[]): boolean {
-  for (const entry of ignorePaths) {
-    if (path === entry) return true;
-    if (path.startsWith(`${entry}.`)) return true;
-  }
-  return false;
+  return matchesPathPrefix(path, ignorePaths);
 }
 
 /**

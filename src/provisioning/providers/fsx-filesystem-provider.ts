@@ -1713,24 +1713,33 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * Plain-string arrays FSx returns as unordered sets.
    *
    *  - `WindowsConfiguration.Aliases` — DNS alias names (`files.example.com`).
-   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps` —
-   *    plain IPv4 strings.
+   *    Alternate names the file system answers to; the API documents no
+   *    ordering semantics and no name is privileged over another, so a
+   *    `DescribeFileSystems` reorder carries no meaning.
    *
-   * Neither matches the shared normalizer's AWS-id / ARN heuristic, so without
-   * this declaration a `DescribeFileSystems` reorder would surface as phantom
-   * drift. Declared here rather than sorted in `readWindowsConfiguration` so
-   * the sort applies to BOTH comparison sides — see
+   * This does not match the shared normalizer's AWS-id / ARN heuristic, so
+   * without the declaration a reorder would surface as phantom drift. Declared
+   * here rather than sorted in `readWindowsConfiguration` so the sort applies
+   * to BOTH comparison sides — see
    * {@link ResourceProvider.getDriftUnorderedPaths}.
    *
-   * `OntapConfiguration.RouteTableIds` / `OpenZFSConfiguration.RouteTableIds`
-   * need no entry: their `rtb-` elements already match the id heuristic.
+   * Deliberately NOT declared:
+   *
+   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps` —
+   *    the API reference describes it only as "A list of IP addresses of DNS
+   *    servers or domain controllers in the self-managed AD directory"
+   *    (https://docs.aws.amazon.com/fsx/latest/APIReference/API_SelfManagedActiveDirectoryConfiguration.html),
+   *    with no statement that order is insignificant. DNS resolver lists are
+   *    conventionally preference-ordered (primary first), and if FSx honors
+   *    that when joining the domain, sorting would HIDE a real reorder. A
+   *    false positive is visible and correctable; silently hiding drift is
+   *    not. Same reasoning excludes ElastiCache `PreferredAvailabilityZones`.
+   *  - `OntapConfiguration.RouteTableIds` / `OpenZFSConfiguration.RouteTableIds`
+   *    — their `rtb-` elements already match the shared id heuristic.
    */
   getDriftUnorderedPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::FSx::FileSystem') return [];
-    return [
-      'WindowsConfiguration.Aliases',
-      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps',
-    ];
+    return ['WindowsConfiguration.Aliases'];
   }
 
   /**
