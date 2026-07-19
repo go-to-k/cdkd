@@ -1,3 +1,10 @@
+## [0.252.1](https://github.com/go-to-k/cdkd/compare/v0.252.0...v0.252.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **analyzer:** canonicalize provider-declared unordered plain-string arrays before drift compare ([#1100](https://github.com/go-to-k/cdkd/issues/1100)) ([38b658c](https://github.com/go-to-k/cdkd/commit/38b658c7e829fca9e9c65a9cc2bf6bdd3ec2944c))
+
 # [0.252.0](https://github.com/go-to-k/cdkd/compare/v0.251.0...v0.252.0) (2026-07-19)
 
 
