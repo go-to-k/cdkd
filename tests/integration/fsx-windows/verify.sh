@@ -90,9 +90,14 @@ tagged_fs_ids() {
 # List directory ids for the fixture's domain (the Directory Service API
 # has no tag filter on DescribeDirectories, and the domain name is unique
 # to this fixture).
+# Stage=='Deleted' is excluded for the same reason directory_state treats
+# it as gone: AWS keeps returning a deleted directory successfully for a
+# while, and counting those would both re-issue pointless deletes in
+# cleanup and make the post-delete "no directory remains" assertion fire
+# on a directory that is already gone.
 fixture_directory_ids() {
   aws ds describe-directories --region "${REGION}" \
-    --query "DirectoryDescriptions[?Name=='${AD_DOMAIN}'].DirectoryId" \
+    --query "DirectoryDescriptions[?Name=='${AD_DOMAIN}' && Stage!='Deleted'].DirectoryId" \
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
@@ -101,45 +106,83 @@ fixture_directory_ids() {
 # blip would report a live, billing file system or directory as deleted.
 # Require the not-found error specifically.
 #   0 = gone, 1 = still exists, 2 = indeterminate (API error)
+# FSx and Directory Service signal "deleted" DIFFERENTLY. Verified against
+# the API models rather than assumed symmetric:
+#
+#   FSx        FileSystemLifecycle = AVAILABLE | CREATING | DELETING |
+#              FAILED | MISCONFIGURED | MISCONFIGURED_UNAVAILABLE |
+#              UPDATING. There is NO terminal DELETED value — a deleted
+#              file system simply stops being returned, so the
+#              FileSystemNotFound error IS the only "gone" signal.
+#
+#   Directory  Stage = ... | Deleting | Deleted | Failed. AWS keeps
+#   Service    returning a deleted directory SUCCESSFULLY for a while
+#              with Stage=Deleted, so waiting for an error alone spins
+#              until the deadline and then wrongly reports a leak.
+#
+#   0 = gone, 1 = still exists, 2 = indeterminate (API error),
+#   3 = terminal FAILED (never "gone" — must be loud)
 fs_state() {
-  local fs_id="$1" err
-  if err="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
-    --region "${REGION}" 2>&1 >/dev/null)"; then
-    return 1
+  local fs_id="$1" out rc
+  out="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
+    --region "${REGION}" --query 'FileSystems[0].Lifecycle' \
+    --output text 2>&1)" && rc=0 || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    case "${out}" in
+      FAILED) return 3 ;;
+      # AVAILABLE / DELETING / UPDATING / MISCONFIGURED* all mean it is
+      # still there and still billing.
+      *) return 1 ;;
+    esac
   fi
-  case "${err}" in
+  case "${out}" in
     *FileSystemNotFound*) return 0 ;;
     *) return 2 ;;
   esac
 }
 
 directory_state() {
-  local dir_id="$1" err
-  if err="$(aws ds describe-directories --directory-ids "${dir_id}" \
-    --region "${REGION}" 2>&1 >/dev/null)"; then
-    return 1
+  local dir_id="$1" out rc
+  out="$(aws ds describe-directories --directory-ids "${dir_id}" \
+    --region "${REGION}" --query 'DirectoryDescriptions[0].Stage' \
+    --output text 2>&1)" && rc=0 || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    case "${out}" in
+      Deleted) return 0 ;;
+      Failed) return 3 ;;
+      *) return 1 ;;
+    esac
   fi
-  case "${err}" in
+  case "${out}" in
     *EntityDoesNotExist* | *DirectoryDoesNotExist*) return 0 ;;
     *) return 2 ;;
   esac
 }
 
 wait_fs_gone() {
-  local fs_id="$1"
+  local fs_id="$1" rc
   local deadline=$((SECONDS + 1800))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    fs_state "${fs_id}" && return 0
+    fs_state "${fs_id}" && return 0 || rc=$?
+    if [ "${rc}" -eq 3 ]; then
+      echo "    ERROR: FSx file system ${fs_id} reached Lifecycle=FAILED during deletion" >&2
+      return 3
+    fi
+    # rc 2 (transient API error) keeps polling — the deadline is the guard.
     sleep 15
   done
   return 1
 }
 
 wait_directory_gone() {
-  local dir_id="$1"
+  local dir_id="$1" rc
   local deadline=$((SECONDS + 2400))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    directory_state "${dir_id}" && return 0
+    directory_state "${dir_id}" && return 0 || rc=$?
+    if [ "${rc}" -eq 3 ]; then
+      echo "    ERROR: directory ${dir_id} reached Stage=Failed during deletion" >&2
+      return 3
+    fi
     sleep 20
   done
   return 1
@@ -550,6 +593,10 @@ case ${FS_RC} in
     echo "FAIL: FSx file system ${FS_ID_P4} still exists after cdkd removed it from the template" >&2
     exit 1
     ;;
+  3)
+    echo "FAIL: FSx file system ${FS_ID_P4} is in Lifecycle=FAILED, not deleted" >&2
+    exit 1
+    ;;
   *)
     echo "FAIL: could not determine whether ${FS_ID_P4} was deleted (FSx API error)" >&2
     exit 1
@@ -580,10 +627,18 @@ echo "    no chargeable backup remains"
 # --- Phase 6: delete the Managed AD -------------------------------------
 echo "==> Phase 6: delete the Managed Microsoft AD (~10 min)"
 aws ds delete-directory --directory-id "${DIRECTORY_ID}" --region "${REGION}" >/dev/null
-if ! wait_directory_gone "${DIRECTORY_ID}"; then
-  echo "FAIL: directory ${DIRECTORY_ID} still exists after delete-directory" >&2
-  exit 1
-fi
+wait_directory_gone "${DIRECTORY_ID}" && DIR_RC=0 || DIR_RC=$?
+case ${DIR_RC} in
+  0) ;;
+  3)
+    echo "FAIL: directory ${DIRECTORY_ID} reached Stage=Failed while deleting" >&2
+    exit 1
+    ;;
+  *)
+    echo "FAIL: directory ${DIRECTORY_ID} was still present at the deadline after delete-directory" >&2
+    exit 1
+    ;;
+esac
 REMAINING_DIRS="$(fixture_directory_ids)"
 if [ -n "${REMAINING_DIRS}" ]; then
   echo "FAIL: directory/directories for ${AD_DOMAIN} still exist: ${REMAINING_DIRS}" >&2

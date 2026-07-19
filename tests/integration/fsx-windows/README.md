@@ -119,6 +119,22 @@ file system and bills per GB-month. `verify.sh` therefore sweeps and
 asserts on backups explicitly after the delete; the file-system
 assertions alone would not catch this.
 
+### "Deleted" is not spelled the same way by both services
+
+The two services signal deletion differently, and the probes in
+`verify.sh` are deliberately **not** symmetric:
+
+| | Terminal signal | Why |
+| --- | --- | --- |
+| FSx | `FileSystemNotFound` error | `FileSystemLifecycle` has no `DELETED` value (`AVAILABLE`/`CREATING`/`DELETING`/`FAILED`/`MISCONFIGURED`/`MISCONFIGURED_UNAVAILABLE`/`UPDATING`) — a deleted file system simply stops being returned. |
+| Directory Service | `Stage == Deleted`, **or** `EntityDoesNotExist` | AWS keeps returning a deleted directory **successfully** for a while with `Stage=Deleted`. Waiting only for an API error spins until the deadline and then wrongly reports a leak. |
+
+Both probes keep a distinct "indeterminate" result for any other API
+error (a throttle or expired credential must never read as "gone"), and
+both treat the service's `FAILED` / `Failed` state as a loud failure
+rather than as deletion. The `Stage!='Deleted'` filter on the
+directory-listing query exists for the same reason.
+
 ### Not concurrency-safe
 
 The pre-run cleanup deletes any file system tagged

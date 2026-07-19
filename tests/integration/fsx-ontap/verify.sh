@@ -64,23 +64,45 @@ tagged_fs_ids() {
 # blip would report a live, billing file system as deleted. Require the
 # not-found error specifically.
 #   0 = gone, 1 = still exists, 2 = indeterminate (API error)
+# FSx FileSystemLifecycle = AVAILABLE | CREATING | DELETING | FAILED |
+# MISCONFIGURED | MISCONFIGURED_UNAVAILABLE | UPDATING. There is NO
+# terminal DELETED value (verified against the API model) — a deleted file
+# system simply stops being returned, so the FileSystemNotFound error IS
+# the only "gone" signal here. Note this does NOT generalise: Directory
+# Service keeps returning a deleted directory with Stage=Deleted, which is
+# why fsx-windows needs a different probe for it.
+#
+#   0 = gone, 1 = still exists, 2 = indeterminate (API error),
+#   3 = terminal FAILED (never "gone" — must be loud)
 fs_state() {
-  local fs_id="$1" err
-  if err="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
-    --region "${REGION}" 2>&1 >/dev/null)"; then
-    return 1
+  local fs_id="$1" out rc
+  out="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
+    --region "${REGION}" --query 'FileSystems[0].Lifecycle' \
+    --output text 2>&1)" && rc=0 || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    case "${out}" in
+      FAILED) return 3 ;;
+      # AVAILABLE / DELETING / UPDATING / MISCONFIGURED* all mean it is
+      # still there and still billing.
+      *) return 1 ;;
+    esac
   fi
-  case "${err}" in
+  case "${out}" in
     *FileSystemNotFound*) return 0 ;;
     *) return 2 ;;
   esac
 }
 
 wait_fs_gone() {
-  local fs_id="$1"
+  local fs_id="$1" rc
   local deadline=$((SECONDS + 1800))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    fs_state "${fs_id}" && return 0
+    fs_state "${fs_id}" && return 0 || rc=$?
+    if [ "${rc}" -eq 3 ]; then
+      echo "    ERROR: FSx file system ${fs_id} reached Lifecycle=FAILED during deletion" >&2
+      return 3
+    fi
+    # rc 2 (transient API error) keeps polling — the deadline is the guard.
     sleep 15
   done
   return 1
@@ -345,6 +367,10 @@ case ${FS_RC} in
   0) ;;
   1)
     echo "FAIL: FSx file system ${FS_ID_P2} still exists after destroy" >&2
+    exit 1
+    ;;
+  3)
+    echo "FAIL: FSx file system ${FS_ID_P2} is in Lifecycle=FAILED, not deleted" >&2
     exit 1
     ;;
   *)
