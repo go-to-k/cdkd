@@ -211,6 +211,9 @@ delete_fixture_directories() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # The Managed AD request payload carries the admin password; drop it on
+  # every exit path (may be unset if we never reached Phase 2).
+  rm -f "${AD_INPUT_FILE:-}"
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
@@ -337,28 +340,48 @@ echo "    vpc ${VPC_ID}, subnets ${SUBNET_A} / ${SUBNET_B}"
 # complexity pattern (8-64 chars with upper + lower + digit + symbol).
 AD_PASSWORD="Cdkd-$(openssl rand -hex 12)-Aa1!"
 echo "==> Phase 2: create the Managed Microsoft AD (Standard edition; this takes ~20-40 min)"
-# The request is piped in as JSON rather than passed on argv: a
+# The request goes in as JSON via a PRIVATE TEMP FILE, not on argv: a
 # `--password` flag would put the AD admin password in the process table
-# where any local user can read it via `ps`. The values reach `node` as
-# environment variables (not argv) for the same reason.
-DIRECTORY_ID="$(
-  AD_NAME="${AD_DOMAIN}" AD_PW="${AD_PASSWORD}" AD_VPC="${VPC_ID}" \
-    AD_SUB_A="${SUBNET_A}" AD_SUB_B="${SUBNET_B}" node -e '
-      process.stdout.write(
-        JSON.stringify({
-          Name: process.env.AD_NAME,
-          Password: process.env.AD_PW,
-          Edition: "Standard",
-          Description: "cdkd integ fsx-windows",
-          VpcSettings: {
-            VpcId: process.env.AD_VPC,
-            SubnetIds: [process.env.AD_SUB_A, process.env.AD_SUB_B],
-          },
-        })
-      );
-    ' | aws ds create-microsoft-ad --cli-input-json file:///dev/stdin \
-      --region "${REGION}" --query 'DirectoryId' --output text
-)"
+# where any local user could read it with `ps`. The values reach `node`
+# as environment variables (not argv) for the same reason.
+#
+# It must be a real file, NOT `file:///dev/stdin`. This fixture normally
+# runs non-interactively — as a background task, under CI, or from any
+# shell whose stdin is redirected from /dev/null — and in that mode the
+# AWS CLI reads nothing from /dev/stdin and dies before it ever reaches
+# the API ("Warning: Input is not a terminal (fd=0)", exit 120). A temp
+# file works whether or not a TTY is attached.
+#
+# `umask 077` makes mktemp create it owner-readable only, and cleanup()
+# removes it on every exit path including the INT/TERM handlers.
+AD_INPUT_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/cdkd-fsx-windows-ad.XXXXXX")"
+AD_NAME="${AD_DOMAIN}" AD_PW="${AD_PASSWORD}" AD_VPC="${VPC_ID}" \
+  AD_SUB_A="${SUBNET_A}" AD_SUB_B="${SUBNET_B}" node -e '
+    process.stdout.write(
+      JSON.stringify({
+        Name: process.env.AD_NAME,
+        Password: process.env.AD_PW,
+        Edition: "Standard",
+        Description: "cdkd integ fsx-windows",
+        VpcSettings: {
+          VpcId: process.env.AD_VPC,
+          SubnetIds: [process.env.AD_SUB_A, process.env.AD_SUB_B],
+        },
+      })
+    );
+  ' > "${AD_INPUT_FILE}"
+if [ ! -s "${AD_INPUT_FILE}" ]; then
+  echo "FAIL: failed to build the create-microsoft-ad request payload" >&2
+  exit 1
+fi
+
+DIRECTORY_ID="$(aws ds create-microsoft-ad \
+  --cli-input-json "file://${AD_INPUT_FILE}" \
+  --region "${REGION}" --query 'DirectoryId' --output text)"
+
+# Drop the payload as soon as it has been sent (cleanup() repeats this on
+# the failure paths).
+rm -f "${AD_INPUT_FILE}"
 if [ -z "${DIRECTORY_ID}" ] || [ "${DIRECTORY_ID}" = "None" ]; then
   echo "FAIL: create-microsoft-ad returned no DirectoryId" >&2
   exit 1

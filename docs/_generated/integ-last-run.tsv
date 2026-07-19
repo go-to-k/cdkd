@@ -251,3 +251,5 @@ state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055
 cc-api-fallback	2026-07-20T02:16:18Z	PASS	62	verify.sh	CC auto-route silent-drop closed, destroy clean, deployments swept
 cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transition/override #634 verified, 2 stacks destroy clean
 recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean
+fsx-ontap	2026-07-19T17:04:12Z	FAIL	1085	verify.sh	deploy+config OK; assertion too strict - AWS omits AutomaticBackupRetentionDays when 0; cleanup clean 0 orphans
+fsx-windows	2026-07-19T17:18:44Z	FAIL	120	verify.sh	phase2 AD create: --cli-input-json file:///dev/stdin fails when stdin is not a TTY (background run); VPC deploy OK, cleanup clean 0 orphans
