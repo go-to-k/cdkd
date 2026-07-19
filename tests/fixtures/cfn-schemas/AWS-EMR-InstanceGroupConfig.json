@@ -1,0 +1,35 @@
+{
+  "resourceType": "AWS::EMR::InstanceGroupConfig",
+  "generatedAt": "2026-07-19",
+  "properties": [
+    "AutoScalingPolicy",
+    "BidPrice",
+    "Configurations",
+    "CustomAmiId",
+    "EbsConfiguration",
+    "Id",
+    "InstanceCount",
+    "InstanceRole",
+    "InstanceType",
+    "JobFlowId",
+    "Market",
+    "Name"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "BidPrice",
+    "Configurations",
+    "CustomAmiId",
+    "EbsConfiguration",
+    "InstanceRole",
+    "InstanceType",
+    "JobFlowId",
+    "Market",
+    "Name"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

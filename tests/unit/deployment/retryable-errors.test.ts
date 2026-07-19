@@ -170,6 +170,14 @@ describe('isRetryableTransientError', () => {
         'Failed to create EMR Cluster Cluster: Invalid InstanceProfile: MyStack-EmrEc2InstanceProfile.',
         'EMR fresh-instance-profile propagation',
       ],
+      // EMR AddInstanceGroups / RunJobFlow surfaces the SAME fresh-instance-
+      // profile race with a different sentence when the profile exists but its
+      // role membership has not propagated to EMR's authorization layer
+      // (emr-instance-configs): "Failed to authorize instance profile <arn>."
+      [
+        'Failed to create EMR Cluster Cluster: Failed to authorize instance profile arn:aws:iam::123456789012:instance-profile/MyStack-EmrEc2InstanceProfile',
+        'EMR fresh-instance-profile authorization propagation',
+      ],
     ])('retries on %j (%s)', (message) => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(true);
     });

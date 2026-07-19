@@ -59,8 +59,6 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::ElastiCache::SecurityGroupIngress',
   'AWS::ElasticLoadBalancingV2::ListenerCertificate',
   'AWS::Elasticsearch::Domain',
-  'AWS::EMR::InstanceFleetConfig',
-  'AWS::EMR::InstanceGroupConfig',
   'AWS::FSx::Snapshot',
   'AWS::FSx::StorageVirtualMachine',
   'AWS::FSx::Volume',
