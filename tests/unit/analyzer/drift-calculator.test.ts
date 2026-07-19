@@ -248,4 +248,82 @@ describe('calculateResourceDrift', () => {
       expect(drifts[0]?.path).toBe('SubnetIds');
     });
   });
+
+  describe('unorderedPaths (provider-declared plain-string sets)', () => {
+    const FSX_UNORDERED = [
+      'WindowsConfiguration.Aliases',
+      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps',
+    ];
+
+    it('reports no drift on an AWS-side reorder with the observedProperties baseline', () => {
+      // observedProperties baseline => unionWalkObjects: true (see drift.ts).
+      const observed = {
+        WindowsConfiguration: {
+          ThroughputCapacity: 8,
+          Aliases: ['a.example.com', 'b.example.com'],
+          SelfManagedActiveDirectoryConfiguration: { DnsIps: ['10.0.0.1', '10.0.0.2'] },
+        },
+      };
+      const aws = {
+        WindowsConfiguration: {
+          ThroughputCapacity: 8,
+          Aliases: ['b.example.com', 'a.example.com'],
+          SelfManagedActiveDirectoryConfiguration: { DnsIps: ['10.0.0.2', '10.0.0.1'] },
+        },
+      };
+      expect(
+        calculateResourceDrift(observed, aws, {
+          unionWalkObjects: true,
+          unorderedPaths: FSX_UNORDERED,
+        })
+      ).toEqual([]);
+    });
+
+    it('reports no drift on an AWS-side reorder with the properties-fallback baseline', () => {
+      // The whole reason the fix lives in the shared normalizer: for a resource
+      // deployed before observed-capture the baseline is the user's TEMPLATE
+      // order, so only normalizing both sides keeps this clean.
+      const templateProperties = {
+        WindowsConfiguration: {
+          Aliases: ['b.example.com', 'a.example.com'],
+          SelfManagedActiveDirectoryConfiguration: { DnsIps: ['10.0.0.2', '10.0.0.1'] },
+        },
+      };
+      const aws = {
+        WindowsConfiguration: {
+          Aliases: ['a.example.com', 'b.example.com'],
+          SelfManagedActiveDirectoryConfiguration: { DnsIps: ['10.0.0.1', '10.0.0.2'] },
+        },
+      };
+      expect(
+        calculateResourceDrift(templateProperties, aws, {
+          unionWalkObjects: false,
+          unorderedPaths: FSX_UNORDERED,
+        })
+      ).toEqual([]);
+    });
+
+    it('still reports drift on a real membership change at a declared path', () => {
+      const state = { WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] } };
+      const aws = { WindowsConfiguration: { Aliases: ['a.example.com', 'c.example.com'] } };
+      const drifts = calculateResourceDrift(state, aws, { unorderedPaths: FSX_UNORDERED });
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]?.path).toBe('WindowsConfiguration.Aliases');
+    });
+
+    it('still reports drift when an undeclared plain-string array is reordered', () => {
+      // Guard against over-normalizing an order-significant scalar list.
+      const state = { OrderedList: ['first', 'second'] };
+      const aws = { OrderedList: ['second', 'first'] };
+      const drifts = calculateResourceDrift(state, aws, { unorderedPaths: FSX_UNORDERED });
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]?.path).toBe('OrderedList');
+    });
+
+    it('reports drift on a reorder when no unorderedPaths are supplied at all', () => {
+      const state = { WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] } };
+      const aws = { WindowsConfiguration: { Aliases: ['b.example.com', 'a.example.com'] } };
+      expect(calculateResourceDrift(state, aws)).toHaveLength(1);
+    });
+  });
 });

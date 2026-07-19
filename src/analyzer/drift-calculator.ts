@@ -24,7 +24,11 @@
  *     output).
  */
 
-import { canonicalizeIdArraysDeep, canonicalizeTagListsDeep } from './drift-normalize.js';
+import {
+  canonicalizeIdArraysDeep,
+  canonicalizeTagListsDeep,
+  canonicalizeUnorderedArraysAtPaths,
+} from './drift-normalize.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -70,28 +74,39 @@ export interface PropertyDrift {
  * it is exactly equal to the entry, or when the entry is a prefix followed
  * by `.` — so `'Code'` excludes the whole `Code` subtree, and
  * `'VpcConfig.SubnetIds'` excludes only that leaf.
+ *
+ * `options.unorderedPaths` is supplied by the provider (via
+ * `getDriftUnorderedPaths`) for plain-string arrays that are semantically
+ * UNORDERED sets — e.g. FSx `WindowsConfiguration.Aliases`. Those are sorted on
+ * BOTH sides before comparison so an AWS-side reorder is not phantom drift.
+ * Path matching uses the same prefix rule as `ignorePaths`.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
-  options?: { ignorePaths?: readonly string[]; unionWalkObjects?: boolean }
+  options?: {
+    ignorePaths?: readonly string[];
+    unionWalkObjects?: boolean;
+    unorderedPaths?: readonly string[];
+  }
 ): PropertyDrift[] {
   const drifts: PropertyDrift[] = [];
   const ignore = options?.ignorePaths ?? [];
   const union = options?.unionWalkObjects ?? false;
+  const unordered = options?.unorderedPaths ?? [];
   // Canonicalize tag lists and AWS resource-id/ARN arrays on BOTH sides before
   // any comparison. AWS does not guarantee element ordering across reads, so a
   // reorder between the deploy-time observedProperties snapshot and a later
   // drift read would otherwise surface as phantom drift (the deepEqual walk
   // below compares arrays positionally). See drift-normalize.ts.
-  stateProperties = canonicalizeIdArraysDeep(canonicalizeTagListsDeep(stateProperties)) as Record<
-    string,
-    unknown
-  >;
-  awsProperties = canonicalizeIdArraysDeep(canonicalizeTagListsDeep(awsProperties)) as Record<
-    string,
-    unknown
-  >;
+  stateProperties = canonicalizeUnorderedArraysAtPaths(
+    canonicalizeIdArraysDeep(canonicalizeTagListsDeep(stateProperties)),
+    unordered
+  ) as Record<string, unknown>;
+  awsProperties = canonicalizeUnorderedArraysAtPaths(
+    canonicalizeIdArraysDeep(canonicalizeTagListsDeep(awsProperties)),
+    unordered
+  ) as Record<string, unknown>;
   // Top-level walk is intentionally state-keys-only even with union mode:
   // the top-level shape is fully described by what `provider.create()`
   // takes, and AWS surfaces a long tail of read-only top-level fields

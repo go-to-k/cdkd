@@ -473,6 +473,13 @@ async function runDriftForStack(
       const ignorePaths = provider.getDriftUnknownPaths
         ? provider.getDriftUnknownPaths(resource.resourceType)
         : [];
+      // Providers can also declare plain-string array paths that are
+      // semantically UNORDERED sets (FSx `WindowsConfiguration.Aliases`, ...).
+      // The comparator sorts those on BOTH sides, so an AWS-side reorder is
+      // not phantom drift. Same CC-API-fallback caveat as ignorePaths above.
+      const unorderedPaths = provider.getDriftUnorderedPaths
+        ? provider.getDriftUnorderedPaths(resource.resourceType)
+        : [];
       // Prefer the observedProperties baseline (deploy-time AWS snapshot)
       // when present — this is what makes "console-side change to a key
       // the user did not template" surface as drift, instead of being
@@ -494,6 +501,7 @@ async function runDriftForStack(
       const changes = calculateResourceDrift(baseline, aws, {
         ignorePaths,
         unionWalkObjects: useObserved,
+        unorderedPaths,
       });
       if (changes.length === 0) {
         outcomes.push({ kind: 'clean', logicalId, resourceType: resource.resourceType });

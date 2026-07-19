@@ -868,6 +868,16 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     ]);
     expect(newProvider().getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
   });
+
+  it('declares the plain-string unordered-set paths the id/ARN heuristic cannot cover', () => {
+    // RouteTableIds are deliberately absent: their `rtb-` elements already
+    // match canonicalizeIdArraysDeep's heuristic.
+    expect(newProvider().getDriftUnorderedPaths(RESOURCE_TYPE)).toEqual([
+      'WindowsConfiguration.Aliases',
+      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps',
+    ]);
+    expect(newProvider().getDriftUnorderedPaths('AWS::S3::Bucket')).toEqual([]);
+  });
 });
 
 describe('FSxFileSystemProvider readCurrentState variant blocks', () => {

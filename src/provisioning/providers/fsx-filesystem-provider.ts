@@ -1710,6 +1710,30 @@ export class FSxFileSystemProvider implements ResourceProvider {
   }
 
   /**
+   * Plain-string arrays FSx returns as unordered sets.
+   *
+   *  - `WindowsConfiguration.Aliases` — DNS alias names (`files.example.com`).
+   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps` —
+   *    plain IPv4 strings.
+   *
+   * Neither matches the shared normalizer's AWS-id / ARN heuristic, so without
+   * this declaration a `DescribeFileSystems` reorder would surface as phantom
+   * drift. Declared here rather than sorted in `readWindowsConfiguration` so
+   * the sort applies to BOTH comparison sides — see
+   * {@link ResourceProvider.getDriftUnorderedPaths}.
+   *
+   * `OntapConfiguration.RouteTableIds` / `OpenZFSConfiguration.RouteTableIds`
+   * need no entry: their `rtb-` elements already match the id heuristic.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::FSx::FileSystem') return [];
+    return [
+      'WindowsConfiguration.Aliases',
+      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps',
+    ];
+  }
+
+  /**
    * Read the AWS-current file system configuration in CFn-property shape
    * via `DescribeFileSystems`. Lustre data-repository fields (`ImportPath`
    * / `ExportPath` / `AutoImportPolicy` / `ImportedFileChunkSize`) are

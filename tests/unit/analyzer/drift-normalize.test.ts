@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   canonicalizeIdArraysDeep,
   canonicalizeTagListsDeep,
+  canonicalizeUnorderedArraysAtPaths,
 } from '../../../src/analyzer/drift-normalize.js';
 
 describe('canonicalizeTagListsDeep', () => {
@@ -108,5 +109,65 @@ describe('canonicalizeIdArraysDeep', () => {
     expect(canonicalizeIdArraysDeep('subnet-aaa111')).toBe('subnet-aaa111');
     expect(canonicalizeIdArraysDeep(7)).toBe(7);
     expect(canonicalizeIdArraysDeep(null)).toBe(null);
+  });
+});
+
+describe('canonicalizeUnorderedArraysAtPaths', () => {
+  it('sorts a plain-string array at a declared leaf path', () => {
+    const v = { WindowsConfiguration: { Aliases: ['b.example.com', 'a.example.com'] } };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['WindowsConfiguration.Aliases'])).toEqual({
+      WindowsConfiguration: { Aliases: ['a.example.com', 'b.example.com'] },
+    });
+  });
+
+  it('leaves a plain-string array at an undeclared path untouched', () => {
+    const v = { Layers: ['z', 'a'] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['WindowsConfiguration.Aliases'])).toEqual({
+      Layers: ['z', 'a'],
+    });
+  });
+
+  it('treats a declared entry as a subtree prefix', () => {
+    const v = {
+      WindowsConfiguration: {
+        SelfManagedActiveDirectoryConfiguration: { DnsIps: ['10.0.0.2', '10.0.0.1'] },
+      },
+    };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['WindowsConfiguration'])).toEqual({
+      WindowsConfiguration: {
+        SelfManagedActiveDirectoryConfiguration: { DnsIps: ['10.0.0.1', '10.0.0.2'] },
+      },
+    });
+  });
+
+  it('does not sort a non-string array at a declared path', () => {
+    const v = { P: [{ B: 2 }, { A: 1 }] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: [{ B: 2 }, { A: 1 }] });
+  });
+
+  it('does not sort a mixed-type array at a declared path', () => {
+    const v = { P: ['b', 1] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: ['b', 1] });
+  });
+
+  it('does not sort a single-element array at a declared path', () => {
+    expect(canonicalizeUnorderedArraysAtPaths({ P: ['only'] }, ['P'])).toEqual({ P: ['only'] });
+  });
+
+  it('is a no-op when no paths are declared', () => {
+    const v = { WindowsConfiguration: { Aliases: ['b', 'a'] } };
+    expect(canonicalizeUnorderedArraysAtPaths(v, [])).toBe(v);
+  });
+
+  it('sorts a declared array nested under an array element (elements inherit the parent path)', () => {
+    const v = { Items: [{ Aliases: ['b', 'a'] }] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['Items.Aliases'])).toEqual({
+      Items: [{ Aliases: ['a', 'b'] }],
+    });
+  });
+
+  it('passes scalars through unchanged', () => {
+    expect(canonicalizeUnorderedArraysAtPaths('x', ['P'])).toBe('x');
+    expect(canonicalizeUnorderedArraysAtPaths(null, ['P'])).toBe(null);
   });
 });

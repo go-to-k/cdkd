@@ -1074,6 +1074,26 @@ getDriftUnknownPaths(): string[] {
 
 The comparator does exact-match + `entry + '.'` prefix-match — listing `'Policies'` skips `Policies`, `Policies.Foo`, `Policies[0].PolicyDocument`, etc. Pair this with a docstring explaining why the field is unreadable so a future PR can lift the gap.
 
+#### `getDriftUnorderedPaths()` for plain-string sets
+
+The drift comparator compares arrays **positionally**, and AWS does not guarantee element ordering across reads. The shared normalizer ([src/analyzer/drift-normalize.ts](../src/analyzer/drift-normalize.ts)) already auto-canonicalizes two shapes for every type — `{Key,...}[]` tag lists and arrays whose every element is an AWS resource id (`subnet-…`, `rtb-…`) or ARN — but **plain-string arrays are deliberately left untouched**, because a scalar list can be order-significant.
+
+When your `readCurrentState` emits a plain-string array that is semantically an unordered SET, declare its path so the comparator sorts it on both sides:
+
+```typescript
+getDriftUnorderedPaths(resourceType: string): string[] {
+  if (resourceType !== 'AWS::FSx::FileSystem') return [];
+  return [
+    'WindowsConfiguration.Aliases',                                        // DNS alias names
+    'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps', // plain IPv4 strings
+  ];
+}
+```
+
+Path matching is the same exact-match + `entry + '.'` prefix rule as `getDriftUnknownPaths()`, so an entry can name a leaf or a whole subtree. Only arrays whose every element is a plain string are sorted; anything else at a declared path is left alone.
+
+**Do NOT sort inside the reverse-mapper instead.** It looks like a one-liner, but it breaks the `properties` fallback baseline: `runDriftForStack` uses `observedProperties` as the baseline only when present and falls back to the template `properties` otherwise, so for a resource deployed before observed-capture the baseline would be the user's TEMPLATE order while the read side is sorted — manufacturing drift instead of removing it. The normalizer runs on both comparison sides, which is exactly the property needed.
+
 #### Two failure modes when an always-emit placeholder round-trips through `update()`
 
 `cdkd drift --revert` round-trips `observedProperties` (the snapshot `readCurrentState` produced) back through `provider.update`. That code path is what surfaces every shape-mismatch bug between the read side (`readCurrentState` output) and the write side (AWS create/update API input). Two failure classes have been observed; both must be designed around BEFORE adding a new `readCurrentState`.
