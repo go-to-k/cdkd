@@ -4,11 +4,11 @@
 [![Downloads](https://img.shields.io/npm/dw/@go-to-k/cdkd.svg)](https://www.npmjs.com/package/@go-to-k/cdkd)
 [![License: Apache-2.0](https://img.shields.io/npm/l/@go-to-k/cdkd.svg)](./LICENSE)
 
-Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of CloudFormation, plus local emulation for Lambda, API Gateway, and ECS.
+Drop-in CDK CLI for existing CDK apps: up to 15x faster deploys via AWS SDK instead of CloudFormation.
 
-- **Drop-in CDK compatible** — your existing CDK app code runs as-is.
-- **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
-- **Local dev for any CDK app** — invoke Lambdas, serve API Gateway routes, run ECS tasks/services directly from your CDK code. Works against both `cdkd deploy`-managed AND `cdk deploy`-managed (CloudFormation) stacks via `--from-state` / `--from-cfn-stack` — no migration, no `cdk synth → sam local` round-trip.
+- **Drop-in CDK compatible**: your existing CDK app code runs as-is.
+- **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits.
+- **Local execution**: run your functions and APIs locally, with env vars, secrets, and resource references resolved from your deployed stack instead of hand-written `.env` files.
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
