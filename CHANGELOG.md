@@ -1,3 +1,10 @@
+## [0.252.3](https://github.com/go-to-k/cdkd/compare/v0.252.2...v0.252.3) (2026-07-19)
+
+
+### Bug Fixes
+
+* **provisioning:** enrich Fn::GetAtt for CC-routed Pipes / S3 AccessPoint / ResourceGroups via CC GetResource read-back ([#1104](https://github.com/go-to-k/cdkd/issues/1104)) ([5464117](https://github.com/go-to-k/cdkd/commit/54641179aedae406770f5d98fcbfaeb9bd37f43f))
+
 ## [0.252.2](https://github.com/go-to-k/cdkd/compare/v0.252.1...v0.252.2) (2026-07-19)
 
 
