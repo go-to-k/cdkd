@@ -243,3 +243,4 @@ dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-
 codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
 codecommit	2026-07-18T19:00:09Z	PASS	150	verify.sh	issue #1065 drift (post-rebase re-run, mid-read guard); 3 phases + drift round-trip clean 0 orphans
 emr-cluster	2026-07-19T08:46:11Z	PASS	528	verify.sh	issue #1069 import(): deploy+in-place-update+destroy clean, 12 deleted 0 errors, cluster TERMINATED, 0 orphans
+fsx-openzfs	2026-07-19T10:17:23Z	PASS	1310	verify.sh	issue #1068 OpenZFS variant: deploy+update(ThroughputCapacity 64->128, tag removal)+destroy clean, filesystem GONE, 0 orphans
