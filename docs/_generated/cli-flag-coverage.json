@@ -1096,6 +1096,7 @@
     "--group-id",
     "--group-ids",
     "--group-name",
+    "--help",
     "--host",
     "--host-port",
     "--hosted-zone-id",
