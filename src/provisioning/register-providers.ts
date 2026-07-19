@@ -280,9 +280,10 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::EFS::AccessPoint', efsProvider);
 
   // FSx — NON_PROVISIONABLE in the CFn registry, so no Cloud Control
-  // fallback exists (issue #1042). Lustre variant only in v1; the
-  // Windows / ONTAP / OpenZFS config blocks are unhandledByDesign and
-  // rejected by the property-coverage pre-flight.
+  // fallback exists (issue #1042). All four variants are handled by the SDK
+  // provider: Lustre (issue #1042) plus Windows / ONTAP / OpenZFS (issue
+  // #1068). `disableCcApiFallback` still guards against CC-routing any
+  // future unhandled property.
   registry.register('AWS::FSx::FileSystem', new FSxFileSystemProvider());
 
   // EMR — NON_PROVISIONABLE in the CFn registry, so no Cloud Control

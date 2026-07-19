@@ -833,6 +833,11 @@
       "scenarios": []
     },
     {
+      "name": "fsx-openzfs",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "full-stack-demo",
       "annotated": true,
       "scenarios": [

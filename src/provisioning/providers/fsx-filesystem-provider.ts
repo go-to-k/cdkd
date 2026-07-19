@@ -10,6 +10,20 @@ import {
   FileSystemNotFound,
   type CreateFileSystemLustreConfiguration,
   type UpdateFileSystemLustreConfiguration,
+  type CreateFileSystemWindowsConfiguration,
+  type UpdateFileSystemWindowsConfiguration,
+  type CreateFileSystemOntapConfiguration,
+  type UpdateFileSystemOntapConfiguration,
+  type CreateFileSystemOpenZFSConfiguration,
+  type UpdateFileSystemOpenZFSConfiguration,
+  type SelfManagedActiveDirectoryConfiguration,
+  type SelfManagedActiveDirectoryConfigurationUpdates,
+  type DiskIopsConfiguration,
+  type WindowsAuditLogCreateConfiguration,
+  type WindowsFsrmConfiguration,
+  type OpenZFSCreateRootVolumeConfiguration,
+  type OpenZFSUserOrGroupQuota,
+  type OpenZFSReadCacheConfiguration,
   type FileSystem,
   type FileSystemType,
   type StorageType,
@@ -57,6 +71,100 @@ const LUSTRE_MUTABLE_SUBPROPS = new Set<string>([
 ]);
 
 /**
+ * `WindowsConfiguration` sub-properties `UpdateFileSystem` accepts (the
+ * mutable subset — mirrors `UpdateFileSystemWindowsConfiguration`).
+ * Everything else in the CFn block (ActiveDirectoryId, DeploymentType,
+ * PreferredSubnetId, Aliases, ...) is fixed at creation, so a change on one
+ * is rejected by update() with a `--replace` pointer.
+ */
+const WINDOWS_MUTABLE_SUBPROPS = new Set<string>([
+  'WeeklyMaintenanceStartTime',
+  'DailyAutomaticBackupStartTime',
+  'AutomaticBackupRetentionDays',
+  'ThroughputCapacity',
+  'SelfManagedActiveDirectoryConfiguration',
+  'AuditLogConfiguration',
+  'DiskIopsConfiguration',
+  'FsrmConfiguration',
+]);
+
+/**
+ * `OntapConfiguration` sub-properties `UpdateFileSystem` accepts (mirrors
+ * `UpdateFileSystemOntapConfiguration`). `RouteTableIds` is mutable but the
+ * API expresses the change as Add/Remove deltas, computed in
+ * {@link FSxFileSystemProvider.applyOntapUpdateField}.
+ */
+const ONTAP_MUTABLE_SUBPROPS = new Set<string>([
+  'AutomaticBackupRetentionDays',
+  'DailyAutomaticBackupStartTime',
+  'FsxAdminPassword',
+  'WeeklyMaintenanceStartTime',
+  'DiskIopsConfiguration',
+  'ThroughputCapacity',
+  'ThroughputCapacityPerHAPair',
+  'HAPairs',
+  'RouteTableIds',
+  'EndpointIpv6AddressRange',
+]);
+
+/**
+ * `OpenZFSConfiguration` sub-properties `UpdateFileSystem` accepts (mirrors
+ * `UpdateFileSystemOpenZFSConfiguration`). `RouteTableIds` is mutable via
+ * Add/Remove deltas (see {@link FSxFileSystemProvider.applyOpenZFSUpdateField}).
+ * `RootVolumeConfiguration` is NOT here — its fields change through the root
+ * volume's own `UpdateVolume` API, which `UpdateFileSystem` cannot express,
+ * so a change is rejected with a `--replace` pointer.
+ */
+const OPENZFS_MUTABLE_SUBPROPS = new Set<string>([
+  'AutomaticBackupRetentionDays',
+  'CopyTagsToBackups',
+  'CopyTagsToVolumes',
+  'DailyAutomaticBackupStartTime',
+  'ThroughputCapacity',
+  'WeeklyMaintenanceStartTime',
+  'DiskIopsConfiguration',
+  'RouteTableIds',
+  'ReadCacheConfiguration',
+  'EndpointIpv6AddressRange',
+]);
+
+/**
+ * The four `FileSystemType` values → their CFn variant-config property name.
+ * Each `CreateFileSystem`/`UpdateFileSystem` call carries at most one of
+ * these blocks (the one matching the file system's type).
+ */
+const VARIANT_CONFIG_KEY: Record<string, string> = {
+  LUSTRE: 'LustreConfiguration',
+  WINDOWS: 'WindowsConfiguration',
+  ONTAP: 'OntapConfiguration',
+  OPENZFS: 'OpenZFSConfiguration',
+};
+
+const VARIANT_MUTABLE_SUBPROPS: Record<string, ReadonlySet<string>> = {
+  LustreConfiguration: LUSTRE_MUTABLE_SUBPROPS,
+  WindowsConfiguration: WINDOWS_MUTABLE_SUBPROPS,
+  OntapConfiguration: ONTAP_MUTABLE_SUBPROPS,
+  OpenZFSConfiguration: OPENZFS_MUTABLE_SUBPROPS,
+};
+
+/**
+ * Compute the Add/Remove route-table-id deltas an ONTAP / OpenZFS
+ * `UpdateFileSystem` needs from the previous vs. next `RouteTableIds` list.
+ * Route table membership is an unordered set, so a pure reorder yields no
+ * delta.
+ */
+const routeTableDelta = (next: unknown, prev: unknown): { add?: string[]; remove?: string[] } => {
+  const nextIds = new Set((next as string[] | undefined) ?? []);
+  const prevIds = new Set((prev as string[] | undefined) ?? []);
+  const add = [...nextIds].filter((id) => !prevIds.has(id));
+  const remove = [...prevIds].filter((id) => !nextIds.has(id));
+  return {
+    ...(add.length > 0 && { add }),
+    ...(remove.length > 0 && { remove }),
+  };
+};
+
+/**
  * Top-level properties that are create-only per the CFn registry schema
  * (`createOnlyProperties`). A change on any of these is routed through
  * DELETE+CREATE by the replacement-detection layer; if a diff somehow
@@ -85,12 +193,11 @@ const toBoolean = (v: unknown): boolean | undefined => {
  * The type is `ProvisioningType: NON_PROVISIONABLE` in the CFn registry,
  * so cdkd's Cloud Control fallback cannot handle it (issue #1042).
  *
- * v1 scope: the **Lustre** variant (the CDK L2, `aws-fsx.LustreFileSystem`).
- * The `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration`
- * sub-trees are declared `unhandledByDesign`, so templates using them are
- * rejected by the property-coverage pre-flight instead of silently dropping
- * the whole variant config (each non-Lustre `FileSystemType` REQUIRES its
- * variant block, so no non-Lustre template can slip past the pre-flight).
+ * Supported variants: **Lustre** (the CDK L2 `aws-fsx.LustreFileSystem`),
+ * **Windows** (FSx for Windows File Server), **ONTAP** (FSx for NetApp
+ * ONTAP), and **OpenZFS** (FSx for OpenZFS) — each carries its own
+ * `<Variant>Configuration` block, mapped per-variant on create and diffed
+ * against the `UpdateFileSystem` mutable surface on update (issue #1068).
  *
  * Lifecycle handling — every mutation is async on AWS:
  *  - `create` → `CreateFileSystem` (or `CreateFileSystemFromBackup` when
@@ -142,34 +249,19 @@ export class FSxFileSystemProvider implements ResourceProvider {
         'KmsKeyId',
         'LustreConfiguration',
         'NetworkType',
+        'OntapConfiguration',
+        'OpenZFSConfiguration',
         'SecurityGroupIds',
         'StorageCapacity',
         'StorageType',
         'SubnetIds',
         'Tags',
+        'WindowsConfiguration',
       ]),
     ],
   ]);
 
-  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::FSx::FileSystem',
-      new Map<string, string>([
-        [
-          'WindowsConfiguration',
-          'FSx for Windows File Server variant — requires Active Directory wiring and Windows-specific update/delete semantics (final backups, throughput tiers) that v1 does not implement; only the Lustre variant (the CDK L2) is supported. Follow-up to issue #1042.',
-        ],
-        [
-          'OntapConfiguration',
-          'FSx for NetApp ONTAP variant — the file system is only a container for SVMs/volumes (separate AWS::FSx::StorageVirtualMachine / AWS::FSx::Volume types, both still unsupported), so shipping it alone would be misleading; only the Lustre variant is supported in v1. Follow-up to issue #1042.',
-        ],
-        [
-          'OpenZFSConfiguration',
-          'FSx for OpenZFS variant — root-volume semantics (RootVolumeId, child AWS::FSx::Volume trees) are not implemented in v1; only the Lustre variant is supported. Follow-up to issue #1042.',
-        ],
-      ]),
-    ],
-  ]);
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>();
 
   private getClient(): FSxClient {
     if (!this.client) {
@@ -206,14 +298,16 @@ export class FSxFileSystemProvider implements ResourceProvider {
     const backupId = properties['BackupId'] as string | undefined;
     const fileSystemType = properties['FileSystemType'] as string | undefined;
 
-    // Defensive: the property-coverage pre-flight already rejects the
-    // Windows/ONTAP/OpenZFS config blocks, and every non-Lustre
-    // FileSystemType requires its block — but refuse clearly if a
-    // non-Lustre create reaches us anyway (e.g. via
-    // --allow-unsupported-properties).
-    if (backupId === undefined && fileSystemType !== 'LUSTRE') {
+    // Defensive: refuse clearly if a create reaches us with a
+    // FileSystemType cdkd does not implement (e.g. a future AWS variant, or
+    // a typo routed past the pre-flight). BackupId creates derive the type
+    // from the backup, so they skip this check.
+    if (
+      backupId === undefined &&
+      !(fileSystemType !== undefined && fileSystemType in VARIANT_CONFIG_KEY)
+    ) {
       throw new ProvisioningError(
-        `AWS::FSx::FileSystem: FileSystemType '${fileSystemType ?? '(unset)'}' is not supported by cdkd yet — only the LUSTRE variant is implemented (issue #1042). Windows / ONTAP / OpenZFS file systems can follow in a later PR.`,
+        `AWS::FSx::FileSystem: FileSystemType '${fileSystemType ?? '(unset)'}' is not supported by cdkd — expected one of ${Object.keys(VARIANT_CONFIG_KEY).join(' / ')}.`,
         resourceType,
         logicalId
       );
@@ -265,8 +359,19 @@ export class FSxFileSystemProvider implements ResourceProvider {
       StorageCapacity: toNumber(properties['StorageCapacity']),
       FileSystemTypeVersion: properties['FileSystemTypeVersion'] as string | undefined,
       NetworkType: properties['NetworkType'] as NetworkType | undefined,
+      // Exactly one variant block is non-undefined for any given file system
+      // (the one matching FileSystemType); the SDK ignores the undefined rest.
       LustreConfiguration: this.toCreateLustreConfiguration(
         properties['LustreConfiguration'] as Record<string, unknown> | undefined
+      ),
+      WindowsConfiguration: this.toCreateWindowsConfiguration(
+        properties['WindowsConfiguration'] as Record<string, unknown> | undefined
+      ),
+      OntapConfiguration: this.toCreateOntapConfiguration(
+        properties['OntapConfiguration'] as Record<string, unknown> | undefined
+      ),
+      OpenZFSConfiguration: this.toCreateOpenZFSConfiguration(
+        properties['OpenZFSConfiguration'] as Record<string, unknown> | undefined
       ),
       Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
     };
@@ -391,6 +496,212 @@ export class FSxFileSystemProvider implements ResourceProvider {
     return out;
   }
 
+  /** Map the CFn `WindowsConfiguration` block to the SDK create shape. */
+  private toCreateWindowsConfiguration(
+    config: Record<string, unknown> | undefined
+  ): CreateFileSystemWindowsConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      ActiveDirectoryId: config['ActiveDirectoryId'] as string | undefined,
+      SelfManagedActiveDirectoryConfiguration: this.toSelfManagedAdConfiguration(
+        config['SelfManagedActiveDirectoryConfiguration'] as Record<string, unknown> | undefined
+      ),
+      DeploymentType: config[
+        'DeploymentType'
+      ] as CreateFileSystemWindowsConfiguration['DeploymentType'],
+      PreferredSubnetId: config['PreferredSubnetId'] as string | undefined,
+      // ThroughputCapacity is required by the SDK type (number | undefined);
+      // a Windows template always carries it, but coerce defensively.
+      ThroughputCapacity: toNumber(config['ThroughputCapacity']) as number,
+      WeeklyMaintenanceStartTime: config['WeeklyMaintenanceStartTime'] as string | undefined,
+      DailyAutomaticBackupStartTime: config['DailyAutomaticBackupStartTime'] as string | undefined,
+      AutomaticBackupRetentionDays: toNumber(config['AutomaticBackupRetentionDays']),
+      CopyTagsToBackups: toBoolean(config['CopyTagsToBackups']),
+      Aliases: config['Aliases'] as string[] | undefined,
+      AuditLogConfiguration: this.toWindowsAuditLogConfiguration(
+        config['AuditLogConfiguration'] as Record<string, unknown> | undefined
+      ),
+      DiskIopsConfiguration: this.toDiskIopsConfiguration(
+        config['DiskIopsConfiguration'] as Record<string, unknown> | undefined
+      ),
+      FsrmConfiguration: this.toWindowsFsrmConfiguration(
+        config['FsrmConfiguration'] as Record<string, unknown> | undefined
+      ),
+    };
+  }
+
+  /** Map the CFn `OntapConfiguration` block to the SDK create shape. */
+  private toCreateOntapConfiguration(
+    config: Record<string, unknown> | undefined
+  ): CreateFileSystemOntapConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      AutomaticBackupRetentionDays: toNumber(config['AutomaticBackupRetentionDays']),
+      DailyAutomaticBackupStartTime: config['DailyAutomaticBackupStartTime'] as string | undefined,
+      DeploymentType: config[
+        'DeploymentType'
+      ] as CreateFileSystemOntapConfiguration['DeploymentType'],
+      EndpointIpAddressRange: config['EndpointIpAddressRange'] as string | undefined,
+      FsxAdminPassword: config['FsxAdminPassword'] as string | undefined,
+      DiskIopsConfiguration: this.toDiskIopsConfiguration(
+        config['DiskIopsConfiguration'] as Record<string, unknown> | undefined
+      ),
+      PreferredSubnetId: config['PreferredSubnetId'] as string | undefined,
+      RouteTableIds: config['RouteTableIds'] as string[] | undefined,
+      ThroughputCapacity: toNumber(config['ThroughputCapacity']),
+      WeeklyMaintenanceStartTime: config['WeeklyMaintenanceStartTime'] as string | undefined,
+      HAPairs: toNumber(config['HAPairs']),
+      ThroughputCapacityPerHAPair: toNumber(config['ThroughputCapacityPerHAPair']),
+      EndpointIpv6AddressRange: config['EndpointIpv6AddressRange'] as string | undefined,
+    };
+  }
+
+  /** Map the CFn `OpenZFSConfiguration` block to the SDK create shape. */
+  private toCreateOpenZFSConfiguration(
+    config: Record<string, unknown> | undefined
+  ): CreateFileSystemOpenZFSConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      AutomaticBackupRetentionDays: toNumber(config['AutomaticBackupRetentionDays']),
+      CopyTagsToBackups: toBoolean(config['CopyTagsToBackups']),
+      CopyTagsToVolumes: toBoolean(config['CopyTagsToVolumes']),
+      DailyAutomaticBackupStartTime: config['DailyAutomaticBackupStartTime'] as string | undefined,
+      DeploymentType: config[
+        'DeploymentType'
+      ] as CreateFileSystemOpenZFSConfiguration['DeploymentType'],
+      // ThroughputCapacity is required by the SDK type; coerce defensively.
+      ThroughputCapacity: toNumber(config['ThroughputCapacity']) as number,
+      WeeklyMaintenanceStartTime: config['WeeklyMaintenanceStartTime'] as string | undefined,
+      DiskIopsConfiguration: this.toDiskIopsConfiguration(
+        config['DiskIopsConfiguration'] as Record<string, unknown> | undefined
+      ),
+      RootVolumeConfiguration: this.toOpenZFSRootVolumeConfiguration(
+        config['RootVolumeConfiguration'] as Record<string, unknown> | undefined
+      ),
+      PreferredSubnetId: config['PreferredSubnetId'] as string | undefined,
+      EndpointIpAddressRange: config['EndpointIpAddressRange'] as string | undefined,
+      EndpointIpv6AddressRange: config['EndpointIpv6AddressRange'] as string | undefined,
+      RouteTableIds: config['RouteTableIds'] as string[] | undefined,
+      ReadCacheConfiguration: this.toOpenZFSReadCacheConfiguration(
+        config['ReadCacheConfiguration'] as Record<string, unknown> | undefined
+      ),
+    };
+  }
+
+  // ─── Nested sub-block mappers (shared by create + update) ───────────
+
+  private toDiskIopsConfiguration(
+    config: Record<string, unknown> | undefined
+  ): DiskIopsConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      Mode: config['Mode'] as DiskIopsConfiguration['Mode'],
+      Iops: toNumber(config['Iops']),
+    };
+  }
+
+  private toSelfManagedAdConfiguration(
+    config: Record<string, unknown> | undefined
+  ): SelfManagedActiveDirectoryConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      DomainName: config['DomainName'] as string,
+      OrganizationalUnitDistinguishedName: config['OrganizationalUnitDistinguishedName'] as
+        | string
+        | undefined,
+      FileSystemAdministratorsGroup: config['FileSystemAdministratorsGroup'] as string | undefined,
+      UserName: config['UserName'] as string | undefined,
+      Password: config['Password'] as string | undefined,
+      DnsIps: config['DnsIps'] as string[],
+      DomainJoinServiceAccountSecret: config['DomainJoinServiceAccountSecret'] as
+        | string
+        | undefined,
+    };
+  }
+
+  private toSelfManagedAdConfigurationUpdates(
+    config: Record<string, unknown> | undefined
+  ): SelfManagedActiveDirectoryConfigurationUpdates | undefined {
+    if (!config) return undefined;
+    return {
+      UserName: config['UserName'] as string | undefined,
+      Password: config['Password'] as string | undefined,
+      DnsIps: config['DnsIps'] as string[] | undefined,
+      DomainName: config['DomainName'] as string | undefined,
+      OrganizationalUnitDistinguishedName: config['OrganizationalUnitDistinguishedName'] as
+        | string
+        | undefined,
+      FileSystemAdministratorsGroup: config['FileSystemAdministratorsGroup'] as string | undefined,
+      DomainJoinServiceAccountSecret: config['DomainJoinServiceAccountSecret'] as
+        | string
+        | undefined,
+    };
+  }
+
+  private toWindowsAuditLogConfiguration(
+    config: Record<string, unknown> | undefined
+  ): WindowsAuditLogCreateConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      FileAccessAuditLogLevel: config[
+        'FileAccessAuditLogLevel'
+      ] as WindowsAuditLogCreateConfiguration['FileAccessAuditLogLevel'],
+      FileShareAccessAuditLogLevel: config[
+        'FileShareAccessAuditLogLevel'
+      ] as WindowsAuditLogCreateConfiguration['FileShareAccessAuditLogLevel'],
+      AuditLogDestination: config['AuditLogDestination'] as string | undefined,
+    };
+  }
+
+  private toWindowsFsrmConfiguration(
+    config: Record<string, unknown> | undefined
+  ): WindowsFsrmConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      FsrmServiceEnabled: toBoolean(config['FsrmServiceEnabled']) as boolean,
+      EventLogDestination: config['EventLogDestination'] as string | undefined,
+    };
+  }
+
+  private toOpenZFSRootVolumeConfiguration(
+    config: Record<string, unknown> | undefined
+  ): OpenZFSCreateRootVolumeConfiguration | undefined {
+    if (!config) return undefined;
+    const nfsExports = config['NfsExports'] as Array<Record<string, unknown>> | undefined;
+    const quotas = config['UserAndGroupQuotas'] as Array<Record<string, unknown>> | undefined;
+    return {
+      RecordSizeKiB: toNumber(config['RecordSizeKiB']),
+      DataCompressionType: config[
+        'DataCompressionType'
+      ] as OpenZFSCreateRootVolumeConfiguration['DataCompressionType'],
+      NfsExports: nfsExports?.map((exp) => ({
+        ClientConfigurations: (
+          (exp['ClientConfigurations'] as Array<Record<string, unknown>> | undefined) ?? []
+        ).map((cc) => ({
+          Clients: cc['Clients'] as string,
+          Options: cc['Options'] as string[],
+        })),
+      })),
+      UserAndGroupQuotas: quotas?.map((q) => ({
+        Type: q['Type'] as OpenZFSUserOrGroupQuota['Type'],
+        Id: toNumber(q['Id']) as number,
+        StorageCapacityQuotaGiB: toNumber(q['StorageCapacityQuotaGiB']) as number,
+      })),
+      CopyTagsToSnapshots: toBoolean(config['CopyTagsToSnapshots']),
+      ReadOnly: toBoolean(config['ReadOnly']),
+    };
+  }
+
+  private toOpenZFSReadCacheConfiguration(
+    config: Record<string, unknown> | undefined
+  ): OpenZFSReadCacheConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      SizingMode: config['SizingMode'] as OpenZFSReadCacheConfiguration['SizingMode'],
+      SizeGiB: toNumber(config['SizeGiB']),
+    };
+  }
+
   // ─── UPDATE ────────────────────────────────────────────────────────
 
   async update(
@@ -419,64 +730,22 @@ export class FSxFileSystemProvider implements ResourceProvider {
       }
     }
 
-    // Lustre sub-property immutability: the CFn registry schema does NOT
-    // mark LustreConfiguration (or its sub-fields) createOnly, so the
-    // schema-based replacement fallback never fires for them — the
-    // provider must classify them itself. Reject changes on sub-fields
-    // UpdateFileSystem cannot express.
-    const nextLustre = (properties['LustreConfiguration'] ?? {}) as Record<string, unknown>;
-    const prevLustre = (previousProperties['LustreConfiguration'] ?? {}) as Record<string, unknown>;
-    const lustreKeys = new Set([...Object.keys(nextLustre), ...Object.keys(prevLustre)]);
-    const lustreMutableDiff: UpdateFileSystemLustreConfiguration = {};
-    let lustreHasMutableDiff = false;
-    for (const key of lustreKeys) {
-      const next = nextLustre[key];
-      const prev = prevLustre[key];
-      if (JSON.stringify(next) === JSON.stringify(prev)) continue;
-      if (!LUSTRE_MUTABLE_SUBPROPS.has(key)) {
-        throw new ResourceUpdateNotSupportedError(
+    // Variant sub-property immutability: the CFn registry schema does NOT
+    // mark the <Variant>Configuration blocks (or their sub-fields) createOnly,
+    // so the schema-based replacement fallback never fires for them — the
+    // provider classifies each itself, mapping the UpdateFileSystem-mutable
+    // subset and rejecting every other changed sub-field with a --replace
+    // pointer. At most ONE variant block is present per file system.
+    const variantConfigKey = this.detectVariantConfigKey(properties, previousProperties);
+    const { diff: variantDiff, hasMutableDiff: variantHasMutableDiff } = variantConfigKey
+      ? this.computeVariantConfigDiff(
           resourceType,
           logicalId,
-          `AWS FSx FileSystem LustreConfiguration.${key} is immutable on AWS — UpdateFileSystem cannot change it after creation. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
-        );
-      }
-      lustreHasMutableDiff = true;
-      switch (key) {
-        case 'WeeklyMaintenanceStartTime':
-        case 'DailyAutomaticBackupStartTime':
-          (lustreMutableDiff as Record<string, unknown>)[key] = next as string | undefined;
-          break;
-        case 'AutomaticBackupRetentionDays':
-        case 'PerUnitStorageThroughput':
-        case 'ThroughputCapacity':
-          (lustreMutableDiff as Record<string, unknown>)[key] = toNumber(next);
-          break;
-        case 'AutoImportPolicy':
-        case 'DataCompressionType':
-          (lustreMutableDiff as Record<string, unknown>)[key] = next;
-          break;
-        case 'MetadataConfiguration': {
-          const metadata = next as Record<string, unknown> | undefined;
-          lustreMutableDiff.MetadataConfiguration = metadata
-            ? {
-                Mode: metadata['Mode'] as 'AUTOMATIC' | 'USER_PROVISIONED' | undefined,
-                Iops: toNumber(metadata['Iops']),
-              }
-            : undefined;
-          break;
-        }
-        case 'DataReadCacheConfiguration': {
-          const readCache = next as Record<string, unknown> | undefined;
-          lustreMutableDiff.DataReadCacheConfiguration = readCache
-            ? {
-                SizingMode: readCache['SizingMode'] as LustreReadCacheSizingMode,
-                SizeGiB: toNumber(readCache['SizeGiB']),
-              }
-            : undefined;
-          break;
-        }
-      }
-    }
+          variantConfigKey,
+          (properties[variantConfigKey] ?? {}) as Record<string, unknown>,
+          (previousProperties[variantConfigKey] ?? {}) as Record<string, unknown>
+        )
+      : { diff: {}, hasMutableDiff: false };
 
     const storageCapacityChanged = changed('StorageCapacity');
     const storageTypeChanged = changed('StorageType');
@@ -485,7 +754,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
     const tagsChanged = changed('Tags');
 
     if (
-      !lustreHasMutableDiff &&
+      !variantHasMutableDiff &&
       !storageCapacityChanged &&
       !storageTypeChanged &&
       !typeVersionChanged &&
@@ -500,7 +769,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
     try {
       const needsUpdateCall =
-        lustreHasMutableDiff ||
+        variantHasMutableDiff ||
         storageCapacityChanged ||
         storageTypeChanged ||
         typeVersionChanged ||
@@ -525,7 +794,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
             ...(networkTypeChanged && {
               NetworkType: properties['NetworkType'] as NetworkType | undefined,
             }),
-            ...(lustreHasMutableDiff && { LustreConfiguration: lustreMutableDiff }),
+            ...(variantHasMutableDiff && variantConfigKey
+              ? { [variantConfigKey]: variantDiff }
+              : {}),
           })
         );
 
@@ -621,6 +892,225 @@ export class FSxFileSystemProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  // ─── Variant UPDATE diff ────────────────────────────────────────────
+
+  /**
+   * Which `<Variant>Configuration` block (if any) is present on either side
+   * of the update. At most one is expected — the file system's type never
+   * changes (FileSystemType is registry-createOnly, guarded above).
+   */
+  private detectVariantConfigKey(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): string | undefined {
+    for (const key of Object.values(VARIANT_CONFIG_KEY)) {
+      if (properties[key] !== undefined || previousProperties[key] !== undefined) return key;
+    }
+    return undefined;
+  }
+
+  /**
+   * Diff a variant config block's sub-properties into the SDK
+   * `UpdateFileSystem<Variant>Configuration` shape. A changed sub-field that
+   * is NOT in the variant's mutable set is rejected with a `--replace`
+   * pointer (UpdateFileSystem cannot express it).
+   */
+  private computeVariantConfigDiff(
+    resourceType: string,
+    logicalId: string,
+    configKey: string,
+    next: Record<string, unknown>,
+    prev: Record<string, unknown>
+  ): { diff: Record<string, unknown>; hasMutableDiff: boolean } {
+    const mutable = VARIANT_MUTABLE_SUBPROPS[configKey] ?? new Set<string>();
+    const keys = new Set([...Object.keys(next), ...Object.keys(prev)]);
+    const diff: Record<string, unknown> = {};
+    let hasMutableDiff = false;
+    for (const key of keys) {
+      const nextVal = next[key];
+      const prevVal = prev[key];
+      if (JSON.stringify(nextVal) === JSON.stringify(prevVal)) continue;
+      if (!mutable.has(key)) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `AWS FSx FileSystem ${configKey}.${key} is immutable on AWS — UpdateFileSystem cannot change it after creation. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+        );
+      }
+      const applied =
+        configKey === 'LustreConfiguration'
+          ? this.applyLustreUpdateField(key, nextVal, diff)
+          : configKey === 'WindowsConfiguration'
+            ? this.applyWindowsUpdateField(key, nextVal, diff)
+            : configKey === 'OntapConfiguration'
+              ? this.applyOntapUpdateField(key, nextVal, prevVal, diff)
+              : this.applyOpenZFSUpdateField(key, nextVal, prevVal, diff);
+      // A pure RouteTableIds reorder yields no Add/Remove delta — do not
+      // trigger a no-op UpdateFileSystem call for it.
+      if (applied) hasMutableDiff = true;
+    }
+    return { diff, hasMutableDiff };
+  }
+
+  private applyLustreUpdateField(
+    key: string,
+    next: unknown,
+    diff: Record<string, unknown>
+  ): boolean {
+    const out = diff as UpdateFileSystemLustreConfiguration;
+    switch (key) {
+      case 'WeeklyMaintenanceStartTime':
+      case 'DailyAutomaticBackupStartTime':
+        (diff as Record<string, unknown>)[key] = next as string | undefined;
+        break;
+      case 'AutomaticBackupRetentionDays':
+      case 'PerUnitStorageThroughput':
+      case 'ThroughputCapacity':
+        (diff as Record<string, unknown>)[key] = toNumber(next);
+        break;
+      case 'AutoImportPolicy':
+      case 'DataCompressionType':
+        (diff as Record<string, unknown>)[key] = next;
+        break;
+      case 'MetadataConfiguration': {
+        const metadata = next as Record<string, unknown> | undefined;
+        out.MetadataConfiguration = metadata
+          ? {
+              Mode: metadata['Mode'] as 'AUTOMATIC' | 'USER_PROVISIONED' | undefined,
+              Iops: toNumber(metadata['Iops']),
+            }
+          : undefined;
+        break;
+      }
+      case 'DataReadCacheConfiguration': {
+        const readCache = next as Record<string, unknown> | undefined;
+        out.DataReadCacheConfiguration = readCache
+          ? {
+              SizingMode: readCache['SizingMode'] as LustreReadCacheSizingMode,
+              SizeGiB: toNumber(readCache['SizeGiB']),
+            }
+          : undefined;
+        break;
+      }
+    }
+    return true;
+  }
+
+  private applyWindowsUpdateField(
+    key: string,
+    next: unknown,
+    diff: Record<string, unknown>
+  ): boolean {
+    const out = diff as UpdateFileSystemWindowsConfiguration;
+    switch (key) {
+      case 'WeeklyMaintenanceStartTime':
+      case 'DailyAutomaticBackupStartTime':
+        (diff as Record<string, unknown>)[key] = next as string | undefined;
+        break;
+      case 'AutomaticBackupRetentionDays':
+      case 'ThroughputCapacity':
+        (diff as Record<string, unknown>)[key] = toNumber(next);
+        break;
+      case 'SelfManagedActiveDirectoryConfiguration':
+        out.SelfManagedActiveDirectoryConfiguration = this.toSelfManagedAdConfigurationUpdates(
+          next as Record<string, unknown> | undefined
+        );
+        break;
+      case 'AuditLogConfiguration':
+        out.AuditLogConfiguration = this.toWindowsAuditLogConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
+      case 'DiskIopsConfiguration':
+        out.DiskIopsConfiguration = this.toDiskIopsConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
+      case 'FsrmConfiguration':
+        out.FsrmConfiguration = this.toWindowsFsrmConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
+    }
+    return true;
+  }
+
+  private applyOntapUpdateField(
+    key: string,
+    next: unknown,
+    prev: unknown,
+    diff: Record<string, unknown>
+  ): boolean {
+    const out = diff as UpdateFileSystemOntapConfiguration;
+    switch (key) {
+      case 'DailyAutomaticBackupStartTime':
+      case 'WeeklyMaintenanceStartTime':
+      case 'FsxAdminPassword':
+      case 'EndpointIpv6AddressRange':
+        (diff as Record<string, unknown>)[key] = next as string | undefined;
+        break;
+      case 'AutomaticBackupRetentionDays':
+      case 'ThroughputCapacity':
+      case 'ThroughputCapacityPerHAPair':
+      case 'HAPairs':
+        (diff as Record<string, unknown>)[key] = toNumber(next);
+        break;
+      case 'DiskIopsConfiguration':
+        out.DiskIopsConfiguration = this.toDiskIopsConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
+      case 'RouteTableIds': {
+        const { add, remove } = routeTableDelta(next, prev);
+        if (add) out.AddRouteTableIds = add;
+        if (remove) out.RemoveRouteTableIds = remove;
+        return add !== undefined || remove !== undefined;
+      }
+    }
+    return true;
+  }
+
+  private applyOpenZFSUpdateField(
+    key: string,
+    next: unknown,
+    prev: unknown,
+    diff: Record<string, unknown>
+  ): boolean {
+    const out = diff as UpdateFileSystemOpenZFSConfiguration;
+    switch (key) {
+      case 'DailyAutomaticBackupStartTime':
+      case 'WeeklyMaintenanceStartTime':
+      case 'EndpointIpv6AddressRange':
+        (diff as Record<string, unknown>)[key] = next as string | undefined;
+        break;
+      case 'CopyTagsToBackups':
+      case 'CopyTagsToVolumes':
+        (diff as Record<string, unknown>)[key] = toBoolean(next);
+        break;
+      case 'AutomaticBackupRetentionDays':
+      case 'ThroughputCapacity':
+        (diff as Record<string, unknown>)[key] = toNumber(next);
+        break;
+      case 'DiskIopsConfiguration':
+        out.DiskIopsConfiguration = this.toDiskIopsConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
+      case 'ReadCacheConfiguration':
+        out.ReadCacheConfiguration = this.toOpenZFSReadCacheConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
+      case 'RouteTableIds': {
+        const { add, remove } = routeTableDelta(next, prev);
+        if (add) out.AddRouteTableIds = add;
+        if (remove) out.RemoveRouteTableIds = remove;
+        return add !== undefined || remove !== undefined;
+      }
+    }
+    return true;
   }
 
   /**
@@ -937,6 +1427,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
     if (fs.LustreConfiguration?.MountName !== undefined) {
       attributes['LustreMountName'] = fs.LustreConfiguration.MountName;
     }
+    if (fs.OpenZFSConfiguration?.RootVolumeId !== undefined) {
+      attributes['RootVolumeId'] = fs.OpenZFSConfiguration.RootVolumeId;
+    }
     if (fs.FileSystemId !== undefined) attributes['FileSystemId'] = fs.FileSystemId;
     return attributes;
   }
@@ -975,10 +1468,23 @@ export class FSxFileSystemProvider implements ResourceProvider {
    *    interface ids, never the original security group list.
    *  - `BackupId` — creation-source input, not surfaced on the deployed
    *    file system.
+   *  - `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration`
+   *    — `readCurrentState` maps only the Lustre block back to CFn shape
+   *    today, so drift on the non-Lustre variant blocks is not yet computed;
+   *    marking them unknown avoids a guaranteed false positive on every run
+   *    (variant-config drift is a follow-up). Only the block matching the
+   *    file system's type is ever present in state, so listing all three is
+   *    harmless.
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::FSx::FileSystem') return [];
-    return ['SecurityGroupIds', 'BackupId'];
+    return [
+      'SecurityGroupIds',
+      'BackupId',
+      'WindowsConfiguration',
+      'OntapConfiguration',
+      'OpenZFSConfiguration',
+    ];
   }
 
   /**

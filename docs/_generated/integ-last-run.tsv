@@ -238,8 +238,9 @@ lambda	2026-07-17T12:12:19Z	PASS	91	verify.sh	broad integ re-run for #1044 revie
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
 fsx-lustre	2026-07-17T16:22:08Z	PASS	1100	verify.sh	deploy+update(LZ4,tags)+destroy clean, 0 orphans (3rd run, post threshold-scoped update-wait fix)
 fsx-lustre	2026-07-18T00:50:49Z	PASS	900	verify.sh	deploy+update(incl tag removal)+destroy clean, 0 orphans (4th run, covers de7494ba observe-confirmed-action fix)
-bench-cdk-sample	2026-07-18T03:53:42Z	PASS		standard	deploy 0-err + destroy 37 deleted/2 retained(by-design LogGroups)/0 errors, 0 orphans
 dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
 codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
 codecommit	2026-07-18T19:00:09Z	PASS	150	verify.sh	issue #1065 drift (post-rebase re-run, mid-read guard); 3 phases + drift round-trip clean 0 orphans
 emr-cluster	2026-07-19T08:46:11Z	PASS	528	verify.sh	issue #1069 import(): deploy+in-place-update+destroy clean, 12 deleted 0 errors, cluster TERMINATED, 0 orphans
+fsx-openzfs	2026-07-19T10:17:23Z	PASS	1310	verify.sh	issue #1068 OpenZFS variant: deploy+update(ThroughputCapacity 64->128, tag removal)+destroy clean, filesystem GONE, 0 orphans
+bench-cdk-sample	2026-07-19T10:40:06Z	PASS	340	standard	integ-broad for #1085 FSx variants; 39 created/deleted, 0 errors; log groups swept by orchestrator

@@ -65,6 +65,56 @@ const LUSTRE_PROPS = {
   Tags: [{ Key: 'env', Value: 'test' }],
 };
 
+const WINDOWS_PROPS = {
+  FileSystemType: 'WINDOWS',
+  StorageCapacity: 32,
+  SubnetIds: ['subnet-111'],
+  SecurityGroupIds: ['sg-222'],
+  WindowsConfiguration: {
+    ActiveDirectoryId: 'd-1234567890',
+    DeploymentType: 'MULTI_AZ_1',
+    PreferredSubnetId: 'subnet-111',
+    ThroughputCapacity: 32,
+    WeeklyMaintenanceStartTime: '1:05:00',
+  },
+  Tags: [{ Key: 'env', Value: 'test' }],
+};
+
+const ONTAP_PROPS = {
+  FileSystemType: 'ONTAP',
+  StorageCapacity: 1024,
+  SubnetIds: ['subnet-111', 'subnet-222'],
+  SecurityGroupIds: ['sg-222'],
+  OntapConfiguration: {
+    DeploymentType: 'MULTI_AZ_1',
+    ThroughputCapacity: 128,
+    PreferredSubnetId: 'subnet-111',
+    RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+    DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+  },
+  Tags: [{ Key: 'env', Value: 'test' }],
+};
+
+const OPENZFS_PROPS = {
+  FileSystemType: 'OPENZFS',
+  StorageCapacity: 64,
+  SubnetIds: ['subnet-111'],
+  SecurityGroupIds: ['sg-222'],
+  OpenZFSConfiguration: {
+    DeploymentType: 'SINGLE_AZ_1',
+    ThroughputCapacity: 64,
+    RootVolumeConfiguration: {
+      RecordSizeKiB: 128,
+      DataCompressionType: 'LZ4',
+      NfsExports: [
+        { ClientConfigurations: [{ Clients: '*', Options: ['rw', 'crossmnt'] }] },
+      ],
+      UserAndGroupQuotas: [{ Type: 'USER', Id: 0, StorageCapacityQuotaGiB: 10 }],
+    },
+  },
+  Tags: [{ Key: 'env', Value: 'test' }],
+};
+
 const availableFs = (overrides: Record<string, unknown> = {}) => ({
   FileSystemId: FS_ID,
   Lifecycle: 'AVAILABLE',
@@ -215,10 +265,10 @@ describe('FSxFileSystemProvider create', () => {
     expect(callsOf(CreateFileSystemCommand)).toHaveLength(0);
   });
 
-  it('rejects non-Lustre FileSystemType with a clear error before any SDK call', async () => {
+  it('rejects an unknown FileSystemType with a clear error before any SDK call', async () => {
     await expect(
-      newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS, FileSystemType: 'WINDOWS' })
-    ).rejects.toThrow(/only the LUSTRE variant/);
+      newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS, FileSystemType: 'BOGUS' })
+    ).rejects.toThrow(/is not supported by cdkd — expected one of LUSTRE \/ WINDOWS \/ ONTAP \/ OPENZFS/);
     expect(mockSend).not.toHaveBeenCalled();
   });
 
@@ -805,10 +855,13 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('declares SecurityGroupIds and BackupId as drift-unknown', () => {
+  it('declares SecurityGroupIds / BackupId / the non-Lustre variant blocks as drift-unknown', () => {
     expect(newProvider().getDriftUnknownPaths(RESOURCE_TYPE)).toEqual([
       'SecurityGroupIds',
       'BackupId',
+      'WindowsConfiguration',
+      'OntapConfiguration',
+      'OpenZFSConfiguration',
     ]);
     expect(newProvider().getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
   });
@@ -905,5 +958,438 @@ describe('FSxFileSystemProvider timeout self-report', () => {
   it('reports the polling ceiling via getMinResourceTimeoutMs (default 1h)', () => {
     expect(new FSxFileSystemProvider().getMinResourceTimeoutMs()).toBe(60 * 60 * 1000);
     expect(newProvider({ maxWaitMs: 123 }).getMinResourceTimeoutMs()).toBe(123);
+  });
+});
+
+// ─── Windows / ONTAP / OpenZFS variants (issue #1068) ─────────────────
+
+describe('FSxFileSystemProvider WINDOWS variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends CreateFileSystem with FileSystemType WINDOWS and the mapped WindowsConfiguration', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create('MyFs', RESOURCE_TYPE, {
+      ...WINDOWS_PROPS,
+      WindowsConfiguration: {
+        ...WINDOWS_PROPS.WindowsConfiguration,
+        ThroughputCapacity: '32',
+        AutomaticBackupRetentionDays: '7',
+        CopyTagsToBackups: 'true',
+        SelfManagedActiveDirectoryConfiguration: {
+          DomainName: 'corp.example.com',
+          DnsIps: ['10.0.0.1', '10.0.0.2'],
+          UserName: 'Admin',
+          Password: 'secret',
+        },
+        AuditLogConfiguration: {
+          FileAccessAuditLogLevel: 'SUCCESS_AND_FAILURE',
+          FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
+        },
+      },
+    });
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(create.input['FileSystemType']).toBe('WINDOWS');
+    expect(create.input['WindowsConfiguration']).toMatchObject({
+      ActiveDirectoryId: 'd-1234567890',
+      DeploymentType: 'MULTI_AZ_1',
+      ThroughputCapacity: 32,
+      AutomaticBackupRetentionDays: 7,
+      CopyTagsToBackups: true,
+      SelfManagedActiveDirectoryConfiguration: {
+        DomainName: 'corp.example.com',
+        DnsIps: ['10.0.0.1', '10.0.0.2'],
+      },
+      AuditLogConfiguration: {
+        FileAccessAuditLogLevel: 'SUCCESS_AND_FAILURE',
+        FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
+      },
+    });
+    // No sibling variant blocks leak onto the create call.
+    expect(create.input['OntapConfiguration']).toBeUndefined();
+    expect(create.input['OpenZFSConfiguration']).toBeUndefined();
+  });
+
+  it('maps FsrmConfiguration on create (incl. FsrmServiceEnabled boolean coercion)', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create('MyFs', RESOURCE_TYPE, {
+      ...WINDOWS_PROPS,
+      WindowsConfiguration: {
+        ...WINDOWS_PROPS.WindowsConfiguration,
+        FsrmConfiguration: {
+          FsrmServiceEnabled: 'true',
+          EventLogDestination: 'application',
+        },
+      },
+    });
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(create.input['WindowsConfiguration']).toMatchObject({
+      FsrmConfiguration: { FsrmServiceEnabled: true, EventLogDestination: 'application' },
+    });
+  });
+
+  it('applies an FsrmConfiguration change via UpdateFileSystem (mutable Windows sub-property)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...WINDOWS_PROPS,
+        WindowsConfiguration: {
+          ...WINDOWS_PROPS.WindowsConfiguration,
+          FsrmConfiguration: { FsrmServiceEnabled: true },
+        },
+      },
+      { ...WINDOWS_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      WindowsConfiguration: {
+        FsrmConfiguration: { FsrmServiceEnabled: true, EventLogDestination: undefined },
+      },
+    });
+  });
+
+  it('applies a mutable ThroughputCapacity change plus a SelfManagedAD update via UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...WINDOWS_PROPS,
+        WindowsConfiguration: {
+          ...WINDOWS_PROPS.WindowsConfiguration,
+          ThroughputCapacity: 64,
+          SelfManagedActiveDirectoryConfiguration: { UserName: 'NewAdmin', Password: 'p2' },
+        },
+      },
+      { ...WINDOWS_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      WindowsConfiguration: {
+        ThroughputCapacity: 64,
+        SelfManagedActiveDirectoryConfiguration: { UserName: 'NewAdmin', Password: 'p2' },
+      },
+    });
+  });
+
+  it('rejects a changed immutable Windows sub-property (DeploymentType) with a --replace pointer', async () => {
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        {
+          ...WINDOWS_PROPS,
+          WindowsConfiguration: { ...WINDOWS_PROPS.WindowsConfiguration, DeploymentType: 'SINGLE_AZ_1' },
+        },
+        { ...WINDOWS_PROPS }
+      )
+    ).rejects.toThrow(/WindowsConfiguration\.DeploymentType is immutable/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('FSxFileSystemProvider ONTAP variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends CreateFileSystem with FileSystemType ONTAP and the mapped OntapConfiguration', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create('MyFs', RESOURCE_TYPE, {
+      ...ONTAP_PROPS,
+      OntapConfiguration: {
+        ...ONTAP_PROPS.OntapConfiguration,
+        ThroughputCapacity: '128',
+        HAPairs: '1',
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: '3000' },
+      },
+    });
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(create.input['FileSystemType']).toBe('ONTAP');
+    expect(create.input['OntapConfiguration']).toMatchObject({
+      DeploymentType: 'MULTI_AZ_1',
+      ThroughputCapacity: 128,
+      HAPairs: 1,
+      RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+      DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 3000 },
+    });
+    // No sibling variant blocks leak onto the create call.
+    expect(create.input['WindowsConfiguration']).toBeUndefined();
+    expect(create.input['OpenZFSConfiguration']).toBeUndefined();
+  });
+
+  it('translates a RouteTableIds change into Add/Remove deltas on UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...ONTAP_PROPS,
+        OntapConfiguration: { ...ONTAP_PROPS.OntapConfiguration, RouteTableIds: ['rtb-aaa', 'rtb-ccc'] },
+      },
+      { ...ONTAP_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OntapConfiguration: {
+        AddRouteTableIds: ['rtb-ccc'],
+        RemoveRouteTableIds: ['rtb-bbb'],
+      },
+    });
+  });
+
+  it('is a no-op when RouteTableIds are only reordered (no Add/Remove delta)', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...ONTAP_PROPS,
+        OntapConfiguration: { ...ONTAP_PROPS.OntapConfiguration, RouteTableIds: ['rtb-bbb', 'rtb-aaa'] },
+      },
+      { ...ONTAP_PROPS }
+    );
+
+    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('rejects a changed immutable ONTAP sub-property (DeploymentType) with a --replace pointer', async () => {
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        {
+          ...ONTAP_PROPS,
+          OntapConfiguration: { ...ONTAP_PROPS.OntapConfiguration, DeploymentType: 'SINGLE_AZ_1' },
+        },
+        { ...ONTAP_PROPS }
+      )
+    ).rejects.toThrow(/OntapConfiguration\.DeploymentType is immutable/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('FSxFileSystemProvider OPENZFS variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends CreateFileSystem with FileSystemType OPENZFS and the mapped OpenZFSConfiguration (incl. root volume)', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      DescribeFileSystemsCommand: {
+        FileSystems: [availableFs({ OpenZFSConfiguration: { RootVolumeId: 'fsvol-abc' } })],
+      },
+    });
+
+    const result = await newProvider().create('MyFs', RESOURCE_TYPE, {
+      ...OPENZFS_PROPS,
+      OpenZFSConfiguration: {
+        ...OPENZFS_PROPS.OpenZFSConfiguration,
+        ThroughputCapacity: '64',
+        CopyTagsToVolumes: 'true',
+        RootVolumeConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration.RootVolumeConfiguration,
+          RecordSizeKiB: '128',
+          ReadOnly: 'false',
+        },
+      },
+    });
+
+    // OpenZFS exposes the RootVolumeId GetAtt-served attribute.
+    expect(result.attributes).toMatchObject({ RootVolumeId: 'fsvol-abc' });
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(create.input['FileSystemType']).toBe('OPENZFS');
+    expect(create.input['OpenZFSConfiguration']).toMatchObject({
+      DeploymentType: 'SINGLE_AZ_1',
+      ThroughputCapacity: 64,
+      CopyTagsToVolumes: true,
+      RootVolumeConfiguration: {
+        RecordSizeKiB: 128,
+        DataCompressionType: 'LZ4',
+        ReadOnly: false,
+        NfsExports: [{ ClientConfigurations: [{ Clients: '*', Options: ['rw', 'crossmnt'] }] }],
+        UserAndGroupQuotas: [{ Type: 'USER', Id: 0, StorageCapacityQuotaGiB: 10 }],
+      },
+    });
+    // No sibling variant blocks leak onto the create call.
+    expect(create.input['WindowsConfiguration']).toBeUndefined();
+    expect(create.input['OntapConfiguration']).toBeUndefined();
+  });
+
+  it('applies a mutable ThroughputCapacity + ReadCacheConfiguration change via UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          ThroughputCapacity: 128,
+          ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 50 },
+        },
+      },
+      { ...OPENZFS_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: {
+        ThroughputCapacity: 128,
+        ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 50 },
+      },
+    });
+  });
+
+  it('translates an OpenZFS RouteTableIds change into Add/Remove deltas on UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-aaa', 'rtb-ccc'],
+        },
+      },
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+        },
+      }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: {
+        AddRouteTableIds: ['rtb-ccc'],
+        RemoveRouteTableIds: ['rtb-bbb'],
+      },
+    });
+  });
+
+  it('is a no-op when OpenZFS RouteTableIds are only reordered (no Add/Remove delta)', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-bbb', 'rtb-aaa'],
+        },
+      },
+      {
+        ...OPENZFS_PROPS,
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+        },
+      }
+    );
+
+    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('rejects a changed RootVolumeConfiguration (immutable via UpdateFileSystem) with a --replace pointer', async () => {
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        {
+          ...OPENZFS_PROPS,
+          OpenZFSConfiguration: {
+            ...OPENZFS_PROPS.OpenZFSConfiguration,
+            RootVolumeConfiguration: {
+              ...OPENZFS_PROPS.OpenZFSConfiguration.RootVolumeConfiguration,
+              RecordSizeKiB: 256,
+            },
+          },
+        },
+        { ...OPENZFS_PROPS }
+      )
+    ).rejects.toThrow(/OpenZFSConfiguration\.RootVolumeConfiguration is immutable/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('resolves the RootVolumeId attribute via getAttribute (OpenZFS-only)', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [availableFs({ OpenZFSConfiguration: { RootVolumeId: 'fsvol-xyz' } })],
+      },
+    });
+
+    const value = await newProvider().getAttribute(FS_ID, RESOURCE_TYPE, 'RootVolumeId');
+    expect(value).toBe('fsvol-xyz');
   });
 });
