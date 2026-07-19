@@ -90,6 +90,50 @@ describe('classifyVerifyScript', () => {
     expect(c.hasResumingSignalTrap).toBe(false);
   });
 
+  // Every case below is a non-compliant shape that passed an earlier cut of
+  // the classifier. They come from the PR #1102 re-review, which built them by
+  // reading the regexes rather than the tree.
+  it('rejects a seed placed AFTER the handler call', () => {
+    // `[A-Za-z_]` after the seed used to match the literal `exit`, so the
+    // round-1 blocker's own shape passed with the tokens merely reordered.
+    const c = classifyVerifyScript(`${CLEANUP}trap 'cleanup; (exit 130); exit 130' INT\n`);
+    expect(c.hasCorrectIntTrap).toBe(false);
+  });
+
+  it('rejects a command between the seed and the handler', () => {
+    // The `rm` clobbers `$?` again, defeating the seed.
+    const c = classifyVerifyScript(
+      `${CLEANUP}trap '(exit 130); rm -f x; cleanup; exit 130' INT\n`,
+    );
+    expect(c.hasCorrectIntTrap).toBe(false);
+  });
+
+  it('sees double-quoted trap bodies', () => {
+    const c = classifyVerifyScript(`${CLEANUP}trap "cleanup; echo x" EXIT INT TERM\n`);
+    expect(c.hasCleanupExitTrap).toBe(true);
+    expect(c.hasResumingSignalTrap).toBe(true);
+  });
+
+  it('requires a correct INT arm even with no EXIT trap', () => {
+    const c = classifyVerifyScript(`${CLEANUP}trap 'cleanup; exit 130' INT\n`);
+    expect(c.hasCorrectIntTrap).toBe(false);
+  });
+
+  it('requires EVERY re-arm to be correct, not just one', () => {
+    // 8 fixtures legitimately re-arm at phase boundaries. A `some()` check
+    // would greenlight a file whose later re-arm dropped the seed -- the most
+    // likely future regression.
+    const c = classifyVerifyScript(
+      `${CLEANUP}trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
+echo phase2
+trap 'cleanup; exit 130' INT
+`,
+    );
+    expect(c.hasCorrectIntTrap).toBe(false);
+  });
+
   it('joins a multi-line trap so it cannot hide from a line scan', () => {
     // local-start-api-websocket shipped exactly this shape; the line-oriented
     // first cut read it as two unrelated fragments and greenlit the fixture.
