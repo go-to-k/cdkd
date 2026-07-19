@@ -8,11 +8,10 @@ this fixture is the end-to-end proof of the non-Lustre variant mapping.
 
 OpenZFS `SINGLE_AZ_1` is the **cheapest** non-Lustre variant to stand up (no
 Active Directory, one subnet, 64 GiB / 64 MB/s — the smallest legal config),
-so it is the variant chosen as the cheapest live integ. **Windows** and
-**ONTAP** have their own per-variant fixtures — `fsx-windows` (AD-joined,
-issue #1088) and `fsx-ontap` (SINGLE_AZ_1, issue #1088) — which cost more
-per run and take materially longer, so this fixture remains the cheap
-smoke test of the shared create-poll / delete-poll path.
+so it is the variant chosen for the live integ. **Windows** and **ONTAP** are
+unit-tested and share this fixture's integ-verified create-poll / delete-poll
+path (the shared lifecycle machinery is variant-agnostic); a per-variant
+Windows-managed-AD / multi-AZ-ONTAP integ is an optional cost-gated follow-up.
 
 ## Resources
 
