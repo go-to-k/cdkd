@@ -201,7 +201,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Audit** | AWS::CloudTrail::Trail | SDK Provider | ✅ |
 | **Backup** | AWS::DLM::LifecyclePolicy | SDK Provider | ✅ |
 | **CI/CD** | AWS::CodeBuild::Project | SDK Provider | ✅ |
-| **CI/CD** | AWS::CodeCommit::Repository | SDK Provider | ✅ |
+| **CI/CD** | AWS::CodeCommit::Repository (`Code` create-only S3-zip seed content unpacked into the initial commit via `CreateCommit`; `Triggers` reconciled on create + update via `PutRepositoryTriggers`) | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Browser (adopt-only singleton — the CFn registry declares the type a read-only representation of the AWS-managed default browser `aws.browser.v1` with `NON_PROVISIONABLE` provisioning, so cdkd adopts the default via `GetBrowser` on create and no-ops delete; custom browsers are the separate `AWS::BedrockAgentCore::BrowserCustom` type, served by Cloud Control) | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::CodeInterpreter (adopt-only singleton for the AWS-managed default `aws.codeinterpreter.v1`, same semantics as Browser; custom interpreters are `AWS::BedrockAgentCore::CodeInterpreterCustom`, served by Cloud Control) | SDK Provider | ✅ |

@@ -1,16 +1,23 @@
 # CodeCommit Repository Example
 
-Minimal integ probe for the `AWS::CodeCommit::Repository` SDK provider
-(issue #1045). The type is `ProvisioningType: NON_PROVISIONABLE`, so cdkd's
+Integ probe for the `AWS::CodeCommit::Repository` SDK provider
+(issues #1045 / #1065 / #1066). The type is `ProvisioningType:
+NON_PROVISIONABLE`, so cdkd's
 Cloud Control fallback cannot handle it — pre-fix, the pre-flight rejected it
 outright. CodeCommit returned to General Availability on 2025-11-24.
 
 ## Configuration
 
-One stack with a single resource:
+One stack:
 
-- **CodeCommit Repository**: description + two tags (`env`, `team`). Free
+- **CodeCommit Repository**: description + two tags (`env`, `team`), a `Code`
+  seed (the `seed/` directory unpacked into the initial commit on `main`), and
+  a `Triggers` entry notifying the SNS topic on all repository events. Free
   (no per-repository charge at this scale).
+- **SNS Topic + TopicPolicy**: the trigger destination; the policy grants
+  `codecommit.amazonaws.com` `sns:Publish` so CodeCommit can validate the
+  trigger at `PutRepositoryTriggers` time (an explicit dependency puts the
+  policy before the trigger).
 
 ## Features Tested in cdkd
 
@@ -29,9 +36,14 @@ One stack with a single resource:
    `KmsKeyId` / `Tags` inputs. A freshly-deployed repo reports zero drift; an
    out-of-band `UpdateRepositoryDescription` is detected as drift (exit 1),
    then reverted so state and AWS realign.
-5. **Update**: `UpdateRepositoryDescription`, plus tag change AND tag
+5. **Code seed** (issue #1066, create-only): the `seed/` directory is zipped
+   as a CDK file asset and unpacked into the repository's initial commit via
+   `CreateCommit` — verified by `GetFile README.md` after deploy.
+6. **Triggers** (issue #1066, mutable): an SNS-backed trigger applied via
+   `PutRepositoryTriggers` on create — verified by `GetRepositoryTriggers`.
+7. **Update**: `UpdateRepositoryDescription`, plus tag change AND tag
    REMOVAL via `UntagResource` (the ECR issue #981 regression class).
-6. **Destroy**: `DeleteRepository` + state cleanup.
+8. **Destroy**: `DeleteRepository` + SNS topic + state cleanup.
 
 ## Run
 
@@ -39,11 +51,12 @@ One stack with a single resource:
 STATE_BUCKET=<your-cdkd-state-bucket> ./verify.sh
 ```
 
-Phases: (1) deploy + assert description/tags/Ref-id, (1b) drift clean after
-deploy → out-of-band description change detected as drift → revert,
-(2) `CDKD_TEST_UPDATE=true` re-deploy with rename + description change + `env`
-tag change + `team` tag removal, (3) destroy + assert the repository and state
-file are gone.
+Phases: (1) deploy + assert description/tags/Ref-id + Code seed (GetFile) +
+Triggers (GetRepositoryTriggers), (1b) drift clean after deploy → out-of-band
+description change detected as drift → revert, (2) `CDKD_TEST_UPDATE=true`
+re-deploy with rename + description change + `env` tag change + `team` tag
+removal, (3) destroy + assert the repository, SNS topic, and state file are
+gone.
 
 If Phase 1 fails with a new-customer access error, the AWS account has not
 been (re-)enabled for CodeCommit — the provider cannot be integ-verified on

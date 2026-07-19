@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
+const mockS3Send = vi.hoisted(() => vi.fn());
+// Mutable holder for the entries the mocked AdmZip instance returns per test.
+const admZipState = vi.hoisted(() => ({
+  entries: [] as Array<{ entryName: string; isDirectory: boolean; getData: () => Buffer }>,
+}));
 
 vi.mock('@aws-sdk/client-codecommit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-codecommit')>();
@@ -12,6 +17,20 @@ vi.mock('@aws-sdk/client-codecommit', async (importOriginal) => {
     })),
   };
 });
+
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send })),
+  };
+});
+
+vi.mock('adm-zip', () => ({
+  default: vi.fn().mockImplementation(() => ({
+    getEntries: () => admZipState.entries,
+  })),
+}));
 
 vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
@@ -34,11 +53,13 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import { CodeCommitRepositoryProvider } from '../../../../src/provisioning/providers/codecommit-repository-provider.js';
 import {
+  CreateCommitCommand,
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   GetRepositoryCommand,
   ListRepositoriesCommand,
   ListTagsForResourceCommand,
+  PutRepositoryTriggersCommand,
   TagResourceCommand,
   UntagResourceCommand,
   UpdateRepositoryDescriptionCommand,
@@ -46,6 +67,7 @@ import {
   UpdateRepositoryNameCommand,
   RepositoryDoesNotExistException,
 } from '@aws-sdk/client-codecommit';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 
@@ -75,6 +97,7 @@ describe('CodeCommitRepositoryProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    admZipState.entries = [];
     provider = new CodeCommitRepositoryProvider();
   });
 
@@ -173,6 +196,286 @@ describe('CodeCommitRepositoryProvider', () => {
       });
 
       expect('tags' in mockSend.mock.calls[0][0].input).toBe(false);
+    });
+  });
+
+  describe('create with Code seed', () => {
+    it('unpacks the S3 zip and seeds the initial commit via CreateCommit (default branch main)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({ commitId: 'abc123' }); // CreateCommit
+      mockS3Send.mockResolvedValueOnce({
+        Body: { transformToByteArray: async () => new Uint8Array([1, 2, 3]) },
+      });
+      admZipState.entries = [
+        { entryName: 'README.md', isDirectory: false, getData: () => Buffer.from('# hi') },
+        { entryName: 'src/', isDirectory: true, getData: () => Buffer.from('') },
+        { entryName: 'src/index.js', isDirectory: false, getData: () => Buffer.from('x') },
+      ];
+
+      const result = await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Code: { S3: { Bucket: 'seed-bucket', Key: 'seed.zip' } },
+      });
+
+      // GetObject with no VersionId
+      expect(mockS3Send).toHaveBeenCalledTimes(1);
+      const s3cmd = mockS3Send.mock.calls[0][0];
+      expect(s3cmd).toBeInstanceOf(GetObjectCommand);
+      expect(s3cmd.input).toEqual({ Bucket: 'seed-bucket', Key: 'seed.zip' });
+
+      // CreateCommit carries only file entries (directory skipped), on main.
+      const commitCmd = mockSend.mock.calls[1][0];
+      expect(commitCmd).toBeInstanceOf(CreateCommitCommand);
+      expect(commitCmd.input.repositoryName).toBe('my-repo');
+      expect(commitCmd.input.branchName).toBe('main');
+      expect(commitCmd.input.commitMessage).toBe('Initial commit');
+      expect(commitCmd.input.putFiles.map((f: { filePath: string }) => f.filePath)).toEqual([
+        'README.md',
+        'src/index.js',
+      ]);
+      expect(result.physicalId).toBe('my-repo');
+    });
+
+    it('honors an explicit BranchName and ObjectVersion', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ commitId: 'abc123' });
+      mockS3Send.mockResolvedValueOnce({
+        Body: { transformToByteArray: async () => new Uint8Array([1]) },
+      });
+      admZipState.entries = [
+        { entryName: 'f.txt', isDirectory: false, getData: () => Buffer.from('a') },
+      ];
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Code: {
+          BranchName: 'develop',
+          S3: { Bucket: 'b', Key: 'k.zip', ObjectVersion: 'v42' },
+        },
+      });
+
+      expect(mockS3Send.mock.calls[0][0].input).toEqual({
+        Bucket: 'b',
+        Key: 'k.zip',
+        VersionId: 'v42',
+      });
+      expect(mockSend.mock.calls[1][0].input.branchName).toBe('develop');
+    });
+
+    it('skips the seed commit (no CreateCommit) when the zip has no file entries', async () => {
+      mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() }); // CreateRepository only
+      mockS3Send.mockResolvedValueOnce({
+        Body: { transformToByteArray: async () => new Uint8Array([1]) },
+      });
+      admZipState.entries = [{ entryName: 'emptydir/', isDirectory: true, getData: () => Buffer.from('') }];
+
+      const result = await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Code: { S3: { Bucket: 'b', Key: 'k.zip' } },
+      });
+
+      expect(result.physicalId).toBe('my-repo');
+      expect(mockSend).toHaveBeenCalledTimes(1); // no CreateCommit
+    });
+
+    it('rejects a Code.S3 with a missing Bucket/Key and rolls back the repository', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({}); // DeleteRepository (rollback)
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Key: 'k.zip' } }, // no Bucket
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+
+      // Rollback deleted the just-created repository.
+      const deleteCmd = mockSend.mock.calls[1][0];
+      expect(deleteCmd).toBeInstanceOf(DeleteRepositoryCommand);
+      expect(deleteCmd.input).toEqual({ repositoryName: 'my-repo' });
+    });
+
+    it('rolls back (deletes) the repository when the S3 download fails', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({}); // DeleteRepository (rollback)
+      mockS3Send.mockRejectedValueOnce(new Error('access denied'));
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'b', Key: 'k.zip' } },
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
+    });
+
+    it('rejects a Code.S3 with a missing Key and rolls back the repository', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({}); // DeleteRepository (rollback)
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'b' } }, // no Key
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
+    });
+
+    it('rolls back when the S3 GetObject returns an empty body', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({}); // DeleteRepository (rollback)
+      mockS3Send.mockResolvedValueOnce({ Body: undefined }); // empty body
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'b', Key: 'k.zip' } },
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
+    });
+
+    it('still surfaces the original error when the rollback DeleteRepository also fails', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockRejectedValueOnce(new Error('cleanup boom')); // DeleteRepository (rollback) fails
+      mockS3Send.mockRejectedValueOnce(new Error('seed download failed'));
+
+      // The cleanup failure is swallowed; the ORIGINAL post-create error is
+      // re-thrown (wrapped as ProvisioningError). Message carries the seed
+      // failure, not the cleanup failure.
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Code: { S3: { Bucket: 'b', Key: 'k.zip' } },
+        })
+      ).rejects.toThrow(/seed download failed/);
+
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteRepositoryCommand);
+    });
+  });
+
+  describe('create with Triggers', () => {
+    it('applies Triggers via PutRepositoryTriggers (CFn PascalCase -> SDK camelCase)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockResolvedValueOnce({ configurationId: 'cfg-1' }); // PutRepositoryTriggers
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Triggers: [
+          {
+            Name: 'notify',
+            DestinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
+            CustomData: 'ping',
+            Branches: ['main'],
+            Events: ['all'],
+          },
+        ],
+      });
+
+      const putCmd = mockSend.mock.calls[1][0];
+      expect(putCmd).toBeInstanceOf(PutRepositoryTriggersCommand);
+      expect(putCmd.input).toEqual({
+        repositoryName: 'my-repo',
+        triggers: [
+          {
+            name: 'notify',
+            destinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
+            customData: 'ping',
+            branches: ['main'],
+            events: ['all'],
+          },
+        ],
+      });
+    });
+
+    it('omits optional customData but ALWAYS emits branches ([]) when absent (CodeCommit rejects null branches)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ configurationId: 'cfg-1' });
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Triggers: [
+          {
+            Name: 't',
+            DestinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
+            Events: ['createReference', 'deleteReference'],
+          },
+        ],
+      });
+
+      // branches defaults to [] (all branches) — PutRepositoryTriggers fails
+      // with "branch name list cannot be null" if the field is absent.
+      expect(mockSend.mock.calls[1][0].input.triggers[0]).toEqual({
+        name: 't',
+        destinationArn: 'arn:aws:sns:us-east-1:123456789012:topic',
+        events: ['createReference', 'deleteReference'],
+        branches: [],
+      });
+    });
+
+    it('coerces non-string trigger field shapes (number/boolean scalar -> string; object -> "")', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+        .mockResolvedValueOnce({ configurationId: 'cfg-1' });
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Triggers: [
+          {
+            Name: 42, // number -> '42'
+            DestinationArn: { Ref: 'Topic' }, // object -> ''
+            Branches: ['main', 7], // mixed -> ['main', '7']
+            Events: ['all', true], // boolean -> 'true'
+          },
+        ],
+      });
+
+      expect(mockSend.mock.calls[1][0].input.triggers[0]).toEqual({
+        name: '42',
+        destinationArn: '',
+        events: ['all', 'true'],
+        branches: ['main', '7'],
+      });
+    });
+
+    it('does NOT call PutRepositoryTriggers when the Triggers array is empty', async () => {
+      mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() });
+
+      await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+        Triggers: [],
+      });
+
+      expect(mockSend).toHaveBeenCalledTimes(1); // CreateRepository only
+    });
+
+    it('rolls back the repository when PutRepositoryTriggers fails on create', async () => {
+      mockSend
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // CreateRepository
+        .mockRejectedValueOnce(new Error('invalid destinationArn')) // PutRepositoryTriggers
+        .mockResolvedValueOnce({}); // DeleteRepository (rollback)
+
+      await expect(
+        provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+          RepositoryName: 'my-repo',
+          Triggers: [{ Name: 'bad', DestinationArn: 'nope', Events: ['all'] }],
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+
+      expect(mockSend.mock.calls[2][0]).toBeInstanceOf(DeleteRepositoryCommand);
     });
   });
 
@@ -439,6 +742,82 @@ describe('CodeCommitRepositoryProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetRepositoryCommand);
       expect(result.physicalId).toBe('my-repo');
+    });
+
+    it('applies changed Triggers via PutRepositoryTriggers (full replace)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ configurationId: 'cfg-2' }) // PutRepositoryTriggers
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }); // final GetRepository
+
+      await provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::CodeCommit::Repository',
+        {
+          RepositoryName: 'my-repo',
+          Triggers: [
+            { Name: 't', DestinationArn: 'arn:aws:sns:us-east-1:1:new', Events: ['all'] },
+          ],
+        },
+        {
+          RepositoryName: 'my-repo',
+          Triggers: [
+            { Name: 't', DestinationArn: 'arn:aws:sns:us-east-1:1:old', Events: ['all'] },
+          ],
+        }
+      );
+
+      const putCmd = mockSend.mock.calls[0][0];
+      expect(putCmd).toBeInstanceOf(PutRepositoryTriggersCommand);
+      expect(putCmd.input.triggers[0].destinationArn).toBe('arn:aws:sns:us-east-1:1:new');
+    });
+
+    it('clears all triggers with an empty array when the Triggers property is removed', async () => {
+      mockSend
+        .mockResolvedValueOnce({ configurationId: 'cfg-3' }) // PutRepositoryTriggers([])
+        .mockResolvedValueOnce({ repositoryMetadata: metadata() }); // final GetRepository
+
+      await provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::CodeCommit::Repository',
+        { RepositoryName: 'my-repo' }, // Triggers dropped
+        {
+          RepositoryName: 'my-repo',
+          Triggers: [
+            { Name: 't', DestinationArn: 'arn:aws:sns:us-east-1:1:old', Events: ['all'] },
+          ],
+        }
+      );
+
+      const putCmd = mockSend.mock.calls[0][0];
+      expect(putCmd).toBeInstanceOf(PutRepositoryTriggersCommand);
+      expect(putCmd.input).toEqual({ repositoryName: 'my-repo', triggers: [] });
+    });
+
+    it('does NOT call PutRepositoryTriggers when the Triggers block is unchanged (incl. re-order-stable fields)', async () => {
+      mockSend.mockResolvedValueOnce({ repositoryMetadata: metadata() }); // final GetRepository only
+
+      await provider.update(
+        'MyRepo',
+        'my-repo',
+        'AWS::CodeCommit::Repository',
+        {
+          RepositoryName: 'my-repo',
+          Triggers: [
+            { Name: 't', DestinationArn: 'arn:aws:sns:us-east-1:1:x', Branches: ['main'], Events: ['all'] },
+          ],
+        },
+        {
+          RepositoryName: 'my-repo',
+          Triggers: [
+            { Name: 't', DestinationArn: 'arn:aws:sns:us-east-1:1:x', Branches: ['main'], Events: ['all'] },
+          ],
+        }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetRepositoryCommand);
     });
 
     it('wraps SDK errors in ProvisioningError', async () => {
@@ -924,18 +1303,20 @@ describe('CodeCommitRepositoryProvider', () => {
   });
 
   describe('property classification', () => {
-    it('declares handledProperties + unhandledByDesign covering the CFn schema write-side set', () => {
+    it('declares handledProperties covering the full CFn schema write-side set (Code + Triggers now handled)', () => {
       const handled = provider.handledProperties.get('AWS::CodeCommit::Repository');
       expect(handled).toBeDefined();
       expect([...(handled ?? [])].sort()).toEqual([
+        'Code',
         'KmsKeyId',
         'RepositoryDescription',
         'RepositoryName',
         'Tags',
+        'Triggers',
       ]);
-      const byDesign = provider.unhandledByDesign.get('AWS::CodeCommit::Repository');
-      expect(byDesign?.has('Code')).toBe(true);
-      expect(byDesign?.has('Triggers')).toBe(true);
+      // Code + Triggers moved out of unhandledByDesign (issue #1066); the
+      // provider no longer declares any by-design-unhandled property.
+      expect(provider.unhandledByDesign).toBeUndefined();
     });
   });
 });

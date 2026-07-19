@@ -157,6 +157,7 @@ high.
 - `cdk-local` - Local-emulation engine (`--from-cfn-stack` dispatcher + state-source plumbing). cdkd's `src/cli/commands/local-state-source.ts` is a shim that injects the S3-backed `--from-state` factory via `cdk-local`'s `extraStateProviders` hook.
 - `graphlib` - DAG construction
 - `archiver` - ZIP packaging for file assets
+- `adm-zip` - ZIP unpacking for the `AWS::CodeCommit::Repository` `Code` seed (S3 zip → initial commit via `CreateCommit`; issue #1066)
 - `chokidar` - File watcher backing `cdkd local start-api --watch` (PR 8c)
 - `yaml` - CFn-aware YAML codec for `cdkd export` / `cdkd import --migrate-from-cloudformation` (preserves `!Ref` / `!GetAtt` / `!Sub` shorthand intrinsics on round-trip — see [src/cli/yaml-cfn.ts](src/cli/yaml-cfn.ts))
 

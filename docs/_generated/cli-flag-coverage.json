@@ -1065,6 +1065,7 @@
     "--event-source-arn",
     "--execution-arn",
     "--fail",
+    "--file-path",
     "--file-system-id",
     "--file-system-ids",
     "--filter",

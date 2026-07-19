@@ -1,18 +1,25 @@
 import {
   CodeCommitClient,
+  CreateCommitCommand,
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   GetRepositoryCommand,
   ListRepositoriesCommand,
   ListTagsForResourceCommand,
+  PutRepositoryTriggersCommand,
   TagResourceCommand,
   UntagResourceCommand,
   UpdateRepositoryDescriptionCommand,
   UpdateRepositoryEncryptionKeyCommand,
   UpdateRepositoryNameCommand,
   RepositoryDoesNotExistException,
+  type PutFileEntry,
   type RepositoryMetadata,
+  type RepositoryTrigger,
+  type RepositoryTriggerEventEnum,
 } from '@aws-sdk/client-codecommit';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import AdmZip from 'adm-zip';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
@@ -70,6 +77,88 @@ function tagMapsEqual(a: Record<string, string>, b: Record<string, string>): boo
 }
 
 /**
+ * CFn `Code` property shape (create-only seed content). CFn unpacks the S3
+ * ZIP into the repository's first commit on `BranchName` (default `main`).
+ */
+interface CfnCode {
+  BranchName?: unknown;
+  S3?: {
+    Bucket?: unknown;
+    Key?: unknown;
+    ObjectVersion?: unknown;
+  };
+}
+
+/** CFn `Triggers[]` entry shape (PascalCase); mapped to the SDK's camelCase. */
+interface CfnTrigger {
+  Name?: unknown;
+  DestinationArn?: unknown;
+  CustomData?: unknown;
+  Branches?: unknown;
+  Events?: unknown;
+}
+
+/** Default branch for the `Code` seed commit when `BranchName` is omitted. */
+const DEFAULT_SEED_BRANCH = 'main';
+
+/**
+ * Coerce a CFn scalar value to a string. Post-intrinsic-resolution values are
+ * strings in practice; numbers / booleans are stringified and any other shape
+ * (object / null / undefined) collapses to `''` — avoids stringifying an
+ * object to the useless `'[object Object]'`.
+ */
+function scalarToString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+/**
+ * Convert the CFn `Triggers` list shape to the CodeCommit SDK's
+ * `RepositoryTrigger[]` (PascalCase → camelCase). `Branches` is ALWAYS
+ * emitted (defaulting to `[]` when the template omits it) — CodeCommit's
+ * `PutRepositoryTriggers` rejects a trigger whose `branches` is null with
+ * "Repository trigger branch name list cannot be null", and an empty array
+ * means "all branches" (matching CFn's default when `Branches` is absent).
+ * `CustomData` is truly optional (emitted only when present) so a re-order /
+ * equality comparison stays stable. `Events` / `Branches` are coerced to
+ * string arrays.
+ */
+function toSdkTriggers(triggers: CfnTrigger[] | undefined): RepositoryTrigger[] {
+  // CFn always resolves `Triggers` to a list, but guard defensively against a
+  // non-array (hand-written / malformed template) so update()'s unguarded call
+  // site can't hit a raw `.map is not a function` TypeError.
+  if (!Array.isArray(triggers) || triggers.length === 0) return [];
+  return triggers.map((t) => {
+    const events: unknown[] = Array.isArray(t?.Events) ? t.Events : [];
+    const branches: unknown[] = Array.isArray(t?.Branches) ? t.Branches : [];
+    const trigger: RepositoryTrigger = {
+      name: scalarToString(t?.Name),
+      destinationArn: scalarToString(t?.DestinationArn),
+      // The SDK types `events` as a string-literal enum union; the CFn values
+      // are the same wire strings (`all` / `createReference` / ...), so the
+      // coerced strings are cast to the enum type.
+      events: events.map((e) => scalarToString(e)) as RepositoryTriggerEventEnum[],
+      branches: branches.map((b) => scalarToString(b)),
+    };
+    if (t?.CustomData !== undefined && t.CustomData !== null) {
+      trigger.customData = scalarToString(t.CustomData);
+    }
+    return trigger;
+  });
+}
+
+/**
+ * Order-sensitive structural equality for two mapped SDK trigger lists, used
+ * to skip a redundant `PutRepositoryTriggers` when the template `Triggers`
+ * block is unchanged. Compared as canonical JSON so `undefined` optional
+ * fields (`customData` / `branches`) collapse identically on both sides.
+ */
+function triggersEqual(a: RepositoryTrigger[], b: RepositoryTrigger[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
  * AWS CodeCommit Repository Provider
  *
  * Implements resource provisioning for AWS::CodeCommit::Repository using the
@@ -87,28 +176,23 @@ function tagMapsEqual(a: Record<string, string>, b: Record<string, string>): boo
  */
 export class CodeCommitRepositoryProvider implements ResourceProvider {
   private client?: CodeCommitClient;
+  private s3Client?: S3Client;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('CodeCommitRepositoryProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::CodeCommit::Repository',
-      new Set<string>(['RepositoryName', 'RepositoryDescription', 'KmsKeyId', 'Tags']),
-    ],
-  ]);
-
-  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::CodeCommit::Repository',
-      new Map<string, string>([
-        [
-          'Code',
-          'CFn-only seed-content orchestration (S3 zip unpacked into an initial commit on a chosen branch); not wired in v1 — pre-flight rejects templates carrying it so nothing is silently dropped; a follow-up could implement it via CreateCommit/PutFile',
-        ],
-        [
-          'Triggers',
-          'repository trigger management not wired in v1 — pre-flight rejects templates carrying it so nothing is silently dropped; a follow-up could implement it via PutRepositoryTriggers',
-        ],
+      new Set<string>([
+        'RepositoryName',
+        'RepositoryDescription',
+        'KmsKeyId',
+        'Tags',
+        // `Code`: create-only S3-zip seed content, unpacked into the initial
+        // commit (see `seedInitialCommit`). `Triggers`: mutable repository
+        // event triggers, wired on create + update via PutRepositoryTriggers.
+        'Code',
+        'Triggers',
       ]),
     ],
   ]);
@@ -120,6 +204,13 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       );
     }
     return this.client;
+  }
+
+  private getS3Client(): S3Client {
+    if (!this.s3Client) {
+      this.s3Client = new S3Client(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.s3Client;
   }
 
   /**
@@ -173,13 +264,42 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       if (!metadata?.repositoryName) {
         throw new Error('CreateRepository did not return repository metadata');
       }
+      const createdName = metadata.repositoryName;
 
-      this.logger.debug(
-        `Successfully created CodeCommit Repository ${logicalId}: ${metadata.repositoryName}`
-      );
+      // Post-create orchestration (`Code` seed + `Triggers`). If either
+      // fails, the repository already exists on AWS but the deploy engine's
+      // rollback cannot delete it — `create()` throwing before returning a
+      // physicalId means the engine never recorded one to roll back. So
+      // self-clean: delete the just-created repository before re-throwing,
+      // mirroring CloudFormation's rollback-deletes-the-repo behavior.
+      try {
+        const code = properties['Code'] as CfnCode | undefined;
+        if (code) {
+          await this.seedInitialCommit(createdName, code);
+        }
+        const triggers = properties['Triggers'] as CfnTrigger[] | undefined;
+        if (Array.isArray(triggers) && triggers.length > 0) {
+          await this.getClient().send(
+            new PutRepositoryTriggersCommand({
+              repositoryName: createdName,
+              triggers: toSdkTriggers(triggers),
+            })
+          );
+          this.logger.debug(`Applied ${triggers.length} trigger(s) to ${createdName}`);
+        }
+      } catch (postCreateError) {
+        this.logger.warn(
+          `Post-create step failed for CodeCommit Repository ${logicalId}; deleting the ` +
+            `just-created repository ${createdName} to avoid an orphan`
+        );
+        await this.bestEffortDelete(createdName);
+        throw postCreateError;
+      }
+
+      this.logger.debug(`Successfully created CodeCommit Repository ${logicalId}: ${createdName}`);
 
       return {
-        physicalId: metadata.repositoryName,
+        physicalId: createdName,
         attributes: this.toAttributes(metadata),
       };
     } catch (error) {
@@ -204,7 +324,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * CFn's `Ref` value — survives the rename), RepositoryDescription
    * (UpdateRepositoryDescription), KmsKeyId (UpdateRepositoryEncryptionKey),
    * Tags (TagResource / UntagResource — full tag removal handled explicitly,
-   * see the ECR Tags regression class in issue #981).
+   * see the ECR Tags regression class in issue #981), Triggers
+   * (PutRepositoryTriggers — a full-set replace, so a dropped or fully-removed
+   * `Triggers` property is applied by putting the new/empty set; issue #1066).
+   * `Code` is create-only seed content (CFn ignores it on update) and is NOT
+   * re-applied here.
    *
    * A rename returns the NEW repository name as `physicalId` with
    * `wasReplaced: false`; the deploy engine persists the returned physical
@@ -318,6 +442,28 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             `Could not resolve ARN for CodeCommit Repository ${currentName}; tag update skipped`
           );
         }
+      }
+
+      // Update Triggers if changed. `PutRepositoryTriggers` REPLACES the full
+      // trigger set, so a template that dropped an entry — or removed the
+      // `Triggers` property entirely (`newTriggers === undefined`) — is
+      // handled by putting the new set (empty array = clear all). `Code` is
+      // create-only seed content and is intentionally NOT re-applied here
+      // (CFn ignores `Code` on update).
+      const newSdkTriggers = toSdkTriggers(properties['Triggers'] as CfnTrigger[] | undefined);
+      const oldSdkTriggers = toSdkTriggers(
+        previousProperties['Triggers'] as CfnTrigger[] | undefined
+      );
+      if (!triggersEqual(newSdkTriggers, oldSdkTriggers)) {
+        await this.getClient().send(
+          new PutRepositoryTriggersCommand({
+            repositoryName: currentName,
+            triggers: newSdkTriggers,
+          })
+        );
+        this.logger.debug(
+          `Updated triggers for ${currentName} (${newSdkTriggers.length} trigger(s))`
+        );
       }
 
       // Get current attributes (re-read so rename / description / key
@@ -518,12 +664,15 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * State property paths this provider cannot read back from AWS, skipped by
    * the drift comparator to avoid a guaranteed false positive.
    *
-   * `Code` (create-only S3-zip seed content unpacked into an initial commit)
-   * and `Triggers` (repository trigger management, not wired) are both
-   * `unhandledByDesign` — normally rejected pre-flight, but a state written
-   * under `--allow-unsupported-properties` could still carry them, and neither
-   * is read back by `readCurrentState`, so exclude both defensively to avoid a
-   * guaranteed false-positive drift on every run.
+   * `Code` is create-only S3-zip seed content unpacked into the initial
+   * commit — there is no read-back to compare against (the commit is git
+   * history, not a repository attribute), so it can never meaningfully drift.
+   * `Triggers` IS wired on the write side (create + update via
+   * `PutRepositoryTriggers`), but `readCurrentState` does not yet fetch
+   * `GetRepositoryTriggers`, so comparing a state that carries `Triggers`
+   * against an `observedProperties` that omits it would be a guaranteed false
+   * positive. Both are therefore excluded here; a follow-up can add
+   * `GetRepositoryTriggers` read-back and drop `Triggers` from this list.
    */
   getDriftUnknownPaths(_resourceType: string): string[] {
     return ['Code', 'Triggers'];
@@ -585,6 +734,87 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       nextToken = list.nextToken;
     } while (nextToken);
     return null;
+  }
+
+  /**
+   * Seed the repository's initial commit from the CFn `Code` property.
+   *
+   * CFn's `Code` orchestration downloads the S3 ZIP, unpacks it, and creates
+   * the repository's first commit on `BranchName` (default `main`). cdkd
+   * reproduces that here: `GetObject` the ZIP, unpack every file entry
+   * (directories are implied by file paths — CodeCommit has no empty-dir
+   * concept), and issue a single `CreateCommit` carrying all files as
+   * `putFiles`. This is create-only: CFn ignores `Code` on update, and so
+   * does cdkd (`update()` never calls this).
+   *
+   * A ZIP with no file entries is a no-op (warn + skip) rather than a hard
+   * failure — CodeCommit rejects a `CreateCommit` with an empty `putFiles`.
+   */
+  private async seedInitialCommit(repositoryName: string, code: CfnCode): Promise<void> {
+    const bucket = code.S3?.Bucket;
+    const key = code.S3?.Key;
+    if (typeof bucket !== 'string' || typeof key !== 'string' || !bucket || !key) {
+      throw new Error('Code.S3 requires string Bucket and Key');
+    }
+    const versionId =
+      typeof code.S3?.ObjectVersion === 'string' ? code.S3.ObjectVersion : undefined;
+    const branchName =
+      typeof code.BranchName === 'string' && code.BranchName
+        ? code.BranchName
+        : DEFAULT_SEED_BRANCH;
+
+    // The S3 client is bound to the deploy region (`AWS_REGION`). CDK always
+    // uploads a `Code` asset to the same-region bootstrap bucket, so a
+    // cross-region `Code.S3.Bucket` (PermanentRedirect) is not expected here.
+    const obj = await this.getS3Client().send(
+      new GetObjectCommand({ Bucket: bucket, Key: key, ...(versionId && { VersionId: versionId }) })
+    );
+    if (!obj.Body) {
+      throw new Error(`Code.S3 object s3://${bucket}/${key} returned an empty body`);
+    }
+    const zipBytes = await obj.Body.transformToByteArray();
+
+    const zip = new AdmZip(Buffer.from(zipBytes));
+    const putFiles: PutFileEntry[] = [];
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue;
+      putFiles.push({ filePath: entry.entryName, fileContent: entry.getData() });
+    }
+    if (putFiles.length === 0) {
+      this.logger.warn(
+        `Code.S3 object s3://${bucket}/${key} contained no files; skipping seed commit for ${repositoryName}`
+      );
+      return;
+    }
+
+    await this.getClient().send(
+      new CreateCommitCommand({
+        repositoryName,
+        branchName,
+        commitMessage: 'Initial commit',
+        putFiles,
+      })
+    );
+    this.logger.debug(
+      `Seeded ${repositoryName} with ${putFiles.length} file(s) on branch ${branchName}`
+    );
+  }
+
+  /**
+   * Best-effort delete used to roll back a just-created repository when a
+   * post-create step (`Code` seed / `Triggers`) fails. Never throws — the
+   * original post-create error is what the caller re-throws; a cleanup
+   * failure is logged so the orphan is surfaced.
+   */
+  private async bestEffortDelete(repositoryName: string): Promise<void> {
+    try {
+      await this.getClient().send(new DeleteRepositoryCommand({ repositoryName }));
+    } catch (cleanupError) {
+      this.logger.warn(
+        `Failed to clean up CodeCommit Repository ${repositoryName} after a post-create failure: ` +
+          `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+      );
+    }
   }
 
   /**
