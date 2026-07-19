@@ -286,6 +286,9 @@ These types have an `enrichResourceAttributes` case but no cached CFn schema, so
 - `AWS::Events::Connection`
 - `AWS::Lambda::Version`
 - `AWS::OpenSearchService::Domain`
+- `AWS::Pipes::Pipe`
 - `AWS::Redshift::Cluster`
+- `AWS::ResourceGroups::Group`
 - `AWS::Route53::HealthCheck`
+- `AWS::S3::AccessPoint`
 

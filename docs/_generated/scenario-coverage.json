@@ -465,6 +465,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-getatt-readback",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []

@@ -1275,7 +1275,7 @@ export class CloudControlProvider implements ResourceProvider {
         // failed read leaves the CC-API attribute shape unchanged and never
         // fails the deploy.
         if (!enriched['BackupVaultArn']) {
-          const model = await this.readBackupResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId);
           if (model) {
             if (typeof model['BackupVaultArn'] === 'string') {
               enriched['BackupVaultArn'] = model['BackupVaultArn'];
@@ -1303,7 +1303,7 @@ export class CloudControlProvider implements ResourceProvider {
         // the physicalId (the BackupPlanId). Overlay both from a CC
         // GetResource read-back. Best-effort.
         if (!enriched['BackupPlanArn'] || !enriched['VersionId']) {
-          const model = await this.readBackupResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId);
           if (model) {
             if (!enriched['BackupPlanArn'] && typeof model['BackupPlanArn'] === 'string') {
               enriched['BackupPlanArn'] = model['BackupPlanArn'];
@@ -1344,7 +1344,7 @@ export class CloudControlProvider implements ResourceProvider {
               enriched['BackupPlanId'] = physicalId.substring(firstUnderscore + 1);
             }
           }
-          const model = await this.readBackupResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId);
           if (model) {
             if (typeof model['SelectionId'] === 'string') {
               enriched['SelectionId'] = model['SelectionId'];
@@ -1360,6 +1360,84 @@ export class CloudControlProvider implements ResourceProvider {
         break;
       }
 
+      case 'AWS::Pipes::Pipe': {
+        // Pipes has NO SDK provider, so it always routes through Cloud
+        // Control, and the CC CREATE ResourceModel is sparse — it does not
+        // surface the pipe ARN. `Fn::GetAtt(<Pipe>, 'Arn')` would fall
+        // through the resolver's constructAttribute to the physicalId (the
+        // pipe NAME), poisoning IAM policies / alarm actions / outputs that
+        // need the ARN. Overlay the documented GetAtt attributes from a CC
+        // GetResource read-back. Best-effort: a failed read leaves the
+        // attribute shape unchanged and never fails the deploy. (issue #1103)
+        if (!enriched['Arn']) {
+          const model = await this.readCcResourceModel(resourceType, physicalId);
+          if (model) {
+            if (typeof model['Arn'] === 'string') {
+              enriched['Arn'] = model['Arn'];
+            }
+            if (!enriched['CurrentState'] && typeof model['CurrentState'] === 'string') {
+              enriched['CurrentState'] = model['CurrentState'];
+            }
+            if (!enriched['StateReason'] && typeof model['StateReason'] === 'string') {
+              enriched['StateReason'] = model['StateReason'];
+            }
+            if (!enriched['CreationTime'] && typeof model['CreationTime'] === 'string') {
+              enriched['CreationTime'] = model['CreationTime'];
+            }
+            if (!enriched['LastModifiedTime'] && typeof model['LastModifiedTime'] === 'string') {
+              enriched['LastModifiedTime'] = model['LastModifiedTime'];
+            }
+            this.logger.debug(`Enriched Pipes Pipe ${physicalId} with Arn from CC GetResource`);
+          }
+        }
+        break;
+      }
+
+      case 'AWS::S3::AccessPoint': {
+        // Same class as the Pipes branch: the physicalId is the access point
+        // NAME while Arn / Alias are readOnly attributes the sparse CREATE
+        // ResourceModel omits. Alias is load-bearing for S3 data access (the
+        // `...-s3alias` bucket-style name handed to S3 clients), so falling
+        // back to the bare name breaks consumers silently. (issue #1103)
+        if (!enriched['Arn'] || !enriched['Alias']) {
+          const model = await this.readCcResourceModel(resourceType, physicalId);
+          if (model) {
+            if (!enriched['Arn'] && typeof model['Arn'] === 'string') {
+              enriched['Arn'] = model['Arn'];
+            }
+            if (!enriched['Alias'] && typeof model['Alias'] === 'string') {
+              enriched['Alias'] = model['Alias'];
+            }
+            if (!enriched['NetworkOrigin'] && typeof model['NetworkOrigin'] === 'string') {
+              enriched['NetworkOrigin'] = model['NetworkOrigin'];
+            }
+            this.logger.debug(
+              `Enriched S3 AccessPoint ${physicalId} with Arn/Alias from CC GetResource`
+            );
+          }
+        }
+        break;
+      }
+
+      case 'AWS::ResourceGroups::Group': {
+        // Same class: the physicalId is the group NAME and Arn is the only
+        // computed GetAtt attribute; the sparse CREATE ResourceModel omits
+        // it, so the resolver would hand the bare name to consumers that
+        // need the ARN (e.g. IAM policies). (issue #1103)
+        if (!enriched['Arn']) {
+          const model = await this.readCcResourceModel(resourceType, physicalId);
+          if (model) {
+            if (typeof model['Arn'] === 'string') {
+              enriched['Arn'] = model['Arn'];
+            }
+            this.logger.debug(
+              `Enriched ResourceGroups Group ${physicalId} with Arn from CC GetResource`
+            );
+          }
+        }
+        break;
+      }
+
       default:
         break;
     }
@@ -1368,13 +1446,17 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
-   * Read the Cloud Control GetResource model for a pure-CC Backup resource and
-   * return its parsed property map, or `undefined` on any failure. Backup types
-   * have no SDK provider, so this generic CC read-back is the cleanest source
-   * of their readOnly attributes (ARNs, VersionId, SelectionId) that the sparse
-   * CREATE ResourceModel does not reliably surface. Best-effort: never throws.
+   * Read the Cloud Control GetResource model for a pure-CC resource and
+   * return its parsed property map, or `undefined` on any failure. Types with
+   * no SDK provider always route through Cloud Control, whose async CREATE
+   * ResourceModel is sparse for several types, so this generic CC read-back is
+   * the cleanest source of their readOnly attributes (ARNs, aliases,
+   * VersionId, SelectionId) — the type's registry schema lists them under
+   * readOnlyProperties, which the CC read handler does return. Originally
+   * Backup-scoped (issue #984); generalized for Pipes / S3 AccessPoint /
+   * ResourceGroups in issue #1103. Best-effort: never throws.
    */
-  private async readBackupResourceModel(
+  private async readCcResourceModel(
     resourceType: string,
     physicalId: string
   ): Promise<Record<string, unknown> | undefined> {
