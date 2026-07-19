@@ -32,7 +32,10 @@ vi.mock('../../../../src/utils/logger.js', () => {
   };
 });
 
-import { FSxFileSystemProvider } from '../../../../src/provisioning/providers/fsx-filesystem-provider.js';
+import {
+  FSxFileSystemProvider,
+  VARIANT_MUTABLE_SUBPROPS,
+} from '../../../../src/provisioning/providers/fsx-filesystem-provider.js';
 import {
   CreateFileSystemCommand,
   CreateFileSystemFromBackupCommand,
@@ -855,15 +858,507 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('declares SecurityGroupIds / BackupId / the non-Lustre variant blocks as drift-unknown', () => {
+  it('declares only the individually-unreadable leaves as drift-unknown (not whole variant blocks)', () => {
     expect(newProvider().getDriftUnknownPaths(RESOURCE_TYPE)).toEqual([
       'SecurityGroupIds',
       'BackupId',
-      'WindowsConfiguration',
-      'OntapConfiguration',
-      'OpenZFSConfiguration',
+      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
+      'OntapConfiguration.FsxAdminPassword',
+      'OntapConfiguration.EndpointIpv6AddressRange',
+      'OpenZFSConfiguration.EndpointIpv6AddressRange',
+      'OpenZFSConfiguration.RootVolumeConfiguration',
     ]);
     expect(newProvider().getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
+  });
+});
+
+describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reverse-maps WindowsConfiguration, flattening Aliases to a name list', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'WINDOWS',
+            StorageCapacity: 32,
+            SubnetIds: ['subnet-111'],
+            WindowsConfiguration: {
+              ActiveDirectoryId: 'd-1234567890',
+              DeploymentType: 'MULTI_AZ_1',
+              PreferredSubnetId: 'subnet-111',
+              ThroughputCapacity: 32,
+              WeeklyMaintenanceStartTime: '1:05:00',
+              CopyTagsToBackups: true,
+              Aliases: [
+                { Name: 'files.example.com', Lifecycle: 'AVAILABLE' },
+                { Name: 'share.example.com', Lifecycle: 'CREATING' },
+              ],
+              AuditLogConfiguration: {
+                FileAccessAuditLogLevel: 'SUCCESS_ONLY',
+                FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
+                AuditLogDestination: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/fsx/x',
+              },
+              DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 3000 },
+              FsrmConfiguration: { FsrmServiceEnabled: true },
+              SelfManagedActiveDirectoryConfiguration: {
+                DomainName: 'corp.example.com',
+                UserName: 'Admin',
+                DnsIps: ['10.0.0.1'],
+              },
+              // Read-only fields that are not CFn inputs.
+              RemoteAdministrationEndpoint: 'amznfsx.corp.example.com',
+              PreferredFileServerIp: '10.0.0.9',
+              MaintenanceOperationsInProgress: ['PATCHING'],
+            },
+          },
+        ],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const windows = state?.['WindowsConfiguration'] as Record<string, unknown>;
+
+    expect(windows).toMatchObject({
+      ActiveDirectoryId: 'd-1234567890',
+      DeploymentType: 'MULTI_AZ_1',
+      ThroughputCapacity: 32,
+      CopyTagsToBackups: true,
+      Aliases: ['files.example.com', 'share.example.com'],
+      AuditLogConfiguration: {
+        FileAccessAuditLogLevel: 'SUCCESS_ONLY',
+        FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
+      },
+      DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 3000 },
+      FsrmConfiguration: { FsrmServiceEnabled: true },
+      SelfManagedActiveDirectoryConfiguration: { DomainName: 'corp.example.com', UserName: 'Admin' },
+    });
+    // Read-only API fields must not leak in as phantom CFn properties.
+    expect(windows['RemoteAdministrationEndpoint']).toBeUndefined();
+    expect(windows['PreferredFileServerIp']).toBeUndefined();
+    expect(windows['MaintenanceOperationsInProgress']).toBeUndefined();
+    // Write-only credential is never returned by AWS.
+    expect(
+      (windows['SelfManagedActiveDirectoryConfiguration'] as Record<string, unknown>)['Password']
+    ).toBeUndefined();
+    // Sibling variant blocks stay absent.
+    expect(state?.['OntapConfiguration']).toBeUndefined();
+    expect(state?.['OpenZFSConfiguration']).toBeUndefined();
+  });
+
+  it('reverse-maps OntapConfiguration without the read-only Endpoints block', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'ONTAP',
+            StorageCapacity: 1024,
+            SubnetIds: ['subnet-111', 'subnet-222'],
+            OntapConfiguration: {
+              DeploymentType: 'MULTI_AZ_1',
+              ThroughputCapacity: 128,
+              ThroughputCapacityPerHAPair: 128,
+              HAPairs: 1,
+              PreferredSubnetId: 'subnet-111',
+              RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+              EndpointIpAddressRange: '198.19.0.0/24',
+              DiskIopsConfiguration: { Mode: 'AUTOMATIC', Iops: 3072 },
+              Endpoints: { Management: { DNSName: 'management.example.com' } },
+            },
+          },
+        ],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const ontap = state?.['OntapConfiguration'] as Record<string, unknown>;
+
+    expect(ontap).toEqual({
+      DeploymentType: 'MULTI_AZ_1',
+      ThroughputCapacity: 128,
+      ThroughputCapacityPerHAPair: 128,
+      HAPairs: 1,
+      PreferredSubnetId: 'subnet-111',
+      RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
+      EndpointIpAddressRange: '198.19.0.0/24',
+      DiskIopsConfiguration: { Mode: 'AUTOMATIC', Iops: 3072 },
+    });
+  });
+
+  it('reverse-maps OpenZFSConfiguration without RootVolumeId / EndpointIpAddress', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'OPENZFS',
+            StorageCapacity: 64,
+            SubnetIds: ['subnet-111'],
+            OpenZFSConfiguration: {
+              DeploymentType: 'SINGLE_AZ_1',
+              ThroughputCapacity: 64,
+              CopyTagsToBackups: false,
+              CopyTagsToVolumes: true,
+              DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+              ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+              RootVolumeId: 'fsvol-0123456789abcdef0',
+              EndpointIpAddress: '10.0.0.5',
+            },
+          },
+        ],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const openzfs = state?.['OpenZFSConfiguration'] as Record<string, unknown>;
+
+    expect(openzfs).toEqual({
+      DeploymentType: 'SINGLE_AZ_1',
+      ThroughputCapacity: 64,
+      CopyTagsToBackups: false,
+      CopyTagsToVolumes: true,
+      DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+      ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+    });
+    // RootVolumeConfiguration lives on the volume — never synthesized here.
+    expect(openzfs['RootVolumeConfiguration']).toBeUndefined();
+  });
+
+  // Mandatory round-trip guard (docs/provider-development.md §3b): `cdkd drift
+  // --revert` feeds a readCurrentState snapshot back through update(). Only the
+  // variant block matching FileSystemType is ever emitted, so the Class 1
+  // type-discriminator hazard cannot fire; this pins that contract.
+  it('round-trip: an unchanged variant snapshot replays through update() with no AWS call', async () => {
+    const observedFs = {
+      FileSystemId: FS_ID,
+      Lifecycle: 'AVAILABLE',
+      FileSystemType: 'OPENZFS',
+      StorageCapacity: 64,
+      SubnetIds: ['subnet-111'],
+      OpenZFSConfiguration: {
+        DeploymentType: 'SINGLE_AZ_1',
+        ThroughputCapacity: 64,
+        DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+        RootVolumeId: 'fsvol-0123456789abcdef0',
+      },
+    };
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [observedFs] } });
+
+    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    expect(observed).toBeDefined();
+
+    vi.clearAllMocks();
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    // Replaying the snapshot against itself is a no-op: no immutable-property
+    // rejection, and no empty UpdateFileSystem call.
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...observed },
+      { ...observed }
+    );
+    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('round-trip: a mutable-only variant drift replays as a real UpdateFileSystem', async () => {
+    const state = {
+      FileSystemType: 'OPENZFS',
+      StorageCapacity: 64,
+      SubnetIds: ['subnet-111'],
+      OpenZFSConfiguration: { DeploymentType: 'SINGLE_AZ_1', ThroughputCapacity: 64 },
+    };
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'OPENZFS',
+            StorageCapacity: 64,
+            SubnetIds: ['subnet-111'],
+            // Console-side change to a MUTABLE sub-property.
+            OpenZFSConfiguration: { DeploymentType: 'SINGLE_AZ_1', ThroughputCapacity: 128 },
+          },
+        ],
+      },
+    });
+
+    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+
+    vi.clearAllMocks();
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    // Reverting pushes the state value back over the observed one.
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, state, { ...observed });
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: { ThroughputCapacity: 64 },
+    });
+  });
+
+  it('omits a variant block entirely when AWS returns it empty', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          { FileSystemId: FS_ID, Lifecycle: 'AVAILABLE', FileSystemType: 'ONTAP', OntapConfiguration: {} },
+        ],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    expect(state).not.toHaveProperty('OntapConfiguration');
+  });
+});
+
+/**
+ * A plausible changed value per mutable sub-property, used to drive every
+ * declared-mutable key through its variant's `apply*UpdateField` switch.
+ */
+const SUBPROP_SAMPLE_VALUE: Record<string, unknown> = {
+  WeeklyMaintenanceStartTime: '1:05:00',
+  DailyAutomaticBackupStartTime: '02:00',
+  AutomaticBackupRetentionDays: 7,
+  AutoImportPolicy: 'NEW',
+  DataCompressionType: 'LZ4',
+  PerUnitStorageThroughput: 125,
+  MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
+  DataReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+  ThroughputCapacity: 256,
+  ThroughputCapacityPerHAPair: 256,
+  HAPairs: 2,
+  SelfManagedActiveDirectoryConfiguration: { UserName: 'Admin', Password: 'S3cret!' },
+  AuditLogConfiguration: { FileAccessAuditLogLevel: 'SUCCESS_ONLY' },
+  DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 4000 },
+  FsrmConfiguration: { FsrmServiceEnabled: true },
+  FsxAdminPassword: 'S3cret!',
+  RouteTableIds: ['rtb-zzz'],
+  EndpointIpv6AddressRange: 'fd00::/64',
+  CopyTagsToBackups: true,
+  CopyTagsToVolumes: true,
+  ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+};
+
+const VARIANT_FILE_SYSTEM_TYPE: Record<string, string> = {
+  LustreConfiguration: 'LUSTRE',
+  WindowsConfiguration: 'WINDOWS',
+  OntapConfiguration: 'ONTAP',
+  OpenZFSConfiguration: 'OPENZFS',
+};
+
+describe('FSxFileSystemProvider apply*UpdateField default guard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Guards the silent-no-op bug class: a sub-property added to a
+  // *_MUTABLE_SUBPROPS set without a matching switch case would pass the
+  // mutability check, map to nothing, and issue an empty UpdateFileSystem.
+  for (const [configKey, subprops] of Object.entries(VARIANT_MUTABLE_SUBPROPS)) {
+    for (const key of subprops) {
+      it(`maps ${configKey}.${key} to an UpdateFileSystem field`, async () => {
+        routeSend({
+          UpdateFileSystemCommand: {},
+          DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+        });
+
+        expect(SUBPROP_SAMPLE_VALUE).toHaveProperty(key);
+        const base = { FileSystemType: VARIANT_FILE_SYSTEM_TYPE[configKey], [configKey]: {} };
+
+        await newProvider().update(
+          'MyFs',
+          FS_ID,
+          RESOURCE_TYPE,
+          { ...base, [configKey]: { [key]: SUBPROP_SAMPLE_VALUE[key] } },
+          base
+        );
+
+        const [update] = callsOf(UpdateFileSystemCommand);
+        expect(update).toBeDefined();
+        // The mapped diff must be non-empty — an empty variant block is the
+        // exact silent no-op the default guard exists to prevent.
+        expect(Object.keys(update.input[configKey] as Record<string, unknown>)).not.toHaveLength(0);
+      });
+    }
+  }
+
+  it('throws a reportable error when a mutable sub-property has no mapping', async () => {
+    const fakeKey = 'NotMappedSubprop';
+    const windows = VARIANT_MUTABLE_SUBPROPS['WindowsConfiguration'] as Set<string>;
+    windows.add(fakeKey);
+    try {
+      routeSend({
+        UpdateFileSystemCommand: {},
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+
+      const base = { FileSystemType: 'WINDOWS', WindowsConfiguration: {} };
+      await expect(
+        newProvider().update(
+          'MyFs',
+          FS_ID,
+          RESOURCE_TYPE,
+          { ...base, WindowsConfiguration: { [fakeKey]: 'x' } },
+          base
+        )
+      ).rejects.toThrow(
+        /WindowsConfiguration\.NotMappedSubprop is declared mutable but has no UpdateFileSystem mapping/
+      );
+      expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    } finally {
+      windows.delete(fakeKey);
+    }
+  });
+});
+
+describe('FSxFileSystemProvider nested sub-block update arms', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reconciles a Windows AuditLogConfiguration change into the create-shaped block', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const prev = {
+      ...WINDOWS_PROPS,
+      WindowsConfiguration: {
+        ...WINDOWS_PROPS.WindowsConfiguration,
+        AuditLogConfiguration: {
+          FileAccessAuditLogLevel: 'DISABLED',
+          FileShareAccessAuditLogLevel: 'DISABLED',
+        },
+      },
+    };
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, {
+      ...prev,
+      WindowsConfiguration: {
+        ...prev.WindowsConfiguration,
+        AuditLogConfiguration: {
+          FileAccessAuditLogLevel: 'SUCCESS_ONLY',
+          FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
+          AuditLogDestination: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/fsx/audit',
+        },
+      },
+    }, prev);
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      WindowsConfiguration: {
+        AuditLogConfiguration: {
+          FileAccessAuditLogLevel: 'SUCCESS_ONLY',
+          FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
+          AuditLogDestination: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/fsx/audit',
+        },
+      },
+    });
+  });
+
+  it('coerces a stringified Iops in a Windows DiskIopsConfiguration change', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const prev = {
+      ...WINDOWS_PROPS,
+      WindowsConfiguration: {
+        ...WINDOWS_PROPS.WindowsConfiguration,
+        DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+      },
+    };
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, {
+      ...prev,
+      WindowsConfiguration: {
+        ...prev.WindowsConfiguration,
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: '4000' },
+      },
+    }, prev);
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      WindowsConfiguration: {
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 4000 },
+      },
+    });
+  });
+
+  it('reconciles an ONTAP DiskIopsConfiguration change independently of RouteTableIds', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, {
+      ...ONTAP_PROPS,
+      OntapConfiguration: {
+        ...ONTAP_PROPS.OntapConfiguration,
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 5000 },
+      },
+    }, { ...ONTAP_PROPS });
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OntapConfiguration: {
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 5000 },
+      },
+    });
+    // RouteTableIds unchanged — no Add/Remove keys emitted.
+    expect(update.input['OntapConfiguration']).not.toHaveProperty('AddRouteTableIds');
+    expect(update.input['OntapConfiguration']).not.toHaveProperty('RemoveRouteTableIds');
+  });
+
+  it('drops a nested sub-block to undefined when it is removed from the template', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const prev = {
+      ...WINDOWS_PROPS,
+      WindowsConfiguration: {
+        ...WINDOWS_PROPS.WindowsConfiguration,
+        FsrmConfiguration: { FsrmServiceEnabled: true },
+      },
+    };
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...prev, WindowsConfiguration: { ...WINDOWS_PROPS.WindowsConfiguration } },
+      prev
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      WindowsConfiguration: { FsrmConfiguration: undefined },
+    });
   });
 });
 
