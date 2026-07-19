@@ -189,6 +189,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819).',
   'state-schema-migration':
     'Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.',
+  'import-adopt-live-resource-roundtrip':
+    'End-to-end `cdkd import` adoption of a LIVE AWS resource: drop the resource from cdkd state with `cdkd orphan` (AWS untouched), re-adopt it with `cdkd import --resource <logicalId>=<physicalId>`, then destroy THROUGH the re-adopted record. Exercises the provider `import()` + `readCurrentState()` pair (the `observedProperties` baseline seeded post-import) and the selective-mode merge that must preserve unlisted sibling rows. Distinct from `nested-stack-migrate-from-cfn`, which covers the `--migrate-from-cloudformation` path; NO fixture covered the plain adopt mode before (issue #1090).',
   'legacy-bucket-name-fallback':
     'New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution.',
   // NOTE: `partial-create-cleanup` (post-`Create*` wiring failure issues

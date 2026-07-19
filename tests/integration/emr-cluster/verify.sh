@@ -19,12 +19,30 @@
 #      (VisibleToAllUsers is intentionally NOT exercised — AWS deprecated it,
 #      so SetVisibleToAllUsers(false) is a no-op; the provider still issues the
 #      call and its unit tests cover the mapping.)
-#   3. Destroy + assert the cluster is TERMINATED (an EMR cluster bills per
+#   3. Import round-trip (issue #1090, follow-up to PR #1080 which added the
+#      provider's `import()` / `readCurrentState()`): drop ONLY the cluster
+#      row from cdkd state via `cdkd orphan <stack>/<constructPath>` (AWS
+#      untouched — the cluster must still be live afterwards), then re-adopt
+#      it with `cdkd import --resource <logicalId>=<clusterId>` (selective
+#      mode). Assert the re-adopted row carries the SAME physical id / type /
+#      provisionedBy, that the unlisted sibling rows (VPC / IAM / SG) survived
+#      the selective merge, and that `observedProperties` was seeded from the
+#      LIVE cluster by `readCurrentState` (this is the assertion that actually
+#      exercises PR #1080 against real AWS — it must reflect the Phase 2
+#      UPDATE values, not the template's).
+#   4. Destroy + assert the cluster is TERMINATED (an EMR cluster bills per
 #      instance-hour, so a leftover is never acceptable) with no ACTIVE
 #      cluster carrying the fixture tag, and the cdkd state file is removed.
+#      Because Phase 3 re-adopted the cluster, this destroy runs THROUGH the
+#      imported state record — the round-trip is only proven if the cluster
+#      actually terminates from it.
 #
 # NOTE: EMR cluster creation to WAITING takes ~5-15 minutes and termination a
-# few more — expect a total wall clock of 20-40 minutes.
+# few more — expect a total wall clock of 20-40 minutes. Phase 3 adds only a
+# few AWS API calls against the ALREADY-RUNNING cluster (no second cluster is
+# launched), so it costs ~1 minute of wall clock and zero extra instance-hours
+# — which is why the round-trip extends this fixture instead of standing up a
+# dedicated `emr-import` one.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -176,6 +194,28 @@ output_value() {
   state_json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write((j.state.outputs&&j.state.outputs[process.argv[1]])||"")})' "$1"
 }
 
+# Evaluate a JS expression against the parsed `state show --json` payload.
+# `st` is the StackState object; the expression's value is printed raw (an
+# `undefined` / `null` result prints as the empty string so callers can test
+# with `[ -z ... ]`). Keeps the Phase 3 assertions readable instead of
+# repeating a 200-char `node -e` per check.
+state_query() {
+  state_json | node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d)).on("end", () => {
+  const st = JSON.parse(s).state;
+  const v = new Function("st", "return (" + process.argv[1] + ");")(st);
+  process.stdout.write(v === undefined || v === null ? "" : String(v));
+});' "$1"
+}
+
+# Logical id of the EMR cluster row in state. Derived (not hardcoded to
+# `Cluster`) so a future CDK logical-id hashing change does not silently
+# break the phase.
+cluster_logical_id() {
+  state_query 'Object.keys(st.resources).find((k) => st.resources[k].resourceType === "AWS::EMR::Cluster") || ""'
+}
+
 # --- Phase 1: deploy baseline ------------------------------------------
 echo "==> Phase 1: deploy single-node EMR cluster (this takes ~5-15 min)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -232,7 +272,7 @@ fi
 echo "    baseline tags reached AWS (env=test, dropme=yes)"
 
 # The cluster must route via the SDK provider (catch a routing flip).
-PROVISIONED_BY="$(state_json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::EMR::Cluster");process.stdout.write((r[k]&&r[k].provisionedBy)||"sdk")})')"
+PROVISIONED_BY="$(state_query 'Object.values(st.resources).find((r) => r.resourceType === "AWS::EMR::Cluster")?.provisionedBy ?? "sdk"')"
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: expected EMR cluster provisionedBy=sdk, got '${PROVISIONED_BY}'" >&2
   exit 1
@@ -277,8 +317,127 @@ if [ "${DROPME_P2}" != "None" ] && [ -n "${DROPME_P2}" ]; then
 fi
 echo "    update reached AWS (StepConcurrencyLevel 5, AutoTerminationPolicy IdleTimeout 7200, env=changed, dropme removed)"
 
-# --- Phase 3: destroy ----------------------------------------------------
-echo "==> Phase 3: destroy (EMR termination takes a few minutes)"
+# --- Phase 3: import round-trip (issue #1090) ----------------------------
+# Adopt the LIVE cluster back into cdkd state after dropping its row. This is
+# the end-to-end proof of the provider's `import()` + `readCurrentState()`
+# (PR #1080), which unit tests + a wire-format check covered but no integ did.
+#
+# Why `cdkd orphan <path>` (per-resource) and not `cdkd state orphan <stack>`
+# (whole-stack): the fixture's VPC / IAM / SG rows have no `import()` reachable
+# by physical id here, and cdkd deploy does NOT propagate `aws:cdk:path` as an
+# AWS tag (AWS reserves the `aws:` prefix), so whole-stack AUTO import cannot
+# re-adopt them — they would stay out of state and leak on destroy. Dropping
+# only the cluster keeps the destroy path complete AND exercises the selective
+# merge, which must preserve every unlisted sibling row.
+echo "==> Phase 3: import round-trip (orphan the cluster row, re-adopt via cdkd import)"
+
+CLUSTER_LID="$(cluster_logical_id)"
+if [ -z "${CLUSTER_LID}" ]; then
+  echo "FAIL: no AWS::EMR::Cluster row found in state before the import round-trip" >&2
+  exit 1
+fi
+RES_COUNT_PRE="$(state_query 'Object.keys(st.resources).length')"
+echo "    cluster logical id: ${CLUSTER_LID} (${RES_COUNT_PRE} resource rows in state)"
+
+# `orphan` takes a CONSTRUCT path, not a logical id — `Cluster` here is the
+# construct id from lib/emr-cluster-stack.ts (`new emr.CfnCluster(this,
+# 'Cluster')`), a source-level fact, whereas CLUSTER_LID above is a synth
+# output read back from state. They happen to match today (a direct stack
+# child gets no hash suffix) but are not the same thing.
+#
+# Synth with the SAME env as Phase 2 so the template cdkd imports against
+# matches the cluster actually running in AWS.
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/Cluster" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+if [ -n "$(cluster_logical_id)" ]; then
+  echo "FAIL: AWS::EMR::Cluster row still present in state after 'cdkd orphan'" >&2
+  exit 1
+fi
+RES_COUNT_ORPHANED="$(state_query 'Object.keys(st.resources).length')"
+if [ "${RES_COUNT_ORPHANED}" != "$((RES_COUNT_PRE - 1))" ]; then
+  echo "FAIL: 'cdkd orphan' should drop exactly 1 row, went ${RES_COUNT_PRE} -> ${RES_COUNT_ORPHANED}" >&2
+  exit 1
+fi
+echo "    cluster row dropped from state (${RES_COUNT_PRE} -> ${RES_COUNT_ORPHANED} rows)"
+
+# `orphan` must NOT touch AWS — the cluster has to still be running for the
+# re-adoption to mean anything.
+STATE_ORPHANED="$(cluster_state "${CID_P2}")"
+if [ "${STATE_ORPHANED}" != "WAITING" ] && [ "${STATE_ORPHANED}" != "RUNNING" ]; then
+  echo "FAIL: cluster ${CID_P2} is '${STATE_ORPHANED}' after 'cdkd orphan' — orphan must leave AWS untouched" >&2
+  exit 1
+fi
+echo "    cluster still ${STATE_ORPHANED} in AWS (orphan left it alone)"
+
+echo "    re-adopting via cdkd import --resource ${CLUSTER_LID}=${CID_P2}"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" import "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --resource "${CLUSTER_LID}=${CID_P2}" --yes
+
+# --- re-adoption assertions ---
+CID_IMPORTED="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.physicalId')"
+if [ "${CID_IMPORTED}" != "${CID_P2}" ]; then
+  echo "FAIL: imported physicalId '${CID_IMPORTED}' != live cluster id '${CID_P2}'" >&2
+  exit 1
+fi
+TYPE_IMPORTED="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.resourceType')"
+if [ "${TYPE_IMPORTED}" != "AWS::EMR::Cluster" ]; then
+  echo "FAIL: imported resourceType '${TYPE_IMPORTED}' != 'AWS::EMR::Cluster'" >&2
+  exit 1
+fi
+PROV_IMPORTED="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.provisionedBy')"
+if [ "${PROV_IMPORTED}" != "sdk" ]; then
+  echo "FAIL: imported provisionedBy '${PROV_IMPORTED}' != 'sdk'" >&2
+  exit 1
+fi
+echo "    re-adopted: physicalId=${CID_IMPORTED}, type=${TYPE_IMPORTED}, provisionedBy=${PROV_IMPORTED}"
+
+# Selective mode is a MERGE — the unlisted sibling rows must all survive.
+RES_COUNT_POST="$(state_query 'Object.keys(st.resources).length')"
+if [ "${RES_COUNT_POST}" != "${RES_COUNT_PRE}" ]; then
+  echo "FAIL: selective import should restore the row count to ${RES_COUNT_PRE}, got ${RES_COUNT_POST}" >&2
+  exit 1
+fi
+echo "    unlisted sibling rows preserved by the selective merge (${RES_COUNT_POST} rows)"
+
+# `observedProperties` is seeded post-import by the provider's
+# `readCurrentState` against the LIVE cluster. These values must reflect the
+# Phase 2 UPDATE (StepConcurrencyLevel 5), which proves the baseline came from
+# AWS and not from the synthesized template.
+OBS_STEP="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.StepConcurrencyLevel')"
+if [ "${OBS_STEP}" != "5" ]; then
+  echo "FAIL: observedProperties.StepConcurrencyLevel is '${OBS_STEP}', expected 5 from the live cluster" >&2
+  echo "      (empty means readCurrentState did not run or was swallowed post-import)" >&2
+  exit 1
+fi
+OBS_RELEASE="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.ReleaseLabel')"
+if [ "${OBS_RELEASE}" != "emr-7.9.0" ]; then
+  echo "FAIL: observedProperties.ReleaseLabel is '${OBS_RELEASE}', expected 'emr-7.9.0'" >&2
+  exit 1
+fi
+# The reverse-mapped Instances block (ListInstanceGroups -> role-keyed CFn
+# shape) is the bulk of readCurrentState's work — assert it round-tripped.
+OBS_MASTER_TYPE="$(state_query 'st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.Instances?.MasterInstanceGroup?.InstanceType')"
+if [ "${OBS_MASTER_TYPE}" != "m5.xlarge" ]; then
+  echo "FAIL: observedProperties.Instances.MasterInstanceGroup.InstanceType is '${OBS_MASTER_TYPE}', expected 'm5.xlarge'" >&2
+  exit 1
+fi
+# Tags come back through normalizeAwsTagsToCfn — Phase 2 set env=changed and
+# removed `dropme`, so the observed baseline must agree with AWS, not the
+# baseline template.
+OBS_ENV_TAG="$(state_query '(st.resources["'"${CLUSTER_LID}"'"]?.observedProperties?.Tags ?? []).find((t) => t.Key === "env")?.Value')"
+if [ "${OBS_ENV_TAG}" != "changed" ]; then
+  echo "FAIL: observedProperties Tags env is '${OBS_ENV_TAG}', expected 'changed' (the live post-update value)" >&2
+  exit 1
+fi
+echo "    observedProperties seeded from the LIVE cluster by readCurrentState"
+echo "      (StepConcurrencyLevel=5, ReleaseLabel=emr-7.9.0, MasterInstanceGroup.InstanceType=m5.xlarge, env=changed)"
+
+# --- Phase 4: destroy ----------------------------------------------------
+# Runs THROUGH the state record Phase 3 re-adopted — a broken import would
+# surface here as a cluster that never terminates.
+echo "==> Phase 4: destroy via the re-adopted state record (EMR termination takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 FINAL_STATE="$(cluster_state "${CID_P2}")"
@@ -301,4 +460,4 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/n
 fi
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + destroy (TERMINATED) all passed"
+echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + import round-trip (orphan -> import -> observedProperties from live AWS) + destroy (TERMINATED) all passed"

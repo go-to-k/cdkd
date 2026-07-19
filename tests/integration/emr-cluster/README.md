@@ -34,16 +34,53 @@ EMR clusters).
    replacement). (`VisibleToAllUsers` is deliberately not exercised — AWS
    deprecated it, so `SetVisibleToAllUsers(false)` is a no-op; the provider
    still issues the call and its unit tests cover the mapping.)
-3. **Destroy** and assert the cluster is `TERMINATED` and the VPC / state
-   are gone. A leftover running EMR cluster is never acceptable (per
-   instance-hour billing) — the cleanup trap disables termination
-   protection and terminates any active cluster carrying the fixture's
-   constant tag (`cdkd-integ=emr-cluster`).
+3. **Import round-trip** (issue #1090, follow-up to PR #1080 which added
+   the provider's `import()` / `readCurrentState()`). `cdkd orphan
+   CdkdEmrClusterExample/Cluster` drops ONLY the cluster row from cdkd
+   state — AWS is untouched, and the phase asserts the cluster is still
+   `WAITING`/`RUNNING` afterwards. `cdkd import CdkdEmrClusterExample
+   --resource <logicalId>=<clusterId>` then re-adopts it. Asserts:
+   - the re-adopted row carries the same `physicalId`, `resourceType`
+     (`AWS::EMR::Cluster`) and `provisionedBy` (`sdk`);
+   - the selective-mode merge preserved every unlisted sibling row (the
+     state row count returns to its pre-orphan value);
+   - `observedProperties` was seeded from the **live** cluster by
+     `readCurrentState` — the values asserted (`StepConcurrencyLevel: 5`,
+     tag `env=changed`) are the phase-2 UPDATE values, so they can only
+     have come from AWS and not from the synthesized template. The
+     reverse-mapped `Instances.MasterInstanceGroup.InstanceType`
+     (`ListInstanceGroups` → role-keyed CFn shape) is asserted too, since
+     that reverse mapping is the bulk of `readCurrentState`'s work.
+
+   **Why this extends `emr-cluster` rather than a dedicated `emr-import`
+   fixture**: the round-trip needs a live cluster, and a separate fixture
+   would launch a second one (another 5-15 min and another block of
+   `m5.xlarge` instance-hours) plus duplicate the VPC / IAM / managed-SG
+   scaffolding. Reusing the cluster this fixture already has running costs
+   ~1 extra minute and zero extra instance-hours.
+
+   **Why per-resource `cdkd orphan` and not whole-stack `cdkd state
+   orphan`**: `cdkd deploy` does not propagate `aws:cdk:path` as an AWS
+   tag (AWS reserves the `aws:` prefix), so whole-stack **auto** import
+   cannot re-adopt the VPC / IAM / SG rows — they would stay out of state
+   and leak on destroy. Dropping only the cluster keeps the destroy path
+   complete and additionally exercises the selective merge.
+4. **Destroy** — runs **through the re-adopted state record**, so a broken
+   import surfaces here as a cluster that never terminates. Asserts the
+   cluster is `TERMINATED` and the VPC / state are gone. A leftover
+   running EMR cluster is never acceptable (per instance-hour billing) —
+   the phase asserts `aws emr list-clusters --active` reports no cluster
+   carrying the fixture's constant tag (`cdkd-integ=emr-cluster`; scoped
+   by tag rather than a bare "no active clusters at all" so an unrelated
+   cluster in a shared account cannot false-fail the run), and the cleanup
+   trap disables termination protection and terminates any that remain.
 
 ## Timing
 
 EMR cluster creation to `WAITING` takes ~5-15 minutes and termination a
-few more; expect a total wall clock of 20-40 minutes.
+few more; expect a total wall clock of 20-40 minutes. The import
+round-trip (phase 3) adds only a handful of API calls against the
+already-running cluster — about a minute, no extra instance-hours.
 
 ## Run
 

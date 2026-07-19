@@ -125,6 +125,10 @@
       "description": "CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race."
     },
     {
+      "tag": "import-adopt-live-resource-roundtrip",
+      "description": "End-to-end `cdkd import` adoption of a LIVE AWS resource: drop the resource from cdkd state with `cdkd orphan` (AWS untouched), re-adopt it with `cdkd import --resource <logicalId>=<physicalId>`, then destroy THROUGH the re-adopted record. Exercises the provider `import()` + `readCurrentState()` pair (the `observedProperties` baseline seeded post-import) and the selective-mode merge that must preserve unlisted sibling rows. Distinct from `nested-stack-migrate-from-cfn`, which covers the `--migrate-from-cloudformation` path; NO fixture covered the plain adopt mode before (issue #1090)."
+    },
+    {
       "tag": "intrinsic-hard-arg-shapes",
       "description": "Resolver correctness on the harder / less-common intrinsic arg shapes feeding real resource values: `Fn::Select` over a list-returning intrinsic (`Fn::GetAZs` / `Fn::Split`), `Fn::FindInMap` enhanced 4th-arg `{DefaultValue}` + `Ref`-driven top key, `Fn::GetAtt` with a `Ref`-valued attribute name, the `Fn::Sub` `${!Literal}` escape, `Fn::Base64` of an intrinsic, a triple-nested `Fn::If`-in-`Fn::Sub`-in-`Fn::Join`, and `Fn::Cidr` IPv6. Sibling of `intrinsics-torture` (which found bug #838)."
     },
@@ -770,7 +774,9 @@
     {
       "name": "emr-cluster",
       "annotated": true,
-      "scenarios": []
+      "scenarios": [
+        "import-adopt-live-resource-roundtrip"
+      ]
     },
     {
       "name": "emr-instance-configs",
@@ -1961,6 +1967,13 @@
         "microservices",
         "propagation-races-2",
         "stepfunctions-logging"
+      ]
+    },
+    {
+      "scenario": "import-adopt-live-resource-roundtrip",
+      "description": "End-to-end `cdkd import` adoption of a LIVE AWS resource: drop the resource from cdkd state with `cdkd orphan` (AWS untouched), re-adopt it with `cdkd import --resource <logicalId>=<physicalId>`, then destroy THROUGH the re-adopted record. Exercises the provider `import()` + `readCurrentState()` pair (the `observedProperties` baseline seeded post-import) and the selective-mode merge that must preserve unlisted sibling rows. Distinct from `nested-stack-migrate-from-cfn`, which covers the `--migrate-from-cloudformation` path; NO fixture covered the plain adopt mode before (issue #1090).",
+      "fixtures": [
+        "emr-cluster"
       ]
     },
     {
