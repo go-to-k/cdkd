@@ -20,6 +20,11 @@
 #      tag value change AND tag removal (TagResource / UntagResource).
 #      Assert the FileSystemId is UNCHANGED (in-place update, no
 #      replacement).
+#   2.5. `cdkd drift` must be CLEAN on the untouched file system (issue
+#      #1089). readCurrentState reverse-maps the OpenZFSConfiguration block
+#      back to CFn input shape; before #1089 the block was declared
+#      drift-unknown so drift passed trivially. Now it is compared, so a
+#      mapping bug surfaces here as phantom drift.
 #   3. Destroy + assert the file system is GONE from AWS (by id AND by the
 #      fixture's constant tag — an FSx file system bills per hour, so a
 #      leftover is never acceptable) and the cdkd state file is removed.
@@ -237,6 +242,48 @@ if [ "${DROPME_P2}" != "None" ] && [ -n "${DROPME_P2}" ]; then
 fi
 echo "    update reached AWS (ThroughputCapacity 128, env=changed, dropme removed)"
 
+# --- Phase 2.5: clean-drift check (issue #1089) --------------------------
+# readCurrentState reverse-maps the OpenZFSConfiguration block back to CFn
+# input shape. Before #1089 the whole block was declared drift-unknown, so
+# drift passed trivially; now it is compared field-by-field against the
+# deploy-time state. A mapping bug (wrong key name, a read-only AWS field
+# leaking in, a type mismatch) therefore shows up right here as a phantom
+# drift on a file system nobody touched. `cdkd drift` exits 0 = no drift,
+# 1 = drift detected, 2 = error.
+echo "==> Phase 2.5: drift must be CLEAN immediately after a successful deploy"
+DRIFT_OUT="$(mktemp)"
+DRIFT_ERR="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json >"${DRIFT_OUT}" 2>"${DRIFT_ERR}"
+DRIFT_RC=$?
+set -e
+
+if [ "${DRIFT_RC}" -eq 2 ]; then
+  echo "FAIL: cdkd drift errored (exit 2) — readCurrentState raised" >&2
+  cat "${DRIFT_ERR}" >&2
+  rm -f "${DRIFT_OUT}" "${DRIFT_ERR}"
+  exit 1
+fi
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: phantom drift on an untouched file system (exit ${DRIFT_RC}) — the OpenZFSConfiguration reverse-map does not round-trip" >&2
+  cat "${DRIFT_OUT}" >&2
+  rm -f "${DRIFT_OUT}" "${DRIFT_ERR}"
+  exit 1
+fi
+rm -f "${DRIFT_OUT}" "${DRIFT_ERR}"
+echo "    no drift detected (OpenZFSConfiguration reverse-map round-trips cleanly)"
+
+# The block must be genuinely COMPARED now, not silently skipped: assert the
+# drift snapshot actually carries the reverse-mapped OpenZFS config.
+OBSERVED_TP="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::FSx::FileSystem");const o=(r[k]&&r[k].properties&&r[k].properties.OpenZFSConfiguration)||{};process.stdout.write(String(o.ThroughputCapacity===undefined?"":o.ThroughputCapacity))})')"
+if [ "${OBSERVED_TP}" != "128" ]; then
+  echo "FAIL: expected state OpenZFSConfiguration.ThroughputCapacity 128 after Phase 2, got '${OBSERVED_TP}'" >&2
+  exit 1
+fi
+echo "    state carries the OpenZFS config block cdkd drift compares against"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -260,4 +307,4 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/n
 fi
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::FSx::FileSystem OpenZFS variant: deploy + in-place update (incl. tag removal) + destroy all passed"
+echo "[verify] PASS — AWS::FSx::FileSystem OpenZFS variant: deploy + in-place update (incl. tag removal) + clean-drift + destroy all passed"
