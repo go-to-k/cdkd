@@ -102,7 +102,9 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+// `typescript-v6` is an npm alias of typescript@6 — see the note in
+// gen-property-coverage.ts (TS7 no longer ships the stable JS compiler API).
+import ts from 'typescript-v6';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

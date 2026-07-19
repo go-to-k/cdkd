@@ -44,7 +44,11 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+// `typescript-v6` is an npm alias of typescript@6: TypeScript 7's package no
+// longer ships the stable JS compiler API (createSourceFile / forEachChild
+// live only under `typescript/unstable/*`), so syntactic parsing stays on the
+// v6 library while the toolchain `tsc` is v7.
+import ts from 'typescript-v6';
 // NOTE: same-directory import uses `.ts` (not `.js`) — Node 24 native type
 // stripping resolves imports literally when the script runs directly via
 // `node scripts/gen-property-coverage.ts`; see the matching note in

@@ -68,7 +68,7 @@ Add new examples under `tests/integration/`. See existing examples for patterns.
 
 ## Code Style
 
-- TypeScript with strict mode and the native preview checker (`tsgo`)
+- TypeScript with strict mode, checked by the native TypeScript 7 compiler (`tsc`)
 - ESM modules (`.js` extension in imports)
 - Node native type stripping for TypeScript runners (`node app.ts`)
 - Vite+ tasks in `vite.config.ts`

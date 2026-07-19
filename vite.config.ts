@@ -88,7 +88,7 @@ export default defineConfig({
     exclude: ['node_modules', 'dist'],
     typecheck: {
       enabled: true,
-      checker: 'tsgo',
+      checker: 'tsc',
       tsconfig: './tsconfig.test.json',
       include: ['tests/**/*.test-d.ts', 'src/**/*.test-d.ts'],
     },
@@ -198,7 +198,7 @@ export default defineConfig({
         command: 'vp fmt --check',
       },
       typecheck: {
-        command: 'tsgo --project tsconfig.json --noEmit',
+        command: 'tsc --project tsconfig.json --noEmit',
       },
       verify: {
         command: 'vp run check && vp run test && vp run build',

@@ -2,7 +2,7 @@
 "ubi:go-to-k/markgate" = "0.3.3"
 
 [tools."http:vp"]
-version = "0.1.20"
+version = "0.2.5"
 strip_components = 1
 
 [tools."http:vp".platforms]
