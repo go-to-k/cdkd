@@ -1,3 +1,10 @@
+# [0.252.0](https://github.com/go-to-k/cdkd/compare/v0.251.0...v0.252.0) (2026-07-19)
+
+
+### Features
+
+* **providers:** shared throttle-tolerant tag-walk for import() + EMR SUSPENDED fail-fast ([#1093](https://github.com/go-to-k/cdkd/issues/1093)) ([e468024](https://github.com/go-to-k/cdkd/commit/e46802434a444dccbaf979bf5d58be3d970eb69e))
+
 # [0.251.0](https://github.com/go-to-k/cdkd/compare/v0.250.0...v0.251.0) (2026-07-19)
 
 
