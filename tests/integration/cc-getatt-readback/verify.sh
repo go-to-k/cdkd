@@ -87,17 +87,17 @@ echo "==> Phase 1: deploy access point + pipe + resource group"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null || true)
 if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
   exit 1
 fi
 
 # Locate each output by key prefix so a CDK-hashed output logical id still
-# matches; fall back to the exact key.
+# matches; a miss yields "" and the equality assertion below reports it.
 output_value() {
   echo "${STATE}" | jq -r --arg k "$1" \
-    '[.outputs | to_entries[] | select(.key | startswith($k)) | .value] | first // (.outputs[$k] // "")'
+    '[.outputs // {} | to_entries[] | select(.key | startswith($k)) | .value] | first // ""'
 }
 
 # Every assertion is an EQUALITY check against the value the service API

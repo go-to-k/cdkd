@@ -1342,6 +1342,45 @@ describe('CloudControlProvider Pipes / S3 AccessPoint / ResourceGroups attribute
     expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
     expect(enriched['Arn']).toBeUndefined();
   });
+
+  // readCcResourceModel malformed-response branches (shared with the Backup
+  // cases, but previously untested at any call site): each must degrade to
+  // "no model" and leave the attributes unchanged rather than throw.
+  it('leaves attributes unchanged when the GetResource response has no Properties string', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({ ResourceDescription: {} });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched).toEqual({});
+  });
+
+  it('leaves attributes unchanged when the GetResource Properties is not valid JSON', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: { Properties: '{not json' },
+    });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched).toEqual({});
+  });
+
+  it('leaves attributes unchanged when the GetResource Properties parses to a non-object', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: { Properties: '["not", "an", "object"]' },
+    });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched).toEqual({});
+  });
+
+  it('skips a non-string model value instead of overlaying it', async () => {
+    mockCcModel({ Arn: { nested: 'wrong-shape' } });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched['Arn']).toBeUndefined();
+  });
 });
 
 describe('CloudControlProvider create: failed-create remnant cleanup', () => {
