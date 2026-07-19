@@ -864,8 +864,6 @@ describe('FSxFileSystemProvider readCurrentState', () => {
       'BackupId',
       'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
       'OntapConfiguration.FsxAdminPassword',
-      'OntapConfiguration.EndpointIpv6AddressRange',
-      'OpenZFSConfiguration.EndpointIpv6AddressRange',
       'OpenZFSConfiguration.RootVolumeConfiguration',
     ]);
     expect(newProvider().getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
@@ -968,6 +966,9 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
               PreferredSubnetId: 'subnet-111',
               RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
               EndpointIpAddressRange: '198.19.0.0/24',
+              // Modeled AND returned by DescribeFileSystems — must be
+              // reverse-mapped, not declared drift-unknown.
+              EndpointIpv6AddressRange: 'fd00:ec2::/64',
               DiskIopsConfiguration: { Mode: 'AUTOMATIC', Iops: 3072 },
               Endpoints: { Management: { DNSName: 'management.example.com' } },
             },
@@ -987,6 +988,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       PreferredSubnetId: 'subnet-111',
       RouteTableIds: ['rtb-aaa', 'rtb-bbb'],
       EndpointIpAddressRange: '198.19.0.0/24',
+      EndpointIpv6AddressRange: 'fd00:ec2::/64',
       DiskIopsConfiguration: { Mode: 'AUTOMATIC', Iops: 3072 },
     });
   });
@@ -1008,6 +1010,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
               CopyTagsToVolumes: true,
               DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
               ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+              EndpointIpv6AddressRange: 'fd00:ec2::/64',
               RootVolumeId: 'fsvol-0123456789abcdef0',
               EndpointIpAddress: '10.0.0.5',
             },
@@ -1026,6 +1029,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       CopyTagsToVolumes: true,
       DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
       ReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+      EndpointIpv6AddressRange: 'fd00:ec2::/64',
     });
     // RootVolumeConfiguration lives on the volume — never synthesized here.
     expect(openzfs['RootVolumeConfiguration']).toBeUndefined();
@@ -1111,6 +1115,121 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     expect(update.input).toEqual({
       FileSystemId: FS_ID,
       OpenZFSConfiguration: { ThroughputCapacity: 64 },
+    });
+  });
+
+  // Windows exercises a different arm than OpenZFS: its snapshot carries
+  // nested AD / Audit / Fsrm blocks and immutable scalars (ActiveDirectoryId,
+  // DeploymentType, PreferredSubnetId) that update() immutability-checks.
+  it('round-trip: an unchanged WINDOWS snapshot replays through update() with no AWS call', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'WINDOWS',
+            StorageCapacity: 32,
+            SubnetIds: ['subnet-111'],
+            WindowsConfiguration: {
+              ActiveDirectoryId: 'd-1234567890',
+              DeploymentType: 'MULTI_AZ_1',
+              PreferredSubnetId: 'subnet-111',
+              ThroughputCapacity: 32,
+              WeeklyMaintenanceStartTime: '1:05:00',
+              Aliases: [{ Name: 'files.example.com', Lifecycle: 'AVAILABLE' }],
+              AuditLogConfiguration: {
+                FileAccessAuditLogLevel: 'SUCCESS_ONLY',
+                FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
+              },
+              DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+              FsrmConfiguration: { FsrmServiceEnabled: true },
+            },
+          },
+        ],
+      },
+    });
+
+    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    expect(observed?.['WindowsConfiguration']).toBeDefined();
+
+    vi.clearAllMocks();
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...observed },
+      { ...observed }
+    );
+    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  // docs/provider-development.md §3b Class 2: a nested sub-block AWS returns
+  // only partially populated (AUTOMATIC mode omits Iops) must still be a legal
+  // UpdateFileSystem input when --revert pushes the state values back.
+  it('round-trip: a partially-populated nested DiskIopsConfiguration reverts without an invalid input', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'OPENZFS',
+            SubnetIds: ['subnet-111'],
+            OpenZFSConfiguration: {
+              DeploymentType: 'SINGLE_AZ_1',
+              ThroughputCapacity: 64,
+              // AWS switched the volume to AUTOMATIC and omits Iops entirely.
+              DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+            },
+          },
+        ],
+      },
+    });
+
+    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    expect(observed?.['OpenZFSConfiguration']).toMatchObject({
+      DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
+    });
+    // The partial block must not carry an explicit Iops: undefined key.
+    expect(
+      Object.keys(
+        (observed?.['OpenZFSConfiguration'] as Record<string, Record<string, unknown>>)[
+          'DiskIopsConfiguration'
+        ]
+      )
+    ).toEqual(['Mode']);
+
+    vi.clearAllMocks();
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    // Revert: push the state's USER_PROVISIONED/4000 back over AWS's AUTOMATIC.
+    const state = {
+      FileSystemType: 'OPENZFS',
+      SubnetIds: ['subnet-111'],
+      OpenZFSConfiguration: {
+        DeploymentType: 'SINGLE_AZ_1',
+        ThroughputCapacity: 64,
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 4000 },
+      },
+    };
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, state, { ...observed });
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: {
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 4000 },
+      },
     });
   });
 

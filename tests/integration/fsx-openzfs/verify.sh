@@ -274,15 +274,19 @@ fi
 rm -f "${DRIFT_OUT}" "${DRIFT_ERR}"
 echo "    no drift detected (OpenZFSConfiguration reverse-map round-trips cleanly)"
 
-# The block must be genuinely COMPARED now, not silently skipped: assert the
-# drift snapshot actually carries the reverse-mapped OpenZFS config.
+# A clean exit alone is NOT sufficient proof: drift classifies a resource whose
+# readCurrentState returns undefined as `unsupported`, which also exits 0. So
+# assert the reverse-mapper actually PRODUCED the block. `observedProperties`
+# (not `properties`) is the deploy-time readCurrentState snapshot captured by
+# deploy-engine — reading `properties` here would be tautological, since that is
+# the template input and is present whether or not readCurrentState ever ran.
 OBSERVED_TP="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --stack-region "${REGION}" --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::FSx::FileSystem");const o=(r[k]&&r[k].properties&&r[k].properties.OpenZFSConfiguration)||{};process.stdout.write(String(o.ThroughputCapacity===undefined?"":o.ThroughputCapacity))})')"
+  --stack-region "${REGION}" --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::FSx::FileSystem");const o=(r[k]&&r[k].observedProperties&&r[k].observedProperties.OpenZFSConfiguration)||{};process.stdout.write(String(o.ThroughputCapacity===undefined?"":o.ThroughputCapacity))})')"
 if [ "${OBSERVED_TP}" != "128" ]; then
-  echo "FAIL: expected state OpenZFSConfiguration.ThroughputCapacity 128 after Phase 2, got '${OBSERVED_TP}'" >&2
+  echo "FAIL: expected observedProperties.OpenZFSConfiguration.ThroughputCapacity 128 after Phase 2, got '${OBSERVED_TP}' — the OpenZFS reverse-map did not run or did not emit the block" >&2
   exit 1
 fi
-echo "    state carries the OpenZFS config block cdkd drift compares against"
+echo "    observedProperties carries the reverse-mapped OpenZFS block (readCurrentState ran)"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"

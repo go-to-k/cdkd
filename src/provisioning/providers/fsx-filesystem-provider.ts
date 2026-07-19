@@ -167,10 +167,16 @@ export const VARIANT_MUTABLE_SUBPROPS: Record<string, ReadonlySet<string>> = {
 };
 
 /**
- * Copy `value` into `target[key]` only when AWS actually returned it.
- * `readCurrentState` must never introduce `undefined`-valued keys: the drift
- * comparator descends into every key present on the AWS-current side, so a
- * key AWS omitted would surface as phantom drift against the state baseline.
+ * Copy `value` into `target[key]` only when AWS actually returned it, so the
+ * snapshot carries no `undefined`-valued keys.
+ *
+ * The drift comparator walks the BASELINE's keys (`observedProperties`, or
+ * `properties` when a resource predates observed-capture), not the AWS side —
+ * so an omitted key here is not itself phantom drift. It matters because this
+ * snapshot BECOMES the next baseline: `deploy-engine` stores it as
+ * `observedProperties`, and an explicit `Foo: undefined` would then be walked
+ * as a real key on every later comparison. Omitting is also what keeps the
+ * emitted shape a faithful subset of the CFn input shape.
  */
 const putIfDefined = (target: Record<string, unknown>, key: string, value: unknown): void => {
   if (value !== undefined) target[key] = value;
@@ -1617,8 +1623,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
       'RouteTableIds',
       ontap.RouteTableIds ? [...ontap.RouteTableIds] : undefined
     );
-    // `FsxAdminPassword` is write-only and `EndpointIpv6AddressRange` is not
-    // returned by DescribeFileSystems (both in getDriftUnknownPaths).
+    putIfDefined(config, 'EndpointIpv6AddressRange', ontap.EndpointIpv6AddressRange);
+    // `FsxAdminPassword` is write-only — the API never echoes it back (see
+    // getDriftUnknownPaths).
 
     const diskIops = this.readDiskIopsConfiguration(ontap.DiskIopsConfiguration);
     if (diskIops) config['DiskIopsConfiguration'] = diskIops;
@@ -1645,9 +1652,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
       'RouteTableIds',
       openzfs.RouteTableIds ? [...openzfs.RouteTableIds] : undefined
     );
-    // `EndpointIpv6AddressRange` is not returned, and RootVolumeConfiguration
-    // lives on the root VOLUME (DescribeFileSystems returns only its id) —
-    // both stay in getDriftUnknownPaths.
+    putIfDefined(config, 'EndpointIpv6AddressRange', openzfs.EndpointIpv6AddressRange);
+    // RootVolumeConfiguration lives on the root VOLUME (DescribeFileSystems
+    // returns only its id) — it stays in getDriftUnknownPaths.
 
     const diskIops = this.readDiskIopsConfiguration(openzfs.DiskIopsConfiguration);
     if (diskIops) config['DiskIopsConfiguration'] = diskIops;
@@ -1682,9 +1689,6 @@ export class FSxFileSystemProvider implements ResourceProvider {
    *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`
    *    / `OntapConfiguration.FsxAdminPassword` — write-only credentials; the
    *    API never echoes them back.
-   *  - `OntapConfiguration.EndpointIpv6AddressRange` /
-   *    `OpenZFSConfiguration.EndpointIpv6AddressRange` — accepted on create
-   *    but absent from the `DescribeFileSystems` response shape.
    *  - `OpenZFSConfiguration.RootVolumeConfiguration` — configured on the
    *    root VOLUME, not the file system; `DescribeFileSystems` returns only
    *    `RootVolumeId`, so reading it back would need a separate
@@ -1701,8 +1705,6 @@ export class FSxFileSystemProvider implements ResourceProvider {
       'BackupId',
       'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
       'OntapConfiguration.FsxAdminPassword',
-      'OntapConfiguration.EndpointIpv6AddressRange',
-      'OpenZFSConfiguration.EndpointIpv6AddressRange',
       'OpenZFSConfiguration.RootVolumeConfiguration',
     ];
   }
