@@ -249,5 +249,4 @@ fsx-openzfs	2026-07-19T10:17:23Z	PASS	1310	verify.sh	issue #1068 OpenZFS variant
 bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
 lambda	2026-07-19T15:42:32Z	PASS	83	verify.sh	broad integ for import-tag-walk retry widening; 9 deleted 0 errors 0 orphans
-emr-cluster	2026-07-19T16:39:57Z	FAIL	1290	verify.sh	phase3 import round-trip: cdkd import rejects --region (fixture flag bug); cleanup recovered 0 orphans
-emr-cluster	2026-07-19T16:57:18Z	PASS	1520	verify.sh	issue #1090 import round-trip: orphan -> import --resource -> observedProperties from live AWS; 12 deleted 0 errors 0 orphans
+emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
