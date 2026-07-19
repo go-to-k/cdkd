@@ -59,14 +59,15 @@ Run each check and report pass/fail:
 5. **Documentation consistency**
    - Invoke `/check-docs` skill logic: verify docs match code changes
    - Check for stale references to removed code
-   - **Coverage matrix freshness**: CI runs three independent matrix checks (`integ-coverage`, `scenario-coverage`, `audit:coverage:check`) and hard-fails on staleness. PR #548 hit two of these in succession because `/verify-pr` only regenerated `integ-coverage` locally — the contributor pushed, CI failed on `audit:coverage:check`, the contributor regenerated provider-coverage and pushed again, CI failed on `scenario-coverage matrix is up-to-date`. The block below covers all three so the same round-trip can't happen again:
+   - **Coverage matrix freshness**: CI runs four independent matrix checks (`integ-coverage`, `scenario-coverage`, `cli-flag-coverage`, `audit:coverage:check`) and hard-fails on staleness. PR #548 hit two of these in succession because `/verify-pr` only regenerated `integ-coverage` locally — the contributor pushed, CI failed on `audit:coverage:check`, the contributor regenerated provider-coverage and pushed again, CI failed on `scenario-coverage matrix is up-to-date`. PR #1104 then hit the SAME round-trip on `cli-flag-coverage` (added to CI by #1072 without updating this step): a new fixture's `verify.sh` joined the per-flag user lists, CI failed, one more regen+push cycle. The block below covers all four so the round-trip can't happen again:
      ```bash
-     fixtures_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$|^tests/integration/[^/]+/(lib|bin)/.+\.ts$|^tests/integration/[^/]+/\.scenarios\.json$' && echo yes)
+     fixtures_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$|^tests/integration/[^/]+/(lib|bin)/.+\.ts$|^tests/integration/[^/]+/\.scenarios\.json$|^tests/integration/[^/]+/verify\.sh$' && echo yes)
      providers_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$' && echo yes)
 
      if [ "$fixtures_changed" = "yes" ]; then
        vp run integ-coverage
        vp run scenario-coverage
+       vp run cli-flag-coverage
      fi
 
      if [ "$providers_changed" = "yes" ]; then
@@ -83,6 +84,7 @@ Run each check and report pass/fail:
 
      git status --short docs/integ-coverage.md docs/_generated/integ-coverage.json \
                         docs/scenario-coverage.md docs/_generated/scenario-coverage.json \
+                        docs/cli-flag-coverage.md docs/_generated/cli-flag-coverage.json \
                         docs/_generated/provider-coverage.json docs/_generated/provider-coverage.md
      ```
      If `git status` reports any of these files as dirty, the contributor forgot to regenerate after their code change. Stage the regenerated output, amend / new-commit it onto the PR, and re-run `/check-docs` to refresh the docs marker. If `vp run audit:coverage:check` exits non-zero, run `vp run audit:coverage:regenerate` (heavy — see above) and commit the regenerated `docs/_generated/provider-coverage.{json,md}`.

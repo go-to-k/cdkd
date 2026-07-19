@@ -1230,6 +1230,159 @@ describe('CloudControlProvider Backup attribute enrichment (CC-API routing, issu
   });
 });
 
+describe('CloudControlProvider Pipes / S3 AccessPoint / ResourceGroups attribute enrichment (CC-API routing, issue #1103)', () => {
+  let provider: CloudControlProvider;
+
+  const enrich = (
+    resourceType: string,
+    physicalId: string,
+    attributes: Record<string, unknown>
+  ) =>
+    (
+      provider as unknown as {
+        enrichResourceAttributes: (
+          resourceType: string,
+          physicalId: string,
+          attributes: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).enrichResourceAttributes(resourceType, physicalId, attributes);
+
+  const mockCcModel = (model: Record<string, unknown>) => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: { Properties: JSON.stringify(model) },
+    });
+  };
+
+  beforeEach(() => {
+    mockCloudControlSend.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('Pipes::Pipe: overlays Arn (and state attrs) from the CC GetResource model', async () => {
+    mockCcModel({
+      Name: 'my-pipe',
+      Arn: 'arn:aws:pipes:us-east-1:123456789012:pipe/my-pipe',
+      CurrentState: 'RUNNING',
+    });
+
+    // physicalId is the pipe NAME (the type's Ref-return), NOT the ARN.
+    const enriched = await enrich('AWS::Pipes::Pipe', 'my-pipe', {});
+
+    expect(enriched['Arn']).toBe('arn:aws:pipes:us-east-1:123456789012:pipe/my-pipe');
+    expect(enriched['CurrentState']).toBe('RUNNING');
+    const sent = mockCloudControlSend.mock.calls[0]![0] as {
+      input: { TypeName: string; Identifier: string };
+    };
+    expect(sent.input.TypeName).toBe('AWS::Pipes::Pipe');
+    expect(sent.input.Identifier).toBe('my-pipe');
+  });
+
+  it('Pipes::Pipe: skips the read-back when Arn is already present', async () => {
+    const enriched = await enrich('AWS::Pipes::Pipe', 'my-pipe', {
+      Arn: 'arn:aws:pipes:us-east-1:123456789012:pipe/my-pipe',
+    });
+
+    expect(enriched['Arn']).toBe('arn:aws:pipes:us-east-1:123456789012:pipe/my-pipe');
+    expect(mockCloudControlSend).not.toHaveBeenCalled();
+  });
+
+  it('S3::AccessPoint: overlays Arn / Alias / NetworkOrigin from the CC GetResource model', async () => {
+    mockCcModel({
+      Name: 'my-ap',
+      Arn: 'arn:aws:s3:us-east-1:123456789012:accesspoint/my-ap',
+      Alias: 'my-ap-abc123xyz-s3alias',
+      NetworkOrigin: 'Internet',
+    });
+
+    // physicalId is the access point NAME.
+    const enriched = await enrich('AWS::S3::AccessPoint', 'my-ap', {});
+
+    expect(enriched['Arn']).toBe('arn:aws:s3:us-east-1:123456789012:accesspoint/my-ap');
+    expect(enriched['Alias']).toBe('my-ap-abc123xyz-s3alias');
+    expect(enriched['NetworkOrigin']).toBe('Internet');
+  });
+
+  it('S3::AccessPoint: reads back when only Alias is missing and preserves the existing Arn', async () => {
+    mockCcModel({
+      Arn: 'arn:aws:s3:us-east-1:123456789012:accesspoint/from-model',
+      Alias: 'my-ap-abc123xyz-s3alias',
+    });
+
+    const enriched = await enrich('AWS::S3::AccessPoint', 'my-ap', {
+      Arn: 'arn:aws:s3:us-east-1:123456789012:accesspoint/pre-existing',
+    });
+
+    // Existing Arn wins; only the missing Alias is overlaid.
+    expect(enriched['Arn']).toBe('arn:aws:s3:us-east-1:123456789012:accesspoint/pre-existing');
+    expect(enriched['Alias']).toBe('my-ap-abc123xyz-s3alias');
+  });
+
+  it('ResourceGroups::Group: overlays Arn from the CC GetResource model', async () => {
+    mockCcModel({
+      Name: 'my-group',
+      Arn: 'arn:aws:resource-groups:us-east-1:123456789012:group/my-group',
+    });
+
+    // physicalId is the group NAME.
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched['Arn']).toBe('arn:aws:resource-groups:us-east-1:123456789012:group/my-group');
+  });
+
+  it('is best-effort — a failed GetResource does not throw and leaves attributes unchanged', async () => {
+    mockCloudControlSend.mockRejectedValueOnce(
+      Object.assign(new Error('throttled'), { name: 'ThrottlingException' })
+    );
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {
+      ExistingAttr: 'keep-me',
+    });
+
+    expect(enriched).toEqual({ ExistingAttr: 'keep-me' });
+    expect(enriched['Arn']).toBeUndefined();
+  });
+
+  // readCcResourceModel malformed-response branches (shared with the Backup
+  // cases, but previously untested at any call site): each must degrade to
+  // "no model" and leave the attributes unchanged rather than throw.
+  it('leaves attributes unchanged when the GetResource response has no Properties string', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({ ResourceDescription: {} });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched).toEqual({});
+  });
+
+  it('leaves attributes unchanged when the GetResource Properties is not valid JSON', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: { Properties: '{not json' },
+    });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched).toEqual({});
+  });
+
+  it('leaves attributes unchanged when the GetResource Properties parses to a non-object', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: { Properties: '["not", "an", "object"]' },
+    });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched).toEqual({});
+  });
+
+  it('skips a non-string model value instead of overlaying it', async () => {
+    mockCcModel({ Arn: { nested: 'wrong-shape' } });
+
+    const enriched = await enrich('AWS::ResourceGroups::Group', 'my-group', {});
+
+    expect(enriched['Arn']).toBeUndefined();
+  });
+});
+
 describe('CloudControlProvider create: failed-create remnant cleanup', () => {
   let provider: CloudControlProvider;
 

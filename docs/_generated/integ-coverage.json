@@ -2958,6 +2958,7 @@
         "batch",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
+        "cc-getatt-readback",
         "composite-stack",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -3025,6 +3026,9 @@
           "l2"
         ],
         "cc-api-fallback-transitions": [
+          "l2"
+        ],
+        "cc-getatt-readback": [
           "l2"
         ],
         "composite-stack": [
@@ -4049,6 +4053,7 @@
         "basic",
         "bench-sdk",
         "bucket-deployment",
+        "cc-getatt-readback",
         "ci-cd",
         "composite-stack",
         "conditions",
@@ -4097,6 +4102,9 @@
           "l2"
         ],
         "bucket-deployment": [
+          "l2"
+        ],
+        "cc-getatt-readback": [
           "l2"
         ],
         "ci-cd": [
@@ -4501,6 +4509,7 @@
         "basic",
         "bench-cdk-sample",
         "bench-sdk",
+        "cc-getatt-readback",
         "composite-stack",
         "conditions-update-2",
         "data-pipeline",
@@ -4536,6 +4545,9 @@
           "l2"
         ],
         "bench-sdk": [
+          "l2"
+        ],
+        "cc-getatt-readback": [
           "l2"
         ],
         "composite-stack": [
@@ -5096,8 +5108,10 @@
     "AWS::OpenSearchService::Domain",
     "AWS::Pipes::Pipe",
     "AWS::Redshift::Cluster",
+    "AWS::ResourceGroups::Group",
     "AWS::Route53::CidrCollection",
     "AWS::Route53::HealthCheck",
+    "AWS::S3::AccessPoint",
     "AWS::SES::ConfigurationSet",
     "AWS::SES::EmailIdentity",
     "AWS::SSM::Document",
