@@ -84,8 +84,11 @@ service constraints are stricter):
    `FSX_AD_ID` unset — the file system is no longer in the template, so
    cdkd plans a DELETE for it. Asserts it is gone by id AND by the
    fixture's constant tag (`cdkd-integ=fsx-windows`).
-6. **Delete the Managed AD** and assert it is gone by id AND by domain
-   name. A leftover Managed AD bills per hour.
+6. **Delete the Managed AD.** This phase asserts that the deletion was
+   **accepted and is progressing** — *not* that the directory record has
+   vanished. See "Why Phase 6 does not wait for the record to disappear"
+   below. It then waits for the directory's **ENIs** to be released, which
+   is the real precondition for Phase 7.
 7. **Destroy** the stack and assert the VPC and the cdkd state file are
    gone.
 
@@ -118,6 +121,54 @@ the Windows API default is to take a **final backup** that outlives the
 file system and bills per GB-month. `verify.sh` therefore sweeps and
 asserts on backups explicitly after the delete; the file-system
 assertions alone would not catch this.
+
+### Why Phase 6 does not wait for the record to disappear
+
+Managed AD teardown **outlives this fixture**. Two ~96-minute live runs
+(2026-07-19/20) each spent a full 2400s waiting for the deleted directory
+to stop being returned, and it vanished only some time after the script
+had already exited. Blocking on that adds ~40 minutes to every run for no
+safety gain: a directory in `Deleting` completes on its own, nothing the
+fixture does can speed it, and the delete cannot be cancelled.
+
+So Phase 6's verdict is deliberately scoped to **"the deletion was
+accepted and is progressing"**:
+
+| Observed state | Verdict |
+| --- | --- |
+| `Stage=Deleted`, or `EntityDoesNotExist` | pass |
+| `Stage=Deleting` at the deadline | pass, with a loud `WARNING` |
+| `Stage=Failed` | **fail** |
+| any other stage, or an undetermined API error | **fail** |
+
+The invariant that actually matters — *nothing chargeable remains* — is
+still enforced, by the file-system, backup and directory sweeps. A
+genuinely stuck or failed deletion still fails the run.
+
+**`Stage=Deleted` is documented but was never observed on this path.** The
+Directory Service admin guide defines it ("The directory has been deleted.
+All resources for the directory have been released"), so the branch is
+legitimate — but across two runs the record went from `Deleting` straight
+to absent. Treat that branch as belt-and-braces, not as the expected path.
+
+### The ENI gate is the one wait that is load-bearing
+
+Phase 7 runs `cdkd destroy`, which deletes the VPC — and its subnets
+cannot be deleted while the Managed AD still holds ENIs in them. AWS
+releases those only at `Stage=Deleted` ("All resources for the directory
+have been released"). So tolerating a still-`Deleting` record in the
+*verdict* is safe, but proceeding to Phase 7 with its ENIs still attached
+is not: the destroy would fail with `DependencyViolation`.
+
+Phase 6 therefore waits on the **ENIs** rather than on the record — the
+precise precondition, and potentially satisfied earlier. That wait gets
+the real budget (`DIR_ENI_WAIT_SECONDS`, 2400s) and **fails** on timeout,
+because it is a genuine blocker rather than a bookkeeping detail.
+
+The ENI query matches the directory id inside the interface `Description`.
+If AWS ever changes that wording the query returns empty and the gate
+passes immediately — it fails **open**, leaving Phase 7 to surface any
+real problem rather than blocking the run on a string match.
 
 ### "Deleted" is not spelled the same way by both services
 

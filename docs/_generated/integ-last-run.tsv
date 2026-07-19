@@ -255,3 +255,5 @@ fsx-ontap	2026-07-19T17:04:12Z	FAIL	1085	verify.sh	deploy+config OK; assertion t
 fsx-windows	2026-07-19T17:18:44Z	FAIL	120	verify.sh	phase2 AD create: --cli-input-json file:///dev/stdin fails when stdin is not a TTY (background run); VPC deploy OK, cleanup clean 0 orphans
 fsx-ontap	2026-07-19T18:03:27Z	PASS	1600	verify.sh	issue #1088 ONTAP SINGLE_AZ_1 variant: deploy+in-place update+destroy; 8 deleted 0 errors 0 orphans
 fsx-windows	2026-07-19T19:17:01Z	FAIL	4900	verify.sh	domain join + FS delete + final-backup sweep all OK; phase6 wait_directory_gone only accepts an API error as gone, so Stage=Deleted times out; AWS clean 0 orphans
+fsx-ontap	2026-07-19T20:10:45Z	PASS	1580	verify.sh	issue #1088 ONTAP SINGLE_AZ_1: deploy+in-place update+destroy on post-#1102 seeded-trap script; 8 deleted 0 errors 0 orphans
+fsx-windows	2026-07-19T21:28:33Z	FAIL	5760	verify.sh	phases 1-5 all pass (domain join, FS lifecycle, final-backup sweep); phase6 deadline 2400s too short - Managed AD deletion outlives it; AWS clean 0 orphans

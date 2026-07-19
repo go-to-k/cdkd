@@ -78,6 +78,23 @@ CLEANUP_TAG_VALUE="fsx-windows"
 # defaults to the first label, "corp".
 AD_DOMAIN="corp.cdkd-integ.com"
 
+# How long to wait for the DELETED DIRECTORY RECORD to disappear. This is
+# ADVISORY: two ~96-minute live runs (2026-07-19/20) both spent the full
+# former 2400s budget here without the record going away, and it vanished
+# only some time after the script exited. Since exceeding this no longer
+# fails the run (a still-Deleting directory is deletion-accepted and
+# progressing), a long budget would be pure dead time on every run — so it
+# is short, just long enough to catch a fast completion or a Failed stage.
+DIR_RECORD_WAIT_SECONDS=600
+# How long to wait for the directory's ENIs to be RELEASED. This one is
+# load-bearing — Phase 7 cannot delete the VPC until they are gone — so it
+# gets the real budget.
+DIR_ENI_WAIT_SECONDS=2400
+# cleanup() only needs the delete to be ACCEPTED before it exits; AWS
+# finishes on its own. Waiting the full record budget on the failure path
+# is what stretched a failed run by ~40 minutes.
+DIR_CLEANUP_WAIT_SECONDS=120
+
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # List file system ids carrying the fixture's constant tag.
@@ -95,9 +112,14 @@ tagged_fs_ids() {
 # while, and counting those would both re-issue pointless deletes in
 # cleanup and make the post-delete "no directory remains" assertion fire
 # on a directory that is already gone.
-fixture_directory_ids() {
+# Directories that still need action from us. Excludes Deleting as well as
+# Deleted: a Deleting directory has already had its delete accepted and
+# will finish on its own, so counting it would both re-issue pointless
+# deletes in cleanup and contradict the Phase 6 verdict below, which
+# deliberately tolerates that state.
+fixture_live_directory_ids() {
   aws ds describe-directories --region "${REGION}" \
-    --query "DirectoryDescriptions[?Name=='${AD_DOMAIN}' && Stage!='Deleted'].DirectoryId" \
+    --query "DirectoryDescriptions[?Name=='${AD_DOMAIN}' && Stage!='Deleted' && Stage!='Deleting'].DirectoryId" \
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
@@ -174,15 +196,57 @@ wait_fs_gone() {
   return 1
 }
 
+# $2 = seconds to wait (default DIR_RECORD_WAIT_SECONDS). Returns:
+#   0 = gone (Stage=Deleted or not found)
+#   3 = Stage=Failed (loud)
+#   4 = deadline reached while still Deleting (accepted + progressing)
+#   1 = deadline reached in some other / undetermined state (loud)
 wait_directory_gone() {
-  local dir_id="$1" rc
-  local deadline=$((SECONDS + 2400))
+  local dir_id="$1" budget="${2:-${DIR_RECORD_WAIT_SECONDS}}" rc last_stage
+  local deadline=$((SECONDS + budget))
   while [ ${SECONDS} -lt ${deadline} ]; do
     directory_state "${dir_id}" && return 0 || rc=$?
     if [ "${rc}" -eq 3 ]; then
       echo "    ERROR: directory ${dir_id} reached Stage=Failed during deletion" >&2
       return 3
     fi
+    sleep 20
+  done
+  # Distinguish "AWS accepted the delete and is working on it" from
+  # "stuck in some state we did not expect".
+  last_stage="$(aws ds describe-directories --directory-ids "${dir_id}" \
+    --region "${REGION}" --query 'DirectoryDescriptions[0].Stage' \
+    --output text 2>/dev/null || true)"
+  [ "${last_stage}" = "Deleting" ] && return 4
+  return 1
+}
+
+# The REAL precondition for Phase 7. `cdkd destroy` deletes the VPC, and
+# its subnets cannot go while the Managed AD still holds ENIs in them —
+# AWS releases those only when the directory reaches Stage=Deleted ("All
+# resources for the directory have been released", Directory Service admin
+# guide, "Understanding your AWS Managed Microsoft AD directory status").
+# So Phase 6's verdict may tolerate a still-Deleting record, but the VPC
+# teardown genuinely cannot.
+#
+# Managed AD ENIs carry the directory id in their Description ("AWS created
+# network interface for directory d-..."). If AWS ever changes that
+# wording this query returns empty and the gate passes immediately — it
+# fails OPEN, leaving Phase 7 to surface any real problem rather than
+# blocking the run on a string match.
+directory_eni_ids() {
+  aws ec2 describe-network-interfaces --region "${REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" \
+    --query "NetworkInterfaces[?contains(Description, '$1')].NetworkInterfaceId" \
+    --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
+}
+
+wait_directory_enis_released() {
+  local dir_id="$1" remaining
+  local deadline=$((SECONDS + DIR_ENI_WAIT_SECONDS))
+  while [ ${SECONDS} -lt ${deadline} ]; do
+    remaining="$(directory_eni_ids "${dir_id}")"
+    [ -z "${remaining}" ] && return 0
     sleep 20
   done
   return 1
@@ -240,14 +304,24 @@ delete_backups_for_fs() {
 }
 
 delete_fixture_directories() {
-  local dirid
-  for dirid in $(fixture_directory_ids); do
+  local dirid rc
+  # Only directories that still need action — a Deleting one already has
+  # its delete accepted, and re-waiting on it here is what turned a failed
+  # run into a ~40-minute-longer failed run.
+  for dirid in $(fixture_live_directory_ids); do
     echo "    deleting Managed AD ${dirid} (${AD_DOMAIN})"
     aws ds delete-directory --directory-id "${dirid}" --region "${REGION}" >/dev/null 2>&1
-    if ! wait_directory_gone "${dirid}"; then
-      echo "    WARNING: possible leak — Managed AD ${dirid} did not disappear before the timeout" >&2
-      echo "    WARNING: a Standard Managed AD bills per hour — check 'aws ds describe-directories'" >&2
-    fi
+    # Short budget: cleanup only needs the delete to be ACCEPTED. AWS
+    # finishes the teardown on its own, and blocking the exit path on it
+    # buys nothing.
+    wait_directory_gone "${dirid}" "${DIR_CLEANUP_WAIT_SECONDS}" && rc=0 || rc=$?
+    case ${rc} in
+      0 | 4) ;;
+      *)
+        echo "    WARNING: possible leak — Managed AD ${dirid} is not in a deleted or Deleting state" >&2
+        echo "    WARNING: a Standard Managed AD bills per hour — check 'aws ds describe-directories'" >&2
+        ;;
+    esac
   done
 }
 
@@ -304,6 +378,14 @@ cleanup() {
       aws ec2 delete-internet-gateway --internet-gateway-id "${igw}" --region "${REGION}" >/dev/null 2>&1
     done
     aws ec2 delete-vpc --vpc-id "${vpcid}" --region "${REGION}" >/dev/null 2>&1
+    # cleanup no longer blocks on the directory finishing its teardown, so
+    # its ENIs may still be pinning these subnets. Say so rather than
+    # leaving a silent survivor — a VPC is not chargeable, but it does need
+    # sweeping once the directory is gone.
+    if aws ec2 describe-vpcs --vpc-ids "${vpcid}" --region "${REGION}" >/dev/null 2>&1; then
+      echo "    WARNING: VPC ${vpcid} survived cleanup — most likely the Managed AD's ENIs are still attached while it finishes Deleting" >&2
+      echo "    WARNING: not chargeable, but sweep it once 'aws ds describe-directories' is empty" >&2
+    fi
   done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -633,25 +715,51 @@ echo "    no chargeable backup remains"
 
 # --- Phase 6: delete the Managed AD -------------------------------------
 echo "==> Phase 6: delete the Managed Microsoft AD (~10 min)"
+# WHAT THIS PHASE ASSERTS: that the deletion was ACCEPTED and is
+# progressing (or already finished) — NOT that the directory record has
+# vanished. Managed AD teardown outlives this fixture: two ~96-minute live
+# runs both waited 2400s here and the record still had not gone. Blocking
+# on it adds ~40 minutes to every run for no safety gain, because a
+# directory in Deleting completes on its own and nothing the fixture does
+# can speed it. The end-of-run sweeps below and in cleanup() are the
+# authority on whether anything chargeable was actually left behind.
 aws ds delete-directory --directory-id "${DIRECTORY_ID}" --region "${REGION}" >/dev/null
 wait_directory_gone "${DIRECTORY_ID}" && DIR_RC=0 || DIR_RC=$?
 case ${DIR_RC} in
-  0) ;;
+  0)
+    echo "    Managed AD record is gone"
+    ;;
+  4)
+    echo "WARNING: Managed AD ${DIRECTORY_ID} still Deleting after ${DIR_RECORD_WAIT_SECONDS}s — AWS teardown outlives this fixture; the account sweep below is the authority" >&2
+    ;;
   3)
     echo "FAIL: directory ${DIRECTORY_ID} reached Stage=Failed while deleting" >&2
     exit 1
     ;;
   *)
-    echo "FAIL: directory ${DIRECTORY_ID} was still present at the deadline after delete-directory" >&2
+    echo "FAIL: directory ${DIRECTORY_ID} is in neither a deleted nor a Deleting state after delete-directory" >&2
     exit 1
     ;;
 esac
-REMAINING_DIRS="$(fixture_directory_ids)"
+
+# Live (non-Deleted, non-Deleting) directories are always a failure: that
+# means a delete never took.
+REMAINING_DIRS="$(fixture_live_directory_ids)"
 if [ -n "${REMAINING_DIRS}" ]; then
-  echo "FAIL: directory/directories for ${AD_DOMAIN} still exist: ${REMAINING_DIRS}" >&2
+  echo "FAIL: directory/directories for ${AD_DOMAIN} are still live: ${REMAINING_DIRS}" >&2
   exit 1
 fi
-echo "    Managed AD deleted (by id and by domain name)"
+
+# Phase 7 deletes the VPC, whose subnets cannot go while the directory
+# still holds ENIs in them. AWS releases those only at Stage=Deleted, so
+# this — not the record check above — is the gate that Phase 7 depends on.
+echo "    waiting for the directory's ENIs to be released (Phase 7 needs the subnets free)"
+if ! wait_directory_enis_released "${DIRECTORY_ID}"; then
+  echo "FAIL: directory ${DIRECTORY_ID} still holds ENIs in ${VPC_ID} after ${DIR_ENI_WAIT_SECONDS}s;" >&2
+  echo "      the VPC teardown in Phase 7 cannot succeed until they are released" >&2
+  exit 1
+fi
+echo "    directory ENIs released"
 
 # --- Phase 7: destroy the stack -----------------------------------------
 echo "==> Phase 7: destroy"
