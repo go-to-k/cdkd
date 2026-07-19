@@ -427,6 +427,37 @@ export interface ResourceProvider {
   getDriftUnknownPaths?(resourceType: string): string[];
 
   /**
+   * State property paths holding a plain-string array that is semantically an
+   * UNORDERED set. The drift comparator sorts the array at these paths on BOTH
+   * comparison sides before comparing, so an AWS-side reorder does not surface
+   * as phantom drift on a resource nobody touched.
+   *
+   * Plain-string arrays are NOT order-normalized by default (a scalar list can
+   * be order-significant), unlike tag lists and AWS id / ARN arrays which the
+   * shared normalizer canonicalizes heuristically for every type. This is the
+   * per-provider opt-in for the cases that are genuinely unordered.
+   *
+   * Example: FSx's `WindowsConfiguration.Aliases` (DNS alias names) and
+   * `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps`
+   * (plain IPv4 strings) come back from `DescribeFileSystems` in an
+   * AWS-chosen order.
+   *
+   * Declare it HERE rather than sorting inside the provider's `readCurrentState`
+   * reverse-mapper: the normalizer runs on both sides, so it stays correct when
+   * the baseline is the template `properties` fallback (a resource deployed
+   * before observed-capture, whose baseline is the user's template order).
+   * Sorting only the read side would manufacture drift on exactly that path.
+   *
+   * Paths use dot-notation for nested keys and match the same way as
+   * {@link getDriftUnknownPaths}: exactly equal, or an entry followed by `.`.
+   *
+   * @param resourceType e.g. `AWS::FSx::FileSystem`
+   * @returns paths whose plain-string array is unordered; defaults to empty
+   *          when not implemented
+   */
+  getDriftUnorderedPaths?(resourceType: string): string[];
+
+  /**
    * Find an already-deployed AWS resource matching the given logicalId from
    * the CDK template, and return its physical id + attributes so the state
    * file can be reconstructed.
