@@ -32,11 +32,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -978,12 +975,14 @@ export class EMRClusterProvider implements ResourceProvider {
    *  2. Tag-based lookup: `ListClusters` filtered to the non-terminated states
    *     (a `TERMINATED*` cluster is gone and must never be adopted), then a
    *     `DescribeCluster` per candidate to read `Tags` (the list summaries do
-   *     NOT carry tags) and match `aws:cdk:path`.
+   *     NOT carry tags) and match `aws:cdk:path`. The walk runs through the
+   *     shared `importTagWalk` helper, so each list page / describe is retried
+   *     with exponential backoff when AWS throttles the N+1 read burst.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, null);
     if (explicit) {
-      const cluster = await this.describeClusterOrNull(explicit);
+      const cluster = await this.describeClusterOrUndefined(explicit);
       // A cluster that has aged out of DescribeCluster (returns null) or that
       // is already terminated is not adoptable — report not-found so the
       // import command marks it skipped rather than writing dead state.
@@ -993,37 +992,45 @@ export class EMRClusterProvider implements ResourceProvider {
       return { physicalId: explicit, attributes: this.buildAttributes(cluster) };
     }
 
-    if (!input.cdkPath) return null;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListClustersCommand({
+            ClusterStates: [...NON_TERMINATED_STATES],
+            ...(marker && { Marker: marker }),
+          })
+        );
+        return { items: list.Clusters, nextMarker: list.Marker };
+      },
+      describe: async (summary) =>
+        summary.Id ? await this.describeClusterOrUndefined(summary.Id) : undefined,
+      tagsOf: (cluster) => cluster.Tags,
+    });
+    if (!match) return null;
 
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListClustersCommand({
-          ClusterStates: [...NON_TERMINATED_STATES],
-          ...(marker && { Marker: marker }),
-        })
-      );
-      for (const summary of list.Clusters ?? []) {
-        if (!summary.Id) continue;
-        const cluster = await this.describeClusterOrNull(summary.Id);
-        if (!cluster) continue;
-        if (matchesCdkPath(cluster.Tags, input.cdkPath)) {
-          return { physicalId: summary.Id, attributes: this.buildAttributes(cluster) };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
-
-    return null;
+    // `Id` is non-null by construction: `describe` returns `undefined` for a
+    // summary without one, so the walk never yields it as a match.
+    return { physicalId: match.summary.Id!, attributes: this.buildAttributes(match.detail) };
   }
 
   /**
    * `DescribeCluster` that maps a not-found (`InvalidRequestException` — the
-   * cluster id is unknown in this region / aged out of Describe) to `null`
-   * instead of throwing, so `import()` can treat it as "no match" rather than
-   * aborting the whole adoption run.
+   * cluster id is unknown in this region / aged out of Describe) to
+   * `undefined` instead of throwing, so `import()` can treat it as "no match"
+   * rather than aborting the whole adoption run.
+   *
+   * `undefined`, NOT `null`, is load-bearing: `importTagWalk` skips a candidate
+   * on `detail === undefined`, and an actual `null` would flow into `tagsOf`
+   * and `TypeError`. Also note the mapping is BROAD — `InvalidRequestException`
+   * covers more than not-found, so a genuine failure here degrades to "no
+   * match" and a subsequent deploy would CREATE a duplicate cluster rather than
+   * adopt the existing one. The walk logs each skip at debug so the case is at
+   * least visible under `--verbose`; narrowing the mapping needs a
+   * message/code-level discriminator AWS does not currently document.
    */
-  private async describeClusterOrNull(clusterId: string): Promise<Cluster | undefined> {
+  private async describeClusterOrUndefined(clusterId: string): Promise<Cluster | undefined> {
     try {
       const resp = await this.getClient().send(
         new DescribeClusterCommand({ ClusterId: clusterId })
@@ -1072,7 +1079,7 @@ export class EMRClusterProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | undefined> {
-    const cluster = await this.describeClusterOrNull(physicalId);
+    const cluster = await this.describeClusterOrUndefined(physicalId);
     if (!cluster) return undefined;
 
     let instanceGroups: InstanceGroup[] = [];

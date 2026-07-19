@@ -15,16 +15,14 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  type Tag,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -958,6 +956,9 @@ export class DocDBProvider implements ResourceProvider {
    * Identifier` / `DBClusterIdentifier` / `DBSubnetGroupName`) are usually
    * present in CDK templates; fall back to `aws:cdk:path` tag lookup via
    * the corresponding `Describe*` + `ListTagsForResource` pair otherwise.
+   * The fallback walk runs through the shared `importTagWalk` helper, so the
+   * N+1 `ListTagsForResource` burst is retried with exponential backoff when
+   * AWS throttles it instead of aborting the whole import.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
@@ -1144,25 +1145,25 @@ export class DocDBProvider implements ResourceProvider {
         throw err;
       }
     }
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeDBInstancesCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const inst of list.DBInstances ?? []) {
-        if (!inst.DBInstanceIdentifier || !inst.DBInstanceArn) continue;
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ ResourceName: inst.DBInstanceArn })
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new DescribeDBInstancesCommand({ ...(marker && { Marker: marker }) })
         );
-        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
-          return { physicalId: inst.DBInstanceIdentifier, attributes: {} };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
-    return null;
+        return { items: list.DBInstances, nextMarker: list.Marker };
+      },
+      describe: async (inst) =>
+        inst.DBInstanceIdentifier && inst.DBInstanceArn
+          ? await this.listTagsForResource(inst.DBInstanceArn)
+          : undefined,
+      tagsOf: (tags) => tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` returns `undefined` for a summary
+    // without both fields, so the walk never yields it as a match.
+    return { physicalId: match.summary.DBInstanceIdentifier!, attributes: {} };
   }
 
   private async importDBCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -1178,25 +1179,25 @@ export class DocDBProvider implements ResourceProvider {
         throw err;
       }
     }
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeDBClustersCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const c of list.DBClusters ?? []) {
-        if (!c.DBClusterIdentifier || !c.DBClusterArn) continue;
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ ResourceName: c.DBClusterArn })
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new DescribeDBClustersCommand({ ...(marker && { Marker: marker }) })
         );
-        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
-          return { physicalId: c.DBClusterIdentifier, attributes: {} };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
-    return null;
+        return { items: list.DBClusters, nextMarker: list.Marker };
+      },
+      describe: async (c) =>
+        c.DBClusterIdentifier && c.DBClusterArn
+          ? await this.listTagsForResource(c.DBClusterArn)
+          : undefined,
+      tagsOf: (tags) => tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` returns `undefined` for a summary
+    // without both fields, so the walk never yields it as a match.
+    return { physicalId: match.summary.DBClusterIdentifier!, attributes: {} };
   }
 
   private async importDBSubnetGroup(
@@ -1214,24 +1215,37 @@ export class DocDBProvider implements ResourceProvider {
         throw err;
       }
     }
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeDBSubnetGroupsCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const sg of list.DBSubnetGroups ?? []) {
-        if (!sg.DBSubnetGroupName || !sg.DBSubnetGroupArn) continue;
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ ResourceName: sg.DBSubnetGroupArn })
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new DescribeDBSubnetGroupsCommand({ ...(marker && { Marker: marker }) })
         );
-        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
-          return { physicalId: sg.DBSubnetGroupName, attributes: {} };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
-    return null;
+        return { items: list.DBSubnetGroups, nextMarker: list.Marker };
+      },
+      describe: async (sg) =>
+        sg.DBSubnetGroupName && sg.DBSubnetGroupArn
+          ? await this.listTagsForResource(sg.DBSubnetGroupArn)
+          : undefined,
+      tagsOf: (tags) => tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` returns `undefined` for a summary
+    // without both fields, so the walk never yields it as a match.
+    return { physicalId: match.summary.DBSubnetGroupName!, attributes: {} };
+  }
+
+  /**
+   * `ListTagsForResource` for the tag-walk import path. Returns the tag list
+   * (possibly empty) so `importTagWalk` can match `aws:cdk:path` against it;
+   * `undefined` is reserved for "skip this candidate", which the callers signal
+   * before calling this.
+   */
+  private async listTagsForResource(resourceArn: string): Promise<Tag[]> {
+    const resp = await this.getClient().send(
+      new ListTagsForResourceCommand({ ResourceName: resourceArn })
+    );
+    return resp.TagList ?? [];
   }
 }

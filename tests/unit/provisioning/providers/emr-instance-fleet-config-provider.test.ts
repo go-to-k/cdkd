@@ -166,6 +166,24 @@ describe('EMRInstanceFleetConfigProvider create', () => {
     );
   });
 
+  // Issue #1092 item 2: a SUSPENDED fleet can no longer add or remove
+  // instances, so the wait must fail fast instead of polling to maxWaitMs.
+  // Without SUSPENDED in FAILED_STATES this rejects with a timeout message
+  // (only after burning the whole wait budget), not "failed state SUSPENDED".
+  it('fails fast when the fleet enters SUSPENDED (resize could not complete)', async () => {
+    routeSend({
+      AddInstanceFleetCommand: { InstanceFleetId: FLEET_ID },
+      ListInstanceFleetsCommand: fleetOf('SUSPENDED', 0),
+    });
+    // The error must carry the service's own state-change reason — that is the
+    // whole point of failing fast rather than timing out with a generic message.
+    await expect(
+      newProvider({ maxWaitMs: 60_000 }).create('Fleet', RESOURCE_TYPE, BASE_PROPS)
+    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    // Fail-fast means ONE poll, not a spin until the 5s vitest timeout fires.
+    expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(1);
+  });
+
   it('times out when the fleet never reaches RUNNING', async () => {
     routeSend({
       AddInstanceFleetCommand: { InstanceFleetId: FLEET_ID },
@@ -226,6 +244,49 @@ describe('EMRInstanceFleetConfigProvider update', () => {
     const next = { ...BASE_PROPS, TargetOnDemandCapacity: 5 };
     await newProvider().update('Fleet', FLEET_ID, RESOURCE_TYPE, next, BASE_PROPS);
 
+    expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(3);
+  });
+
+  // Recovery scenario: the fleet is SUSPENDED (a previous resize could not
+  // complete) and the user re-runs `cdkd deploy` to fix it. The pre-resize read
+  // lag means poll #1 still reports SUSPENDED — enforcing FAILED_STATES there
+  // would abort the very resize that recovers the fleet, EVERY time, leaving it
+  // permanently unrecoverable through cdkd.
+  it('recovers a SUSPENDED fleet: the stale SUSPENDED poll must not abort the resize', async () => {
+    routeSend({
+      ModifyInstanceFleetCommand: {},
+      ListInstanceFleetsCommand: [
+        fleetOf('SUSPENDED', 2), // stale pre-modify read — must NOT fail the wait
+        fleetOf('RESIZING', 2),
+        fleetOf('RUNNING', 5), // recovery complete
+      ],
+    });
+
+    const next = { ...BASE_PROPS, TargetOnDemandCapacity: 5 };
+    await expect(
+      newProvider().update('Fleet', FLEET_ID, RESOURCE_TYPE, next, BASE_PROPS)
+    ).resolves.toMatchObject({ wasReplaced: false });
+
+    expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(3);
+  });
+
+  // The other half of the same rule: once the fleet has been observed LEAVING
+  // its initial state, a genuine SUSPENDED must still fail fast — that is the
+  // #1092 item 2 behavior, and tolerance must not swallow it.
+  it('still fails fast when a resize transitions into SUSPENDED', async () => {
+    routeSend({
+      ModifyInstanceFleetCommand: {},
+      ListInstanceFleetsCommand: [
+        fleetOf('RUNNING', 2), // stale pre-resize
+        fleetOf('RESIZING', 2), // left the initial state
+        fleetOf('SUSPENDED', 2), // resize genuinely failed
+      ],
+    });
+
+    const next = { ...BASE_PROPS, TargetOnDemandCapacity: 5 };
+    await expect(
+      newProvider({ maxWaitMs: 60_000 }).update('Fleet', FLEET_ID, RESOURCE_TYPE, next, BASE_PROPS)
+    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
     expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(3);
   });
 

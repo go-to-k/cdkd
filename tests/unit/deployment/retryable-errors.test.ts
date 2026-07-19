@@ -350,6 +350,50 @@ describe('isRetryableTransientError', () => {
       a.cause = b; // cycle
       expect(isRetryableTransientError(a, 'unrelated')).toBe(false);
     });
+
+    // Regression for the metadata-depth gap (PR #1093): the throttling NAME was
+    // walked to depth 5 but the HTTP STATUS was only checked at depths 0 and 1,
+    // so a 429 two cause-links deep fell through to the message table and was
+    // treated as terminal. Folding the status check into the shared cause walk
+    // fixed it; without this case, reverting that fold keeps the suite green.
+    it('retries a 429 nested TWO cause-links deep (no throttling name anywhere)', () => {
+      // Names are deliberately NOT in THROTTLING_ERROR_NAMES and the message
+      // does not say "Rate exceeded", so the status is the ONLY retryable
+      // signal — this fails unless the walk checks $metadata past depth 1.
+      const inner = Object.assign(new Error('upstream rejected the request'), {
+        name: 'SomeServiceException',
+        $metadata: { httpStatusCode: 429 },
+      });
+      const middle = Object.assign(new Error('handler failed'), {
+        name: 'HandlerError',
+        cause: inner,
+      });
+      const outer = Object.assign(new Error('Failed to create resource Foo'), {
+        name: 'ProvisioningError',
+        cause: middle,
+      });
+      expect(isRetryableTransientError(outer, outer.message)).toBe(true);
+    });
+
+    it('retries a 503 nested two cause-links deep', () => {
+      const inner = Object.assign(new Error('service unavailable'), {
+        name: 'SomeServiceException',
+        $metadata: { httpStatusCode: 503 },
+      });
+      const middle = Object.assign(new Error('wrap'), { name: 'Wrap', cause: inner });
+      const outer = Object.assign(new Error('outer'), { name: 'ProvisioningError', cause: middle });
+      expect(isRetryableTransientError(outer, outer.message)).toBe(true);
+    });
+
+    it('still does not retry a non-retryable status nested deep (500)', () => {
+      const inner = Object.assign(new Error('internal error'), {
+        name: 'SomeServiceException',
+        $metadata: { httpStatusCode: 500 },
+      });
+      const middle = Object.assign(new Error('wrap'), { name: 'Wrap', cause: inner });
+      const outer = Object.assign(new Error('outer'), { name: 'ProvisioningError', cause: middle });
+      expect(isRetryableTransientError(outer, 'outer')).toBe(false);
+    });
   });
 
   describe('robustness', () => {

@@ -169,6 +169,23 @@ describe('EMRInstanceGroupConfigProvider create', () => {
     );
   });
 
+  // Issue #1092 item 2, group half: SUSPENDED IS a valid InstanceGroupState (a
+  // resize that could not complete — instances keep running but AWS can add or
+  // remove none), so the wait must fail fast rather than poll to maxWaitMs.
+  // Symmetric with the instance-fleet provider's SUSPENDED test.
+  it('fails fast when the group enters SUSPENDED (resize could not complete)', async () => {
+    routeSend({
+      AddInstanceGroupsCommand: { InstanceGroupIds: [GROUP_ID] },
+      ListInstanceGroupsCommand: groupOf('SUSPENDED', 0),
+    });
+    // The error must carry the service's own state-change reason.
+    await expect(
+      newProvider({ maxWaitMs: 60_000 }).create('Grp', RESOURCE_TYPE, BASE_PROPS)
+    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    // Fail-fast means ONE poll, not a spin until the vitest timeout fires.
+    expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(1);
+  });
+
   it('times out when the group never reaches RUNNING', async () => {
     routeSend({
       AddInstanceGroupsCommand: { InstanceGroupIds: [GROUP_ID] },
@@ -229,6 +246,49 @@ describe('EMRInstanceGroupConfigProvider update', () => {
 
     // 3 polls consumed (stale RUNNING, RESIZING, final RUNNING) proves the
     // stale RUNNING did not short-circuit the wait.
+    expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(3);
+  });
+
+  // Recovery scenario: the group is SUSPENDED (a previous resize could not
+  // complete) and the user re-runs `cdkd deploy` to fix it. The pre-resize read
+  // lag means poll #1 still reports SUSPENDED — enforcing FAILED_STATES there
+  // would abort the very resize that recovers the group, EVERY time, leaving it
+  // permanently unrecoverable through cdkd.
+  it('recovers a SUSPENDED group: the stale SUSPENDED poll must not abort the resize', async () => {
+    routeSend({
+      ModifyInstanceGroupsCommand: {},
+      ListInstanceGroupsCommand: [
+        groupOf('SUSPENDED', 2), // stale pre-modify read — must NOT fail the wait
+        groupOf('RESIZING', 2),
+        groupOf('RUNNING', 5), // recovery complete
+      ],
+    });
+
+    const next = { ...BASE_PROPS, InstanceCount: 5 };
+    await expect(
+      newProvider().update('Grp', GROUP_ID, RESOURCE_TYPE, next, BASE_PROPS)
+    ).resolves.toMatchObject({ wasReplaced: false });
+
+    expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(3);
+  });
+
+  // The other half of the same rule: once the group has been observed LEAVING
+  // its initial state, a genuine SUSPENDED must still fail fast — that is the
+  // #1092 item 2 behavior, and tolerance must not swallow it.
+  it('still fails fast when a resize transitions into SUSPENDED', async () => {
+    routeSend({
+      ModifyInstanceGroupsCommand: {},
+      ListInstanceGroupsCommand: [
+        groupOf('RUNNING', 2), // stale pre-resize
+        groupOf('RESIZING', 2), // left the initial state
+        groupOf('SUSPENDED', 2), // resize genuinely failed
+      ],
+    });
+
+    const next = { ...BASE_PROPS, InstanceCount: 5 };
+    await expect(
+      newProvider({ maxWaitMs: 60_000 }).update('Grp', GROUP_ID, RESOURCE_TYPE, next, BASE_PROPS)
+    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
     expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(3);
   });
 

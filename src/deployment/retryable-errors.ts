@@ -263,17 +263,32 @@ export const THROTTLING_ERROR_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Walk the error + its `.cause` chain (bounded) looking for an AWS SDK v3
- * throttling error `name`. cdkd wraps the original AWS error in a
- * `ProvisioningError`, so the throttling signal is typically one cause-link
- * deep; the bounded walk also tolerates SDK errors that nest a `$response`/
- * cause without exploding on a cyclic chain.
+ * Walk the error + its `.cause` chain (bounded) looking for a rate-limit
+ * signal — either an AWS SDK v3 throttling error `name`
+ * ({@link THROTTLING_ERROR_NAMES}) or a retryable HTTP status
+ * ({@link RETRYABLE_HTTP_STATUS_CODES}) on `$metadata`.
+ *
+ * cdkd wraps the original AWS error in a `ProvisioningError`, so the signal is
+ * typically one cause-link deep; the bounded walk also tolerates SDK errors
+ * that nest a `$response`/cause without exploding on a cyclic chain.
+ *
+ * BOTH signals are checked at EVERY depth. An earlier version checked the name
+ * to depth 5 but the HTTP status only at depths 0 and 1, so a 429 nested two
+ * links deep was missed. This is the single shared cause-walk: the read-only
+ * import tag walk (`src/provisioning/import-tag-walk.ts`) composes its own
+ * classifier on top of this function rather than re-implementing the traversal,
+ * so the two cannot drift apart again.
  */
-function isThrottlingError(error: unknown): boolean {
+export function isThrottlingError(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && current != null; depth++) {
     const name = (current as { name?: unknown }).name;
     if (typeof name === 'string' && THROTTLING_ERROR_NAMES.has(name)) return true;
+
+    const status = (current as { $metadata?: { httpStatusCode?: number } }).$metadata
+      ?.httpStatusCode;
+    if (status !== undefined && RETRYABLE_HTTP_STATUS_CODES.has(status)) return true;
+
     current = (current as { cause?: unknown }).cause;
   }
   return false;
@@ -283,21 +298,13 @@ function isThrottlingError(error: unknown): boolean {
  * Determine whether an AWS error should be retried.
  *
  * Checks (in order):
- *   1. HTTP status code on the error itself (`$metadata.httpStatusCode`)
- *   2. HTTP status code on a wrapped cause (`cause.$metadata.httpStatusCode`)
- *   3. Throttling error `name` on the error or any wrapped cause (most AWS
- *      throttles are HTTP 400, not 429 — see {@link THROTTLING_ERROR_NAMES})
- *   4. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
+ *   1. Rate-limit signal on the error or any wrapped cause — throttling error
+ *      `name` or retryable HTTP status (most AWS throttles are HTTP 400, not
+ *      429, so the name check carries most of the weight). See
+ *      {@link isThrottlingError}.
+ *   2. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
  */
 export function isRetryableTransientError(error: unknown, message: string): boolean {
-  const metadata = (error as { $metadata?: { httpStatusCode?: number } }).$metadata;
-  const statusCode = metadata?.httpStatusCode;
-  if (statusCode !== undefined && RETRYABLE_HTTP_STATUS_CODES.has(statusCode)) return true;
-
-  const cause = (error as { cause?: { $metadata?: { httpStatusCode?: number } } }).cause;
-  const causeStatus = cause?.$metadata?.httpStatusCode;
-  if (causeStatus !== undefined && RETRYABLE_HTTP_STATUS_CODES.has(causeStatus)) return true;
-
   if (isThrottlingError(error)) return true;
 
   return RETRYABLE_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
