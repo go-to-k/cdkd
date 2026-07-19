@@ -213,6 +213,9 @@ cleanup() {
   set -eu
 }
 
+# The canonical cdkd fixture signal-trap form (see .claude/rules/testing.md,
+# enforced by tests/unit/scripts/integ-verify-signal-traps.test.ts).
+#
 # INT/TERM need their OWN handlers that EXIT. Bash does not run an EXIT
 # trap when killed by an untrapped SIGINT, but `trap cleanup INT` alone is
 # just as wrong: a signal handler RETURNS to the interrupted point, so the
@@ -220,9 +223,13 @@ cleanup() {
 # file system concurrently with a still-running `node deploy` child (the
 # harness signals the script PID, not the child) and potentially exiting 0,
 # reporting PASS on a run that was torn down mid-flight.
+#
+# The `(exit N)` seed is load-bearing: inside a handler `$?` is the
+# INTERRUPTED COMMAND's status, not the signal's, so a cleanup that gates
+# teardown on `rc=$?` could see 0 and skip it entirely.
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
