@@ -166,8 +166,6 @@ s3-lifecycle	2026-06-28T17:58:35Z	PASS	51	verify.sh	V1/V2 mix + top-level Object
 inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 s3-replication-and-filter	2026-06-29T05:06:19Z	PASS	55	verify.sh	And filter create+update+destroy, orph clean
-replacement-immutable-name	2026-06-29T06:27:27Z	PASS	130	verify.sh	6-type rename w/ --force-stateful-recreation, orph clean
-efs-immutable-replacement	2026-06-29T07:14:02Z	PASS	95	verify.sh	token-robustness refactor re-verified, orph clean
 codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
 eventbridge	2026-07-02T06:09:46Z	PASS	210	verify.sh	new Phase 1.5 custom-bus rule-drop update (issue 955 fix), destroy 10/0 err
 dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
@@ -192,14 +190,12 @@ import-value-strong-ref	2026-07-02T18:23:15Z	PASS	115	verify.sh	0703 staleness s
 ecs-fargate	2026-07-02T18:23:15Z	PASS	373	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 serverless-api	2026-07-02T18:23:15Z	PASS	50	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 alb	2026-07-02T18:23:15Z	PASS	62	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-cross-region-state-bucket	2026-07-02T18:23:15Z	PASS	34	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 importvalue-chain	2026-07-02T18:23:15Z	PASS	75	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 destroy-interrupt	2026-07-02T18:23:15Z	PASS	531	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-servicediscovery	2026-07-02T18:23:15Z	PASS	111	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 cloudwatch	2026-07-02T18:23:15Z	PASS	50	standard	0703 staleness sweep (pre-TTL refresh); clean
 docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
 sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated
@@ -251,3 +247,7 @@ emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-tr
 local-start-api	2026-07-19T18:27:53Z	PASS	22	verify.sh	rc ok, 0 docker orphans; swept verify.sh (#1097 pattern 1)
 local-start-api-websocket	2026-07-19T18:46:28Z	PASS	103	verify.sh	rc ok, 0 docker orphans; validates restructured multi-line trap (#1097)
 cc-getatt-readback	2026-07-19T19:55:05Z	PASS	150	verify.sh	new fixture issue-1103; GetAtt outputs equal real API values; destroy 0 err 0 orph
+cross-region-state-bucket	2026-07-19T18:57:34Z	PASS	33	verify.sh	rc ok, temp bucket removed, orph clean
+servicediscovery	2026-07-19T19:00:29Z	PASS	111	verify.sh	rc ok, 3 deleted, orph clean
+replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
+efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
