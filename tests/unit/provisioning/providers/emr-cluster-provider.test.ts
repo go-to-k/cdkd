@@ -37,6 +37,9 @@ import {
   RunJobFlowCommand,
   TerminateJobFlowsCommand,
   DescribeClusterCommand,
+  ListClustersCommand,
+  ListInstanceGroupsCommand,
+  ListInstanceFleetsCommand,
   SetTerminationProtectionCommand,
   SetVisibleToAllUsersCommand,
   ModifyClusterCommand,
@@ -702,5 +705,266 @@ describe('EMRClusterProvider polling + error paths', () => {
       StepConcurrencyLevel: 'not-a-number',
     });
     expect(callsOf(RunJobFlowCommand)[0]!.input['StepConcurrencyLevel']).toBeUndefined();
+  });
+});
+
+const CDK_PATH = 'MyStack/MyCluster/Resource';
+
+function importInput(overrides: Record<string, unknown> = {}) {
+  return {
+    logicalId: 'MyCluster',
+    resourceType: RESOURCE_TYPE,
+    cdkPath: CDK_PATH,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: { ...BASE_PROPS },
+    ...overrides,
+  };
+}
+
+describe('EMRClusterProvider import', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('verifies an explicit cluster id (knownPhysicalId) via DescribeCluster and returns attributes', async () => {
+    routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
+
+    const result = await newProvider().import(importInput({ knownPhysicalId: CLUSTER_ID }));
+
+    expect(result).toEqual({
+      physicalId: CLUSTER_ID,
+      attributes: { Id: CLUSTER_ID, MasterPublicDNS: DNS },
+    });
+    // Explicit-id path must NOT list.
+    expect(callsOf(ListClustersCommand)).toHaveLength(0);
+    expect(callsOf(DescribeClusterCommand)[0]!.input['ClusterId']).toBe(CLUSTER_ID);
+  });
+
+  it('returns null when the explicit cluster id is unknown (InvalidRequestException)', async () => {
+    routeSend({ DescribeClusterCommand: invalidRequest() });
+    const result = await newProvider().import(importInput({ knownPhysicalId: CLUSTER_ID }));
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the explicit cluster id is already terminated', async () => {
+    routeSend({ DescribeClusterCommand: clusterOf('TERMINATED') });
+    const result = await newProvider().import(importInput({ knownPhysicalId: CLUSTER_ID }));
+    expect(result).toBeNull();
+  });
+
+  it('walks ListClusters (non-terminated) + DescribeCluster and matches aws:cdk:path', async () => {
+    routeSend({
+      ListClustersCommand: {
+        Clusters: [{ Id: 'j-OTHER1' }, { Id: CLUSTER_ID }],
+      },
+      DescribeClusterCommand: [
+        clusterOf('WAITING', { Id: 'j-OTHER1', Tags: [{ Key: 'aws:cdk:path', Value: 'other' }] }),
+        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] }),
+      ],
+    });
+
+    const result = await newProvider().import(importInput());
+
+    expect(result).toEqual({
+      physicalId: CLUSTER_ID,
+      attributes: { Id: CLUSTER_ID, MasterPublicDNS: DNS },
+    });
+    // ListClusters must filter to the non-terminated states.
+    const listInput = callsOf(ListClustersCommand)[0]!.input;
+    expect(listInput['ClusterStates']).toEqual([
+      'STARTING',
+      'BOOTSTRAPPING',
+      'RUNNING',
+      'WAITING',
+      'TERMINATING',
+    ]);
+  });
+
+  it('paginates ListClusters via Marker until a tag match is found', async () => {
+    routeSend({
+      ListClustersCommand: [
+        { Clusters: [{ Id: 'j-PAGE1' }], Marker: 'next' },
+        { Clusters: [{ Id: CLUSTER_ID }] },
+      ],
+      DescribeClusterCommand: [
+        clusterOf('WAITING', { Id: 'j-PAGE1', Tags: [{ Key: 'aws:cdk:path', Value: 'nope' }] }),
+        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] }),
+      ],
+    });
+
+    const result = await newProvider().import(importInput());
+
+    expect(result?.physicalId).toBe(CLUSTER_ID);
+    expect(callsOf(ListClustersCommand)).toHaveLength(2);
+    expect(callsOf(ListClustersCommand)[1]!.input['Marker']).toBe('next');
+  });
+
+  it('returns null when no cluster carries the matching aws:cdk:path', async () => {
+    routeSend({
+      ListClustersCommand: { Clusters: [{ Id: CLUSTER_ID }] },
+      DescribeClusterCommand: [
+        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: 'different' }] }),
+      ],
+    });
+    const result = await newProvider().import(importInput());
+    expect(result).toBeNull();
+  });
+
+  it('returns null when neither an explicit id nor a cdkPath is available', async () => {
+    routeSend({});
+    const result = await newProvider().import(importInput({ cdkPath: '' }));
+    expect(result).toBeNull();
+    expect(callsOf(ListClustersCommand)).toHaveLength(0);
+  });
+});
+
+describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reverses a flat InstanceGroups array back into role-keyed CFn Instances', async () => {
+    routeSend({
+      DescribeClusterCommand: clusterOf('WAITING', {
+        InstanceCollectionType: 'INSTANCE_GROUP',
+        TerminationProtected: true,
+        Ec2InstanceAttributes: {
+          Ec2SubnetId: 'subnet-abc',
+          Ec2KeyName: 'my-key',
+          IamInstanceProfile: 'EMR_EC2_DefaultRole',
+          EmrManagedMasterSecurityGroup: 'sg-master',
+        },
+        Tags: [
+          { Key: 'env', Value: 'test' },
+          { Key: 'aws:cdk:path', Value: CDK_PATH },
+        ],
+      }),
+      ListInstanceGroupsCommand: {
+        InstanceGroups: [
+          {
+            InstanceGroupType: 'MASTER',
+            InstanceType: 'm5.xlarge',
+            // Requested != Running (mid-resize): CFn `InstanceCount` must map to
+            // the REQUESTED count, not the running one, or a resize transiently
+            // reports drift. The differing values make the mapping load-bearing.
+            RequestedInstanceCount: 1,
+            RunningInstanceCount: 5,
+            Name: 'Master',
+            Market: 'ON_DEMAND',
+          },
+          { InstanceGroupType: 'CORE', InstanceType: 'm5.xlarge', RequestedInstanceCount: 2 },
+          { InstanceGroupType: 'TASK', InstanceType: 'm5.2xlarge', RequestedInstanceCount: 3 },
+        ],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
+    const instances = state!['Instances'] as Record<string, any>;
+
+    expect(instances['MasterInstanceGroup']).toMatchObject({
+      InstanceType: 'm5.xlarge',
+      InstanceCount: 1,
+      Name: 'Master',
+      Market: 'ON_DEMAND',
+    });
+    // InstanceCount is the REQUESTED count (1), never the running count (5).
+    expect(instances['MasterInstanceGroup']['InstanceCount']).toBe(1);
+    expect(instances['CoreInstanceGroup']).toMatchObject({ InstanceCount: 2 });
+    expect(instances['TaskInstanceGroups']).toHaveLength(1);
+    expect(instances['TaskInstanceGroups'][0]).toMatchObject({ InstanceCount: 3 });
+    // No fleets on an INSTANCE_GROUP cluster.
+    expect(instances['MasterInstanceFleet']).toBeUndefined();
+    expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(0);
+    // Ec2 attributes folded back in.
+    expect(instances['Ec2SubnetId']).toBe('subnet-abc');
+    expect(instances['Ec2KeyName']).toBe('my-key');
+    expect(instances['EmrManagedMasterSecurityGroup']).toBe('sg-master');
+    expect(instances['TerminationProtected']).toBe(true);
+    // Top-level fields.
+    expect(state!['JobFlowRole']).toBe('EMR_EC2_DefaultRole');
+    // aws: tags stripped; user tags kept.
+    expect(state!['Tags']).toEqual([{ Key: 'env', Value: 'test' }]);
+  });
+
+  it('reverses a flat InstanceFleets array back into role-keyed CFn Instances', async () => {
+    routeSend({
+      DescribeClusterCommand: clusterOf('WAITING', {
+        InstanceCollectionType: 'INSTANCE_FLEET',
+        Ec2InstanceAttributes: { RequestedEc2SubnetIds: ['subnet-a', 'subnet-b'] },
+      }),
+      ListInstanceFleetsCommand: {
+        InstanceFleets: [
+          { InstanceFleetType: 'MASTER', Name: 'M', TargetOnDemandCapacity: 1 },
+          { InstanceFleetType: 'CORE', TargetSpotCapacity: 2 },
+          { InstanceFleetType: 'TASK', TargetSpotCapacity: 5 },
+        ],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
+    const instances = state!['Instances'] as Record<string, any>;
+
+    expect(instances['MasterInstanceFleet']).toMatchObject({ Name: 'M', TargetOnDemandCapacity: 1 });
+    expect(instances['CoreInstanceFleet']).toMatchObject({ TargetSpotCapacity: 2 });
+    expect(instances['TaskInstanceFleets']).toHaveLength(1);
+    expect(instances['TaskInstanceFleets'][0]).toMatchObject({ TargetSpotCapacity: 5 });
+    expect(instances['Ec2SubnetIds']).toEqual(['subnet-a', 'subnet-b']);
+    // Fleet clusters do not list instance groups.
+    expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(0);
+  });
+
+  it('returns undefined when the cluster is gone (InvalidRequestException)', async () => {
+    routeSend({ DescribeClusterCommand: invalidRequest() });
+    const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
+    expect(state).toBeUndefined();
+  });
+
+  it('getDriftUnknownPaths lists the create-only + lossy-reverse paths', () => {
+    const paths = newProvider().getDriftUnknownPaths(RESOURCE_TYPE);
+
+    // Top-level create-only sub-config AWS does not read back faithfully.
+    for (const p of [
+      'AdditionalInfo',
+      'Applications',
+      'AutoTerminationPolicy',
+      'BootstrapActions',
+      'Configurations',
+      'KerberosAttributes',
+      'ManagedScalingPolicy',
+      'PlacementGroupConfigs',
+      'Steps',
+    ]) {
+      expect(paths).toContain(p);
+    }
+
+    // `Instances.*` sub-fields reverseInstancesToCfn intentionally omits — must
+    // be skipped or they phantom-drift on the `properties`-fallback path.
+    for (const p of [
+      'Instances.HadoopVersion',
+      'Instances.KeepJobFlowAliveWhenNoSteps',
+      'Instances.Placement',
+      'Instances.MasterInstanceGroup.EbsConfiguration',
+      'Instances.MasterInstanceGroup.AutoScalingPolicy',
+      'Instances.MasterInstanceGroup.Configurations',
+      'Instances.CoreInstanceGroup.EbsConfiguration',
+      'Instances.CoreInstanceGroup.AutoScalingPolicy',
+      'Instances.CoreInstanceGroup.Configurations',
+      'Instances.MasterInstanceFleet.InstanceTypeConfigs',
+      'Instances.MasterInstanceFleet.LaunchSpecifications',
+      'Instances.MasterInstanceFleet.ResizeSpecifications',
+      'Instances.CoreInstanceFleet.InstanceTypeConfigs',
+      'Instances.CoreInstanceFleet.LaunchSpecifications',
+      'Instances.CoreInstanceFleet.ResizeSpecifications',
+      // Task groups/fleets are arrays → ignored whole (leaf comparison).
+      'Instances.TaskInstanceGroups',
+      'Instances.TaskInstanceFleets',
+    ]) {
+      expect(paths).toContain(p);
+    }
+
+    // The whole `Instances` block must NOT be blanket-ignored — mutable
+    // primary topology (e.g. InstanceCount resize) still needs drift coverage.
+    expect(paths).not.toContain('Instances');
   });
 });

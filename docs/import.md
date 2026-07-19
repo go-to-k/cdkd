@@ -347,6 +347,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::DLM::LifecyclePolicy
 - AWS::FSx::FileSystem (tag lookup walks `DescribeFileSystems` — `Tags` ride inline on each item)
 - AWS::Budgets::Budget (the template `Budget.BudgetName` also resolves without a flag; tag lookup walks `DescribeBudgets` + `ListTagsForResource`)
+- AWS::EMR::Cluster (override with the cluster id `j-XXXX`; tag lookup walks `ListClusters` filtered to non-terminated states + a `DescribeCluster` per candidate to read `Tags`, since the list summaries carry none)
 
 ### Override-only — no standalone identity / list API
 
@@ -440,11 +441,6 @@ whole tree via a single parent-side `DeleteStack` cascade. See the
 the SDK provider exists for create / update / delete / readCurrentState
 but has not yet been wired for `import()`. Track-able via a follow-up
 that adds tag-based auto-lookup over `DescribeAutoScalingGroups`.
-
-`AWS::EMR::Cluster` is likewise unsupported for import in its initial
-provider — create / update / delete are implemented, but `import()` is
-not yet wired. Track-able via a follow-up that adds tag-based auto-lookup
-over `ListClusters` + `DescribeCluster`.
 
 ### Adding a new entry
 
