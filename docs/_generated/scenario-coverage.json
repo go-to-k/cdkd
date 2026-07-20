@@ -883,6 +883,11 @@
       ]
     },
     {
+      "name": "getatt-fallback-guard",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getstackoutput-crossregion",
       "annotated": true,
       "scenarios": [
@@ -2362,6 +2367,7 @@
     "eventbridge-scheduler",
     "export-nested-stack",
     "fifo-sqs-event-source",
+    "getatt-fallback-guard",
     "glue-securityconfig-replace",
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
