@@ -84,6 +84,8 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
      - `aws ecr describe-repositories --region us-east-1 --query 'repositories[?contains(repositoryName, \`{stackName-lowercase}\`)].repositoryName'`
      - `aws dynamodb list-tables --region us-east-1 --query 'TableNames[?contains(@, \`{StackName}\`)]'`
      - For VPC-based tests also check: `aws ec2 describe-vpcs --filters "Name=tag:Name,Values={StackName}/Vpc" ...`
+     - For FSx-based tests also check **final backups** (issue #1113): destroy keeps CFn parity, so `DeleteFileSystem` runs with API defaults, which TAKE a chargeable final backup for Windows/ONTAP (observed on OpenZFS too; `AutomaticBackupRetentionDays: 0` does not prevent it). The backup usually carries NO tags (`CopyTagsToBackups` defaults to false), so a tag/name scan reports clean over a live billing backup; attribute by the backup's persisted `FileSystem.FileSystemId` instead:
+       `aws fsx describe-backups --region us-east-1 --query 'Backups[?FileSystem.FileSystemId==\`{fs-id}\`].[BackupId,Lifecycle]'` (use the file-system id(s) the run created, from deploy output or state). If the run's fs ids are not known, list ALL backups (`aws fsx describe-backups --region us-east-1 --query 'Backups[].{Id:BackupId,FsId:FileSystem.FileSystemId,Type:FileSystem.FileSystemType,Created:CreationTime}'`) and flag any untagged/unattributed entry for manual review (do NOT assume clean). Delete a confirmed leftover with `aws fsx delete-backup --backup-id {id} --region us-east-1`.
    - Only check resource types relevant to the test being run
 
 7. **Auto-cleanup orphans (mandatory when destroy didn't fully succeed)**:
