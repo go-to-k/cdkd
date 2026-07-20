@@ -1,8 +1,10 @@
 # integ-last-run ledger (update-type: one row per test). cols: test	last_run_iso	result	duration_s	flow	note
-# INVARIANT: exactly one row per test. Duplicates break /pick-integ staleness ranking.
-# A git merge of two branches that each appended a row for the same test concatenates BOTH,
-# so after any rebase/merge that touches this file, re-check with:
-#   awk -F'\t' '!/^#/{c[$1]++} END{for(t in c) if(c[t]>1) print t}' docs/_generated/integ-last-run.tsv
+# INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
+# /pick-integ staleness ranking; the sort is what makes a rebased commit reproduce this
+# file byte-for-byte instead of appending a duplicate row (issue #1112).
+# GENERATED SHAPE - do not hand-edit. After recording a run, run:
+#   vp run integ-ledger-normalize
+# CI enforces this; a non-normalized file fails check-build-test.
 acm-certificate	2026-06-21T11:00:28Z	PASS	20	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
 alb	2026-07-02T18:23:15Z	PASS	62	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
