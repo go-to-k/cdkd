@@ -336,43 +336,17 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         migrationCfnStackName,
         awsClients.cloudFormation
       );
-      const cfnMapping = migrationTree.resources;
-      let derived = 0;
-      let skippedNonImportable = 0;
-      let skippedNestedStackRow = 0;
-      for (const [logicalId, physicalId] of cfnMapping) {
-        if (!templateLogicalIds.has(logicalId)) {
-          skippedNonImportable++;
-          continue;
-        }
-        // Nested-stack rows: the AWS-side physical ID is the child stack
-        // ARN, which is NOT what we want as an import override. The root
-        // parent's state entry for the nested-stack resource carries the
-        // synthesized cdkd-local ARN (matching what `NestedStackProvider.create`
-        // would write at deploy time — design §6), populated by `importOne`'s
-        // short-circuit below. Filter the AWS ARN out here so it doesn't
-        // overwrite the synth-ARN entry.
-        const tmplResource = template.Resources[logicalId];
-        if (tmplResource?.Type === NESTED_STACK_RESOURCE_TYPE) {
-          skippedNestedStackRow++;
-          continue;
-        }
-        if (!overrides.has(logicalId)) {
-          overrides.set(logicalId, physicalId);
-          derived++;
-        }
-      }
-      const overriddenByUser =
-        cfnMapping.size - derived - skippedNonImportable - skippedNestedStackRow;
-      const detail: string[] = [];
-      if (overriddenByUser > 0) detail.push(`${overriddenByUser} already overridden by --resource`);
-      if (skippedNonImportable > 0)
-        detail.push(`${skippedNonImportable} non-importable (e.g. CDKMetadata)`);
-      if (skippedNestedStackRow > 0)
-        detail.push(`${skippedNestedStackRow} nested-stack row(s) handled separately`);
+      // Shared filter (see `mergeCfnDerivedOverrides`): non-importable rows,
+      // nested-stack rows, and ids the user already supplied are all dropped.
+      const mergeStats = mergeCfnDerivedOverrides({
+        cfnMapping: migrationTree.resources,
+        template,
+        templateLogicalIds,
+        overrides,
+      });
       logger.info(
-        `Resolved ${derived} physical ID(s) from CloudFormation` +
-          (detail.length > 0 ? ` (${detail.join(', ')})` : '')
+        `Resolved ${mergeStats.derived} physical ID(s) from CloudFormation` +
+          formatCfnOverrideMergeDetail(mergeStats)
       );
       // Validate template ↔ AWS shape: every nested-stack row in the synth
       // template MUST have a matching child in the AWS tree, and vice
@@ -473,17 +447,24 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         awsClients.cloudFormation
       );
       if (cfnResources) {
-        let derived = 0;
-        for (const [logicalId, physicalId] of cfnResources) {
-          if (!templateLogicalIds.has(logicalId)) continue;
-          if (template.Resources[logicalId]?.Type === NESTED_STACK_RESOURCE_TYPE) continue;
-          if (overrides.has(logicalId)) continue;
-          overrides.set(logicalId, physicalId);
-          derived++;
-        }
-        if (derived > 0) {
+        // Same three filters as the migration path — shared so a change to
+        // any of them lands once (issue #1131). Note the second-order effect
+        // documented on the helper: seeding `overrides` ALSO pre-resolves
+        // `{Ref: <X>}` in a resource's Properties via `substituteOverrideRefs`
+        // before `provider.import()` runs, which auto mode did not do before
+        // #1128. That is intended — it is the same resolution
+        // `--migrate-from-cloudformation` has always produced, and it is what
+        // makes sub-resource providers (e.g. `SQSQueuePolicyProvider`)
+        // importable — but it is broader than "resolve physical IDs" alone.
+        const mergeStats = mergeCfnDerivedOverrides({
+          cfnMapping: cfnResources,
+          template,
+          templateLogicalIds,
+          overrides,
+        });
+        if (mergeStats.derived > 0) {
           logger.info(
-            `Resolved ${derived} physical ID(s) from CloudFormation stack '${stackInfo.stackName}'. ` +
+            `Resolved ${mergeStats.derived} physical ID(s) from CloudFormation stack '${stackInfo.stackName}'. ` +
               `To adopt AND retire that stack, use --migrate-from-cloudformation.`
           );
         } else {
@@ -841,6 +822,101 @@ interface ImportTask {
    * `--migrate-from-cloudformation`).
    */
   overrides: Map<string, string>;
+}
+
+/** Per-filter counts from {@link mergeCfnDerivedOverrides}. */
+export interface CfnOverrideMergeStats {
+  /** Entries actually seeded into `overrides` by this merge. */
+  derived: number;
+  /** CFn rows whose logical ID is not an importable template resource (e.g. `AWS::CDK::Metadata`). */
+  skippedNonImportable: number;
+  /** CFn rows for `AWS::CloudFormation::Stack` resources (handled separately). */
+  skippedNestedStackRow: number;
+  /** CFn rows that survived both filters but were already in `overrides` (user-supplied wins). */
+  overriddenByUser: number;
+}
+
+/**
+ * Merge a CloudFormation-derived `logicalId -> physicalId` map into the run's
+ * `overrides`, applying the three filters every CFn-derived seed needs, and
+ * report what each filter dropped.
+ *
+ * The filters, in order:
+ *   1. **Not an importable template resource** — CFn knows about sentinel rows
+ *      like `AWS::CDK::Metadata` that cdkd silently skips on import. Merging
+ *      those would make the typo-validation step reject them.
+ *   2. **Nested-stack row** — the AWS-side physical ID of an
+ *      `AWS::CloudFormation::Stack` row is the child stack ARN, which is NOT
+ *      what we want as an import override. The parent's state entry carries
+ *      the synthesized cdkd-local ARN (matching what `NestedStackProvider.create`
+ *      writes at deploy time — design §6), populated by `importOne`'s
+ *      short-circuit. Filtering here keeps the AWS ARN from overwriting it.
+ *   3. **Already overridden** — user-supplied `--resource` /
+ *      `--resource-mapping` entries are inserted before any CFn lookup and
+ *      always win.
+ *
+ * Shared by all three CFn-derived seeding sites so a change to any filter
+ * lands once: the `--migrate-from-cloudformation` root walk, the auto-mode
+ * best-effort lookup (issue #1128), and the recursive nested-child walk.
+ * The three differ only in their LOGGING, which stays at the call sites.
+ *
+ * **Second-order effect worth naming:** `overrides` is also consumed by
+ * {@link substituteOverrideRefs}, so seeding it from CloudFormation means a
+ * `{Ref: <X>}` in a resource's Properties pre-resolves to the CFn physical ID
+ * before `provider.import()` sees it. That is intended — it is what makes
+ * sub-resource providers (e.g. `SQSQueuePolicyProvider`, which reads
+ * `properties.Queues[0]` as a literal queue URL) importable — but it is a
+ * behavior beyond "resolve physical IDs", and it applies to every caller of
+ * this helper, not just the migration path. See issue #1131.
+ *
+ * Mutates `overrides` in place; does not mutate `cfnMapping` or `template`.
+ */
+export function mergeCfnDerivedOverrides(params: {
+  cfnMapping: ReadonlyMap<string, string>;
+  template: CloudFormationTemplate;
+  templateLogicalIds: ReadonlySet<string>;
+  overrides: Map<string, string>;
+}): CfnOverrideMergeStats {
+  const { cfnMapping, template, templateLogicalIds, overrides } = params;
+  const stats: CfnOverrideMergeStats = {
+    derived: 0,
+    skippedNonImportable: 0,
+    skippedNestedStackRow: 0,
+    overriddenByUser: 0,
+  };
+  for (const [logicalId, physicalId] of cfnMapping) {
+    if (!templateLogicalIds.has(logicalId)) {
+      stats.skippedNonImportable++;
+      continue;
+    }
+    if (template.Resources[logicalId]?.Type === NESTED_STACK_RESOURCE_TYPE) {
+      stats.skippedNestedStackRow++;
+      continue;
+    }
+    if (overrides.has(logicalId)) {
+      stats.overriddenByUser++;
+      continue;
+    }
+    overrides.set(logicalId, physicalId);
+    stats.derived++;
+  }
+  return stats;
+}
+
+/**
+ * Render the human-readable breakdown of a {@link mergeCfnDerivedOverrides}
+ * result — the parenthesized suffix of the `Resolved N physical ID(s)` line.
+ * Returns `''` when nothing was dropped (no breakdown worth reporting).
+ */
+export function formatCfnOverrideMergeDetail(stats: CfnOverrideMergeStats): string {
+  const detail: string[] = [];
+  if (stats.overriddenByUser > 0)
+    detail.push(`${stats.overriddenByUser} already overridden by --resource`);
+  if (stats.skippedNonImportable > 0)
+    detail.push(`${stats.skippedNonImportable} non-importable (e.g. CDKMetadata)`);
+  if (stats.skippedNestedStackRow > 0)
+    detail.push(`${stats.skippedNestedStackRow} nested-stack row(s) handled separately`);
+  return detail.length > 0 ? ` (${detail.join(', ')})` : '';
 }
 
 /**
@@ -1742,19 +1818,18 @@ async function importNestedStackChildrenRecursive(args: {
     await lockManager.acquireLock(childStackName, childRegion, lockOwner, 'import');
     try {
       // Compose the child's import overrides from the child tree's flat
-      // resource map. Filter out nested-stack rows (those are
-      // short-circuited to synth ARNs below — same as the root's
-      // dispatch loop) and any logical id not in the child template
-      // (e.g. AWS::CDK::Metadata).
+      // resource map, through the same shared filter as the root walk
+      // (issue #1131). The "already overridden" filter is inert here — the
+      // child map starts empty, since `--resource` overrides are root-scoped.
       const childResources = collectImportableResources(childTemplate);
       const childTemplateLogicalIds = new Set(childResources.map((r) => r.logicalId));
       const childOverrides = new Map<string, string>();
-      for (const [logicalId, physicalId] of childTreeNode.resources) {
-        if (!childTemplateLogicalIds.has(logicalId)) continue;
-        const tmplResource = childTemplate.Resources[logicalId];
-        if (tmplResource?.Type === NESTED_STACK_RESOURCE_TYPE) continue;
-        childOverrides.set(logicalId, physicalId);
-      }
+      mergeCfnDerivedOverrides({
+        cfnMapping: childTreeNode.resources,
+        template: childTemplate,
+        templateLogicalIds: childTemplateLogicalIds,
+        overrides: childOverrides,
+      });
 
       // Dispatch + collect rows (same shape as the root's dispatch loop).
       const rows: ImportRow[] = [];
