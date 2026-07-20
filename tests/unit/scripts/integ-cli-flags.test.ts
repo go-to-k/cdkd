@@ -7,6 +7,7 @@ import {
   joinContinuedLines,
   lintFixtureTree,
   lintScript,
+  acceptedFlagsFor,
   formatViolation,
 } from '../../../scripts/check-integ-cli-flags.js';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
@@ -67,6 +68,19 @@ describe('findCliVariables', () => {
 
   it('ignores unrelated assignments', () => {
     expect([...findCliVariables('STACK="CdkdExample"\nREGION="us-east-1"')]).toEqual([]);
+  });
+
+  // Missing an assignment silently mutes EVERY invocation in that fixture, and
+  // the file then contributes nothing to the coverage floors either -- a false
+  // negative that hides itself twice over.
+  it.each([
+    ['export prefix', 'export CLI="node ../../dist/cli.js"'],
+    ['readonly prefix', 'readonly CLI="node ../../dist/cli.js"'],
+    ['local prefix', 'local CLI="node ../../dist/cli.js"'],
+    ['trailing comment', 'CLI="node ../../dist/cli.js" # the built binary'],
+    ['command substitution', 'CLI="node $(dirname "$0")/../../dist/cli.js"'],
+  ])('recognizes the %s form', (_label, assignment) => {
+    expect([...findCliVariables(assignment)]).toContain('CLI');
   });
 });
 
@@ -129,6 +143,52 @@ describe('extractInvocations', () => {
   it('ignores a non-CLI command that happens to share a subcommand name', () => {
     expect(extractInvocations('aws s3 deploy --region us-east-1', specs)).toEqual([]);
   });
+
+  // A chained line used to collapse into ONE invocation, so the second
+  // command's flags were judged against the first. With `deploy && import`
+  // that hid the very bug this lint exists to catch, because `deploy` accepts
+  // `--region` and `import` does not.
+  it('parses each command of a chained line separately', () => {
+    const inv = extractInvocations(
+      withCli('${CLI} deploy S && ${CLI} import S --region us-east-1'),
+      specs,
+    );
+    expect(inv).toHaveLength(2);
+    expect(inv[0]!.commandPath).toBe('deploy');
+    expect(inv[0]!.longFlags).toEqual([]);
+    expect(inv[1]!.commandPath).toBe('import');
+    expect(inv[1]!.longFlags).toEqual(['--region']);
+  });
+
+  it.each([
+    ['&&', '${CLI} deploy S --yes && ${CLI} destroy S --force'],
+    ['||', '${CLI} deploy S --yes || ${CLI} destroy S --force'],
+    [';', '${CLI} deploy S --yes; ${CLI} destroy S --force'],
+  ])('attributes flags to the right command across `%s`', (_op, body) => {
+    const inv = extractInvocations(withCli(body), specs);
+    expect(inv.map((i) => [i.commandPath, i.longFlags])).toEqual([
+      ['deploy', ['--yes']],
+      ['destroy', ['--force']],
+    ]);
+  });
+
+  it('does not split on an operator inside quotes', () => {
+    const inv = extractInvocations(withCli('${CLI} deploy S -c "a&&b" --force'), specs);
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.longFlags).toEqual(['--force']);
+  });
+
+  it('keeps flags that follow a quoted `#`', () => {
+    // A naive `/\s#.*$/` strip discarded everything after the quoted hash,
+    // reporting zero flags for the line.
+    const inv = extractInvocations(withCli('${CLI} import S -c "a #b" --region us-east-1'), specs);
+    expect(inv[0]!.longFlags).toEqual(['--region']);
+  });
+
+  it('still strips a real trailing comment', () => {
+    const inv = extractInvocations(withCli('${CLI} deploy S --force # --region here'), specs);
+    expect(inv[0]!.longFlags).toEqual(['--force']);
+  });
 });
 
 describe('lintScript', () => {
@@ -152,6 +212,21 @@ describe('lintScript', () => {
     expect(lintScript('sample', script, specs)).toEqual([]);
   });
 
+  // Commander lets a subcommand accept options declared on an ANCESTOR, not
+  // just its own and the program's. Checking own+program only produced false
+  // positives on all five `events prune` call sites. Verified on the built
+  // binary: `events prune --state-bucket` is accepted (it fails later, on
+  // bucket access), while `--bogus-flag` is still rejected.
+  it('accepts a flag declared on a parent command', () => {
+    const script = 'CLI="node ../../../dist/cli.js"\n${CLI} events prune S --all --state-bucket b\n';
+    expect(lintScript('sample', script, specs)).toEqual([]);
+  });
+
+  it('still rejects a flag no ancestor declares', () => {
+    const script = 'CLI="node ../../../dist/cli.js"\n${CLI} events prune S --bogus-flag\n';
+    expect(lintScript('sample', script, specs)).toHaveLength(1);
+  });
+
   it('reports a flag that exists on no subcommand at all', () => {
     const script = 'CLI="node ../../../dist/cli.js"\n${CLI} deploy --totally-made-up\n';
     const violations = lintScript('sample', script, specs);
@@ -172,9 +247,8 @@ describe('integ fixture CLI invocations (#1097)', () => {
   // invocations. A regex regression that silently stops matching would make
   // the check pass vacuously, which is the failure mode that let the original
   // `import --region` bug ship. These floors turn "sees nothing" into a
-  // failure. They are deliberately well under the current numbers (300
-  // invocations / 640 flags / 23 command paths) so ordinary fixture churn does
-  // not trip them.
+  // failure. They sit under the current numbers (829 invocations / 2164 flags
+  // / 25 command paths) with enough slack for ordinary fixture churn.
   it('parses a substantial share of the fixture tree', () => {
     const fixtures = readdirSync(INTEG_ROOT, { withFileTypes: true }).filter(
       (e) => e.isDirectory() && existsSync(join(INTEG_ROOT, e.name, 'verify.sh')),
@@ -193,12 +267,53 @@ describe('integ fixture CLI invocations (#1097)', () => {
     }
 
     expect(fixtures.length).toBeGreaterThan(150);
-    expect(invocations).toBeGreaterThan(250);
-    expect(flags).toBeGreaterThan(550);
-    expect(commandPaths.size).toBeGreaterThan(15);
+    expect(invocations).toBeGreaterThan(700);
+    expect(flags).toBeGreaterThan(1800);
+    expect(commandPaths.size).toBeGreaterThan(20);
     // The highest-traffic commands must always be represented.
     for (const cmd of ['deploy', 'destroy', 'synth']) {
       expect(commandPaths.has(cmd), `no ${cmd} invocation parsed`).toBe(true);
     }
+  });
+
+  // Aggregate floors have ~20% headroom, so a regression that kills ONE
+  // invocation shape stays well under them and passes. That is not
+  // hypothetical: the env-prefix branch was silently dropping every
+  // UPDATE-mode deploy (46 invocations) while the suite was green. So assert
+  // each shape the extractor claims to handle is actually exercised by the
+  // real tree.
+  it('parses every invocation shape it claims to support', () => {
+    // Only shapes the real tree actually contains. `node <literal>/cli.js` is
+    // supported by the extractor (see the unit test above) but never appears
+    // as an invocation here -- every `node ../../../dist/cli.js` occurrence in
+    // the tree is inside a variable ASSIGNMENT, not a call site.
+    const shapes: Record<string, RegExp> = {
+      // `node "${LOCAL_DIST}" deploy ...` -- how most fixtures invoke the CLI.
+      'node + variable path': /(?:^|\s)node\s+"?\$\{?[A-Za-z_]+\}?"?\s/,
+      // `${CDKD} deploy ...`
+      'bare variable': /^\s*"?\$\{?[A-Za-z_]+\}?"?\s/,
+      // `CDKD_TEST_UPDATE=true ...` / `env -u FOO ...`
+      'env prefix': /(?:^|\s)(?:[A-Z_][A-Z0-9_]*=\S*\s+|env\s+-[iu])/,
+    };
+    const seen = new Map<string, number>(Object.keys(shapes).map((k) => [k, 0]));
+
+    for (const e of readdirSync(INTEG_ROOT, { withFileTypes: true })) {
+      if (!e.isDirectory() || !existsSync(join(INTEG_ROOT, e.name, 'verify.sh'))) continue;
+      const content = readFileSync(join(INTEG_ROOT, e.name, 'verify.sh'), 'utf8');
+      for (const inv of extractInvocations(content, specs)) {
+        for (const [name, re] of Object.entries(shapes)) {
+          if (re.test(inv.raw)) seen.set(name, seen.get(name)! + 1);
+        }
+      }
+    }
+
+    for (const name of Object.keys(shapes)) {
+      expect(seen.get(name), `no invocation parsed for shape: ${name}`).toBeGreaterThan(0);
+    }
+    // `node + variable path` is the shape whose silent loss this assertion
+    // exists to prevent: requiring a literal `cli.js` in the token made 135 of
+    // the 195 fixtures contribute ZERO invocations while the suite stayed
+    // green. It should dominate the tree.
+    expect(seen.get('node + variable path')).toBeGreaterThan(200);
   });
 });

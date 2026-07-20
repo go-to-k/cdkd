@@ -46,13 +46,16 @@ export function collectCommandSpecs(program: Command): Map<string, CommandSpec> 
 
     // `cmd.options` includes hidden options -- the whole point of reading the
     // tree rather than `--help`.
+    //
+    // Only the EXACT declared long form is accepted. Commander does NOT derive
+    // a `--no-foo` negation for a declared `--foo` (nor the positive form for a
+    // declared `--no-foo`): `_findOption` is an exact match. Verified against
+    // the built binary -- `cdkd deploy --no-state-bucket` dies with
+    // `unknown option`. Deriving negations here would have roughly doubled the
+    // accepted set and let any `--no-X` typo pass, which is the exact
+    // vacuous-pass failure this lint exists to prevent.
     for (const opt of cmd.options) {
-      if (opt.long) {
-        longFlags.add(opt.long);
-        // Commander accepts `--no-foo` for a `--foo` boolean and vice versa.
-        if (opt.long.startsWith('--no-')) longFlags.add(`--${opt.long.slice(5)}`);
-        else longFlags.add(`--no-${opt.long.slice(2)}`);
-      }
+      if (opt.long) longFlags.add(opt.long);
       if (opt.short) shortFlags.add(opt.short);
     }
 
@@ -115,13 +118,94 @@ export function joinContinuedLines(content: string): { text: string; line: numbe
  * Names of shell variables in this script that hold a path to (or an
  * invocation of) `dist/cli.js` -- `CLI="node ${REPO_ROOT}/dist/cli.js"`,
  * `CDKD="node ../../../dist/cli.js"`, `LOCAL_DIST="${PWD}/../../../dist/cli.js"`.
+ *
+ * Deliberately permissive about the assignment's shape: an `export` /
+ * `readonly` / `local` prefix, a trailing comment, and a `$( ... )` substring
+ * (`CLI="node $(dirname "$0")/../../dist/cli.js"` -- the idiomatic relocatable
+ * form) all still count. Missing an assignment silently mutes EVERY invocation
+ * in that fixture, and the file then contributes nothing to the coverage
+ * floors, so a false negative here is invisible twice over.
  */
 export function findCliVariables(content: string): Set<string> {
   const vars = new Set<string>();
-  for (const m of content.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(["']?)([^"'\n]*)\2\s*$/gm)) {
+  const assignment =
+    /^\s*(?:export\s+|readonly\s+|declare\s+(?:-\w+\s+)?|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)(.*?)\2\s*(?:#.*)?$/gm;
+  for (const m of content.matchAll(assignment)) {
     if (/cli\.js/.test(m[3]!)) vars.add(m[1]!);
   }
   return vars;
+}
+
+/**
+ * Splits a line into separate commands on shell operators, so a chained line
+ * is not collapsed into one invocation.
+ *
+ * Without this, `${CLI} deploy S && ${CLI} import S --region us-east-1` parsed
+ * as a single `deploy` invocation owning `--region` -- and since `deploy` DOES
+ * accept `--region`, the `import --region` bug this lint exists to catch would
+ * have passed clean. The inverse (a valid `destroy --force` reported against a
+ * preceding `deploy`) is the false-positive twin.
+ *
+ * Operators inside quotes are not split on.
+ */
+export function splitShellCommands(line: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    const two = line.slice(i, i + 2);
+    if (two === '&&' || two === '||') {
+      parts.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    if (ch === ';' || ch === '|' || ch === '&') {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+
+  return parts.filter((p) => p.trim().length > 0);
+}
+
+/**
+ * Removes a trailing `# comment`, but only when the `#` is outside quotes.
+ *
+ * `${CLI} import S -c "a #b" --region us-east-1` must keep its `--region`;
+ * a naive `/\s#.*$/` strip discarded everything after the quoted `#` and
+ * reported zero flags for the line.
+ */
+export function stripTrailingComment(line: string): string {
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /\s/.test(line[i - 1]!))) return line.slice(0, i);
+  }
+  return line;
 }
 
 const KNOWN_SUBCOMMAND_START = /^[a-z][a-z0-9-]*$/;
@@ -159,58 +243,72 @@ export function extractInvocations(content: string, specs: Map<string, CommandSp
   const invocations: Invocation[] = [];
 
   for (const { text, line } of joinContinuedLines(content)) {
-    // Strip comments outside quotes (cheap approximation: a ` #` run).
-    const stripped = text.replace(/\s#.*$/, '');
+    const stripped = stripTrailingComment(text);
 
-    // Find where the CLI invocation starts.
-    let rest: string | null = null;
-    const nodeMatch = new RegExp(
-      `${CMD_START}\\s*node\\s+(?:"[^"]*"|'[^']*'|\\S+)\\s+(.*)$`,
-    ).exec(stripped);
-    if (
-      nodeMatch &&
-      /cli\.js/.test(
-        stripped.slice(0, nodeMatch.index + nodeMatch[0].length - nodeMatch[1]!.length),
-      )
-    ) {
-      rest = nodeMatch[1]!;
-    } else {
-      for (const v of cliVars) {
-        const varMatch = new RegExp(
-          `${CMD_START}\\s*(?:"?\\$\\{${v}\\}"?|"?\\$${v}"?)\\s+(.*)$`,
-        ).exec(stripped);
-        if (varMatch) {
-          rest = varMatch[1]!;
-          break;
+    // A single line may chain several commands; each is judged on its own.
+    for (const segment of splitShellCommands(stripped)) {
+      let rest: string | null = null;
+
+      // `node <script> <args>` -- the script token counts as cdkd when it is a
+      // literal path to cli.js OR a variable holding one. The variable form
+      // (`node "${LOCAL_DIST}" deploy ...`, where
+      // `LOCAL_DIST="${PWD}/../../../dist/cli.js"`) is how 135 of the 195
+      // fixtures invoke the CLI; requiring a literal `cli.js` in the token made
+      // every one of them contribute zero invocations.
+      const nodeMatch = new RegExp(
+        `${CMD_START}\\s*node\\s+("[^"]*"|'[^']*'|\\S+)\\s+(.*)$`,
+      ).exec(segment);
+      if (nodeMatch) {
+        const scriptToken = nodeMatch[1]!;
+        const referencesCliVar = [...cliVars].some((v) =>
+          new RegExp(`\\$\\{${v}\\}|\\$${v}\\b`).test(scriptToken),
+        );
+        if (/cli\.js/.test(scriptToken) || referencesCliVar) rest = nodeMatch[2]!;
+      }
+
+      if (rest === null) {
+        for (const v of cliVars) {
+          const varMatch = new RegExp(
+            `${CMD_START}\\s*(?:"?\\$\\{${v}\\}"?|"?\\$${v}"?)\\s+(.*)$`,
+          ).exec(segment);
+          if (varMatch) {
+            rest = varMatch[1]!;
+            break;
+          }
         }
       }
+      if (rest === null) continue;
+
+      const tokens = rest.split(/\s+/).map(stripShellPunctuation).filter(Boolean);
+      if (tokens.length === 0) continue;
+
+      // Resolve the deepest command path that exists in the tree.
+      const pathParts: string[] = [];
+      let idx = 0;
+      while (idx < tokens.length) {
+        const token = tokens[idx]!;
+        if (!KNOWN_SUBCOMMAND_START.test(token)) break;
+        const parent = specs.get(pathParts.join(' '));
+        if (!parent || !parent.children.has(token)) break;
+        pathParts.push(token);
+        idx++;
+      }
+      if (pathParts.length === 0) continue;
+
+      const longFlags = tokens
+        .slice(idx)
+        .filter((t) => t.startsWith('--') && t !== '--')
+        .map((t) => t.split('=')[0]!)
+        // A flag built from a shell variable cannot be checked statically.
+        .filter((t) => !t.includes('$'));
+
+      invocations.push({
+        line,
+        commandPath: pathParts.join(' '),
+        longFlags,
+        raw: segment.trim(),
+      });
     }
-    if (rest === null) continue;
-
-    const tokens = rest.split(/\s+/).map(stripShellPunctuation).filter(Boolean);
-    if (tokens.length === 0) continue;
-
-    // Resolve the deepest command path that exists in the tree.
-    const pathParts: string[] = [];
-    let idx = 0;
-    while (idx < tokens.length) {
-      const token = tokens[idx]!;
-      if (!KNOWN_SUBCOMMAND_START.test(token)) break;
-      const parent = specs.get(pathParts.join(' '));
-      if (!parent || !parent.children.has(token)) break;
-      pathParts.push(token);
-      idx++;
-    }
-    if (pathParts.length === 0) continue;
-
-    const longFlags = tokens
-      .slice(idx)
-      .filter((t) => t.startsWith('--') && t !== '--')
-      .map((t) => t.split('=')[0]!)
-      // A flag built from a shell variable cannot be checked statically.
-      .filter((t) => !t.includes('$'));
-
-    invocations.push({ line, commandPath: pathParts.join(' '), longFlags, raw: stripped.trim() });
   }
 
   return invocations;
@@ -226,20 +324,45 @@ export interface Violation {
   raw: string;
 }
 
+/**
+ * Every long flag a given command path actually accepts.
+ *
+ * Commander lets a subcommand accept options declared on any ANCESTOR command,
+ * not just its own and the program's: `cdkd events prune --state-bucket` is
+ * valid because `--state-bucket` is declared on the `events` parent. Checking
+ * only own+program flags produced false positives on all five `events prune`
+ * call sites. Verified against the built binary: those three flags are
+ * accepted, while `--bogus-flag` is still rejected.
+ */
+export function acceptedFlagsFor(
+  commandPath: string,
+  specs: Map<string, CommandSpec>,
+): Set<string> {
+  const accepted = new Set<string>();
+  const parts = commandPath === '' ? [] : commandPath.split(' ');
+
+  for (let i = 0; i <= parts.length; i++) {
+    const ancestor = parts.slice(0, i).join(' ');
+    for (const flag of specs.get(ancestor)?.longFlags ?? []) accepted.add(flag);
+  }
+
+  return accepted;
+}
+
 export function lintScript(
   fixture: string,
   content: string,
   specs: Map<string, CommandSpec>,
 ): Violation[] {
-  const globalFlags = specs.get('')?.longFlags ?? new Set<string>();
   const violations: Violation[] = [];
 
   for (const inv of extractInvocations(content, specs)) {
     const spec = specs.get(inv.commandPath);
     if (!spec) continue;
+    const accepted = acceptedFlagsFor(inv.commandPath, specs);
 
     for (const flag of inv.longFlags) {
-      if (spec.longFlags.has(flag) || globalFlags.has(flag)) continue;
+      if (accepted.has(flag)) continue;
 
       const declaredOn = [...specs.entries()]
         .filter(([path, s]) => path !== '' && s.longFlags.has(flag))

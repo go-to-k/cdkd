@@ -87,8 +87,11 @@ flags would silently change region resolution.
 
 Enforced by `tests/unit/scripts/integ-cli-flags.test.ts`, which walks the real
 Commander tree via `buildProgram()` (`src/cli/program.ts`) rather than `--help`
-or options.ts. The check carries coverage floors, so a parser regression that
-stops seeing invocations fails loudly instead of passing vacuously. The
+or options.ts. A flag counts as accepted when the target command OR any ancestor
+declares it, matching Commander's own lookup. The check carries coverage floors
+(totals plus one per supported call shape), so a parser regression that stops
+seeing invocations fails loudly instead of passing vacuously -- two iterations
+of this lint were green while skipping most of the tree. The
 `state-destroy-force-gate.sh` hook remains the commit-time guard for the
 specific `state destroy --force` case; this lint generalizes it to every
 subcommand and also catches pre-existing occurrences the hook cannot see.

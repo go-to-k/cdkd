@@ -511,9 +511,18 @@ Two traps when auditing this by hand:
 tree. It reads the real Commander tree through `buildProgram()`
 (`src/cli/program.ts`) — not `--help`, and not `src/cli/options.ts`, which is a
 flat global list with no command attachment and therefore cannot express this
-class of bug at all. The check also asserts coverage floors (invocations parsed,
-flags seen, distinct subcommands reached) so a parser regression that stops
-matching fails loudly rather than passing vacuously.
+class of bug at all. A flag counts as accepted when the target command **or any
+ancestor** declares it, matching Commander's own lookup (`cdkd events prune
+--state-bucket` is valid because `events` declares it).
+
+The check also asserts coverage floors — total invocations parsed, flags seen,
+distinct subcommands reached, plus at least one invocation of each supported
+call shape — so a parser regression that stops matching fails loudly rather than
+passing vacuously. That is not hypothetical: two separate iterations of this
+lint were green while silently skipping most of the tree (first every
+env-prefixed `CDKD_TEST_UPDATE=true ...` deploy, then every
+`node "${LOCAL_DIST}" ...` call site — 135 of 195 fixtures). Current coverage:
+195 fixtures, ~830 invocations, ~2,160 flags, 25 command paths.
 
 ## 3. Deploy Using cdkd
 
