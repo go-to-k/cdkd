@@ -20,6 +20,38 @@
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
 
 set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
 STACK="CdkdBackupExample"
@@ -152,18 +184,27 @@ echo "    SelectionRef resolved to the bare SelectionId (Ref segment fix #995 wo
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-REMAINING_PLANS=$(aws backup list-backup-plans --region "${REGION}" \
-  --query "length(BackupPlansList[?BackupPlanName=='${PLAN}'] || \`[]\`)" --output text 2>/dev/null || echo 0)
+# Strict capture (issue #1097 pattern 2): a silenced `|| echo 0` would read a
+# throttled list call as "0 remaining" and silently pass the leak check.
+if ! REMAINING_PLANS=$(aws backup list-backup-plans --region "${REGION}" \
+  --query "length(BackupPlansList[?BackupPlanName=='${PLAN}'] || \`[]\`)" --output text 2>&1); then
+  echo "FAIL: could not list backup plans after destroy: ${REMAINING_PLANS}" >&2; exit 1
+fi
 if [ "${REMAINING_PLANS}" != "0" ]; then
   echo "FAIL: backup plan ${PLAN} still exists after destroy" >&2; exit 1
 fi
-if aws backup describe-backup-vault --backup-vault-name "${VAULT}" --region "${REGION}" >/dev/null 2>&1; then
+# AWS Backup masks a missing vault as AccessDeniedException ("Insufficient
+# privileges to perform this action"), NOT a not-found error, so gone_probe
+# cannot classify describe-backup-vault -- assert absence via a strict list.
+if ! REMAINING_VAULTS=$(aws backup list-backup-vaults --region "${REGION}" \
+  --query "length(BackupVaultList[?BackupVaultName=='${VAULT}'] || \`[]\`)" --output text 2>&1); then
+  echo "FAIL: could not list backup vaults after destroy: ${REMAINING_VAULTS}" >&2; exit 1
+fi
+if [ "${REMAINING_VAULTS}" != "0" ]; then
   echo "FAIL: backup vault ${VAULT} still exists after destroy" >&2; exit 1
 fi
 echo "    Vault / Plan / Selection deleted"
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file still exists after destroy" >&2; exit 1
-fi
+assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
 echo "[verify] PASS — BackupVaultArn Fn::GetAtt enrichment works end-to-end, 2 phases passed"

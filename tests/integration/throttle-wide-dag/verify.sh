@@ -25,6 +25,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 # This fixture DELIBERATELY induces an SSM Parameter Store rate-limit storm (80
@@ -284,17 +316,13 @@ echo "    OK: destroy exited 0"
 # the throttle-prone `describe-parameters` LIST API — the destroy fires a
 # 70-DeleteParameter burst that rate-limits a List call called moments later.
 for IDX in 0 "${MID_WIDE}" "${LAST_WIDE}"; do
-  if aws ssm get-parameter --region "${REGION}" --name "/${STACK}/wide/${IDX}" \
-    >/dev/null 2>&1; then
-    echo "FAIL: SSM parameter /${STACK}/wide/${IDX} still exists after destroy (orphan)" >&2
-    exit 1
-  fi
+  assert_gone "SSM parameter /${STACK}/wide/${IDX} still exists after destroy (orphan)" aws ssm get-parameter --region "${REGION}" --name "/${STACK}/wide/${IDX}"
 done
 echo "    OK: 0 SSM parameter orphans (spot-checked wide/0, wide/${MID_WIDE}, wide/${LAST_WIDE})"
 
 ROLE_LEFT=0
 for i in $(seq 0 $((ROLE_COUNT - 1))); do
-  if aws iam get-role --role-name "${ROLE_PREFIX}${i}" >/dev/null 2>&1; then
+  if ! gone_probe aws iam get-role --role-name "${ROLE_PREFIX}${i}"; then
     ROLE_LEFT=$((ROLE_LEFT + 1))
   fi
 done
@@ -306,9 +334,9 @@ echo "    OK: 0 IAM role orphans"
 
 TOPIC_LEFT=0
 for i in $(seq 0 $((TOPIC_COUNT - 1))); do
-  if aws sns get-topic-attributes \
+  if ! gone_probe aws sns get-topic-attributes \
     --topic-arn "arn:aws:sns:${REGION}:${ACCOUNT}:${TOPIC_PREFIX}${i}" \
-    --region "${REGION}" >/dev/null 2>&1; then
+    --region "${REGION}"; then
     TOPIC_LEFT=$((TOPIC_LEFT + 1))
   fi
 done
@@ -319,10 +347,7 @@ fi
 echo "    OK: 0 SNS topic orphans"
 
 # --- Assertion: state file gone --------------------------------------------
-if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""

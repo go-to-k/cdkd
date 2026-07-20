@@ -32,6 +32,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 REGION="${AWS_REGION:-us-east-1}"
@@ -221,24 +253,12 @@ node "${LOCAL_DIST}" destroy "${TRANSITION_STACK}" \
   --region "${REGION}" \
   --force
 
-if aws lambda get-function --function-name "${OVERRIDE_FN}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: ${OVERRIDE_FN} still exists after destroy" >&2
-  exit 1
-fi
-if aws lambda get-function --function-name "${TRANSITION_FN}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: ${TRANSITION_FN} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "${OVERRIDE_FN} still exists after destroy" aws lambda get-function --function-name "${OVERRIDE_FN}" --region "${REGION}"
+assert_gone "${TRANSITION_FN} still exists after destroy" aws lambda get-function --function-name "${TRANSITION_FN}" --region "${REGION}"
 echo "    OK: both Lambda probes are gone"
 
-if aws s3 ls "s3://${STATE_BUCKET}/${OVERRIDE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: OverrideStack state file still exists after destroy" >&2
-  exit 1
-fi
-if aws s3 ls "s3://${STATE_BUCKET}/${TRANSITION_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: TransitionStack state file still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "OverrideStack state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${OVERRIDE_KEY}"
+assert_gone "TransitionStack state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${TRANSITION_KEY}"
 echo "    OK: both state files are gone"
 
 echo ""

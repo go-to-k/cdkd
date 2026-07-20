@@ -41,6 +41,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdConditionsUpdate2Example"
@@ -120,9 +152,11 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# Helper: does an SSM parameter exist? rc 0 = yes, 1 = no.
+# Helper: does an SSM parameter exist? rc 0 = yes, 1 = confirmed not-found.
+# Routed through gone_probe (issue #1097 pattern 2) so any other probe failure
+# (throttle, auth) hard-FAILs instead of reading as "absent".
 ssm_exists() {
-  aws ssm get-parameter --name "$1" --region "${REGION}" >/dev/null 2>&1
+  ! gone_probe aws ssm get-parameter --name "$1" --region "${REGION}"
 }
 
 # Helper: read an SSM parameter Value, or empty. Never aborts under set -e.
@@ -318,20 +352,15 @@ if ssm_exists "${APPEAR_PARAM}"; then
   echo "FAIL: AppearParam still exists after destroy" >&2
   exit 1
 fi
-if [ -n "$(queue_url "${WORK_QUEUE_NAME}")" ]; then
-  echo "FAIL: WorkQueue '${WORK_QUEUE_NAME}' still exists after destroy" >&2
-  exit 1
-fi
-if [ -n "$(queue_url "${DLQ_NAME}")" ]; then
-  echo "FAIL: DeadLetterQueue '${DLQ_NAME}' still exists after destroy" >&2
-  exit 1
-fi
+# Direct get-queue-url gone-probes (issue #1097 pattern 2): the silenced
+# queue_url helper reads a throttle as "" == gone, so it must not back a
+# leak assertion. SQS missing-queue is QueueDoesNotExist ("The specified
+# queue does not exist"), which matches the canonical signature.
+assert_gone "WorkQueue '${WORK_QUEUE_NAME}' still exists after destroy" aws sqs get-queue-url --queue-name "${WORK_QUEUE_NAME}" --region "${REGION}"
+assert_gone "DeadLetterQueue '${DLQ_NAME}' still exists after destroy" aws sqs get-queue-url --queue-name "${DLQ_NAME}" --region "${REGION}"
 echo "    OK: all AWS resources gone after destroy"
 
-if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""

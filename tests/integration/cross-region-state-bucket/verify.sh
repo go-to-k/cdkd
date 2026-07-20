@@ -36,6 +36,38 @@
 # BSD/macOS-portable: no grep -P, no date -d.
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 BASE_REGION="${AWS_REGION:-us-east-1}"
 BUCKET_REGION="${BUCKET_REGION:-us-west-2}"
 if [ "${BASE_REGION}" = "${BUCKET_REGION}" ]; then
@@ -133,10 +165,7 @@ if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --reg
   echo "[verify] FAIL: state.json not found at s3://${STATE_BUCKET}/${STATE_KEY}"
   exit 1
 fi
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}" --region "${BUCKET_REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: lock.json still present at s3://${STATE_BUCKET}/${LOCK_KEY} — lock was not released"
-  exit 1
-fi
+assert_gone "lock.json still present at s3://${STATE_BUCKET}/${LOCK_KEY} — lock was not released" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}" --region "${BUCKET_REGION}"
 # Issue #819: the exports index file must have been written to the
 # cross-region bucket (pre-fix the write hit the 301 and was skipped).
 if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${INDEX_KEY}" --region "${BUCKET_REGION}" >/dev/null 2>&1; then
@@ -171,14 +200,8 @@ DESTROY_OUT="$(${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --forc
 echo "${DESTROY_OUT}"
 
 echo "[verify] step 7: assert state gone + SSM parameter gone + no 301 warning"
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${BUCKET_REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: state.json still present after destroy"
-  exit 1
-fi
-if aws ssm get-parameter --name "${SSM_PARAM_NAME}" --region "${BASE_REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: SSM parameter ${SSM_PARAM_NAME} still exists after destroy"
-  exit 1
-fi
+assert_gone "state.json still present after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${BUCKET_REGION}"
+assert_gone "SSM parameter ${SSM_PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${SSM_PARAM_NAME}" --region "${BASE_REGION}"
 # Issue #819: the destroy output must NOT carry the exports-index 301 warning.
 assert_no_exports_index_301 "destroy" "${DESTROY_OUT}"
 echo "[verify] step 7 ok"

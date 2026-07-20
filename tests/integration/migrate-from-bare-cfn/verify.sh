@@ -23,6 +23,38 @@
 # failure path so leftover orphans never persist.
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 
@@ -175,9 +207,9 @@ done
 echo "[verify] step 6 ok: cdkd state has all 3 resource types"
 
 echo "[verify] step 7: assert source CFn stack is retired"
-if aws cloudformation describe-stacks \
+if ! gone_probe aws cloudformation describe-stacks \
     --stack-name "${SOURCE_STACK}" \
-    --region "${REGION}" >/dev/null 2>&1; then
+    --region "${REGION}"; then
   STATUS="$(aws cloudformation describe-stacks --stack-name "${SOURCE_STACK}" --region "${REGION}" \
     --query 'Stacks[0].StackStatus' --output text)"
   if [ "${STATUS}" != "DELETE_COMPLETE" ]; then
@@ -201,25 +233,13 @@ ${CLI} destroy "${SOURCE_STACK}" \
 echo "[verify] step 9 ok: cdkd destroy exited 0"
 
 echo "[verify] step 10: assert AWS resources are GONE"
-if aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: ${BUCKET_NAME} still exists after destroy"
-  exit 1
-fi
-if aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: ${PARAM_NAME} still exists after destroy"
-  exit 1
-fi
-if aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: ${TOPIC_NAME} still exists after destroy"
-  exit 1
-fi
+assert_gone "${BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
+assert_gone "${PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
+assert_gone "${TOPIC_NAME} still exists after destroy" aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}"
 echo "[verify] step 10 ok: bucket / parameter / topic all 404"
 
 echo "[verify] step 11: assert cdkd state is GONE"
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: cdkd state still present at s3://${STATE_BUCKET}/${STATE_KEY}"
-  exit 1
-fi
+assert_gone "cdkd state still present at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}"
 echo "[verify] step 11 ok: cdkd state cleared"
 
 trap - EXIT INT TERM

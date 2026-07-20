@@ -38,6 +38,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdFsxOpenZfsExample"
@@ -57,11 +89,16 @@ tagged_fs_ids() {
 
 wait_fs_gone() {
   local fs_id="$1"
+  local out
   local deadline=$((SECONDS + 1800))
   while [ ${SECONDS} -lt ${deadline} ]; do
-    if ! aws fsx describe-file-systems --file-system-ids "${fs_id}" \
-      --region "${REGION}" >/dev/null 2>&1; then
-      return 0
+    if ! out="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
+      --region "${REGION}" 2>&1)"; then
+      # Strict gone-check (#1097 pattern 2): only a not-found error means the
+      # file system is gone; on any other failure (throttle) keep waiting.
+      if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        return 0
+      fi
     fi
     sleep 15
   done
@@ -294,10 +331,7 @@ echo "    observedProperties carries the reverse-mapped OpenZFS block (readCurre
 echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: FSx file system ${FS_ID_P2} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "FSx file system ${FS_ID_P2} still exists after destroy" aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}"
 echo "    file system deleted (by id)"
 
 LEFTOVERS="$(tagged_fs_ids)"
@@ -307,10 +341,7 @@ if [ -n "${LEFTOVERS}" ]; then
 fi
 echo "    no file system with the fixture tag remains"
 
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
 echo "[verify] PASS — AWS::FSx::FileSystem OpenZFS variant: deploy + in-place update (incl. tag removal) + clean-drift + destroy all passed"

@@ -37,6 +37,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdDeepGetAttChainsExample"
@@ -239,16 +271,11 @@ echo ""
 echo "==> Post-destroy: assert named resources are gone"
 
 # E: Lambda function gone.
-if aws lambda get-function-configuration --region "${REGION}" \
-  --function-name "${FUNCTION_NAME}" >/dev/null 2>&1; then
-  fail "Lambda ${FUNCTION_NAME} still exists after destroy"
-fi
+assert_gone "Lambda ${FUNCTION_NAME} still exists after destroy" aws lambda get-function-configuration --region "${REGION}" --function-name "${FUNCTION_NAME}"
 echo "    OK: Lambda E is gone"
 
 # D: SSM parameter gone.
-if aws ssm get-parameter --region "${REGION}" --name "${PARAM_NAME}" >/dev/null 2>&1; then
-  fail "SSM parameter ${PARAM_NAME} still exists after destroy"
-fi
+assert_gone "SSM parameter ${PARAM_NAME} still exists after destroy" aws ssm get-parameter --region "${REGION}" --name "${PARAM_NAME}"
 echo "    OK: SSM param D is gone"
 
 # C: composite alarm gone (and confirm it carried our OWN fixture tag while alive).
@@ -279,9 +306,7 @@ fi
 echo "    OK: SNS topic A is gone"
 
 # State file gone.
-if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
-  fail "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy"
-fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""

@@ -42,6 +42,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 CDKD="node ../../../dist/cli.js"
@@ -342,36 +374,21 @@ echo ""
 echo "==> Step 4: Ordered teardown C -> B -> A (each succeeds once consumer gone)"
 echo "==> Step 4a: Destroy C (tail consumer) -> clean"
 ${CDKD} destroy ${STACK_C} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
-if aws s3 ls "s3://${STATE_BUCKET}/${C_STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: C state still exists after destroy"
-  exit 1
-fi
-if aws ssm get-parameter --name "${C_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-  echo "FAIL: C's SSM Parameter ${C_PARAM_NAME} still exists after destroy (orphan)"
-  exit 1
-fi
+assert_gone "C state still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${C_STATE_KEY}"
+assert_gone "C's SSM Parameter ${C_PARAM_NAME} still exists after destroy (orphan)" aws ssm get-parameter --name "${C_PARAM_NAME}" --region "${AWS_REGION}"
 echo "    C destroyed, state + SSM Parameter gone (✓)"
 
 echo ""
 echo "==> Step 4b: Destroy B (now no consumer) -> clean"
 ${CDKD} destroy ${STACK_B} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
-if aws s3 ls "s3://${STATE_BUCKET}/${B_STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: B state still exists after destroy"
-  exit 1
-fi
-if aws ssm get-parameter --name "${B_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-  echo "FAIL: B's SSM Parameter ${B_PARAM_NAME} still exists after destroy (orphan)"
-  exit 1
-fi
+assert_gone "B state still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${B_STATE_KEY}"
+assert_gone "B's SSM Parameter ${B_PARAM_NAME} still exists after destroy (orphan)" aws ssm get-parameter --name "${B_PARAM_NAME}" --region "${AWS_REGION}"
 echo "    B destroyed, state + SSM Parameter gone (✓)"
 
 echo ""
 echo "==> Step 4c: Destroy A (head, now no consumer) -> clean"
 ${CDKD} destroy ${STACK_A} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
-if aws s3 ls "s3://${STATE_BUCKET}/${A_STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: A state still exists after destroy"
-  exit 1
-fi
+assert_gone "A state still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${A_STATE_KEY}"
 # Assert the SNS topic that Stack A created is gone (state-empty can miss an
 # orphan that carries no stack name; assert the real resource directly).
 LEFTOVER_TOPIC=$(aws sns list-topics --region "${AWS_REGION}" \

@@ -433,6 +433,60 @@ re-runs `cleanup`.
 `tests/unit/scripts/integ-verify-signal-traps.test.ts` enforces this across the
 whole fixture tree (issue #1097).
 
+### Fixture convention: `verify.sh` gone-probes
+
+A "resource is gone after destroy" assertion must never be built on a silenced
+AWS CLI read probe. Both of these are the same bug (issue #1097 pattern 2):
+
+```bash
+# WRONG: ANY probe failure (throttle, expired credentials, network) lands in
+# the else-branch and reports "gone" -- a leaked resource passes silently.
+if aws lambda get-function --function-name "${FN}" >/dev/null 2>&1; then
+  echo "FAIL: function still exists after destroy" >&2; exit 1
+fi
+
+# WRONG (inverse spelling): any failure is read as "gone".
+if ! aws dynamodb describe-table --table-name "${TABLE}" >/dev/null 2>&1; then
+  TABLE_GONE=1
+fi
+```
+
+The list-operator spellings (`aws <probe> ... && { FAIL still exists; }` and
+`aws <probe> ... || { GONE=1; break; }`) are the same bug and equally banned.
+
+Instead, every fixture that asserts deletion carries the canonical helper block
+(verbatim; see `scripts/check-integ-probe-not-found.ts` for the source of
+truth) and routes probes through it:
+
+```bash
+# Simple leak assertion: fails on "still exists" AND on an undetermined probe.
+assert_gone "function ${FN} still exists after destroy" aws lambda get-function --function-name "${FN}" --region "${REGION}"
+
+# Branching form (orphan counters, wait-until-gone polls, status checks):
+# 0 = confirmed not-found, 1 = still exists, hard-FAIL on anything else.
+if ! gone_probe aws iam get-role --role-name "${ROLE}"; then
+  ORPHANS=$((ORPHANS + 1))
+fi
+```
+
+The helpers grep the probe's stderr for the ONE canonical not-found signature
+(`'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'`, case-insensitive)
+and refuse to report PASS on any other failure. Notes:
+
+- Only READ-verb probes (`describe|get|head|list|batch-get`, `aws s3 ls`) used
+  as existence checks are in scope. A mutation such as
+  `if ! aws fsx delete-backup ...` legitimately treats non-zero as "the delete
+  failed" and stays as-is; so do fail-closed existence checks
+  (`if ! aws ...; then FAIL`), pre-flight "already exists, clean up first"
+  guards, and best-effort cleanup guards.
+- Probe state files with `aws s3api head-object --bucket ... --key ...`, not
+  `aws s3 ls`: `s3 ls` exits 1 with EMPTY output for "no keys", which is
+  indistinguishable from a silenced error.
+
+`tests/unit/scripts/integ-verify-probe-not-found.test.ts` enforces this across
+the whole fixture tree (issue #1097), including a bash-level behavioral test of
+the helpers against a stubbed `aws` (success, not-found, throttle).
+
 ## 3. Deploy Using cdkd
 
 ```bash

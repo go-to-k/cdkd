@@ -38,6 +38,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdReplacementFanoutExample"
@@ -209,10 +241,7 @@ if ! aws sns get-topic-attributes --topic-arn "${TOPIC_ARN_B}" --region "${REGIO
   exit 1
 fi
 # ...and the old topic must be GONE (replacement deletes the original).
-if aws sns get-topic-attributes --topic-arn "${TOPIC_ARN_A}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: old base topic '${TOPIC_ARN_A}' still exists after replacement — old physical resource was not cleaned up" >&2
-  exit 1
-fi
+assert_gone "old base topic '${TOPIC_ARN_A}' still exists after replacement — old physical resource was not cleaned up" aws sns get-topic-attributes --topic-arn "${TOPIC_ARN_A}" --region "${REGION}"
 echo "    OK (replacement): base topic ARN CHANGED ${TOPIC_ARN_A} -> ${TOPIC_ARN_B}, old gone, new present"
 
 # --- FAN-OUT assertion: EVERY dependent picks up the NEW ARN ----------
@@ -284,17 +313,11 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --force
 
-if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 # The (replaced) base topic must be gone.
-if aws sns get-topic-attributes --topic-arn "${TOPIC_ARN_B}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: base topic '${TOPIC_ARN_B}' still exists after destroy (orphan)" >&2
-  exit 1
-fi
+assert_gone "base topic '${TOPIC_ARN_B}' still exists after destroy (orphan)" aws sns get-topic-attributes --topic-arn "${TOPIC_ARN_B}" --region "${REGION}"
 echo "    OK: base topic is gone after destroy"
 
 # Every dependent parameter must be NOT-FOUND in AWS after destroy. The
@@ -303,7 +326,7 @@ echo "    OK: base topic is gone after destroy"
 ORPHAN_PARAMS=()
 for i in $(seq 0 $((DEP_COUNT - 1))); do
   pname="${DEP_NAMES[$i]}"
-  if aws ssm get-parameter --name "${pname}" --region "${REGION}" >/dev/null 2>&1; then
+  if ! gone_probe aws ssm get-parameter --name "${pname}" --region "${REGION}"; then
     echo "FAIL: dependent ${i} parameter '${pname}' still exists after destroy (orphan)" >&2
     ORPHAN_PARAMS+=("${i}")
   fi

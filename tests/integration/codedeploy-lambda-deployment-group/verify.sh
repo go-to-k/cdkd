@@ -28,6 +28,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdCodedeployLambdaDeploymentGroupExample"
@@ -157,25 +189,12 @@ echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if aws deploy get-application --application-name "${APP_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: CodeDeploy application still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "CodeDeploy application still exists after destroy" aws deploy get-application --application-name "${APP_NAME}" --region "${REGION}"
 # Errors with ApplicationDoesNotExistException / DeploymentGroupDoesNotExist-
 # Exception once either level is gone — both count as "deployment group gone".
-if aws deploy get-deployment-group --application-name "${APP_NAME}" \
-  --deployment-group-name "${DG_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: CodeDeploy deployment group still exists after destroy" >&2
-  exit 1
-fi
-if aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: Lambda function still exists after destroy" >&2
-  exit 1
-fi
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "CodeDeploy deployment group still exists after destroy" aws deploy get-deployment-group --application-name "${APP_NAME}" --deployment-group-name "${DG_NAME}" --region "${REGION}"
+assert_gone "Lambda function still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
+assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    Application / function / state all gone"
 
 # The Phase 2 invoke auto-created /aws/lambda/<fn> — sweep it so the run
