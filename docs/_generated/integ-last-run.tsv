@@ -72,7 +72,7 @@ dynamodb-autoscaling	2026-06-27T16:08:39Z	PASS	68	verify.sh	CC-API ScalableTarge
 dynamodb-globaltable	2026-06-20T17:59:38Z	PASS		verify.sh	BillingMode/autoscaling UPDATE + clean destroy (#887 regression); 1 deleted 0 errors
 dynamodb-gsi-update	2026-06-20T18:10:27Z	PASS		verify.sh	#887 add-GSI in-place UPDATE (no replacement); 3 phases pass, clean destroy
 dynamodb-ondemand	2026-06-20T18:12:58Z	PASS		verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE (#887 regression); 3 deleted 0 errors
-dynamodb-sse	2026-06-21T08:22:45Z	PASS	41	verify.sh	SSESpecification create-path (#910 adds update-path code+unit); SSE reaches AWS as KMS; destroy clean
+dynamodb-sse	2026-07-20T07:04:47Z	PASS	150	verify.sh	capture-form sweep sample (#1120): strict captures + gone_probe branch live-verified; 0 orphans
 dynamodb-stream-filter	2026-06-21T06:31:35Z	PASS	58	verify.sh	FilterCriteria/bisect/responseTypes; 0 orph
 dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
 dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
