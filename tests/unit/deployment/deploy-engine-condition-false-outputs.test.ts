@@ -31,6 +31,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 const conditionsHolder: { value: Record<string, boolean> } = { value: {} };
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
+    resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockImplementation(() => Promise.resolve(conditionsHolder.value)),

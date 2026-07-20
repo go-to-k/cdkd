@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd Fn::GetAtt unknown-attribute ARN-shape guard (issue #1106).
-# ERROR-PATH fixture: `Fn::GetAtt [Probe, BogusArn]` on AWS::SSM::Parameter
-# reaches the resolver's final unknown-attribute fallback, where the
-# physicalId (the parameter NAME) is not ARN-shaped — the deploy must FAIL
-# with the actionable guard error instead of shipping the wrong value.
+# verify.sh — cdkd Fn::GetAtt unknown-attribute ARN-shape guard (issue #1106)
+# + --strict-getatt / deploy-summary fallback line (issue #1111).
+# ERROR-PATH fixture, three phases:
+#   1. `Fn::GetAtt [Probe, BogusArn]` on AWS::SSM::Parameter reaches the
+#      resolver's unknown-attribute fallback, where the physicalId (the
+#      parameter NAME) is not ARN-shaped — the deploy must FAIL with the
+#      actionable guard error instead of shipping the wrong value.
+#   2. GUARD_PHASE=warn switches the bogus attribute to `BogusName` (a
+#      non-Arn suffix that default mode warn-passes); with --strict-getatt
+#      the deploy must FAIL on the promoted fallback error.
+#   3. Same warn shape WITHOUT the flag: the deploy must SUCCEED, warn
+#      "Unknown attribute BogusName", and print the one-line deploy-summary
+#      fallback count pointing at --strict-getatt.
 # The bogus GetAtt is a RESOURCE property (a second parameter's Value), not
-# an Output, because output-resolution failures are warn-and-continue and
-# would not make the deploy exit non-zero.
-# Asserts: deploy non-zero + guard message, then destroy / direct-cleanup
+# an Output, because output-resolution failures are warn-and-continue in
+# default mode and would not make the deploy exit non-zero.
+# Asserts: per-phase exit codes + messages, then destroy / direct-cleanup
 # fallback, zero leftover parameters, state gone.
 
 set -euo pipefail
@@ -117,5 +125,65 @@ assert_gone "SSM parameter ${CONSUMER_PARAM} exists (guard fired too late?)" aws
 echo "    OK: consumer parameter gone (was never created)"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
+
+# --- Phase 2 (issue #1111): --strict-getatt promotes a warn-path fallback ----
+# GUARD_PHASE=warn switches the bogus attribute to `BogusName`, whose
+# physicalId fallback default mode accepts with a warning; --strict-getatt
+# must reject it and fail the deploy.
+echo "==> Deploy --strict-getatt on the warn-shape attribute (EXPECTED to fail)"
+STRICT_RC=0
+STRICT_OUT="$(GUARD_PHASE=warn node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --strict-getatt --yes 2>&1)" || STRICT_RC=$?
+printf '%s\n' "${STRICT_OUT}"
+if [ "${STRICT_RC}" -eq 0 ]; then
+  echo "FAIL: deploy --strict-getatt exited 0 — the strict fallback promotion did not fire" >&2
+  exit 1
+fi
+for needle in 'Cannot resolve Fn::GetAtt' 'BogusName' '--strict-getatt'; do
+  if ! printf '%s' "${STRICT_OUT}" | grep -qF -- "${needle}"; then
+    echo "FAIL: strict deploy output lacks message fragment: ${needle}" >&2
+    exit 1
+  fi
+done
+echo "    OK: strict deploy failed (rc=${STRICT_RC}) with the promoted fallback error"
+
+# Normalize whatever the failed strict deploy left behind (rollback usually
+# removes the Probe + state, but do not rely on it).
+STRICT_DESTROY_RC=0
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force >/dev/null 2>&1 || STRICT_DESTROY_RC=$?
+if [ "${STRICT_DESTROY_RC}" -ne 0 ]; then
+  aws ssm delete-parameter --name "${PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${CONSUMER_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+  aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+fi
+
+# --- Phase 3 (issue #1111): default mode warn-passes + summary line ----------
+echo "==> Deploy default mode on the warn-shape attribute (EXPECTED to succeed)"
+WARN_RC=0
+WARN_OUT="$(GUARD_PHASE=warn node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || WARN_RC=$?
+printf '%s\n' "${WARN_OUT}"
+if [ "${WARN_RC}" -ne 0 ]; then
+  echo "FAIL: default-mode deploy of the warn-shape attribute exited ${WARN_RC} (expected success)" >&2
+  exit 1
+fi
+for needle in 'Unknown attribute BogusName' 'fell back to the physical ID' '--strict-getatt'; do
+  if ! printf '%s' "${WARN_OUT}" | grep -qF -- "${needle}"; then
+    echo "FAIL: default-mode deploy output lacks fragment: ${needle}" >&2
+    exit 1
+  fi
+done
+if ! printf '%s' "${WARN_OUT}" | grep -qE '[1-9][0-9]* attribute resolution\(s\) fell back to the physical ID'; then
+  echo "FAIL: deploy-summary fallback line missing its non-zero count" >&2
+  exit 1
+fi
+echo "    OK: default deploy succeeded with the warn + deploy-summary fallback line"
+
+echo "==> Destroy (phase 3)"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+
+assert_gone "SSM parameter ${PARAM} still exists after phase-3 destroy" aws ssm get-parameter --name "${PARAM}" --region "${REGION}"
+assert_gone "SSM parameter ${CONSUMER_PARAM} still exists after phase-3 destroy" aws ssm get-parameter --name "${CONSUMER_PARAM}" --region "${REGION}"
+assert_gone "state remains after phase-3 destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    OK: phase-3 resources + state gone"
 echo ""
-echo "[verify] PASS — getatt-fallback-guard: deploy hard-failed on the knowably-wrong ARN fallback, cleanup clean"
+echo "[verify] PASS — getatt-fallback-guard: ARN-shape hard-fail, --strict-getatt promotion, and default-mode summary line all verified, cleanup clean"

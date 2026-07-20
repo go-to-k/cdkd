@@ -164,3 +164,211 @@ describe('IntrinsicFunctionResolver - unknown-attribute fallback shape guard (is
     expect(result).toBe('arn:aws:s3:::my-bucket');
   });
 });
+
+/**
+ * Helper for typed per-resource-type contexts (issue #1111 tests below).
+ */
+const mkTypedContext = (
+  resourceType: string,
+  physicalId: string,
+  attributes: Record<string, unknown> = {}
+): ResolverContext => {
+  const template: CloudFormationTemplate = {
+    Resources: { Res: { Type: resourceType, Properties: {} } },
+  };
+  return {
+    template,
+    resources: {
+      Res: {
+        physicalId,
+        resourceType,
+        properties: {},
+        attributes,
+        dependencies: [],
+      },
+    },
+  };
+};
+
+/**
+ * Issue #1111 item 1: per-type handlers whose `default:` meant "unknown
+ * attribute for this type" now route through the SAME shape guard as the
+ * final unknown-type fallback — `*Arn` with a name-shaped physicalId
+ * hard-fails, everything else warns and returns the physicalId. Explicit
+ * `case`s whose correct value IS the physicalId (KMS KeyId, SNS TopicName,
+ * Cognito UserPoolId, EC2 InstanceId, LaunchTemplate LaunchTemplateId, ...)
+ * are NOT guarded and NOT warned.
+ */
+describe('IntrinsicFunctionResolver - per-type default branches route through the guard (issue #1111)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    warnSpy.mockClear();
+  });
+
+  it('DynamoDB Table: unknown Arn-suffixed attribute hard-fails on a name-shaped physicalId', async () => {
+    const context = mkTypedContext('AWS::DynamoDB::Table', 'my-table');
+    await expect(resolver.resolve({ 'Fn::GetAtt': ['Res', 'FooArn'] }, context)).rejects.toThrow(
+      /Cannot resolve Fn::GetAtt \[Res, FooArn\] for AWS::DynamoDB::Table/
+    );
+  });
+
+  it('DynamoDB Table: the known Arn mapping still constructs the table ARN', async () => {
+    const context = mkTypedContext('AWS::DynamoDB::Table', 'my-table');
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'Arn'] }, context);
+    expect(result).toBe('arn:aws:dynamodb:us-east-1:123456789012:table/my-table');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('DynamoDB Table: unknown non-Arn attribute keeps warn-and-return', async () => {
+    const context = mkTypedContext('AWS::DynamoDB::Table', 'my-table');
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'FooBar'] }, context);
+    expect(result).toBe('my-table');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Unknown attribute FooBar'));
+  });
+
+  it('EC2 Instance: unknown Arn-suffixed attribute hard-fails', async () => {
+    const context = mkTypedContext('AWS::EC2::Instance', 'i-0123456789abcdef0');
+    await expect(resolver.resolve({ 'Fn::GetAtt': ['Res', 'FooArn'] }, context)).rejects.toThrow(
+      /Cannot resolve Fn::GetAtt \[Res, FooArn\] for AWS::EC2::Instance/
+    );
+  });
+
+  it('EC2 LaunchTemplate: unknown Arn-suffixed attribute hard-fails', async () => {
+    const context = mkTypedContext('AWS::EC2::LaunchTemplate', 'lt-0123456789abcdef0');
+    await expect(resolver.resolve({ 'Fn::GetAtt': ['Res', 'FooArn'] }, context)).rejects.toThrow(
+      /Cannot resolve Fn::GetAtt \[Res, FooArn\] for AWS::EC2::LaunchTemplate/
+    );
+  });
+
+  it.each([
+    ['AWS::KMS::Key', 'KeyId', 'mrk-1234'],
+    ['AWS::SNS::Topic', 'TopicName', 'my-topic'],
+    ['AWS::Cognito::UserPool', 'UserPoolId', 'us-east-1_AbCdEf'],
+    ['AWS::EC2::Instance', 'InstanceId', 'i-0123456789abcdef0'],
+    ['AWS::EC2::LaunchTemplate', 'LaunchTemplateId', 'lt-0123456789abcdef0'],
+    ['AWS::EC2::Subnet', 'SubnetId', 'subnet-0123'],
+    ['AWS::EFS::FileSystem', 'FileSystemId', 'fs-0123'],
+  ])(
+    '%s.%s is a KNOWN physicalId-valued attribute — returned without warn',
+    async (resourceType, attributeName, physicalId) => {
+      const context = mkTypedContext(resourceType, physicalId);
+      const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', attributeName] }, context);
+      expect(result).toBe(physicalId);
+      expect(warnSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  it('IAM Role: unknown Arn-suffixed attribute hard-fails (default branch guarded)', async () => {
+    const context = mkTypedContext('AWS::IAM::Role', 'my-role');
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Res', 'ServiceRoleArn'] }, context)
+    ).rejects.toThrow(/Cannot resolve Fn::GetAtt \[Res, ServiceRoleArn\] for AWS::IAM::Role/);
+  });
+});
+
+/**
+ * Issue #1111 item 2 (resolver side): `--strict-getatt` promotes EVERY
+ * unknown-attribute physicalId fallback (any suffix) to a hard error.
+ */
+describe('IntrinsicFunctionResolver - strictGetAtt mode (issue #1111)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver(undefined, { strictGetAtt: true });
+    resetAccountInfoCache();
+    warnSpy.mockClear();
+  });
+
+  it('promotes a warn-path fallback (non-Arn suffix) to a hard error', async () => {
+    const context = mkTypedContext('AWS::Example::Widget', 'my-widget-name');
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Res', 'WidgetAlias'] }, context)
+    ).rejects.toThrow(/--strict-getatt/);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects even an ARN-shaped physicalId fallback for an Arn-suffixed attribute', async () => {
+    // Default mode warn-passes this (shape check satisfied); strict mode
+    // rejects every unknown-attribute fallback regardless of shape.
+    const arn = 'arn:aws:example:us-east-1:123456789012:widget/my-widget';
+    const context = mkTypedContext('AWS::Example::Widget', arn);
+    await expect(resolver.resolve({ 'Fn::GetAtt': ['Res', 'WidgetArn'] }, context)).rejects.toThrow(
+      /--strict-getatt/
+    );
+  });
+
+  it('per-type default branches are strict too (DynamoDB unknown non-Arn attribute)', async () => {
+    const context = mkTypedContext('AWS::DynamoDB::Table', 'my-table');
+    await expect(resolver.resolve({ 'Fn::GetAtt': ['Res', 'FooBar'] }, context)).rejects.toThrow(
+      /--strict-getatt/
+    );
+  });
+
+  it('known per-type mappings are unaffected under strict (S3 Bucket Arn)', async () => {
+    const context = mkTypedContext('AWS::S3::Bucket', 'my-bucket');
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'Arn'] }, context);
+    expect(result).toBe('arn:aws:s3:::my-bucket');
+  });
+
+  it('known physicalId-valued attributes are unaffected under strict (SNS TopicName)', async () => {
+    const context = mkTypedContext('AWS::SNS::Topic', 'my-topic');
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'TopicName'] }, context);
+    expect(result).toBe('my-topic');
+  });
+
+  it('enriched attributes are unaffected under strict', async () => {
+    const arn = 'arn:aws:example:us-east-1:123456789012:widget/my-widget';
+    const context = mkTypedContext('AWS::Example::Widget', 'my-widget-name', { WidgetArn: arn });
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'WidgetArn'] }, context);
+    expect(result).toBe(arn);
+  });
+});
+
+/**
+ * Issue #1111 item 3 (resolver side): warn-path fallbacks are counted
+ * per resolver instance and resettable per deploy run.
+ */
+describe('IntrinsicFunctionResolver - physicalId fallback counter (issue #1111)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    warnSpy.mockClear();
+  });
+
+  it('counts each warn-path fallback and resets per run', async () => {
+    const context = mkTypedContext('AWS::Example::Widget', 'my-widget-name');
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
+    await resolver.resolve({ 'Fn::GetAtt': ['Res', 'WidgetAlias'] }, context);
+    await resolver.resolve({ 'Fn::GetAtt': ['Res', 'Endpoint'] }, context);
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(2);
+    resolver.resetPhysicalIdFallbackCount();
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
+  });
+
+  it('counts per-type default-branch fallbacks too', async () => {
+    const context = mkTypedContext('AWS::DynamoDB::Table', 'my-table');
+    await resolver.resolve({ 'Fn::GetAtt': ['Res', 'FooBar'] }, context);
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(1);
+  });
+
+  it('does not count known mappings or enriched-attribute resolutions', async () => {
+    const s3 = mkTypedContext('AWS::S3::Bucket', 'my-bucket');
+    await resolver.resolve({ 'Fn::GetAtt': ['Res', 'Arn'] }, s3);
+    const enriched = mkTypedContext('AWS::Example::Widget', 'name', { Foo: 'bar' });
+    await resolver.resolve({ 'Fn::GetAtt': ['Res', 'Foo'] }, enriched);
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
+  });
+
+  it('does not count hard-failed (Arn-shape) resolutions', async () => {
+    const context = mkTypedContext('AWS::Example::Widget', 'my-widget-name');
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Res', 'WidgetArn'] }, context)
+    ).rejects.toThrow();
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
+  });
+});

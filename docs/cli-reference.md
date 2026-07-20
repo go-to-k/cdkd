@@ -867,6 +867,58 @@ cdkd deploy MyStack \
 - **NOT** compatible with `--recreate-via-cc-api` on the same logical
   id — pick ONE direction per resource.
 
+## `--strict-getatt` (deploy)
+
+Fail the deploy on ANY `Fn::GetAtt` that falls back to the resource's
+physical ID because cdkd cannot construct the requested attribute, and on
+any stack Output that cannot be resolved.
+
+```bash
+cdkd deploy MyStack --strict-getatt
+```
+
+### Default behavior (without the flag)
+
+When a template requests an attribute that is neither captured in state
+`attributes` nor constructible by the resolver's per-type mappings, cdkd
+falls back to the resource's **physical ID**:
+
+- **Knowably-wrong shapes hard-fail even without the flag** (issue #1106):
+  an attribute name ending in `Arn` whose fallback value is not
+  `arn:`-shaped, or ending in `Url` whose fallback is not an http(s) URL,
+  cannot be what CloudFormation would return — the deploy fails with an
+  actionable error naming the resource, attribute, and an issue link. This
+  applies to the resolver's final unknown-type fallback AND to every
+  per-type handler's unknown-attribute default branch (issue #1111).
+- **Every other suffix warns and returns the physical ID** (`Unknown
+  attribute X for resource type Y, returning physical ID`) — an alias or
+  endpoint is shape-indistinguishable from a plain name, so a hard-fail
+  there would risk failing correct deploys.
+- When at least one such fallback happened, the deploy summary prints a
+  one-line count so the warns don't scroll away on green deploys:
+
+  ```text
+  2 attribute resolution(s) fell back to the physical ID (potentially wrong values); re-run with --strict-getatt to fail on these
+  ```
+
+- An **Output** whose value cannot be resolved is warned about and skipped
+  (no value is persisted or exported); the deploy still exits 0.
+
+### With `--strict-getatt`
+
+- EVERY unknown-attribute physical-ID fallback — any suffix, including an
+  ARN-shaped fallback for an `*Arn` attribute — is a hard error.
+- An Output resolution failure fails the deploy instead of silently
+  publishing nothing (which would otherwise break downstream
+  `Fn::ImportValue` consumers with "export not found" long after this
+  deploy exited 0).
+
+Use it in CI to guarantee no potentially-wrong `Fn::GetAtt` value ever
+ships quietly; drop it (default) when a known-benign fallback (e.g. a
+physical ID that genuinely is the attribute value for a type cdkd has not
+enriched yet) is acceptable. Nested-stack child deploys inherit the flag
+from the parent deploy.
+
 ## `--role-arn`
 
 Assume a different IAM role for cdkd's AWS API calls. Equivalent env

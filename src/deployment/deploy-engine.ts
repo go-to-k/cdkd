@@ -266,6 +266,17 @@ export interface DeployEngineOptions {
    * error naming the resource + the data-loss reason.
    */
   forceStatefulRecreation?: boolean;
+
+  /**
+   * `--strict-getatt` (issue #1111) — promote every unknown-attribute
+   * `Fn::GetAtt` physicalId fallback (any suffix, not just the always-fatal
+   * `*Arn` / `*Url` shape mismatches) to a hard error, and fail the deploy
+   * when a stack Output cannot be resolved (default: warn and store no
+   * value). Threaded into the engine's `IntrinsicFunctionResolver` at
+   * construction and consulted by `resolveOutputs`. Nested-stack child
+   * engines inherit it via the options spread in `NestedStackProvider`.
+   */
+  strictGetAtt?: boolean;
 }
 
 /**
@@ -290,6 +301,14 @@ export interface DeployResult {
    * deploy and on the no-change path; undefined under --dry-run.
    */
   outputs?: Record<string, unknown>;
+  /**
+   * Number of `Fn::GetAtt` resolutions that fell back to the physical ID
+   * (the resolver's warn path) during this deploy run (issue #1111 item 3).
+   * The deploy CLI prints a one-line summary when > 0 so the per-resolution
+   * warns don't scroll away on green deploys. Always 0 under
+   * `--strict-getatt` (every fallback is a hard error there).
+   */
+  attributeFallbackCount: number;
 }
 
 /**
@@ -485,7 +504,9 @@ export class DeployEngine {
     this.options = options;
     this.stackRegion = stackRegion;
     this.exportIndexStore = exportIndexStore;
-    this.resolver = new IntrinsicFunctionResolver(stackRegion);
+    this.resolver = new IntrinsicFunctionResolver(stackRegion, {
+      strictGetAtt: options.strictGetAtt ?? false,
+    });
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
     this.options.lockTimeout = options.lockTimeout ?? 5 * 60 * 1000; // 5 minutes
@@ -511,6 +532,10 @@ export class DeployEngine {
     // `state.outputReads`.
     this.recordedImports = [];
     this.recordedOutputReads = [];
+    // Per-deploy-run counter: the resolver instance is engine-scoped and an
+    // engine can be reused across deploys, so reset here (not in the
+    // resolver constructor) to keep the deploy-summary count per run.
+    this.resolver.resetPhysicalIdFallbackCount();
     // Scope `stackName` to this deploy's async chain so concurrent
     // deploys (--stack-concurrency > 1) don't see each other's value.
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
@@ -1134,6 +1159,7 @@ export class DeployEngine {
           unchanged: Object.keys(currentState.resources).length,
           durationMs: Date.now() - startTime,
           outputs: this.buildDisplayOutputs(template, persistedOutputs),
+          attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
         };
       }
 
@@ -1155,6 +1181,7 @@ export class DeployEngine {
           deleted: deleteChanges.length,
           unchanged: this.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
           durationMs: Date.now() - startTime,
+          attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
         };
       }
 
@@ -1220,6 +1247,7 @@ export class DeployEngine {
         unchanged: unchangedCount,
         durationMs,
         outputs: this.buildDisplayOutputs(template, newState.outputs ?? {}),
+        attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     } finally {
       // Stop live renderer (clears any remaining in-flight task display)
@@ -3256,6 +3284,17 @@ export class DeployEngine {
           }
         }
       } catch (error) {
+        // Issue #1111 item 2: under --strict-getatt an unresolvable Output
+        // fails the deploy instead of silently publishing nothing (which
+        // breaks downstream Fn::ImportValue consumers with "export not
+        // found" long after this deploy exits 0).
+        if (this.options.strictGetAtt) {
+          throw new Error(
+            `Failed to resolve output ${outputKey}: ${error instanceof Error ? error.message : String(error)} ` +
+              `(--strict-getatt promotes output resolution failures to deploy errors; ` +
+              `drop the flag to warn and skip the output instead)`
+          );
+        }
         this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
         outputs[outputKey] = undefined;
       }
