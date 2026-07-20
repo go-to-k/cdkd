@@ -215,11 +215,19 @@ export class CloudControlProvider implements ResourceProvider {
         result.attributes = this.parseResourceModel(progressEvent.ResourceModel);
       }
 
+      // Generic sparse-model read-back (issue #1105) — BEFORE the per-type
+      // enrichment switch so its `if (!enriched['X'])` gating composes.
+      result.attributes = await this.mergeSparseModelReadback(
+        resourceType,
+        progressEvent.Identifier,
+        result.attributes || {}
+      );
+
       // Enrich attributes with computed values for specific resource types
       result.attributes = await this.enrichResourceAttributes(
         resourceType,
         progressEvent.Identifier,
-        result.attributes || {}
+        result.attributes
       );
 
       return result;
@@ -407,11 +415,21 @@ export class CloudControlProvider implements ResourceProvider {
         result.attributes = this.parseResourceModel(progressEvent.ResourceModel);
       }
 
+      // Generic sparse-model read-back (issue #1105). Also covers UPDATE
+      // staleness: a ProgressEvent that omits attributes present at CREATE
+      // would otherwise leave stale values in state — the read-back refreshes
+      // them from the AWS-current model.
+      result.attributes = await this.mergeSparseModelReadback(
+        resourceType,
+        physicalId,
+        result.attributes || {}
+      );
+
       // Enrich attributes with computed values for specific resource types
       result.attributes = await this.enrichResourceAttributes(
         resourceType,
         physicalId,
-        result.attributes || {}
+        result.attributes
       );
 
       return result;
@@ -1446,6 +1464,62 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
+   * Generic sparse-model read-back (issue #1105). When the CREATE / UPDATE
+   * `ProgressEvent.ResourceModel` yielded a sparse attribute map, issue ONE
+   * best-effort `GetResource` read-back and merge the returned model over the
+   * parsed attributes. Closes the "pure-CC type with a sparse CREATE model →
+   * empty state attributes → `Fn::GetAtt` silently resolves to the bare
+   * physicalId" class generically instead of per-type (previously fixed
+   * type-by-type in #984 / #1103). Runs BEFORE `enrichResourceAttributes` so
+   * the per-type overlays' `if (!enriched['X'])` gating composes naturally
+   * (no second GetResource for a type the read-back already filled).
+   * Best-effort: a failed read-back leaves the attributes as-is and never
+   * fails the deploy (same never-throw contract as `readCcResourceModel`).
+   */
+  private async mergeSparseModelReadback(
+    resourceType: string,
+    physicalId: string,
+    attributes: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    if (!this.isSparseAttributeMap(attributes, physicalId)) {
+      return attributes;
+    }
+    const model = await this.readCcResourceModel(resourceType, physicalId);
+    if (!model) {
+      return attributes;
+    }
+    this.logger.debug(
+      `Merged CC GetResource read-back over sparse ${resourceType} attributes for ${physicalId}`
+    );
+    // Read-back wins: the sparseness predicate admits nothing beyond
+    // identifier echoes, and on UPDATE the read-back is by definition fresher
+    // than whatever the ProgressEvent omitted.
+    return { ...attributes, ...model };
+  }
+
+  /**
+   * Conservative sparseness predicate for `mergeSparseModelReadback`. A map
+   * is sparse when it is empty or carries nothing beyond an echo of the
+   * identifier — every value is a string equal to the physicalId or to one
+   * segment of a compound `|`-joined CC primaryIdentifier. Sparseness is
+   * empirically per-type: `AWS::ApiGatewayV2::Api` returns `ApiEndpoint` in
+   * its CREATE model (NOT sparse — no extra GetResource), while Pipes /
+   * S3 AccessPoint / ResourceGroups / Backup return nothing usable (sparse —
+   * read-back fires). Any non-identifier value (a URL, an ARN, an echoed
+   * input property, a nested object) means the model carried real
+   * information, so we skip the extra API call.
+   */
+  private isSparseAttributeMap(attributes: Record<string, unknown>, physicalId: string): boolean {
+    const values = Object.values(attributes);
+    if (values.length === 0) {
+      return true;
+    }
+    const identifierEchoes = new Set(physicalId.split('|'));
+    identifierEchoes.add(physicalId);
+    return values.every((value) => typeof value === 'string' && identifierEchoes.has(value));
+  }
+
+  /**
    * Read the Cloud Control GetResource model for a pure-CC resource and
    * return its parsed property map, or `undefined` on any failure. Types with
    * no SDK provider always route through Cloud Control, whose async CREATE
@@ -1454,7 +1528,8 @@ export class CloudControlProvider implements ResourceProvider {
    * VersionId, SelectionId) — the type's registry schema lists them under
    * readOnlyProperties, which the CC read handler does return. Originally
    * Backup-scoped (issue #984); generalized for Pipes / S3 AccessPoint /
-   * ResourceGroups in issue #1103. Best-effort: never throws.
+   * ResourceGroups in issue #1103, and reused by the generic sparse-model
+   * read-back (issue #1105). Best-effort: never throws.
    */
   private async readCcResourceModel(
     resourceType: string,
