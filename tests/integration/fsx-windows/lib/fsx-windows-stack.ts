@@ -57,7 +57,13 @@ import type { Construct } from 'constructs';
  *     Enterprise, so it must be passed explicitly).
  *
  * UPDATE phase (CDKD_TEST_UPDATE=true) exercises the in-place Windows
- * update path:
+ * update path. Precisely: it proves the ROUTING — that a change reaches
+ * `UpdateFileSystem` under the right `configKey` and the right
+ * `UpdateFileSystemWindowsConfiguration` wrapper. It does NOT prove any
+ * variant-UNIQUE update field, because `WeeklyMaintenanceStartTime` is
+ * the identical trivial pass-through arm in all four apply functions.
+ * Windows' own arms — `SelfManagedActiveDirectoryConfiguration`,
+ * `AuditLogConfiguration`, `FsrmConfiguration` — are untested here.
  *   - `WeeklyMaintenanceStartTime` '1:05:00' -> '2:06:00' (an
  *     UpdateFileSystem-mutable WindowsConfiguration sub-property). Chosen
  *     over a ThroughputCapacity change on purpose: scaling Windows
@@ -124,9 +130,11 @@ export class FsxWindowsStack extends cdk.Stack {
         // the chosen mutable sub-property.
         weeklyMaintenanceStartTime: isUpdate ? '2:06:00' : '1:05:00',
         // AUTOMATIC is the default (SSD IOPS scale with capacity), so this
-        // costs nothing — but stating it explicitly is what exercises the
-        // provider's shared `toDiskIopsConfiguration` mapping, which no
-        // FSx fixture covered before.
+        // costs nothing. Setting it alone would prove nothing either —
+        // being the default, a provider that dropped the block entirely
+        // would look identical. verify.sh therefore READS BACK
+        // `DiskIopsConfiguration.Mode`/`.Iops`, which is what actually
+        // covers the shared `toDiskIopsConfiguration` mapping.
         diskIopsConfiguration: {
           mode: 'AUTOMATIC',
         },

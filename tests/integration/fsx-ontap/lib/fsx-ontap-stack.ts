@@ -34,7 +34,13 @@ import type { Construct } from 'constructs';
  *     ONTAP CLI, so no secret is committed.
  *
  * UPDATE phase (CDKD_TEST_UPDATE=true) exercises the in-place ONTAP
- * update path:
+ * update path. Precisely: it proves the ROUTING — that a change reaches
+ * `UpdateFileSystem` under the right `configKey` and the right
+ * `UpdateFileSystemOntapConfiguration` wrapper. It does NOT prove any
+ * variant-UNIQUE update field, because `WeeklyMaintenanceStartTime` is
+ * the identical trivial pass-through arm in all four apply functions.
+ * ONTAP's own arms — `FsxAdminPassword`, `HAPairs`,
+ * `ThroughputCapacityPerHAPair`, `RouteTableIds` — are untested here.
  *   - `WeeklyMaintenanceStartTime` '1:05:00' -> '2:06:00' (an
  *     UpdateFileSystem-mutable OntapConfiguration sub-property). Chosen
  *     over a ThroughputCapacity change on purpose: scaling ONTAP
@@ -86,9 +92,11 @@ export class FsxOntapStack extends cdk.Stack {
         // the chosen mutable sub-property.
         weeklyMaintenanceStartTime: isUpdate ? '2:06:00' : '1:05:00',
         // AUTOMATIC is the default (SSD IOPS scale with capacity), so this
-        // costs nothing — but stating it explicitly is what exercises the
-        // provider's shared `toDiskIopsConfiguration` mapping, which no
-        // FSx fixture covered before.
+        // costs nothing. Setting it alone would prove nothing either —
+        // being the default, a provider that dropped the block entirely
+        // would look identical. verify.sh therefore READS BACK
+        // `DiskIopsConfiguration.Mode`/`.Iops`, which is what actually
+        // covers the shared `toDiskIopsConfiguration` mapping.
         diskIopsConfiguration: {
           mode: 'AUTOMATIC',
         },

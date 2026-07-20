@@ -268,7 +268,12 @@ wait_directory_gone() {
           echo "    directory ${dir_id}: Deleting confirmed after $((SECONDS - start))s"
           return 4
         fi
-        if [ ${left} -eq 1 ] && [ "${stage}" = 'Failed' ]; then
+        # `Failed` is exempt from the stale-read tolerance: it is terminal
+        # in its own right, so a directory already Failed on the FIRST
+        # poll should be diagnosed as such immediately rather than burning
+        # the whole budget and then reporting "never left its stage",
+        # which misdescribes what happened.
+        if [ "${stage}" = 'Failed' ]; then
           echo "    ERROR: directory ${dir_id} reached Stage=Failed during deletion" >&2
           return 3
         fi
@@ -587,11 +592,21 @@ echo "    directory id: ${DIRECTORY_ID}"
 AD_DEADLINE=$((SECONDS + 3600))
 AD_STAGE=""
 while [ ${SECONDS} -lt ${AD_DEADLINE} ]; do
-  AD_STAGE="$(aws ds describe-directories --directory-ids "${DIRECTORY_ID}" --region "${REGION}" \
-    --query 'DirectoryDescriptions[0].Stage' --output text)"
+  # Via directory_stage(), not a bare describe: a bare command substitution
+  # under `set -e` dies on a single throttle, killing an up-to-60-minute
+  # wait before the post-loop FAIL below can even report why.
+  AD_STAGE="$(directory_stage "${DIRECTORY_ID}")"
   case "${AD_STAGE}" in
     Active) break ;;
-    Failed | Deleted | Deleting)
+    __ERROR__)
+      # Transient API failure — keep waiting rather than aborting.
+      sleep 30
+      ;;
+    __GONE__)
+      echo "FAIL: directory ${DIRECTORY_ID} disappeared while waiting for it to become Active" >&2
+      exit 1
+      ;;
+    Failed | Deleting)
       echo "FAIL: directory ${DIRECTORY_ID} reached terminal stage '${AD_STAGE}'" >&2
       exit 1
       ;;
@@ -618,9 +633,9 @@ if [ -z "${FS_ID_P3}" ]; then
 fi
 echo "    file system id: ${FS_ID_P3}"
 
-read -r LIFECYCLE_P3 DEPLOY_TYPE_P3 CAPACITY_P3 STORAGE_TYPE_P3 THROUGHPUT_P3 RETENTION_P3 MAINT_P3 AD_ID_P3 DNS_AWS ARN_AWS <<EOF
+read -r LIFECYCLE_P3 DEPLOY_TYPE_P3 CAPACITY_P3 STORAGE_TYPE_P3 THROUGHPUT_P3 RETENTION_P3 MAINT_P3 AD_ID_P3 IOPS_MODE_P3 IOPS_P3 DNS_AWS ARN_AWS <<EOF
 $(aws fsx describe-file-systems --file-system-ids "${FS_ID_P3}" --region "${REGION}" \
-  --query 'FileSystems[0].[Lifecycle,WindowsConfiguration.DeploymentType,StorageCapacity,StorageType,WindowsConfiguration.ThroughputCapacity,WindowsConfiguration.AutomaticBackupRetentionDays,WindowsConfiguration.WeeklyMaintenanceStartTime,WindowsConfiguration.ActiveDirectoryId,DNSName,ResourceARN]' \
+  --query 'FileSystems[0].[Lifecycle,WindowsConfiguration.DeploymentType,StorageCapacity,StorageType,WindowsConfiguration.ThroughputCapacity,WindowsConfiguration.AutomaticBackupRetentionDays,WindowsConfiguration.WeeklyMaintenanceStartTime,WindowsConfiguration.ActiveDirectoryId,WindowsConfiguration.DiskIopsConfiguration.Mode,WindowsConfiguration.DiskIopsConfiguration.Iops,DNSName,ResourceARN]' \
   --output text)
 EOF
 
@@ -657,7 +672,21 @@ if [ "${AD_ID_P3}" != "${DIRECTORY_ID}" ]; then
   echo "FAIL: Phase 3 expected ActiveDirectoryId ${DIRECTORY_ID}, got '${AD_ID_P3}'" >&2
   exit 1
 fi
-echo "    file system is AVAILABLE and joined to ${DIRECTORY_ID} (SINGLE_AZ_1, SSD 32 GiB, 8 MBps, backups off)"
+# DiskIopsConfiguration must be READ BACK, not merely sent: Mode
+# AUTOMATIC is the API default, so without this assertion cdkd could drop
+# the whole block and the fixture would still pass — the same trap as
+# AutomaticBackupRetentionDays.
+if [ "${IOPS_MODE_P3}" != "AUTOMATIC" ]; then
+  echo "FAIL: Phase 3 expected DiskIopsConfiguration.Mode AUTOMATIC, got '${IOPS_MODE_P3}'" >&2
+  exit 1
+fi
+case "${IOPS_P3}" in
+  '' | None | *[!0-9]*)
+    echo "FAIL: Phase 3 expected a provisioned DiskIopsConfiguration.Iops, got '${IOPS_P3}'" >&2
+    exit 1
+    ;;
+esac
+echo "    file system is AVAILABLE and joined to ${DIRECTORY_ID} (SINGLE_AZ_1, SSD 32 GiB, 8 MBps, backups off, ${IOPS_P3} IOPS AUTOMATIC)"
 
 # Fn::GetAtt outputs must match the AWS-side values.
 if [ "${DNS_OUT}" != "${DNS_AWS}" ] || [ -z "${DNS_OUT}" ]; then

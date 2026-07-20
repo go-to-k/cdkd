@@ -294,9 +294,9 @@ if [ -z "${FS_ID_P1}" ]; then
 fi
 echo "    file system id: ${FS_ID_P1}"
 
-read -r LIFECYCLE_P1 DEPLOY_TYPE_P1 CAPACITY_P1 THROUGHPUT_P1 RETENTION_P1 MAINT_P1 ARN_AWS <<EOF
+read -r LIFECYCLE_P1 DEPLOY_TYPE_P1 CAPACITY_P1 THROUGHPUT_P1 RETENTION_P1 MAINT_P1 IOPS_MODE_P1 IOPS_P1 ARN_AWS <<EOF
 $(aws fsx describe-file-systems --file-system-ids "${FS_ID_P1}" --region "${REGION}" \
-  --query 'FileSystems[0].[Lifecycle,OntapConfiguration.DeploymentType,StorageCapacity,OntapConfiguration.ThroughputCapacity,OntapConfiguration.AutomaticBackupRetentionDays,OntapConfiguration.WeeklyMaintenanceStartTime,ResourceARN]' \
+  --query 'FileSystems[0].[Lifecycle,OntapConfiguration.DeploymentType,StorageCapacity,OntapConfiguration.ThroughputCapacity,OntapConfiguration.AutomaticBackupRetentionDays,OntapConfiguration.WeeklyMaintenanceStartTime,OntapConfiguration.DiskIopsConfiguration.Mode,OntapConfiguration.DiskIopsConfiguration.Iops,ResourceARN]' \
   --output text)
 EOF
 
@@ -329,7 +329,21 @@ if [ "${MAINT_P1}" != "1:05:00" ]; then
   echo "FAIL: Phase 1 expected WeeklyMaintenanceStartTime 1:05:00, got '${MAINT_P1}'" >&2
   exit 1
 fi
-echo "    file system is AVAILABLE (SINGLE_AZ_1, 1024 GiB, 128 MBps, backups off)"
+# DiskIopsConfiguration must be READ BACK, not merely sent: Mode
+# AUTOMATIC is the API default, so without this assertion cdkd could drop
+# the whole block and the fixture would still pass — the same trap as
+# AutomaticBackupRetentionDays.
+if [ "${IOPS_MODE_P1}" != "AUTOMATIC" ]; then
+  echo "FAIL: Phase 1 expected DiskIopsConfiguration.Mode AUTOMATIC, got '${IOPS_MODE_P1}'" >&2
+  exit 1
+fi
+case "${IOPS_P1}" in
+  '' | None | *[!0-9]*)
+    echo "FAIL: Phase 1 expected a provisioned DiskIopsConfiguration.Iops, got '${IOPS_P1}'" >&2
+    exit 1
+    ;;
+esac
+echo "    file system is AVAILABLE (SINGLE_AZ_1, 1024 GiB, 128 MBps, backups off, ${IOPS_P1} IOPS AUTOMATIC)"
 
 # Fn::GetAtt output must match the AWS-side value.
 if [ "${ARN_OUT}" != "${ARN_AWS}" ] || [ -z "${ARN_OUT}" ]; then

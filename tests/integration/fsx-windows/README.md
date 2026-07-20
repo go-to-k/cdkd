@@ -217,6 +217,25 @@ the region. Do not run two copies of this fixture against the same
 account+region simultaneously — the second run's pre-cleanup would
 destroy the first run's live directory.
 
+### Not covered
+
+Stated explicitly rather than left to inference:
+
+- **Variant-unique update arms.** The UPDATE phase proves the *routing* —
+  that a change reaches `UpdateFileSystem` under the right `configKey` and
+  the right `UpdateFileSystem<Variant>Configuration` wrapper. It does not
+  prove any variant-unique field: `WeeklyMaintenanceStartTime` is the same
+  trivial pass-through arm in all four apply functions. Windows' own arms — `SelfManagedActiveDirectoryConfiguration`,
+  `AuditLogConfiguration`, `FsrmConfiguration` — are untested, as is
+  self-managed AD (it would need real domain controllers).
+- **Nested sub-block reconciliation** (issue #1092 item 3) — the
+  `AuditLogConfiguration` / `DiskIopsConfiguration` *update* arms are not
+  exercised. This fixture only asserts `DiskIopsConfiguration` is created
+  and read back correctly; changing it in place is untested.
+- **The asynchronous admin-action wait**, because a metadata-only update
+  reports no pending action. It stays live-covered by `fsx-openzfs`,
+  whose UPDATE scales `ThroughputCapacity`.
+
 ## Timing
 
 The Managed AD takes ~20-40 minutes to provision and ~10 to delete; the
