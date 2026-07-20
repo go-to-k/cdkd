@@ -173,7 +173,7 @@ cleanup() {
   done
 
   # Best-effort cdkd state cleanup so a re-run is not blocked.
-  ${CLI} state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>/dev/null || true
+  ${CLI} state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --yes 2>/dev/null || true
   ${CLI} state orphan "${STACK}" --state-bucket "${STATE_BUCKET}" 2>/dev/null || true
 
   echo "[verify] cleanup attempt complete (exit ${rc})"

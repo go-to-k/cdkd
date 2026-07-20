@@ -70,6 +70,29 @@ cleanup guards. Enforced by
 `tests/unit/scripts/integ-verify-probe-not-found.test.ts`; user-facing writeup
 in [docs/testing.md](../../docs/testing.md).
 
+### `verify.sh` CLI flags (mandatory)
+
+Every flag a fixture passes must be declared on the **subcommand it targets**,
+not merely somewhere in `src/cli/options.ts`. The originating case (issue #1097):
+`cdkd import --region` died with `error: unknown option '--region'`, so the
+import round-trip that fixture existed to exercise had never run once. `--region`
+IS declared in options.ts and IS accepted by ~10 sibling commands — `import` is
+the single one that never attaches it, so the flag looked right by analogy.
+
+Two known traps when auditing by hand: `--help` omits hidden options (so help
+text is not decisive), and `--region` is NOT a no-op on the commands that DO
+accept it (it is the highest-precedence region source per
+[cli-internals.md](cli-internals.md)) — "cleaning up" deprecated `--region`
+flags would silently change region resolution.
+
+Enforced by `tests/unit/scripts/integ-cli-flags.test.ts`, which walks the real
+Commander tree via `buildProgram()` (`src/cli/program.ts`) rather than `--help`
+or options.ts. The check carries coverage floors, so a parser regression that
+stops seeing invocations fails loudly instead of passing vacuously. The
+`state-destroy-force-gate.sh` hook remains the commit-time guard for the
+specific `state destroy --force` case; this lint generalizes it to every
+subcommand and also catches pre-existing occurrences the hook cannot see.
+
 ## UPDATE Testing
 
 - Environment variable `CDKD_TEST_UPDATE=true` enables UPDATE test mode

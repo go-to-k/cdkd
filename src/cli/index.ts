@@ -1,27 +1,6 @@
 #!/usr/bin/env node
 
-import { Command } from 'commander';
-
-// Injected at build time by tsdown `define` from package.json.
-declare const __CDKD_VERSION__: string;
-
-import { createBootstrapCommand } from './commands/bootstrap.js';
-import { createSynthCommand } from './commands/synth.js';
-import { createListCommand } from './commands/list.js';
-import { createDeployCommand } from './commands/deploy.js';
-import { createDiffCommand } from './commands/diff.js';
-import { createDriftCommand } from './commands/drift.js';
-import { createDestroyCommand } from './commands/destroy.js';
-import { createEventsCommand } from './commands/events.js';
-import { createGcCommand } from './commands/gc.js';
-import { createOrphanCommand } from './commands/orphan.js';
-import { createPublishAssetsCommand } from './commands/publish-assets.js';
-import { createForceUnlockCommand } from './commands/force-unlock.js';
-import { createStateCommand } from './commands/state.js';
-import { createImportCommand } from './commands/import.js';
-import { createLocalCommand } from './commands/local-invoke.js';
-import { createExportCommand } from './commands/export.js';
-import { createMigrateCommand } from './commands/migrate-command.js';
+import { buildProgram } from './program.js';
 import { installPipeCloseHandler } from './pipe-close-handler.js';
 
 const SUBCOMMANDS = new Set([
@@ -67,31 +46,7 @@ function reorderArgs(argv: string[]): string[] {
  */
 async function main(): Promise<void> {
   installPipeCloseHandler();
-  const program = new Command();
-
-  program
-    .name('cdkd')
-    .description('CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API')
-    .version(__CDKD_VERSION__);
-
-  // Add commands
-  program.addCommand(createBootstrapCommand());
-  program.addCommand(createSynthCommand());
-  program.addCommand(createListCommand());
-  program.addCommand(createDeployCommand());
-  program.addCommand(createDiffCommand());
-  program.addCommand(createDriftCommand());
-  program.addCommand(createDestroyCommand());
-  program.addCommand(createEventsCommand());
-  program.addCommand(createGcCommand());
-  program.addCommand(createOrphanCommand());
-  program.addCommand(createImportCommand());
-  program.addCommand(createPublishAssetsCommand());
-  program.addCommand(createForceUnlockCommand());
-  program.addCommand(createStateCommand());
-  program.addCommand(createLocalCommand());
-  program.addCommand(createExportCommand());
-  program.addCommand(createMigrateCommand());
+  const program = buildProgram();
 
   // Reorder args: move options before subcommand to after it
   // This allows `cdkd -c key=value deploy` like CDK CLI
