@@ -906,6 +906,7 @@
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
+        "deletion-ordering-complex",
         "destroy-interrupt",
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
