@@ -1,4 +1,8 @@
-# integ-last-run ledger (update-type: one row per test). cols: test  last_run_iso  result  duration_s  flow  note
+# integ-last-run ledger (update-type: one row per test). cols: test	last_run_iso	result	duration_s	flow	note
+# INVARIANT: exactly one row per test. Duplicates break /pick-integ staleness ranking.
+# A git merge of two branches that each appended a row for the same test concatenates BOTH,
+# so after any rebase/merge that touches this file, re-check with:
+#   awk -F'\t' '!/^#/{c[$1]++} END{for(t in c) if(c[t]>1) print t}' docs/_generated/integ-last-run.tsv
 acm-certificate	2026-06-21T11:00:28Z	PASS	20	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 alb-advanced	2026-06-21T11:00:28Z	PASS	54	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 api-cognito	2026-06-21T11:00:28Z	PASS	66	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -193,9 +197,9 @@ sns-inline-subscription	2026-07-03T09:04:10Z	PASS	47	verify.sh	inline sub create
 launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAtt value change propagates to NO_CHANGE ASG same deploy; destroy clean
 dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
 backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
-asset-bootstrap	2026-07-15T01:59:00Z	PASS	88	verify.sh	new #1002 PR1 fixture: legacy notice, bootstrap storage+marker, cdkd-assets detect, deleted-repo hard error, clean destroy
-asset-migration	2026-07-15T05:59:16Z	PASS	800	verify.sh	PR2 #1002 final: +skip-assets phase +opt-out child assert; repoint incl nested+ECR; destroy clean
-asset-auto-create	2026-07-16T14:11:56Z	PASS	149	verify.sh	3 phases incl. --skip-assets no-auto-create leg (PR 1008 review fix-back), 0 orphans
+asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
+asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
+asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 ses-identity	2026-07-16T15:54:15Z	PASS	182	verify.sh	new fixture, 3 phases clean, orph clean
 eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
@@ -206,27 +210,18 @@ wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
 multi-resource	2026-07-17T12:05:00Z	PASS	85	standard	broad refresh for #1041 register-providers edit (post-rebase): 17 created/deleted, 0 errors, log groups swept
 local-run-task-cdkd-assets	2026-07-16T17:53:49Z	PASS	95	verify.sh	classifier regression for issue-1025 marker-based repo match; docker sweep clean
-gc-custom-asset-names	2026-07-16T17:50:46Z	PASS	188	verify.sh	us-west-2 (us-east-1 marker in use); bootstrap custom names + publish + gc + teardown clean
 gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run after review hardening (own-marker guard); clean
-asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
-asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
-asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
 budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-rebase (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans
 servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
-fsx-lustre	2026-07-17T16:22:08Z	PASS	1100	verify.sh	deploy+update(LZ4,tags)+destroy clean, 0 orphans (3rd run, post threshold-scoped update-wait fix)
 fsx-lustre	2026-07-18T00:50:49Z	PASS	900	verify.sh	deploy+update(incl tag removal)+destroy clean, 0 orphans (4th run, covers de7494ba observe-confirmed-action fix)
 dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
 codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
-codecommit	2026-07-18T19:00:09Z	PASS	150	verify.sh	issue #1065 drift (post-rebase re-run, mid-read guard); 3 phases + drift round-trip clean 0 orphans
 bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
 fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
 drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
 import-attributes	2026-07-19T18:00:36Z	PASS	39	verify.sh	PR #1099 final verify after provider empty-attr fixes; PolicyArn persisted; 1 del 0 err 0 orphans
-fsx-openzfs	2026-07-19T10:17:23Z	PASS	1310	verify.sh	issue #1068 OpenZFS variant: deploy+update(ThroughputCapacity 64->128, tag removal)+destroy clean, filesystem GONE, 0 orphans
-bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
-emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
 emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
 local-start-api	2026-07-19T18:27:53Z	PASS	22	verify.sh	rc ok, 0 docker orphans; swept verify.sh (#1097 pattern 1)
 local-start-api-websocket	2026-07-19T18:46:28Z	PASS	103	verify.sh	rc ok, 0 docker orphans; validates restructured multi-line trap (#1097)
