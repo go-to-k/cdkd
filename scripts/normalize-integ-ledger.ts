@@ -50,6 +50,27 @@ export const LEDGER_PATH = join(REPO_ROOT, 'docs/_generated/integ-last-run.tsv')
 /** Column count of a ledger data row: test/last_run_iso/result/duration_s/flow/note. */
 const COLUMNS = 6;
 
+/**
+ * The ONLY accepted `last_run_iso` shape: a fixed-width UTC instant, exactly
+ * what `/run-integ` writes via `date -u +%Y-%m-%dT%H:%M:%SZ`.
+ *
+ * This is deliberately stricter than `Date.parse`, which must NOT be used
+ * anywhere in this file. `Date.parse` is lenient — it accepts `2026`,
+ * `Jul 20 2026`, and (the dangerous one) a date-time with NO designator like
+ * `2026-01-01T05:00:00`, which the spec says to interpret as LOCAL time. That
+ * made the normalizer's own output timezone-dependent: the same two-row input
+ * picked a different winner under TZ=UTC vs TZ=Asia/Tokyo, so (a) a
+ * developer's run and CI's UTC run disagreed about whether a file was
+ * normalized — the gate would flap — and (b) the losing row is DELETED, so a
+ * real run record could be destroyed depending on whose machine ran the task.
+ * A normalizer whose entire value proposition is determinism cannot depend on
+ * the ambient timezone.
+ *
+ * With the shape pinned, plain string comparison on this fixed-width form IS
+ * chronological comparison, so no date parsing is needed anywhere.
+ */
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
 export interface LedgerRow {
   test: string;
   lastRunIso: string;
@@ -105,10 +126,13 @@ export function parseLedger(content: string): ParsedLedger {
     if (test.trim() === '') {
       throw new Error(`integ-last-run.tsv line ${lineNo}: empty test name`);
     }
-    if (Number.isNaN(Date.parse(lastRunIso))) {
+    if (!ISO_UTC.test(lastRunIso)) {
       throw new Error(
-        `integ-last-run.tsv line ${lineNo}: unparseable last_run_iso ${JSON.stringify(lastRunIso)} ` +
-          `for test ${JSON.stringify(test)} (expected an ISO-8601 instant, e.g. 2026-07-20T09:15:00Z)`,
+        `integ-last-run.tsv line ${lineNo}: malformed last_run_iso ${JSON.stringify(lastRunIso)} ` +
+          `for test ${JSON.stringify(test)} (expected a UTC instant of exactly the form ` +
+          `YYYY-MM-DDTHH:MM:SSZ, e.g. 2026-07-20T09:15:00Z — the trailing Z is required, ` +
+          `since a timezone-less timestamp would make the normalizer's output depend on the ` +
+          `local timezone)`,
       );
     }
 
@@ -123,12 +147,20 @@ export function parseLedger(content: string): ParsedLedger {
  * `last_run_iso`. An exact tie keeps the FIRST occurrence (no error — two
  * runs recorded in the same second are indistinguishable, and failing the
  * build over it would be worse than picking either).
+ *
+ * Compares the timestamps as plain STRINGS, never via `Date.parse`.
+ * `parseLedger` has already pinned every value to the fixed-width
+ * `YYYY-MM-DDTHH:MM:SSZ` UTC form, on which lexicographic order and
+ * chronological order coincide. Using `Date` here would reintroduce the
+ * timezone dependence described at `ISO_UTC` — and since the loser of this
+ * comparison is DELETED, a timezone-dependent winner means a real run record
+ * can be destroyed differently on different machines.
  */
 export function dedupeRows(rows: LedgerRow[]): LedgerRow[] {
   const winners = new Map<string, LedgerRow>();
   for (const row of rows) {
     const current = winners.get(row.test);
-    if (current === undefined || Date.parse(row.lastRunIso) > Date.parse(current.lastRunIso)) {
+    if (current === undefined || row.lastRunIso > current.lastRunIso) {
       winners.set(row.test, row);
     }
   }
@@ -165,16 +197,35 @@ export function findDuplicateTests(rows: LedgerRow[]): string[] {
   return [...counts.entries()].filter(([, n]) => n > 1).map(([test]) => test);
 }
 
-/** Test names that appear before a lexicographically smaller predecessor. */
+/**
+ * Test names that sit too LATE in the file — each one is followed by a
+ * lexicographically smaller name.
+ *
+ * At a break between `rows[i-1]` and `rows[i]` it is the PREDECESSOR that is
+ * reported, not `rows[i]`: for the input `b, a` the misplaced row is `b`
+ * (it belongs after `a`), and naming `a` would send whoever hits the CI
+ * failure looking at the wrong line.
+ */
 export function findOutOfOrderTests(rows: LedgerRow[]): string[] {
   const out: string[] = [];
   for (let i = 1; i < rows.length; i++) {
-    if (rows[i]!.test < rows[i - 1]!.test) out.push(rows[i]!.test);
+    if (rows[i]!.test < rows[i - 1]!.test) out.push(rows[i - 1]!.test);
   }
   return out;
 }
 
 export function main(argv: string[]): number {
+  try {
+    return run(argv);
+  } catch (e) {
+    // A malformed row / missing file must surface as the same clean one-liner
+    // the --check path prints, not as a raw Node stack trace in the CI log.
+    console.error(e instanceof Error ? e.message : String(e));
+    return 1;
+  }
+}
+
+function run(argv: string[]): number {
   const check = argv.includes('--check');
   // An explicit path is accepted so the CLI surface (exit codes, messages) is
   // testable against synthetic fixtures; CI and `vp run` pass no path.

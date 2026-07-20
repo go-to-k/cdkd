@@ -284,6 +284,17 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     the normalizer collapses to the newest row per test and re-sorts):
     ```bash
     LEDGER="docs/_generated/integ-last-run.tsv"
+    # Bootstrap the header if the file is somehow absent — `>>` alone would create it
+    # headerless, and the normalizer preserves whatever header it finds (none), silently
+    # dropping the invariant + do-not-hand-edit notice.
+    [ -f "$LEDGER" ] || printf '%b\n' \
+      '# integ-last-run ledger (update-type: one row per test). cols: test\tlast_run_iso\tresult\tduration_s\tflow\tnote' \
+      '# INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break' \
+      '# /pick-integ staleness ranking; the sort is what makes a rebased commit reproduce this' \
+      '# file byte-for-byte instead of appending a duplicate row (issue #1112).' \
+      '# GENERATED SHAPE - do not hand-edit. After recording a run, run:' \
+      '#   vp run integ-ledger-normalize' \
+      '# CI enforces this; a non-normalized file fails check-build-test.' > "$LEDGER"
     TEST="<test-name>"; TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     RESULT="PASS"; DUR="<seconds>"; FLOW="verify.sh"; NOTE="rc ok, orph clean"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$TEST" "$TS" "$RESULT" "$DUR" "$FLOW" "$NOTE" >> "$LEDGER"
