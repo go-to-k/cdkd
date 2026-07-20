@@ -293,6 +293,16 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     Commit the ledger update with the branch's changes (it is part of the integ run record;
     the file is intentionally committed so the last-run history is shared across sessions).
 
+    **After any rebase / merge that touches this file, re-check the one-row-per-test
+    invariant.** The awk above dedups against the branch's OWN base, so when two branches
+    each append a row for the same test, git concatenates BOTH on merge and neither side's
+    dedup ever sees the other. Found 2026-07-20: 9 tests carried duplicate rows, some with
+    differing timestamps (so `/pick-integ` could rank staleness off the OLDER run) and some
+    byte-identical. Cheap check, and re-run the dedup awk if it prints anything:
+    ```bash
+    awk -F'\t' '!/^#/{c[$1]++} END{for(t in c) if(c[t]>1) print t}' docs/_generated/integ-last-run.tsv
+    ```
+
 ## Important
 
 - Always use `--region us-east-1` for integration tests
