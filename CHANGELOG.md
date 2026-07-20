@@ -1,3 +1,10 @@
+## [0.254.1](https://github.com/go-to-k/cdkd/compare/v0.254.0...v0.254.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **providers:** FSx readCurrentState always-emit placeholders + Class 1 discriminator carve-out ([#1114](https://github.com/go-to-k/cdkd/issues/1114)) ([e30108f](https://github.com/go-to-k/cdkd/commit/e30108f4feb21a52bc8103b74c972232d880c3bd))
+
 # [0.254.0](https://github.com/go-to-k/cdkd/compare/v0.253.0...v0.254.0) (2026-07-20)
 
 
