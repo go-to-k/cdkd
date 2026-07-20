@@ -213,7 +213,6 @@ gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run 
 budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-rebase (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans
 servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
-fsx-lustre	2026-07-18T00:50:49Z	PASS	900	verify.sh	deploy+update(incl tag removal)+destroy clean, 0 orphans (4th run, covers de7494ba observe-confirmed-action fix)
 dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
 codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
 bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
@@ -248,3 +247,4 @@ getatt-fallback-guard	2026-07-20T03:13:10Z	PASS	60	verify.sh	new error-path fixt
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
 local-invoke	2026-07-20T03:08:51Z	PASS	120	verify.sh	integ-local refresh for pattern-2 sweep (local-start-alb-from-state probe change); docker sweep clean
 basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildProgram entry-point refactor (#1097)
+fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans
