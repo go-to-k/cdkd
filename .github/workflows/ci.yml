@@ -57,6 +57,29 @@ jobs:
             exit 1
           fi
 
+      # Issue #1112 — fail CI when docs/_generated/integ-last-run.tsv breaks
+      # its "exactly one row per test" invariant or its sorted order. The
+      # ledger is an update-type file, but /run-integ appends to it, so a
+      # rebase replays the append against a base that already carries the
+      # row and git auto-merge takes BOTH sides — 10 tests on main had
+      # silently accumulated duplicates that way. `vp run
+      # integ-ledger-normalize` rewrites the whole file deterministically
+      # (newest row per test, sorted by test name), which is both the
+      # rebase-safe write path and the invariant check: a replayed commit
+      # now produces an IDENTICAL file rather than an additive diff. Same
+      # `vp run ... && git diff --exit-code` shape as the matrix steps
+      # above. The script ALSO hard-fails on a malformed row (wrong column
+      # count / unparseable timestamp) rather than dropping it silently, so
+      # this step covers both classes.
+      - name: integ-last-run ledger is normalized
+        run: |
+          vp run integ-ledger-normalize
+          if ! git diff --quiet -- docs/_generated/integ-last-run.tsv; then
+            echo "::error::integ-last-run ledger is not normalized (duplicate rows or wrong order) — run \`vp run integ-ledger-normalize\` and commit docs/_generated/integ-last-run.tsv"
+            git --no-pager diff -- docs/_generated/integ-last-run.tsv
+            exit 1
+          fi
+
       # Issue #398 — fail CI when the cached three-tier provider-coverage
       # audit (docs/_generated/provider-coverage.json) Tier 1 list drifts
       # from src/provisioning/register-providers.ts. Offline check (<1s,
