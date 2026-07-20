@@ -251,3 +251,5 @@ state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055
 cc-api-fallback	2026-07-20T02:16:18Z	PASS	62	verify.sh	CC auto-route silent-drop closed, destroy clean, deployments swept
 cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transition/override #634 verified, 2 stacks destroy clean
 recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean
+fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
+fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
