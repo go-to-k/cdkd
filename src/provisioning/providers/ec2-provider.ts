@@ -80,7 +80,7 @@ import {
   isTerminationProtectionPropagationError,
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from '../ec2-termination-protection.js';
-import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -3677,60 +3677,21 @@ export class EC2Provider implements ResourceProvider {
    * is rule-level), and the typical adoption story is "find the VPC,
    * cdkd reconstructs the rest at deploy time".
    *
-   * EC2 supports `Filters: [{Name: 'tag:aws:cdk:path', Values: [path]}]`
-   * directly on `Describe*`, so the lookup is one API call per type.
+   * There is no `aws:cdk:path` tag lookup: AWS rejects `aws:`-prefixed tag
+   * writes, so that tag never exists on a real resource and a
+   * `Filters: [{Name: 'tag:aws:cdk:path', ...}]` `Describe*` could never
+   * match (issue #1134). Auto-mode import resolves ids from
+   * CloudFormation's `DescribeStackResources` or the template's
+   * physical-name property instead.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    // 1. Explicit override → verify by id and short-circuit.
+    // Explicit override → verify by id and short-circuit.
     if (input.knownPhysicalId) {
       return this.verifyExplicit(input.resourceType, input.knownPhysicalId);
     }
 
-    if (!input.cdkPath) return null;
-
-    const tagFilter = { Name: `tag:${CDK_PATH_TAG}`, Values: [input.cdkPath] };
-
-    try {
-      switch (input.resourceType) {
-        case 'AWS::EC2::VPC': {
-          const resp = await this.ec2Client.send(new DescribeVpcsCommand({ Filters: [tagFilter] }));
-          const vpc = resp.Vpcs?.[0];
-          return vpc?.VpcId ? { physicalId: vpc.VpcId, attributes: {} } : null;
-        }
-        case 'AWS::EC2::Subnet': {
-          const resp = await this.ec2Client.send(
-            new DescribeSubnetsCommand({ Filters: [tagFilter] })
-          );
-          const subnet = resp.Subnets?.[0];
-          return subnet?.SubnetId ? { physicalId: subnet.SubnetId, attributes: {} } : null;
-        }
-        case 'AWS::EC2::SecurityGroup': {
-          const resp = await this.ec2Client.send(
-            new DescribeSecurityGroupsCommand({ Filters: [tagFilter] })
-          );
-          const sg = resp.SecurityGroups?.[0];
-          return sg?.GroupId ? { physicalId: sg.GroupId, attributes: {} } : null;
-        }
-        case 'AWS::EC2::NatGateway': {
-          const resp = await this.ec2Client.send(
-            new DescribeNatGatewaysCommand({
-              Filter: [{ Name: `tag:${CDK_PATH_TAG}`, Values: [input.cdkPath] }],
-            })
-          );
-          // Skip already-deleted gateways — DescribeNatGateways returns
-          // them for some time after deletion.
-          const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
-          return gw?.NatGatewayId ? { physicalId: gw.NatGatewayId, attributes: {} } : null;
-        }
-        default:
-          // Unsupported EC2 sub-type. Caller will report as
-          // "skipped — provider does not implement import (yet)".
-          return null;
-      }
-    } catch (error) {
-      if (this.isNotFoundError(error)) return null;
-      throw error;
-    }
+    // A resource reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   /**

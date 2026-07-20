@@ -38,7 +38,6 @@ import {
   DeleteProjectCommand,
   UpdateProjectCommand,
   BatchGetProjectsCommand,
-  ListProjectsCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-codebuild';
 
@@ -216,47 +215,15 @@ describe('CodeBuildProvider', () => {
       expect(mockSend.mock.calls[0][0].input).toEqual({ names: ['my-project'] });
     });
 
-    it('tag-based lookup: ListProjects + BatchGetProjects matches lowercase key/value tag', async () => {
-      mockSend
-        // ListProjects
-        .mockResolvedValueOnce({ projects: ['other-project', 'my-project'] })
-        // BatchGetProjects
-        .mockResolvedValueOnce({
-          projects: [
-            {
-              name: 'other-project',
-              tags: [{ key: 'aws:cdk:path', value: 'OtherStack/Project/Resource' }],
-            },
-            {
-              name: 'my-project',
-              tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyProject/Resource' }],
-            },
-          ],
-        });
-
-      const result = await provider.import(makeInput());
-
-      expect(result).toEqual({ physicalId: 'my-project', attributes: {} });
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListProjectsCommand);
-      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(BatchGetProjectsCommand);
-      expect(mockSend.mock.calls[1][0].input).toEqual({ names: ['other-project', 'my-project'] });
-    });
-
-    it('returns null when no project matches the cdkPath', async () => {
-      mockSend
-        .mockResolvedValueOnce({ projects: ['unrelated'] })
-        .mockResolvedValueOnce({
-          projects: [
-            {
-              name: 'unrelated',
-              tags: [{ key: 'aws:cdk:path', value: 'OtherStack/Project/Resource' }],
-            },
-          ],
-        });
-
+    // No `aws:cdk:path` tag walk (issue #1134): AWS rejects `aws:`-prefixed
+    // tag writes, so the tag never exists on a real resource. Without an
+    // explicit override or a template `Name` the provider returns null
+    // without any AWS call.
+    it('returns null without any AWS call when no explicit override or Name is supplied', async () => {
       const result = await provider.import(makeInput());
 
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

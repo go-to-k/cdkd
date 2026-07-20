@@ -12,9 +12,6 @@ import {
   UpdateServiceCommand,
   DeleteServiceCommand,
   DescribeServicesCommand,
-  ListClustersCommand,
-  ListServicesCommand,
-  ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
   type Tag,
@@ -1811,9 +1808,8 @@ export class ECSProvider implements ResourceProvider {
    * Adopt an existing ECS resource into cdkd state.
    *
    * Supported types: `AWS::ECS::Cluster`, `AWS::ECS::Service`,
-   * `AWS::ECS::TaskDefinition`. ECS uses lowercase `key`/`value` tags
-   * (vs the standard CFn `Key`/`Value`), so the standard
-   * `matchesCdkPath` helper doesn't apply — match the tag manually.
+   * `AWS::ECS::TaskDefinition` — all explicit-override only (see the
+   * per-branch notes on why the `aws:cdk:path` tag walk was removed).
    *
    * Service has a composite physical id of `<clusterArn>|<serviceName>`
    * (the form ECSProvider uses internally for mutation operations),
@@ -1850,25 +1846,11 @@ export class ECSProvider implements ResourceProvider {
         throw err;
       }
     }
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListClustersCommand({ ...(nextToken && { nextToken }) })
-      );
-      for (const arn of list.clusterArns ?? []) {
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ resourceArn: arn })
-        );
-        if (this.tagsMatchCdkPath(tagsResp.tags, input.cdkPath)) {
-          // Cluster physical id is the cluster name (last segment of ARN).
-          const name = arn.substring(arn.lastIndexOf('/') + 1);
-          return { physicalId: name, attributes: {} };
-        }
-      }
-      nextToken = list.nextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // cluster reaching here needs an explicit `--resource` override.
     return null;
   }
 
@@ -1878,39 +1860,11 @@ export class ECSProvider implements ResourceProvider {
     if (input.knownPhysicalId) {
       return { physicalId: input.knownPhysicalId, attributes: {} };
     }
-    if (!input.cdkPath) return null;
-
-    // Walk every cluster, then every service in that cluster, matching
-    // tags. Expensive on accounts with many clusters; users should
-    // prefer explicit overrides for ECS Services in adoption flows.
-    let clusterToken: string | undefined;
-    do {
-      const clusterList = await this.getClient().send(
-        new ListClustersCommand({ ...(clusterToken && { nextToken: clusterToken }) })
-      );
-      for (const clusterArn of clusterList.clusterArns ?? []) {
-        let svcToken: string | undefined;
-        do {
-          const svcList = await this.getClient().send(
-            new ListServicesCommand({
-              cluster: clusterArn,
-              ...(svcToken && { nextToken: svcToken }),
-            })
-          );
-          for (const svcArn of svcList.serviceArns ?? []) {
-            const tagsResp = await this.getClient().send(
-              new ListTagsForResourceCommand({ resourceArn: svcArn })
-            );
-            if (this.tagsMatchCdkPath(tagsResp.tags, input.cdkPath)) {
-              const svcName = svcArn.substring(svcArn.lastIndexOf('/') + 1);
-              return { physicalId: `${clusterArn}|${svcName}`, attributes: {} };
-            }
-          }
-          svcToken = svcList.nextToken;
-        } while (svcToken);
-      }
-      clusterToken = clusterList.nextToken;
-    } while (clusterToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // service reaching here needs an explicit `--resource` override.
     return null;
   }
 
@@ -1935,16 +1889,5 @@ export class ECSProvider implements ResourceProvider {
       }
     }
     return null;
-  }
-
-  private tagsMatchCdkPath(
-    tags: Array<{ key?: string | undefined; value?: string | undefined }> | undefined,
-    cdkPath: string
-  ): boolean {
-    if (!tags) return false;
-    for (const t of tags) {
-      if (t.key === 'aws:cdk:path' && t.value === cdkPath) return true;
-    }
-    return false;
   }
 }

@@ -852,39 +852,15 @@ describe('Route53Provider', () => {
       expect(call.input).toEqual({ Id: 'Z123' });
     });
 
-    it('tag-based lookup (HostedZone): walks ListHostedZones + ListTagsForResource', async () => {
-      // ListHostedZones
-      mockSend.mockResolvedValueOnce({
-        HostedZones: [
-          { Id: '/hostedzone/ZAAA', Name: 'a.example.com.' },
-          { Id: '/hostedzone/ZBBB', Name: 'b.example.com.' },
-        ],
-        IsTruncated: false,
-      });
-      // ListTagsForResource for ZAAA
-      mockSend.mockResolvedValueOnce({
-        ResourceTagSet: { Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] },
-      });
-      // ListTagsForResource for ZBBB
-      mockSend.mockResolvedValueOnce({
-        ResourceTagSet: { Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyZone' }] },
-      });
-
+    it('returns null (HostedZone) without any AWS call when no override is given', async () => {
+      // The `aws:cdk:path` tag walk is gone (issue #1134) -- AWS rejects
+      // `aws:`-prefixed tag writes, so the tag never exists and the walk could
+      // not match. Without `--resource` there is nothing left to look up, and
+      // the provider must not burn a ListHostedZones page discovering that.
       const result = await provider.import(makeInput());
-      expect(result).toEqual({ physicalId: 'ZBBB', attributes: {} });
-    });
 
-    it('returns null (HostedZone) when no zone matches', async () => {
-      mockSend.mockResolvedValueOnce({
-        HostedZones: [{ Id: '/hostedzone/Zonly', Name: 'only.example.com.' }],
-        IsTruncated: false,
-      });
-      mockSend.mockResolvedValueOnce({
-        ResourceTagSet: { Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] },
-      });
-
-      const result = await provider.import(makeInput());
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('RecordSet: explicit override returned as-is, no AWS calls', async () => {

@@ -507,38 +507,11 @@ describe('RDSDBProxyProvider', () => {
       });
     });
 
-    it('auto-lookup matches via aws:cdk:path tag', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          DBProxies: [{ DBProxyName: PROXY_NAME, DBProxyArn: PROXY_ARN }],
-          Marker: undefined,
-        })
-        .mockResolvedValueOnce({
-          TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/Proxy/Resource' }],
-        })
-        .mockResolvedValueOnce({
-          DBProxies: [{ DBProxyArn: PROXY_ARN, Endpoint: PROXY_ENDPOINT, VpcId: 'vpc-xxx' }],
-        }); // buildImportResult
-
-      const result = await provider.import({
-        logicalId: 'Proxy',
-        resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/Proxy/Resource',
-        stackName: 'MyStack',
-        region: 'us-east-1',
-        properties: {},
-      } as never);
-
-      expect(result).toMatchObject({ physicalId: PROXY_NAME });
-    });
-
-    it('auto-lookup returns null when no match', async () => {
-      mockSend
-        .mockResolvedValueOnce({ DBProxies: [{ DBProxyName: 'OtherProxy', DBProxyArn: PROXY_ARN }] })
-        .mockResolvedValueOnce({
-          TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/OtherProxy/Resource' }],
-        });
-
+    // Issue #1134: the `aws:cdk:path` tag walk was removed. AWS rejects
+    // `aws:`-prefixed tag writes, so that tag never exists on a real proxy
+    // and the walk could never match. Without an explicit override or a
+    // template `DBProxyName`, import returns null without any AWS call.
+    it('returns null without listing when no explicit id or DBProxyName is available', async () => {
       const result = await provider.import({
         logicalId: 'Proxy',
         resourceType: RESOURCE_TYPE,
@@ -549,6 +522,24 @@ describe('RDSDBProxyProvider', () => {
       } as never);
 
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('resolves from the template DBProxyName property', async () => {
+      mockSend.mockResolvedValueOnce({
+        DBProxies: [{ DBProxyArn: PROXY_ARN, Endpoint: PROXY_ENDPOINT, VpcId: 'vpc-xxx' }],
+      });
+
+      const result = await provider.import({
+        logicalId: 'Proxy',
+        resourceType: RESOURCE_TYPE,
+        cdkPath: 'MyStack/Proxy/Resource',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: { DBProxyName: PROXY_NAME },
+      } as never);
+
+      expect(result).toMatchObject({ physicalId: PROXY_NAME });
     });
   });
 });

@@ -20,7 +20,6 @@ import {
   GetAuthorizerCommand,
   UpdateAuthorizerCommand,
   GetApiCommand,
-  GetApisCommand,
   NotFoundException,
   type ProtocolType,
   type IpAddressType,
@@ -37,11 +36,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  CDK_PATH_TAG,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1157,8 +1152,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * Adopt an existing API Gateway V2 resource into cdkd state.
    *
-   * `AWS::ApiGatewayV2::Api` supports full tag-based auto-lookup via
-   * `GetApis` (`Tags` is a `Record<string,string>` map on each item).
+   * `AWS::ApiGatewayV2::Api` resolves an explicit `--resource` override
+   * (verified via `GetApi`). There is no `aws:cdk:path` tag walk — AWS
+   * rejects `aws:`-prefixed tag writes, so that tag never exists on a real
+   * resource (issue #1134); auto-mode import resolves ids from
+   * CloudFormation's `DescribeStackResources` instead.
    *
    * Sub-resources (`Stage`, `Integration`, `Route`, `Authorizer`) are
    * scoped under a parent `ApiId`, and their physical ids are not
@@ -1187,21 +1185,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new GetApisCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      for (const api of list.Items ?? []) {
-        if (!api.ApiId) continue;
-        if (api.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
-          return { physicalId: api.ApiId, attributes: {} };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; an
+    // API reaching here needs an explicit `--resource` override.
     return null;
   }
 

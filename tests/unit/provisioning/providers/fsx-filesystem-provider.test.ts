@@ -1874,42 +1874,11 @@ describe('FSxFileSystemProvider import', () => {
     ).resolves.toBeNull();
   });
 
-  it('finds a file system by aws:cdk:path tag across pagination', async () => {
-    routeSend({
-      DescribeFileSystemsCommand: [
-        {
-          FileSystems: [{ FileSystemId: 'fs-other', Tags: [] }],
-          NextToken: 'page2',
-        },
-        {
-          FileSystems: [
-            availableFs({ Tags: [{ Key: 'aws:cdk:path', Value: 'Stack/Fs/Resource' }] }),
-          ],
-        },
-      ],
-    });
-
-    const result = await newProvider().import({
-      logicalId: 'MyFs',
-      resourceType: RESOURCE_TYPE,
-      cdkPath: 'Stack/Fs/Resource',
-      stackName: 'Stack',
-      region: 'us-east-1',
-      properties: {},
-    });
-
-    expect(result?.physicalId).toBe(FS_ID);
-    // The second page request must forward the first page's NextToken —
-    // without this assertion a broken pagination loop would still pass
-    // (page 2 is served regardless of input by the mock queue).
-    const describes = callsOf(DescribeFileSystemsCommand);
-    expect(describes).toHaveLength(2);
-    expect(describes[1].input['NextToken']).toBe('page2');
-  });
-
-  it('returns null when neither an id nor a matching tag is found', async () => {
-    routeSend({ DescribeFileSystemsCommand: { FileSystems: [] } });
-
+  // The `aws:cdk:path` tag walk was removed in issue #1134: AWS rejects
+  // `aws:`-prefixed tag writes, so that tag never exists on a real resource
+  // and the walk could not match. Without an explicit override, import must
+  // report not-found without any AWS call.
+  it('returns null without an override and issues no AWS call', async () => {
     await expect(
       newProvider().import({
         logicalId: 'MyFs',
@@ -1920,6 +1889,7 @@ describe('FSxFileSystemProvider import', () => {
         properties: {},
       })
     ).resolves.toBeNull();
+    expect(callsOf(DescribeFileSystemsCommand)).toHaveLength(0);
   });
 });
 

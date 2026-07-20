@@ -14,7 +14,6 @@ import {
   GetIntrospectionSchemaCommand,
   GetResolverCommand,
   ListApiKeysCommand,
-  ListGraphqlApisCommand,
   NotFoundException as AppSyncNotFoundException,
   UpdateGraphqlApiCommand,
   UpdateDataSourceCommand,
@@ -37,11 +36,7 @@ import { parse as graphqlParse, print as graphqlPrint } from 'graphql';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  CDK_PATH_TAG,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1660,11 +1655,13 @@ export class AppSyncProvider implements ResourceProvider {
   /**
    * Adopt an existing AppSync resource into cdkd state.
    *
-   * `AWS::AppSync::GraphQLApi` supports full tag-based auto-lookup via
-   * `ListGraphqlApis` (each item carries a `tags` map). AppSync sub-resources
+   * `AWS::AppSync::GraphQLApi` resolves an explicit `--resource` override
+   * (verified via `GetGraphqlApi`). There is no `aws:cdk:path` tag walk —
+   * AWS rejects `aws:`-prefixed tag writes, so that tag never exists on a
+   * real resource (issue #1134); auto-mode import resolves ids from
+   * CloudFormation's `DescribeStackResources` instead. AppSync sub-resources
    * (`GraphQLSchema`, `DataSource`, `Resolver`, `ApiKey`) are scoped under a
-   * parent `apiId` and cannot be discovered by tag at the account level —
-   * explicit-override only.
+   * parent `apiId` — explicit-override only.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.resourceType !== 'AWS::AppSync::GraphQLApi') {
@@ -1685,21 +1682,11 @@ export class AppSyncProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListGraphqlApisCommand({ ...(nextToken && { nextToken }) })
-      );
-      for (const api of list.graphqlApis ?? []) {
-        if (!api.apiId) continue;
-        if (api.tags?.[CDK_PATH_TAG] === input.cdkPath) {
-          return { physicalId: api.apiId, attributes: {} };
-        }
-      }
-      nextToken = list.nextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // GraphQL API reaching here needs an explicit `--resource` override.
     return null;
   }
 }

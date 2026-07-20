@@ -299,6 +299,18 @@ after the name-based lookup has come up empty.
 > the code path, not which imports succeed. Adoption in practice comes from the
 > template's physical-name property or from the CloudFormation lookup added in
 > #1128.
+>
+> Because the path is unreachable, it is being **deleted** rather than kept
+> ([#1134](https://github.com/go-to-k/cdkd/issues/1134)). Batch 1 has already
+> removed it from `apigatewayv2`, `appsync`, `codebuild`, `ec2`, `ecs`,
+> `elasticache`, `elbv2`, `fsx-filesystem`, `glue`, `iam-user-group`,
+> `neptune`, `rds`, the `rds-dbproxy` family, `route53`, `s3-tables`, and
+> `servicediscovery` — those types now resolve only from `--resource` /
+> CloudFormation / a template physical-name property. Two of them
+> (`AWS::S3Tables::TableBucket`, the `AWS::ServiceDiscovery::*Namespace`
+> types) keep a list walk purely for that name match. The remaining entries
+> below still carry the dead code path and are removed in a follow-up batch,
+> at which point this whole section goes away.
 
 - AWS::S3::Bucket
 - AWS::Lambda::Function

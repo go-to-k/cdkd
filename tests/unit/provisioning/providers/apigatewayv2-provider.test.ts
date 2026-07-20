@@ -36,7 +36,6 @@ import { ApiGatewayV2Provider } from '../../../../src/provisioning/providers/api
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import {
   GetApiCommand,
-  GetApisCommand,
   NotFoundException,
 } from '@aws-sdk/client-apigatewayv2';
 
@@ -81,40 +80,14 @@ describe('ApiGatewayV2Provider import', () => {
     expect(mockSend.mock.calls[0][0].input).toEqual({ ApiId: 'abc123' });
   });
 
-  it('tag-based lookup: GetApis matches the aws:cdk:path tag map', async () => {
-    mockSend.mockResolvedValueOnce({
-      Items: [
-        {
-          ApiId: 'other123',
-          Tags: { 'aws:cdk:path': 'OtherStack/Api/Resource' },
-        },
-        {
-          ApiId: 'abc123',
-          Tags: { 'aws:cdk:path': 'MyStack/MyApi/Resource' },
-        },
-      ],
-    });
-
-    const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: 'abc123', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(1);
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetApisCommand);
-  });
-
-  it('returns null when no API matches the cdkPath', async () => {
-    mockSend.mockResolvedValueOnce({
-      Items: [
-        {
-          ApiId: 'unrelated',
-          Tags: { 'aws:cdk:path': 'OtherStack/Api/Resource' },
-        },
-      ],
-    });
-
+  // No `aws:cdk:path` tag walk (issue #1134): AWS rejects `aws:`-prefixed
+  // tag writes, so the tag never exists on a real resource. Without an
+  // explicit override the provider returns null without any AWS call.
+  it('returns null without any AWS call when no explicit override is supplied', async () => {
     const result = await provider.import(makeInput());
 
     expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('sub-resource override-only: returns the knownPhysicalId without API calls', async () => {

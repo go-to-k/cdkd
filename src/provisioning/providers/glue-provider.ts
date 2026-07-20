@@ -7,19 +7,15 @@ import {
   UpdateTableCommand,
   DeleteTableCommand,
   GetDatabaseCommand,
-  GetDatabasesCommand,
   GetTableCommand,
-  GetTablesCommand,
   GetTagsCommand,
   CreateWorkflowCommand,
   UpdateWorkflowCommand,
   DeleteWorkflowCommand,
   GetWorkflowCommand,
-  ListWorkflowsCommand,
   CreateSecurityConfigurationCommand,
   DeleteSecurityConfigurationCommand,
   GetSecurityConfigurationCommand,
-  GetSecurityConfigurationsCommand,
   CreateJobCommand,
   UpdateJobCommand,
   DeleteJobCommand,
@@ -75,7 +71,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -96,8 +92,6 @@ import type {
  */
 export class GlueProvider implements ResourceProvider {
   private client: GlueClient | undefined;
-  private stsClient: STSClient | undefined;
-  private cachedAccountId: string | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('GlueProvider');
 
@@ -674,16 +668,11 @@ export class GlueProvider implements ResourceProvider {
   /**
    * Adopt an existing Glue Database or Table into cdkd state.
    *
-   * Lookup order (per type):
-   *  1. Explicit override / template name → verify with `GetDatabase`
-   *     or `GetTable`.
-   *  2. Walk `GetDatabases` / `GetTables` paginators and match the
-   *     `aws:cdk:path` tag via `GetTags(ResourceArn)`. Glue tags are
-   *     a `Record<string,string>` map (not a `Tag[]` array), so the
-   *     match is `tags?.[CDK_PATH_TAG] === input.cdkPath`.
-   *
-   * Glue list APIs return only names — ARNs are constructed locally
-   * for the per-item GetTags call.
+   * Lookup (per type): explicit override / template name → verify with
+   * `GetDatabase` or `GetTable`. There is no `aws:cdk:path` tag walk — AWS
+   * rejects `aws:`-prefixed tag writes, so that tag never exists on a real
+   * resource (issue #1134); auto-mode import resolves ids from
+   * CloudFormation's `DescribeStackResources` instead.
    */
   /**
    * Read the AWS-current Glue resource configuration in CFn-property shape.
@@ -849,25 +838,11 @@ export class GlueProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new GetDatabasesCommand({
-          ...(nextToken && { NextToken: nextToken }),
-          ...(catalogId && { CatalogId: catalogId }),
-        })
-      );
-      for (const db of list.DatabaseList ?? []) {
-        if (!db.Name) continue;
-        const arn = await this.buildDatabaseArn(db.Name, db.CatalogId);
-        if (await this.tagsMatchCdkPath(arn, input.cdkPath)) {
-          return { physicalId: db.Name, attributes: {} };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // database reaching here needs an explicit `--resource` override.
     return null;
   }
 
@@ -913,71 +888,12 @@ export class GlueProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath || !databaseName) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new GetTablesCommand({
-          DatabaseName: databaseName,
-          ...(nextToken && { NextToken: nextToken }),
-          ...(catalogId && { CatalogId: catalogId }),
-        })
-      );
-      for (const t of list.TableList ?? []) {
-        if (!t.Name) continue;
-        const arn = await this.buildTableArn(databaseName, t.Name, catalogId);
-        if (await this.tagsMatchCdkPath(arn, input.cdkPath)) {
-          return { physicalId: `${databaseName}|${t.Name}`, attributes: {} };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // table reaching here needs an explicit `--resource` override.
     return null;
-  }
-
-  private async tagsMatchCdkPath(arn: string, cdkPath: string): Promise<boolean> {
-    try {
-      const resp = await this.getClient().send(new GetTagsCommand({ ResourceArn: arn }));
-      return resp.Tags?.[CDK_PATH_TAG] === cdkPath;
-    } catch (err) {
-      if (err instanceof EntityNotFoundException) return false;
-      throw err;
-    }
-  }
-
-  private async buildDatabaseArn(databaseName: string, catalogId?: string): Promise<string> {
-    const region = await this.getRegion();
-    const account = catalogId ?? (await this.getAccountId());
-    return `arn:aws:glue:${region}:${account}:database/${databaseName}`;
-  }
-
-  private async buildTableArn(
-    databaseName: string,
-    tableName: string,
-    catalogId?: string
-  ): Promise<string> {
-    const region = await this.getRegion();
-    const account = catalogId ?? (await this.getAccountId());
-    return `arn:aws:glue:${region}:${account}:table/${databaseName}/${tableName}`;
-  }
-
-  private async getRegion(): Promise<string> {
-    const region = await this.getClient().config.region();
-    return region || this.providerRegion || 'us-east-1';
-  }
-
-  private async getAccountId(): Promise<string> {
-    if (this.cachedAccountId) return this.cachedAccountId;
-    if (!this.stsClient) {
-      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
-    }
-    const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
-    if (!identity.Account) {
-      throw new Error('Failed to resolve AWS account id from STS');
-    }
-    this.cachedAccountId = identity.Account;
-    return this.cachedAccountId;
   }
 }
 
@@ -1242,32 +1158,12 @@ export class GlueWorkflowProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListWorkflowsCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      for (const name of list.Workflows ?? []) {
-        const arn = await this.buildWorkflowArn(name);
-        if (await this.tagsMatchCdkPath(arn, input.cdkPath)) {
-          return { physicalId: name, attributes: {} };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // workflow reaching here needs an explicit `--resource` override.
     return null;
-  }
-
-  private async tagsMatchCdkPath(arn: string, cdkPath: string): Promise<boolean> {
-    try {
-      const resp = await this.getClient().send(new GetTagsCommand({ ResourceArn: arn }));
-      return resp.Tags?.[CDK_PATH_TAG] === cdkPath;
-    } catch (err) {
-      if (err instanceof EntityNotFoundException) return false;
-      throw err;
-    }
   }
 
   private async buildWorkflowArn(workflowName: string): Promise<string> {
@@ -1509,28 +1405,15 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
       }
     }
 
-    // SecurityConfiguration does NOT support tags (no GetTags arn for
-    // this type), so we cannot do `aws:cdk:path` lookup. Fall back to
-    // walking `GetSecurityConfigurations` + matching the explicit name
-    // — but without an explicit name in the template, we have nothing
-    // to match on. Return null: import users must pass `--resource
-    // <logicalId>=<name>` for this type.
-    if (!explicitName) {
-      let nextToken: string | undefined;
-      do {
-        const list = await this.getClient().send(
-          new GetSecurityConfigurationsCommand({ ...(nextToken && { NextToken: nextToken }) })
-        );
-        // No tag-based match possible — the per-name loop is documented
-        // for completeness; without a known name we cannot disambiguate.
-        for (const _entry of list.SecurityConfigurations ?? []) {
-          // Intentional no-op: see docstring above.
-        }
-        nextToken = list.NextToken;
-      } while (nextToken);
-      return null;
-    }
-
+    // Nothing left to look up. SecurityConfiguration is not taggable at all
+    // (the type has no ARN to hand to `GetTags`), so it never had even the
+    // now-removed `aws:cdk:path` walk to fall back on — and without an
+    // explicit name there is no other key to match a candidate against.
+    // Import users must pass `--resource <logicalId>=<name>` for this type.
+    //
+    // This previously paginated all of `GetSecurityConfigurations` into a
+    // loop whose body was an explicit no-op, burning a full listing on every
+    // call to reach the same `null` (issue #1134).
     return null;
   }
 }

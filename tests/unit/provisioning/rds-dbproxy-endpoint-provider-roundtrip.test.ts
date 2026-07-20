@@ -473,38 +473,11 @@ describe('RDSDBProxyEndpointProvider', () => {
       expect(result).toMatchObject({ physicalId: EP_NAME });
     });
 
-    it('auto-lookup matches via aws:cdk:path tag', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          DBProxyEndpoints: [{ DBProxyEndpointName: EP_NAME, DBProxyEndpointArn: EP_ARN }],
-          Marker: undefined,
-        })
-        .mockResolvedValueOnce({
-          TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/EP/Resource' }],
-        })
-        .mockResolvedValueOnce({
-          DBProxyEndpoints: [{ Endpoint: EP_HOST, DBProxyEndpointArn: EP_ARN, IsDefault: false }],
-        });
-      const result = await provider.import({
-        logicalId: 'EP',
-        resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/EP/Resource',
-        stackName: 'MyStack',
-        region: 'us-east-1',
-        properties: {},
-      });
-      expect(result).toMatchObject({ physicalId: EP_NAME });
-    });
-
-    it('returns null when no match', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          DBProxyEndpoints: [{ DBProxyEndpointName: 'OtherEP', DBProxyEndpointArn: EP_ARN }],
-          Marker: undefined,
-        })
-        .mockResolvedValueOnce({
-          TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/OtherEP' }],
-        });
+    // Issue #1134: the `aws:cdk:path` tag walk was removed. AWS rejects
+    // `aws:`-prefixed tag writes, so that tag never exists on a real
+    // endpoint and the walk could never match. Without an explicit override
+    // or a template `DBProxyEndpointName`, import returns null with no call.
+    it('returns null without listing when no explicit id or name property is available', async () => {
       const result = await provider.import({
         logicalId: 'EP',
         resourceType: RESOURCE_TYPE,
@@ -514,6 +487,22 @@ describe('RDSDBProxyEndpointProvider', () => {
         properties: {},
       });
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('resolves from the template DBProxyEndpointName property', async () => {
+      mockSend.mockResolvedValueOnce({
+        DBProxyEndpoints: [{ Endpoint: EP_HOST, DBProxyEndpointArn: EP_ARN, IsDefault: false }],
+      });
+      const result = await provider.import({
+        logicalId: 'EP',
+        resourceType: RESOURCE_TYPE,
+        cdkPath: 'MyStack/EP/Resource',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: { DBProxyEndpointName: EP_NAME },
+      });
+      expect(result).toMatchObject({ physicalId: EP_NAME });
     });
   });
 });
