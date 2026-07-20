@@ -783,7 +783,32 @@ export class FSxFileSystemProvider implements ResourceProvider {
         )
       : { diff: {}, hasMutableDiff: false };
 
-    const storageCapacityChanged = changed('StorageCapacity');
+    // §3b Class 2 wire-layer sanitize. `readCurrentState` emits
+    // `StorageCapacity ?? 0` as its always-emit placeholder, and the 0 is
+    // REACHABLE on a real AWS shape: FSx Lustre Intelligent-Tiering
+    // (`DataReadCacheConfiguration`) does not provision capacity, so
+    // `DescribeFileSystems` returns no `StorageCapacity` for it —
+    // `StorageCapacity` is neither createOnly nor required in the registry
+    // schema for exactly that reason. If such a placeholder ever reaches
+    // here as a "change" (an undefined-at-capture / defined-later
+    // transition), shipping `StorageCapacity: 0` would earn an opaque AWS
+    // rejection. Suppress the field instead of sending it: 0 is never a
+    // legal desired capacity, so there is nothing to express — and
+    // suppressing rather than throwing keeps an otherwise-valid update (a
+    // variant-config diff in the same call) working, instead of failing it
+    // over a synthetic value the user never wrote. Folded into the
+    // `changed()` flag so the no-op early-return below also sees it: when
+    // the placeholder is the ONLY diff, the update is correctly a no-op
+    // rather than an empty UpdateFileSystem call.
+    const resolvedStorageCapacity = toNumber(properties['StorageCapacity']);
+    const storageCapacityIsPlaceholder =
+      resolvedStorageCapacity !== undefined && resolvedStorageCapacity <= 0;
+    if (storageCapacityIsPlaceholder && changed('StorageCapacity')) {
+      this.logger.debug(
+        `Suppressing non-positive StorageCapacity (${resolvedStorageCapacity}) for FSx FileSystem ${logicalId}: this is the readCurrentState placeholder for a capacity-less file system (Lustre Intelligent-Tiering), not a desired value.`
+      );
+    }
+    const storageCapacityChanged = changed('StorageCapacity') && !storageCapacityIsPlaceholder;
     const storageTypeChanged = changed('StorageType');
     const typeVersionChanged = changed('FileSystemTypeVersion');
     const networkTypeChanged = changed('NetworkType');
@@ -1869,7 +1894,22 @@ export class FSxFileSystemProvider implements ResourceProvider {
         // Unknown / absent FileSystemType: emit no variant block rather than
         // guessing one. cdkd's create() rejects such a type up front, so this
         // is only reachable for a file system created outside cdkd on a type
-        // cdkd does not support yet.
+        // cdkd does not support yet (a future 5th variant).
+        //
+        // WARN, not silence: this branch is a real behavior regression risk.
+        // Before the discriminator carve-out, whatever config block AWS
+        // returned was emitted regardless of type, so an unrecognized variant
+        // still produced a (partial) snapshot. Now it produces NONE — which
+        // reads downstream as "no drift" on a resource whose configuration
+        // cdkd never actually looked at. Guessing a block is not better than
+        // omitting one, so the behavior stays; it just must not be quiet.
+        this.logger.warn(
+          `FSx FileSystem ${physicalId} has FileSystemType '${fs.FileSystemType ?? '(unset)'}', which cdkd does not recognize (expected one of ${Object.keys(
+            VARIANT_CONFIG_KEY
+          ).join(
+            ' / '
+          )}). Its variant configuration is NOT included in the drift snapshot, so drift in that block cannot be detected. Please report this at https://github.com/go-to-k/cdkd/issues`
+        );
         break;
     }
 

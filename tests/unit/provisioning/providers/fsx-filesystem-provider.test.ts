@@ -51,6 +51,16 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
+import { getLogger } from '../../../../src/utils/logger.js';
+
+/**
+ * The mocked child logger the provider writes to. `child: () => childLogger`
+ * closes over ONE instance, so this is the same object the provider holds.
+ */
+const childLogger = getLogger().child('FSxFileSystemProvider') as unknown as {
+  debug: ReturnType<typeof vi.fn>;
+  warn: ReturnType<typeof vi.fn>;
+};
 
 const RESOURCE_TYPE = 'AWS::FSx::FileSystem';
 const FS_ID = 'fs-0123456789abcdef0';
@@ -691,6 +701,81 @@ describe('FSxFileSystemProvider update', () => {
     expect(untag.input).toEqual({ ResourceARN: FS_ARN, TagKeys: ['env'] });
   });
 
+  // ─── §3b Class 2 wire-layer sanitize for the StorageCapacity placeholder ──
+  //
+  // readCurrentState emits `StorageCapacity ?? 0`, and the 0 is reachable on a
+  // real AWS shape: Lustre Intelligent-Tiering (DataReadCacheConfiguration)
+  // provisions no capacity, so DescribeFileSystems returns none. Per §3b the
+  // placeholder stays on the read side and is sanitized at the WIRE layer.
+
+  it('suppresses the non-positive StorageCapacity placeholder while still shipping the real diff (Class 2)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const previous = {
+      FileSystemType: 'LUSTRE',
+      StorageCapacity: 1200,
+      LustreConfiguration: { DataCompressionType: 'NONE' },
+    };
+    const next = {
+      FileSystemType: 'LUSTRE',
+      StorageCapacity: 0, // the readCurrentState placeholder, never a desired value
+      LustreConfiguration: { DataCompressionType: 'LZ4' },
+    };
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, next, previous);
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update).toBeDefined();
+    // The genuine diff still ships in full...
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: { DataCompressionType: 'LZ4' },
+    });
+    // ...and `StorageCapacity: 0` does NOT — AWS would reject it outright.
+    expect(update.input).not.toHaveProperty('StorageCapacity');
+  });
+
+  it('is a no-op when the non-positive StorageCapacity placeholder is the ONLY diff', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { FileSystemType: 'LUSTRE', StorageCapacity: 0 },
+      { FileSystemType: 'LUSTRE', StorageCapacity: 1200 }
+    );
+
+    // The sanitize is folded into the `changed()` flag, so the no-op
+    // early-return sees it too — no empty UpdateFileSystem call is issued.
+    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('still ships a genuine StorageCapacity change (positive control for the sanitize)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { FileSystemType: 'LUSTRE', StorageCapacity: 2400 },
+      { FileSystemType: 'LUSTRE', StorageCapacity: 1200 }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({ FileSystemId: FS_ID, StorageCapacity: 2400 });
+  });
+
   it('is a silent no-op when there is no mutable diff', async () => {
     const result = await newProvider().update(
       'MyFs',
@@ -926,6 +1011,29 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     });
   }
 
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response (FileSystemType absent)', async () => {
+    // The discriminator itself is registry-createOnly, so it keeps its
+    // putIfDefined guard — an AWS response without it yields a 5-key list
+    // (no FileSystemType, and no variant block to select).
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'AVAILABLE' }],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+
+    expect(Object.keys(state ?? {}).sort()).toEqual(
+      ALWAYS_EMITTED_KEYS.filter((k) => k !== 'FileSystemType').sort()
+    );
+    expect(state?.['FileSystemTypeVersion']).toBe('');
+    expect(state?.['NetworkType']).toBe('IPV4');
+    expect(state?.['StorageCapacity']).toBe(0);
+    expect(state?.['StorageType']).toBe('SSD');
+    expect(state?.['Tags']).toEqual([]);
+    expect(childLogger.warn).toHaveBeenCalledTimes(1);
+  });
+
   it('round-trip: a discriminator-false snapshot never ships a foreign variant block to AWS', async () => {
     // The mechanical defense that makes the Class 1 carve-out safe. If
     // readCurrentState regressed to emitting all four blocks as {},
@@ -940,6 +1048,17 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     });
 
     const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+
+    // The property actually being protected, asserted directly rather than
+    // inferred from a downstream symptom: the snapshot offers update() EXACTLY
+    // ONE variant key, so detectVariantConfigKey() can only resolve to
+    // WindowsConfiguration. Were all four emitted as {}, it would resolve to
+    // LustreConfiguration instead — it walks VARIANT_CONFIG_KEY in declaration
+    // order — and ship a Lustre block for a WINDOWS file system.
+    const variantKeysInSnapshot = Object.keys(observed ?? {}).filter((k) =>
+      Object.values(VARIANT_FILE_SYSTEM_TYPE_TO_KEY).includes(k)
+    );
+    expect(variantKeysInSnapshot).toEqual(['WindowsConfiguration']);
     expect(observed?.['WindowsConfiguration']).toEqual({});
 
     vi.clearAllMocks();
@@ -1443,7 +1562,11 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     expect(state).not.toHaveProperty('OpenZFSConfiguration');
   });
 
-  it('emits no variant block at all for a FileSystemType cdkd does not support', async () => {
+  it('warns (not silently) and emits no variant block for a FileSystemType cdkd does not support', async () => {
+    // Pre-carve-out, an unrecognized variant still produced a partial
+    // snapshot (whatever block AWS returned was emitted regardless of type).
+    // Now it produces none, which reads downstream as "no drift" on a
+    // resource cdkd never looked at — so the omission must be LOUD.
     routeSend({
       DescribeFileSystemsCommand: {
         FileSystems: [
@@ -1453,14 +1576,29 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     });
 
     const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
-    for (const key of [
-      'LustreConfiguration',
-      'WindowsConfiguration',
-      'OntapConfiguration',
-      'OpenZFSConfiguration',
-    ]) {
+    for (const key of Object.values(VARIANT_FILE_SYSTEM_TYPE_TO_KEY)) {
       expect(state).not.toHaveProperty(key);
     }
+
+    expect(childLogger.warn).toHaveBeenCalledTimes(1);
+    const warning = childLogger.warn.mock.calls[0][0] as string;
+    expect(warning).toContain('SOMETHING_NEW');
+    expect(warning).toContain(FS_ID);
+    // States the consequence, not just the fact.
+    expect(warning).toContain('NOT included in the drift snapshot');
+  });
+
+  it('does not warn for a FileSystemType cdkd does support', async () => {
+    // Guards the assertion above against going tautological if the warn were
+    // ever hoisted out of the default branch.
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'AVAILABLE', FileSystemType: 'LUSTRE' }],
+      },
+    });
+
+    await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    expect(childLogger.warn).not.toHaveBeenCalled();
   });
 });
 
