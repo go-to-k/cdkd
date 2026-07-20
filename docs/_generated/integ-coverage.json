@@ -4747,6 +4747,7 @@
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
+        "getatt-fallback-guard",
         "getstackoutput-crossregion",
         "import-attributes",
         "import-nested-stack",
@@ -4832,6 +4833,10 @@
         ],
         "export-nested-stack": [
           "l2",
+          "literal"
+        ],
+        "getatt-fallback-guard": [
+          "l1",
           "literal"
         ],
         "getstackoutput-crossregion": [
