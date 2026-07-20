@@ -19,12 +19,32 @@ outside the CDK project directory or want to override `cdk.json`.
 cdkd import MyStack
 ```
 
-Imports **every** resource in the synthesized template by tag. cdkd
-looks up each resource using its `aws:cdk:path` tag (which CDK
-automatically writes), so resources deployed by `cdk deploy` are found
-without any manual work. Useful for **adopting a whole stack** that was
-previously deployed by `cdk deploy`. This is cdkd's value-add over
-`cdk import` — CDK CLI does not have a tag-based bulk-import mode.
+Attempts to import **every** resource in the synthesized template, without
+naming physical ids by hand. Per resource, cdkd tries two lookups in order:
+
+1. **By physical name** — the template's own name property
+   (`ManagedPolicyName`, `TopicName`, `TableName`, ...). This is the path that
+   works today.
+2. **By `aws:cdk:path` tag** — a fallback walk over the account's resources of
+   that type.
+
+> [!WARNING]
+> **The tag fallback (2) does not match in practice.** `aws:cdk:path` is not a
+> tag that exists on AWS resources: AWS rejects any `aws:`-prefixed tag write
+> (`Tag keys beginning with aws: are reserved for system use`), and
+> CloudFormation keeps the value in the template's resource `Metadata` without
+> promoting it to a tag. Measured on a `cdk deploy`-deployed policy: tags `[]`,
+> template Metadata carries the path.
+>
+> So auto mode succeeds only for resources whose template sets an explicit
+> physical name. CDK apps usually let CloudFormation generate names, so for a
+> typical app most resources come back as `not found`. Tracking issue: #1128.
+
+For adopting a stack previously deployed by `cdk deploy`, use
+[`--migrate-from-cloudformation`](#migrating-from-cdk-deploy-cloudformation-to-cdkd) instead — it
+reads `DescribeStackResources` for the logical-id -> physical-id mapping and
+does not depend on tags. For a handful of resources, name them explicitly with
+`--resource` (Mode 2).
 
 ## Mode 2: selective (CDK CLI parity — when explicit overrides are given)
 
@@ -263,10 +283,18 @@ implement import are reported as `unsupported` and skipped.
 
 ### Auto-lookup (tag-based, no flag needed)
 
-Resources here are looked up by their `aws:cdk:path` tag — cdkd lists
-the relevant AWS resources, finds the one whose tag matches the
-template's logical id, and adopts it. Works under `auto` (default) and
-`hybrid` modes.
+These types implement the tag-walk fallback: cdkd lists the relevant AWS
+resources, looks for one whose `aws:cdk:path` tag matches the template's
+logical id, and adopts it. Runs under `auto` (default) and `hybrid` modes,
+after the name-based lookup has come up empty.
+
+> [!WARNING]
+> As of #1128 this fallback does not match on real AWS — `aws:cdk:path` is
+> never present as a tag (AWS reserves the `aws:` prefix; CloudFormation keeps
+> the value in template `Metadata`). The list below therefore describes which
+> providers have the code path, not which imports succeed today. In practice a
+> resource is adopted only when its template sets an explicit physical name, or
+> when you supply `--resource` / `--migrate-from-cloudformation`.
 
 - AWS::S3::Bucket
 - AWS::Lambda::Function
@@ -472,9 +500,9 @@ table to predict behavior when migrating from `cdk import`.
 | Selective mode (`--resource <id>=<physical>` repeatable) | Not supported (upstream uses interactive prompts or a mapping file). | Supported as cdkd's CLI-friendly equivalent. |
 | `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | Supported. Same shape as `--resource-mapping <file>` but supplied as a string — useful for non-TTY CI scripts that do not want a separate file. Mutually exclusive with `--resource-mapping`. |
 | `--record-resource-mapping <file>` | Supported (writes the mapping the user typed at the prompt to a file for re-use). | Supported. Writes the resolved `{logicalId: physicalId}` map (covers explicit overrides AND cdkd's tag-based auto-lookup) to the file before the confirmation prompt. The file is produced even if the user says "no" or under `--dry-run`, so the resolved data is never thrown away. |
-| Interactive prompt for missing IDs | Default in TTY — prompts for every resource not covered by a mapping file. | **Not supported.** cdkd is non-interactive: missing logical IDs are looked up by `aws:cdk:path` tag in `auto` / `hybrid` modes, or skipped as `out of scope` in selective mode. The only prompt is the final "write state?" confirmation, which `--yes` skips. |
+| Interactive prompt for missing IDs | Default in TTY — prompts for every resource not covered by a mapping file. | **Not supported.** cdkd is non-interactive: missing logical IDs are resolved from the template's physical-name property (or, nominally, by `aws:cdk:path` tag — see #1128, that fallback does not match today) in `auto` / `hybrid` modes, or skipped as `out of scope` in selective mode. The only prompt is the final "write state?" confirmation, which `--yes` skips. |
 | Typo'd logical ID | Aborts with a clear error before any AWS calls. | Aborts with a clear error before any AWS calls — checked against the synthesized template. |
-| Whole-stack tag-based import | **Not supported.** | **cdkd-specific.** With no flags, cdkd looks every resource up by its `aws:cdk:path` tag — the typical case for adopting a stack previously deployed by `cdk deploy`. |
+| Whole-stack import with no per-resource ids | **Not supported.** | **cdkd-specific**, with a caveat. With no flags cdkd resolves each resource from the template's physical-name property, falling back to an `aws:cdk:path` tag walk that does not match on real AWS (#1128). To adopt a stack previously deployed by `cdk deploy`, use `--migrate-from-cloudformation`, which reads `DescribeStackResources` and does not depend on tags. |
 | Hybrid mode (overrides + tag fallback) | **Not supported.** | **cdkd-specific.** `--auto` together with `--resource` lets listed resources use the explicit physical id while everything else still goes through tag lookup. |
 | Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Supported via `cdkd import --migrate-from-cloudformation` (issue [#464](https://github.com/go-to-k/cdkd/issues/464)): recursively walks the tree via `DescribeStackResources`, writes one v6-keyed state file per child (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), recursively injects `DeletionPolicy: Retain` into every leaf resource template, then retires the whole tree via a single parent-side `DeleteStack` cascade. Bare `cdkd import` (auto / selective / hybrid mode) still reports each nested-stack row as `unsupported`. CDK Stages (separate top-level stacks) are also fine: pass the stack's display path or physical name as the positional argument. |
 | Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
