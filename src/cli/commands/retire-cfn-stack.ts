@@ -927,21 +927,41 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  *     stack is the NORMAL case (a cdkd-native stack has no CFn counterpart)
  *     and must return `null` rather than abort the import.
  *
- * Only a genuine "stack does not exist" is swallowed. Any other failure —
- * throttling, AccessDenied, a malformed name — is rethrown, because silently
- * treating those as "no CFn stack" would degrade into the exact silent
- * not-found this lookup exists to fix.
+ * NO failure is fatal. The lookup is an OPTIMIZATION: when it cannot answer,
+ * the caller falls through to the per-provider lookups, which is exactly the
+ * behavior that shipped before this function existed. Throwing would convert a
+ * missed improvement into a hard failure — and it would do so precisely for the
+ * users least likely to benefit. A cdkd-native stack has no CloudFormation
+ * counterpart, so an operator whose IAM policy is scoped to cdkd's actual needs
+ * (no `cloudformation:DescribeStackResources`) would see `AccessDenied` abort an
+ * import that worked fine the day before.
+ *
+ * A missing stack is the expected case and logs at debug. Anything else logs a
+ * WARN naming the cause, so a permissions gap or a throttle is visible rather
+ * than silent — the user learns why the ids were not resolved, and still gets
+ * the pre-existing behavior instead of an abort.
  */
 export async function tryGetCloudFormationResourceMap(
   stackName: string,
   cfnClient: CloudFormationClient
 ): Promise<Map<string, string> | null> {
+  const logger = getLogger();
   let resp;
   try {
     resp = await cfnClient.send(new DescribeStackResourcesCommand({ StackName: stackName }));
   } catch (err) {
-    if (isStackNotFoundError(err)) return null;
-    throw err;
+    if (isStackNotFoundError(err)) {
+      logger.debug(`No CloudFormation stack named '${stackName}'.`);
+      return null;
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      `Could not read CloudFormation stack '${stackName}' to resolve physical IDs (${reason}). ` +
+        `Falling back to per-resource lookup; resources whose physical name CloudFormation ` +
+        `generated may be reported as not found. Grant cloudformation:DescribeStackResources, ` +
+        `or pass --resource <LogicalId>=<physicalId> for those resources.`
+    );
+    return null;
   }
 
   const resources = new Map<string, string>();
