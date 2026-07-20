@@ -1,3 +1,10 @@
+# [0.253.0](https://github.com/go-to-k/cdkd/compare/v0.252.3...v0.253.0) (2026-07-20)
+
+
+### Features
+
+* **provisioning:** generic CC GetResource read-back on sparse create/update ResourceModel ([#1109](https://github.com/go-to-k/cdkd/issues/1109)) ([5390cde](https://github.com/go-to-k/cdkd/commit/5390cde06ec1687415947555f4d595d4bc751293))
+
 ## [0.252.3](https://github.com/go-to-k/cdkd/compare/v0.252.2...v0.252.3) (2026-07-19)
 
 
