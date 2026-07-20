@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { ResourceNotFoundException } from '@aws-sdk/client-eventbridge';
 
 // Mock AWS clients before importing the provider
@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 describe('EventBridgeRuleProvider', () => {
   let provider: EventBridgeRuleProvider;
@@ -516,6 +517,15 @@ describe('EventBridgeRuleProvider', () => {
   });
 
   describe('import', () => {
+    beforeEach(() => {
+      // Skip the walk's real exponential backoff in the throttle tests.
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'MyRule',
@@ -593,6 +603,67 @@ describe('EventBridgeRuleProvider', () => {
 
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
+    });
+
+    it('forwards the template EventBusName to every ListRules page', async () => {
+      const targetArn = 'arn:aws:events:us-east-1:123456789012:rule/my-bus/target';
+      mockSend
+        // page 1: no match, more pages
+        .mockResolvedValueOnce({
+          Rules: [{ Name: 'other', Arn: 'arn:aws:events:us-east-1:123456789012:rule/my-bus/other' }],
+          NextToken: 'page-2',
+        })
+        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] })
+        // page 2: the match
+        .mockResolvedValueOnce({ Rules: [{ Name: 'target', Arn: targetArn }] })
+        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRule' }] });
+
+      const result = await provider.import(makeInput({ properties: { EventBusName: 'my-bus' } }));
+
+      expect(result).toEqual({ physicalId: targetArn, attributes: {} });
+      const firstList = mockSend.mock.calls[0][0];
+      expect(firstList.constructor.name).toBe('ListRulesCommand');
+      expect(firstList.input).toEqual({ EventBusName: 'my-bus' });
+      const secondList = mockSend.mock.calls[2][0];
+      expect(secondList.constructor.name).toBe('ListRulesCommand');
+      expect(secondList.input).toEqual({ EventBusName: 'my-bus', NextToken: 'page-2' });
+    });
+
+    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForResource burst
+    // routed through the shared importTagWalk helper — a throttled
+    // per-candidate tag read is retried with backoff instead of aborting the
+    // whole import, while a non-throttling error still surfaces immediately.
+    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
+      const targetArn = 'arn:aws:events:us-east-1:123456789012:rule/target';
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      mockSend
+        .mockResolvedValueOnce({ Rules: [{ Name: 'target', Arn: targetArn }] })
+        .mockRejectedValueOnce(throttled)
+        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRule' }] });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: targetArn, attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
+      const denied = new Error('User is not authorized to perform events:ListTagsForResource');
+      denied.name = 'AccessDeniedException';
+
+      mockSend
+        .mockResolvedValueOnce({
+          Rules: [{ Name: 'target', Arn: 'arn:aws:events:us-east-1:123456789012:rule/target' }],
+        })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
   });
 });

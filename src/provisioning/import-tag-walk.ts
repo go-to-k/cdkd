@@ -91,6 +91,19 @@ export function isThrottlingLikeError(error: unknown, message: string): boolean 
   return isThrottlingError(error) || message.includes('Rate exceeded');
 }
 
+/**
+ * Module-level test hooks for the walk's backoff.
+ *
+ * Providers do not expose a retry option on `import()`, so their wiring tests
+ * cannot inject `retry.sleep` per call — without this hook every throttle-path
+ * wiring test pays a real 0.5s+ backoff wait. Tests set `sleep` to a resolved
+ * no-op in `beforeEach` (and clear it in `afterEach`); a per-call
+ * `retry.sleep` still wins when supplied. Never set this in production code.
+ */
+export const importTagWalkTestHooks: {
+  sleep?: ((ms: number) => Promise<void>) | undefined;
+} = {};
+
 /** Thrown when the walk exceeds its wall-clock budget or page ceiling. */
 export class ImportTagWalkLimitError extends Error {
   constructor(message: string) {
@@ -193,7 +206,9 @@ export async function importTagWalk<TSummary, TDetail>(
     logger,
     ...(options.retry?.isInterrupted && { isInterrupted: options.retry.isInterrupted }),
     ...(options.retry?.onInterrupted && { onInterrupted: options.retry.onInterrupted }),
-    ...(options.retry?.sleep && { sleep: options.retry.sleep }),
+    ...((options.retry?.sleep ?? importTagWalkTestHooks.sleep) && {
+      sleep: (options.retry?.sleep ?? importTagWalkTestHooks.sleep)!,
+    }),
   };
 
   const startedAt = Date.now();

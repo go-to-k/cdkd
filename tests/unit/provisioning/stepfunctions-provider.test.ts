@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
 const mockS3Send = vi.fn();
@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { StepFunctionsProvider } from '../../../src/provisioning/providers/stepfunctions-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 describe('StepFunctionsProvider', () => {
   let provider: StepFunctionsProvider;
@@ -499,6 +500,14 @@ describe('StepFunctionsProvider', () => {
   });
 
   describe('import', () => {
+    // Skip the walk's real throttle backoff waits in the retry tests.
+    beforeEach(() => {
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'MyStateMachine',
@@ -560,6 +569,52 @@ describe('StepFunctionsProvider', () => {
 
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
+    });
+
+    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForResource burst
+    // routed through the shared importTagWalk helper: a throttled
+    // per-candidate tag read is retried with backoff instead of aborting the
+    // whole import, while a non-throttling error still surfaces immediately.
+    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const arn = 'arn:aws:states:us-east-1:123456789012:stateMachine:target';
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      mockSend
+        .mockResolvedValueOnce({ stateMachines: [{ stateMachineArn: arn, name: 'target' }] })
+        .mockRejectedValueOnce(throttled)
+        .mockResolvedValueOnce({
+          tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyStateMachine' }],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: arn, attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling error during the walk', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const denied = new Error('User is not authorized to perform states:ListTagsForResource');
+      denied.name = 'AccessDeniedException';
+
+      mockSend
+        .mockResolvedValueOnce({
+          stateMachines: [
+            {
+              stateMachineArn: 'arn:aws:states:us-east-1:123456789012:stateMachine:target',
+              name: 'target',
+            },
+          ],
+        })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
   });
 

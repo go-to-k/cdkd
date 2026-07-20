@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateDBClusterCommand,
   CreateDBInstanceCommand,
@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -410,6 +411,14 @@ describe('DocDBProvider', () => {
   // ─── import (aws:cdk:path tag walk) ───────────────────────────────
 
   describe('import tag walk', () => {
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    beforeEach(() => {
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     const CDK_PATH = 'MyStack/MyDb/Resource';
 
     const importInput = (

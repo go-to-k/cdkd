@@ -23,7 +23,8 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -492,27 +493,31 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
     const scope = ((input.properties['Scope'] as string | undefined) || 'REGIONAL') as Scope;
 
-    let nextMarker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListWebACLsCommand({ Scope: scope, ...(nextMarker && { NextMarker: nextMarker }) })
-      );
-      for (const item of list.WebACLs ?? []) {
-        if (!item.ARN) continue;
-        const tagsResp = await this.getClient().send(
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import. `Scope` is required
+    // by ListWebACLs, so it is derived once above and forwarded on every page.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListWebACLsCommand({ Scope: scope, ...(marker && { NextMarker: marker }) })
+        );
+        return { items: list.WebACLs, nextMarker: list.NextMarker };
+      },
+      describe: async (item) => {
+        if (!item.ARN) return undefined;
+        return await this.getClient().send(
           new ListTagsForResourceCommand({ ResourceARN: item.ARN })
         );
-        const tagList = tagsResp.TagInfoForResource?.TagList;
-        if (matchesCdkPath(tagList, input.cdkPath)) {
-          return { physicalId: item.ARN, attributes: {} };
-        }
-      }
-      nextMarker = list.NextMarker;
-    } while (nextMarker);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.TagInfoForResource?.TagList,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without an ARN.
+    return { physicalId: match.summary.ARN!, attributes: {} };
   }
 }

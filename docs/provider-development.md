@@ -774,11 +774,15 @@ lookups, batch tag fetch) can keep their own loop; `isThrottlingLikeError`
 is exported for reuse. Map-shaped tags (`Record<string, string>`) DO fit —
 re-shape them to `{Key, Value}` entries inside `tagsOf` (see
 `lambda-function-provider.ts` / `sqs-queue-provider.ts`).
-Migrated callers: EMR Cluster, DocDB (all three sub-types), and the
+Migrated callers: EMR Cluster, DocDB (all three sub-types), the
 issue #1091 batch-2 set (Lambda Function, CloudWatch Alarm, Logs LogGroup,
 SQS Queue, SNS Topic, IAM Role, IAM ManagedPolicy, DynamoDB Table, Kinesis
-Stream, S3 Bucket, ECR Repository, SSM Parameter); the remaining
-`aws:cdk:path` walkers are migrated incrementally.
+Stream, S3 Bucket, ECR Repository, SSM Parameter), and the batch-3 set
+(Step Functions StateMachine, Cognito UserPool, CloudFront Distribution,
+ACM Certificate, CloudTrail Trail, DynamoDB GlobalTable, EventBridge
+EventBus + Rule, Firehose DeliveryStream, WAFv2 WebACL, S3 Directory
+Bucket, Budgets Budget); the remaining `aws:cdk:path` walkers are
+migrated incrementally.
 
 Reference implementations to copy from:
 

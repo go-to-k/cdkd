@@ -53,6 +53,7 @@ import {
   inlineCodeFileNameForRuntime,
 } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 import * as zlib from 'node:zlib';
 
 describe('LambdaFunctionProvider', () => {
@@ -1847,6 +1848,11 @@ describe('LambdaFunctionProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockLambdaSend.mockReset();
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    importTagWalkTestHooks.sleep = async () => {};
+  });
+  afterEach(() => {
+    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = () => ({

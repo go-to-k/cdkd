@@ -18,7 +18,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -616,28 +617,34 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.eventBridgeClient.send(
-        new ListRulesCommand({
-          ...(eventBusName && { EventBusName: eventBusName }),
-          ...(nextToken && { NextToken: nextToken }),
-        })
-      );
-      for (const rule of list.Rules ?? []) {
-        if (!rule.Arn) continue;
-        const tagsResp = await this.eventBridgeClient.send(
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import. The template's
+    // EventBusName (when literal) scopes every ListRules page, matching the
+    // previous inline loop.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.eventBridgeClient.send(
+          new ListRulesCommand({
+            ...(eventBusName && { EventBusName: eventBusName }),
+            ...(marker && { NextToken: marker }),
+          })
+        );
+        return { items: list.Rules ?? [], nextMarker: list.NextToken };
+      },
+      describe: async (rule) => {
+        if (!rule.Arn) return undefined;
+        return await this.eventBridgeClient.send(
           new ListTagsForResourceCommand({ ResourceARN: rule.Arn })
         );
-        if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-          return { physicalId: rule.Arn, attributes: {} };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.Tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without an ARN.
+    return { physicalId: match.summary.Arn!, attributes: {} };
   }
 
   /**

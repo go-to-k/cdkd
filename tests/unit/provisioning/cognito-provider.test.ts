@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 describe('CognitoUserPoolProvider', () => {
   let provider: CognitoUserPoolProvider;
@@ -603,6 +604,118 @@ describe('CognitoUserPoolProvider', () => {
         const map = provider.unhandledByDesign.get('AWS::Cognito::UserPool');
         expect(map?.has('WebAuthnFactorConfiguration')).toBe(true);
       });
+    });
+  });
+
+  // Issue #1091 batch 3: the tag-based import lookup costs TWO reads per
+  // candidate (DescribeUserPool for the ARN, then ListTagsForResource) and is
+  // routed through the shared importTagWalk helper: a throttled read is
+  // retried with backoff (re-running the whole per-candidate callback)
+  // instead of aborting the whole import, while a non-throttling error still
+  // surfaces immediately. The per-candidate name match rides the same walk as
+  // a synthetic tag, checked BEFORE any tag read.
+  describe('import tag walk', () => {
+    const CDK_PATH = 'MyStack/MyUserPool/Resource';
+    const ARN_A = 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_aaa111';
+    const ARN_B = 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_bbb222';
+
+    beforeEach(() => {
+      // Drop once-queued responses leaked by earlier tests: clearAllMocks()
+      // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+      mockSend.mockReset();
+      // Skip the walk's real throttle backoff waits.
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
+    const importInput = (overrides: Record<string, unknown> = {}) => ({
+      logicalId: 'MyUserPool',
+      resourceType: 'AWS::Cognito::UserPool',
+      cdkPath: CDK_PATH,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties: {},
+      ...overrides,
+    });
+
+    /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+    const throttle = (): Error => {
+      const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
+      err.name = 'ThrottlingException';
+      err.$metadata = { httpStatusCode: 400 };
+      return err;
+    };
+
+    it('name match short-circuits without any tag read', async () => {
+      // Only the list page is queued: a name-matched candidate must resolve
+      // BEFORE its DescribeUserPool / ListTagsForResource reads, even when a
+      // cdkPath is also present.
+      mockSend.mockResolvedValueOnce({
+        UserPools: [{ Id: 'us-east-1_bbb222', Name: 'my-pool' }],
+      });
+
+      const result = await provider.import(
+        importInput({ properties: { UserPoolName: 'my-pool' } })
+      );
+
+      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListUserPoolsCommand');
+    });
+
+    it('matches map-shaped aws:cdk:path tags via the walk (happy path)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          UserPools: [
+            { Id: 'us-east-1_aaa111', Name: 'other' },
+            { Id: 'us-east-1_bbb222', Name: 'target' },
+          ],
+        })
+        // Candidate 1: DescribeUserPool for the ARN, tags do not match.
+        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_aaa111', Arn: ARN_A } })
+        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'OtherStack/Other/Resource' } })
+        // Candidate 2: DescribeUserPool for the ARN, tags match.
+        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
+        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
+
+      const result = await provider.import(importInput());
+
+      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(5);
+    });
+
+    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
+      mockSend
+        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'target' }] })
+        // Candidate attempt 1: DescribeUserPool ok, ListTagsForResource throttled.
+        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
+        .mockRejectedValueOnce(throttle())
+        // Retry re-runs the WHOLE per-candidate callback: DescribeUserPool
+        // again, then the tag read succeeds with the match.
+        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
+        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
+
+      const result = await provider.import(importInput());
+
+      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(5);
+    });
+
+    it('does not retry a non-throttling error during the walk', async () => {
+      const denied = new Error(
+        'User is not authorized to perform cognito-idp:ListTagsForResource'
+      );
+      denied.name = 'AccessDeniedException';
+
+      mockSend
+        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'target' }] })
+        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(3);
     });
   });
 });

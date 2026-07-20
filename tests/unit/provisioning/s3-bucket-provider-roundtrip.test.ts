@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   GetBucketTaggingCommand,
   PutBucketEncryptionCommand,
@@ -55,6 +55,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const BUCKET_NAME = 'my-bucket';
 
@@ -1761,6 +1762,11 @@ describe('S3BucketProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockSend.mockReset();
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    importTagWalkTestHooks.sleep = async () => {};
+  });
+  afterEach(() => {
+    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = () => ({

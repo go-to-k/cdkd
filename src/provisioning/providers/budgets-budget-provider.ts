@@ -28,7 +28,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -754,32 +754,38 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await client.send(
-        new DescribeBudgetsCommand({
-          AccountId: accountId,
-          ...(nextToken && { NextToken: nextToken }),
-        })
-      );
-      for (const budget of list.Budgets ?? []) {
-        if (!budget.BudgetName) continue;
-        const tags = await client.send(
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import. Every DescribeBudgets
+    // page carries the required AccountId resolved above.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await client.send(
+          new DescribeBudgetsCommand({
+            AccountId: accountId,
+            ...(marker && { NextToken: marker }),
+          })
+        );
+        return { items: list.Budgets, nextMarker: list.NextToken };
+      },
+      describe: async (budget) => {
+        if (!budget.BudgetName) return undefined;
+        return await client.send(
           new ListTagsForResourceCommand({
             ResourceARN: this.budgetArn(accountId, budget.BudgetName),
           })
         );
-        if (matchesCdkPath(tags.ResourceTags, input.cdkPath)) {
-          return {
-            physicalId: budget.BudgetName,
-            attributes: { Arn: this.budgetArn(accountId, budget.BudgetName) },
-          };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tags) => tags.ResourceTags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips budgets without a name.
+    const budgetName = match.summary.BudgetName!;
+    return {
+      physicalId: budgetName,
+      attributes: { Arn: this.budgetArn(accountId, budgetName) },
+    };
   }
 }

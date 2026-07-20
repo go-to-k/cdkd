@@ -17,7 +17,8 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -437,36 +438,36 @@ export class ACMCertificateProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.acmClient.send(
-        new ListCertificatesCommand({ ...(nextToken ? { NextToken: nextToken } : {}) })
-      );
-      for (const summary of list.CertificateSummaryList ?? []) {
-        if (!summary.CertificateArn) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForCertificate burst is retried with exponential backoff when
+    // AWS throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.acmClient.send(
+          new ListCertificatesCommand({ ...(marker && { NextToken: marker }) })
+        );
+        return { items: list.CertificateSummaryList, nextMarker: list.NextToken };
+      },
+      describe: async (summary) => {
+        if (!summary.CertificateArn) return undefined;
         try {
-          const tags = await this.acmClient.send(
+          return await this.acmClient.send(
             new ListTagsForCertificateCommand({ CertificateArn: summary.CertificateArn })
           );
-          if (matchesCdkPath(tags.Tags, input.cdkPath)) {
-            return {
-              physicalId: summary.CertificateArn,
-              attributes: {
-                Arn: summary.CertificateArn,
-                CertificateArn: summary.CertificateArn,
-              },
-            };
-          }
         } catch (err) {
-          if (err instanceof ResourceNotFoundException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof ResourceNotFoundException) return undefined;
           throw err;
         }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.Tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without an ARN.
+    const arn = match.summary.CertificateArn!;
+    return { physicalId: arn, attributes: { Arn: arn, CertificateArn: arn } };
   }
 
   // ── helpers ───────────────────────────────────────────────────────

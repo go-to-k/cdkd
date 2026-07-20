@@ -18,7 +18,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1028,29 +1028,39 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.cloudFrontClient.send(
-        new ListDistributionsCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const d of list.DistributionList?.Items ?? []) {
-        if (!d.Id || !d.ARN) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.cloudFrontClient.send(
+          new ListDistributionsCommand({ ...(marker && { Marker: marker }) })
+        );
+        return {
+          items: list.DistributionList?.Items,
+          nextMarker: list.DistributionList?.IsTruncated
+            ? list.DistributionList?.NextMarker
+            : undefined,
+        };
+      },
+      describe: async (d) => {
+        if (!d.Id || !d.ARN) return undefined;
         try {
-          const tagsResp = await this.cloudFrontClient.send(
+          return await this.cloudFrontClient.send(
             new ListTagsForResourceCommand({ Resource: d.ARN })
           );
-          if (matchesCdkPath(tagsResp.Tags?.Items, input.cdkPath)) {
-            return { physicalId: d.Id, attributes: {} };
-          }
         } catch (err) {
-          if (err instanceof NoSuchDistribution) continue;
+          // Deleted between the list and the tag read: skip the candidate.
+          if (err instanceof NoSuchDistribution) return undefined;
           throw err;
         }
-      }
-      marker = list.DistributionList?.IsTruncated ? list.DistributionList?.NextMarker : undefined;
-    } while (marker);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.Tags?.Items,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without an Id.
+    return { physicalId: match.summary.Id!, attributes: {} };
   }
 }

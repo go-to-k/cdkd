@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateTableCommand,
   DescribeTableCommand,
@@ -54,6 +54,7 @@ import {
   DynamoDBTableProvider,
   mapSSESpecification,
 } from '../../../../src/provisioning/providers/dynamodb-table-provider.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 
 // Helper: a minimal ACTIVE DescribeTable response.
 const activeTable = (overrides: Record<string, unknown> = {}) => ({
@@ -1045,6 +1046,11 @@ describe('DynamoDBTableProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockSend.mockReset();
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    importTagWalkTestHooks.sleep = async () => {};
+  });
+  afterEach(() => {
+    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = () => ({

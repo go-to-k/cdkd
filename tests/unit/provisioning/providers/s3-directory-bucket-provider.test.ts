@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateBucketCommand,
   DeleteBucketCommand,
@@ -55,6 +55,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { S3DirectoryBucketProvider } from '../../../../src/provisioning/providers/s3-directory-bucket-provider.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 
 describe('S3DirectoryBucketProvider', () => {
   let provider: S3DirectoryBucketProvider;
@@ -207,6 +208,15 @@ describe('S3DirectoryBucketProvider', () => {
   });
 
   describe('import', () => {
+    beforeEach(() => {
+      // Skip the walk's real backoff waits in the throttle-retry tests.
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'DirectoryBucket',
@@ -261,6 +271,65 @@ describe('S3DirectoryBucketProvider', () => {
         .mockResolvedValueOnce({ TagSet: [{ Key: 'foo', Value: 'bar' }] });
       const result = await provider.import!(makeInput());
       expect(result).toBeNull();
+    });
+
+    // Issue #1091 batch 3: the tag walk is an N+1 GetBucketTagging burst
+    // routed through the shared importTagWalk helper: a throttled tag read
+    // is retried with backoff instead of aborting the whole import, the
+    // historical NoSuchTagSet / AccessDenied skip classes still skip the
+    // bucket, and a genuine error still surfaces immediately.
+    it('retries a throttled GetBucketTagging mid-walk and still finds the match', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      mockSend
+        .mockResolvedValueOnce({ Buckets: [{ Name: 'mine--az--x-s3' }] })
+        .mockRejectedValueOnce(throttled)
+        .mockResolvedValueOnce({
+          TagSet: [{ Key: 'aws:cdk:path', Value: 'MyStack/DirectoryBucket' }],
+        });
+
+      const result = await provider.import!(makeInput());
+
+      expect(result).toEqual({ physicalId: 'mine--az--x-s3', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('skips an AccessDenied candidate and continues the walk to the next one', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const denied = new Error('Access Denied') as Error & { name: string };
+      denied.name = 'AccessDenied';
+
+      mockSend
+        .mockResolvedValueOnce({
+          Buckets: [{ Name: 'forbidden--az--x-s3' }, { Name: 'mine--az--x-s3' }],
+        })
+        .mockRejectedValueOnce(denied)
+        .mockResolvedValueOnce({
+          TagSet: [{ Key: 'aws:cdk:path', Value: 'MyStack/DirectoryBucket' }],
+        });
+
+      const result = await provider.import!(makeInput());
+
+      expect(result).toEqual({ physicalId: 'mine--az--x-s3', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling GetBucketTagging error during the walk', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const internal = new Error('We encountered an internal error.') as Error & { name: string };
+      internal.name = 'InternalError';
+
+      mockSend
+        .mockResolvedValueOnce({ Buckets: [{ Name: 'mine--az--x-s3' }] })
+        .mockRejectedValueOnce(internal);
+
+      await expect(provider.import!(makeInput())).rejects.toThrow(/internal error/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
   });
 });

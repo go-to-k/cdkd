@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -33,6 +33,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { EMRClusterProvider } from '../../../../src/provisioning/providers/emr-cluster-provider.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   RunJobFlowCommand,
   TerminateJobFlowsCommand,
@@ -725,6 +726,11 @@ function importInput(overrides: Record<string, unknown> = {}) {
 describe('EMRClusterProvider import', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    importTagWalkTestHooks.sleep = async () => {};
+  });
+  afterEach(() => {
+    importTagWalkTestHooks.sleep = undefined;
   });
 
   it('verifies an explicit cluster id (knownPhysicalId) via DescribeCluster and returns attributes', async () => {

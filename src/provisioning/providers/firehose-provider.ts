@@ -34,11 +34,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2025,33 +2022,37 @@ export class FirehoseProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let exclusiveStartDeliveryStreamName: string | undefined;
-    // ListDeliveryStreams paginates via `ExclusiveStartDeliveryStreamName`
-    // (last name from previous page) when `HasMoreDeliveryStreams` is true.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const list = await this.getClient().send(
-        new ListDeliveryStreamsCommand({
-          ...(exclusiveStartDeliveryStreamName && {
-            ExclusiveStartDeliveryStreamName: exclusiveStartDeliveryStreamName,
-          }),
-        })
-      );
-      const names = list.DeliveryStreamNames ?? [];
-      for (const name of names) {
-        const tagsResp = await this.getClient().send(
-          new ListTagsForDeliveryStreamCommand({ DeliveryStreamName: name })
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForDeliveryStream burst is retried with exponential backoff
+    // when AWS throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListDeliveryStreamsCommand({
+            ...(marker && { ExclusiveStartDeliveryStreamName: marker }),
+          })
         );
-        if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-          return { physicalId: name, attributes: {} };
-        }
-      }
-      if (!list.HasMoreDeliveryStreams || names.length === 0) break;
-      exclusiveStartDeliveryStreamName = names[names.length - 1];
-    }
-    return null;
+        const names = list.DeliveryStreamNames ?? [];
+        // ListDeliveryStreams paginates via `ExclusiveStartDeliveryStreamName`
+        // rather than `NextToken` — the next page boundary is the last name on
+        // this page, and only when `HasMoreDeliveryStreams` says another page
+        // exists.
+        return {
+          items: names,
+          nextMarker:
+            list.HasMoreDeliveryStreams && names.length > 0 ? names[names.length - 1] : undefined,
+        };
+      },
+      describe: async (name) =>
+        await this.getClient().send(
+          new ListTagsForDeliveryStreamCommand({ DeliveryStreamName: name })
+        ),
+      tagsOf: (tagsResp) => tagsResp.Tags,
+    });
+    if (!match) return null;
+    return { physicalId: match.summary, attributes: {} };
   }
 
   /**

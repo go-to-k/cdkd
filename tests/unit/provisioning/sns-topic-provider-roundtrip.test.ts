@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { CreateTopicCommand, SetTopicAttributesCommand } from '@aws-sdk/client-sns';
 
 const mockSend = vi.fn();
@@ -29,6 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const STANDARD_TOPIC_ARN = 'arn:aws:sns:us-east-1:0:standard-topic';
 const FIFO_TOPIC_ARN = 'arn:aws:sns:us-east-1:0:fifo-topic.fifo';
@@ -289,6 +290,11 @@ describe('SNSTopicProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockSend.mockReset();
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    importTagWalkTestHooks.sleep = async () => {};
+  });
+  afterEach(() => {
+    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = (

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -47,6 +47,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
 import { KinesisStreamProvider } from '../../../../src/provisioning/providers/kinesis-provider.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 
 describe('KinesisStreamProvider', () => {
   let provider: KinesisStreamProvider;
@@ -378,6 +379,14 @@ describe('KinesisStreamProvider', () => {
   });
 
   describe('import', () => {
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    beforeEach(() => {
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'MyStream',

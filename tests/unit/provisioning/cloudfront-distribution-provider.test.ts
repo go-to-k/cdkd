@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { NoSuchDistribution } from '@aws-sdk/client-cloudfront';
 
 // Mock AWS clients before importing the provider
@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { CloudFrontDistributionProvider } from '../../../src/provisioning/providers/cloudfront-distribution-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 describe('CloudFrontDistributionProvider', () => {
   let provider: CloudFrontDistributionProvider;
@@ -1043,6 +1044,119 @@ describe('CloudFrontDistributionProvider', () => {
 
     it('returns an empty list for unrelated resource types', () => {
       expect(provider.getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
+    });
+  });
+
+  // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForResource burst
+  // routed through the shared importTagWalk helper: a throttled per-candidate
+  // tag read is retried with backoff instead of aborting the whole import,
+  // while a non-throttling error still surfaces immediately. The CloudFront
+  // pagination shape (IsTruncated gating NextMarker) folds into the walk's
+  // nextMarker.
+  describe('import', () => {
+    const CDK_PATH = 'MyStack/MyDistribution/Resource';
+    const ARN_1 = 'arn:aws:cloudfront::123456789012:distribution/E1AAAAAAAAAAAA';
+    const ARN_2 = 'arn:aws:cloudfront::123456789012:distribution/E2BBBBBBBBBBBB';
+
+    beforeEach(() => {
+      // Drop once-queued responses leaked by earlier tests: clearAllMocks()
+      // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+      mockSend.mockReset();
+      // Skip the walk's real throttle backoff waits.
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
+    const importInput = () => ({
+      logicalId: 'MyDistribution',
+      resourceType: 'AWS::CloudFront::Distribution',
+      cdkPath: CDK_PATH,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties: {},
+    });
+
+    it('paginates across IsTruncated/NextMarker and matches the tagged distribution', async () => {
+      mockSend
+        // Page 1: one candidate whose tags do not match; IsTruncated with a
+        // NextMarker continues the walk.
+        .mockResolvedValueOnce({
+          DistributionList: {
+            Items: [{ Id: 'E1AAAAAAAAAAAA', ARN: ARN_1 }],
+            IsTruncated: true,
+            NextMarker: 'marker-1',
+          },
+        })
+        .mockResolvedValueOnce({
+          Tags: { Items: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other/Resource' }] },
+        })
+        // Page 2: the match. IsTruncated false ends the walk even though a
+        // NextMarker is present (CloudFront's pagination contract).
+        .mockResolvedValueOnce({
+          DistributionList: {
+            Items: [{ Id: 'E2BBBBBBBBBBBB', ARN: ARN_2 }],
+            IsTruncated: false,
+            NextMarker: 'marker-2',
+          },
+        })
+        .mockResolvedValueOnce({
+          Tags: { Items: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] },
+        });
+
+      const result = await provider.import(importInput());
+
+      expect(result).toEqual({ physicalId: 'E2BBBBBBBBBBBB', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      // The second list call carries the first page's NextMarker.
+      const secondList = mockSend.mock.calls[2][0];
+      expect(secondList.constructor.name).toBe('ListDistributionsCommand');
+      expect(secondList.input.Marker).toBe('marker-1');
+    });
+
+    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      mockSend
+        .mockResolvedValueOnce({
+          DistributionList: {
+            Items: [{ Id: 'E2BBBBBBBBBBBB', ARN: ARN_2 }],
+            IsTruncated: false,
+          },
+        })
+        .mockRejectedValueOnce(throttled)
+        .mockResolvedValueOnce({
+          Tags: { Items: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] },
+        });
+
+      const result = await provider.import(importInput());
+
+      expect(result).toEqual({ physicalId: 'E2BBBBBBBBBBBB', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling error during the walk', async () => {
+      const denied = new Error(
+        'User is not authorized to perform cloudfront:ListTagsForResource'
+      );
+      denied.name = 'AccessDeniedException';
+
+      mockSend
+        .mockResolvedValueOnce({
+          DistributionList: {
+            Items: [{ Id: 'E2BBBBBBBBBBBB', ARN: ARN_2 }],
+            IsTruncated: false,
+          },
+        })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
   });
 });
