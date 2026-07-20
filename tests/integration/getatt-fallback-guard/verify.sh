@@ -54,7 +54,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup"
   set +eu
-  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+  [ -f "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   aws ssm delete-parameter --name "${PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${CONSUMER_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then

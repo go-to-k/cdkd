@@ -1210,7 +1210,7 @@ export class IntrinsicFunctionResolver {
     }
 
     // Construct attribute value based on resource type
-    const value = await this.constructAttribute(resource, attributeName, context);
+    const value = await this.constructAttribute(resource, attributeName, context, logicalId);
     this.logger.debug(
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyValue(value)}`
     );
@@ -1226,7 +1226,8 @@ export class IntrinsicFunctionResolver {
   private async constructAttribute(
     resource: ResourceState,
     attributeName: string,
-    context: ResolverContext
+    _context: ResolverContext,
+    logicalId: string
   ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
     const accountInfo = await getAccountInfo(this.resolverRegion);
@@ -1854,8 +1855,6 @@ export class IntrinsicFunctionResolver {
     const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
     const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
     if (expectsArnShape || expectsUrlShape) {
-      const logicalId =
-        Object.entries(context.resources).find(([, r]) => r === resource)?.[0] ?? '<unknown>';
       const expectedShape = expectsArnShape ? 'an ARN (arn:...)' : 'a URL (http(s)://...)';
       throw new Error(
         `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
