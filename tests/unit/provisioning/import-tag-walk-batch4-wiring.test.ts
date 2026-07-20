@@ -10,7 +10,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  *
  *  - the `tagsOf` adapter, since the seven providers span FOUR different tag
  *    wire shapes (`{Key,Value}` list, `Record<string,string>` map, the v2
- *    `{TagKey,TagValue}` list, and tags carried inline on the list summary);
+ *    `{TagKey,TagValue}` list, and — for SecretsManager only — tags carried
+ *    inline on the list summary). Getting one wrong does not error: the walk
+ *    simply never matches and `cdkd import` reports the resource as not-found,
+ *    which is why each adapter is pinned here;
  *  - that a THROTTLED per-candidate read is retried and the walk still finds
  *    the match, which is the whole point of the migration;
  *  - that pagination is threaded through (`nextMarker` wired to the right
@@ -187,27 +190,67 @@ describe('lambda-layer: map-shaped tags via ListTags', () => {
   });
 });
 
-describe('iam-instance-profile: tags inline on the list summary', () => {
-  it('matches without any per-candidate read', async () => {
-    mockSend.mockResolvedValueOnce({
-      InstanceProfiles: [
-        { InstanceProfileName: 'prof-1', Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] },
-      ],
-    });
+describe('iam-instance-profile: tags come from a per-candidate GetInstanceProfile', () => {
+  // ListInstanceProfiles does NOT return tags (AWS documents this on the
+  // command itself) even though the InstanceProfile TYPE carries `Tags?`.
+  // Reading them off the list summary typechecks and always sees `undefined`,
+  // so the walk would never match and import would report "not found". These
+  // cases pin the per-candidate read that avoids that.
+  it('reads tags via GetInstanceProfile and matches', async () => {
+    mockSend
+      .mockResolvedValueOnce({ InstanceProfiles: [{ InstanceProfileName: 'prof-1' }] })
+      .mockResolvedValueOnce({
+        InstanceProfile: {
+          InstanceProfileName: 'prof-1',
+          Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }],
+        },
+      });
 
     const result = await new IAMInstanceProfileProvider().import!(input());
     expect(result).toEqual({ physicalId: 'prof-1', attributes: {} });
-    // Exactly one call: the list. No describe burst for an inline-tag list.
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    // List + one GetInstanceProfile: the per-candidate read must happen.
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[1]![0].constructor.name).toBe('GetInstanceProfileCommand');
+  });
+
+  it('does NOT match on tags that only appear on the list summary', async () => {
+    // Regression guard: a summary-only adapter would match here. The real API
+    // never populates this field, so matching it is the bug.
+    mockSend
+      .mockResolvedValueOnce({
+        InstanceProfiles: [
+          { InstanceProfileName: 'prof-1', Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] },
+        ],
+      })
+      .mockResolvedValueOnce({ InstanceProfile: { InstanceProfileName: 'prof-1' } });
+
+    expect(await new IAMInstanceProfileProvider().import!(input())).toBeNull();
+  });
+
+  it('retries a throttled GetInstanceProfile and still finds the match', async () => {
+    mockSend
+      .mockResolvedValueOnce({ InstanceProfiles: [{ InstanceProfileName: 'prof-1' }] })
+      .mockRejectedValueOnce(throttled())
+      .mockResolvedValueOnce({
+        InstanceProfile: {
+          InstanceProfileName: 'prof-1',
+          Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }],
+        },
+      });
+
+    const result = await new IAMInstanceProfileProvider().import!(input());
+    expect(result?.physicalId).toBe('prof-1');
   });
 
   it('follows IsTruncated/Marker pagination', async () => {
     mockSend
       .mockResolvedValueOnce({ InstanceProfiles: [], IsTruncated: true, Marker: 'p2' })
+      .mockResolvedValueOnce({ InstanceProfiles: [{ InstanceProfileName: 'prof-2' }] })
       .mockResolvedValueOnce({
-        InstanceProfiles: [
-          { InstanceProfileName: 'prof-2', Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] },
-        ],
+        InstanceProfile: {
+          InstanceProfileName: 'prof-2',
+          Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }],
+        },
       });
 
     const result = await new IAMInstanceProfileProvider().import!(input());
@@ -215,14 +258,17 @@ describe('iam-instance-profile: tags inline on the list summary', () => {
   });
 
   it('stops when IsTruncated is false even if a Marker is echoed back', async () => {
-    mockSend.mockResolvedValueOnce({
-      InstanceProfiles: [{ InstanceProfileName: 'other' }],
-      IsTruncated: false,
-      Marker: 'ignored',
-    });
+    mockSend
+      .mockResolvedValueOnce({
+        InstanceProfiles: [{ InstanceProfileName: 'other' }],
+        IsTruncated: false,
+        Marker: 'ignored',
+      })
+      .mockResolvedValueOnce({ InstanceProfile: { InstanceProfileName: 'other' } });
 
     expect(await new IAMInstanceProfileProvider().import!(input())).toBeNull();
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    // List + describe for the one candidate, then the walk ends — no page 2.
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -252,6 +298,35 @@ describe('secretsmanager: tags inline on the list summary', () => {
     const result = await new SecretsManagerSecretProvider().import!(input());
     expect(result?.physicalId).toBe('arn:aws:secretsmanager:us-east-1:1:secret:S');
   });
+
+  it('follows NextToken pagination', async () => {
+    mockSend
+      .mockResolvedValueOnce({ SecretList: [], NextToken: 'p2' })
+      .mockResolvedValueOnce({
+        SecretList: [
+          {
+            ARN: 'arn:aws:secretsmanager:us-east-1:1:secret:S2',
+            Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }],
+          },
+        ],
+      });
+
+    const result = await new SecretsManagerSecretProvider().import!(input());
+    expect(result?.physicalId).toBe('arn:aws:secretsmanager:us-east-1:1:secret:S2');
+  });
+
+  it('returns null when no secret carries the path', async () => {
+    mockSend.mockResolvedValueOnce({
+      SecretList: [
+        {
+          ARN: 'arn:aws:secretsmanager:us-east-1:1:secret:S',
+          Tags: [{ Key: 'aws:cdk:path', Value: 'Other/Path' }],
+        },
+      ],
+    });
+
+    expect(await new SecretsManagerSecretProvider().import!(input())).toBeNull();
+  });
 });
 
 describe('dlm: map-shaped tags, unpaginated list', () => {
@@ -271,6 +346,14 @@ describe('dlm: map-shaped tags, unpaginated list', () => {
 
     const result = await new DLMLifecyclePolicyProvider().import!(input());
     expect(result?.physicalId).toBe('policy-abc');
+  });
+
+  it('returns null when no policy carries the path', async () => {
+    mockSend.mockResolvedValueOnce({
+      Policies: [{ PolicyId: 'policy-abc', Tags: { 'aws:cdk:path': 'Other/Path' } }],
+    });
+
+    expect(await new DLMLifecyclePolicyProvider().import!(input())).toBeNull();
   });
 });
 
@@ -306,6 +389,24 @@ describe('kms: v2-style {TagKey,TagValue} tags', () => {
 
     const result = await new KMSProvider().import!(kmsInput());
     expect(result?.physicalId).toBe('key-1');
+  });
+
+  it('follows NextMarker pagination', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Keys: [], NextMarker: 'p2' })
+      .mockResolvedValueOnce({ Keys: [{ KeyId: 'key-3' }] })
+      .mockResolvedValueOnce({ Tags: [{ TagKey: 'aws:cdk:path', TagValue: CDK_PATH }] });
+
+    const result = await new KMSProvider().import!(kmsInput());
+    expect(result?.physicalId).toBe('key-3');
+  });
+
+  it('returns null when no key carries the path', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Keys: [{ KeyId: 'key-1' }] })
+      .mockResolvedValueOnce({ Tags: [{ TagKey: 'aws:cdk:path', TagValue: 'Other/Path' }] });
+
+    expect(await new KMSProvider().import!(kmsInput())).toBeNull();
   });
 });
 
@@ -360,9 +461,46 @@ describe('codecommit: two reads per candidate, attributes from the metadata read
       input({ resourceType: 'AWS::CodeCommit::Repository' })
     );
     expect(result?.physicalId).toBe('repo-1');
-    // The attributes come from the metadata read inside `describe`, so a
-    // migration that dropped `match.detail` would return an empty object here.
-    expect(result?.attributes).toBeDefined();
+    // `toAttributes` fills every key with a `?? ''` fallback, so a
+    // `toBeDefined()` check would pass even if `match.detail` were dropped.
+    // Assert the actual metadata values came through.
+    expect(result?.attributes).toMatchObject({
+      Arn: 'arn:aws:codecommit:us-east-1:1:repo-1',
+      Name: 'repo-1',
+    });
+  });
+
+  it('follows nextToken pagination', async () => {
+    mockSend
+      .mockResolvedValueOnce({ repositories: [], nextToken: 'p2' })
+      .mockResolvedValueOnce({ repositories: [{ repositoryName: 'repo-2' }] })
+      .mockResolvedValueOnce({
+        repositoryMetadata: {
+          Arn: 'arn:aws:codecommit:us-east-1:1:repo-2',
+          repositoryName: 'repo-2',
+        },
+      })
+      .mockResolvedValueOnce({ tags: { 'aws:cdk:path': CDK_PATH } });
+
+    const result = await new CodeCommitRepositoryProvider().import!(
+      input({ resourceType: 'AWS::CodeCommit::Repository' })
+    );
+    expect(result?.physicalId).toBe('repo-2');
+  });
+
+  it('returns null when no repository carries the path', async () => {
+    mockSend
+      .mockResolvedValueOnce({ repositories: [{ repositoryName: 'repo-1' }] })
+      .mockResolvedValueOnce({
+        repositoryMetadata: { Arn: 'arn:aws:codecommit:us-east-1:1:repo-1' },
+      })
+      .mockResolvedValueOnce({ tags: { 'aws:cdk:path': 'Other/Path' } });
+
+    expect(
+      await new CodeCommitRepositoryProvider().import!(
+        input({ resourceType: 'AWS::CodeCommit::Repository' })
+      )
+    ).toBeNull();
   });
 
   it('retries a throttled metadata read mid-walk', async () => {

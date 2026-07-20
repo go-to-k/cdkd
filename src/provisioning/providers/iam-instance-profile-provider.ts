@@ -389,10 +389,29 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           nextMarker: list.IsTruncated ? list.Marker : undefined,
         };
       },
-      // ListInstanceProfiles already returns Tags inline, so there is no
-      // per-candidate read to make: the walk is paginated but not N+1.
-      describe: async (profile) => (profile.InstanceProfileName ? profile : undefined),
-      tagsOf: (profile) => profile.Tags,
+      // `ListInstanceProfiles` does NOT return tags. The `InstanceProfile`
+      // TYPE carries `Tags?: Tag[]`, so reading them off the list summary
+      // typechecks and silently always sees `undefined` -- the walk then never
+      // matches and `cdkd import` reports the resource as not-found rather
+      // than erroring. AWS documents this explicitly on the command: "this
+      // operation does not return tags, even though they are an attribute of
+      // the returned object ... see GetInstanceProfile". So the tags come from
+      // a per-candidate GetInstanceProfile, which makes this a true N+1 walk
+      // (now retried by the helper).
+      describe: async (profile) => {
+        if (!profile.InstanceProfileName) return undefined;
+        try {
+          const resp = await this.iamClient.send(
+            new GetInstanceProfileCommand({ InstanceProfileName: profile.InstanceProfileName })
+          );
+          return resp.InstanceProfile;
+        } catch (err) {
+          // Deleted between the list and the describe -- skip the candidate.
+          if (err instanceof NoSuchEntityException) return undefined;
+          throw err;
+        }
+      },
+      tagsOf: (detail) => detail?.Tags,
     });
     if (!match) return null;
     // Non-null by construction: `describe` skips summaries without a name.
