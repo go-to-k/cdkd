@@ -52,7 +52,7 @@ export function buildProgram(): Command {
     .version(typeof __CDKD_VERSION__ === 'string' ? __CDKD_VERSION__ : '0.0.0-dev');
 
   program.hook('preAction', (_thisCommand, actionCommand) => {
-    const { profile } = actionCommand.opts<{ profile?: string }>();
+    const { profile } = actionCommand.optsWithGlobals<{ profile?: string }>();
     if (profile !== undefined) {
       process.env['AWS_PROFILE'] = profile;
     }

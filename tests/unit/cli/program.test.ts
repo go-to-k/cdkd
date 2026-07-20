@@ -28,4 +28,26 @@ describe('CLI profile propagation', () => {
 
     expect(observedProfile).toBe('haruki-default');
   });
+
+  it('sets AWS_PROFILE when --profile belongs to the parent command', async () => {
+    delete process.env['AWS_PROFILE'];
+    const program = buildProgram();
+    let observedProfile: string | undefined;
+    const parent = program.command('profile-parent').option('--profile <profile>');
+
+    parent.command('profile-child').action(() => {
+      observedProfile = process.env['AWS_PROFILE'];
+    });
+
+    await program.parseAsync([
+      'node',
+      'cdkd',
+      'profile-parent',
+      '--profile',
+      'haruki-default',
+      'profile-child',
+    ]);
+
+    expect(observedProfile).toBe('haruki-default');
+  });
 });
