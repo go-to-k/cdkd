@@ -1,3 +1,10 @@
+# [0.254.0](https://github.com/go-to-k/cdkd/compare/v0.253.0...v0.254.0) (2026-07-20)
+
+
+### Features
+
+* **deployment:** hard-fail knowably-wrong Fn::GetAtt physicalId fallbacks ([#1108](https://github.com/go-to-k/cdkd/issues/1108)) ([601b1d7](https://github.com/go-to-k/cdkd/commit/601b1d7615b41192a6e3826f424c2ff51f293e12))
+
 # [0.253.0](https://github.com/go-to-k/cdkd/compare/v0.252.3...v0.253.0) (2026-07-20)
 
 
