@@ -1,3 +1,10 @@
+# [0.257.0](https://github.com/go-to-k/cdkd/compare/v0.256.0...v0.257.0) (2026-07-20)
+
+
+### Features
+
+* **providers:** migrate 12 more import() tag walks onto the shared importTagWalk helper ([#1091](https://github.com/go-to-k/cdkd/issues/1091) batch 3) ([#1124](https://github.com/go-to-k/cdkd/issues/1124)) ([ecea871](https://github.com/go-to-k/cdkd/commit/ecea87114fbbbc1dd50cde6632043a9ad1f49fde))
+
 # [0.256.0](https://github.com/go-to-k/cdkd/compare/v0.255.0...v0.256.0) (2026-07-20)
 
 
