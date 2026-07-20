@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd Fn::GetAtt unknown-attribute ARN-shape guard (issue #1106)
 # + --strict-getatt / deploy-summary fallback line (issue #1111).
-# ERROR-PATH fixture, three phases:
+# ERROR-PATH fixture, four phases:
 #   1. `Fn::GetAtt [Probe, BogusArn]` on AWS::SSM::Parameter reaches the
 #      resolver's unknown-attribute fallback, where the physicalId (the
 #      parameter NAME) is not ARN-shaped — the deploy must FAIL with the
@@ -12,9 +12,17 @@
 #   3. Same warn shape WITHOUT the flag: the deploy must SUCCEED, warn
 #      "Unknown attribute BogusName", and print the one-line deploy-summary
 #      fallback count pointing at --strict-getatt.
-# The bogus GetAtt is a RESOURCE property (a second parameter's Value), not
-# an Output, because output-resolution failures are warn-and-continue in
-# default mode and would not make the deploy exit non-zero.
+#   4. GUARD_PHASE=output-strict puts the ONLY bogus GetAtt in a stack
+#      Output (resource properties all valid) and deploys a FRESH stack
+#      with --strict-getatt: the deploy must FAIL after provisioning, the
+#      state file must EXIST recording the created resources (the review
+#      blocker: a strict output failure on a first deploy must not skip
+#      state persistence — invisible orphans otherwise), and `cdkd
+#      destroy` must clean them via that state.
+# In phases 1-3 the bogus GetAtt is a RESOURCE property (a second
+# parameter's Value), not an Output, because output-resolution failures are
+# warn-and-continue in default mode and would not make the deploy exit
+# non-zero.
 # Asserts: per-phase exit codes + messages, then destroy / direct-cleanup
 # fallback, zero leftover parameters, state gone.
 
@@ -185,5 +193,50 @@ assert_gone "SSM parameter ${PARAM} still exists after phase-3 destroy" aws ssm 
 assert_gone "SSM parameter ${CONSUMER_PARAM} still exists after phase-3 destroy" aws ssm get-parameter --name "${CONSUMER_PARAM}" --region "${REGION}"
 assert_gone "state remains after phase-3 destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: phase-3 resources + state gone"
+
+# --- Phase 4 (issue #1111 review blocker): strict Output failure must persist
+# state. GUARD_PHASE=output-strict makes every resource property valid and
+# puts the only bogus GetAtt in a stack Output; on a FRESH stack the
+# incremental per-resource saves are no-ops (no prior ETag), so the
+# post-provisioning persist is the ONLY thing standing between the created
+# resources and zero state (invisible orphans; re-runs collide with
+# "already exists").
+echo "==> Deploy --strict-getatt with the bogus GetAtt ONLY in an Output (EXPECTED to fail, state persisted)"
+OUTPUT_RC=0
+OUTPUT_OUT="$(GUARD_PHASE=output-strict node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --strict-getatt --yes 2>&1)" || OUTPUT_RC=$?
+printf '%s\n' "${OUTPUT_OUT}"
+if [ "${OUTPUT_RC}" -eq 0 ]; then
+  echo "FAIL: strict deploy with a bogus Output exited 0 — the output promotion did not fire" >&2
+  exit 1
+fi
+for needle in 'Failed to resolve output BadOutput' '--strict-getatt'; do
+  if ! printf '%s' "${OUTPUT_OUT}" | grep -qF -- "${needle}"; then
+    echo "FAIL: output-strict deploy output lacks fragment: ${needle}" >&2
+    exit 1
+  fi
+done
+# State-persistence guarantee (fail-closed existence check, not a gone-probe:
+# the state file must EXIST here). Without the persist-before-rethrow fix
+# this head-object fails and the created parameters are invisible orphans.
+if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
+  echo "FAIL: state file missing after the strict output failure — created resources are invisible orphans" >&2
+  exit 1
+fi
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)" || { echo "FAIL: could not read the persisted state file for content assertions" >&2; exit 1; }
+for needle in '"Probe"' '"Consumer"' "${PARAM}" "${CONSUMER_PARAM}"; do
+  if ! printf '%s' "${STATE_JSON}" | grep -qF -- "${needle}"; then
+    echo "FAIL: persisted state lacks ${needle} after the strict output failure" >&2
+    exit 1
+  fi
+done
+echo "    OK: strict output failure exited non-zero (rc=${OUTPUT_RC}) with state recording the created resources"
+
+echo "==> Destroy (phase 4 — proves the persisted state cleans up the resources)"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+
+assert_gone "SSM parameter ${PARAM} still exists after phase-4 destroy" aws ssm get-parameter --name "${PARAM}" --region "${REGION}"
+assert_gone "SSM parameter ${CONSUMER_PARAM} still exists after phase-4 destroy" aws ssm get-parameter --name "${CONSUMER_PARAM}" --region "${REGION}"
+assert_gone "state remains after phase-4 destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    OK: phase-4 resources + state gone"
 echo ""
-echo "[verify] PASS — getatt-fallback-guard: ARN-shape hard-fail, --strict-getatt promotion, and default-mode summary line all verified, cleanup clean"
+echo "[verify] PASS — getatt-fallback-guard: ARN-shape hard-fail, --strict-getatt promotion, default-mode summary line, and strict-output state persistence all verified, cleanup clean"

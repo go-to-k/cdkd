@@ -694,10 +694,20 @@ export class IntrinsicFunctionResolver {
   /**
    * Number of unknown-attribute resolutions that fell back to the physical
    * ID (the warn path) since construction / the last
-   * {@link resetPhysicalIdFallbackCount}. The deploy engine resets this at
-   * the start of each `deploy()` run and surfaces the count in the deploy
-   * summary (issue #1111 item 3) — instance-scoped, so parallel stacks
-   * (each with their own engine + resolver) never share a counter.
+   * {@link resetPhysicalIdFallbackCount}. Counting semantics (issue #1111
+   * item 3): the deploy engine resets this at the start of each `deploy()`
+   * run AND again right before provisioning on the change path — the diff
+   * phase resolves through this same counted resolver, so without the
+   * second reset a fallback site on a to-be-updated resource would count
+   * once during diff and again during provisioning (~2x distinct sites in
+   * the summary). Each distinct fallback site therefore counts once per
+   * run: the surfaced summary covers provisioning + output resolution on
+   * the change path, diff + output resolution on the no-change path, and
+   * diff only under --dry-run. Instance-scoped, so parallel stacks (each
+   * with their own engine + resolver) never share a counter; for the same
+   * reason a nested-stack CHILD engine's fallbacks are counted by the
+   * child's own resolver and are NOT aggregated into the parent stack's
+   * deploy summary.
    */
   private physicalIdFallbackCount = 0;
 
@@ -1758,6 +1768,28 @@ export class IntrinsicFunctionResolver {
             return physicalId.substring(pipeIdx + 1);
           }
           return physicalId;
+        }
+        case 'ServiceArn': {
+          // Documented GetAtt whose correct value IS the physicalId: the SDK
+          // provider stores the service ARN as the physical ID, so return it
+          // verbatim instead of routing through the guard — on imported /
+          // legacy state without cached attributes, --strict-getatt would
+          // otherwise reject a CORRECT fallback (review of issue #1111).
+          // Compound `<a>|<b>` ids (import / readCurrentState shapes) are
+          // disambiguated like `Name` above: the `:service/`-containing side
+          // is the service ARN.
+          const pipeIdx = physicalId.indexOf('|');
+          if (pipeIdx < 0) return physicalId;
+          const left = physicalId.substring(0, pipeIdx);
+          if (left.includes(':service/')) return left; // <serviceArn>|<clusterName>
+          // `<clusterArn>|<serviceName>`: the (new-format, long-ARN) service
+          // ARN is `arn:...:service/<clusterName>/<serviceName>`, derivable
+          // from the cluster ARN side.
+          const clusterIdx = left.indexOf(':cluster/');
+          if (clusterIdx < 0) return physicalId;
+          const clusterName = left.substring(clusterIdx + ':cluster/'.length);
+          const serviceName = physicalId.substring(pipeIdx + 1);
+          return `${left.substring(0, clusterIdx)}:service/${clusterName}/${serviceName}`;
         }
         default:
           return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);

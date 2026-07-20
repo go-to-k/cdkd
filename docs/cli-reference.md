@@ -901,6 +901,12 @@ falls back to the resource's **physical ID**:
   2 attribute resolution(s) fell back to the physical ID (potentially wrong values); re-run with --strict-getatt to fail on these
   ```
 
+  Each distinct fallback site is counted once per run (diff-phase
+  resolutions are not double-counted against provisioning-phase ones). The
+  count is per stack: a nested-stack child's fallbacks are counted by the
+  child's own deploy engine and are not aggregated into the parent's
+  summary line.
+
 - An **Output** whose value cannot be resolved is warned about and skipped
   (no value is persisted or exported); the deploy still exits 0.
 
@@ -911,7 +917,12 @@ falls back to the resource's **physical ID**:
 - An Output resolution failure fails the deploy instead of silently
   publishing nothing (which would otherwise break downstream
   `Fn::ImportValue` consumers with "export not found" long after this
-  deploy exited 0).
+  deploy exited 0). The failure fires AFTER all resource operations
+  succeeded, so cdkd persists the provisioning result to state BEFORE
+  failing: the created/updated resources are recorded (previously
+  persisted outputs are kept), no rollback runs, and a follow-up
+  `cdkd deploy` or `cdkd destroy` sees them — even on a first deploy,
+  nothing becomes an invisible orphan.
 
 Use it in CI to guarantee no potentially-wrong `Fn::GetAtt` value ever
 ships quietly; drop it (default) when a known-benign fallback (e.g. a

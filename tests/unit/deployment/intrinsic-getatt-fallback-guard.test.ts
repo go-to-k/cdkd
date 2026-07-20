@@ -267,6 +267,35 @@ describe('IntrinsicFunctionResolver - per-type default branches route through th
       resolver.resolve({ 'Fn::GetAtt': ['Res', 'ServiceRoleArn'] }, context)
     ).rejects.toThrow(/Cannot resolve Fn::GetAtt \[Res, ServiceRoleArn\] for AWS::IAM::Role/);
   });
+
+  // Review of issue #1111: ECS Service.ServiceArn is a documented GetAtt
+  // whose correct value IS the physicalId (the SDK provider stores the
+  // service ARN as the physical ID). It must have an explicit case — routed
+  // through the guard, --strict-getatt would reject a CORRECT fallback on
+  // imported/legacy state without cached attributes.
+  it('ECS Service: ServiceArn returns the ARN physicalId without warn', async () => {
+    const arn = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+    const context = mkTypedContext('AWS::ECS::Service', arn);
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'ServiceArn'] }, context);
+    expect(result).toBe(arn);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('ECS Service: ServiceArn extracts the ARN side of a <serviceArn>|<clusterName> compound id', async () => {
+    const arn = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+    const context = mkTypedContext('AWS::ECS::Service', `${arn}|my-cluster`);
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'ServiceArn'] }, context);
+    expect(result).toBe(arn);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('ECS Service: ServiceArn derives the ARN from a <clusterArn>|<serviceName> compound id', async () => {
+    const clusterArn = 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster';
+    const context = mkTypedContext('AWS::ECS::Service', `${clusterArn}|my-service`);
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'ServiceArn'] }, context);
+    expect(result).toBe('arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
 });
 
 /**
@@ -317,6 +346,14 @@ describe('IntrinsicFunctionResolver - strictGetAtt mode (issue #1111)', () => {
     const context = mkTypedContext('AWS::SNS::Topic', 'my-topic');
     const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'TopicName'] }, context);
     expect(result).toBe('my-topic');
+  });
+
+  it('ECS Service.ServiceArn is unaffected under strict (physicalId IS the documented value)', async () => {
+    const arn = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+    const context = mkTypedContext('AWS::ECS::Service', arn);
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Res', 'ServiceArn'] }, context);
+    expect(result).toBe(arn);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('enriched attributes are unaffected under strict', async () => {
