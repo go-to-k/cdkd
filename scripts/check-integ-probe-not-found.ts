@@ -23,7 +23,10 @@
  * Only READ-verb probes used as existence checks are in scope
  * (describe|get|head|list|batch-get, plus `aws s3 ls`): a mutation like
  * `if ! aws fsx delete-backup ...` legitimately treats non-zero as "the
- * delete failed" and must not be flagged.
+ * delete failed" and must not be flagged. The one exception: a silenced
+ * `aws <service> \${var}` in condition / list-operator position cannot be
+ * verb-classified at all and is flagged outright (variableVerbProbes) --
+ * route it through the helpers or use literal verbs.
  *
  * This module is separate from the test so the classifier can be table-tested
  * against synthetic script shapes rather than only against today's tree.
@@ -35,12 +38,15 @@
  * fixtures probe: `NotFound` / `Not Found` (generic, EC2 `*.NotFound`, S3 404
  * body), `NoSuch*` (S3, IAM NoSuchEntity, CloudFront, Route53), `does not
  * exist` / `*DoesNotExist*` (CloudFormation ValidationError, CodeDeploy,
- * Step Functions), `NonExistent*` (SQS NonExistentQueue), and bare `404`
- * (s3api head-object/head-bucket). Throttle / auth / network error texts match
- * none of these, so they surface as a hard FAIL instead of a silent pass.
+ * Step Functions), `NonExistent*` (SQS NonExistentQueue), and `\(404` (s3api
+ * head-object/head-bucket, whose error the AWS CLI spells "An error occurred
+ * (404)" -- the open paren anchors it so a bare `404` embedded in an ARN or
+ * request id inside a NON-not-found error text cannot match). Throttle / auth /
+ * network error texts match none of these, so they surface as a hard FAIL
+ * instead of a silent pass.
  */
 export const CANONICAL_NOT_FOUND_REGEX =
-  "'not ?found|no ?such|does ?not ?exist|non ?existent|404'";
+  "'not ?found|no ?such|does ?not ?exist|non ?existent|\\(404'";
 
 /**
  * The canonical helper block inserted into every fixture that asserts
@@ -55,7 +61,11 @@ export const CANONICAL_HELPER_BLOCK = `# --- issue #1097 pattern 2: strict gone-
 # gone_probe returns 0 when the probe fails with a not-found error (resource
 # confirmed gone), 1 when the probe succeeds (resource still exists), and
 # hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# \`assert_gone aws ...\` would exec \`lambda get-function ...\` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "\${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: \${1:-<empty>})" >&2; exit 1; }
   local out
   if out="$("$@" 2>&1)"; then
     return 1
@@ -101,6 +111,13 @@ export interface ProbeClassification {
    * through `gone_probe` (or capture + inspect the error text) instead.
    */
   blindProbeLoops: FlaggedProbe[];
+  /**
+   * A silenced `aws <service> \${var}` / `aws "$var" ...` in condition or
+   * list-operator position: the verb cannot be classified statically, so the
+   * probe must go through the helpers (or use literal verbs) regardless of
+   * what the branch concludes.
+   */
+  variableVerbProbes: FlaggedProbe[];
   /** Calls assert_gone or gone_probe somewhere. */
   usesHelpers: boolean;
   /** Contains CANONICAL_HELPER_BLOCK verbatim. */
@@ -136,17 +153,41 @@ export function joinContinuationLines(content: string): Array<{ line: number; te
 const READ_VERB = /^(describe|get|head|list|batch-get)/;
 
 /**
+ * The statement discards stderr (`2>&1` after `>/dev/null`, `2>/dev/null`, or
+ * `&>/dev/null`, each with optional space before `/dev/null`) -- the property
+ * that makes not-found indistinguishable from a throttle.
+ */
+function isSilenced(cmd: string): boolean {
+  return /(>\s*\/dev\/null\s+2>&1|2>\s*\/dev\/null|&>\s*\/dev\/null|2>&1\s*>\s*\/dev\/null)/.test(
+    cmd,
+  );
+}
+
+/**
  * Matches `aws <service> <verb> ...` where the verb is a read probe and the
- * statement discards stderr (`2>&1` after `>/dev/null`, `2>/dev/null`, or
- * `&>/dev/null`) -- the property that makes not-found indistinguishable from
- * a throttle.
+ * statement is silenced (see {@link isSilenced}).
  */
 function isSilencedReadProbe(cmd: string): boolean {
   const m = /^aws\s+([a-z0-9-]+)\s+([a-z0-9-]+)\b/.exec(cmd);
   if (!m) return false;
   const isRead = m[1] === 's3' ? m[2] === 'ls' : READ_VERB.test(m[2]!);
   if (!isRead) return false;
-  return /(>\/dev\/null\s+2>&1|2>\/dev\/null|&>\/dev\/null|2>&1\s*>\/dev\/null)/.test(cmd);
+  return isSilenced(cmd);
+}
+
+/**
+ * Matches a silenced `aws` invocation whose service or verb position is a
+ * shell VARIABLE (`aws glue \${chk} ...`, `aws "$svc" describe ...`): the
+ * probe cannot be verb-classified statically, so using it silenced in a
+ * condition / list-operator position is banned outright -- route it through
+ * gone_probe / assert_gone or restructure with literal verbs instead
+ * (glue-update-hardening's destroy loop evaded the classifier exactly this
+ * way).
+ */
+function isSilencedVariableVerbProbe(cmd: string): boolean {
+  if (!/^aws\s/.test(cmd)) return false;
+  if (!isSilenced(cmd)) return false;
+  return /^aws\s+(?:"?\$|[a-z0-9-]+\s+"?\$)/.test(cmd);
 }
 
 /** Wording that marks a then-branch as a leak/gone assertion. */
@@ -161,6 +202,7 @@ export function classifyVerifyScript(content: string): ProbeClassification {
   const blindLeakAsserts: FlaggedProbe[] = [];
   const blindGoneConcludes: FlaggedProbe[] = [];
   const blindProbeLoops: FlaggedProbe[] = [];
+  const variableVerbProbes: FlaggedProbe[] = [];
 
   for (let i = 0; i < joined.length; i++) {
     const { line, text } = joined[i]!;
@@ -170,9 +212,13 @@ export function classifyVerifyScript(content: string): ProbeClassification {
     // statement position (line starts with it), so probes inside an
     // `if [ ... ] && { aws ...; }` compound guard are not matched here.
     const sm =
-      /^\s*(aws\s.*?(?:>\/dev\/null 2>&1|2>\/dev\/null|&>\/dev\/null|2>&1\s*>\/dev\/null))\s*(&&|\|\|)\s*(.*)$/.exec(
+      /^\s*(aws\s.*?(?:>\s*\/dev\/null\s+2>&1|2>\s*\/dev\/null|&>\s*\/dev\/null|2>&1\s*>\s*\/dev\/null))\s*(&&|\|\|)\s*(.*)$/.exec(
         text,
       );
+    if (sm && isSilencedVariableVerbProbe(sm[1]!.trim())) {
+      variableVerbProbes.push({ line, text: text.trim() });
+      continue;
+    }
     if (sm && isSilencedReadProbe(sm[1]!.trim())) {
       // Branch text: the rest of the line, plus the `{ ... }` block when the
       // line opens one.
@@ -197,7 +243,12 @@ export function classifyVerifyScript(content: string): ProbeClassification {
     const m = /^\s*(if|elif|while|until)\s+(!\s+)?(aws\s.*?);?\s*(then|do)\s*$/.exec(text);
     if (!m) continue;
     const [, kw, neg, cmd] = m;
-    if (!isSilencedReadProbe(cmd!.trim())) continue;
+    if (!isSilencedReadProbe(cmd!.trim())) {
+      if (isSilencedVariableVerbProbe(cmd!.trim())) {
+        variableVerbProbes.push({ line, text: text.trim() });
+      }
+      continue;
+    }
 
     if (kw === 'while' || kw === 'until') {
       blindProbeLoops.push({ line, text: text.trim() });
@@ -241,6 +292,7 @@ export function classifyVerifyScript(content: string): ProbeClassification {
     blindLeakAsserts,
     blindGoneConcludes,
     blindProbeLoops,
+    variableVerbProbes,
     usesHelpers,
     hasCanonicalHelperBlock: content.includes(CANONICAL_HELPER_BLOCK),
     nonCanonicalNotFoundGreps,

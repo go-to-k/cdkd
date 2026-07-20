@@ -35,12 +35,16 @@ set -euo pipefail
 # gone_probe returns 0 when the probe fails with a not-found error (resource
 # confirmed gone), 1 when the probe succeeds (resource still exists), and
 # hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -94,12 +98,17 @@ trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
+# Strict existence probes (issue #1097 pattern 2): head-object through
+# gone_probe -- 0 = object present, 1 = confirmed 404-gone, hard-FAIL on any
+# other probe failure (a throttle must never read as "state/lock is gone").
+# `aws s3 ls` is unusable here: it exits 1 with EMPTY output for "no keys",
+# indistinguishable from a silenced error.
 state_exists() {
-  aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
+  ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 }
 
 lock_exists() {
-  aws s3 ls "s3://${STATE_BUCKET}/${LOCK_KEY}" >/dev/null 2>&1
+  ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}"
 }
 
 # Bounded poll: returns 0 (released) once the lock object is GONE, or 1
@@ -109,6 +118,8 @@ lock_exists() {
 # check can race the delete. Only call this AFTER `wait` has confirmed
 # the node process fully exited — while the process is alive the lock is
 # LEGITIMATELY held (it is released in the finally, not mid-drain).
+# lock_exists is strict (gone_probe): a throttled probe hard-FAILs the run
+# instead of reading as "released".
 wait_for_lock_release() {
   local tries=0
   while [ "${tries}" -lt 10 ]; do

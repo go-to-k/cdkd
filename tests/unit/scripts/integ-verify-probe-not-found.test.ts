@@ -64,6 +64,9 @@ fi
     ['reversed redirect order', 'if aws ssm get-parameter --name x 2>&1 >/dev/null; then'],
     ['elif arm', 'elif aws s3api head-object --bucket b --key k >/dev/null 2>&1; then'],
     ['aws s3 ls', 'if aws s3 ls "s3://b/k" >/dev/null 2>&1; then'],
+    ['spaced > /dev/null redirection', 'if aws lambda get-function --function-name x > /dev/null 2>&1; then'],
+    ['spaced 2> /dev/null silencing', 'if aws sqs get-queue-url --queue-name x 2> /dev/null | grep -q x; then'],
+    ['spaced reversed redirect order', 'if aws ssm get-parameter --name x 2>&1 > /dev/null; then'],
   ])('flags Form B variant: %s', (_label, cond) => {
     const script = `${cond}\n  echo "FAIL: still exists after destroy" >&2\n  exit 1\nfi\n`;
     expect(classifyVerifyScript(script).blindLeakAsserts).toHaveLength(1);
@@ -162,6 +165,25 @@ fi
     expect(c.blindLeakAsserts).toEqual([]);
   });
 
+  it.each([
+    ['if condition, variable verb', 'if aws glue ${chk} --region r >/dev/null 2>&1; then\n  echo "FAIL: still exists after destroy" >&2\n  exit 1\nfi\n'],
+    ['negated if condition', 'if ! aws glue ${chk} --region r >/dev/null 2>&1; then\n  GONE=1\nfi\n'],
+    ['quoted variable verb', 'if aws glue "$chk" --region r >/dev/null 2>&1; then\n  echo "FAIL: still exists" >&2\n  exit 1\nfi\n'],
+    ['variable service', 'if aws ${svc} describe-thing --id x >/dev/null 2>&1; then\n  echo "noise"\nfi\n'],
+    ['&&-list position', 'aws glue ${chk} --region r >/dev/null 2>&1 && { echo "FAIL: still exists" >&2; exit 1; }\n'],
+    ['||-list position', 'aws glue ${chk} --region r >/dev/null 2>&1 || { GONE=1; break; }\n'],
+  ])('flags a silenced variable-verb probe: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).variableVerbProbes).toHaveLength(1);
+  });
+
+  it.each([
+    ['routed through gone_probe', 'if ! gone_probe aws glue ${chk} --region r; then\n  echo "FAIL: still exists" >&2\n  exit 1\nfi\n'],
+    ['unsilenced strict capture', 'if ! out=$(aws glue ${chk} --region r 2>&1); then\n  echo "probe failed: ${out}" >&2\nfi\n'],
+    ['literal-verb probe (handled by the read-probe categories)', 'if aws glue get-job --job-name x >/dev/null 2>&1; then\n  echo "noise"\nfi\n'],
+  ])('does not flag a variable-verb non-violation: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).variableVerbProbes).toEqual([]);
+  });
+
   it('flags a wait-until-gone while/until loop driven by a blind probe', () => {
     for (const kw of ['while', 'until']) {
       const script = `${kw} aws efs describe-file-systems --file-system-id f >/dev/null 2>&1; do
@@ -233,6 +255,12 @@ case "\${AWS_STUB_MODE}" in
   throttle)
     echo "An error occurred (ThrottlingException) when calling the GetFunction operation: Rate exceeded" >&2
     exit 254 ;;
+  http404)
+    echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2
+    exit 254 ;;
+  arn404)
+    echo "An error occurred (AccessDenied) when calling the GetFunction operation: User arn:aws:iam::123404567890:role/x is not authorized" >&2
+    exit 254 ;;
 esac
 `,
     { mode: 0o755 },
@@ -277,6 +305,45 @@ echo "LEAK-CHECK-PASSED"
     expect(r.stdout).not.toContain('LEAK-CHECK-PASSED');
   });
 
+  it('"An error occurred (404)" -> the leak check passes (anchored 404)', () => {
+    const r = run('http404');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('LEAK-CHECK-PASSED');
+  });
+
+  it('a bare 404 embedded in an ARN does NOT match -> FAIL: undetermined', () => {
+    // Before the \\(404 anchor, "123404567890" in an AccessDenied ARN would
+    // satisfy the alternation and silently pass the leak check.
+    const r = run('arn404');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('gone-probe undetermined');
+    expect(r.stdout).not.toContain('LEAK-CHECK-PASSED');
+  });
+
+  it('a forgotten assert_gone description hard-FAILs instead of silently passing', () => {
+    // `assert_gone aws ...` (desc omitted) makes gone_probe exec
+    // `lambda get-function ...` -> "command not found" would match
+    // `not ?found` without the first-arg guard.
+    const noDescScript = join(dir, 'no-desc.sh');
+    writeFileSync(
+      noDescScript,
+      `#!/usr/bin/env bash
+set -euo pipefail
+${CANONICAL_HELPER_BLOCK}
+assert_gone aws lambda get-function --function-name w
+echo "LEAK-CHECK-PASSED"
+`,
+      { mode: 0o755 },
+    );
+    const r = spawnSync('bash', [noDescScript], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${binDir}:${process.env['PATH']}`, AWS_STUB_MODE: 'notfound' },
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('gone_probe: probe must start with aws (got: lambda)');
+    expect(r.stdout).not.toContain('LEAK-CHECK-PASSED');
+  });
+
   it('cleans up the temp scripts', () => {
     rmSync(dir, { recursive: true, force: true });
     expect(existsSync(dir)).toBe(false);
@@ -309,6 +376,13 @@ describe('integ fixture verify.sh gone-probes (#1097 pattern 2)', () => {
     const offenders = inScope
       .filter((f) => f.blindProbeLoops.length > 0)
       .map((f) => `${f.name}: ${f.blindProbeLoops.map((p) => p.line).join(',')}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('never probes with a silenced variable verb in condition position', () => {
+    const offenders = inScope
+      .filter((f) => f.variableVerbProbes.length > 0)
+      .map((f) => `${f.name}: ${f.variableVerbProbes.map((p) => p.line).join(',')}`);
     expect(offenders).toEqual([]);
   });
 

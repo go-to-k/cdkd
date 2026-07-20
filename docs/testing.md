@@ -470,7 +470,7 @@ fi
 ```
 
 The helpers grep the probe's stderr for the ONE canonical not-found signature
-(`'not ?found|no ?such|does ?not ?exist|non ?existent|404'`, case-insensitive)
+(`'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'`, case-insensitive)
 and refuse to report PASS on any other failure. Notes:
 
 - Only READ-verb probes (`describe|get|head|list|batch-get`, `aws s3 ls`) used

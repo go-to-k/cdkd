@@ -32,12 +32,16 @@ set -euo pipefail
 # gone_probe returns 0 when the probe fails with a not-found error (resource
 # confirmed gone), 1 when the probe succeeds (resource still exists), and
 # hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -65,39 +69,65 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # --- existence helpers (async-delete aware where needed) ---------------
+# All strict (issue #1097 pattern 2): rc 0 = exists/live, rc 1 = confirmed
+# gone; any OTHER probe failure (throttle, auth) hard-FAILs the run instead of
+# reading as "gone". ID-based error-on-missing probes go through gone_probe;
+# list/query forms capture the output and fail loudly on a probe error.
 stream_live() {
   # Kinesis DeleteStream is async (StreamStatus=DELETING) — treat that as gone.
   local s
-  s="$(aws kinesis describe-stream-summary --stream-name "$1" --region "${REGION}" \
-    --query 'StreamDescriptionSummary.StreamStatus' --output text 2>/dev/null)" || return 1
+  if ! s="$(aws kinesis describe-stream-summary --stream-name "$1" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1)"; then
+    if printf '%s' "${s}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      return 1
+    fi
+    echo "FAIL: stream_live probe undetermined ($1): ${s}" >&2; exit 1
+  fi
   [ -n "${s}" ] && [ "${s}" != "DELETING" ] && [ "${s}" != "None" ]
 }
 secret_active() {
-  local n; n="$(aws secretsmanager list-secrets --region "${REGION}" \
-    --query "SecretList[?Name=='$1'].Name | [0]" --output text 2>/dev/null)"
+  local n
+  if ! n="$(aws secretsmanager list-secrets --region "${REGION}" \
+    --query "SecretList[?Name=='$1'].Name | [0]" --output text 2>&1)"; then
+    echo "FAIL: secret_active probe undetermined ($1): ${n}" >&2; exit 1
+  fi
   [ "${n}" = "$1" ]
 }
 sm_live() {
   # DeleteStateMachine is async (status=DELETING) — treat that as gone. Match by name.
   local arn st
-  arn="$(aws stepfunctions list-state-machines --region "${REGION}" \
-    --query "stateMachines[?name=='$1'].stateMachineArn | [0]" --output text 2>/dev/null)"
+  if ! arn="$(aws stepfunctions list-state-machines --region "${REGION}" \
+    --query "stateMachines[?name=='$1'].stateMachineArn | [0]" --output text 2>&1)"; then
+    echo "FAIL: sm_live list probe undetermined ($1): ${arn}" >&2; exit 1
+  fi
   [ -n "${arn}" ] && [ "${arn}" != "None" ] || return 1
-  st="$(aws stepfunctions describe-state-machine --state-machine-arn "${arn}" --region "${REGION}" \
-    --query 'status' --output text 2>/dev/null)" || return 1
+  if ! st="$(aws stepfunctions describe-state-machine --state-machine-arn "${arn}" --region "${REGION}" \
+    --query 'status' --output text 2>&1)"; then
+    # Deleted between the list and the describe -> gone.
+    if printf '%s' "${st}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      return 1
+    fi
+    echo "FAIL: sm_live describe probe undetermined (${arn}): ${st}" >&2; exit 1
+  fi
   [ "${st}" != "DELETING" ]
 }
 rule_exists() {
-  local n; n="$(aws events list-rules --name-prefix "$1" --region "${REGION}" \
-    --query "Rules[?Name=='$1'].Name | [0]" --output text 2>/dev/null)"
+  local n
+  if ! n="$(aws events list-rules --name-prefix "$1" --region "${REGION}" \
+    --query "Rules[?Name=='$1'].Name | [0]" --output text 2>&1)"; then
+    echo "FAIL: rule_exists probe undetermined ($1): ${n}" >&2; exit 1
+  fi
   [ "${n}" = "$1" ]
 }
 param_exists() {
-  aws ssm get-parameter --name "$1" --region "${REGION}" >/dev/null 2>&1
+  ! gone_probe aws ssm get-parameter --name "$1" --region "${REGION}"
 }
 alarm_exists() {
-  local n; n="$(aws cloudwatch describe-alarms --alarm-names "$1" --region "${REGION}" \
-    --query 'MetricAlarms[0].AlarmName' --output text 2>/dev/null)"
+  local n
+  if ! n="$(aws cloudwatch describe-alarms --alarm-names "$1" --region "${REGION}" \
+    --query 'MetricAlarms[0].AlarmName' --output text 2>&1)"; then
+    echo "FAIL: alarm_exists probe undetermined ($1): ${n}" >&2; exit 1
+  fi
   [ "${n}" = "$1" ]
 }
 

@@ -36,12 +36,16 @@ set -euo pipefail
 # gone_probe returns 0 when the probe fails with a not-found error (resource
 # confirmed gone), 1 when the probe succeeds (resource still exists), and
 # hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -253,10 +257,19 @@ echo "[verify] step 9 ok: child state parent-link=${PARENT_LINK}"
 
 echo "[verify] step 10: assert source CFn stacks are retired (parent + child both gone)"
 if ! gone_probe aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}"; then
-  STATUS=$(aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}" \
-    --query 'Stacks[0].StackStatus' --output text)
-  if [ "${STATUS}" != "DELETE_COMPLETE" ]; then
-    echo "[verify] FAIL: parent CFn stack still alive with status ${STATUS}"
+  # Still present at the first probe -- but the stack can finish deleting
+  # between the two probes, so capture the follow-up describe instead of
+  # letting a raw not-found errexit-abort the script.
+  if STATUS=$(aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}" \
+    --query 'Stacks[0].StackStatus' --output text 2>&1); then
+    if [ "${STATUS}" != "DELETE_COMPLETE" ]; then
+      echo "[verify] FAIL: parent CFn stack still alive with status ${STATUS}"
+      exit 1
+    fi
+  elif ! gone_probe aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}"; then
+    # Describe failed but a re-probe says the stack still exists (or the
+    # failure was not a not-found, in which case gone_probe hard-FAILed).
+    echo "[verify] FAIL: parent CFn stack describe failed (${STATUS}) but the stack still exists"
     exit 1
   fi
 fi

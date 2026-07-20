@@ -62,7 +62,7 @@ if ! gone_probe aws <service> <read-verb> [args...]; then ...still exists...; fi
 ```
 
 `gone_probe` accepts ONLY the canonical not-found signature
-(`'not ?found|no ?such|does ?not ?exist|non ?existent|404'`) and hard-FAILs on
+(`'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'`) and hard-FAILs on
 anything else. Probe state files via `s3api head-object`, never `aws s3 ls`
 (which exits 1 with empty output for "no keys"). Out of scope: mutation probes,
 fail-closed existence checks, pre-flight "already exists" guards, best-effort

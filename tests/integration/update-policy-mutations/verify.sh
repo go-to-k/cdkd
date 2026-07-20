@@ -43,12 +43,16 @@ set -euo pipefail
 # gone_probe returns 0 when the probe fails with a not-found error (resource
 # confirmed gone), 1 when the probe succeeds (resource still exists), and
 # hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -110,15 +114,20 @@ trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
 # --- helpers (BSD-portable) ------------------------------------------
+# All strict (issue #1097 pattern 2), routed through gone_probe: rc 0 =
+# exists, rc 1 = confirmed not-found; any other probe failure (throttle,
+# auth) hard-FAILs the run instead of reading as "gone".
 bucket_exists() {
-  # 0 if the bucket exists AND we can see it, non-zero otherwise.
-  aws s3api head-bucket --bucket "$1" --region "${AWS_REGION}" >/dev/null 2>&1
+  # head-bucket answers 404 for a missing bucket (matches the canonical
+  # signature); 403/AccessDenied on someone ELSE's bucket is undetermined
+  # and hard-FAILs -- these buckets are account-owned, so that is correct.
+  ! gone_probe aws s3api head-bucket --bucket "$1" --region "${AWS_REGION}"
 }
 ssm_exists() {
-  aws ssm get-parameter --region "${AWS_REGION}" --name "$1" >/dev/null 2>&1
+  ! gone_probe aws ssm get-parameter --region "${AWS_REGION}" --name "$1"
 }
 sns_exists() {
-  aws sns get-topic-attributes --region "${AWS_REGION}" --topic-arn "$1" >/dev/null 2>&1
+  ! gone_probe aws sns get-topic-attributes --region "${AWS_REGION}" --topic-arn "$1"
 }
 
 fail() {
