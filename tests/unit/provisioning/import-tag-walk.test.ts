@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 
 import {
   importTagWalk,
   isThrottlingLikeError,
   ImportTagWalkLimitError,
+  importTagWalkTestHooks,
 } from '../../../src/provisioning/import-tag-walk.js';
 
 const CDK_PATH = 'MyStack/MyConstruct/Resource';
@@ -317,6 +318,61 @@ describe('importTagWalk', () => {
       })
     ).rejects.toThrow(/after 3 pages/);
     expect(listPage).toHaveBeenCalledTimes(3);
+  });
+
+  // The module-level test seam every provider wiring test relies on: without
+  // this, dropping the hook read from the retryOpts spread keeps the suite
+  // green while every provider throttle test silently pays real backoff waits.
+  describe('importTagWalkTestHooks.sleep', () => {
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
+    it('supplies the walk backoff sleep when no per-call retry.sleep is given', async () => {
+      const hookSleep = vi.fn(async () => {});
+      importTagWalkTestHooks.sleep = hookSleep;
+
+      const describeFn = vi
+        .fn()
+        .mockRejectedValueOnce(throttlingError())
+        .mockResolvedValue({ Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
+
+      const match = await importTagWalk<Summary, { Tags: Array<{ Key: string; Value: string }> }>({
+        cdkPath: CDK_PATH,
+        listPage: async () => ({ items: [{ id: 'a' }] }),
+        describe: describeFn,
+        tagsOf: (d) => d.Tags,
+        // Deliberately NO retry.sleep: the hook must back the throttle retry.
+      });
+
+      expect(match?.summary.id).toBe('a');
+      expect(describeFn).toHaveBeenCalledTimes(2);
+      expect(hookSleep).toHaveBeenCalled();
+      expect(hookSleep.mock.calls[0]![0]).toBe(500);
+    });
+
+    it('is overridden by a per-call retry.sleep (hook never called)', async () => {
+      const hookSleep = vi.fn(async () => {});
+      const perCallSleep = vi.fn(async () => {});
+      importTagWalkTestHooks.sleep = hookSleep;
+
+      const describeFn = vi
+        .fn()
+        .mockRejectedValueOnce(throttlingError())
+        .mockResolvedValue({ Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
+
+      const match = await importTagWalk<Summary, { Tags: Array<{ Key: string; Value: string }> }>({
+        cdkPath: CDK_PATH,
+        listPage: async () => ({ items: [{ id: 'a' }] }),
+        describe: describeFn,
+        tagsOf: (d) => d.Tags,
+        retry: { sleep: perCallSleep },
+      });
+
+      expect(match?.summary.id).toBe('a');
+      expect(perCallSleep).toHaveBeenCalled();
+      expect(hookSleep).not.toHaveBeenCalled();
+    });
   });
 
   it('honors an interrupt raised while backing off', async () => {

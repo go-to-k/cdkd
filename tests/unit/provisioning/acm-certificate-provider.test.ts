@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-certificate-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const ARN = 'arn:aws:acm:us-east-1:123456789012:certificate/abc123';
 
@@ -528,6 +529,57 @@ describe('ACMCertificateProvider', () => {
       mockSend.mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'Other/X' }] });
       const result = await provider.import!(makeInput());
       expect(result).toBeNull();
+    });
+
+    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForCertificate
+    // burst routed through the shared importTagWalk helper — a throttled
+    // per-candidate tag read is retried with backoff instead of aborting the
+    // whole import, while a non-throttling error still surfaces immediately.
+    describe('tag walk retry', () => {
+      beforeEach(() => {
+        // Skip the walk's real backoff waits so the retry tests stay fast.
+        importTagWalkTestHooks.sleep = async () => {};
+      });
+      afterEach(() => {
+        importTagWalkTestHooks.sleep = undefined;
+      });
+
+      it('retries a throttled ListTagsForCertificate mid-walk and still finds the match', async () => {
+        const throttled = new Error('Rate exceeded') as Error & {
+          $metadata: { httpStatusCode: number };
+        };
+        throttled.name = 'ThrottlingException';
+        throttled.$metadata = { httpStatusCode: 400 };
+
+        mockSend
+          .mockResolvedValueOnce({ CertificateSummaryList: [{ CertificateArn: ARN }] })
+          .mockRejectedValueOnce(throttled)
+          .mockResolvedValueOnce({
+            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyCert' }],
+          });
+
+        const result = await provider.import!(makeInput());
+
+        expect(result).toEqual({
+          physicalId: ARN,
+          attributes: { Arn: ARN, CertificateArn: ARN },
+        });
+        expect(mockSend).toHaveBeenCalledTimes(3);
+      });
+
+      it('does not retry a non-throttling ListTagsForCertificate error during the walk', async () => {
+        const denied = new Error(
+          'User is not authorized to perform acm:ListTagsForCertificate'
+        );
+        denied.name = 'AccessDeniedException';
+
+        mockSend
+          .mockResolvedValueOnce({ CertificateSummaryList: [{ CertificateArn: ARN }] })
+          .mockRejectedValueOnce(denied);
+
+        await expect(provider.import!(makeInput())).rejects.toThrow(/not authorized/);
+        expect(mockSend).toHaveBeenCalledTimes(2);
+      });
     });
   });
 });

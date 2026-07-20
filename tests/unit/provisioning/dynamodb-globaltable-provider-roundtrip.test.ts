@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateTableCommand,
   DeleteTableCommand,
@@ -115,6 +115,7 @@ import {
   diffGlobalSecondaryIndexes,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE_NAME = 'my-table';
@@ -2718,6 +2719,96 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         properties: {},
       });
       expect(result).toBeNull();
+    });
+
+    // Issue #1091 batch 3: the tag-based import lookup costs TWO reads per
+    // candidate (DescribeTable for the ARN, then ListTagsOfResource) and is
+    // routed through the shared importTagWalk helper — a throttled read is
+    // retried with backoff (re-running the whole per-candidate callback)
+    // instead of aborting the whole import, while a non-throttling error
+    // still surfaces immediately.
+    describe('tag walk retry', () => {
+      beforeEach(() => {
+        // Skip the walk's real backoff waits so the retry tests stay fast.
+        importTagWalkTestHooks.sleep = async () => {};
+      });
+      afterEach(() => {
+        importTagWalkTestHooks.sleep = undefined;
+      });
+
+      const walkInput = () => ({
+        logicalId: 'L',
+        resourceType: RESOURCE_TYPE,
+        cdkPath: 'Stack/L/Resource',
+        stackName: 'Stack',
+        region: 'us-east-1',
+        properties: {},
+      });
+
+      /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+      const throttle = (): Error => {
+        const err = new Error('Rate exceeded') as Error & {
+          $metadata: { httpStatusCode: number };
+        };
+        err.name = 'ThrottlingException';
+        err.$metadata = { httpStatusCode: 400 };
+        return err;
+      };
+
+      it('retries a throttled ListTagsOfResource mid-walk and still finds the match', async () => {
+        mockSend
+          .mockResolvedValueOnce({ TableNames: ['tbl-1'] })
+          // Candidate attempt 1: DescribeTable ok, ListTagsOfResource throttled.
+          .mockResolvedValueOnce({ Table: { TableArn: 'arn:tbl-1' } })
+          .mockRejectedValueOnce(throttle())
+          // Retry re-runs the WHOLE per-candidate callback: DescribeTable
+          // again, then the tag read succeeds with the match.
+          .mockResolvedValueOnce({ Table: { TableArn: 'arn:tbl-1' } })
+          .mockResolvedValueOnce({
+            Tags: [{ Key: 'aws:cdk:path', Value: 'Stack/L/Resource' }],
+          });
+
+        const result = await provider.import(walkInput());
+
+        expect(result).toEqual({ physicalId: 'tbl-1', attributes: {} });
+        expect(mockSend).toHaveBeenCalledTimes(5);
+      });
+
+      it('does not retry a non-throttling error during the walk', async () => {
+        const denied = new Error('User is not authorized to perform dynamodb:ListTagsOfResource');
+        denied.name = 'AccessDeniedException';
+        mockSend
+          .mockResolvedValueOnce({ TableNames: ['tbl-1'] })
+          .mockResolvedValueOnce({ Table: { TableArn: 'arn:tbl-1' } })
+          .mockRejectedValueOnce(denied);
+
+        await expect(provider.import(walkInput())).rejects.toThrow(/not authorized/);
+        expect(mockSend).toHaveBeenCalledTimes(3);
+      });
+
+      // The ListTables pagination fold is the one non-mechanical piece of
+      // the migration: the next page boundary is LastEvaluatedTableName,
+      // echoed back as ExclusiveStartTableName on the next list call.
+      it('paginates via ExclusiveStartTableName = LastEvaluatedTableName of the previous page', async () => {
+        mockSend
+          // page 1: no match, more pages
+          .mockResolvedValueOnce({ TableNames: ['tbl-1'], LastEvaluatedTableName: 'tbl-1' })
+          .mockResolvedValueOnce({ Table: { TableArn: 'arn:tbl-1' } })
+          .mockResolvedValueOnce({ Tags: [] })
+          // page 2: the match
+          .mockResolvedValueOnce({ TableNames: ['tbl-2'] })
+          .mockResolvedValueOnce({ Table: { TableArn: 'arn:tbl-2' } })
+          .mockResolvedValueOnce({
+            Tags: [{ Key: 'aws:cdk:path', Value: 'Stack/L/Resource' }],
+          });
+
+        const result = await provider.import(walkInput());
+
+        expect(result).toEqual({ physicalId: 'tbl-2', attributes: {} });
+        const secondList = mockSend.mock.calls[3]?.[0];
+        expect(secondList).toBeInstanceOf(ListTablesCommand);
+        expect(secondList.input).toEqual({ ExclusiveStartTableName: 'tbl-1' });
+      });
     });
   });
 

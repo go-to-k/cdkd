@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -28,6 +28,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { CloudWatchAlarmProvider } from '../../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   DescribeAlarmsCommand,
   ListTagsForResourceCommand,
@@ -39,6 +40,11 @@ describe('CloudWatchAlarmProvider import', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new CloudWatchAlarmProvider();
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    importTagWalkTestHooks.sleep = async () => {};
+  });
+  afterEach(() => {
+    importTagWalkTestHooks.sleep = undefined;
   });
 
   function makeInput(

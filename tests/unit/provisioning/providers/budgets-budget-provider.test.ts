@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());
@@ -56,6 +56,7 @@ import {
   DuplicateRecordException,
 } from '@aws-sdk/client-budgets';
 import { BudgetsBudgetProvider } from '../../../../src/provisioning/providers/budgets-budget-provider.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   ReplacementRulesRegistry,
   budgetNameChanged,
@@ -581,6 +582,15 @@ describe('BudgetsBudgetProvider', () => {
   });
 
   describe('import', () => {
+    beforeEach(() => {
+      // Skip the walk's real backoff waits in the throttle-retry tests.
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     const input = (overrides: Record<string, unknown> = {}): never =>
       ({
         logicalId: 'MyBudget',
@@ -684,6 +694,59 @@ describe('BudgetsBudgetProvider', () => {
 
       const result = await provider.import(input());
       expect(result).toBeNull();
+    });
+
+    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForResource burst
+    // routed through the shared importTagWalk helper: a throttled
+    // per-candidate tag read is retried with backoff instead of aborting the
+    // whole import, while a non-throttling error still surfaces immediately.
+    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      let tagCalls = 0;
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeBudgetsCommand) {
+          return Promise.resolve({ Budgets: [{ BudgetName: 'tagged' }] });
+        }
+        if (cmd instanceof ListTagsForResourceCommand) {
+          tagCalls += 1;
+          if (tagCalls === 1) return Promise.reject(throttled);
+          return Promise.resolve({
+            ResourceTags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBudget' }],
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await provider.import(input());
+
+      expect(result).toEqual({
+        physicalId: 'tagged',
+        attributes: { Arn: `arn:aws:budgets::${ACCOUNT}:budget/tagged` },
+      });
+      expect(callsOf(ListTagsForResourceCommand)).toHaveLength(2);
+    });
+
+    it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
+      const denied = new Error('User is not authorized to perform budgets:ListTagsForResource');
+      denied.name = 'AccessDeniedException';
+
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeBudgetsCommand) {
+          return Promise.resolve({ Budgets: [{ BudgetName: 'tagged' }] });
+        }
+        if (cmd instanceof ListTagsForResourceCommand) {
+          return Promise.reject(denied);
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(provider.import(input())).rejects.toThrow(/not authorized/);
+      expect(callsOf(ListTagsForResourceCommand)).toHaveLength(1);
     });
   });
 });

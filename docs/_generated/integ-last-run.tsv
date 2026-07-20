@@ -115,7 +115,7 @@ iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-ver
 iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
 iam-role-prefixed-name-update	2026-06-21T08:38:12Z	PASS	45	verify.sh	prefix-migration false-positive fix (generator-based); in-place UPDATE w/o -y, RoleId unchanged, destroy clean
-import-attributes	2026-07-20T05:29:20Z	PASS	90	verify.sh	live-verifies migrated iam-managed-policy importTagWalk (#1091 batch 2); destroy clean
+import-attributes	2026-07-20T08:55:56Z	PASS	43	verify.sh	batch3 importTagWalk migration live-verify; destroy 0 err 0 orph
 import-nested-stack	2026-06-21T11:00:28Z	PASS	146	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 import-value-strong-ref	2026-07-02T18:23:15Z	PASS	115	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 importvalue-chain	2026-07-02T18:23:15Z	PASS	75	verify.sh	0703 staleness sweep (pre-TTL refresh); clean

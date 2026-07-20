@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -33,6 +33,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { CloudTrailProvider } from '../../../../src/provisioning/providers/cloudtrail-provider.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   CreateTrailCommand,
   DeleteTrailCommand,
@@ -351,6 +352,71 @@ describe('CloudTrailProvider', () => {
       const result = await provider.import(makeInput());
 
       expect(result).toBeNull();
+    });
+
+    // Issue #1091 batch 3: the tag walk is an N+1 ListTags burst routed
+    // through the shared importTagWalk helper — a throttled per-candidate
+    // tag read is retried with backoff instead of aborting the whole
+    // import, while a non-throttling error still surfaces immediately.
+    describe('tag walk retry', () => {
+      beforeEach(() => {
+        // Skip the walk's real backoff waits so the retry tests stay fast.
+        importTagWalkTestHooks.sleep = async () => {};
+      });
+      afterEach(() => {
+        importTagWalkTestHooks.sleep = undefined;
+      });
+
+      it('retries a throttled ListTags mid-walk and still finds the match', async () => {
+        const throttled = new Error('Rate exceeded') as Error & {
+          $metadata: { httpStatusCode: number };
+        };
+        throttled.name = 'ThrottlingException';
+        throttled.$metadata = { httpStatusCode: 400 };
+
+        mockSend
+          .mockResolvedValueOnce({
+            Trails: [
+              {
+                Name: 'my-trail',
+                TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+              },
+            ],
+          })
+          .mockRejectedValueOnce(throttled)
+          .mockResolvedValueOnce({
+            ResourceTagList: [
+              {
+                ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+                TagsList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTrail/Resource' }],
+              },
+            ],
+          });
+
+        const result = await provider.import(makeInput());
+
+        expect(result).toEqual({ physicalId: 'my-trail', attributes: {} });
+        expect(mockSend).toHaveBeenCalledTimes(3);
+      });
+
+      it('does not retry a non-throttling ListTags error during the walk', async () => {
+        const denied = new Error('User is not authorized to perform cloudtrail:ListTags');
+        denied.name = 'AccessDeniedException';
+
+        mockSend
+          .mockResolvedValueOnce({
+            Trails: [
+              {
+                Name: 'my-trail',
+                TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+              },
+            ],
+          })
+          .mockRejectedValueOnce(denied);
+
+        await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
+        expect(mockSend).toHaveBeenCalledTimes(2);
+      });
     });
   });
 });

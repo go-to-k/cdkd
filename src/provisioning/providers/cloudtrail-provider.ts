@@ -22,11 +22,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -576,30 +573,34 @@ export class CloudTrailProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListTrailsCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      for (const trail of list.Trails ?? []) {
-        if (!trail.TrailARN || !trail.Name) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTags burst is retried with exponential backoff when AWS throttles
+    // it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListTrailsCommand({ ...(marker && { NextToken: marker }) })
+        );
+        return { items: list.Trails, nextMarker: list.NextToken };
+      },
+      describe: async (trail) => {
+        if (!trail.TrailARN || !trail.Name) return undefined;
         try {
-          const tagsResp = await this.getClient().send(
+          return await this.getClient().send(
             new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
           );
-          const list2 = tagsResp.ResourceTagList?.[0];
-          if (matchesCdkPath(list2?.TagsList, input.cdkPath)) {
-            return { physicalId: trail.Name, attributes: {} };
-          }
         } catch (err) {
-          if (err instanceof TrailNotFoundException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof TrailNotFoundException) return undefined;
           throw err;
         }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.ResourceTagList?.[0]?.TagsList,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.Name!, attributes: {} };
   }
 }

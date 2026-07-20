@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   GetRoleCommand,
   NoSuchEntityException,
@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
@@ -527,6 +528,11 @@ describe('IAMRoleProvider', () => {
       // Drop once-queued responses leaked by earlier tests — clearAllMocks()
       // clears calls but NOT unconsumed mockResolvedValueOnce entries.
       mockSend.mockReset();
+      // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
     });
 
     const importInput = () => ({

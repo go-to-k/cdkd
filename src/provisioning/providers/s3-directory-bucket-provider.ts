@@ -15,7 +15,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -360,28 +361,35 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let token: string | undefined;
-    do {
-      const list = await this.s3Client.send(
-        new ListDirectoryBucketsCommand({ ...(token && { ContinuationToken: token }) })
-      );
-      for (const b of list.Buckets ?? []) {
-        if (!b.Name) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // GetBucketTagging burst (one call per directory bucket in the account)
+    // is retried with exponential backoff when AWS throttles it instead of
+    // aborting the whole import. NoSuchTagSet / AccessDenied candidates are
+    // still skipped rather than fatal.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (token) => {
+        const list = await this.s3Client.send(
+          new ListDirectoryBucketsCommand({ ...(token && { ContinuationToken: token }) })
+        );
+        return { items: list.Buckets, nextMarker: list.ContinuationToken };
+      },
+      describe: async (b) => {
+        if (!b.Name) return undefined;
         try {
-          const tagging = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
-          if (matchesCdkPath(tagging.TagSet, input.cdkPath)) {
-            return { physicalId: b.Name, attributes: {} };
-          }
+          return await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
         } catch (err) {
+          // NoSuchTagSet / access denied → skip this bucket
           const e = err as { name?: string };
-          if (e.name === 'NoSuchTagSet' || e.name === 'AccessDenied') continue;
+          if (e.name === 'NoSuchTagSet' || e.name === 'AccessDenied') return undefined;
           throw err;
         }
-      }
-      token = list.ContinuationToken;
-    } while (token);
-    return null;
+      },
+      tagsOf: (tagging) => tagging.TagSet,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips buckets without a name.
+    return { physicalId: match.summary.Name!, attributes: {} };
   }
 }

@@ -19,11 +19,8 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -457,29 +454,34 @@ export class EventBridgeBusProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.eventBridgeClient.send(
-        new ListEventBusesCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      for (const bus of list.EventBuses ?? []) {
-        if (!bus.Name || !bus.Arn) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.eventBridgeClient.send(
+          new ListEventBusesCommand({ ...(marker && { NextToken: marker }) })
+        );
+        return { items: list.EventBuses, nextMarker: list.NextToken };
+      },
+      describe: async (bus) => {
+        if (!bus.Name || !bus.Arn) return undefined;
         try {
-          const tagsResp = await this.eventBridgeClient.send(
+          return await this.eventBridgeClient.send(
             new ListTagsForResourceCommand({ ResourceARN: bus.Arn })
           );
-          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-            return { physicalId: bus.Name, attributes: {} };
-          }
         } catch (err) {
-          if (err instanceof ResourceNotFoundException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof ResourceNotFoundException) return undefined;
           throw err;
         }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.Tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.Name!, attributes: {} };
   }
 }

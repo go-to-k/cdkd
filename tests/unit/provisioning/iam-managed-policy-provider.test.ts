@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   AttachGroupPolicyCommand,
   AttachRolePolicyCommand,
@@ -49,6 +49,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
+import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const ARN = 'arn:aws:iam::123456789012:policy/MyManagedPolicy';
 const POLICY_DOC = {
@@ -439,6 +440,14 @@ describe('IAMManagedPolicyProvider', () => {
   });
 
   describe('import', () => {
+    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
+    beforeEach(() => {
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'MyManagedPolicy',

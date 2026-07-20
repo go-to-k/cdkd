@@ -32,12 +32,14 @@ import {
   type CreateUserPoolCommandInput,
   type UpdateUserPoolCommandInput,
   type SetUserPoolMfaConfigCommandInput,
+  type ListTagsForResourceCommandOutput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1077,6 +1079,16 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *  3. `aws:cdk:path` tag match via `ListUserPools` +
    *     `ListTagsForResource(<arn>)`. Cognito's tag map uses the same
    *     `Tags: { [key]: value }` shape as Lambda.
+   *
+   * Steps 2 and 3 share ONE `ListUserPools` walk (per candidate: name check
+   * first, then the two tag reads, only when a `cdkPath` is present), which
+   * runs through the shared `importTagWalk` helper so the N+1 read burst
+   * (DescribeUserPool for the ARN, then ListTagsForResource) is retried with
+   * exponential backoff when AWS throttles it instead of aborting the whole
+   * import. The name match is expressed to the walk as a synthetic
+   * `aws:cdk:path` tag carrying the walk's own lookup key, so a name-only
+   * template (no CDK path metadata) still resolves without any per-candidate
+   * API call, matching the previous inline loop.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -1096,44 +1108,63 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         ? input.properties['UserPoolName']
         : undefined;
 
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListUserPoolsCommand({
-          MaxResults: 60,
-          ...(nextToken && { NextToken: nextToken }),
-        })
-      );
-      for (const pool of list.UserPools ?? []) {
-        if (!pool.Id) continue;
-        if (desiredName && pool.Name === desiredName) {
-          return { physicalId: pool.Id, attributes: {} };
+    // The walk key: the template's CDK path when present, else a synthetic
+    // key for name-only lookups (never a real tag value: it only ever
+    // matches the synthetic name-match tag below). Neither present, and the
+    // helper short-circuits to null without any API call.
+    const walkCdkPath =
+      input.cdkPath || (desiredName ? `cdkd:cognito-user-pool-name:${desiredName}` : undefined);
+    /** Sentinel detail for a candidate matched by its user pool name. */
+    const NAME_MATCH = { nameMatch: true } as const;
+
+    // Tag-based fallback via the shared throttle-tolerant walk: each tagged
+    // candidate costs TWO reads (DescribeUserPool for the ARN, then
+    // ListTagsForResource), both inside the retried `describe` callback so a
+    // throttled read is retried with exponential backoff instead of aborting
+    // the whole import.
+    const match = await importTagWalk({
+      cdkPath: walkCdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListUserPoolsCommand({ MaxResults: 60, ...(marker && { NextToken: marker }) })
+        );
+        return { items: list.UserPools, nextMarker: list.NextToken };
+      },
+      describe: async (
+        pool
+      ): Promise<typeof NAME_MATCH | ListTagsForResourceCommandOutput | undefined> => {
+        if (!pool.Id) return undefined;
+        // Name match wins for a candidate BEFORE its tag reads, exactly as
+        // the previous inline loop did.
+        if (desiredName && pool.Name === desiredName) return NAME_MATCH;
+        // Only issue the per-candidate reads when the template carries a CDK
+        // path: a name-only lookup walks the list without any extra API call.
+        if (!input.cdkPath) return undefined;
+        // Need the ARN for ListTagsForResource. Physical id format is
+        // `<region>_<random>`, ARN is
+        // `arn:aws:cognito-idp:<region>:<account>:userpool/<id>`.
+        // Use DescribeUserPool to fetch the ARN cheaply.
+        try {
+          const desc = await this.getClient().send(
+            new DescribeUserPoolCommand({ UserPoolId: pool.Id })
+          );
+          const arn = desc.UserPool?.Arn;
+          if (!arn) return undefined;
+          return await this.getClient().send(new ListTagsForResourceCommand({ ResourceArn: arn }));
+        } catch (err) {
+          // Deleted between the list and the reads: skip the candidate.
+          if (err instanceof ResourceNotFoundException) return undefined;
+          throw err;
         }
-        if (input.cdkPath) {
-          // Need the ARN for ListTagsForResource. Construct from id —
-          // physical id format is `<region>_<random>`, ARN is
-          // `arn:aws:cognito-idp:<region>:<account>:userpool/<id>`.
-          // Use DescribeUserPool to fetch the ARN cheaply.
-          try {
-            const desc = await this.getClient().send(
-              new DescribeUserPoolCommand({ UserPoolId: pool.Id })
-            );
-            const arn = desc.UserPool?.Arn;
-            if (!arn) continue;
-            const tagsResp = await this.getClient().send(
-              new ListTagsForResourceCommand({ ResourceArn: arn })
-            );
-            if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
-              return { physicalId: pool.Id, attributes: {} };
-            }
-          } catch (err) {
-            if (err instanceof ResourceNotFoundException) continue;
-            throw err;
-          }
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (detail) =>
+        'nameMatch' in detail
+          ? [{ Key: CDK_PATH_TAG, Value: walkCdkPath }]
+          : Object.entries(detail.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips pools without an Id.
+    return { physicalId: match.summary.Id!, attributes: {} };
   }
 }

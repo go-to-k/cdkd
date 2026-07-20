@@ -21,7 +21,8 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -431,10 +432,10 @@ export class StepFunctionsProvider implements ResourceProvider {
    *
    * Lookup order:
    *  1. `--resource <id>=<arn>` override → verify with `DescribeStateMachine`.
-   *  2. Walk `ListStateMachines` paginator → `ListTagsForResource(arn)`,
-   *     match the lowercase `key`/`value` `aws:cdk:path` tag (SFN uses
-   *     lowercase tags, so `matchesCdkPath` from import-helpers does not
-   *     apply directly).
+   *  2. Walk `ListStateMachines` → `ListTagsForResource(arn)` via the shared
+   *     `importTagWalk` helper. SFN returns lowercase `key`/`value` tags, so
+   *     `tagsOf` maps them to the `Key`/`Value` shape the walk's
+   *     `aws:cdk:path` matcher expects.
    *
    * SFN state machines do not expose a template-supplied name field
    * usable as a stable physicalId — the physicalId is the ARN — so the
@@ -454,25 +455,31 @@ export class StepFunctionsProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListStateMachinesCommand({ ...(nextToken && { nextToken }) })
-      );
-      for (const sm of list.stateMachines ?? []) {
-        if (!sm.stateMachineArn) continue;
-        const tagsResp = await this.getClient().send(
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import. SFN returns
+    // lowercase `{key, value}` tags, so `tagsOf` maps them to the walk's
+    // `{Key, Value}` shape before matching.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListStateMachinesCommand({ ...(marker && { nextToken: marker }) })
+        );
+        return { items: list.stateMachines, nextMarker: list.nextToken };
+      },
+      describe: async (sm) => {
+        if (!sm.stateMachineArn) return undefined;
+        return await this.getClient().send(
           new ListTagsForResourceCommand({ resourceArn: sm.stateMachineArn })
         );
-        if (this.tagsMatchCdkPath(tagsResp.tags, input.cdkPath)) {
-          return { physicalId: sm.stateMachineArn, attributes: {} };
-        }
-      }
-      nextToken = list.nextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => (tagsResp.tags ?? []).map((t) => ({ Key: t.key, Value: t.value })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without an ARN.
+    return { physicalId: match.summary.stateMachineArn!, attributes: {} };
   }
 
   /**
@@ -523,17 +530,6 @@ export class StepFunctionsProvider implements ResourceProvider {
         `Added/updated ${tagsToAdd.length} tag(s) on SFN state machine ${stateMachineArn}`
       );
     }
-  }
-
-  /**
-   * Match SFN's lowercase `key`/`value` tag shape against the CDK path.
-   */
-  private tagsMatchCdkPath(tags: Tag[] | undefined, cdkPath: string): boolean {
-    if (!tags) return false;
-    for (const t of tags) {
-      if (t.key === CDK_PATH_TAG && t.value === cdkPath) return true;
-    }
-    return false;
   }
 
   /**

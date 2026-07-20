@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -34,6 +34,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import { FirehoseProvider } from '../../../../src/provisioning/providers/firehose-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 
 describe('FirehoseProvider', () => {
   let provider: FirehoseProvider;
@@ -240,6 +241,15 @@ describe('FirehoseProvider', () => {
   });
 
   describe('import', () => {
+    beforeEach(() => {
+      // Skip the walk's real exponential backoff in the throttle tests.
+      importTagWalkTestHooks.sleep = async () => {};
+    });
+
+    afterEach(() => {
+      importTagWalkTestHooks.sleep = undefined;
+    });
+
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'MyDeliveryStream',
@@ -292,6 +302,80 @@ describe('FirehoseProvider', () => {
 
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
+    });
+
+    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForDeliveryStream
+    // burst routed through the shared importTagWalk helper — a throttled
+    // per-candidate tag read is retried with backoff instead of aborting the
+    // whole import, while a non-throttling error still surfaces immediately.
+    it('retries a throttled ListTagsForDeliveryStream mid-walk and still finds the match', async () => {
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      mockSend
+        .mockResolvedValueOnce({ DeliveryStreamNames: ['target'], HasMoreDeliveryStreams: false })
+        .mockRejectedValueOnce(throttled)
+        .mockResolvedValueOnce({
+          Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyDeliveryStream' }],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: 'target', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling ListTagsForDeliveryStream error during the walk', async () => {
+      const denied = new Error(
+        'User is not authorized to perform firehose:ListTagsForDeliveryStream'
+      );
+      denied.name = 'AccessDeniedException';
+
+      mockSend
+        .mockResolvedValueOnce({ DeliveryStreamNames: ['target'], HasMoreDeliveryStreams: false })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    // The ListDeliveryStreams pagination fold is the one non-mechanical piece
+    // of the migration: the next page boundary is the LAST name of the current
+    // page (ExclusiveStartDeliveryStreamName), and only when
+    // HasMoreDeliveryStreams says another page exists.
+    it('paginates via ExclusiveStartDeliveryStreamName = last name of the previous page', async () => {
+      mockSend
+        // page 1: no match, more pages
+        .mockResolvedValueOnce({
+          DeliveryStreamNames: ['a-stream', 'b-stream'],
+          HasMoreDeliveryStreams: true,
+        })
+        .mockResolvedValueOnce({ Tags: [] }) // tags(a-stream)
+        .mockResolvedValueOnce({ Tags: [] }) // tags(b-stream)
+        // page 2: the match
+        .mockResolvedValueOnce({ DeliveryStreamNames: ['target'], HasMoreDeliveryStreams: false })
+        .mockResolvedValueOnce({
+          Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyDeliveryStream' }],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: 'target', attributes: {} });
+      const secondList = mockSend.mock.calls[3][0];
+      expect(secondList.constructor.name).toBe('ListDeliveryStreamsCommand');
+      expect(secondList.input).toEqual({ ExclusiveStartDeliveryStreamName: 'b-stream' });
+    });
+
+    it('stops on an empty page even when HasMoreDeliveryStreams is true', async () => {
+      mockSend.mockResolvedValueOnce({ DeliveryStreamNames: [], HasMoreDeliveryStreams: true });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toBeNull();
+      expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });
 });
