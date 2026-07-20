@@ -55,7 +55,6 @@ lambda-versioning	2026-06-21T11:00:28Z	PASS	48	standard	sweep-4..8 staleness re-
 legacy-bucket-name-fallback	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 legacy-state-migration	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-ecs-service-connect	2026-06-21T11:00:28Z	PASS	20	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke	2026-06-21T11:00:28Z	PASS	32	verify.sh	sweep staleness re-run (re-verified PASS; ledger-restore)
 local-invoke-agentcore	2026-06-21T10:51:48Z	PASS	103	verify.sh	creds materialized (export-credentials); 21 tests; arm64-native container (no qemu); docker clean
 local-invoke-agentcore-from-state	2026-06-21T10:51:48Z	PASS	55	verify.sh	creds materialized; 8 del 0 err; --from-state intrinsic env-var substitution; docker clean
 local-invoke-buildkit	2026-06-21T11:00:28Z	PASS	32	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -146,7 +145,6 @@ custom-resource-provider	2026-06-27T16:56:19Z	PASS	293	standard	CR framework (on
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-eventbridge-scheduler	2026-07-02T12:35:05Z	PASS	57	verify.sh	regression for new Scheduler SDK provider routing (default group)
 lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
@@ -253,3 +251,5 @@ fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-join
 cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-back live-verified (#1105); destroy 8/8, 0 orphans
 lambda	2026-07-20T03:12:02Z	PASS	170	verify.sh	broad refresh for #1106 resolver guard; destroy 9/9, 0 orphans
 getatt-fallback-guard	2026-07-20T03:13:10Z	PASS	60	verify.sh	new error-path fixture: guard hard-fails BogusArn fallback live; rollback + destroy clean
+eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
+local-invoke	2026-07-20T03:08:51Z	PASS	120	verify.sh	integ-local refresh for pattern-2 sweep (local-start-alb-from-state probe change); docker sweep clean
