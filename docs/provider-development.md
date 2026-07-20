@@ -769,11 +769,16 @@ and throws `ImportTagWalkLimitError` (whose message points at the
 | `isInterrupted` / `onInterrupted` | unset | Ctrl-C during a throttled sleep going unhonored (same seam `withRetry` uses on the deploy path) |
 | `logger` | process logger | Silent retries — defaults so a throttled walk and every skipped candidate show up under `--verbose` |
 
-Providers whose tag API does not fit the shape (map-shaped tags,
-lowercase `key`/`value`, filter-based one-shot lookups, batch tag fetch)
-can keep their own loop; `isThrottlingLikeError` is exported for reuse.
-The EMR Cluster + DocDB providers are the migrated reference callers;
-the remaining `aws:cdk:path` walkers are migrated incrementally.
+Providers whose tag API does not fit the shape (filter-based one-shot
+lookups, batch tag fetch) can keep their own loop; `isThrottlingLikeError`
+is exported for reuse. Map-shaped tags (`Record<string, string>`) DO fit —
+re-shape them to `{Key, Value}` entries inside `tagsOf` (see
+`lambda-function-provider.ts` / `sqs-queue-provider.ts`).
+Migrated callers: EMR Cluster, DocDB (all three sub-types), and the
+issue #1091 batch-2 set (Lambda Function, CloudWatch Alarm, Logs LogGroup,
+SQS Queue, SNS Topic, IAM Role, IAM ManagedPolicy, DynamoDB Table, Kinesis
+Stream, S3 Bucket, ECR Repository, SSM Parameter); the remaining
+`aws:cdk:path` walkers are migrated incrementally.
 
 Reference implementations to copy from:
 

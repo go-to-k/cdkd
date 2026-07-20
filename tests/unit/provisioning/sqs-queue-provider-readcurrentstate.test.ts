@@ -181,3 +181,58 @@ describe('SQSQueueProvider.readCurrentState', () => {
     expect(result).toHaveProperty('FifoQueue', true);
   });
 });
+
+// Issue #1091 batch 2: the tag-based import lookup is an N+1 ListQueueTags
+// burst routed through the shared importTagWalk helper — a throttled
+// per-candidate tag read is retried with backoff instead of aborting the whole
+// import, while a non-throttling error still surfaces immediately.
+describe('SQSQueueProvider import tag walk', () => {
+  const CDK_PATH = 'MyStack/MyQueue/Resource';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop once-queued responses leaked by earlier tests - clearAllMocks()
+    // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+    mockSend.mockReset();
+  });
+
+  const importInput = () => ({
+    logicalId: 'MyQueue',
+    resourceType: 'AWS::SQS::Queue',
+    cdkPath: CDK_PATH,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: {},
+  });
+
+  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+  const throttle = (): Error => {
+    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
+    err.name = 'ThrottlingException';
+    err.$metadata = { httpStatusCode: 400 };
+    return err;
+  };
+
+  it('retries a throttled ListQueueTags mid-walk and still finds the match', async () => {
+    mockSend
+      .mockResolvedValueOnce({ QueueUrls: [QUEUE_URL] })
+      .mockRejectedValueOnce(throttle())
+      .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
+
+    const provider = new SQSQueueProvider();
+    const result = await provider.import(importInput());
+
+    expect(result).toEqual({ physicalId: QUEUE_URL, attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a non-throttling ListQueueTags error during the walk', async () => {
+    const denied = new Error('User is not authorized to perform sqs:ListQueueTags');
+    denied.name = 'AccessDeniedException';
+    mockSend.mockResolvedValueOnce({ QueueUrls: [QUEUE_URL] }).mockRejectedValueOnce(denied);
+
+    const provider = new SQSQueueProvider();
+    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+});

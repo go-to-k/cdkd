@@ -15,11 +15,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -499,29 +496,34 @@ export class SSMParameterProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.ssmClient.send(
-        new DescribeParametersCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      for (const p of list.Parameters ?? []) {
-        if (!p.Name) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.ssmClient.send(
+          new DescribeParametersCommand({ ...(marker && { NextToken: marker }) })
+        );
+        return { items: list.Parameters, nextMarker: list.NextToken };
+      },
+      describe: async (p) => {
+        if (!p.Name) return undefined;
         try {
-          const tagsResp = await this.ssmClient.send(
+          return await this.ssmClient.send(
             new ListTagsForResourceCommand({ ResourceType: 'Parameter', ResourceId: p.Name })
           );
-          if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
-            return { physicalId: p.Name, attributes: {} };
-          }
         } catch (err) {
-          if (err instanceof ParameterNotFound) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof ParameterNotFound) return undefined;
           throw err;
         }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.TagList,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.Name!, attributes: {} };
   }
 }

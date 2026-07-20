@@ -1833,3 +1833,61 @@ describe('LambdaFunctionProvider', () => {
     });
   });
 });
+
+// Issue #1091 batch 2: the tag-based import lookup is an N+1 ListTags burst
+// routed through the shared importTagWalk helper — a throttled per-candidate
+// tag read is retried with backoff instead of aborting the whole import, while
+// a non-throttling error still surfaces immediately.
+describe('LambdaFunctionProvider import tag walk', () => {
+  const CDK_PATH = 'MyStack/MyFunction/Resource';
+  const FN_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:fn1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop once-queued responses leaked by earlier tests - clearAllMocks()
+    // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+    mockLambdaSend.mockReset();
+  });
+
+  const importInput = () => ({
+    logicalId: 'MyFunction',
+    resourceType: 'AWS::Lambda::Function',
+    cdkPath: CDK_PATH,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: {},
+  });
+
+  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+  const throttle = (): Error => {
+    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
+    err.name = 'ThrottlingException';
+    err.$metadata = { httpStatusCode: 400 };
+    return err;
+  };
+
+  it('retries a throttled ListTags mid-walk and still finds the match', async () => {
+    mockLambdaSend
+      .mockResolvedValueOnce({ Functions: [{ FunctionName: 'fn1', FunctionArn: FN_ARN }] })
+      .mockRejectedValueOnce(throttle())
+      .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
+
+    const provider = new LambdaFunctionProvider();
+    const result = await provider.import(importInput());
+
+    expect(result).toEqual({ physicalId: 'fn1', attributes: {} });
+    expect(mockLambdaSend).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a non-throttling ListTags error during the walk', async () => {
+    const denied = new Error('User is not authorized to perform lambda:ListTags');
+    denied.name = 'AccessDeniedException';
+    mockLambdaSend
+      .mockResolvedValueOnce({ Functions: [{ FunctionName: 'fn1', FunctionArn: FN_ARN }] })
+      .mockRejectedValueOnce(denied);
+
+    const provider = new LambdaFunctionProvider();
+    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
+    expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+  });
+});

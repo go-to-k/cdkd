@@ -538,6 +538,49 @@ describe('IAMManagedPolicyProvider', () => {
       const result = await provider.import!(makeInput());
       expect(result).toBeNull();
     });
+
+    // Issue #1091 batch 2: the tag walk is an N+1 ListPolicyTags burst routed
+    // through the shared importTagWalk helper — a throttled per-candidate tag
+    // read is retried with backoff instead of aborting the whole import,
+    // while a non-throttling error still surfaces immediately.
+    it('retries a throttled ListPolicyTags mid-walk and still finds the match', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      mockSend
+        .mockResolvedValueOnce({
+          Policies: [{ PolicyName: 'MyManagedPolicy', Arn: ARN }],
+          IsTruncated: false,
+        })
+        .mockRejectedValueOnce(throttled)
+        .mockResolvedValueOnce({
+          Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyManagedPolicy' }],
+        });
+
+      const result = await provider.import!(makeInput());
+
+      expect(result).toEqual({ physicalId: ARN, attributes: { PolicyArn: ARN } });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling ListPolicyTags error during the walk', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const denied = new Error('User is not authorized to perform iam:ListPolicyTags');
+      denied.name = 'AccessDeniedException';
+      mockSend
+        .mockResolvedValueOnce({
+          Policies: [{ PolicyName: 'MyManagedPolicy', Arn: ARN }],
+          IsTruncated: false,
+        })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import!(makeInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
   });
 });
 

@@ -33,11 +33,8 @@ import {
   type LoggingConfig,
   type RecursiveLoop,
 } from '@aws-sdk/client-lambda';
-import {
-  CDK_PATH_TAG,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import {
   EC2Client,
   DescribeNetworkInterfacesCommand,
@@ -1488,8 +1485,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
    *  2. `ListFunctions` + `ListTags`, match `aws:cdk:path` tag.
    *
    * Lambda's `ListTags` returns a `Tags` map keyed by tag name (unlike
-   * EC2/S3 which return an array of `{Key, Value}`), so we read it directly
-   * instead of going through the shared `matchesCdkPath` helper.
+   * EC2/S3 which return an array of `{Key, Value}`), so the map is re-shaped
+   * to `{Key, Value}` entries for the walk's matcher.
+   *
+   * The tag walk runs through the shared `importTagWalk` helper, so the N+1
+   * `ListTags` burst is retried with exponential backoff when AWS throttles
+   * it instead of aborting the whole import.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'FunctionName');
@@ -1503,29 +1504,30 @@ export class LambdaFunctionProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.lambdaClient.send(
-        new ListFunctionsCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const fn of list.Functions ?? []) {
-        if (!fn.FunctionArn || !fn.FunctionName) continue;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.lambdaClient.send(
+          new ListFunctionsCommand({ ...(marker && { Marker: marker }) })
+        );
+        return { items: list.Functions, nextMarker: list.NextMarker };
+      },
+      describe: async (fn) => {
+        if (!fn.FunctionArn || !fn.FunctionName) return undefined;
         try {
-          const tagsResp = await this.lambdaClient.send(
-            new ListTagsCommand({ Resource: fn.FunctionArn })
-          );
-          if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
-            return { physicalId: fn.FunctionName, attributes: {} };
-          }
+          return await this.lambdaClient.send(new ListTagsCommand({ Resource: fn.FunctionArn }));
         } catch (err) {
-          if (err instanceof ResourceNotFoundException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof ResourceNotFoundException) return undefined;
           throw err;
         }
-      }
-      marker = list.NextMarker;
-    } while (marker);
-    return null;
+      },
+      tagsOf: (tagsResp) =>
+        Object.entries(tagsResp.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.FunctionName!, attributes: {} };
   }
 }

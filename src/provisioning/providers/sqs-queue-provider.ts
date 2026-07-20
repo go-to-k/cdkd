@@ -18,11 +18,8 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  CDK_PATH_TAG,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -665,26 +662,33 @@ export class SQSQueueProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.sqsClient.send(
-        new ListQueuesCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      for (const url of list.QueueUrls ?? []) {
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListQueueTags burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import. SQS returns tags as
+    // a `Record<string, string>` map, re-shaped to `{Key, Value}` entries for
+    // the walk's matcher; the candidate summary is the queue URL itself.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.sqsClient.send(
+          new ListQueuesCommand({ ...(marker && { NextToken: marker }) })
+        );
+        return { items: list.QueueUrls, nextMarker: list.NextToken };
+      },
+      describe: async (url) => {
         try {
-          const tagsResp = await this.sqsClient.send(new ListQueueTagsCommand({ QueueUrl: url }));
-          if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
-            return { physicalId: url, attributes: {} };
-          }
+          return await this.sqsClient.send(new ListQueueTagsCommand({ QueueUrl: url }));
         } catch (err) {
-          if (err instanceof QueueDoesNotExist) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof QueueDoesNotExist) return undefined;
           throw err;
         }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) =>
+        Object.entries(tagsResp.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
+    });
+    if (!match) return null;
+    return { physicalId: match.summary, attributes: {} };
   }
 }

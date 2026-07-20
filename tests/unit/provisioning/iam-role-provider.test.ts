@@ -515,4 +515,58 @@ describe('IAMRoleProvider', () => {
       expect(input.MaxSessionDuration).toBe(3600);
     });
   });
+
+  // Issue #1091 batch 2: the tag-based import lookup is an N+1 ListRoleTags
+  // burst routed through the shared importTagWalk helper — a throttled
+  // per-candidate tag read is retried with backoff instead of aborting the
+  // whole import, while a non-throttling error still surfaces immediately.
+  describe('import tag walk', () => {
+    const CDK_PATH = 'MyStack/MyRole/Resource';
+
+    beforeEach(() => {
+      // Drop once-queued responses leaked by earlier tests — clearAllMocks()
+      // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+      mockSend.mockReset();
+    });
+
+    const importInput = () => ({
+      logicalId: 'MyRole',
+      resourceType: 'AWS::IAM::Role',
+      cdkPath: CDK_PATH,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties: {},
+    });
+
+    /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+    const throttle = (): Error => {
+      const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
+      err.name = 'ThrottlingException';
+      err.$metadata = { httpStatusCode: 400 };
+      return err;
+    };
+
+    it('retries a throttled ListRoleTags mid-walk and still finds the match', async () => {
+      mockSend
+        .mockResolvedValueOnce({ Roles: [{ RoleName: 'my-role' }], IsTruncated: false })
+        .mockRejectedValueOnce(throttle())
+        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
+
+      const result = await provider.import(importInput());
+
+      expect(result).toEqual({ physicalId: 'my-role', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling ListRoleTags error during the walk', async () => {
+      const denied = new Error('User is not authorized to perform iam:ListRoleTags');
+      denied.name = 'AccessDeniedException';
+      mockSend
+        .mockResolvedValueOnce({ Roles: [{ RoleName: 'my-role' }], IsTruncated: false })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+  });
 });

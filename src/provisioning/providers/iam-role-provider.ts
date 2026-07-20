@@ -27,11 +27,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1011,30 +1008,34 @@ export class IAMRoleProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.iamClient.send(
-        new ListRolesCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const role of list.Roles ?? []) {
-        if (!role.RoleName) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListRoleTags burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.iamClient.send(
+          new ListRolesCommand({ ...(marker && { Marker: marker }) })
+        );
+        // IAM signals "more pages" via IsTruncated, not Marker presence alone.
+        return { items: list.Roles, nextMarker: list.IsTruncated ? list.Marker : undefined };
+      },
+      describe: async (role) => {
+        if (!role.RoleName) return undefined;
         try {
-          const tags = await this.iamClient.send(
-            new ListRoleTagsCommand({ RoleName: role.RoleName })
-          );
-          if (matchesCdkPath(tags.Tags, input.cdkPath)) {
-            return { physicalId: role.RoleName, attributes: {} };
-          }
+          return await this.iamClient.send(new ListRoleTagsCommand({ RoleName: role.RoleName }));
         } catch (err) {
-          if (err instanceof NoSuchEntityException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof NoSuchEntityException) return undefined;
           throw err;
         }
-      }
-      marker = list.IsTruncated ? list.Marker : undefined;
-    } while (marker);
-    return null;
+      },
+      tagsOf: (tags) => tags.Tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.RoleName!, attributes: {} };
   }
 }
 

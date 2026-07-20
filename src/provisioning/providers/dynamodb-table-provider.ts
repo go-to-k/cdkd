@@ -41,11 +41,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1939,35 +1936,39 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let exclusiveStartTableName: string | undefined;
-    do {
-      const list = await this.dynamoDBClient.send(
-        new ListTablesCommand({
-          ...(exclusiveStartTableName && { ExclusiveStartTableName: exclusiveStartTableName }),
-        })
-      );
-      for (const name of list.TableNames ?? []) {
+    // Tag-based fallback via the shared throttle-tolerant walk: each
+    // candidate costs TWO reads (DescribeTable for the ARN, then
+    // ListTagsOfResource), so the N+1 burst is even hotter than most — the
+    // walk retries both with exponential backoff when AWS throttles them
+    // instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.dynamoDBClient.send(
+          new ListTablesCommand({ ...(marker && { ExclusiveStartTableName: marker }) })
+        );
+        return { items: list.TableNames, nextMarker: list.LastEvaluatedTableName };
+      },
+      describe: async (name) => {
         try {
           const desc = await this.dynamoDBClient.send(
             new DescribeTableCommand({ TableName: name })
           );
           const arn = desc.Table?.TableArn;
-          if (!arn) continue;
-          const tagsResp = await this.dynamoDBClient.send(
+          if (!arn) return undefined;
+          return await this.dynamoDBClient.send(
             new ListTagsOfResourceCommand({ ResourceArn: arn })
           );
-          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-            return { physicalId: name, attributes: {} };
-          }
         } catch (err) {
-          if (err instanceof ResourceNotFoundException) continue;
+          // Deleted between the list and the reads — skip the candidate.
+          if (err instanceof ResourceNotFoundException) return undefined;
           throw err;
         }
-      }
-      exclusiveStartTableName = list.LastEvaluatedTableName;
-    } while (exclusiveStartTableName);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.Tags,
+    });
+    if (!match) return null;
+    return { physicalId: match.summary, attributes: {} };
   }
 }

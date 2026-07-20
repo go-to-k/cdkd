@@ -21,11 +21,8 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -507,9 +504,12 @@ export class KinesisStreamProvider implements ResourceProvider {
    *     with `DescribeStream`.
    *  2. Walk `ListStreams` (paged via `ExclusiveStartStreamName`) and
    *     match the `aws:cdk:path` tag via `ListTagsForStream(StreamName)`.
+   *     The walk runs through the shared `importTagWalk` helper, so the N+1
+   *     tag-read burst is retried with exponential backoff when AWS
+   *     throttles it instead of aborting the whole import.
    *
    * Kinesis tags use the standard `Tag[]` array shape (`Key`/`Value`),
-   * so `matchesCdkPath` from import-helpers applies directly.
+   * so the walk's `matchesCdkPath` matcher applies directly.
    */
   /**
    * Read the AWS-current Kinesis stream configuration in CFn-property shape.
@@ -606,32 +606,31 @@ export class KinesisStreamProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let exclusiveStartStreamName: string | undefined;
-    // ListStreams paginates via `ExclusiveStartStreamName` rather than
-    // `NextToken` — set the next page boundary to the last name we saw
-    // when `HasMoreStreams` is true.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const list = await this.getClient().send(
-        new ListStreamsCommand({
-          ...(exclusiveStartStreamName && { ExclusiveStartStreamName: exclusiveStartStreamName }),
-        })
-      );
-      const names = list.StreamNames ?? [];
-      for (const streamName of names) {
-        const tagsResp = await this.getClient().send(
-          new ListTagsForStreamCommand({ StreamName: streamName })
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForStream burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListStreamsCommand({ ...(marker && { ExclusiveStartStreamName: marker }) })
         );
-        if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-          return { physicalId: streamName, attributes: {} };
-        }
-      }
-      if (!list.HasMoreStreams || names.length === 0) break;
-      exclusiveStartStreamName = names[names.length - 1];
-    }
-    return null;
+        const names = list.StreamNames ?? [];
+        // ListStreams paginates via `ExclusiveStartStreamName` rather than
+        // `NextToken` — the next page boundary is the last name on this page,
+        // and only when `HasMoreStreams` says another page exists.
+        return {
+          items: names,
+          nextMarker: list.HasMoreStreams && names.length > 0 ? names[names.length - 1] : undefined,
+        };
+      },
+      describe: async (streamName) =>
+        await this.getClient().send(new ListTagsForStreamCommand({ StreamName: streamName })),
+      tagsOf: (tagsResp) => tagsResp.Tags,
+    });
+    if (!match) return null;
+    return { physicalId: match.summary, attributes: {} };
   }
 
   /**

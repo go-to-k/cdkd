@@ -395,3 +395,80 @@ describe('LogsLogGroupProvider read-update round-trip', () => {
     expect(tagCalls).toHaveLength(0);
   });
 });
+
+// Issue #1091 batch 2: the tag-based import lookup is an N+1
+// ListTagsForResource burst routed through the shared importTagWalk helper —
+// a throttled per-candidate tag read is retried with backoff instead of
+// aborting the whole import, while a non-throttling error still surfaces
+// immediately.
+describe('LogsLogGroupProvider import tag walk', () => {
+  const CDK_PATH = 'MyStack/MyLogGroup/Resource';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop once-queued responses leaked by earlier tests - clearAllMocks()
+    // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+    mockSend.mockReset();
+  });
+
+  const importInput = () => ({
+    logicalId: 'MyLogGroup',
+    resourceType: RESOURCE_TYPE,
+    cdkPath: CDK_PATH,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: {},
+  });
+
+  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+  const throttle = (): Error => {
+    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
+    err.name = 'ThrottlingException';
+    err.$metadata = { httpStatusCode: 400 };
+    return err;
+  };
+
+  it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        logGroups: [
+          {
+            logGroupName: '/aws/lambda/my-fn',
+            arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/my-fn:*',
+          },
+        ],
+      })
+      .mockRejectedValueOnce(throttle())
+      .mockResolvedValueOnce({ tags: { 'aws:cdk:path': CDK_PATH } });
+
+    const provider = new LogsLogGroupProvider();
+    const result = await provider.import(importInput());
+
+    expect(result).toEqual({ physicalId: '/aws/lambda/my-fn', attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(3);
+    // The trailing ":*" CloudWatch appends to log-group ARNs must be stripped
+    // before the tag read (both the throttled attempt and the retry).
+    const tagArn = (mockSend.mock.calls[1][0] as { input: { resourceArn: string } }).input
+      .resourceArn;
+    expect(tagArn).toBe('arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/my-fn');
+  });
+
+  it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
+    const denied = new Error('User is not authorized to perform logs:ListTagsForResource');
+    denied.name = 'AccessDeniedException';
+    mockSend
+      .mockResolvedValueOnce({
+        logGroups: [
+          {
+            logGroupName: '/aws/lambda/my-fn',
+            arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/my-fn:*',
+          },
+        ],
+      })
+      .mockRejectedValueOnce(denied);
+
+    const provider = new LogsLogGroupProvider();
+    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+});

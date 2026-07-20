@@ -272,3 +272,96 @@ describe('SNSTopicProvider read-update round-trip', () => {
     expect(setAttrCalls).toHaveLength(0);
   });
 });
+
+// Issue #1091 batch 2: the tag-based import lookup is an N+1
+// ListTagsForResource burst routed through the shared importTagWalk helper —
+// a throttled per-candidate tag read is retried with backoff instead of
+// aborting the whole import, while a non-throttling error still surfaces
+// immediately. The SNS walk ALSO matches by `Properties.TopicName` (ARN tail)
+// per candidate BEFORE the tag read, and that name path must keep working
+// even without a CDK path.
+describe('SNSTopicProvider import tag walk', () => {
+  const CDK_PATH = 'MyStack/MyTopic/Resource';
+  const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop once-queued responses leaked by earlier tests - clearAllMocks()
+    // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+    mockSend.mockReset();
+  });
+
+  const importInput = (
+    overrides: Partial<{ cdkPath: string; properties: Record<string, unknown> }> = {}
+  ) => ({
+    logicalId: 'MyTopic',
+    resourceType: 'AWS::SNS::Topic',
+    cdkPath: CDK_PATH,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: {},
+    ...overrides,
+  });
+
+  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+  const throttle = (): Error => {
+    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
+    err.name = 'ThrottlingException';
+    err.$metadata = { httpStatusCode: 400 };
+    return err;
+  };
+
+  it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Topics: [{ TopicArn: TOPIC_ARN }] })
+      .mockRejectedValueOnce(throttle())
+      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
+
+    const provider = new SNSTopicProvider();
+    const result = await provider.import(importInput());
+
+    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
+    const denied = new Error('User is not authorized to perform sns:ListTagsForResource');
+    denied.name = 'AuthorizationErrorException';
+    mockSend
+      .mockResolvedValueOnce({ Topics: [{ TopicArn: TOPIC_ARN }] })
+      .mockRejectedValueOnce(denied);
+
+    const provider = new SNSTopicProvider();
+    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('matches Properties.TopicName by ARN tail without any tag read (no cdkPath)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Topics: [
+        { TopicArn: 'arn:aws:sns:us-east-1:123456789012:other-topic' },
+        { TopicArn: TOPIC_ARN },
+      ],
+    });
+
+    const provider = new SNSTopicProvider();
+    const result = await provider.import(
+      importInput({ cdkPath: '', properties: { TopicName: 'my-topic' } })
+    );
+
+    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
+    // ListTopics only — a name-only lookup must never issue tag reads.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('name match short-circuits the tag read even when a cdkPath is present', async () => {
+    mockSend.mockResolvedValueOnce({ Topics: [{ TopicArn: TOPIC_ARN }] });
+
+    const provider = new SNSTopicProvider();
+    const result = await provider.import(importInput({ properties: { TopicName: 'my-topic' } }));
+
+    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
+    // The matching candidate is resolved by name — no ListTagsForResource.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+});
