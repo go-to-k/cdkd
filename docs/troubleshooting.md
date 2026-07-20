@@ -889,6 +889,17 @@ cdkd destroy MyStack --force
 cdkd deploy MyStack
 ```
 
+### Known Leftover: FSx Final Backups
+
+A successful `cdkd destroy` of an `AWS::FSx::FileSystem` can leave a
+chargeable final backup behind: cdkd keeps CloudFormation parity and calls
+`DeleteFileSystem` with API defaults, which take a final backup for
+Windows/ONTAP (observed on OpenZFS too). The backup is typically untagged, so
+find it via the backup's persisted `FileSystem.FileSystemId` rather than tags.
+See [supported-resources.md, "FSx final backup on destroy"](supported-resources.md#fsx-final-backup-on-destroy)
+for the details and the `aws fsx describe-backups` / `aws fsx delete-backup`
+commands.
+
 ---
 
 ## Debugging Methods

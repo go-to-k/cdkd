@@ -196,7 +196,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Storage** | AWS::S3Tables::Namespace | SDK Provider | ✅ |
 | **Storage** | AWS::S3Tables::Table | SDK Provider | ✅ |
 | **Storage** | AWS::S3Vectors::VectorBucket | SDK Provider | ✅ |
-| **Storage** | AWS::FSx::FileSystem (all four variants — Lustre / Windows / ONTAP / OpenZFS; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; per-variant create/update property mapping against the `UpdateFileSystem` mutable surface — a change to an immutable sub-property is rejected with a `--replace` pointer; async create/delete polled to `AVAILABLE`/gone with a self-reported 1h resource timeout. Variant-config drift is computed for all four config blocks; only the inputs AWS never returns stay drift-unknown — the two write-only credentials (`WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`, `OntapConfiguration.FsxAdminPassword`) and `OpenZFSConfiguration.RootVolumeConfiguration`, which lives on the root volume rather than the file system) | SDK Provider | ✅ |
+| **Storage** | AWS::FSx::FileSystem (all four variants — Lustre / Windows / ONTAP / OpenZFS; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; per-variant create/update property mapping against the `UpdateFileSystem` mutable surface — a change to an immutable sub-property is rejected with a `--replace` pointer; async create/delete polled to `AVAILABLE`/gone with a self-reported 1h resource timeout. Variant-config drift is computed for all four config blocks; only the inputs AWS never returns stay drift-unknown — the two write-only credentials (`WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`, `OntapConfiguration.FsxAdminPassword`) and `OpenZFSConfiguration.RootVolumeConfiguration`, which lives on the root volume rather than the file system. **Destroy caveat**: delete keeps CloudFormation parity and may leave a chargeable final backup, see [FSx final backup on destroy](#fsx-final-backup-on-destroy) below) | SDK Provider | ✅ |
 | **Analytics** | AWS::EMR::Cluster (EMR on EC2; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; `RunJobFlow`-backed create polled to `WAITING`/`RUNNING`, `TerminateJobFlows`-backed delete polled to `TERMINATED` — both with a self-reported 1h resource timeout; mutable surface is termination protection / visibility / step concurrency / managed-scaling / auto-termination / tags, everything else is createOnly → replacement; `--remove-protection` flips `SetTerminationProtection(false)` before terminating) | SDK Provider | ✅ |
 | **Analytics** | AWS::EMR::InstanceGroupConfig (adds a standalone instance group to an existing cluster referenced by `JobFlowId`; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; `AddInstanceGroups`-backed create polled to `RUNNING`, `ModifyInstanceGroups`/`PutAutoScalingPolicy` mutable surface (`InstanceCount` resize + `AutoScalingPolicy`), everything else createOnly → replacement; **delete has no standalone AWS API** — a group is released when the parent cluster terminates, so delete is a no-op that drops cdkd state (best-effort scale-to-0 for a `TASK` group); self-reported 1h resource timeout) | SDK Provider | ✅ |
 | **Analytics** | AWS::EMR::InstanceFleetConfig (adds a standalone instance fleet to an existing cluster referenced by `ClusterId`; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; `AddInstanceFleet`-backed create polled to `RUNNING`, `ModifyInstanceFleet` mutable surface (`TargetOnDemandCapacity`/`TargetSpotCapacity`/`ResizeSpecifications`/`InstanceTypeConfigs`), everything else createOnly → replacement; **delete has no standalone AWS API** — a fleet is released when the parent cluster terminates, so delete is a no-op that drops cdkd state (best-effort scale-to-0 for a `TASK` fleet); self-reported 1h resource timeout) | SDK Provider | ✅ |
@@ -214,6 +214,38 @@ catalog with Tier 2 and Tier 3 entries included.
 | **CloudFormation** | AWS::CloudFormation::WaitConditionHandle (no-op placeholder — outside CloudFormation the real pre-signed signal URL cannot exist, so cdkd synthesizes an opaque placeholder physical id and calls no AWS API; sufficient for the empty-template-placeholder usage e.g. `cdk-multi-region-stack`, issue [#1020](https://github.com/go-to-k/cdkd/issues/1020). `AWS::CloudFormation::WaitCondition` — the blocking signal-wait — remains unsupported) | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |
+
+### FSx final backup on destroy
+
+Destroying an `AWS::FSx::FileSystem` keeps CloudFormation parity: cdkd calls
+`DeleteFileSystem` with API defaults, exactly as CloudFormation does. For
+Windows and ONTAP file systems the API default is to TAKE a final backup on
+delete (observed on OpenZFS as well; SCRATCH Lustre deployments take none), so
+a destroy that reports 0 errors can still leave a **chargeable backup** that
+outlives the stack (issue
+[#1113](https://github.com/go-to-k/cdkd/issues/1113)). Two traps to know
+about:
+
+- `AutomaticBackupRetentionDays: 0` does NOT prevent the final backup. That
+  setting only disables *scheduled* backups.
+- The final backup is typically **untagged**: `CopyTagsToBackups` defaults to
+  false, so the backup's persisted file-system metadata does not reliably
+  carry the file system's tags, and tag-based sweeps will not find it. Select
+  by the backup's persisted `FileSystem.FileSystemId` instead.
+
+To find and delete a leftover final backup, note the file system id (from
+deploy output or cdkd state) and run:
+
+```bash
+aws fsx describe-backups --region <region> \
+  --query 'Backups[?FileSystem.FileSystemId==`fs-XXXXXXXX`].{Id:BackupId,Lifecycle:Lifecycle,Type:FileSystem.FileSystemType,Created:CreationTime}' \
+  --output table
+aws fsx delete-backup --backup-id backup-XXXXXXXX --region <region>
+```
+
+If the file system id is no longer known, list all backups
+(`aws fsx describe-backups`) and review untagged entries by creation time and
+storage capacity.
 
 ## Not planned (deprecated services)
 
