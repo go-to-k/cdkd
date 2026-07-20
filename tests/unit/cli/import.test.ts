@@ -94,6 +94,12 @@ const mockRetireCloudFormationStack = vi.hoisted(() =>
 const mockGetCfnResourceTree = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<CfnStackResourceTree>>()
 );
+// Auto mode consults CloudFormation before the per-provider lookups (#1128).
+// Defaults to `null` ("no CFn stack of that name") in `beforeEach`, which is
+// the shape every pre-#1128 test was implicitly written against.
+const mockTryGetCfnResourceMap = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<Map<string, string> | null>>()
+);
 vi.mock('../../../src/cli/commands/retire-cfn-stack.js', async () => {
   // Pull the real module's `NESTED_STACK_RESOURCE_TYPE` constant via
   // `vi.importActual` so the test mock can't silently drift from the
@@ -105,6 +111,7 @@ vi.mock('../../../src/cli/commands/retire-cfn-stack.js', async () => {
   return {
     retireCloudFormationStack: mockRetireCloudFormationStack,
     getCloudFormationResourceTree: mockGetCfnResourceTree,
+    tryGetCloudFormationResourceMap: mockTryGetCfnResourceMap,
     NESTED_STACK_RESOURCE_TYPE: actual.NESTED_STACK_RESOURCE_TYPE,
   };
 });
@@ -262,6 +269,11 @@ describe('cdkd import', () => {
       resources: new Map(),
       nested: new Map(),
     });
+    // Default: no CloudFormation stack of that name, so auto mode falls
+    // straight through to the per-provider lookups — the behavior every
+    // pre-#1128 test in this file was written against.
+    mockTryGetCfnResourceMap.mockReset();
+    mockTryGetCfnResourceMap.mockResolvedValue(null);
     errorSpy.mockReset();
     infoSpy.mockReset();
     warnSpy.mockReset();
@@ -1710,11 +1722,83 @@ describe('cdkd import', () => {
       return { importSpy };
     }
 
-    it('does not invoke either CFn helper when the flag is omitted', async () => {
+    // Issue #1128: auto mode's per-resource fallback is an `aws:cdk:path` tag
+    // walk, and that tag cannot exist on AWS (AWS rejects `aws:`-prefixed tag
+    // writes; CloudFormation keeps the value in template `Metadata`). So a
+    // resource whose physical name CloudFormation generated came back
+    // `not found`. Auto mode now asks CloudFormation directly first.
+    describe('auto-mode CloudFormation lookup (#1128)', () => {
+      it('uses the CFn physical id when a stack of the same name exists', async () => {
+        const { importSpy } = setupHappyPath();
+        mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'cfn-derived-bucket']]));
+
+        await runImport(['import', '--app', 'x', '--yes']);
+
+        // The provider must receive the CFn-resolved id as knownPhysicalId,
+        // so its own name/tag lookup is never needed.
+        expect(importSpy.mock.calls[0]![0]).toMatchObject({
+          knownPhysicalId: 'cfn-derived-bucket',
+        });
+      });
+
+      it('does not flip into selective mode on CFn-derived ids', async () => {
+        // Selective mode is keyed on user-supplied overrides. CFn-derived ids
+        // are not user intent to narrow scope -- treating them as such would
+        // mark every other template resource `out of scope`.
+        setupHappyPath();
+        mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'cfn-derived-bucket']]));
+
+        await runImport(['import', '--app', 'x', '--yes']);
+
+        expect(infoSpy.mock.calls.flat().join(' ')).not.toContain('Selective mode');
+      });
+
+      it('lets a user --resource override win over the CFn-derived id', async () => {
+        const { importSpy } = setupHappyPath();
+        mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'cfn-derived-bucket']]));
+
+        await runImport(['import', '--app', 'x', '--yes', '--auto', '--resource', 'MyBucket=mine']);
+
+        expect(importSpy.mock.calls[0]![0]).toMatchObject({ knownPhysicalId: 'mine' });
+      });
+
+      it('falls through to the per-provider lookup when no CFn stack exists', async () => {
+        const { importSpy } = setupHappyPath();
+        mockTryGetCfnResourceMap.mockResolvedValue(null);
+
+        await runImport(['import', '--app', 'x', '--yes']);
+
+        // No knownPhysicalId -> the provider does its own name/tag lookup,
+        // exactly as before #1128.
+        expect(importSpy.mock.calls[0]![0].knownPhysicalId).toBeUndefined();
+      });
+
+      it('skips the lookup entirely in selective mode', async () => {
+        // Selective mode already has every id the user cares about; a
+        // speculative DescribeStackResources would be a wasted call.
+        setupHappyPath();
+        await runImport(['import', '--app', 'x', '--yes', '--resource', 'MyBucket=mine']);
+        expect(mockTryGetCfnResourceMap).not.toHaveBeenCalled();
+      });
+
+      it('skips the lookup when --migrate-from-cloudformation already resolves ids', async () => {
+        setupHappyPath('cfn-bucket-physical');
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(mockTryGetCfnResourceMap).not.toHaveBeenCalled();
+        expect(mockGetCfnResourceTree).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('does not walk the CFn tree or retire when the flag is omitted', async () => {
+      // Auto mode DOES consult CloudFormation for physical ids (#1128), but
+      // only via the flat, non-throwing lookup. The recursive tree walk and
+      // the retirement remain exclusive to --migrate-from-cloudformation:
+      // adopting a stack must never silently delete the CFn stack behind it.
       setupHappyPath();
       await runImport(['import', '--app', 'x', '--yes']);
       expect(mockGetCfnResourceTree).not.toHaveBeenCalled();
       expect(mockRetireCloudFormationStack).not.toHaveBeenCalled();
+      expect(mockTryGetCfnResourceMap).toHaveBeenCalledTimes(1);
     });
 
     it('resolves CFn physical IDs and retires using the cdkd stack name by default', async () => {

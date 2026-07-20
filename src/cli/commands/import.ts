@@ -36,6 +36,7 @@ import { readCdkPath } from '../cdk-path.js';
 import {
   retireCloudFormationStack,
   getCloudFormationResourceTree,
+  tryGetCloudFormationResourceMap,
   NESTED_STACK_RESOURCE_TYPE,
   type CfnStackResourceTree,
 } from './retire-cfn-stack.js';
@@ -430,6 +431,74 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           `(${[...overrides.keys()].join(', ')}). ` +
           `Pass --auto to also tag-import the rest.`
       );
+    }
+
+    // Auto mode: ask CloudFormation for the physical IDs before falling back
+    // to the per-provider lookups (issue #1128).
+    //
+    // Auto mode's per-resource lookup is two-stage: the template's physical
+    // name property first, then an `aws:cdk:path` tag walk. The tag stage
+    // CANNOT match on real AWS — AWS rejects any `aws:`-prefixed tag write
+    // ("Tag keys beginning with aws: are reserved for system use") and
+    // CloudFormation keeps the value in the template's resource `Metadata`
+    // without ever promoting it to a tag. So a resource whose physical name
+    // CloudFormation generated (the usual CDK shape, since CDK rarely sets
+    // explicit names) came back `not found` even though it was sitting right
+    // there and perfectly importable.
+    //
+    // `DescribeStackResources` answers the question exactly, and
+    // `--migrate-from-cloudformation` has always used it — auto mode simply
+    // never did. This is best-effort: a cdkd-native stack has no CFn
+    // counterpart, so `null` is the normal case and we fall straight through
+    // to the existing per-provider lookups.
+    //
+    // Flat, not recursive: nested children need per-child state writes and a
+    // retire pass, which is `--migrate-from-cloudformation`'s job. Nested-stack
+    // rows are filtered out below so the AWS child-stack ARN never overwrites
+    // the synthesized cdkd-local ARN `importOne` writes.
+    //
+    // Two assumptions worth naming, both shared with the bare form of
+    // `--migrate-from-cloudformation`:
+    //   - the CFn stack sharing this stack's NAME is the same application. An
+    //     unrelated same-named stack could seed wrong ids, which is why the
+    //     info line below names the stack it read from.
+    //   - the ids are only as good as the stack's state. A stack stuck in
+    //     `ROLLBACK_COMPLETE` / `DELETE_FAILED` still answers with ids of
+    //     resources that may no longer exist; providers re-read the resource
+    //     during import, so those surface as `skipped-not-found` rather than
+    //     bad state.
+    if (!selectiveMode && !migrationCfnStackName) {
+      const cfnResources = await tryGetCloudFormationResourceMap(
+        stackInfo.stackName,
+        awsClients.cloudFormation
+      );
+      if (cfnResources) {
+        let derived = 0;
+        for (const [logicalId, physicalId] of cfnResources) {
+          if (!templateLogicalIds.has(logicalId)) continue;
+          if (template.Resources[logicalId]?.Type === NESTED_STACK_RESOURCE_TYPE) continue;
+          if (overrides.has(logicalId)) continue;
+          overrides.set(logicalId, physicalId);
+          derived++;
+        }
+        if (derived > 0) {
+          logger.info(
+            `Resolved ${derived} physical ID(s) from CloudFormation stack '${stackInfo.stackName}'. ` +
+              `To adopt AND retire that stack, use --migrate-from-cloudformation.`
+          );
+        } else {
+          // Distinguish "stack exists but contributed nothing" (every id
+          // already overridden, or no overlapping logical ids) from "no such
+          // stack" -- otherwise both look identical in the logs.
+          logger.debug(
+            `CloudFormation stack '${stackInfo.stackName}' contributed no new physical IDs.`
+          );
+        }
+      } else {
+        logger.debug(
+          `No CloudFormation stack named '${stackInfo.stackName}' — resolving physical IDs per provider.`
+        );
+      }
     }
 
     // Existing-state guard. The previous implementation refused with

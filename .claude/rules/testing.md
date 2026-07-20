@@ -120,6 +120,42 @@ of this lint were green while skipping most of the tree. The
 specific `state destroy --force` case; this lint generalizes it to every
 subcommand and also catches pre-existing occurrences the hook cannot see.
 
+### A checker must prove it sees its input
+
+When writing a lint or codegen that SCANS files (verify.sh scripts, templates,
+source), "0 violations" and "parsed nothing at all" produce the identical green
+result. Assert coverage explicitly: how many items were parsed, how many
+distinct kinds, and **a floor per input SHAPE the parser claims to handle** —
+not just a grand total.
+
+This is not hypothetical. The #1097 CLI-flag lint shipped this defect twice
+while its suite was green:
+
+1. it ignored inline env prefixes, missing every
+   `CDKD_TEST_UPDATE=true node ... deploy` invocation (46 of them — the
+   UPDATE-mode deploys, i.e. the ones most worth checking);
+2. it required a literal `cli.js` in the `node <script>` token, so
+   `node "${LOCAL_DIST}" ...` matched nothing — **135 of 195 fixtures**
+   contributed zero. Coverage was 36% of the tree.
+
+Neither was found by reading the code or by tests passing. Both were found by
+instrumenting the checker to print what it actually parsed and reconciling that
+against an independently-grepped denominator. A third variant then appeared in
+the fix itself: an unanchored shape regex matched invocations that did not have
+the shape, so a total regression of that branch would still have cleared a
+`> 0` check.
+
+Practical rules:
+
+- before trusting a new checker, measure — count parsed items per shape and
+  explain any gap against a rough independent count;
+- encode the measurement as assertions with real numeric floors, anchored so a
+  near-miss cannot satisfy them;
+- aggregate floors alone are insufficient: one dead shape hides under them.
+
+See `tests/unit/scripts/integ-cli-flags.test.ts` for the shape the assertions
+take.
+
 ## UPDATE Testing
 
 - Environment variable `CDKD_TEST_UPDATE=true` enables UPDATE test mode

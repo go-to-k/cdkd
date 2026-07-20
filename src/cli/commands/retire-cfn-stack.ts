@@ -911,3 +911,75 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
     rl.close();
   }
 }
+
+/**
+ * Flat `logicalId -> physicalId` map for ONE CloudFormation stack, or `null`
+ * when no stack of that name exists.
+ *
+ * This is the non-recursive, non-throwing sibling of
+ * {@link getCloudFormationResourceTree}, used by `cdkd import`'s auto mode as
+ * a best-effort lookup (issue #1128). The distinction matters:
+ *
+ *   - the tree walk is for `--migrate-from-cloudformation`, where the stack is
+ *     known to exist and nested children must be walked so each child's state
+ *     can be written and the whole tree retired;
+ *   - this one runs speculatively on every auto-mode import, so a missing
+ *     stack is the NORMAL case (a cdkd-native stack has no CFn counterpart)
+ *     and must return `null` rather than abort the import.
+ *
+ * NO failure is fatal. The lookup is an OPTIMIZATION: when it cannot answer,
+ * the caller falls through to the per-provider lookups, which is exactly the
+ * behavior that shipped before this function existed. Throwing would convert a
+ * missed improvement into a hard failure — and it would do so precisely for the
+ * users least likely to benefit. A cdkd-native stack has no CloudFormation
+ * counterpart, so an operator whose IAM policy is scoped to cdkd's actual needs
+ * (no `cloudformation:DescribeStackResources`) would see `AccessDenied` abort an
+ * import that worked fine the day before.
+ *
+ * A missing stack is the expected case and logs at debug. Anything else logs a
+ * WARN naming the cause, so a permissions gap or a throttle is visible rather
+ * than silent — the user learns why the ids were not resolved, and still gets
+ * the pre-existing behavior instead of an abort.
+ */
+export async function tryGetCloudFormationResourceMap(
+  stackName: string,
+  cfnClient: CloudFormationClient
+): Promise<Map<string, string> | null> {
+  const logger = getLogger();
+  let resp;
+  try {
+    resp = await cfnClient.send(new DescribeStackResourcesCommand({ StackName: stackName }));
+  } catch (err) {
+    if (isStackNotFoundError(err)) {
+      logger.debug(`No CloudFormation stack named '${stackName}'.`);
+      return null;
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      `Could not read CloudFormation stack '${stackName}' to resolve physical IDs (${reason}). ` +
+        `Falling back to per-resource lookup; resources whose physical name CloudFormation ` +
+        `generated may be reported as not found. Grant cloudformation:DescribeStackResources, ` +
+        `or pass --resource <LogicalId>=<physicalId> for those resources.`
+    );
+    return null;
+  }
+
+  const resources = new Map<string, string>();
+  for (const r of resp.StackResources ?? []) {
+    if (!r.LogicalResourceId || !r.PhysicalResourceId) continue;
+    resources.set(r.LogicalResourceId, r.PhysicalResourceId);
+  }
+  return resources;
+}
+
+/**
+ * CloudFormation reports an unknown stack as a `ValidationError` whose message
+ * carries "does not exist" — there is no dedicated exception type to catch.
+ * Matching the message is therefore required, but it is kept narrow so an
+ * unrelated ValidationError (a malformed stack name, say) still surfaces.
+ */
+export function isStackNotFoundError(err: unknown): boolean {
+  const name = (err as { name?: string } | undefined)?.name;
+  const message = (err as { message?: string } | undefined)?.message ?? '';
+  return name === 'ValidationError' && /does not exist/i.test(message);
+}
