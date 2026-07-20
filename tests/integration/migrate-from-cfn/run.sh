@@ -38,13 +38,34 @@ fi
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
+# True (rc 0) iff the cdkd state.json key exists for a stack. Probes the exact
+# key via head-object, NOT `aws s3 ls` on the prefix: the deployment-events
+# layer at cdkd/<stack>/<region>/deployments/ (issue #808) is intentionally
+# retained after destroy, so a whole-prefix sweep false-positives the moment a
+# run has emitted any deployment event. A canonical not-found/404 means gone;
+# any other error (throttle, auth, network) hard-fails rather than being read
+# as "clean" (per .claude/rules/testing.md gone-probe rule).
+state_json_exists() {
+  local stack="$1" err
+  err="$(aws s3api head-object --bucket "${STATE_BUCKET}" \
+    --key "cdkd/${stack}/${REGION}/state.json" --region us-east-1 2>&1 >/dev/null || true)"
+  if [ -z "${err}" ]; then
+    return 0
+  fi
+  if printf '%s' "${err}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|404'; then
+    return 1
+  fi
+  echo "ERROR: unexpected error probing state.json for ${stack}: ${err}" >&2
+  exit 1
+}
+
 # Hard-fail early if a previous run left cdkd state OR a CFn stack with the
 # same name. Resuming on top of either masks real bugs (the import would
 # refuse, or the cdk deploy would attempt UPDATE on a stale stack).
 preflight_clean() {
   local stack="$1"
   log "[${stack}] pre-flight orphan scan"
-  if aws s3 ls "s3://${STATE_BUCKET}/cdkd/${stack}/" --region us-east-1 2>/dev/null | grep -q .; then
+  if state_json_exists "${stack}"; then
     echo "ERROR: cdkd state already exists for ${stack}. Run 'cdkd state orphan ${stack} --yes' first." >&2
     exit 1
   fi
@@ -56,7 +77,7 @@ preflight_clean() {
 
 assert_state_present() {
   local stack="$1"
-  if ! aws s3 ls "s3://${STATE_BUCKET}/cdkd/${stack}/${REGION}/state.json" --region us-east-1 >/dev/null 2>&1; then
+  if ! state_json_exists "${stack}"; then
     echo "ASSERTION FAILED: cdkd state not written for ${stack}" >&2
     exit 1
   fi
@@ -65,11 +86,11 @@ assert_state_present() {
 
 assert_state_absent() {
   local stack="$1"
-  if aws s3 ls "s3://${STATE_BUCKET}/cdkd/${stack}/" --region us-east-1 2>/dev/null | grep -q .; then
+  if state_json_exists "${stack}"; then
     echo "ASSERTION FAILED: cdkd state still present for ${stack} after destroy" >&2
     exit 1
   fi
-  echo "  ok: cdkd state cleaned"
+  echo "  ok: cdkd state cleaned (deployments/ event log retained by design)"
 }
 
 assert_cfn_gone() {
