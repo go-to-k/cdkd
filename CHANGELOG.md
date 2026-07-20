@@ -1,3 +1,10 @@
+# [0.256.0](https://github.com/go-to-k/cdkd/compare/v0.255.0...v0.256.0) (2026-07-20)
+
+
+### Features
+
+* **deployment:** guard per-type GetAtt defaults, add --strict-getatt, and surface a fallback summary ([#1117](https://github.com/go-to-k/cdkd/issues/1117)) ([abdc063](https://github.com/go-to-k/cdkd/commit/abdc063d44b0e552847254588cdd9085e836820b))
+
 # [0.255.0](https://github.com/go-to-k/cdkd/compare/v0.254.1...v0.255.0) (2026-07-20)
 
 
