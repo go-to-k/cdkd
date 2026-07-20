@@ -821,6 +821,16 @@ Empty `[]` means "intentionally no canonical scenario applies" (per-service smok
 
 Adding a new scenario: (1) add an entry to `KNOWN_SCENARIOS` with a one-line description in [scripts/build-scenario-coverage-matrix.ts](../scripts/build-scenario-coverage-matrix.ts); (2) tag existing fixtures that exercise it (or write a new one); (3) `vp run scenario-coverage` to regenerate.
 
+### Integ-run Ledger (normalized shape)
+
+[`docs/_generated/integ-last-run.tsv`](_generated/integ-last-run.tsv) records, one row per integration test, when it last ran and whether it passed. `/run-integ` writes it on every run (pass or fail) and `/pick-integ` ranks staleness from it.
+
+Unlike the three matrices above it is not derived from the tree — it is accumulated run history, so it cannot simply be regenerated. What IS enforced is its **shape**: exactly one row per test, rows sorted by test name. `vp run integ-ledger-normalize` rewrites the file into that shape (keeping the newest `last_run_iso` per test), and `--check` reports violations without writing.
+
+**CI hard-fails on a non-normalized file** (issue [#1112](https://github.com/go-to-k/cdkd/issues/1112)): the `check-build-test` job runs the task and fails on a non-empty `git diff`, same shape as the staleness gates above.
+
+The sort order is load-bearing, not cosmetic. The pre-fix write path dropped the test's old row and appended a new one; under rebase that append was replayed against a base that already contained the row, so git took both sides and the row silently duplicated — 10 tests on `main` were affected before this landed. A deterministic whole-file rewrite makes a replayed commit reproduce the file byte-for-byte instead, so the duplication cannot be created in the first place. Never hand-edit the file; record the run, then run the task.
+
 ### Verbose Logging
 
 Add the `--verbose` flag to display detailed logs:
