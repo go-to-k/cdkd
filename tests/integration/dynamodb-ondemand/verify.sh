@@ -185,7 +185,7 @@ echo "    OK: Table.OnDemandThroughput.MaxWriteRequestUnits == ${EXPECTED_WRITE}
 # silent-drop is closed.
 POLICY=$(aws dynamodb get-resource-policy \
   --resource-arn "${TABLE_ARN}" --region "${REGION}" \
-  --query 'Policy' --output text 2>/dev/null || echo "")
+  --query 'Policy' --output text)
 if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
   echo "FAIL: no ResourcePolicy attached to ${TABLE_NAME} (silent-drop NOT closed)" >&2
   exit 1
@@ -246,9 +246,11 @@ echo "    OK: ContributorInsightsSpecification.Mode == ${EXPECTED_CI_MODE} on AW
 assert_provisioned_capacity() {
   local expected_read="$1" expected_write="$2" phase="$3"
   local pt actual_read actual_write
+  # `|| return 1`: errexit is cleared inside $( ), so an intermediate capture
+  # failure must be propagated explicitly (stderr stays visible for diagnosis).
   pt=$(aws dynamodb describe-table \
     --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.ProvisionedThroughput' --output json 2>/dev/null)
+    --query 'Table.ProvisionedThroughput' --output json) || return 1
   actual_read=$(echo "${pt}" | jq -r 'if has("ReadCapacityUnits") then .ReadCapacityUnits | tostring else "null" end')
   actual_write=$(echo "${pt}" | jq -r 'if has("WriteCapacityUnits") then .WriteCapacityUnits | tostring else "null" end')
   if [ "${actual_read}" != "${expected_read}" ]; then
@@ -283,9 +285,9 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
 UPDATE_OK=""
 for _ in $(seq 1 24); do
   STATUS=$(aws dynamodb describe-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.TableStatus' --output text 2>/dev/null || echo "")
+    --query 'Table.TableStatus' --output text)
   READ_NOW=$(aws dynamodb describe-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text 2>/dev/null || echo "")
+    --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text)
   if [ "${STATUS}" = "ACTIVE" ] && [ "${READ_NOW}" = "${PROV_UPDATED_READ}" ]; then
     UPDATE_OK=1
     break

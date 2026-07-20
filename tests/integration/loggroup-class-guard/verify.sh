@@ -119,9 +119,11 @@ lg_name() {
 
 lg_class() {
   # logGroupClass may be omitted for STANDARD groups — treat absent as STANDARD.
+  # `|| return 1`: errexit is cleared inside $( ), so a probe error must be
+  # propagated explicitly instead of reading as an empty class.
   local cls
   cls="$(aws logs describe-log-groups --log-group-name-prefix "$1" --region "${REGION}" \
-    --query 'logGroups[0].logGroupClass' --output text)"
+    --query 'logGroups[0].logGroupClass' --output text)" || return 1
   if [ "${cls}" = "None" ]; then
     echo "STANDARD"
   else

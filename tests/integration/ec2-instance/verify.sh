@@ -202,7 +202,7 @@ ACTUAL_DISABLE_TERM=$(aws ec2 describe-instance-attribute \
   --instance-id "${INSTANCE_ID}" \
   --attribute disableApiTermination \
   --region "${REGION}" \
-  --query 'DisableApiTermination.Value' --output text 2>/dev/null || echo "null")
+  --query 'DisableApiTermination.Value' --output text)
 if [ "${ACTUAL_DISABLE_TERM}" != "True" ] && [ "${ACTUAL_DISABLE_TERM}" != "true" ]; then
   echo "FAIL: DisableApiTermination is '${ACTUAL_DISABLE_TERM}', expected True (DisableApiTermination silent-drop NOT closed)" >&2
   exit 1
@@ -217,7 +217,7 @@ echo "    OK: DisableApiTermination == ${ACTUAL_DISABLE_TERM} on AWS (DisableApi
 ACTUAL_CPU_CREDITS=$(aws ec2 describe-instance-credit-specifications \
   --instance-ids "${INSTANCE_ID}" \
   --region "${REGION}" \
-  --query 'InstanceCreditSpecifications[0].CpuCredits' --output text 2>/dev/null || echo "null")
+  --query 'InstanceCreditSpecifications[0].CpuCredits' --output text)
 if [ "${ACTUAL_CPU_CREDITS}" != "unlimited" ]; then
   echo "FAIL: CreditSpecification.CpuCredits is '${ACTUAL_CPU_CREDITS}', expected unlimited (CreditSpecification silent-drop NOT closed)" >&2
   exit 1
@@ -236,10 +236,17 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 # Instance should be terminated (or shutting-down right after the call).
-INSTANCE_STATE=$(aws ec2 describe-instances \
-  --instance-ids "${INSTANCE_ID}" \
-  --region "${REGION}" \
-  --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "gone")
+if gone_probe aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}"; then
+  INSTANCE_STATE="gone"
+elif ! INSTANCE_STATE=$(aws ec2 describe-instances \
+    --instance-ids "${INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
+  # TOCTOU: the record can be swept between gone_probe and this requery.
+  printf '%s' "${INSTANCE_STATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && INSTANCE_STATE="gone" \
+    || { echo "FAIL: describe-instances requery undetermined: ${INSTANCE_STATE}" >&2; exit 1; }
+fi
 if [ "${INSTANCE_STATE}" = "terminated" ] || [ "${INSTANCE_STATE}" = "shutting-down" ] || [ "${INSTANCE_STATE}" = "gone" ]; then
   echo "    OK: instance is terminated/shutting-down/gone (state: ${INSTANCE_STATE})"
   # State is already gone, so the cleanup trap need not re-terminate.

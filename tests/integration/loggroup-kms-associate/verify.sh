@@ -119,9 +119,11 @@ state_output() {
 
 lg_kms() {
   # kmsKeyId is omitted when no key is associated — normalize to NONE.
+  # `|| return 1`: errexit is cleared inside $( ), so a probe error must be
+  # propagated explicitly instead of reading as an empty key id.
   local kid
   kid="$(aws logs describe-log-groups --log-group-name-prefix "$1" --region "${REGION}" \
-    --query "logGroups[?logGroupName=='$1'] | [0].kmsKeyId" --output text)"
+    --query "logGroups[?logGroupName=='$1'] | [0].kmsKeyId" --output text)" || return 1
   if [ "${kid}" = "None" ]; then
     echo "NONE"
   else

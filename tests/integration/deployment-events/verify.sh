@@ -82,6 +82,8 @@ echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
 cleanup() {
   rc=$?
+  # Best-effort cleanup: tolerate probe errors + unset vars (the handler exits).
+  set +eu
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup"
     # Best-effort: destroy the stack if cdkd state still exists.
@@ -217,7 +219,7 @@ echo "[verify]   ok: SSM parameter ${SSM_PARAM_NAME} is gone"
 # alone would miss an orphaned topic that carries no stack name. SNS has no
 # "get one topic by name" call, so resolve the deterministic ARN and confirm
 # get-topic-attributes fails (NotFound). The topic name is `${STACK}-topic`.
-ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 if [ -z "${ACCOUNT_ID}" ] || [ "${ACCOUNT_ID}" = "None" ]; then
   echo "[verify] FAIL: could not resolve account id to build the SNS topic ARN for the not-found assertion"
   exit 1

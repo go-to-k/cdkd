@@ -184,7 +184,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # Deregistering a ScalableTarget is synchronous; after destroy none should remain.
 TARGETS_GONE="$(aws application-autoscaling describe-scalable-targets \
   --service-namespace dynamodb --resource-ids "${RESOURCE_ID}" --region "${REGION}" \
-  --query 'length(ScalableTargets)' --output text 2>/dev/null || echo "0")"
+  --query 'length(ScalableTargets)' --output text)"
 if [ "${TARGETS_GONE}" != "0" ]; then
   echo "FAIL: ${TARGETS_GONE} ScalableTarget(s) still registered after destroy" >&2
   exit 1

@@ -174,8 +174,15 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # the async deletion completes, so a successful describe is NOT a failure here —
 # only a still-ACTIVE status would be. Accept GONE (describe errors) / DELETING /
 # DELETED; the DELETING machine finishes deleting on its own.
-SM_STATUS=$(aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" \
-  --region "${REGION}" --query 'status' --output text 2>/dev/null || echo "GONE")
+if gone_probe aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" --region "${REGION}"; then
+  SM_STATUS="GONE"
+elif ! SM_STATUS=$(aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" \
+    --region "${REGION}" --query 'status' --output text 2>&1); then
+  # TOCTOU: the machine can finish deleting between gone_probe and this requery.
+  printf '%s' "${SM_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && SM_STATUS="GONE" \
+    || { echo "FAIL: describe-state-machine requery undetermined: ${SM_STATUS}" >&2; exit 1; }
+fi
 case "${SM_STATUS}" in
   GONE | DELETING | DELETED)
     echo "    OK: state machine is deleted or async-deleting (status=${SM_STATUS})"

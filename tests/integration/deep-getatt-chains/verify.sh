@@ -281,7 +281,7 @@ echo "    OK: SSM param D is gone"
 # C: composite alarm gone (and confirm it carried our OWN fixture tag while alive).
 C_LEFT=$(aws cloudwatch describe-alarms --region "${REGION}" \
   --alarm-names "${COMPOSITE_ALARM_NAME}" --alarm-types CompositeAlarm \
-  --query 'CompositeAlarms[0].AlarmArn' --output text 2>/dev/null || true)
+  --query 'CompositeAlarms[0].AlarmArn' --output text)
 if [ -n "${C_LEFT}" ] && [ "${C_LEFT}" != "None" ]; then
   fail "CompositeAlarm ${COMPOSITE_ALARM_NAME} still exists after destroy"
 fi
@@ -290,7 +290,7 @@ echo "    OK: composite alarm C is gone"
 # B: metric alarm gone.
 B_LEFT=$(aws cloudwatch describe-alarms --region "${REGION}" \
   --alarm-names "${ALARM_NAME}" --alarm-types MetricAlarm \
-  --query 'MetricAlarms[0].AlarmArn' --output text 2>/dev/null || true)
+  --query 'MetricAlarms[0].AlarmArn' --output text)
 if [ -n "${B_LEFT}" ] && [ "${B_LEFT}" != "None" ]; then
   fail "Alarm ${ALARM_NAME} still exists after destroy"
 fi

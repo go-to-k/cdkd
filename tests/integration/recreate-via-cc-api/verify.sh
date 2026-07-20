@@ -57,7 +57,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STACK="CdkdRecreateViaCcApi"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 FN_NAME="cdkd-recreate-via-cc-api-probe"
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 BUCKET_NAME="cdkd-recreate-via-cc-api-probe-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -196,7 +196,7 @@ echo "    OK: post-recreate RuntimeManagementConfig reached AWS via CC (UpdateRu
 # --- Phase 3: S3 probe pre-flight refusal (#648) -----------------------
 echo "==> Phase 3: pre-flight S3 ListObjectsV2 probe — non-empty bucket must be refused"
 # Sanity check: the bucket was deployed empty.
-OBJ_COUNT=$(aws s3api list-objects-v2 --bucket "${BUCKET_NAME}" --region "${REGION}" --max-items 1 --query 'KeyCount' --output text 2>/dev/null || echo "0")
+OBJ_COUNT=$(aws s3api list-objects-v2 --bucket "${BUCKET_NAME}" --region "${REGION}" --max-items 1 --query 'KeyCount' --output text)
 echo "    Initial bucket object count: ${OBJ_COUNT}"
 
 # Empty-bucket case: pre-flight should pass (no error block emitted). We

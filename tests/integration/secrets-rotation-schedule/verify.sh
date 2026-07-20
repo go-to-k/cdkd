@@ -148,8 +148,15 @@ echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 # The secret must be gone (ResourceNotFound) or scheduled for deletion.
-DELETED_DATE="$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \
-  --query 'DeletedDate' --output text 2>/dev/null || echo "GONE")"
+if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"; then
+  DELETED_DATE="GONE"
+elif ! DELETED_DATE="$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \
+    --query 'DeletedDate' --output text 2>&1)"; then
+  # TOCTOU: the secret can vanish between gone_probe and this requery.
+  printf '%s' "${DELETED_DATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && DELETED_DATE="GONE" \
+    || { echo "FAIL: describe-secret requery undetermined: ${DELETED_DATE}" >&2; exit 1; }
+fi
 if [ "${DELETED_DATE}" = "None" ]; then
   echo "FAIL: secret ${SECRET_NAME} still live (not deleted/scheduled) after destroy" >&2
   exit 1

@@ -112,9 +112,9 @@ echo "    OK: deploy exited 0"
 
 echo "==> Step 2 (LOAD-BEARING): assert GetAtt DomainEndpoint / Arn resolved to the REAL values"
 ENDPOINT=$(aws ssm get-parameter --name "${ENDPOINT_PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 ARN=$(aws ssm get-parameter --name "${ARN_PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 echo "    DomainEndpoint = '${ENDPOINT}'  Arn = '${ARN}'"
 case "${ENDPOINT}" in
   *.es.amazonaws.com)
@@ -154,7 +154,7 @@ assert_gone "state file still exists after destroy" aws s3api head-object --buck
 assert_gone "SSM parameter ${ENDPOINT_PARAM} still exists after destroy" aws ssm get-parameter --name "${ENDPOINT_PARAM}" --region "${REGION}"
 DOM_LEFT=$(aws opensearch list-domain-names --region "${REGION}" \
   --query "DomainNames[?contains(DomainName, 'cdkd-opensearch')] | length(@)" \
-  --output text 2>/dev/null || echo 0)
+  --output text)
 if [ "${DOM_LEFT}" != "0" ]; then
   echo "FAIL: ${DOM_LEFT} OpenSearch domain(s) still exist after destroy (orphan)" >&2
   exit 1

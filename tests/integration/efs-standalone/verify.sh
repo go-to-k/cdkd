@@ -124,7 +124,7 @@ echo "    Using FileSystemId '${FS_ID}'"
 # --- Assertion 1: BackupPolicy ENABLED --------------------------------
 BACKUP_STATUS=$(aws efs describe-backup-policy \
   --file-system-id "${FS_ID}" --region "${REGION}" \
-  --query 'BackupPolicy.Status' --output text 2>/dev/null || echo "")
+  --query 'BackupPolicy.Status' --output text)
 if [ "${BACKUP_STATUS}" != "ENABLED" ]; then
   echo "FAIL: BackupPolicy.Status is '${BACKUP_STATUS}', expected 'ENABLED' (PutBackupPolicy silent-drop NOT closed)" >&2
   exit 1
@@ -135,7 +135,7 @@ echo "    OK: BackupPolicy.Status == ENABLED (PutBackupPolicy wired)"
 LIFECYCLE_TIA=$(aws efs describe-lifecycle-configuration \
   --file-system-id "${FS_ID}" --region "${REGION}" \
   --query 'LifecyclePolicies[?TransitionToIA!=`null`].TransitionToIA | [0]' \
-  --output text 2>/dev/null || echo "")
+  --output text)
 if [ "${LIFECYCLE_TIA}" != "AFTER_30_DAYS" ]; then
   echo "FAIL: LifecyclePolicies TransitionToIA is '${LIFECYCLE_TIA}', expected 'AFTER_30_DAYS' (PutLifecycleConfiguration silent-drop NOT closed)" >&2
   exit 1
@@ -146,7 +146,7 @@ echo "    OK: LifecyclePolicies TransitionToIA == AFTER_30_DAYS (PutLifecycleCon
 PROTECTION=$(aws efs describe-file-systems \
   --file-system-id "${FS_ID}" --region "${REGION}" \
   --query 'FileSystems[0].FileSystemProtection.ReplicationOverwriteProtection' \
-  --output text 2>/dev/null || echo "")
+  --output text)
 if [ "${PROTECTION}" != "ENABLED" ]; then
   echo "FAIL: ReplicationOverwriteProtection is '${PROTECTION}', expected 'ENABLED' (UpdateFileSystemProtection silent-drop NOT closed)" >&2
   exit 1
@@ -159,7 +159,7 @@ echo "    OK: ReplicationOverwriteProtection == ENABLED (UpdateFileSystemProtect
 # `has(...)` (BSD-safe boolean) rather than relying on `//`-on-false.
 POLICY_JSON=$(aws efs describe-file-system-policy \
   --file-system-id "${FS_ID}" --region "${REGION}" \
-  --query 'Policy' --output text 2>/dev/null || echo "")
+  --query 'Policy' --output text)
 if [ -z "${POLICY_JSON}" ]; then
   echo "FAIL: no FileSystemPolicy attached (PutFileSystemPolicy silent-drop NOT closed)" >&2
   exit 1

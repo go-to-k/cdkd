@@ -144,7 +144,7 @@ RECORDED=""
 for i in 1 2 3 4 5 6 7 8 9 10; do
   RECORDED="$(aws dynamodb get-item --table-name "${TABLE_NAME}" --region "${REGION}" \
     --key "{\"key\":{\"S\":\"${PROBE_KEY}\"}}" \
-    --query 'Item.key.S' --output text 2>/dev/null || echo "")"
+    --query 'Item.key.S' --output text)"
   if [ "${RECORDED}" = "${PROBE_KEY}" ]; then
     break
   fi
@@ -165,8 +165,15 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "bucket ${BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
 echo "    OK: bucket is gone"
 
-TBL_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.TableStatus' --output text 2>/dev/null || echo "GONE")"
+if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
+  TBL_STATUS="GONE"
+elif ! TBL_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+  # TOCTOU: the table can vanish between gone_probe and this requery.
+  printf '%s' "${TBL_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && TBL_STATUS="GONE" \
+    || { echo "FAIL: describe-table requery undetermined: ${TBL_STATUS}" >&2; exit 1; }
+fi
 if [ "${TBL_STATUS}" != "GONE" ] && [ "${TBL_STATUS}" != "DELETING" ]; then
   echo "FAIL: table ${TABLE_NAME} still exists (status ${TBL_STATUS}) after destroy" >&2
   exit 1

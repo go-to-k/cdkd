@@ -60,49 +60,63 @@ echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 # We own the tag (AWS reserves aws:* so cdkd cannot set aws:cdk:path), so we
 # locate everything we created via the resourcegroupstaggingapi + per-service
 # tag filters. Used by both the post-destroy orphan assertion and the trap.
+#
+# Strictness note: errexit is CLEARED inside $( ) command substitutions (bash
+# without inherit_errexit), so every INTERMEDIATE capture below carries an
+# explicit `|| return 1` -- without it a probe error (throttle, creds) would
+# silently yield an empty result and pass the orphan assertion. The `return 1`
+# inside the `while read` pipeline subshell exits that subshell non-zero, which
+# becomes the pipeline's (= the function's last command's) status.
 
 find_load_balancer_arns() {
-  aws elbv2 describe-load-balancers --region "${REGION}" \
-    --query 'LoadBalancers[].LoadBalancerArn' --output text 2>/dev/null \
-    | tr '\t' '\n' | while read -r arn; do
+  local arns
+  arns="$(aws elbv2 describe-load-balancers --region "${REGION}" \
+    --query 'LoadBalancers[].LoadBalancerArn' --output text)" || return 1
+  printf '%s\n' "${arns}" | tr '\t' '\n' | while read -r arn; do
         [ -z "${arn}" ] && continue
         tags="$(aws elbv2 describe-tags --region "${REGION}" --resource-arns "${arn}" \
           --query "TagDescriptions[0].Tags[?Key=='${FIXTURE_TAG_KEY}' && Value=='${FIXTURE_TAG_VALUE}'] | length(@)" \
-          --output text 2>/dev/null || echo 0)"
+          --output text)" || return 1
         if [ "${tags}" != "0" ] && [ -n "${tags}" ]; then echo "${arn}"; fi
       done
 }
 
 find_target_group_arns() {
-  aws elbv2 describe-target-groups --region "${REGION}" \
-    --query 'TargetGroups[].TargetGroupArn' --output text 2>/dev/null \
-    | tr '\t' '\n' | while read -r arn; do
+  local arns
+  arns="$(aws elbv2 describe-target-groups --region "${REGION}" \
+    --query 'TargetGroups[].TargetGroupArn' --output text)" || return 1
+  printf '%s\n' "${arns}" | tr '\t' '\n' | while read -r arn; do
         [ -z "${arn}" ] && continue
         tags="$(aws elbv2 describe-tags --region "${REGION}" --resource-arns "${arn}" \
           --query "TagDescriptions[0].Tags[?Key=='${FIXTURE_TAG_KEY}' && Value=='${FIXTURE_TAG_VALUE}'] | length(@)" \
-          --output text 2>/dev/null || echo 0)"
+          --output text)" || return 1
         if [ "${tags}" != "0" ] && [ -n "${tags}" ]; then echo "${arn}"; fi
       done
 }
 
 find_vpc_ids() {
-  aws ec2 describe-vpcs --region "${REGION}" \
+  local out
+  out="$(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
-    --query 'Vpcs[].VpcId' --output text 2>/dev/null | tr '\t' '\n' | grep -v '^$' || true
+    --query 'Vpcs[].VpcId' --output text)" || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 
 find_security_group_ids() {
-  aws ec2 describe-security-groups --region "${REGION}" \
+  local out
+  out="$(aws ec2 describe-security-groups --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
-    --query 'SecurityGroups[].GroupId' --output text 2>/dev/null | tr '\t' '\n' | grep -v '^$' || true
+    --query 'SecurityGroups[].GroupId' --output text)" || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 
 find_instance_ids() {
-  aws ec2 describe-instances --region "${REGION}" \
+  local out
+  out="$(aws ec2 describe-instances --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
               "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null \
-    | tr '\t' '\n' | grep -v '^$' || true
+    --query 'Reservations[].Instances[].InstanceId' --output text)" || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 
 # ── Aggressive AWS-safe-order cleanup (only fires on a failure exit) ─────────
@@ -198,7 +212,7 @@ ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 # ── step 3: assert the ELBv2 web exists ─────────────────────────────────────
 echo "[verify] step 3: assert ALB + TargetGroup + Listener + ListenerRule exist"
 
-LB_ARNS="$(find_load_balancer_arns || true)"
+LB_ARNS="$(find_load_balancer_arns)"
 if [ -z "${LB_ARNS}" ]; then
   echo "[verify] FAIL: no tagged ApplicationLoadBalancer found after deploy"
   exit 1
@@ -207,7 +221,7 @@ LB_COUNT="$(printf '%s\n' "${LB_ARNS}" | grep -c . || true)"
 echo "[verify]   LoadBalancer(s): ${LB_COUNT}"
 LB_ARN="$(printf '%s\n' "${LB_ARNS}" | head -n1)"
 
-TG_ARNS="$(find_target_group_arns || true)"
+TG_ARNS="$(find_target_group_arns)"
 if [ -z "${TG_ARNS}" ]; then
   echo "[verify] FAIL: no tagged TargetGroup found after deploy"
   exit 1
@@ -215,7 +229,7 @@ fi
 echo "[verify]   TargetGroup(s): $(printf '%s\n' "${TG_ARNS}" | grep -c . || true)"
 
 LISTENER_COUNT="$(aws elbv2 describe-listeners --region "${REGION}" --load-balancer-arn "${LB_ARN}" \
-  --query 'length(Listeners)' --output text 2>/dev/null || echo 0)"
+  --query 'length(Listeners)' --output text)"
 if [ "${LISTENER_COUNT}" = "0" ] || [ -z "${LISTENER_COUNT}" ] || [ "${LISTENER_COUNT}" = "None" ]; then
   echo "[verify] FAIL: LoadBalancer ${LB_ARN} has no Listener"
   exit 1
@@ -226,7 +240,7 @@ LISTENER_ARN="$(aws elbv2 describe-listeners --region "${REGION}" --load-balance
   --query 'Listeners[0].ListenerArn' --output text 2>/dev/null)"
 # A non-default ListenerRule (our /app/* rule) — exclude the `default` rule.
 RULE_COUNT="$(aws elbv2 describe-rules --region "${REGION}" --listener-arn "${LISTENER_ARN}" \
-  --query "length(Rules[?IsDefault==\`false\`])" --output text 2>/dev/null || echo 0)"
+  --query "length(Rules[?IsDefault==\`false\`])" --output text)"
 if [ "${RULE_COUNT}" = "0" ] || [ -z "${RULE_COUNT}" ] || [ "${RULE_COUNT}" = "None" ]; then
   echo "[verify] FAIL: no non-default ListenerRule found on ${LISTENER_ARN}"
   exit 1
@@ -271,11 +285,11 @@ echo "[verify] step 5 ok: state cleared"
 # resource family by our own tag. (#796 lesson: state-empty != AWS-empty.)
 echo "[verify] step 6: assert all tagged AWS resources gone (0 orphans)"
 
-LEFT_LB="$(find_load_balancer_arns || true)"
-LEFT_TG="$(find_target_group_arns || true)"
-LEFT_VPC="$(find_vpc_ids || true)"
-LEFT_SG="$(find_security_group_ids || true)"
-LEFT_INST="$(find_instance_ids || true)"
+LEFT_LB="$(find_load_balancer_arns)"
+LEFT_TG="$(find_target_group_arns)"
+LEFT_VPC="$(find_vpc_ids)"
+LEFT_SG="$(find_security_group_ids)"
+LEFT_INST="$(find_instance_ids)"
 
 ORPHANS=0
 if [ -n "${LEFT_LB}" ]; then echo "[verify]   ORPHAN LoadBalancer(s): ${LEFT_LB}"; ORPHANS=1; fi

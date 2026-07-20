@@ -162,8 +162,15 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # still in a live state (ACTIVE / UPDATING) means the delete never happened.
 # (No polling/sleep — DeleteTable transitions the table to DELETING
 # synchronously, so a single check right after destroy is sufficient.)
-status="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.TableStatus' --output text 2>/dev/null || echo "GONE")"
+if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
+  status="GONE"
+elif ! status="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+  # TOCTOU: the table can vanish between gone_probe and this requery.
+  printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && status="GONE" \
+    || { echo "FAIL: describe-table requery undetermined: ${status}" >&2; exit 1; }
+fi
 if [ "${status}" != "GONE" ] && [ "${status}" != "DELETING" ]; then
   echo "FAIL: table ${TABLE_NAME} still exists (status ${status}) after destroy" >&2
   exit 1

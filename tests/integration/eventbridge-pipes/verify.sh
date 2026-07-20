@@ -80,8 +80,21 @@ env -u CDKD_TEST_UPDATE -u CDKD_TEST_SOURCE_SWITCH node "${LOCAL_DIST}" deploy "
 # as proof it reached AWS; assert the SQS source arn was wired.
 STATE=""; SRCARN=""
 for _ in $(seq 1 24); do
-  STATE=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'CurrentState' --output text 2>/dev/null || echo "")
-  SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+  # The pipe can 404 briefly right after create (read-after-create lag);
+  # gone_probe treats that as "not yet" and hard-FAILs on any other error.
+  if gone_probe aws pipes describe-pipe --name "${PIPE}" --region "${REGION}"; then
+    STATE=""; SRCARN=""
+  elif ! PIPE_DESC=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
+      --query '[CurrentState, Source]' --output text 2>&1); then
+    # TOCTOU: the pipe can 404 again between gone_probe and this requery --
+    # a canonical not-found is still "not yet" (retry); anything else fails.
+    printf '%s' "${PIPE_DESC}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { STATE=""; SRCARN=""; } \
+      || { echo "FAIL: describe-pipe requery undetermined: ${PIPE_DESC}" >&2; exit 1; }
+  else
+    STATE=$(printf '%s' "${PIPE_DESC}" | awk '{print $1}')
+    SRCARN=$(printf '%s' "${PIPE_DESC}" | awk '{print $2}')
+  fi
   if [ "${STATE}" = "RUNNING" ]; then break; fi
   sleep 5
 done
@@ -104,7 +117,7 @@ if grep -q "Replacing Pipe" "${UPDATE_LOG}"; then
   exit 1
 fi
 BS=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
-  --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text 2>/dev/null || true)
+  --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text)
 [ "${BS}" = "2" ] || { echo "FAIL: BatchSize after update is '${BS}', expected 2" >&2; exit 1; }
 echo "    OK: in-place UPDATE reached AWS (BatchSize=${BS})"
 
@@ -118,7 +131,7 @@ set -e
 [ "${COLLIDE_RC}" -ne 0 ] || { echo "FAIL: same-name replacement deploy unexpectedly succeeded without --replace" >&2; exit 1; }
 grep -q "custom-named resource requires replacing" "${COLLIDE_LOG}" \
   || { echo "FAIL: collision error is not the actionable NAMED_REPLACEMENT_COLLISION message" >&2; tail -20 "${COLLIDE_LOG}" >&2; exit 1; }
-SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text)
 case "${SRCARN}" in
   *":${SRC}") : ;;
   *) echo "FAIL: pipe Source changed despite the refused replacement ('${SRCARN}')" >&2; exit 1 ;;
@@ -128,7 +141,7 @@ echo "    OK: refused with the actionable message; AWS unchanged (Source still $
 echo "==> Same-name replacement WITH --replace (delete-first fallback)"
 env CDKD_TEST_UPDATE=true CDKD_TEST_SOURCE_SWITCH=true \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --replace
-SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text)
 case "${SRCARN}" in
   *":${SRC}2") : ;;
   *) echo "FAIL: pipe Source after --replace is '${SRCARN}', expected to end with ':${SRC}2'" >&2; exit 1 ;;

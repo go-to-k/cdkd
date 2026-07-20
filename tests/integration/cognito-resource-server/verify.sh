@@ -129,7 +129,7 @@ echo "    Client id:   ${CLIENT_ID}"
 # --- Assertion 1: AllowedOAuthScopes == api/read (the compound-id Ref fix) ---
 SCOPES=$(aws cognito-idp describe-user-pool-client \
   --user-pool-id "${POOL_ID}" --client-id "${CLIENT_ID}" --region "${REGION}" \
-  --query 'UserPoolClient.AllowedOAuthScopes' --output json 2>/dev/null || echo "[]")
+  --query 'UserPoolClient.AllowedOAuthScopes' --output json)
 SCOPE_COUNT=$(echo "${SCOPES}" | jq 'length')
 SCOPE_VAL=$(echo "${SCOPES}" | jq -r '.[0] // empty')
 if [ "${SCOPE_COUNT}" != "1" ] || [ "${SCOPE_VAL}" != "api/read" ]; then
@@ -142,7 +142,7 @@ echo "    OK: AllowedOAuthScopes == [\"api/read\"] (resource-server Ref resolved
 # --- Assertion 2: the resource server exists with identifier 'api' ----
 RS_ID=$(aws cognito-idp list-resource-servers \
   --user-pool-id "${POOL_ID}" --max-results 10 --region "${REGION}" \
-  --query "ResourceServers[?Identifier=='api'].Identifier | [0]" --output text 2>/dev/null || echo "")
+  --query "ResourceServers[?Identifier=='api'].Identifier | [0]" --output text)
 if [ "${RS_ID}" != "api" ]; then
   echo "FAIL: resource server with identifier 'api' not found (got '${RS_ID}')" >&2
   exit 1
@@ -152,7 +152,7 @@ echo "    OK: resource server 'api' present"
 # --- Assertion 3: the group exists ------------------------------------
 GROUP=$(aws cognito-idp list-groups \
   --user-pool-id "${POOL_ID}" --region "${REGION}" \
-  --query "Groups[?GroupName=='${STACK}-admins'].GroupName | [0]" --output text 2>/dev/null || echo "")
+  --query "Groups[?GroupName=='${STACK}-admins'].GroupName | [0]" --output text)
 if [ "${GROUP}" != "${STACK}-admins" ]; then
   echo "FAIL: group '${STACK}-admins' not found (got '${GROUP}')" >&2
   exit 1

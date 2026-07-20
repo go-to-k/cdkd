@@ -290,7 +290,7 @@ for attempt in 1 2 3 4 5 6; do
   # IAM-propagation authz signal; any other terminal status is a real failure.
   SM_LAST_CAUSE=$(aws stepfunctions describe-execution \
     --execution-arn "${EXEC_ARN}" --region "${REGION}" \
-    --query 'cause' --output text 2>/dev/null || echo "")
+    --query 'cause' --output text)
   case "${SM_LAST_CAUSE}" in
     *"lambda:InvokeFunction"*|*"no identity-based policy allows"*|*"AccessDeniedException"*|*"not authorized to perform"*)
       echo "    edge 2 attempt ${attempt}: SFN role grant not yet propagated (retrying a fresh execution)" >&2

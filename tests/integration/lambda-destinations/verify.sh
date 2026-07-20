@@ -81,13 +81,20 @@ sweep_log_groups() {
 }
 
 delete_queue_by_name() {
-  local name="$1"
-  local url
-  url="$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
-    --query 'QueueUrl' --output text 2>/dev/null || true)"
-  if [ -n "${url}" ] && [ "${url}" != "None" ]; then
-    aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1 || true
-  fi
+  # Best-effort cleanup helper: tolerate probe errors + unset vars. The body
+  # runs in a subshell so `set +eu` dies with it -- a trailing `set -eu` here
+  # would RE-ARM strict mode inside a `set +eu` caller (the cleanup trap) and
+  # abort the rest of its sweep on the next probe error.
+  (
+    set +eu
+    local name="$1"
+    local url
+    url="$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
+      --query 'QueueUrl' --output text 2>/dev/null || true)"
+    if [ -n "${url}" ] && [ "${url}" != "None" ]; then
+      aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+  )
 }
 
 cleanup() {

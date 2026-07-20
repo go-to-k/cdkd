@@ -413,7 +413,7 @@ if [ -n "${VPC_ID}" ] && [ "${VPC_ID}" != "null" ]; then
   # belt-and-suspenders check that the query path is clean.
   LEFT_ENIS=$(aws ec2 describe-network-interfaces --region "${REGION}" \
     --filters "Name=vpc-id,Values=${VPC_ID}" \
-    --query 'length(NetworkInterfaces)' --output text 2>/dev/null || echo 0)
+    --query 'length(NetworkInterfaces)' --output text)
   if [ "${LEFT_ENIS}" != "0" ] && [ "${LEFT_ENIS}" != "None" ]; then
     echo "FAIL: ${LEFT_ENIS} ENI(s) still attached to ${VPC_ID} after destroy" >&2
     exit 1

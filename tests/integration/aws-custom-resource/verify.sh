@@ -114,7 +114,7 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 VAL_P1="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || echo "")"
+  --query 'Parameter.Value' --output text)"
 if [ "${VAL_P1}" != "v1-created" ]; then
   echo "FAIL: expected SSM ${PARAM_NAME} == v1-created after onCreate, got '${VAL_P1}'" >&2
   exit 1
@@ -127,7 +127,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 VAL_P2="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || echo "")"
+  --query 'Parameter.Value' --output text)"
 if [ "${VAL_P2}" != "v2-updated" ]; then
   echo "FAIL: expected SSM ${PARAM_NAME} == v2-updated after onUpdate, got '${VAL_P2}'" >&2
   exit 1

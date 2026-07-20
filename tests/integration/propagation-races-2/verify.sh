@@ -239,7 +239,7 @@ if [ "${INVOKE_OUT}" != "200" ]; then
   exit 1
 fi
 POLICY_JSON=$(aws lambda get-policy --function-name "${FUNCTION_NAME}" \
-  --region "${REGION}" --query 'Policy' --output text 2>/dev/null || echo "")
+  --region "${REGION}" --query 'Policy' --output text)
 if ! echo "${POLICY_JSON}" | grep -qF "s3.amazonaws.com"; then
   echo "FAIL: Lambda resource policy does not grant s3.amazonaws.com — the permission PUT did not land" >&2
   echo "${POLICY_JSON}" >&2
@@ -250,7 +250,7 @@ echo "    OK: Lambda invokable (200) + resource policy grants the S3 source"
 # --- Edge 3 assertion: bucket policy present + references the fresh role
 echo "==> Edge 3: S3 BucketPolicy referencing the fresh role"
 BUCKET_POLICY=$(aws s3api get-bucket-policy --bucket "${POLICED_BUCKET}" \
-  --region "${REGION}" --query 'Policy' --output text 2>/dev/null || echo "")
+  --region "${REGION}" --query 'Policy' --output text)
 if [ -z "${BUCKET_POLICY}" ]; then
   echo "FAIL: no bucket policy on ${POLICED_BUCKET} — PutBucketPolicy did not land" >&2
   exit 1
@@ -265,7 +265,7 @@ echo "    OK: bucket policy present + references the fresh role principal"
 # --- Edge 4 assertion: KMS key usable + the key policy references the fresh role
 echo "==> Edge 4: KMS Key policy referencing the fresh role"
 KEY_STATE=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" \
-  --query 'KeyMetadata.KeyState' --output text 2>/dev/null || echo "null")
+  --query 'KeyMetadata.KeyState' --output text)
 if [ "${KEY_STATE}" != "Enabled" ]; then
   echo "FAIL: KMS key state is '${KEY_STATE}', expected Enabled" >&2
   exit 1
@@ -278,7 +278,7 @@ if [ -z "${ENC}" ]; then
   exit 1
 fi
 KEY_POLICY=$(aws kms get-key-policy --key-id "${KEY_ID}" --policy-name default \
-  --region "${REGION}" --query 'Policy' --output text 2>/dev/null || echo "")
+  --region "${REGION}" --query 'Policy' --output text)
 if ! echo "${KEY_POLICY}" | grep -qF "AllowFreshRoleUse"; then
   echo "FAIL: KMS key policy missing the AllowFreshRoleUse statement" >&2
   echo "${KEY_POLICY}" >&2
@@ -299,9 +299,18 @@ echo "    OK: state file is gone"
 # --- Post-destroy: assert each NAMED resource is gone ------------------
 echo "==> Post-destroy: assert named resources are gone (by fixture tag / resolved id)"
 
-# Instance terminated / shutting-down / gone.
-ST=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
-  --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "gone")
+# Instance terminated / shutting-down / gone. AWS also spells "terminated" by
+# sweeping the record entirely (InvalidInstanceID.NotFound) once the terminated
+# instance ages out, so a not-found probe is a legitimate "gone".
+if gone_probe aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}"; then
+  ST="gone"
+elif ! ST=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
+  # TOCTOU: the record can be swept between gone_probe and this requery.
+  printf '%s' "${ST}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && ST="gone" \
+    || { echo "FAIL: describe-instances requery undetermined: ${ST}" >&2; exit 1; }
+fi
 case "${ST}" in
   terminated|shutting-down|gone) echo "    OK: instance gone (state: ${ST})" ;;
   *) echo "FAIL: instance ${INSTANCE_ID} still in state ${ST} after destroy" >&2; exit 1 ;;
@@ -322,8 +331,15 @@ done
 echo "    OK: both S3 buckets gone"
 
 # KMS key scheduled for deletion (KMS keys cannot be hard-deleted immediately).
-KEY_STATE_AFTER=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" \
-  --query 'KeyMetadata.KeyState' --output text 2>/dev/null || echo "gone")
+if gone_probe aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}"; then
+  KEY_STATE_AFTER="gone"
+elif ! KEY_STATE_AFTER=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" \
+    --query 'KeyMetadata.KeyState' --output text 2>&1); then
+  # TOCTOU: the key can vanish between gone_probe and this requery.
+  printf '%s' "${KEY_STATE_AFTER}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && KEY_STATE_AFTER="gone" \
+    || { echo "FAIL: describe-key requery undetermined: ${KEY_STATE_AFTER}" >&2; exit 1; }
+fi
 case "${KEY_STATE_AFTER}" in
   PendingDeletion|gone) echo "    OK: KMS key pending deletion / gone (state: ${KEY_STATE_AFTER})" ;;
   *) echo "FAIL: KMS key ${KEY_ID} still in state ${KEY_STATE_AFTER} after destroy (expected PendingDeletion)" >&2; exit 1 ;;
@@ -335,7 +351,7 @@ esac
 ORPHAN_INSTANCES=$(aws ec2 describe-instances --region "${REGION}" \
   --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
             "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-  --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || echo "")
+  --query 'Reservations[].Instances[].InstanceId' --output text)
 if [ -n "${ORPHAN_INSTANCES}" ] && [ "${ORPHAN_INSTANCES}" != "None" ]; then
   echo "FAIL: orphan instance(s) carrying the fixture tag remain: ${ORPHAN_INSTANCES}" >&2
   exit 1

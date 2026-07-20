@@ -75,8 +75,19 @@ sweep_log_groups() {
 }
 
 queue_url() {
-  aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
-    --query 'QueueUrl' --output text 2>/dev/null || true
+  local out
+  if gone_probe aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"; then
+    echo ""
+    return 0
+  fi
+  if ! out="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
+      --query 'QueueUrl' --output text 2>&1)"; then
+    # TOCTOU: the queue can vanish between gone_probe and this requery.
+    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { echo ""; return 0; } \
+      || { echo "FAIL: get-queue-url requery undetermined: ${out}" >&2; exit 1; }
+  fi
+  printf '%s\n' "${out}"
 }
 
 cleanup() {
@@ -155,9 +166,9 @@ fi
 
 # Spot-check group-id preservation across BOTH groups: msg-A1 -> g1, msg-B1 -> g2.
 GROUP_A1="$(aws dynamodb get-item --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --key '{"id":{"S":"msg-A1"}}' --query 'Item.group.S' --output text 2>/dev/null || true)"
+  --key '{"id":{"S":"msg-A1"}}' --query 'Item.group.S' --output text)"
 GROUP_B1="$(aws dynamodb get-item --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --key '{"id":{"S":"msg-B1"}}' --query 'Item.group.S' --output text 2>/dev/null || true)"
+  --key '{"id":{"S":"msg-B1"}}' --query 'Item.group.S' --output text)"
 if [ "${GROUP_A1}" != "g1" ]; then
   echo "FAIL: msg-A1 expected MessageGroupId g1, got '${GROUP_A1}'" >&2
   exit 1
@@ -175,7 +186,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 LEFT_ESM="$(aws lambda list-event-source-mappings --region "${REGION}" \
-  --query "length(EventSourceMappings[?contains(FunctionArn, '${FN_NAME}')])" --output text 2>/dev/null || echo 0)"
+  --query "length(EventSourceMappings[?contains(FunctionArn, '${FN_NAME}')])" --output text)"
 if [ "${LEFT_ESM}" != "0" ]; then
   echo "FAIL: ${LEFT_ESM} event source mapping(s) left after destroy" >&2
   exit 1

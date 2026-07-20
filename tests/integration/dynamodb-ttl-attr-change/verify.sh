@@ -103,11 +103,11 @@ cleanup
 # Poll DescribeTimeToLive until the status settles, then echo the AttributeName.
 ttl_attribute() {
   aws dynamodb describe-time-to-live --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query 'TimeToLiveDescription.AttributeName' --output text 2>/dev/null || echo ""
+    --query 'TimeToLiveDescription.AttributeName' --output text
 }
 ttl_status() {
   aws dynamodb describe-time-to-live --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query 'TimeToLiveDescription.TimeToLiveStatus' --output text 2>/dev/null || echo ""
+    --query 'TimeToLiveDescription.TimeToLiveStatus' --output text
 }
 
 # --- Phase 1: deploy TTL on ttlA --------------------------------------

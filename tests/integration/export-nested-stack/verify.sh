@@ -88,6 +88,8 @@ echo "[verify] region=${REGION} parent=${PARENT_STACK} child-cfn=${CHILD_CFN_STA
 
 cleanup() {
   rc=$?
+  # Best-effort cleanup: tolerate probe errors + unset vars (the handler exits).
+  set +eu
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup"
   fi

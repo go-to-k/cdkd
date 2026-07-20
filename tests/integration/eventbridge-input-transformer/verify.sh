@@ -68,19 +68,37 @@ QUEUE_NAME="cdkd-eb-transform-q"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 queue_url() {
-  aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
-    --query 'QueueUrl' --output text 2>/dev/null || true
+  local out
+  if gone_probe aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"; then
+    echo ""
+    return 0
+  fi
+  if ! out="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
+      --query 'QueueUrl' --output text 2>&1)"; then
+    # TOCTOU: the queue can vanish between gone_probe and this requery.
+    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { echo ""; return 0; } \
+      || { echo "FAIL: get-queue-url requery undetermined: ${out}" >&2; exit 1; }
+  fi
+  printf '%s\n' "${out}"
 }
 
 delete_rule() {
-  # A rule cannot be deleted while it has targets; remove them first.
-  local ids
-  ids="$(aws events list-targets-by-rule --rule "${RULE_NAME}" --region "${REGION}" \
-    --query 'Targets[].Id' --output text 2>/dev/null || true)"
-  if [ -n "${ids}" ] && [ "${ids}" != "None" ]; then
-    aws events remove-targets --rule "${RULE_NAME}" --ids ${ids} --region "${REGION}" >/dev/null 2>&1 || true
-  fi
-  aws events delete-rule --name "${RULE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # Best-effort cleanup helper: tolerate probe errors + unset vars. The body
+  # runs in a subshell so `set +eu` dies with it -- a trailing `set -eu` here
+  # would RE-ARM strict mode inside a `set +eu` caller (the cleanup trap) and
+  # abort the rest of its sweep on the next probe error.
+  (
+    set +eu
+    # A rule cannot be deleted while it has targets; remove them first.
+    local ids
+    ids="$(aws events list-targets-by-rule --rule "${RULE_NAME}" --region "${REGION}" \
+      --query 'Targets[].Id' --output text 2>/dev/null || true)"
+    if [ -n "${ids}" ] && [ "${ids}" != "None" ]; then
+      aws events remove-targets --rule "${RULE_NAME}" --ids ${ids} --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+    aws events delete-rule --name "${RULE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  )
 }
 
 cleanup() {

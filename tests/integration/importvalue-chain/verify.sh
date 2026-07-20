@@ -171,9 +171,9 @@ echo ""
 echo "==> Step 1a: Assert B's import resolved to A's REAL topic ARN on AWS"
 TOPIC_ARN=$(aws sns list-topics --region "${AWS_REGION}" \
   --query "Topics[?contains(TopicArn, ':${STACK_A}-') == \`true\`].TopicArn | [0]" \
-  --output text 2>/dev/null || true)
+  --output text)
 B_PARAM_VALUE=$(aws ssm get-parameter --name "${B_PARAM_NAME}" --region "${AWS_REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 if [[ -z "${B_PARAM_VALUE}" || "${B_PARAM_VALUE}" == "None" ]]; then
   echo "FAIL: Stack B's SSM Parameter ${B_PARAM_NAME} is missing/empty — import did not resolve"
   exit 1
@@ -196,7 +196,7 @@ echo "    B imported A's ChainTopicArn = ${B_PARAM_VALUE} (✓)"
 echo ""
 echo "==> Step 1b: Assert C's import resolved to B's DERIVED value (transitive)"
 C_PARAM_VALUE=$(aws ssm get-parameter --name "${C_PARAM_NAME}" --region "${AWS_REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 if [[ -z "${C_PARAM_VALUE}" || "${C_PARAM_VALUE}" == "None" ]]; then
   echo "FAIL: Stack C's SSM Parameter ${C_PARAM_NAME} is missing/empty — import did not resolve"
   exit 1
@@ -393,7 +393,7 @@ assert_gone "A state still exists after destroy" aws s3api head-object --bucket 
 # orphan that carries no stack name; assert the real resource directly).
 LEFTOVER_TOPIC=$(aws sns list-topics --region "${AWS_REGION}" \
   --query "Topics[?contains(TopicArn, ':${STACK_A}-') == \`true\`].TopicArn | [0]" \
-  --output text 2>/dev/null || true)
+  --output text)
 if [[ -n "${LEFTOVER_TOPIC}" && "${LEFTOVER_TOPIC}" != "None" ]]; then
   echo "FAIL: Stack A's SNS topic still exists after destroy (orphan): ${LEFTOVER_TOPIC}"
   exit 1

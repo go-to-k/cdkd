@@ -234,10 +234,17 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 # Spot-check the security cluster is gone or in 'deleting'.
-CLUSTER_STATUS=$(aws rds describe-db-clusters \
-  --db-cluster-identifier "${DB_CLUSTER_ID}" \
-  --region "${REGION}" \
-  --query 'DBClusters[0].Status' --output text 2>/dev/null || echo "gone")
+if gone_probe aws rds describe-db-clusters --db-cluster-identifier "${DB_CLUSTER_ID}" --region "${REGION}"; then
+  CLUSTER_STATUS="gone"
+elif ! CLUSTER_STATUS=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0].Status' --output text 2>&1); then
+  # TOCTOU: the cluster can vanish between gone_probe and this requery.
+  printf '%s' "${CLUSTER_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && CLUSTER_STATUS="gone" \
+    || { echo "FAIL: describe-db-clusters requery undetermined: ${CLUSTER_STATUS}" >&2; exit 1; }
+fi
 if [ "${CLUSTER_STATUS}" = "gone" ] || [ "${CLUSTER_STATUS}" = "deleting" ]; then
   echo "    OK: SecurityCluster is gone or deleting (status: ${CLUSTER_STATUS})"
 else
