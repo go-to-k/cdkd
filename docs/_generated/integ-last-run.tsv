@@ -116,6 +116,7 @@ iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-r
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
 iam-role-prefixed-name-update	2026-06-21T08:38:12Z	PASS	45	verify.sh	prefix-migration false-positive fix (generator-based); in-place UPDATE w/o -y, RoleId unchanged, destroy clean
 import-attributes	2026-07-20T15:36:18Z	PASS	41	verify.sh	rc 0, 0 orphans; #1091 batch 4 final
+import-auto-mode	2026-07-20T16:39:29Z	PASS	72	verify.sh	new fixture (#1128); verified red without the import.ts fix
 import-nested-stack	2026-06-21T11:00:28Z	PASS	146	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 import-value-strong-ref	2026-07-02T18:23:15Z	PASS	115	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 importvalue-chain	2026-07-02T18:23:15Z	PASS	75	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
