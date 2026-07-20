@@ -42,6 +42,38 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - **Delete fail-fast when the backing Lambda is gone (issue #804).** `delete()` issues a single `GetFunction` pre-check before preparing the invocation; a definitive `ResourceNotFoundException` logs a warning and treats the Custom Resource as already deleted (warn-and-continue is the delete path's existing policy). Without it, a re-run after an interrupted / partially-failed destroy entered `waitForBackingLambdaReady`, whose SDK waiters classify `ResourceNotFoundException` as RETRY and poll `GetFunction` for the full 10-minute `maxWaitTime`. Inconclusive pre-check errors (throttle, IAM) fall through to the normal invoke path; SNS-backed tokens skip the pre-check; create / update never pre-check (they must fail loudly against a missing function).
 - Implemented in `CustomResourceProvider`
 
+## Reading a field off an AWS response: type != populated
+
+An AWS SDK v3 response TYPE declaring a field does NOT mean the API you called
+populates it. The models are shared across operations, so a `List*` summary can
+declare `Tags?: Tag[]` and never carry tags. AWS documents the exception on the
+COMMAND, not the model:
+
+> IAM resource-listing operations return a subset of the available attributes
+> for the resource. For example, this operation does not return tags, even
+> though they are an attribute of the returned object. To view all of the
+> information for an instance profile, see GetInstanceProfile.
+
+`iam-instance-profile-provider` carried exactly this defect until PR #1127:
+`import()` read tags off the `ListInstanceProfiles` summary, which typechecked
+and always saw `undefined`. Because a tag-walk non-match is not an error, the
+walk simply never matched and `cdkd import` reported the resource as
+**not-found** — a silent wrong answer, not a crash. The provider's unit tests
+hand-fed inline `Tags` and so agreed with the bug.
+
+**When consuming a field from a `List*` / `Describe*` response:**
+
+- Read the command doc
+  (`node_modules/@aws-sdk/client-*/dist-types/commands/<Op>Command.d.ts`), not
+  just the model in `models/models_*.d.ts`. Types prove SHAPE; only the command
+  doc (or a live call against a populated account) proves POPULATION.
+- Prefer a per-candidate `Get*` when the list form is documented as a subset.
+  The extra call is the correct cost.
+- A live probe that comes back empty because the account has no such resource is
+  **inconclusive**, not confirmation.
+- Ask of any test: "would this still pass if the API returned nothing for this
+  field?" If yes, it pins your assumption, not the behavior.
+
 ## Adding a New SDK Provider
 
 1. Create new file in `src/provisioning/providers/`

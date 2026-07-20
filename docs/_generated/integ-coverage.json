@@ -2989,13 +2989,17 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "iam-managed-policy",
-        "import-attributes"
+        "import-attributes",
+        "import-auto-mode"
       ],
       "signals": {
         "iam-managed-policy": [
           "literal"
         ],
         "import-attributes": [
+          "literal"
+        ],
+        "import-auto-mode": [
           "literal"
         ]
       }

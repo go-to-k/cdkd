@@ -911,3 +911,55 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
     rl.close();
   }
 }
+
+/**
+ * Flat `logicalId -> physicalId` map for ONE CloudFormation stack, or `null`
+ * when no stack of that name exists.
+ *
+ * This is the non-recursive, non-throwing sibling of
+ * {@link getCloudFormationResourceTree}, used by `cdkd import`'s auto mode as
+ * a best-effort lookup (issue #1128). The distinction matters:
+ *
+ *   - the tree walk is for `--migrate-from-cloudformation`, where the stack is
+ *     known to exist and nested children must be walked so each child's state
+ *     can be written and the whole tree retired;
+ *   - this one runs speculatively on every auto-mode import, so a missing
+ *     stack is the NORMAL case (a cdkd-native stack has no CFn counterpart)
+ *     and must return `null` rather than abort the import.
+ *
+ * Only a genuine "stack does not exist" is swallowed. Any other failure —
+ * throttling, AccessDenied, a malformed name — is rethrown, because silently
+ * treating those as "no CFn stack" would degrade into the exact silent
+ * not-found this lookup exists to fix.
+ */
+export async function tryGetCloudFormationResourceMap(
+  stackName: string,
+  cfnClient: CloudFormationClient
+): Promise<Map<string, string> | null> {
+  let resp;
+  try {
+    resp = await cfnClient.send(new DescribeStackResourcesCommand({ StackName: stackName }));
+  } catch (err) {
+    if (isStackNotFoundError(err)) return null;
+    throw err;
+  }
+
+  const resources = new Map<string, string>();
+  for (const r of resp.StackResources ?? []) {
+    if (!r.LogicalResourceId || !r.PhysicalResourceId) continue;
+    resources.set(r.LogicalResourceId, r.PhysicalResourceId);
+  }
+  return resources;
+}
+
+/**
+ * CloudFormation reports an unknown stack as a `ValidationError` whose message
+ * carries "does not exist" — there is no dedicated exception type to catch.
+ * Matching the message is therefore required, but it is kept narrow so an
+ * unrelated ValidationError (a malformed stack name, say) still surfaces.
+ */
+export function isStackNotFoundError(err: unknown): boolean {
+  const name = (err as { name?: string } | undefined)?.name;
+  const message = (err as { message?: string } | undefined)?.message ?? '';
+  return name === 'ValidationError' && /does not exist/i.test(message);
+}
