@@ -1,3 +1,10 @@
+## [0.257.2](https://github.com/go-to-k/cdkd/compare/v0.257.1...v0.257.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* **provisioning:** lift per-type CC operation-timeout floor for slow CREATE/DELETE ([#1135](https://github.com/go-to-k/cdkd/issues/1135)) ([469a2ab](https://github.com/go-to-k/cdkd/commit/469a2ab66fca022adaab125ecd1dd821bdf160e4))
+
 ## [0.257.1](https://github.com/go-to-k/cdkd/compare/v0.257.0...v0.257.1) (2026-07-20)
 
 
