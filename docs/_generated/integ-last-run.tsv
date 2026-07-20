@@ -9,7 +9,6 @@ api-cognito	2026-06-21T11:00:28Z	PASS	66	standard	sweep-4..8 staleness re-run (l
 appconfig	2026-06-21T08:22:45Z	PASS	61	verify.sh	AppConfig compound-id Ref fix: chain creates, UPDATE v2, destroy clean
 appsync	2026-06-21T11:00:28Z	PASS	25	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 aws-custom-resource	2026-06-21T03:52:27Z	PASS		verify.sh	Custom::AWS onCreate/onUpdate(v1->v2 in-place)/onDelete all fired; clean destroy 0 orphan
-basic	2026-06-21T11:00:28Z	PASS	82	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 batch	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bedrock-agentcore	2026-06-21T11:00:28Z	PASS	33	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bench-ccapi	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -248,3 +247,4 @@ lambda	2026-07-20T03:12:02Z	PASS	170	verify.sh	broad refresh for #1106 resolver 
 getatt-fallback-guard	2026-07-20T03:13:10Z	PASS	60	verify.sh	new error-path fixture: guard hard-fails BogusArn fallback live; rollback + destroy clean
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
 local-invoke	2026-07-20T03:08:51Z	PASS	120	verify.sh	integ-local refresh for pattern-2 sweep (local-start-alb-from-state probe change); docker sweep clean
+basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildProgram entry-point refactor (#1097)

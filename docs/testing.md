@@ -487,6 +487,43 @@ and refuse to report PASS on any other failure. Notes:
 the whole fixture tree (issue #1097), including a bash-level behavioral test of
 the helpers against a stubbed `aws` (success, not-found, throttle).
 
+### Fixture convention: `verify.sh` CLI flags
+
+Every flag a fixture passes must be declared on the **subcommand it targets**.
+The originating case: a fixture passed `--region` to `cdkd import`, which died
+with `error: unknown option '--region'` — so the import round-trip that fixture
+exists to exercise had never executed once. `--region` is declared in
+`src/cli/options.ts` and accepted by roughly ten sibling commands (`deploy`,
+`destroy`, `diff`, `drift`, `export`, `events`, `list`, `synth`, `orphan`, and
+every `state` subcommand); `import` is the only one that never attaches it, so
+the flag looked correct by analogy with its neighbours.
+
+Two traps when auditing this by hand:
+
+- **Hidden options do not appear in `--help`**, so help text alone is not
+  decisive — the option set has to come from the command tree itself.
+- **`--region` is not a no-op** on the commands that accept it. It is the
+  highest-precedence region source (see [cli-reference.md](cli-reference.md)),
+  so "cleaning up" deprecated `--region` flags would silently change region
+  resolution.
+
+`tests/unit/scripts/integ-cli-flags.test.ts` enforces this across the fixture
+tree. It reads the real Commander tree through `buildProgram()`
+(`src/cli/program.ts`) — not `--help`, and not `src/cli/options.ts`, which is a
+flat global list with no command attachment and therefore cannot express this
+class of bug at all. A flag counts as accepted when the target command **or any
+ancestor** declares it, matching Commander's own lookup (`cdkd events prune
+--state-bucket` is valid because `events` declares it).
+
+The check also asserts coverage floors — total invocations parsed, flags seen,
+distinct subcommands reached, plus at least one invocation of each supported
+call shape — so a parser regression that stops matching fails loudly rather than
+passing vacuously. That is not hypothetical: two separate iterations of this
+lint were green while silently skipping most of the tree (first every
+env-prefixed `CDKD_TEST_UPDATE=true ...` deploy, then every
+`node "${LOCAL_DIST}" ...` call site — 135 of 195 fixtures). Current coverage:
+195 fixtures, ~830 invocations, ~2,160 flags, 25 command paths.
+
 ## 3. Deploy Using cdkd
 
 ```bash
