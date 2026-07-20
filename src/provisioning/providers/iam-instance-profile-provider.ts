@@ -359,9 +359,11 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.InstanceProfileName` → verify
    *     via `GetInstanceProfile`.
-   *  2. `ListInstanceProfiles` paginator + match `aws:cdk:path` against the
-   *     `InstanceProfile.Tags` array returned inline (no separate
-   *     `ListInstanceProfileTags` call needed).
+   *  2. `ListInstanceProfiles` paginator + a per-candidate `GetInstanceProfile`
+   *     to read the tags, matched against `aws:cdk:path`. The list API does
+   *     NOT return tags (AWS documents this on the command) even though the
+   *     `InstanceProfile` type declares `Tags?`, so reading them off the
+   *     summary typechecks and never matches.
    *
    * IAM is global; this walks every instance profile in the account once.
    */
