@@ -1226,7 +1226,7 @@ export class IntrinsicFunctionResolver {
   private async constructAttribute(
     resource: ResourceState,
     attributeName: string,
-    _context: ResolverContext
+    context: ResolverContext
   ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
     const accountInfo = await getAccountInfo(this.resolverRegion);
@@ -1840,7 +1840,33 @@ export class IntrinsicFunctionResolver {
       return physicalId;
     }
 
-    // Default: return physical ID
+    // Default: fall back to the physical ID, but hard-fail first when the
+    // fallback is knowably WRONG (issue #1106). An attribute name ending in
+    // `Arn` whose fallback value is not ARN-shaped (or ending in `Url` whose
+    // fallback is not an http(s) URL) cannot be what CloudFormation would
+    // return; the #1103 incident shipped four resource NAMES into stack
+    // Outputs where ARNs were requested, with a green deploy. A physicalId
+    // that already IS an ARN / URL passes the shape check and remains a
+    // valid fallback. `Alias` / `Endpoint` and every other suffix keep the
+    // warn-and-return behavior: an alias or endpoint is shape-
+    // indistinguishable from a plain name, so a hard-fail there would risk
+    // failing correct deploys (false positives are unacceptable).
+    const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
+    const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
+    if (expectsArnShape || expectsUrlShape) {
+      const logicalId =
+        Object.entries(context.resources).find(([, r]) => r === resource)?.[0] ?? '<unknown>';
+      const expectedShape = expectsArnShape ? 'an ARN (arn:...)' : 'a URL (http(s)://...)';
+      throw new Error(
+        `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
+          `attributes are not enriched for this resource type, and the physical ID ` +
+          `fallback "${physicalId}" is not ${expectedShape}. CloudFormation would return ` +
+          `a different value here, so falling back to the physical ID would silently ` +
+          `produce a wrong value (e.g. in stack Outputs). Avoid this Fn::GetAtt, or ` +
+          `file an issue at https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
+          `${resourceType}.${attributeName}.`
+      );
+    }
     this.logger.warn(
       `Unknown attribute ${attributeName} for resource type ${resourceType}, returning physical ID`
     );
