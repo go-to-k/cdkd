@@ -289,5 +289,5 @@ cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-b
 lambda	2026-07-20T03:12:02Z	PASS	170	verify.sh	broad refresh for #1106 resolver guard; destroy 9/9, 0 orphans
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
 local-invoke	2026-07-20T03:08:51Z	PASS	120	verify.sh	integ-local refresh for pattern-2 sweep (local-start-alb-from-state probe change); docker sweep clean
-getatt-fallback-guard	2026-07-20T05:11:59Z	PASS	120	verify.sh	3-phase: per-type Arn hard-fail + --strict-getatt promotion + default summary line (#1111); 0 orphans
 export	2026-07-20T05:16:59Z	PASS	220	verify.sh	broad refresh for #1111 resolver/engine/deploy changes; export round-trip + CFn cleanup clean
+getatt-fallback-guard	2026-07-20T05:59:44Z	PASS	300	verify.sh	4-phase incl. strict-output state-persistence guarantee (#1111 blocker fix); 0 orphans
