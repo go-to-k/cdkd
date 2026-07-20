@@ -25,6 +25,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 // inputs (resource properties) pass through unchanged.
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
+    resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => {
       if (props && typeof props === 'object' && 'Fn::Sub' in (props as object)) {
         return Promise.resolve('ResolvedSubPolicyName');

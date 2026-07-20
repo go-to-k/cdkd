@@ -26,6 +26,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
+    resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
     resolveParameters: vi.fn().mockReturnValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),

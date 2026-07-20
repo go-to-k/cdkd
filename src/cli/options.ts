@@ -773,6 +773,24 @@ export const useCdkBootstrapAssetsOption = new Option(
     "legacy-mode 'cdk gc' notice."
 ).default(false);
 
+/**
+ * Issue #1111 — `--strict-getatt` (deploy only). By default, an
+ * `Fn::GetAtt` for an attribute cdkd cannot construct falls back to the
+ * resource's physical ID with a warning (hard-failing only on knowably-wrong
+ * shapes: `*Arn` attributes with a non-ARN fallback, `*Url` with a
+ * non-http(s) fallback — issue #1106). This flag promotes EVERY such
+ * fallback to a hard error, and additionally fails the deploy when a stack
+ * Output cannot be resolved (default: warn and store no value).
+ */
+export const strictGetattOption = new Option(
+  '--strict-getatt',
+  'Fail the deploy on ANY Fn::GetAtt that falls back to the physical ID because cdkd cannot ' +
+    'construct the attribute (default: warn and use the physical ID, hard-failing only when ' +
+    'the fallback is knowably wrong — an *Arn attribute with a non-ARN value or a *Url ' +
+    'attribute with a non-http(s) value). Also fails the deploy when a stack Output cannot ' +
+    'be resolved (default: warn and store no value).'
+).default(false);
+
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)
@@ -848,6 +866,7 @@ export const deployOptions = [
   forceStatefulRecreationOption,
   replaceOption,
   useCdkBootstrapAssetsOption,
+  strictGetattOption,
   ...resourceTimeoutOptions,
 ];
 

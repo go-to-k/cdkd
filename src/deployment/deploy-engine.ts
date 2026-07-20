@@ -266,6 +266,17 @@ export interface DeployEngineOptions {
    * error naming the resource + the data-loss reason.
    */
   forceStatefulRecreation?: boolean;
+
+  /**
+   * `--strict-getatt` (issue #1111) — promote every unknown-attribute
+   * `Fn::GetAtt` physicalId fallback (any suffix, not just the always-fatal
+   * `*Arn` / `*Url` shape mismatches) to a hard error, and fail the deploy
+   * when a stack Output cannot be resolved (default: warn and store no
+   * value). Threaded into the engine's `IntrinsicFunctionResolver` at
+   * construction and consulted by `resolveOutputs`. Nested-stack child
+   * engines inherit it via the options spread in `NestedStackProvider`.
+   */
+  strictGetAtt?: boolean;
 }
 
 /**
@@ -290,6 +301,20 @@ export interface DeployResult {
    * deploy and on the no-change path; undefined under --dry-run.
    */
   outputs?: Record<string, unknown>;
+  /**
+   * Number of `Fn::GetAtt` resolutions that fell back to the physical ID
+   * (the resolver's warn path) during this deploy run (issue #1111 item 3).
+   * The deploy CLI prints a one-line summary when > 0 so the per-resolution
+   * warns don't scroll away on green deploys. Each distinct fallback site
+   * counts once per run (on the change path the counter is reset after the
+   * diff phase so a site is not counted at diff time AND provisioning
+   * time); see `IntrinsicFunctionResolver.getPhysicalIdFallbackCount` for
+   * the full per-path semantics. Scoped to THIS engine's resolver: a
+   * nested-stack CHILD engine's fallbacks appear in the child's own count
+   * and are NOT aggregated into the parent stack's summary. Always 0 under
+   * `--strict-getatt` (every fallback is a hard error there).
+   */
+  attributeFallbackCount: number;
 }
 
 /**
@@ -485,7 +510,9 @@ export class DeployEngine {
     this.options = options;
     this.stackRegion = stackRegion;
     this.exportIndexStore = exportIndexStore;
-    this.resolver = new IntrinsicFunctionResolver(stackRegion);
+    this.resolver = new IntrinsicFunctionResolver(stackRegion, {
+      strictGetAtt: options.strictGetAtt ?? false,
+    });
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
     this.options.lockTimeout = options.lockTimeout ?? 5 * 60 * 1000; // 5 minutes
@@ -511,6 +538,10 @@ export class DeployEngine {
     // `state.outputReads`.
     this.recordedImports = [];
     this.recordedOutputReads = [];
+    // Per-deploy-run counter: the resolver instance is engine-scoped and an
+    // engine can be reused across deploys, so reset here (not in the
+    // resolver constructor) to keep the deploy-summary count per run.
+    this.resolver.resetPhysicalIdFallbackCount();
     // Scope `stackName` to this deploy's async chain so concurrent
     // deploys (--stack-concurrency > 1) don't see each other's value.
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
@@ -1134,6 +1165,7 @@ export class DeployEngine {
           unchanged: Object.keys(currentState.resources).length,
           durationMs: Date.now() - startTime,
           outputs: this.buildDisplayOutputs(template, persistedOutputs),
+          attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
         };
       }
 
@@ -1155,8 +1187,22 @@ export class DeployEngine {
           deleted: deleteChanges.length,
           unchanged: this.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
           durationMs: Date.now() - startTime,
+          attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
         };
       }
+
+      // Issue #1111 item 3 (review fix): the diff phase above resolves
+      // intrinsics through the SAME counted resolver, so a warn-path
+      // fallback on a to-be-updated resource would otherwise count once
+      // during diff and AGAIN during provisioning (~2x distinct sites in
+      // the summary). Reset here so the change-path summary counts each
+      // fallback site once (provisioning + final output resolution). The
+      // no-change / dry-run early returns above keep the deploy()-start
+      // reset: their only resolutions ARE the diff phase (+ the no-change
+      // path's output resolution), so nothing double-counts there. Full
+      // semantics in the counter's JSDoc
+      // ({@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
+      this.resolver.resetPhysicalIdFallbackCount();
 
       // Progress counter for tracking overall deployment progress
       const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
@@ -1220,6 +1266,7 @@ export class DeployEngine {
         unchanged: unchangedCount,
         durationMs,
         outputs: this.buildDisplayOutputs(template, newState.outputs ?? {}),
+        attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     } finally {
       // Stop live renderer (clears any remaining in-flight task display)
@@ -1625,14 +1672,35 @@ export class DeployEngine {
       throw error;
     }
 
-    // Resolve outputs
-    const outputs = await this.resolveOutputs(
-      template,
-      newResources,
-      stackName,
-      parameterValues,
-      conditions
-    );
+    // Resolve outputs. Under --strict-getatt an unresolvable Output makes
+    // resolveOutputs THROW (instead of warn-and-skip). By this point EVERY
+    // resource operation already succeeded in AWS, and the throw would
+    // propagate through doDeploy's catch-less try — skipping the final
+    // saveState. On a FIRST deploy `currentEtag` is undefined so the
+    // incremental per-resource saves were no-ops too: rethrowing without a
+    // save would leave every created resource invisible to cdkd (no state,
+    // no rollback; a re-run collides with "already exists"). Persist the
+    // provisioning result FIRST, then rethrow so the deploy still fails
+    // (review blocker on issue #1111 item 2).
+    let outputs: Record<string, unknown>;
+    try {
+      outputs = await this.resolveOutputs(
+        template,
+        newResources,
+        stackName,
+        parameterValues,
+        conditions
+      );
+    } catch (outputError) {
+      await this.persistStateAfterOutputFailure(
+        stackName,
+        currentState,
+        newResources,
+        currentEtag,
+        pendingMigration
+      );
+      throw outputError;
+    }
 
     return {
       state: {
@@ -1649,6 +1717,84 @@ export class DeployEngine {
       },
       actualCounts,
     };
+  }
+
+  /**
+   * Persist state after provisioning fully succeeded but output resolution
+   * threw (only reachable under `--strict-getatt`, whose promotion fires
+   * AFTER the rollback catch block). The persisted shape mirrors the
+   * success-path state EXCEPT for outputs:
+   *
+   * - `resources`: this run's provisioning result (`newResources`) — every
+   *   create/update/delete landed in AWS, so state must record it.
+   * - `imports` / `outputReads`: this run's `recordedImports` /
+   *   `recordedOutputReads` (the provisioning that produced them succeeded;
+   *   dropping them would desync the strong-reference records from AWS —
+   *   matters on the update-deploy path where the pre-deploy snapshot may
+   *   be stale).
+   * - `outputs`: the PREVIOUSLY persisted map — resolveOutputs threw before
+   *   producing a new one, mirroring what a resource-failure persist keeps.
+   *   The exports index is deliberately NOT updated (it stays consistent
+   *   with the old outputs that remain in state).
+   *
+   * ETag handling mirrors the post-rollback save: expected-ETag first (or
+   * unconditional when `pendingMigration` — same as the per-resource save),
+   * then a fresh-ETag retry, then warn. Best-effort: the deploy error being
+   * rethrown is the primary signal; a failed save only warns.
+   */
+  private async persistStateAfterOutputFailure(
+    stackName: string,
+    currentState: StackState,
+    newResources: Record<string, ResourceState>,
+    currentEtag: string | undefined,
+    pendingMigration: boolean
+  ): Promise<void> {
+    const buildState = (): StackState => ({
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: this.stackRegion,
+      stackName: currentState.stackName,
+      resources: newResources,
+      outputs: currentState.outputs,
+      ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
+      ...(this.recordedOutputReads.length > 0 && {
+        outputReads: [...this.recordedOutputReads],
+      }),
+      lastModified: Date.now(),
+    });
+    try {
+      const expectedEtag = pendingMigration ? undefined : currentEtag;
+      await this.stateBackend.saveState(
+        stackName,
+        this.stackRegion,
+        this.withParentInfo(buildState()),
+        {
+          ...(expectedEtag !== undefined && { expectedEtag }),
+          migrateLegacy: pendingMigration,
+        }
+      );
+      this.logger.debug('State saved after output resolution failure');
+    } catch (saveError) {
+      this.logger.debug(
+        `Retrying state save after output resolution failure (ETag mismatch): ${saveError instanceof Error ? saveError.message : String(saveError)}`
+      );
+      try {
+        const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
+        const freshEtag = freshState?.etag;
+        await this.stateBackend.saveState(
+          stackName,
+          this.stackRegion,
+          this.withParentInfo(buildState()),
+          {
+            ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
+          }
+        );
+        this.logger.debug('State saved after output resolution failure (retry succeeded)');
+      } catch (retryError) {
+        this.logger.warn(
+          `Failed to save state after output resolution failure: ${retryError instanceof Error ? retryError.message : String(retryError)} — resources were provisioned but not recorded; run deploy again to reconcile.`
+        );
+      }
+    }
   }
 
   /**
@@ -3256,6 +3402,17 @@ export class DeployEngine {
           }
         }
       } catch (error) {
+        // Issue #1111 item 2: under --strict-getatt an unresolvable Output
+        // fails the deploy instead of silently publishing nothing (which
+        // breaks downstream Fn::ImportValue consumers with "export not
+        // found" long after this deploy exits 0).
+        if (this.options.strictGetAtt) {
+          throw new Error(
+            `Failed to resolve output ${outputKey}: ${error instanceof Error ? error.message : String(error)} ` +
+              `(--strict-getatt promotes output resolution failures to deploy errors; ` +
+              `drop the flag to warn and skip the output instead)`
+          );
+        }
         this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
         outputs[outputKey] = undefined;
       }

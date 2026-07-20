@@ -97,7 +97,7 @@ eventbridge-input-transformer	2026-06-21T07:34:45Z	PASS	53	verify.sh	InputTransf
 eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
 eventsourcemapping-race	2026-06-21T18:33:45Z	PASS	88	verify.sh	first run (never-run); fresh-source/role ESM create + message processing + no-orphan-ESM destroy
-export	2026-07-19T19:12:00Z	PASS	302	verify.sh	rc ok, CFn stack deleted, orph clean
+export	2026-07-20T05:16:59Z	PASS	220	verify.sh	broad refresh for #1111 resolver/engine/deploy changes; export round-trip + CFn cleanup clean
 export-nested-stack	2026-06-21T11:00:28Z	PASS	326	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 fifo-sqs-event-source	2026-06-21T07:42:41Z	PASS	83	verify.sh	FIFO ESM delivers + both MessageGroupIds (g1,g2) preserved; spaced poll; destroy clean 0 orphan
 fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans
@@ -106,7 +106,7 @@ fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; 
 fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
 full-stack-demo	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run after review hardening (own-marker guard); clean
-getatt-fallback-guard	2026-07-20T03:13:10Z	PASS	60	verify.sh	new error-path fixture: guard hard-fails BogusArn fallback live; rollback + destroy clean
+getatt-fallback-guard	2026-07-20T05:59:44Z	PASS	300	verify.sh	4-phase incl. strict-output state-persistence guarantee (#1111 blocker fix); 0 orphans
 getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (never-run); cross-region Fn::GetStackOutput (us-west-2 producer -> us-east-1 consumer); both regions clean
 glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
 glue-update-hardening	2026-07-02T18:23:15Z	PASS	68	verify.sh	0703 staleness sweep (pre-TTL refresh); clean

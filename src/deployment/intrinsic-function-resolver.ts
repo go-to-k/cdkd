@@ -673,12 +673,57 @@ export interface ParameterDefinition {
   NoEcho?: boolean;
 }
 
+/**
+ * Behavior knobs for {@link IntrinsicFunctionResolver}.
+ */
+export interface IntrinsicFunctionResolverOptions {
+  /**
+   * `--strict-getatt` (issue #1111): when true, EVERY unknown-attribute
+   * physicalId fallback in `constructAttribute` (any suffix, not just the
+   * always-fatal `*Arn` / `*Url` shape mismatches) becomes a hard error
+   * instead of a warn-and-return. Default false (warn-and-return, counted
+   * via {@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
+   */
+  strictGetAtt?: boolean;
+}
+
 export class IntrinsicFunctionResolver {
   private logger = getLogger().child('IntrinsicFunctionResolver');
   private readonly resolverRegion: string;
+  private readonly strictGetAtt: boolean;
+  /**
+   * Number of unknown-attribute resolutions that fell back to the physical
+   * ID (the warn path) since construction / the last
+   * {@link resetPhysicalIdFallbackCount}. Counting semantics (issue #1111
+   * item 3): the deploy engine resets this at the start of each `deploy()`
+   * run AND again right before provisioning on the change path — the diff
+   * phase resolves through this same counted resolver, so without the
+   * second reset a fallback site on a to-be-updated resource would count
+   * once during diff and again during provisioning (~2x distinct sites in
+   * the summary). Each distinct fallback site therefore counts once per
+   * run: the surfaced summary covers provisioning + output resolution on
+   * the change path, diff + output resolution on the no-change path, and
+   * diff only under --dry-run. Instance-scoped, so parallel stacks (each
+   * with their own engine + resolver) never share a counter; for the same
+   * reason a nested-stack CHILD engine's fallbacks are counted by the
+   * child's own resolver and are NOT aggregated into the parent stack's
+   * deploy summary.
+   */
+  private physicalIdFallbackCount = 0;
 
-  constructor(region?: string) {
+  constructor(region?: string, options?: IntrinsicFunctionResolverOptions) {
     this.resolverRegion = region || process.env['AWS_REGION'] || 'us-east-1';
+    this.strictGetAtt = options?.strictGetAtt ?? false;
+  }
+
+  /** Unknown-attribute physicalId fallbacks recorded since the last reset. */
+  getPhysicalIdFallbackCount(): number {
+    return this.physicalIdFallbackCount;
+  }
+
+  /** Reset the per-run fallback counter (called at the start of each deploy). */
+  resetPhysicalIdFallbackCount(): void {
+    this.physicalIdFallbackCount = 0;
   }
 
   /**
@@ -1242,7 +1287,7 @@ export class IntrinsicFunctionResolver {
           // Stream ARN would need to be fetched from API
           return undefined;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1258,7 +1303,7 @@ export class IntrinsicFunctionResolver {
         case 'WebsiteURL':
           return `http://${physicalId}.s3-website-${region}.amazonaws.com`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1271,7 +1316,7 @@ export class IntrinsicFunctionResolver {
           // Role ID would need to be fetched from API
           return undefined;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1330,7 +1375,7 @@ export class IntrinsicFunctionResolver {
         case 'DefaultSecurityGroup':
           return resource.attributes?.['DefaultSecurityGroup'] || physicalId;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1343,7 +1388,7 @@ export class IntrinsicFunctionResolver {
           // Policy ID would need to be fetched from API
           return undefined;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1353,7 +1398,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:iam::${accountId}:user/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1363,7 +1408,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:iam::${accountId}:group/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1373,7 +1418,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:iam::${accountId}:instance-profile/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1385,7 +1430,7 @@ export class IntrinsicFunctionResolver {
         case 'KeyId':
           return physicalId;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1394,8 +1439,12 @@ export class IntrinsicFunctionResolver {
       switch (attributeName) {
         case 'Arn':
           return `arn:${partition}:cognito-idp:${region}:${accountId}:userpool/${physicalId}`;
-        default:
+        case 'UserPoolId':
+          // The physical id IS the user pool id — a known-correct fallback,
+          // so it must not route through the unknown-attribute guard.
           return physicalId;
+        default:
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1405,7 +1454,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:kinesis:${region}:${accountId}:stream/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1430,7 +1479,7 @@ export class IntrinsicFunctionResolver {
             : `arn:${partition}:events:${region}:${accountId}:rule/${physicalId}`;
         }
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1442,7 +1491,7 @@ export class IntrinsicFunctionResolver {
         case 'Name':
           return physicalId;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1454,7 +1503,7 @@ export class IntrinsicFunctionResolver {
         case 'FileSystemId':
           return physicalId;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1464,7 +1513,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:firehose:${region}:${accountId}:deliverystream/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1474,7 +1523,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:codebuild:${region}:${accountId}:project/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1489,7 +1538,7 @@ export class IntrinsicFunctionResolver {
           }
           return `arn:${partition}:cloudtrail:${region}:${accountId}:trail/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1501,7 +1550,7 @@ export class IntrinsicFunctionResolver {
         case 'ApiId':
           return physicalId;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1536,7 +1585,7 @@ export class IntrinsicFunctionResolver {
           }
         }
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1548,7 +1597,7 @@ export class IntrinsicFunctionResolver {
         case 'Id':
           return physicalId;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1558,7 +1607,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:cloudwatch:${region}:${accountId}:alarm:${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1572,7 +1621,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:cloudwatch:${region}:${accountId}:alarm:${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1587,7 +1636,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:rds:${region}:${accountId}:db:${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1602,7 +1651,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:rds:${region}:${accountId}:cluster:${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1612,7 +1661,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:s3express:${region}:${accountId}:bucket/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1622,7 +1671,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:lambda:${region}:${accountId}:function:${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1644,7 +1693,7 @@ export class IntrinsicFunctionResolver {
         case 'QueueName':
           return queueName;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1653,8 +1702,13 @@ export class IntrinsicFunctionResolver {
       switch (attributeName) {
         case 'TopicArn':
           return `arn:${partition}:sns:${region}:${accountId}:${physicalId}`;
-        default:
+        case 'TopicName':
+          // The physical id IS the topic name (the TopicArn case above is
+          // constructed from it) — a known-correct fallback, so it must
+          // not route through the unknown-attribute guard.
           return physicalId;
+        default:
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1664,7 +1718,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:logs:${region}:${accountId}:log-group:${physicalId}:*`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1676,7 +1730,7 @@ export class IntrinsicFunctionResolver {
         case 'RepositoryUri':
           return `${accountId}.dkr.ecr.${region}.amazonaws.com/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1686,7 +1740,7 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:ecs:${region}:${accountId}:cluster/${physicalId}`;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1715,8 +1769,30 @@ export class IntrinsicFunctionResolver {
           }
           return physicalId;
         }
+        case 'ServiceArn': {
+          // Documented GetAtt whose correct value IS the physicalId: the SDK
+          // provider stores the service ARN as the physical ID, so return it
+          // verbatim instead of routing through the guard — on imported /
+          // legacy state without cached attributes, --strict-getatt would
+          // otherwise reject a CORRECT fallback (review of issue #1111).
+          // Compound `<a>|<b>` ids (import / readCurrentState shapes) are
+          // disambiguated like `Name` above: the `:service/`-containing side
+          // is the service ARN.
+          const pipeIdx = physicalId.indexOf('|');
+          if (pipeIdx < 0) return physicalId;
+          const left = physicalId.substring(0, pipeIdx);
+          if (left.includes(':service/')) return left; // <serviceArn>|<clusterName>
+          // `<clusterArn>|<serviceName>`: the (new-format, long-ARN) service
+          // ARN is `arn:...:service/<clusterName>/<serviceName>`, derivable
+          // from the cluster ARN side.
+          const clusterIdx = left.indexOf(':cluster/');
+          if (clusterIdx < 0) return physicalId;
+          const clusterName = left.substring(clusterIdx + ':cluster/'.length);
+          const serviceName = physicalId.substring(pipeIdx + 1);
+          return `${left.substring(0, clusterIdx)}:service/${clusterName}/${serviceName}`;
+        }
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1728,7 +1804,7 @@ export class IntrinsicFunctionResolver {
         case 'VpcId':
           return undefined; // Would need API call
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1738,7 +1814,7 @@ export class IntrinsicFunctionResolver {
         case 'SubnetId':
           return physicalId;
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1751,6 +1827,10 @@ export class IntrinsicFunctionResolver {
     // `i-...` with `not a valid IPv4 address`).
     if (resourceType === 'AWS::EC2::Instance') {
       switch (attributeName) {
+        case 'InstanceId':
+          // The physical id IS the instance id — a known-correct fallback,
+          // so it must not route through the unknown-attribute guard.
+          return physicalId;
         case 'PrivateIp':
         case 'PublicIp':
         case 'PrivateDnsName':
@@ -1800,7 +1880,7 @@ export class IntrinsicFunctionResolver {
           return physicalId;
         }
         default:
-          return physicalId;
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
     }
 
@@ -1838,20 +1918,54 @@ export class IntrinsicFunctionResolver {
         // physicalId fallback which AWS rejects.
         return attributeName === 'LatestVersionNumber' ? '$Latest' : '$Default';
       }
-      return physicalId;
+      if (attributeName === 'LaunchTemplateId') {
+        // The physical id IS the launch template id (lt-...) — a
+        // known-correct fallback, so it must not route through the
+        // unknown-attribute guard.
+        return physicalId;
+      }
+      return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
     }
 
-    // Default: fall back to the physical ID, but hard-fail first when the
-    // fallback is knowably WRONG (issue #1106). An attribute name ending in
-    // `Arn` whose fallback value is not ARN-shaped (or ending in `Url` whose
-    // fallback is not an http(s) URL) cannot be what CloudFormation would
-    // return; the #1103 incident shipped four resource NAMES into stack
-    // Outputs where ARNs were requested, with a green deploy. A physicalId
-    // that already IS an ARN / URL passes the shape check and remains a
-    // valid fallback. `Alias` / `Endpoint` and every other suffix keep the
-    // warn-and-return behavior: an alias or endpoint is shape-
-    // indistinguishable from a plain name, so a hard-fail there would risk
-    // failing correct deploys (false positives are unacceptable).
+    // Default: fall back to the physical ID via the shared shape guard
+    // (issue #1106 / #1111 — the same rules apply to every per-type
+    // `default:` branch above).
+    return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
+  }
+
+  /**
+   * Shared unknown-attribute physicalId fallback (issues #1106 / #1111).
+   *
+   * Applied by BOTH the final unknown-type fallback of
+   * {@link constructAttribute} and every per-type handler's
+   * `default:`-for-an-unknown-attribute branch:
+   *
+   * - An attribute name ending in `Arn` whose fallback value is not
+   *   ARN-shaped (or ending in `Url` whose fallback is not an http(s) URL)
+   *   cannot be what CloudFormation would return — hard-fail. The #1103
+   *   incident shipped four resource NAMES into stack Outputs where ARNs
+   *   were requested, with a green deploy. A physicalId that already IS an
+   *   ARN / URL passes the shape check and remains a valid fallback.
+   * - Under `--strict-getatt`, EVERY unknown-attribute fallback (any
+   *   suffix) is a hard error.
+   * - Otherwise: `Alias` / `Endpoint` and every other suffix keep the
+   *   warn-and-return behavior (an alias or endpoint is
+   *   shape-indistinguishable from a plain name, so a hard-fail there
+   *   would risk failing correct deploys — false positives are
+   *   unacceptable). Each warn-and-return increments the per-run fallback
+   *   counter surfaced in the deploy summary.
+   *
+   * A `return physicalId` that is the CORRECT value for a KNOWN attribute
+   * (e.g. `AWS::KMS::Key.KeyId`, `AWS::SNS::Topic.TopicName`) must NOT
+   * route through this helper — those are explicit `case`s in the
+   * per-type handlers.
+   */
+  private guardedPhysicalIdFallback(
+    logicalId: string,
+    attributeName: string,
+    resourceType: string,
+    physicalId: string
+  ): string {
     const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
     const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
     if (expectsArnShape || expectsUrlShape) {
@@ -1866,6 +1980,18 @@ export class IntrinsicFunctionResolver {
           `${resourceType}.${attributeName}.`
       );
     }
+    if (this.strictGetAtt) {
+      throw new Error(
+        `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
+          `attributes are not enriched for this resource type, and --strict-getatt ` +
+          `rejects the physical ID fallback "${physicalId}" (which may not be the value ` +
+          `CloudFormation would return). Drop --strict-getatt to fall back with a ` +
+          `warning, avoid this Fn::GetAtt, or file an issue at ` +
+          `https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
+          `${resourceType}.${attributeName}.`
+      );
+    }
+    this.physicalIdFallbackCount++;
     this.logger.warn(
       `Unknown attribute ${attributeName} for resource type ${resourceType}, returning physical ID`
     );

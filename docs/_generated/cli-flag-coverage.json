@@ -32,6 +32,7 @@
     "--stack-concurrency",
     "--state-bucket",
     "--state-prefix",
+    "--strict-getatt",
     "--use-cdk-bootstrap-assets",
     "--verbose",
     "--yes"
@@ -836,6 +837,12 @@
       "flag": "--state-prefix",
       "integs": [
         "importvalue-chain"
+      ]
+    },
+    {
+      "flag": "--strict-getatt",
+      "integs": [
+        "getatt-fallback-guard"
       ]
     },
     {

@@ -98,6 +98,7 @@ async function deployCommand(
     recreateViaSdkProvider?: string[];
     forceStatefulRecreation?: boolean;
     replace?: boolean;
+    strictGetatt?: boolean;
     useCdkBootstrapAssets?: boolean;
     autoAssetStorage?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
@@ -710,6 +711,7 @@ async function deployCommand(
             recreateViaSdkProviderTargets.size > 0 && { recreateViaSdkProviderTargets }),
           ...(options.replace && { replace: true }),
           ...(options.forceStatefulRecreation && { forceStatefulRecreation: true }),
+          ...(options.strictGetatt && { strictGetAtt: true }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
@@ -776,6 +778,16 @@ async function deployCommand(
         );
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
+
+        // Issue #1111 item 3 — one-line surface for the per-resolution
+        // "Unknown attribute ..., returning physical ID" warns, which
+        // otherwise scroll away on green deploys.
+        if (deployResult.attributeFallbackCount > 0) {
+          logger.warn(
+            `${deployResult.attributeFallbackCount} attribute resolution(s) fell back to the ` +
+              `physical ID (potentially wrong values); re-run with --strict-getatt to fail on these`
+          );
+        }
 
         if (deployResult.outputs && Object.keys(deployResult.outputs).length > 0) {
           logger.info('\nOutputs:');
