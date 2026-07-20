@@ -632,7 +632,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
             ...(marker && { NextToken: marker }),
           })
         );
-        return { items: list.Rules ?? [], nextMarker: list.NextToken };
+        return { items: list.Rules, nextMarker: list.NextToken };
       },
       describe: async (rule) => {
         if (!rule.Arn) return undefined;

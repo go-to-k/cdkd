@@ -665,6 +665,43 @@ describe('CognitoUserPoolProvider', () => {
       expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListUserPoolsCommand');
     });
 
+    // Name-only templates (no CDK path metadata): the synthetic
+    // `cdkd:cognito-user-pool-name:` walk key must still drive the walk, so
+    // the import resolves from the list alone with zero per-candidate reads.
+    it('name-only template (no cdkPath): resolves via the synthetic walk key', async () => {
+      mockSend.mockResolvedValueOnce({
+        UserPools: [
+          { Id: 'us-east-1_aaa111', Name: 'other' },
+          { Id: 'us-east-1_bbb222', Name: 'my-pool' },
+        ],
+      });
+
+      const result = await provider.import(
+        importInput({ cdkPath: undefined, properties: { UserPoolName: 'my-pool' } })
+      );
+
+      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
+      // List-only: no DescribeUserPool / ListTagsForResource per candidate.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListUserPoolsCommand');
+    });
+
+    it('name-only template (no cdkPath): returns null when no pool name matches', async () => {
+      mockSend.mockResolvedValueOnce({
+        UserPools: [
+          { Id: 'us-east-1_aaa111', Name: 'other' },
+          { Id: 'us-east-1_bbb222', Name: 'also-other' },
+        ],
+      });
+
+      const result = await provider.import(
+        importInput({ cdkPath: undefined, properties: { UserPoolName: 'my-pool' } })
+      );
+
+      expect(result).toBeNull();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
     it('matches map-shaped aws:cdk:path tags via the walk (happy path)', async () => {
       mockSend
         .mockResolvedValueOnce({
@@ -701,6 +738,32 @@ describe('CognitoUserPoolProvider', () => {
 
       expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
       expect(mockSend).toHaveBeenCalledTimes(5);
+    });
+
+    it('forwards the NextToken pagination fold to the page-2 list call', async () => {
+      mockSend
+        // Page 1: one non-matching candidate + a continuation token.
+        .mockResolvedValueOnce({
+          UserPools: [{ Id: 'us-east-1_aaa111', Name: 'other' }],
+          NextToken: 'page-2',
+        })
+        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_aaa111', Arn: ARN_A } })
+        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'OtherStack/Other/Resource' } })
+        // Page 2: the match.
+        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'target' }] })
+        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
+        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
+
+      const result = await provider.import(importInput());
+
+      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(6);
+      const page1 = mockSend.mock.calls[0][0];
+      expect(page1.constructor.name).toBe('ListUserPoolsCommand');
+      expect(page1.input.NextToken).toBeUndefined();
+      const page2 = mockSend.mock.calls[3][0];
+      expect(page2.constructor.name).toBe('ListUserPoolsCommand');
+      expect(page2.input.NextToken).toBe('page-2');
     });
 
     it('does not retry a non-throttling error during the walk', async () => {

@@ -396,6 +396,48 @@ describe('WAFv2WebACLProvider', () => {
       expect(listCall.input.Scope).toBe('REGIONAL');
     });
 
+    it('forwards NextMarker AND Scope to the page-2 list call', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const otherArn = 'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/other/zzz';
+
+      mockSend
+        // Page 1: one non-matching candidate + a continuation marker.
+        .mockResolvedValueOnce({
+          WebACLs: [{ Id: 'zzz', Name: 'other', ARN: otherArn }],
+          NextMarker: 'page-2',
+        })
+        .mockResolvedValueOnce({
+          TagInfoForResource: {
+            ResourceARN: otherArn,
+            TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+          },
+        })
+        // Page 2: the match.
+        .mockResolvedValueOnce({
+          WebACLs: [{ Id: TEST_ID, Name: 'my-acl', ARN: TEST_ARN }],
+        })
+        .mockResolvedValueOnce({
+          TagInfoForResource: {
+            ResourceARN: TEST_ARN,
+            TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyWebACL' }],
+          },
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: TEST_ARN, attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      const page1 = mockSend.mock.calls[0][0];
+      expect(page1.constructor.name).toBe('ListWebACLsCommand');
+      expect(page1.input.NextMarker).toBeUndefined();
+      expect(page1.input.Scope).toBe('REGIONAL');
+      const page2 = mockSend.mock.calls[2][0];
+      expect(page2.constructor.name).toBe('ListWebACLsCommand');
+      expect(page2.input.NextMarker).toBe('page-2');
+      // Scope is REQUIRED by ListWebACLs, so it must ride every page.
+      expect(page2.input.Scope).toBe('REGIONAL');
+    });
+
     it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
       mockSend.mockReset(); // drop once-queued leftovers from earlier tests
       const denied = new Error('User is not authorized to perform wafv2:ListTagsForResource');

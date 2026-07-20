@@ -597,6 +597,36 @@ describe('StepFunctionsProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(3);
     });
 
+    it('forwards the nextToken pagination fold to the page-2 list call', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const arn1 = 'arn:aws:states:us-east-1:123456789012:stateMachine:other';
+      const arn2 = 'arn:aws:states:us-east-1:123456789012:stateMachine:target';
+
+      mockSend
+        // Page 1: one non-matching candidate + a continuation token.
+        .mockResolvedValueOnce({
+          stateMachines: [{ stateMachineArn: arn1, name: 'other' }],
+          nextToken: 'page-2',
+        })
+        .mockResolvedValueOnce({ tags: [{ key: 'aws:cdk:path', value: 'OtherStack/Other' }] })
+        // Page 2: the match.
+        .mockResolvedValueOnce({ stateMachines: [{ stateMachineArn: arn2, name: 'target' }] })
+        .mockResolvedValueOnce({
+          tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyStateMachine' }],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: arn2, attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      const page1 = mockSend.mock.calls[0][0];
+      expect(page1.constructor.name).toBe('ListStateMachinesCommand');
+      expect(page1.input.nextToken).toBeUndefined();
+      const page2 = mockSend.mock.calls[2][0];
+      expect(page2.constructor.name).toBe('ListStateMachinesCommand');
+      expect(page2.input.nextToken).toBe('page-2');
+    });
+
     it('does not retry a non-throttling error during the walk', async () => {
       mockSend.mockReset(); // drop once-queued leftovers from earlier tests
       const denied = new Error('User is not authorized to perform states:ListTagsForResource');

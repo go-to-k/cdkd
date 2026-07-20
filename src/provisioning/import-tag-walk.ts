@@ -198,6 +198,8 @@ export async function importTagWalk<TSummary, TDetail>(
   const maxWalkMs = options.retry?.maxWalkMs ?? DEFAULT_MAX_WALK_MS;
   const maxPages = options.retry?.maxPages ?? DEFAULT_MAX_PAGES;
 
+  // Per-call retry.sleep wins over the module-level test hook.
+  const sleep = options.retry?.sleep ?? importTagWalkTestHooks.sleep;
   const retryOpts = {
     maxRetries: options.retry?.maxRetries ?? DEFAULT_MAX_RETRIES,
     initialDelayMs: options.retry?.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS,
@@ -206,9 +208,7 @@ export async function importTagWalk<TSummary, TDetail>(
     logger,
     ...(options.retry?.isInterrupted && { isInterrupted: options.retry.isInterrupted }),
     ...(options.retry?.onInterrupted && { onInterrupted: options.retry.onInterrupted }),
-    ...((options.retry?.sleep ?? importTagWalkTestHooks.sleep) && {
-      sleep: (options.retry?.sleep ?? importTagWalkTestHooks.sleep)!,
-    }),
+    ...(sleep && { sleep }),
   };
 
   const startedAt = Date.now();

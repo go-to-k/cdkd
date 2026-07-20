@@ -464,7 +464,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
         const list = await this.eventBridgeClient.send(
           new ListEventBusesCommand({ ...(marker && { NextToken: marker }) })
         );
-        return { items: list.EventBuses ?? [], nextMarker: list.NextToken };
+        return { items: list.EventBuses, nextMarker: list.NextToken };
       },
       describe: async (bus) => {
         if (!bus.Name || !bus.Arn) return undefined;

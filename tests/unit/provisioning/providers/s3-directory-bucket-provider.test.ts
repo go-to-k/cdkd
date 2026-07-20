@@ -319,6 +319,53 @@ describe('S3DirectoryBucketProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(3);
     });
 
+    it('skips a NoSuchTagSet candidate and continues the walk to the next one', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const untagged = new Error('The TagSet does not exist') as Error & { name: string };
+      untagged.name = 'NoSuchTagSet';
+
+      mockSend
+        .mockResolvedValueOnce({
+          Buckets: [{ Name: 'untagged--az--x-s3' }, { Name: 'mine--az--x-s3' }],
+        })
+        .mockRejectedValueOnce(untagged)
+        .mockResolvedValueOnce({
+          TagSet: [{ Key: 'aws:cdk:path', Value: 'MyStack/DirectoryBucket' }],
+        });
+
+      const result = await provider.import!(makeInput());
+
+      expect(result).toEqual({ physicalId: 'mine--az--x-s3', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('forwards the ContinuationToken pagination fold to the page-2 list call', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      mockSend
+        // Page 1: one non-matching candidate + a continuation token.
+        .mockResolvedValueOnce({
+          Buckets: [{ Name: 'other--az--x-s3' }],
+          ContinuationToken: 'page-2',
+        })
+        .mockResolvedValueOnce({ TagSet: [{ Key: 'foo', Value: 'bar' }] })
+        // Page 2: the match.
+        .mockResolvedValueOnce({ Buckets: [{ Name: 'mine--az--x-s3' }] })
+        .mockResolvedValueOnce({
+          TagSet: [{ Key: 'aws:cdk:path', Value: 'MyStack/DirectoryBucket' }],
+        });
+
+      const result = await provider.import!(makeInput());
+
+      expect(result).toEqual({ physicalId: 'mine--az--x-s3', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      const page1 = mockSend.mock.calls[0][0];
+      expect(page1).toBeInstanceOf(ListDirectoryBucketsCommand);
+      expect(page1.input.ContinuationToken).toBeUndefined();
+      const page2 = mockSend.mock.calls[2][0];
+      expect(page2).toBeInstanceOf(ListDirectoryBucketsCommand);
+      expect(page2.input.ContinuationToken).toBe('page-2');
+    });
+
     it('does not retry a non-throttling GetBucketTagging error during the walk', async () => {
       mockSend.mockReset(); // drop once-queued leftovers from earlier tests
       const internal = new Error('We encountered an internal error.') as Error & { name: string };

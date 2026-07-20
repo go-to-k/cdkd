@@ -131,6 +131,36 @@ describe('EventBridgeBusProvider import', () => {
     expect(mockSend).toHaveBeenCalledTimes(3);
   });
 
+  it('forwards the NextToken pagination fold to the page-2 list call', async () => {
+    mockSend
+      // Page 1: one non-matching candidate + a continuation token.
+      .mockResolvedValueOnce({
+        EventBuses: [
+          { Name: 'other', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/other' },
+        ],
+        NextToken: 'page-2',
+      })
+      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] })
+      // Page 2: the match.
+      .mockResolvedValueOnce({
+        EventBuses: [
+          { Name: 'target', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target' },
+        ],
+      })
+      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBus' }] });
+
+    const result = await provider.import(makeInput());
+
+    expect(result).toEqual({ physicalId: 'target', attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(4);
+    const page1 = mockSend.mock.calls[0][0];
+    expect(page1.constructor.name).toBe('ListEventBusesCommand');
+    expect(page1.input.NextToken).toBeUndefined();
+    const page2 = mockSend.mock.calls[2][0];
+    expect(page2.constructor.name).toBe('ListEventBusesCommand');
+    expect(page2.input.NextToken).toBe('page-2');
+  });
+
   it('does not retry a non-throttling error during the walk', async () => {
     const denied = new Error('User is not authorized to perform events:ListTagsForResource');
     denied.name = 'AccessDeniedException';
