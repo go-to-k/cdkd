@@ -24,11 +24,8 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -576,29 +573,34 @@ export class ECRProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeRepositoriesCommand({ ...(nextToken && { nextToken }) })
-      );
-      for (const repo of list.repositories ?? []) {
-        if (!repo.repositoryArn || !repo.repositoryName) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new DescribeRepositoriesCommand({ ...(marker && { nextToken: marker }) })
+        );
+        return { items: list.repositories, nextMarker: list.nextToken };
+      },
+      describe: async (repo) => {
+        if (!repo.repositoryArn || !repo.repositoryName) return undefined;
         try {
-          const tagsResp = await this.getClient().send(
+          return await this.getClient().send(
             new ListTagsForResourceCommand({ resourceArn: repo.repositoryArn })
           );
-          if (matchesCdkPath(tagsResp.tags, input.cdkPath)) {
-            return { physicalId: repo.repositoryName, attributes: {} };
-          }
         } catch (err) {
-          if (err instanceof RepositoryNotFoundException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof RepositoryNotFoundException) return undefined;
           throw err;
         }
-      }
-      nextToken = list.nextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.repositoryName!, attributes: {} };
   }
 }

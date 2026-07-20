@@ -1746,3 +1746,73 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
     expect(callsOf(DeleteBucketInventoryConfigurationCommand)).toHaveLength(1);
   });
 });
+
+// Issue #1091 batch 2: the tag-based import lookup is an N+1 GetBucketTagging
+// burst (one call per bucket in the account) routed through the shared
+// importTagWalk helper — a throttled tag read is retried with backoff instead
+// of aborting the whole import, while the historical skip classes
+// (NoSuchTagSet / AccessDenied / cross-region 301) still skip the bucket and
+// a genuine error still surfaces immediately.
+describe('S3BucketProvider import tag walk', () => {
+  const CDK_PATH = 'MyStack/MyBucket/Resource';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop once-queued responses leaked by earlier tests - clearAllMocks()
+    // clears calls but NOT unconsumed mockResolvedValueOnce entries.
+    mockSend.mockReset();
+  });
+
+  const importInput = () => ({
+    logicalId: 'MyBucket',
+    resourceType: 'AWS::S3::Bucket',
+    cdkPath: CDK_PATH,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: {},
+  });
+
+  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
+  const throttle = (): Error => {
+    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
+    err.name = 'ThrottlingException';
+    err.$metadata = { httpStatusCode: 400 };
+    return err;
+  };
+
+  it('retries a throttled GetBucketTagging mid-walk and still finds the match', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Buckets: [{ Name: BUCKET_NAME }] })
+      .mockRejectedValueOnce(throttle())
+      .mockResolvedValueOnce({ TagSet: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
+
+    const provider = new S3BucketProvider();
+    const result = await provider.import(importInput());
+
+    expect(result).toEqual({ physicalId: BUCKET_NAME, attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(3);
+  });
+
+  it('still skips an untagged bucket (NoSuchTagSet) and matches a later one', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Buckets: [{ Name: 'untagged' }, { Name: BUCKET_NAME }] })
+      .mockRejectedValueOnce(notConfigured('NoSuchTagSet'))
+      .mockResolvedValueOnce({ TagSet: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
+
+    const provider = new S3BucketProvider();
+    const result = await provider.import(importInput());
+
+    expect(result).toEqual({ physicalId: BUCKET_NAME, attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a non-throttling GetBucketTagging error during the walk', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Buckets: [{ Name: BUCKET_NAME }] })
+      .mockRejectedValueOnce(notConfigured('MalformedXML'));
+
+    const provider = new S3BucketProvider();
+    await expect(provider.import(importInput())).rejects.toThrow(/MalformedXML/);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+});

@@ -54,11 +54,8 @@ import {
   type ObjectOwnership,
   type CORSRule,
 } from '@aws-sdk/client-s3';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -2522,30 +2519,40 @@ export class S3BucketProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    const list = await this.s3Client.send(new ListBucketsCommand({}));
-    for (const b of list.Buckets ?? []) {
-      if (!b.Name) continue;
-      try {
-        const tagging = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
-        if (matchesCdkPath(tagging.TagSet, input.cdkPath)) {
-          return { physicalId: b.Name, attributes: {} };
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // GetBucketTagging burst (one call per bucket in the account) is retried
+    // with exponential backoff when AWS throttles it instead of aborting the
+    // whole import. ListBuckets is a single unpaginated call, so the walk
+    // sees exactly one page.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async () => {
+        const list = await this.s3Client.send(new ListBucketsCommand({}));
+        return { items: list.Buckets, nextMarker: undefined };
+      },
+      describe: async (b) => {
+        if (!b.Name) return undefined;
+        try {
+          return await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
+        } catch (err) {
+          // NoSuchTagSet / cross-region 301 / access denied → skip this bucket
+          const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+          if (
+            e.name === 'NoSuchTagSet' ||
+            e.name === 'AccessDenied' ||
+            e.$metadata?.httpStatusCode === 301
+          ) {
+            return undefined;
+          }
+          throw err;
         }
-      } catch (err) {
-        // NoSuchTagSet / cross-region 301 / access denied → skip this bucket
-        const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
-        if (
-          e.name === 'NoSuchTagSet' ||
-          e.name === 'AccessDenied' ||
-          e.$metadata?.httpStatusCode === 301
-        ) {
-          continue;
-        }
-        throw err;
-      }
-    }
-    return null;
+      },
+      tagsOf: (tagging) => tagging.TagSet,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips buckets without a name.
+    return { physicalId: match.summary.Name!, attributes: {} };
   }
 
   /**

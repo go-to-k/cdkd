@@ -426,5 +426,73 @@ describe('KinesisStreamProvider', () => {
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
     });
+
+    // Issue #1091 batch 2: the tag walk is an N+1 ListTagsForStream burst
+    // routed through the shared importTagWalk helper — a throttled
+    // per-candidate tag read is retried with backoff instead of aborting the
+    // whole import, while a non-throttling error still surfaces immediately.
+    it('retries a throttled ListTagsForStream mid-walk and still finds the match', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const throttled = new Error('Rate exceeded') as Error & {
+        $metadata: { httpStatusCode: number };
+      };
+      throttled.name = 'ThrottlingException';
+      throttled.$metadata = { httpStatusCode: 400 };
+
+      mockSend
+        .mockResolvedValueOnce({ StreamNames: ['target'], HasMoreStreams: false })
+        .mockRejectedValueOnce(throttled)
+        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream' }] });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: 'target', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-throttling ListTagsForStream error during the walk', async () => {
+      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
+      const denied = new Error('User is not authorized to perform kinesis:ListTagsForStream');
+      denied.name = 'AccessDeniedException';
+      mockSend
+        .mockResolvedValueOnce({ StreamNames: ['target'], HasMoreStreams: false })
+        .mockRejectedValueOnce(denied);
+
+      await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    // The ListStreams pagination fold is the one non-mechanical piece of the
+    // batch-2 migration: the next page boundary is the LAST name of the
+    // current page (ExclusiveStartStreamName), and only when HasMoreStreams
+    // says another page exists.
+    it('paginates via ExclusiveStartStreamName = last name of the previous page', async () => {
+      mockSend.mockReset();
+      mockSend
+        // page 1: no match, more pages
+        .mockResolvedValueOnce({ StreamNames: ['a-stream', 'b-stream'], HasMoreStreams: true })
+        .mockResolvedValueOnce({ Tags: [] }) // tags(a-stream)
+        .mockResolvedValueOnce({ Tags: [] }) // tags(b-stream)
+        // page 2: the match
+        .mockResolvedValueOnce({ StreamNames: ['target'], HasMoreStreams: false })
+        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream' }] });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: 'target', attributes: {} });
+      const secondList = mockSend.mock.calls[3][0];
+      expect(secondList.constructor.name).toBe('ListStreamsCommand');
+      expect(secondList.input).toEqual({ ExclusiveStartStreamName: 'b-stream' });
+    });
+
+    it('stops on an empty page even when HasMoreStreams is true', async () => {
+      mockSend.mockReset();
+      mockSend.mockResolvedValueOnce({ StreamNames: [], HasMoreStreams: true });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toBeNull();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
   });
 });

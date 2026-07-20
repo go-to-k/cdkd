@@ -25,11 +25,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -523,30 +520,38 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       return null;
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.iamClient.send(
-        new ListPoliciesCommand({ Scope: 'Local', ...(marker ? { Marker: marker } : {}) })
-      );
-      for (const policy of list.Policies ?? []) {
-        if (!policy.Arn) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListPolicyTags burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import. `Scope: 'Local'`
+    // keeps AWS-managed policies out of the candidate set (they can never
+    // carry a CDK path, and must never be adopted — see the explicit-ARN
+    // guard above).
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.iamClient.send(
+          new ListPoliciesCommand({ Scope: 'Local', ...(marker ? { Marker: marker } : {}) })
+        );
+        // IAM signals "more pages" via IsTruncated, not Marker presence alone.
+        return { items: list.Policies, nextMarker: list.IsTruncated ? list.Marker : undefined };
+      },
+      describe: async (policy) => {
+        if (!policy.Arn) return undefined;
         try {
-          const tags = await this.iamClient.send(
-            new ListPolicyTagsCommand({ PolicyArn: policy.Arn })
-          );
-          if (matchesCdkPath(tags.Tags, input.cdkPath)) {
-            return { physicalId: policy.Arn, attributes: { PolicyArn: policy.Arn } };
-          }
+          return await this.iamClient.send(new ListPolicyTagsCommand({ PolicyArn: policy.Arn }));
         } catch (err) {
-          if (err instanceof NoSuchEntityException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof NoSuchEntityException) return undefined;
           throw err;
         }
-      }
-      marker = list.IsTruncated ? list.Marker : undefined;
-    } while (marker);
-    return null;
+      },
+      tagsOf: (tags) => tags.Tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without an ARN.
+    const arn = match.summary.Arn!;
+    return { physicalId: arn, attributes: { PolicyArn: arn } };
   }
 
   // ── helpers ───────────────────────────────────────────────────────

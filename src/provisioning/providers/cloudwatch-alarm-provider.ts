@@ -16,11 +16,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -578,31 +575,39 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.cloudWatchClient.send(
-        new DescribeAlarmsCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      const all = [...(list.MetricAlarms ?? []), ...(list.CompositeAlarms ?? [])];
-      for (const a of all) {
-        if (!a.AlarmArn || !a.AlarmName) continue;
+    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
+    // ListTagsForResource burst is retried with exponential backoff when AWS
+    // throttles it instead of aborting the whole import. Metric and composite
+    // alarms share one candidate list, matching the previous inline loop.
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.cloudWatchClient.send(
+          new DescribeAlarmsCommand({ ...(marker && { NextToken: marker }) })
+        );
+        return {
+          items: [...(list.MetricAlarms ?? []), ...(list.CompositeAlarms ?? [])],
+          nextMarker: list.NextToken,
+        };
+      },
+      describe: async (a) => {
+        if (!a.AlarmArn || !a.AlarmName) return undefined;
         try {
-          const tagsResp = await this.cloudWatchClient.send(
+          return await this.cloudWatchClient.send(
             new ListTagsForResourceCommand({ ResourceARN: a.AlarmArn })
           );
-          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-            return { physicalId: a.AlarmName, attributes: {} };
-          }
         } catch (err) {
-          if (this.isNotFound(err)) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (this.isNotFound(err)) return undefined;
           throw err;
         }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
-    return null;
+      },
+      tagsOf: (tagsResp) => tagsResp.Tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.AlarmName!, attributes: {} };
   }
 
   private isNotFound(err: unknown): boolean {
