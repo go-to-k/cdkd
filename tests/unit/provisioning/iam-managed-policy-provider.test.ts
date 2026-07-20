@@ -581,6 +581,36 @@ describe('IAMManagedPolicyProvider', () => {
       await expect(provider.import!(makeInput())).rejects.toThrow(/not authorized/);
       expect(mockSend).toHaveBeenCalledTimes(2);
     });
+
+    // IAM signals "more pages" via IsTruncated, not Marker presence alone;
+    // the migrated walk must forward the Marker only when IsTruncated is set.
+    it('pages the tag walk via IsTruncated-gated Marker', async () => {
+      mockSend.mockReset();
+      mockSend
+        .mockResolvedValueOnce({
+          Policies: [{ PolicyName: 'Other', Arn: 'arn:aws:iam::123456789012:policy/Other' }],
+          IsTruncated: true,
+          Marker: 'page-2',
+        })
+        .mockResolvedValueOnce({ Tags: [] }) // tags(Other)
+        .mockResolvedValueOnce({
+          Policies: [{ PolicyName: 'MyManagedPolicy', Arn: ARN }],
+          IsTruncated: false,
+          // A stale Marker with IsTruncated false must NOT trigger a 3rd page.
+          Marker: 'stale-marker',
+        })
+        .mockResolvedValueOnce({
+          Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyManagedPolicy' }],
+        });
+
+      const result = await provider.import!(makeInput());
+
+      expect(result).toEqual({ physicalId: ARN, attributes: { PolicyArn: ARN } });
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      const secondList = mockSend.mock.calls[2][0];
+      expect(secondList.constructor.name).toBe('ListPoliciesCommand');
+      expect(secondList.input).toEqual({ Scope: 'Local', Marker: 'page-2' });
+    });
   });
 });
 
