@@ -17,7 +17,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -479,15 +480,22 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    const list = await this.getClient().send(new GetLifecyclePoliciesCommand({}));
-    for (const policy of list.Policies ?? []) {
-      if (!policy.PolicyId) continue;
-      if (policy.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
-        return { physicalId: policy.PolicyId, attributes: {} };
-      }
-    }
-    return null;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      // GetLifecyclePolicies is not paginated — one page, no marker. The walk
+      // is still worth routing through the helper for its retry/backoff.
+      listPage: async () => {
+        const list = await this.getClient().send(new GetLifecyclePoliciesCommand({}));
+        return { items: list.Policies };
+      },
+      // The summary already carries Tags; no per-candidate read.
+      describe: async (policy) => (policy.PolicyId ? policy : undefined),
+      // DLM returns tags as a MAP, not a {Key,Value} list.
+      tagsOf: (policy) => Object.entries(policy.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a PolicyId.
+    return { physicalId: match.summary.PolicyId!, attributes: {} };
   }
 }

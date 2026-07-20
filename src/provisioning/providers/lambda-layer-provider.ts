@@ -15,7 +15,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { CDK_PATH_TAG } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -324,32 +324,34 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.lambdaClient.send(
-        new ListLayersCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const layer of list.Layers ?? []) {
-        if (!layer.LayerArn || !layer.LatestMatchingVersion?.LayerVersionArn) continue;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.lambdaClient.send(
+          new ListLayersCommand({ ...(marker && { Marker: marker }) })
+        );
+        return { items: list.Layers, nextMarker: list.NextMarker };
+      },
+      describe: async (layer) => {
+        if (!layer.LayerArn || !layer.LatestMatchingVersion?.LayerVersionArn) return undefined;
         try {
-          const tagsResp = await this.lambdaClient.send(
-            new ListTagsCommand({ Resource: layer.LayerArn })
-          );
-          if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
-            return {
-              physicalId: layer.LatestMatchingVersion.LayerVersionArn,
-              attributes: {},
-            };
-          }
+          return await this.lambdaClient.send(new ListTagsCommand({ Resource: layer.LayerArn }));
         } catch (err) {
-          if (err instanceof ResourceNotFoundException) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (err instanceof ResourceNotFoundException) return undefined;
           throw err;
         }
-      }
-      marker = list.NextMarker;
-    } while (marker);
-    return null;
+      },
+      // Lambda returns tags as a MAP, not a {Key,Value} list.
+      tagsOf: (tagsResp) =>
+        Object.entries(tagsResp.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a version ARN.
+    return {
+      physicalId: match.summary.LatestMatchingVersion!.LayerVersionArn!,
+      attributes: {},
+    };
   }
 }

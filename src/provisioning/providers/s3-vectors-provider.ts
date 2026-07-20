@@ -14,7 +14,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -490,30 +491,34 @@ export class S3VectorsProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let token: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListVectorBucketsCommand({ ...(token && { nextToken: token }) })
-      );
-      for (const bucket of list.vectorBuckets ?? []) {
-        if (!bucket.vectorBucketName || !bucket.vectorBucketArn) continue;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListVectorBucketsCommand({ ...(marker && { nextToken: marker }) })
+        );
+        return { items: list.vectorBuckets, nextMarker: list.nextToken };
+      },
+      describe: async (bucket) => {
+        if (!bucket.vectorBucketName || !bucket.vectorBucketArn) return undefined;
         try {
-          const tagsResp = await this.getClient().send(
+          return await this.getClient().send(
             new ListTagsForResourceCommand({ resourceArn: bucket.vectorBucketArn })
           );
-          if (tagsResp.tags?.[CDK_PATH_TAG] === input.cdkPath) {
-            return { physicalId: bucket.vectorBucketName, attributes: {} };
-          }
         } catch (err) {
-          if (this.isNotFoundError(err)) continue;
+          // Deleted between the list and the tag read — skip the candidate.
+          if (this.isNotFoundError(err)) return undefined;
           throw err;
         }
-      }
-      token = list.nextToken;
-    } while (token);
-    return null;
+      },
+      // S3 Vectors returns tags as a MAP, not a {Key,Value} list.
+      tagsOf: (tagsResp) =>
+        Object.entries(tagsResp.tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.vectorBucketName!, attributes: {} };
   }
 
   private isNotFoundError(error: unknown): boolean {

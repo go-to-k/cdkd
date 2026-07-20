@@ -40,29 +40,48 @@ describe('IAMInstanceProfileProvider — import', () => {
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetInstanceProfileCommand);
   });
 
-  it('finds profile by aws:cdk:path tag via ListInstanceProfiles', async () => {
-    mockSend.mockResolvedValueOnce({
-      InstanceProfiles: [
-        { InstanceProfileName: 'other', Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/X' }] },
-        {
+  // `ListInstanceProfiles` does NOT return tags -- AWS documents this on the
+  // command ("this operation does not return tags, even though they are an
+  // attribute of the returned object ... see GetInstanceProfile"), even though
+  // the `InstanceProfile` TYPE declares `Tags?: Tag[]`. These cases previously
+  // hand-fed inline Tags, which made a walk that could never match in
+  // production look correct. Tags now come from a per-candidate
+  // `GetInstanceProfile`.
+  it('finds profile by aws:cdk:path tag via a per-candidate GetInstanceProfile', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        InstanceProfiles: [{ InstanceProfileName: 'other' }, { InstanceProfileName: 'mine' }],
+        IsTruncated: false,
+      })
+      .mockResolvedValueOnce({
+        InstanceProfile: {
+          InstanceProfileName: 'other',
+          Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/X' }],
+        },
+      })
+      .mockResolvedValueOnce({
+        InstanceProfile: {
           InstanceProfileName: 'mine',
           Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyInstanceProfile' }],
         },
-      ],
-      IsTruncated: false,
-    });
+      });
     const result = await provider.import!(makeInput());
     expect(result).toEqual({ physicalId: 'mine', attributes: {} });
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListInstanceProfilesCommand);
   });
 
   it('returns null when no profile has matching cdkPath tag', async () => {
-    mockSend.mockResolvedValueOnce({
-      InstanceProfiles: [
-        { InstanceProfileName: 'other', Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/X' }] },
-      ],
-      IsTruncated: false,
-    });
+    mockSend
+      .mockResolvedValueOnce({
+        InstanceProfiles: [{ InstanceProfileName: 'other' }],
+        IsTruncated: false,
+      })
+      .mockResolvedValueOnce({
+        InstanceProfile: {
+          InstanceProfileName: 'other',
+          Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/X' }],
+        },
+      });
     const result = await provider.import!(makeInput());
     expect(result).toBeNull();
   });

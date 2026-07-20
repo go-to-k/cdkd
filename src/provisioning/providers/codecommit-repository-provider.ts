@@ -24,11 +24,8 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  CDK_PATH_TAG,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -704,36 +701,43 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListRepositoriesCommand({ ...(nextToken && { nextToken }) })
-      );
-      for (const repo of list.repositories ?? []) {
-        if (!repo.repositoryName) continue;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListRepositoriesCommand({ ...(marker && { nextToken: marker }) })
+        );
+        return { items: list.repositories, nextMarker: list.nextToken };
+      },
+      // Two reads per candidate: GetRepository for the ARN (and the attributes
+      // the caller needs on a hit), then ListTagsForResource. Both live inside
+      // the retried `describe` so a throttle on either is backed off.
+      describe: async (repo) => {
+        if (!repo.repositoryName) return undefined;
         let metadata: RepositoryMetadata | undefined;
         try {
           metadata = await this.getRepositoryMetadata(repo.repositoryName);
         } catch (err) {
-          if (err instanceof RepositoryDoesNotExistException) continue;
+          // Deleted between the list and the describe — skip the candidate.
+          if (err instanceof RepositoryDoesNotExistException) return undefined;
           throw err;
         }
-        if (!metadata?.Arn) continue;
+        if (!metadata?.Arn) return undefined;
         const tagsResp = await this.getClient().send(
           new ListTagsForResourceCommand({ resourceArn: metadata.Arn })
         );
-        if (tagsResp.tags?.[CDK_PATH_TAG] === input.cdkPath) {
-          return {
-            physicalId: repo.repositoryName,
-            attributes: this.toAttributes(metadata),
-          };
-        }
-      }
-      nextToken = list.nextToken;
-    } while (nextToken);
-    return null;
+        return { metadata, tags: tagsResp.tags };
+      },
+      // CodeCommit returns tags as a MAP, not a {Key,Value} list.
+      tagsOf: (detail) => Object.entries(detail.tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return {
+      physicalId: match.summary.repositoryName!,
+      attributes: this.toAttributes(match.detail.metadata),
+    };
   }
 
   /**
