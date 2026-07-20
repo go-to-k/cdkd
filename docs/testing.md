@@ -500,12 +500,45 @@ The same defect hides in two more spellings, both banned (issue #1120):
   get-parameter ... >/dev/null 2>&1; }`) or a value wrapper with a swallow
   tail (`... --output text 2>/dev/null || true`). Both make `$(fn)` /
   `if fn` read a throttle as "gone". Tail-less value wrappers are legal
-  (`$(fn)` propagates the non-zero exit under `set -e`).
+  **only when the probe is the LAST command of the body**: `$(fn)` returns the
+  last command's status, so `set -e` fails the caller loudly.
+
+**Intermediate captures inside a value wrapper need `|| return 1`.** Bash
+clears errexit inside `$( )` command substitutions (no
+`shopt -s inherit_errexit`), so in a multi-statement wrapper called as
+`V="$(fn)"` an intermediate `out="$(aws ...)"` failure does NOT abort the
+body: the remaining statements run and the function returns the last
+command's status (typically 0 via a `|| true` formatting tail), silently
+reading a throttle as "nothing found":
+
+```bash
+find_ids() {
+  local out
+  out="$(aws ec2 describe-vpcs ... --output text)" || return 1  # load-bearing
+  printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
+}
+```
+
+The `|| return 1` routes the probe error through the function's exit status to
+the caller's `set -e`. (A `local V=$(aws ...)` declaration-assignment masks
+the status entirely, since `local` exits 0, so split the declaration from the
+assignment. A status-consuming tail like `out="$(aws ...)" && rc=0 || rc=$?`
+is already strict.)
+
+When a `gone_probe` branch precedes a strict value requery, guard the requery
+against the probe-to-requery race (TOCTOU): on a requery failure whose stderr
+matches the canonical not-found signature, treat it as gone; hard-fail on
+anything else (`elif ! v=$(aws ... 2>&1); then printf '%s' "$v" | grep -qiE
+'<canonical signature>' && v=GONE || { echo FAIL...; exit 1; }`).
 
 Best-effort cleanup code is exempt structurally: lines inside a
 `set +e`/`set +eu` ... `set -e`/`set -eu` span (bounded by the enclosing
 function) are skipped, matching the cleanup convention above — mark a
 best-effort cleanup helper with `set +eu` rather than silencing its probes.
+Run the helper's body in a subshell (`fn() { ( set +eu; ... ) }`) so calling
+it from a `set +eu` cleanup trap can never RE-ARM strict mode in the caller
+(a trailing `set -eu` in a plain body would abort the rest of the sweep on
+the next probe error).
 
 `tests/unit/scripts/integ-verify-probe-not-found.test.ts` enforces all of this
 across the whole fixture tree (issue #1097 pattern 2 + issue #1120), including

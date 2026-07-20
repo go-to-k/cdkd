@@ -254,8 +254,10 @@ echo "==> Phase 1b: assert each zip Lambda's code came from an uploaded ZIP (not
 assert_codesize() {
   local label="$1" name="$2"
   local size
+  # `|| return 1`: errexit is cleared inside $( ), so a probe error must be
+  # propagated explicitly (stderr stays visible for diagnosis).
   size=$(aws lambda get-function-configuration --function-name "${name}" --region "${REGION}" \
-    --query 'CodeSize' --output text 2>/dev/null)
+    --query 'CodeSize' --output text) || return 1
   if [ -z "${size}" ] || [ "${size}" = "None" ]; then
     echo "FAIL: could not read CodeSize for ${label} (${name})" >&2
     exit 1

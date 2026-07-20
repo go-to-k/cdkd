@@ -184,6 +184,11 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      (`|| true` included) and for silenced probe wrappers
      (`fn() { aws ... >/dev/null 2>&1; }`) — use plain strict captures, or a
      `gone_probe` branch when not-found is a legitimate outcome (issue #1120).
+     In a multi-statement value wrapper, append `|| return 1` to every
+     INTERMEDIATE `out="$(aws ...)"` capture (errexit is cleared inside
+     `$( )`, so only the last command's status propagates otherwise), and
+     write best-effort cleanup helpers as `fn() { ( set +eu; ... ) }` so they
+     never re-arm strict mode in a `set +eu` caller.
      Use `s3api head-object` for state files, never `aws s3 ls` (exit 1 +
      empty output for "no keys" is indistinguishable from a silenced error).
      Enforced by `tests/unit/scripts/integ-verify-probe-not-found.test.ts`.

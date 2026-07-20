@@ -238,11 +238,14 @@ echo "    OK: state file is gone"
 # Instance should be terminated (or shutting-down right after the call).
 if gone_probe aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}"; then
   INSTANCE_STATE="gone"
-else
-  INSTANCE_STATE=$(aws ec2 describe-instances \
+elif ! INSTANCE_STATE=$(aws ec2 describe-instances \
     --instance-ids "${INSTANCE_ID}" \
     --region "${REGION}" \
-    --query 'Reservations[0].Instances[0].State.Name' --output text)
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
+  # TOCTOU: the record can be swept between gone_probe and this requery.
+  printf '%s' "${INSTANCE_STATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && INSTANCE_STATE="gone" \
+    || { echo "FAIL: describe-instances requery undetermined: ${INSTANCE_STATE}" >&2; exit 1; }
 fi
 if [ "${INSTANCE_STATE}" = "terminated" ] || [ "${INSTANCE_STATE}" = "shutting-down" ] || [ "${INSTANCE_STATE}" = "gone" ]; then
   echo "    OK: instance is terminated/shutting-down/gone (state: ${INSTANCE_STATE})"

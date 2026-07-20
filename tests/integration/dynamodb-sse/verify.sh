@@ -120,9 +120,12 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
   status="GONE"
-else
-  status="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.TableStatus' --output text)"
+elif ! status="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+  # TOCTOU: the table can vanish between gone_probe and this requery.
+  printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && status="GONE" \
+    || { echo "FAIL: describe-table requery undetermined: ${status}" >&2; exit 1; }
 fi
 if [ "${status}" != "GONE" ] && [ "${status}" != "DELETING" ]; then
   echo "FAIL: table ${TABLE_NAME} still exists (status ${status}) after destroy" >&2

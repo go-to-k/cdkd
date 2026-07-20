@@ -139,6 +139,15 @@ export interface ProbeClassification {
    *   `$(aws s3 ls ... 2>&1 || true)`), where the error text lands IN the
    *   value for inspection.
    *
+   * Known limitation (documented, not detected): the "no fallback is strict"
+   * rationale assumes the assignment's own exit status reaches `set -e`.
+   * A `local V=$(aws ...)` declaration-assignment masks it (`local` exits 0
+   * regardless), and a capture in condition context (`if V=$(aws ...); then`)
+   * deliberately consumes it -- both escape this narrowed detector. Zero
+   * instances exist in the tree today; if one appears, split `local` from the
+   * assignment / keep condition-context captures strict by inspecting the
+   * captured error text.
+   *
    * Captures inside a best-effort `set +e` cleanup span are exempt (see
    * {@link computeExemptLines}).
    */
@@ -158,12 +167,40 @@ export interface ProbeClassification {
    *   exit 0, so `$(find_x)` silently returns "" for a throttle.
    *
    * A tail-less value wrapper (`aws ... --output text 2>/dev/null` as the
-   * body) is NOT flagged: `$(fn)` propagates the probe's non-zero exit and
-   * `set -e` fails the script loudly. Condition / `&&`-branch spellings
-   * inside functions are left to the condition-oriented categories; the
-   * canonical helper block and `set +e` cleanup spans are exempt.
+   * body) is NOT flagged, but ONLY because the probe is the LAST command of
+   * the body: `$(fn)` returns the last command's status, so `set -e` fails
+   * the script loudly. When the probe is an INTERMEDIATE statement the
+   * status-propagation argument breaks -- that shape is owned by
+   * {@link ProbeClassification.unpropagatedWrapperCaptures}. Condition /
+   * `&&`-branch spellings inside functions are left to the condition-oriented
+   * categories; the canonical helper block and `set +e` cleanup spans are
+   * exempt.
    */
   silencedFunctionProbes: FlaggedProbe[];
+  /**
+   * Intermediate-capture form (issue #1120 review blocker): a read-verb
+   * `VAR=$(aws ...)` capture inside a function body that is FOLLOWED by more
+   * statements and lacks `|| return`. Errexit is CLEARED inside `$( )`
+   * command substitutions (bash without `shopt -s inherit_errexit`), so when
+   * the wrapper is called as `V="$(fn)"` an intermediate capture failure does
+   * NOT abort the body; the body keeps running and the function returns the
+   * LAST command's status (typically 0 via a `|| true` formatting tail) --
+   * the probe error silently reads as an empty value. The fix is an explicit
+   * `|| return 1` on every intermediate capture, which routes the failure
+   * through the function's exit status to the caller's `set -e`.
+   *
+   * A `local V=$(aws ...)` declaration-assignment is flagged even WITH a
+   * `|| return` tail: `local` exits 0 regardless, so the tail never fires --
+   * split the declaration (`local V` then `V=$(...) || return 1`).
+   *
+   * Not flagged: the capture as the LAST statement of the body (its status
+   * IS the function's status), condition-context captures
+   * (`if out=$(aws ... 2>&1); then` inspects the status explicitly),
+   * status-consuming tails (`out="$(aws ...)" && rc=0 || rc=$?` drives an
+   * explicit state machine off `$?`), non-aws / mutation-verb captures,
+   * `set +e` cleanup spans, and the canonical helper block.
+   */
+  unpropagatedWrapperCaptures: FlaggedProbe[];
   /** Calls assert_gone or gone_probe somewhere. */
   usesHelpers: boolean;
   /** Contains CANONICAL_HELPER_BLOCK verbatim. */
@@ -243,9 +280,17 @@ function isReadVerbAwsCommand(cmd: string): boolean {
   return m[1] === 's3' ? m[2] === 'ls' : READ_VERB.test(m[2]!);
 }
 
-/** An `|| echo ...` / `|| true` / `|| printf ...` / `|| :` swallow tail. */
+/**
+ * The swallow-fallback commands: `echo ...` / `true` / `printf ...` / `:`,
+ * plus a variable-assignment fallback (`V=""` / `V=0` -- the
+ * `CAP=$(aws ...) || CAP=""` spelling swallows the probe error exactly like
+ * `|| echo ""` inside the substitution would).
+ */
+const SWALLOW_CMD = /(echo\b|true\b|printf\b|:|[A-Za-z_][A-Za-z0-9_]*=)/;
+
+/** An `|| <swallow command>` tail anywhere in the statement. */
 function hasSwallowFallback(cmd: string): boolean {
-  return /\|\|\s*(echo\b|true\b|printf\b|:)/.test(cmd);
+  return new RegExp(`\\|\\|\\s*${SWALLOW_CMD.source}`).test(cmd);
 }
 
 /** Stderr is routed into the capture (bare `2>&1`, not redirected onward). */
@@ -302,6 +347,9 @@ export function extractCommandSubstitutions(
  * Function-definition ranges: `name() {` (optionally `function name() {`)
  * through the closing `}` at the header's indent. Returns [start, end]
  * INDEX pairs into the joined-lines array (inclusive, header and close).
+ * A compact single-line body (`exists() { aws ... >/dev/null 2>&1; }`) is
+ * returned as a `start === end` range; its body lives on the header line
+ * itself and is scanned segment-wise by the function-probe category.
  */
 export function findFunctionRanges(
   joined: Array<{ line: number; text: string }>,
@@ -310,6 +358,11 @@ export function findFunctionRanges(
   for (let i = 0; i < joined.length; i++) {
     const m = /^(\s*)(?:function\s+)?[A-Za-z_][A-Za-z0-9_-]*\s*\(\)\s*\{/.exec(joined[i]!.text);
     if (!m) continue;
+    // Single-line body: the header line also closes the function.
+    if (/\}\s*(#.*)?$/.test(joined[i]!.text.slice(m[0].length))) {
+      ranges.push({ start: i, end: i });
+      continue;
+    }
     const indent = m[1]!;
     for (let j = i + 1; j < joined.length; j++) {
       if (new RegExp(`^${indent}\\}\\s*(#.*)?$`).test(joined[j]!.text)) {
@@ -468,8 +521,9 @@ export function classifyVerifyScript(content: string): ProbeClassification {
       const cmd = body.trim();
       if (!isReadVerbAwsCommand(cmd)) continue;
       // A swallow tail either inside the substitution or attached right
-      // after it (`V=$(aws ...) || true`) makes the probe error unfailable.
-      const tailAfter = /^\s*\|\|\s*(echo\b|true\b|printf\b|:)/.test(text.slice(end));
+      // after it (`V=$(aws ...) || true` / `V=$(aws ...) || V=""`) makes the
+      // probe error unfailable.
+      const tailAfter = new RegExp(`^\\s*\\|\\|\\s*${SWALLOW_CMD.source}`).test(text.slice(end));
       const swallowed = (hasSwallowFallback(cmd) || tailAfter) && !capturesStderr(cmd);
       if (swallowed) {
         blindCaptureProbes.push({ line, text: text.trim() });
@@ -478,38 +532,87 @@ export function classifyVerifyScript(content: string): ProbeClassification {
     }
   }
 
+  // Bare-statement position only: condition (`if`/`while`/...) and
+  // `&&` / `|| {` branch spellings inside functions belong to the
+  // condition-oriented categories above.
+  const isSilencedWrapperStatement = (raw: string): boolean => {
+    const m = /^\s*(aws\s.*)$/.exec(raw);
+    if (!m) return false;
+    let cmd = m[1]!.trim();
+    // Peel a trailing swallow tail so `aws ... 2>/dev/null || true` is
+    // still seen as a bare silenced probe; compound `&&` / `|| {` branch
+    // forms are skipped (handled with branch semantics elsewhere).
+    let hasSwallowTail = false;
+    const tail = /^(.*?)(\|\||&&)(.*)$/.exec(cmd);
+    if (tail) {
+      if (tail[2] === '&&' || !new RegExp(`^\\s*${SWALLOW_CMD.source}`).test(tail[3]!)) {
+        return false;
+      }
+      hasSwallowTail = true;
+      cmd = tail[1]!.trim();
+    }
+    if (!isReadVerbAwsCommand(cmd)) return false;
+    // Exit-status wrapper: fully silenced (stdout AND stderr discarded).
+    const statusWrapper =
+      /(>\s*\/dev\/null\s+2>&1|&>\s*\/dev\/null|2>&1\s*>\s*\/dev\/null)/.test(cmd) ||
+      (/2>\s*\/dev\/null/.test(cmd) && /(?<![2&])>\s*\/dev\/null/.test(cmd));
+    // Value wrapper: stderr silenced; only a swallow tail makes it
+    // unfailable (tail-less value wrappers -- probe as the LAST body
+    // statement -- die loudly via set -e).
+    const swallowedValueWrapper = /2>\s*\/dev\/null/.test(cmd) && hasSwallowTail;
+    return statusWrapper || swallowedValueWrapper;
+  };
+
   const silencedFunctionProbes: FlaggedProbe[] = [];
   for (const { start, end } of functionRanges) {
+    if (start === end) {
+      // Compact single-line body: scan its `;`-separated segments.
+      if (exempt[start]) continue;
+      const { line, text } = joined[start]!;
+      const body = text.slice(text.indexOf('{') + 1, text.lastIndexOf('}'));
+      if (body.split(';').some((seg) => isSilencedWrapperStatement(seg))) {
+        silencedFunctionProbes.push({ line, text: text.trim() });
+      }
+      continue;
+    }
     for (let i = start + 1; i < end; i++) {
       if (exempt[i]) continue;
       const { line, text } = joined[i]!;
-      // Bare-statement position only: condition (`if`/`while`/...) and
-      // `&&` / `|| {` branch spellings inside functions belong to the
-      // condition-oriented categories above.
-      const m = /^\s*(aws\s.*)$/.exec(text);
-      if (!m) continue;
-      let cmd = m[1]!.trim();
-      // Peel a trailing swallow tail so `aws ... 2>/dev/null || true` is
-      // still seen as a bare silenced probe; compound `&&` / `|| {` branch
-      // forms are skipped (handled with branch semantics elsewhere).
-      let hasSwallowTail = false;
-      const tail = /^(.*?)(\|\||&&)(.*)$/.exec(cmd);
-      if (tail) {
-        if (tail[2] === '&&' || !/^\s*(true\b|echo\b|printf\b|:)/.test(tail[3]!)) continue;
-        hasSwallowTail = true;
-        cmd = tail[1]!.trim();
-      }
-      if (!isReadVerbAwsCommand(cmd)) continue;
-      // Exit-status wrapper: fully silenced (stdout AND stderr discarded).
-      const statusWrapper =
-        /(>\s*\/dev\/null\s+2>&1|&>\s*\/dev\/null|2>&1\s*>\s*\/dev\/null)/.test(cmd) ||
-        (/2>\s*\/dev\/null/.test(cmd) && /(?<![2&])>\s*\/dev\/null/.test(cmd));
-      // Value wrapper: stderr silenced; only a swallow tail makes it
-      // unfailable (tail-less value wrappers die loudly via set -e).
-      const swallowedValueWrapper = /2>\s*\/dev\/null/.test(cmd) && hasSwallowTail;
-      if (statusWrapper || swallowedValueWrapper) {
+      if (isSilencedWrapperStatement(text)) {
         silencedFunctionProbes.push({ line, text: text.trim() });
       }
+    }
+  }
+
+  // Intermediate-capture form: a read-verb capture inside a (multi-line)
+  // function body, followed by more statements, without `|| return` -- the
+  // probe error cannot reach the caller's `set -e` (errexit is cleared
+  // inside `$( )`, and the function returns its LAST command's status).
+  const unpropagatedWrapperCaptures: FlaggedProbe[] = [];
+  for (const { start, end } of functionRanges) {
+    if (start === end) continue; // single-line bodies have no "followed by more statements"
+    for (let i = start + 1; i < end; i++) {
+      if (exempt[i]) continue;
+      const { line, text } = joined[i]!;
+      const am = /^\s*(local\s+)?[A-Za-z_][A-Za-z0-9_]*=["']?\$\(/.exec(text);
+      if (!am) continue;
+      const subs = extractCommandSubstitutions(text);
+      if (subs.length === 0 || !isReadVerbAwsCommand(subs[0]!.body.trim())) continue;
+      // Followed by more statements? (non-blank, non-comment lines before `}`)
+      let followed = false;
+      for (let j = i + 1; j < end; j++) {
+        const t = joined[j]!.text.trim();
+        if (t !== '' && !t.startsWith('#')) {
+          followed = true;
+          break;
+        }
+      }
+      if (!followed) continue;
+      // `local V=$(...)` masks the capture status entirely, so it is flagged
+      // even with a `|| return` / `$?` tail; a plain assignment passes with
+      // either (a `$?`-consuming tail drives an explicit state machine).
+      if (!am[1] && (/\|\|\s*return\b/.test(text) || /\$\?/.test(text))) continue;
+      unpropagatedWrapperCaptures.push({ line, text: text.trim() });
     }
   }
 
@@ -529,6 +632,7 @@ export function classifyVerifyScript(content: string): ProbeClassification {
     variableVerbProbes,
     blindCaptureProbes,
     silencedFunctionProbes,
+    unpropagatedWrapperCaptures,
     usesHelpers,
     hasCanonicalHelperBlock: content.includes(CANONICAL_HELPER_BLOCK),
     nonCanonicalNotFoundGreps,

@@ -64,12 +64,15 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Resolve the fixture evaluator's id by its fixed name prefix (the service
 # appends a random 10-char suffix to EvaluatorName).
 find_evaluator_id() {
-  # Strict: a probe error aborts the caller's $( ) capture under set -e
-  # instead of silently reading as "no evaluator".
+  # Strict: errexit is CLEARED inside $( ) command substitutions (bash without
+  # inherit_errexit), so an intermediate capture failure would NOT abort this
+  # body on its own -- the explicit `|| return 1` propagates the probe error
+  # through the function's exit status to the caller's `set -e` instead of
+  # silently reading as "no evaluator".
   local out
   out="$(aws bedrock-agentcore-control list-evaluators --region "${REGION}" \
     --query "evaluators[?starts_with(evaluatorId, '${EVALUATOR_NAME}-')].evaluatorId | [0]" \
-    --output text)"
+    --output text)" || return 1
   printf '%s\n' "${out}" | grep -v '^None$' || true
 }
 

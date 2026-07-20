@@ -119,9 +119,11 @@ table_name() {
 
 table_class() {
   # TableClassSummary is omitted for STANDARD tables — treat absent as STANDARD.
+  # `|| return 1`: errexit is cleared inside $( ), so a probe error must be
+  # propagated explicitly instead of reading as an empty class.
   local cls
   cls="$(aws dynamodb describe-table --table-name "$1" --region "${REGION}" \
-    --query 'Table.TableClassSummary.TableClass' --output text)"
+    --query 'Table.TableClassSummary.TableClass' --output text)" || return 1
   if [ "${cls}" = "None" ]; then
     echo "STANDARD"
   else

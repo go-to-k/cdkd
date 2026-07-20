@@ -176,9 +176,12 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # DELETED; the DELETING machine finishes deleting on its own.
 if gone_probe aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" --region "${REGION}"; then
   SM_STATUS="GONE"
-else
-  SM_STATUS=$(aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" \
-    --region "${REGION}" --query 'status' --output text)
+elif ! SM_STATUS=$(aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" \
+    --region "${REGION}" --query 'status' --output text 2>&1); then
+  # TOCTOU: the machine can finish deleting between gone_probe and this requery.
+  printf '%s' "${SM_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && SM_STATUS="GONE" \
+    || { echo "FAIL: describe-state-machine requery undetermined: ${SM_STATUS}" >&2; exit 1; }
 fi
 case "${SM_STATUS}" in
   GONE | DELETING | DELETED)

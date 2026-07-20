@@ -80,6 +80,9 @@ ESM_UUID=""
 # --- shared helper: list ESM UUIDs bound to a function -----------------
 # Filters list-event-source-mappings by FunctionArn substring so it works
 # whether $1 is a bare name or an ARN. Prints one UUID per line.
+# The `|| return 1` on the intermediate capture is load-bearing: errexit is
+# CLEARED inside $( ) command substitutions, so without it a probe error would
+# silently read as "no ESMs" when called as `$(list_esms_for_function ...)`.
 list_esms_for_function() {
   local fn="$1"
   [ -z "${fn}" ] && return 0
@@ -87,7 +90,7 @@ list_esms_for_function() {
   out="$(aws lambda list-event-source-mappings \
     --region "${REGION}" \
     --query "EventSourceMappings[?contains(FunctionArn, \`${fn}\`)].UUID" \
-    --output text)"
+    --output text)" || return 1
   printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 

@@ -246,9 +246,11 @@ echo "    OK: ContributorInsightsSpecification.Mode == ${EXPECTED_CI_MODE} on AW
 assert_provisioned_capacity() {
   local expected_read="$1" expected_write="$2" phase="$3"
   local pt actual_read actual_write
+  # `|| return 1`: errexit is cleared inside $( ), so an intermediate capture
+  # failure must be propagated explicitly (stderr stays visible for diagnosis).
   pt=$(aws dynamodb describe-table \
     --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.ProvisionedThroughput' --output json 2>/dev/null)
+    --query 'Table.ProvisionedThroughput' --output json) || return 1
   actual_read=$(echo "${pt}" | jq -r 'if has("ReadCapacityUnits") then .ReadCapacityUnits | tostring else "null" end')
   actual_write=$(echo "${pt}" | jq -r 'if has("WriteCapacityUnits") then .WriteCapacityUnits | tostring else "null" end')
   if [ "${actual_read}" != "${expected_read}" ]; then

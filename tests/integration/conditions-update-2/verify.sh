@@ -95,15 +95,23 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Captured at deploy time so cleanup / attribute checks can find the queues.
 WORK_QUEUE_URL=""
 
-# Resolve a queue URL by name (empty if absent). Never aborts under set -e.
+# Resolve a queue URL by name: empty when the queue is CONFIRMED absent
+# (canonical not-found); any other probe failure deliberately aborts the run
+# (gone_probe hard-FAILs, and the strict requery propagates through `$( )`).
 queue_url() {
-  local name="$1"
+  local name="$1" out
   if gone_probe aws sqs get-queue-url --queue-name "${name}" --region "${REGION}"; then
     echo ""
     return 0
   fi
-  aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
-    --query 'QueueUrl' --output text
+  if ! out="$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
+      --query 'QueueUrl' --output text 2>&1)"; then
+    # TOCTOU: the queue can vanish between gone_probe and this requery.
+    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { echo ""; return 0; } \
+      || { echo "FAIL: get-queue-url requery undetermined (${name}): ${out}" >&2; exit 1; }
+  fi
+  printf '%s\n' "${out}"
 }
 
 cleanup() {
@@ -163,14 +171,23 @@ ssm_exists() {
   ! gone_probe aws ssm get-parameter --name "$1" --region "${REGION}"
 }
 
-# Helper: read an SSM parameter Value, or empty. Never aborts under set -e.
+# Helper: read an SSM parameter Value, or empty when the parameter is
+# CONFIRMED absent (canonical not-found); any other probe failure deliberately
+# aborts the run instead of reading as "absent".
 ssm_value() {
+  local out
   if gone_probe aws ssm get-parameter --name "$1" --region "${REGION}"; then
     echo ""
     return 0
   fi
-  aws ssm get-parameter --name "$1" --region "${REGION}" \
-    --query 'Parameter.Value' --output text
+  if ! out="$(aws ssm get-parameter --name "$1" --region "${REGION}" \
+      --query 'Parameter.Value' --output text 2>&1)"; then
+    # TOCTOU: the parameter can vanish between gone_probe and this requery.
+    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { echo ""; return 0; } \
+      || { echo "FAIL: get-parameter requery undetermined ($1): ${out}" >&2; exit 1; }
+  fi
+  printf '%s\n' "${out}"
 }
 
 # Helper: read the WorkQueue RedrivePolicy attribute, or empty when unset.

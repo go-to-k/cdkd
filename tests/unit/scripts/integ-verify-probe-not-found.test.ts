@@ -33,9 +33,9 @@ const INTEG_ROOT = join(import.meta.dirname, '../../../tests/integration');
  * mechanism; entries are asserted stale-free below so the exception
  * self-expires once the owning PR lands.
  *
- * Empty today. `fsx-windows` / `fsx-ontap` (PR #1094) do not exist in this
- * tree yet; `emr-cluster` (PR #1101) already uses a strict output-capturing
- * idiom that this classifier accepts without an exception.
+ * Empty today. `fsx-windows` / `fsx-ontap` (PR #1094) and `emr-cluster`
+ * (PR #1101) have since landed in this tree and already use strict
+ * output-capturing idioms this classifier accepts without an exception.
  */
 const PENDING_OTHER_PR: Record<string, string> = {};
 
@@ -269,6 +269,26 @@ describe('capture-form probes (issue #1120 item 1)', () => {
       'spaced 2> /dev/null silencing',
       'V=$(aws efs describe-backup-policy --file-system-id f 2> /dev/null || echo "")\n',
     ],
+    [
+      '|| printf swallow inside the substitution',
+      "V=$(aws ssm get-parameter --name p --query 'Parameter.Value' --output text 2>/dev/null || printf '')\n",
+    ],
+    [
+      '|| : swallow inside the substitution',
+      'V=$(aws ssm get-parameter --name p --output text 2>/dev/null || :)\n',
+    ],
+    [
+      'assignment-fallback tail after the substitution (|| V="")',
+      'STATUS=$(aws dynamodb describe-table --table-name t 2>/dev/null) || STATUS=""\n',
+    ],
+    [
+      'assignment-fallback inside the substitution (|| V=0)',
+      "N=$(aws elbv2 describe-listeners --load-balancer-arn a --query 'length(Listeners)' --output text 2>/dev/null || N=0)\n",
+    ],
+    [
+      'unsilenced assignment-fallback tail (value still poisoned)',
+      "URL=$(aws sqs get-queue-url --queue-name q --output text) || URL=''\n",
+    ],
   ])('flags a swallowed capture: %s', (_label, script) => {
     expect(classifyVerifyScript(script).blindCaptureProbes).toHaveLength(1);
   });
@@ -305,6 +325,14 @@ describe('capture-form probes (issue #1120 item 1)', () => {
     [
       'non-aws command substitution with a fallback',
       'LEFT="$(find_orphans || true)"\n',
+    ],
+    [
+      'TOCTOU-guarded requery (stderr captured INTO the value for inspection)',
+      `elif ! status="$(aws dynamodb describe-table --table-name t --query 'Table.TableStatus' --output text 2>&1)"; then\n`,
+    ],
+    [
+      'assignment-fallback tail on a strict stderr-capturing probe',
+      'V=$(aws ssm get-parameter --name p --output text 2>&1) || V=$(strict_fallback_probe)\n',
     ],
   ])('does not flag: %s', (_label, script) => {
     expect(classifyVerifyScript(script).blindCaptureProbes).toEqual([]);
@@ -346,6 +374,15 @@ LIVE="$(aws ecr list-images --repository-name r --query imageIds --output json 2
     expect(outer!.body).not.toContain('list-z');
     expect(inner!.body).toContain('list-z');
   });
+
+  it('extractCommandSubstitutions skips an unbalanced (never-closed) substitution', () => {
+    expect(extractCommandSubstitutions('V=$(aws ec2 describe-vpcs --query "length(Vpcs"')).toEqual(
+      [],
+    );
+    // ...while still returning a later balanced one on the same line.
+    const subs = extractCommandSubstitutions('A=$(broken B=$(aws s3 ls "s3://b" 2>&1)');
+    expect(subs.some((s) => s.body.includes('s3 ls'))).toBe(true);
+  });
 });
 
 describe('silenced probes in function bodies (issue #1120 item 2)', () => {
@@ -365,6 +402,26 @@ describe('silenced probes in function bodies (issue #1120 item 2)', () => {
     [
       'value wrapper with || echo "" swallow tail (multi-line)',
       `queue_url() {\n  aws sqs get-queue-url --queue-name "\${name}" --region r \\\n    --query 'QueueUrl' --output text 2>/dev/null || echo ""\n}\n`,
+    ],
+    [
+      'single-line exit-status wrapper (compact body on the header line)',
+      'ssm_exists() { aws ssm get-parameter --name "$1" --region r >/dev/null 2>&1; }\n',
+    ],
+    [
+      '`function` keyword form',
+      'function role_exists() {\n  aws iam get-role --role-name "$1" >/dev/null 2>&1\n}\n',
+    ],
+    [
+      'reversed 2>&1 >/dev/null exit-status wrapper',
+      'fs_exists() {\n  aws efs describe-file-systems --file-system-id "$1" 2>&1 >/dev/null\n}\n',
+    ],
+    [
+      'split 2>/dev/null + >/dev/null exit-status wrapper',
+      'tbl_exists() {\n  aws dynamodb describe-table --table-name "$1" >/dev/null 2>/dev/null\n}\n',
+    ],
+    [
+      'single-line value wrapper with a swallow tail',
+      "api_id() { aws apigateway get-rest-apis --query q --output text 2>/dev/null || true; }\n",
     ],
   ])('flags a silenced wrapper: %s', (_label, script) => {
     expect(classifyVerifyScript(script).silencedFunctionProbes).toHaveLength(1);
@@ -399,6 +456,18 @@ describe('silenced probes in function bodies (issue #1120 item 2)', () => {
       'top-level bare silenced probe (not in a function)',
       'aws ssm get-parameter --name p >/dev/null 2>&1 || true\n',
     ],
+    [
+      'single-line mutation wrapper',
+      'drop() { aws sqs delete-queue --queue-url "$1" >/dev/null 2>&1 || true; }\n',
+    ],
+    [
+      'single-line strict value wrapper (unsilenced)',
+      "api_id() { aws apigateway get-rest-apis --query q --output text; }\n",
+    ],
+    [
+      'subshell set +eu cleanup helper (span bounded at the function close)',
+      'sweep() {\n  (\n    set +eu\n    aws iam list-roles --query q --output text 2>/dev/null || true\n  )\n}\n',
+    ],
   ])('does not flag: %s', (_label, script) => {
     expect(classifyVerifyScript(script).silencedFunctionProbes).toEqual([]);
   });
@@ -407,6 +476,73 @@ describe('silenced probes in function bodies (issue #1120 item 2)', () => {
     const c = classifyVerifyScript(`${CANONICAL_HELPER_BLOCK}\n`);
     expect(c.silencedFunctionProbes).toEqual([]);
     expect(c.blindCaptureProbes).toEqual([]);
+    expect(c.unpropagatedWrapperCaptures).toEqual([]);
+  });
+});
+
+describe('unpropagated intermediate wrapper captures (issue #1120 review blocker)', () => {
+  // errexit is CLEARED inside $( ) command substitutions, so an intermediate
+  // capture failure inside a value wrapper does not abort the body -- the
+  // wrapper returns its LAST command's status and the probe error silently
+  // reads as "nothing found". Empirically verified (see the PR discussion):
+  // `V="$(fn)"` under set -e succeeds with V='' when fn's intermediate
+  // capture fails without `|| return 1`.
+  const WRAPPER = (capture: string) => `find_ids() {
+  local out
+  ${capture}
+  printf '%s\\n' "\${out}" | tr '\\t' '\\n' | grep -v '^$' || true
+}
+`;
+
+  it.each([
+    [
+      'intermediate capture without || return',
+      WRAPPER(`out="$(aws ec2 describe-vpcs --filters f --query 'Vpcs[].VpcId' --output text)"`),
+    ],
+    [
+      'silenced intermediate capture without || return',
+      WRAPPER(`out="$(aws ec2 describe-vpcs --query 'Vpcs[].VpcId' --output text 2>/dev/null)"`),
+    ],
+    [
+      'local declaration-assignment (masks the status even WITH || return 1)',
+      `find_ids() {\n  local out="$(aws ec2 describe-vpcs --query q --output text)" || return 1\n  printf '%s\\n' "\${out}" || true\n}\n`,
+    ],
+  ])('flags: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).unpropagatedWrapperCaptures).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'intermediate capture WITH || return 1',
+      WRAPPER(`out="$(aws ec2 describe-vpcs --filters f --query 'Vpcs[].VpcId' --output text)" || return 1`),
+    ],
+    [
+      'capture as the LAST statement (its status IS the function status)',
+      `api_id() {\n  RES="$(aws apigateway get-rest-apis --query q --output text)"\n}\n`,
+    ],
+    [
+      'status-consuming tail (&& rc=0 || rc=$? state machine)',
+      `fs_state() {\n  local out rc\n  out="$(aws fsx describe-file-systems --file-system-ids "$1" --output text 2>&1)" && rc=0 || rc=$?\n  case "\${out}" in *NotFound*) return 0 ;; *) return 2 ;; esac\n}\n`,
+    ],
+    [
+      'condition-context capture (status inspected explicitly)',
+      `queue_url() {\n  local out\n  if ! out="$(aws sqs get-queue-url --queue-name q --output text 2>&1)"; then\n    echo ""\n    return 0\n  fi\n  printf '%s\\n' "\${out}"\n}\n`,
+    ],
+    ['non-aws intermediate capture', WRAPPER(`out="$(some_helper)"`)],
+    [
+      'mutation-verb intermediate capture',
+      WRAPPER(`out="$(aws sqs delete-queue --queue-url u 2>&1)"`),
+    ],
+    [
+      'intermediate capture inside a set +eu cleanup span',
+      `sweep() {\n  (\n    set +eu\n    out="$(aws iam list-roles --query q --output text 2>/dev/null)"\n    echo "\${out}"\n  )\n}\n`,
+    ],
+    [
+      'top-level intermediate capture (not in a function; set -e applies)',
+      `out="$(aws ec2 describe-vpcs --query q --output text)"\nprintf '%s\\n' "\${out}" || true\n`,
+    ],
+  ])('does not flag: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).unpropagatedWrapperCaptures).toEqual([]);
   });
 });
 
@@ -466,6 +602,46 @@ echo "VALUE:\${PLAN}"
     );
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('VALUE:None');
+  });
+
+  it('an intermediate wrapper capture WITHOUT || return 1 silently reads a throttle as empty', () => {
+    // Documents WHY unpropagatedWrapperCaptures exists: errexit is CLEARED
+    // inside $( ), so the wrapper keeps running past the failed capture and
+    // returns the formatting tail's status 0 -- the caller sees "".
+    const r = run(
+      `#!/usr/bin/env bash
+set -euo pipefail
+find_ids() {
+  local out
+  out="$(aws apigateway get-usage-plans --query q --output text)"
+  printf '%s\\n' "\${out}" | grep -v '^None$' || true
+}
+IDS="$(find_ids)"
+echo "IDS:[\${IDS}]"
+`,
+      'throttle',
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('IDS:[]');
+  });
+
+  it('an intermediate wrapper capture WITH || return 1 hard-fails the caller on a throttle', () => {
+    const r = run(
+      `#!/usr/bin/env bash
+set -euo pipefail
+find_ids() {
+  local out
+  out="$(aws apigateway get-usage-plans --query q --output text)" || return 1
+  printf '%s\\n' "\${out}" | grep -v '^None$' || true
+}
+IDS="$(find_ids)"
+echo "IDS:[\${IDS}]"
+`,
+      'throttle',
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('ThrottlingException');
+    expect(r.stdout).not.toContain('IDS:[');
   });
 
   it('cleans up the temp scripts', () => {
@@ -629,6 +805,13 @@ describe('integ fixture verify.sh gone-probes (#1097 pattern 2)', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('never leaves an intermediate wrapper capture unpropagated (#1120 review)', () => {
+    const offenders = inScope
+      .filter((f) => f.unpropagatedWrapperCaptures.length > 0)
+      .map((f) => `${f.name}: ${f.unpropagatedWrapperCaptures.map((p) => p.line).join(',')}`);
+    expect(offenders).toEqual([]);
+  });
+
   it('never probes with a silenced variable verb in condition position', () => {
     const offenders = inScope
       .filter((f) => f.variableVerbProbes.length > 0)
@@ -662,7 +845,11 @@ describe('integ fixture verify.sh gone-probes (#1097 pattern 2)', () => {
       return (
         f.blindLeakAsserts.length === 0 &&
         f.blindGoneConcludes.length === 0 &&
-        f.blindProbeLoops.length === 0
+        f.blindProbeLoops.length === 0 &&
+        f.variableVerbProbes.length === 0 &&
+        f.blindCaptureProbes.length === 0 &&
+        f.silencedFunctionProbes.length === 0 &&
+        f.unpropagatedWrapperCaptures.length === 0
       );
     });
     expect(stale).toEqual([]);

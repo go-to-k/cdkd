@@ -74,10 +74,23 @@ a throttle reads as "0 remaining"; use a plain strict capture, or branch on
 `gone_probe` when not-found is legitimate) and **silenced function wrappers**
 (an exit-status wrapper `fn() { aws ... >/dev/null 2>&1; }` or a value wrapper
 with a swallow tail). Tail-less silenced captures/wrappers stay legal (`set -e`
-fails them loudly), as does the strict stderr-capture idiom
-(`$(cmd 2>&1 >/dev/null || true)`). Best-effort cleanup is exempt via
-`set +e[u]` spans (bounded by the enclosing function) — mark cleanup helpers
-with `set +eu` instead of silencing probes. Enforced by
+fails them loudly; for wrappers ONLY when the probe is the LAST command of the
+body), as does the strict stderr-capture idiom
+(`$(cmd 2>&1 >/dev/null || true)`).
+
+**Intermediate captures inside a value wrapper need `|| return 1`**: errexit
+is CLEARED inside `$( )` command substitutions, so in a multi-statement
+wrapper called as `V="$(fn)"` an intermediate `out="$(aws ...)"` failure does
+not abort the body and the function exits 0 via its formatting tail; the
+explicit `|| return 1` propagates the probe error to the caller's `set -e`
+(`local V=$(...)` masks the status entirely; split declaration from
+assignment). A `gone_probe`-then-requery site must guard the requery against
+the TOCTOU race: canonical not-found on the requery is still "gone", anything
+else hard-fails. Best-effort cleanup is exempt via `set +e[u]` spans (bounded
+by the enclosing function) — mark cleanup helpers with `set +eu` in a
+SUBSHELL body (`fn() { ( set +eu; ... ) }`) instead of silencing probes, so
+calling them from a `set +eu` cleanup trap never re-arms strict mode
+mid-sweep. Enforced by
 `tests/unit/scripts/integ-verify-probe-not-found.test.ts`; user-facing writeup
 in [docs/testing.md](../../docs/testing.md).
 

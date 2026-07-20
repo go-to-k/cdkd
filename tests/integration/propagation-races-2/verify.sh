@@ -299,9 +299,18 @@ echo "    OK: state file is gone"
 # --- Post-destroy: assert each NAMED resource is gone ------------------
 echo "==> Post-destroy: assert named resources are gone (by fixture tag / resolved id)"
 
-# Instance terminated / shutting-down / gone.
-ST=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
-  --query 'Reservations[0].Instances[0].State.Name' --output text)
+# Instance terminated / shutting-down / gone. AWS also spells "terminated" by
+# sweeping the record entirely (InvalidInstanceID.NotFound) once the terminated
+# instance ages out, so a not-found probe is a legitimate "gone".
+if gone_probe aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}"; then
+  ST="gone"
+elif ! ST=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
+  # TOCTOU: the record can be swept between gone_probe and this requery.
+  printf '%s' "${ST}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && ST="gone" \
+    || { echo "FAIL: describe-instances requery undetermined: ${ST}" >&2; exit 1; }
+fi
 case "${ST}" in
   terminated|shutting-down|gone) echo "    OK: instance gone (state: ${ST})" ;;
   *) echo "FAIL: instance ${INSTANCE_ID} still in state ${ST} after destroy" >&2; exit 1 ;;
@@ -324,9 +333,12 @@ echo "    OK: both S3 buckets gone"
 # KMS key scheduled for deletion (KMS keys cannot be hard-deleted immediately).
 if gone_probe aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}"; then
   KEY_STATE_AFTER="gone"
-else
-  KEY_STATE_AFTER=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" \
-    --query 'KeyMetadata.KeyState' --output text)
+elif ! KEY_STATE_AFTER=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" \
+    --query 'KeyMetadata.KeyState' --output text 2>&1); then
+  # TOCTOU: the key can vanish between gone_probe and this requery.
+  printf '%s' "${KEY_STATE_AFTER}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && KEY_STATE_AFTER="gone" \
+    || { echo "FAIL: describe-key requery undetermined: ${KEY_STATE_AFTER}" >&2; exit 1; }
 fi
 case "${KEY_STATE_AFTER}" in
   PendingDeletion|gone) echo "    OK: KMS key pending deletion / gone (state: ${KEY_STATE_AFTER})" ;;

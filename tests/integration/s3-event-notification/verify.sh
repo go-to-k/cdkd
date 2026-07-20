@@ -167,9 +167,12 @@ echo "    OK: bucket is gone"
 
 if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
   TBL_STATUS="GONE"
-else
-  TBL_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.TableStatus' --output text)"
+elif ! TBL_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+  # TOCTOU: the table can vanish between gone_probe and this requery.
+  printf '%s' "${TBL_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && TBL_STATUS="GONE" \
+    || { echo "FAIL: describe-table requery undetermined: ${TBL_STATUS}" >&2; exit 1; }
 fi
 if [ "${TBL_STATUS}" != "GONE" ] && [ "${TBL_STATUS}" != "DELETING" ]; then
   echo "FAIL: table ${TABLE_NAME} still exists (status ${TBL_STATUS}) after destroy" >&2

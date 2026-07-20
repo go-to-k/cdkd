@@ -249,9 +249,12 @@ echo "    OK: consumer Lambda is gone"
 # that is still ACTIVE with no DeletedDate is a real failure.
 if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"; then
   SECRET_DELETED_DATE="GONE"
-else
-  SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
-    --region "${REGION}" --query 'DeletedDate' --output text)
+elif ! SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
+    --region "${REGION}" --query 'DeletedDate' --output text 2>&1); then
+  # TOCTOU: the secret can vanish between gone_probe and this requery.
+  printf '%s' "${SECRET_DELETED_DATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && SECRET_DELETED_DATE="GONE" \
+    || { echo "FAIL: describe-secret requery undetermined: ${SECRET_DELETED_DATE}" >&2; exit 1; }
 fi
 if [ "${SECRET_DELETED_DATE}" = "GONE" ]; then
   echo "    OK: secret is gone (describe-secret reports it no longer exists)"

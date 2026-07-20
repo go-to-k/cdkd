@@ -121,14 +121,23 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# Helper: read an SSM parameter Value, or print empty if the parameter does
-# not exist. Never aborts under set -e.
+# Helper: read an SSM parameter Value, or print empty when the parameter is
+# CONFIRMED absent (canonical not-found). Any other probe failure (throttle,
+# auth) deliberately hard-fails the run instead of reading as "absent".
 ssm_value() {
-  local name="$1"
-  local out
-  out=$(aws ssm get-parameter --name "${name}" --region "${REGION}" \
-    --query 'Parameter.Value' --output text 2>/dev/null) || out=""
-  echo "${out}"
+  local name="$1" out
+  if gone_probe aws ssm get-parameter --name "${name}" --region "${REGION}"; then
+    echo ""
+    return 0
+  fi
+  if ! out="$(aws ssm get-parameter --name "${name}" --region "${REGION}" \
+      --query 'Parameter.Value' --output text 2>&1)"; then
+    # TOCTOU: the parameter can vanish between gone_probe and this requery.
+    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { echo ""; return 0; } \
+      || { echo "FAIL: get-parameter requery undetermined (${name}): ${out}" >&2; exit 1; }
+  fi
+  printf '%s\n' "${out}"
 }
 
 # Helper: does an SSM parameter exist? rc 0 = yes, 1 = confirmed not-found.
@@ -188,8 +197,10 @@ fi
 echo "    OK: resolved topic ARN ${TOPIC_ARN}"
 
 # --- Fn::If -> set DisplayName (premium): property PRESENT ------------
+# Strict capture: a missing DisplayName key prints "None" with exit 0, so no
+# fallback is needed -- a probe error must abort loudly, not read as "unset".
 DISPLAY=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" \
-  --query 'Attributes.DisplayName' --output text 2>/dev/null) || DISPLAY=""
+  --query 'Attributes.DisplayName' --output text)
 if [ "${DISPLAY}" != "Premium Notifications" ]; then
   echo "FAIL: SNS DisplayName is '${DISPLAY}', expected 'Premium Notifications' (Fn::If set branch)" >&2
   exit 1
@@ -246,9 +257,10 @@ echo "    OK: Fn::And condition-gated PremiumPrimaryParam ABSENT in basic"
 
 # --- Fn::If -> AWS::NoValue (basic): DisplayName property OMITTED ------
 # SNS get-topic-attributes simply does not include the DisplayName key when
-# it was never set. `--output text` on a missing key prints "None".
+# it was never set. `--output text` on a missing key prints "None" with exit 0,
+# so a strict capture needs no fallback; a probe error must abort loudly.
 DISPLAY=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" \
-  --query 'Attributes.DisplayName' --output text 2>/dev/null) || DISPLAY=""
+  --query 'Attributes.DisplayName' --output text)
 if [ -n "${DISPLAY}" ] && [ "${DISPLAY}" != "None" ]; then
   echo "FAIL: SNS DisplayName is '${DISPLAY}', expected ABSENT (Fn::If -> AWS::NoValue)" >&2
   exit 1

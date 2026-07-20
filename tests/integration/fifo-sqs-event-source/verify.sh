@@ -75,12 +75,19 @@ sweep_log_groups() {
 }
 
 queue_url() {
+  local out
   if gone_probe aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"; then
     echo ""
     return 0
   fi
-  aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
-    --query 'QueueUrl' --output text
+  if ! out="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
+      --query 'QueueUrl' --output text 2>&1)"; then
+    # TOCTOU: the queue can vanish between gone_probe and this requery.
+    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { echo ""; return 0; } \
+      || { echo "FAIL: get-queue-url requery undetermined: ${out}" >&2; exit 1; }
+  fi
+  printf '%s\n' "${out}"
 }
 
 cleanup() {

@@ -71,12 +71,18 @@ sweep_log_groups() {
 }
 
 delete_pool_by_name() {
-  local pid
-  pid="$(aws cognito-idp list-user-pools --max-results 60 --region "${REGION}" \
-    --query "UserPools[?Name=='${POOL_NAME}'].Id | [0]" --output text 2>/dev/null)"
-  if [ -n "${pid}" ] && [ "${pid}" != "None" ]; then
-    aws cognito-idp delete-user-pool --user-pool-id "${pid}" --region "${REGION}" >/dev/null 2>&1 || true
-  fi
+  # Best-effort cleanup helper (only called from the cleanup trap): the body
+  # runs in a `set +eu` subshell so a lookup error just skips the delete and
+  # strict-mode changes can never leak into (or re-arm in) the caller.
+  (
+    set +eu
+    local pid
+    pid="$(aws cognito-idp list-user-pools --max-results 60 --region "${REGION}" \
+      --query "UserPools[?Name=='${POOL_NAME}'].Id | [0]" --output text 2>/dev/null)"
+    if [ -n "${pid}" ] && [ "${pid}" != "None" ]; then
+      aws cognito-idp delete-user-pool --user-pool-id "${pid}" --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+  )
 }
 
 cleanup() {

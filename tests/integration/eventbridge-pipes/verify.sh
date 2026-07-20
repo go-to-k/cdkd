@@ -80,8 +80,21 @@ env -u CDKD_TEST_UPDATE -u CDKD_TEST_SOURCE_SWITCH node "${LOCAL_DIST}" deploy "
 # as proof it reached AWS; assert the SQS source arn was wired.
 STATE=""; SRCARN=""
 for _ in $(seq 1 24); do
-  STATE=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'CurrentState' --output text)
-  SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text)
+  # The pipe can 404 briefly right after create (read-after-create lag);
+  # gone_probe treats that as "not yet" and hard-FAILs on any other error.
+  if gone_probe aws pipes describe-pipe --name "${PIPE}" --region "${REGION}"; then
+    STATE=""; SRCARN=""
+  elif ! PIPE_DESC=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
+      --query '[CurrentState, Source]' --output text 2>&1); then
+    # TOCTOU: the pipe can 404 again between gone_probe and this requery --
+    # a canonical not-found is still "not yet" (retry); anything else fails.
+    printf '%s' "${PIPE_DESC}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && { STATE=""; SRCARN=""; } \
+      || { echo "FAIL: describe-pipe requery undetermined: ${PIPE_DESC}" >&2; exit 1; }
+  else
+    STATE=$(printf '%s' "${PIPE_DESC}" | awk '{print $1}')
+    SRCARN=$(printf '%s' "${PIPE_DESC}" | awk '{print $2}')
+  fi
   if [ "${STATE}" = "RUNNING" ]; then break; fi
   sleep 5
 done

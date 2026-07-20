@@ -294,11 +294,14 @@ echo "    OK: state file is gone"
 # path waits for the terminal NotFound, so a clean destroy leaves it gone.
 if gone_probe aws rds describe-db-instances --db-instance-identifier "${DB_INSTANCE_ID}" --region "${REGION}"; then
   INSTANCE_STATUS="gone"
-else
-  INSTANCE_STATUS=$(aws rds describe-db-instances \
+elif ! INSTANCE_STATUS=$(aws rds describe-db-instances \
     --db-instance-identifier "${DB_INSTANCE_ID}" \
     --region "${REGION}" \
-    --query 'DBInstances[0].DBInstanceStatus' --output text)
+    --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1); then
+  # TOCTOU: the instance can vanish between gone_probe and this requery.
+  printf '%s' "${INSTANCE_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && INSTANCE_STATUS="gone" \
+    || { echo "FAIL: describe-db-instances requery undetermined: ${INSTANCE_STATUS}" >&2; exit 1; }
 fi
 if [ "${INSTANCE_STATUS}" = "gone" ] || [ "${INSTANCE_STATUS}" = "deleting" ]; then
   echo "    OK: DBInstance is gone or deleting (status: ${INSTANCE_STATUS})"

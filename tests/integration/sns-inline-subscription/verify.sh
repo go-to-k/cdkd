@@ -111,8 +111,10 @@ resolve_topic_arn() {
 queue_arn() {
   local name="$1"
   local url
+  # `|| return 1`: errexit is cleared inside $( ), so the intermediate URL
+  # lookup must propagate its error explicitly to the caller's `set -e`.
   url=$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
-    --query 'QueueUrl' --output text)
+    --query 'QueueUrl' --output text) || return 1
   aws sqs get-queue-attributes --queue-url "${url}" --attribute-names QueueArn \
     --region "${REGION}" --query 'Attributes.QueueArn' --output text
 }

@@ -89,9 +89,12 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Ids of ACTIVE (not terminated) clusters named like the fixture and carrying
 # the fixture's constant tag.
 active_tagged_cluster_ids() {
+  # `|| return 1`: errexit is cleared inside $( ), so a list-clusters error
+  # must be propagated explicitly (pipefail carries it through the pipeline)
+  # instead of silently reading as "no clusters".
   local ids id
   ids="$(aws emr list-clusters --active --region "${REGION}" \
-    --query "Clusters[?Name=='${CLUSTER_NAME}'].Id" --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d')"
+    --query "Clusters[?Name=='${CLUSTER_NAME}'].Id" --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d')" || return 1
   for id in ${ids}; do
     if aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
       --query "Cluster.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']" \

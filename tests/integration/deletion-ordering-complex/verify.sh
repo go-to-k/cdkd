@@ -60,16 +60,23 @@ echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 # We own the tag (AWS reserves aws:* so cdkd cannot set aws:cdk:path), so we
 # locate everything we created via the resourcegroupstaggingapi + per-service
 # tag filters. Used by both the post-destroy orphan assertion and the trap.
+#
+# Strictness note: errexit is CLEARED inside $( ) command substitutions (bash
+# without inherit_errexit), so every INTERMEDIATE capture below carries an
+# explicit `|| return 1` -- without it a probe error (throttle, creds) would
+# silently yield an empty result and pass the orphan assertion. The `return 1`
+# inside the `while read` pipeline subshell exits that subshell non-zero, which
+# becomes the pipeline's (= the function's last command's) status.
 
 find_load_balancer_arns() {
   local arns
   arns="$(aws elbv2 describe-load-balancers --region "${REGION}" \
-    --query 'LoadBalancers[].LoadBalancerArn' --output text)"
+    --query 'LoadBalancers[].LoadBalancerArn' --output text)" || return 1
   printf '%s\n' "${arns}" | tr '\t' '\n' | while read -r arn; do
         [ -z "${arn}" ] && continue
         tags="$(aws elbv2 describe-tags --region "${REGION}" --resource-arns "${arn}" \
           --query "TagDescriptions[0].Tags[?Key=='${FIXTURE_TAG_KEY}' && Value=='${FIXTURE_TAG_VALUE}'] | length(@)" \
-          --output text)"
+          --output text)" || return 1
         if [ "${tags}" != "0" ] && [ -n "${tags}" ]; then echo "${arn}"; fi
       done
 }
@@ -77,12 +84,12 @@ find_load_balancer_arns() {
 find_target_group_arns() {
   local arns
   arns="$(aws elbv2 describe-target-groups --region "${REGION}" \
-    --query 'TargetGroups[].TargetGroupArn' --output text)"
+    --query 'TargetGroups[].TargetGroupArn' --output text)" || return 1
   printf '%s\n' "${arns}" | tr '\t' '\n' | while read -r arn; do
         [ -z "${arn}" ] && continue
         tags="$(aws elbv2 describe-tags --region "${REGION}" --resource-arns "${arn}" \
           --query "TagDescriptions[0].Tags[?Key=='${FIXTURE_TAG_KEY}' && Value=='${FIXTURE_TAG_VALUE}'] | length(@)" \
-          --output text)"
+          --output text)" || return 1
         if [ "${tags}" != "0" ] && [ -n "${tags}" ]; then echo "${arn}"; fi
       done
 }
@@ -91,7 +98,7 @@ find_vpc_ids() {
   local out
   out="$(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
-    --query 'Vpcs[].VpcId' --output text)"
+    --query 'Vpcs[].VpcId' --output text)" || return 1
   printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 
@@ -99,7 +106,7 @@ find_security_group_ids() {
   local out
   out="$(aws ec2 describe-security-groups --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
-    --query 'SecurityGroups[].GroupId' --output text)"
+    --query 'SecurityGroups[].GroupId' --output text)" || return 1
   printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 
@@ -108,7 +115,7 @@ find_instance_ids() {
   out="$(aws ec2 describe-instances --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
               "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-    --query 'Reservations[].Instances[].InstanceId' --output text)"
+    --query 'Reservations[].Instances[].InstanceId' --output text)" || return 1
   printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 

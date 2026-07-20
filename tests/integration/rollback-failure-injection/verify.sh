@@ -115,7 +115,10 @@ find_fixture_sgs() {
 # the intentional failed deploy if rollback left anything behind). ---
 aggressive_cleanup() {
   echo "[verify] aggressive cleanup: sweeping any fixture orphans"
-  # Best-effort: tolerate probe errors + unset vars while sweeping.
+  # Best-effort: tolerate probe errors + unset vars while sweeping. The body
+  # runs in a subshell so `set +eu` dies with it and can never re-arm or
+  # relax strict mode in the caller.
+  (
   set +eu
 
   # SSM parameter (deterministic name).
@@ -212,7 +215,7 @@ aggressive_cleanup() {
     done
     aws ec2 delete-vpc --vpc-id "${vpc_id}" --region "${REGION}" >/dev/null 2>&1 || true
   done
-  set -eu
+  )
 }
 
 cleanup() {
