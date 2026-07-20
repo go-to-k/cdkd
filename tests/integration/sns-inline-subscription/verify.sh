@@ -18,6 +18,34 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdSnsInlineSubscriptionExample"
@@ -164,9 +192,12 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --force
 
-if aws sns list-subscriptions-by-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1; then
+if ! gone_probe aws sns list-subscriptions-by-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}"; then
   REMAINING=$(aws sns list-subscriptions-by-topic --topic-arn "${TOPIC_ARN}" \
-    --region "${REGION}" --query 'length(Subscriptions || `[]`)' --output text 2>/dev/null || echo 0)
+    --region "${REGION}" --query 'length(Subscriptions || `[]`)' --output text) || {
+    echo "FAIL: could not count remaining subscriptions on ${TOPIC_ARN}" >&2
+    exit 1
+  }
   if [ "${REMAINING}" != "0" ]; then
     echo "FAIL: topic still has ${REMAINING} subscriptions after destroy" >&2
     exit 1
@@ -174,16 +205,10 @@ if aws sns list-subscriptions-by-topic --topic-arn "${TOPIC_ARN}" --region "${RE
 fi
 echo "    OK: topic + subscriptions are gone"
 
-if aws sqs get-queue-url --queue-name "${QUEUE_A_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: queue A ${QUEUE_A_NAME} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "queue A ${QUEUE_A_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_A_NAME}" --region "${REGION}"
 echo "    OK: queues are gone"
 
-if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""

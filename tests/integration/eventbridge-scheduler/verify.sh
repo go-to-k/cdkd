@@ -4,6 +4,34 @@
 # Confirmed-clean /hunt-bugs pattern; regression guard.
 
 set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
 STACK="CdkdEventbridgeSchedulerExample"
@@ -52,16 +80,16 @@ echo "    OK: schedule reached AWS (ScheduleExpression: ${EXPR})"
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-aws scheduler get-schedule --name "${SCHED}" --region "${REGION}" >/dev/null 2>&1 && { echo "FAIL: schedule still exists after destroy" >&2; exit 1; }
+assert_gone "schedule still exists after destroy" aws scheduler get-schedule --name "${SCHED}" --region "${REGION}"
 echo "    OK: schedule gone"
 GONE=""
 for _ in $(seq 1 18); do
-  aws lambda get-function --function-name "${FN}" --region "${REGION}" >/dev/null 2>&1 || { GONE=1; break; }
+  if gone_probe aws lambda get-function --function-name "${FN}" --region "${REGION}"; then GONE=1; break; fi
   sleep 5
 done
 [ -z "${GONE}" ] && { echo "FAIL: function ${FN} still exists after destroy" >&2; exit 1; }
 echo "    OK: function gone"
-aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 && { echo "FAIL: state remains" >&2; exit 1; }
+assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
 echo ""
 echo "==> eventbridge-scheduler test passed"

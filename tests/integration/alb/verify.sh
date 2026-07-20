@@ -10,6 +10,34 @@
 #         or: bash tests/integration/alb/verify.sh
 
 set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
 CDKD="node ../../../dist/cli.js"
@@ -77,10 +105,7 @@ ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET
 
 echo ""
 echo "==> Final cleanup verification"
-aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 && {
-  echo "FAIL: state ${STATE_KEY} still exists after destroy"
-  exit 1
-} || true
+assert_gone "state ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    state file removed (✓)"
 
 echo ""

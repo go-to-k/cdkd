@@ -32,6 +32,34 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdSgCircularExample"
@@ -267,27 +295,18 @@ if ! node "${LOCAL_DIST}" destroy "${STACK}" \
   exit 1
 fi
 
-if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 # Both SGs must be gone from AWS.
 for SG in "${SG_A_ID}" "${SG_B_ID}"; do
-  if aws ec2 describe-security-groups --group-ids "${SG}" --region "${REGION}" >/dev/null 2>&1; then
-    echo "FAIL: security group ${SG} still exists after destroy (orphan — destroy ordering likely deleted in the wrong order or skipped it)" >&2
-    exit 1
-  fi
+  assert_gone "security group ${SG} still exists after destroy (orphan — destroy ordering likely deleted in the wrong order or skipped it)" aws ec2 describe-security-groups --group-ids "${SG}" --region "${REGION}"
 done
 echo "    OK: both security groups are gone from AWS"
 
 # VPC must be gone.
 if [ -n "${VPC_ID}" ]; then
-  if aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}" >/dev/null 2>&1; then
-    echo "FAIL: VPC ${VPC_ID} still exists after destroy (orphan)" >&2
-    exit 1
-  fi
+  assert_gone "VPC ${VPC_ID} still exists after destroy (orphan)" aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
   echo "    OK: VPC ${VPC_ID} is gone from AWS"
 fi
 

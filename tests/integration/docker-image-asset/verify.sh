@@ -32,6 +32,34 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdDockerImageAssetExample"
@@ -237,10 +265,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --yes
 
-if aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: Lambda function ${FN_NAME} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 echo "    OK: Lambda function is gone"
 
 # The Docker image asset is pushed into the SHARED CDK-managed container-assets
@@ -257,20 +282,13 @@ if [ -n "${IMAGE_TAG}" ]; then
       --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   # Re-check: after the sweep, OUR image must be gone (0 orphans for our tag).
-  if aws ecr describe-images --repository-name "${ECR_REPO}" \
-      --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}" >/dev/null 2>&1; then
-    echo "FAIL: pushed ECR image (tag ${IMAGE_TAG}) still present after destroy + sweep" >&2
-    exit 1
-  fi
+  assert_gone "pushed ECR image (tag ${IMAGE_TAG}) still present after destroy + sweep" aws ecr describe-images --repository-name "${ECR_REPO}" --image-ids "imageTag=${IMAGE_TAG}" --region "${REGION}"
   echo "    OK: pushed ECR image (tag ${IMAGE_TAG}) is gone (0 ECR orphans)"
   # Clear so the EXIT-trap sweep does not run again.
   IMAGE_TAG=""
 fi
 
-if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""

@@ -27,6 +27,34 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdRawCfnCondParamsExample"
@@ -109,10 +137,7 @@ if [ "${ENV_VALUE}" != "dev:${QUEUE_NAME}:${STACK}" ]; then
 fi
 echo "    OK: Fn::Sub over parameter + GetAtt resolved (${ENV_VALUE})"
 
-if aws ssm get-parameter --name "${PROD_PARAM}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: condition-false resource ${PROD_PARAM} was created" >&2
-  exit 1
-fi
+assert_gone "condition-false resource ${PROD_PARAM} was created" aws ssm get-parameter --name "${PROD_PARAM}" --region "${REGION}"
 echo "    OK: condition-false resource not created"
 
 if aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -e '.outputs.ProdParamName' >/dev/null 2>&1; then
@@ -180,18 +205,9 @@ echo "==> Phase 5: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: queue ${QUEUE_NAME} still exists after destroy" >&2
-  exit 1
-fi
-if aws ssm get-parameter --name "${ENV_PARAM}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: parameter ${ENV_PARAM} still exists after destroy" >&2
-  exit 1
-fi
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
+assert_gone "parameter ${ENV_PARAM} still exists after destroy" aws ssm get-parameter --name "${ENV_PARAM}" --region "${REGION}"
+assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: queue, parameters, and cdkd state removed"
 
 echo "[verify] PASS — raw-CFn Parameters/Conditions diff-deploy parity (#1027) + condition-false output skip (#1028), all 5 phases passed"

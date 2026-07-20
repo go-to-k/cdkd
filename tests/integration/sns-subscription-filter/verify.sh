@@ -17,6 +17,34 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdSnsSubscriptionFilterExample"
@@ -123,23 +151,21 @@ echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if aws sns list-topics --region "${REGION}" \
-  --query "Topics[?ends_with(TopicArn, ':${TOPIC_NAME}')].TopicArn | [0]" --output text 2>/dev/null | grep -q "${TOPIC_NAME}"; then
+MATCHED_TOPIC="$(aws sns list-topics --region "${REGION}" \
+  --query "Topics[?ends_with(TopicArn, ':${TOPIC_NAME}')].TopicArn | [0]" --output text)" || {
+  echo "FAIL: could not list SNS topics to verify ${TOPIC_NAME} deletion" >&2
+  exit 1
+}
+if [ "${MATCHED_TOPIC}" != "None" ]; then
   echo "FAIL: topic ${TOPIC_NAME} still exists after destroy" >&2
   exit 1
 fi
 echo "    OK: topic is gone"
 
-if aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: queue ${QUEUE_NAME} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
 echo "    OK: queue is gone"
 
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: cdkd state removed"
 
 echo "[verify] PASS — SNS subscription filterPolicy reached AWS intact, clean destroy"

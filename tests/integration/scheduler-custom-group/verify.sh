@@ -6,6 +6,34 @@
 # removal (group kept; the schedule MUST actually leave AWS) -> destroy.
 
 set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
 STACK="CdkdSchedulerCustomGroupExample"
@@ -66,10 +94,7 @@ echo "==> Phase 3: schedule-only removal (group kept) — the #961 silent-orphan
 env -u CDKD_TEST_UPDATE CDKD_TEST_REMOVE_SCHED=true \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-if aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: schedule still LIVE in AWS after removal deploy (silent orphan — the #961 delete bug)" >&2
-  exit 1
-fi
+assert_gone "schedule still LIVE in AWS after removal deploy (silent orphan — the #961 delete bug)" aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}"
 echo "    OK: schedule actually left AWS"
 aws scheduler get-schedule-group --name "${GROUP}" --region "${REGION}" >/dev/null 2>&1 \
   || { echo "FAIL: schedule group disappeared during schedule-only removal" >&2; exit 1; }
@@ -78,9 +103,9 @@ echo "    OK: schedule group survived"
 echo "==> Phase 4: Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-aws scheduler get-schedule-group --name "${GROUP}" --region "${REGION}" >/dev/null 2>&1 && { echo "FAIL: group still exists after destroy" >&2; exit 1; }
+assert_gone "group still exists after destroy" aws scheduler get-schedule-group --name "${GROUP}" --region "${REGION}"
 echo "    OK: group gone"
-aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 && { echo "FAIL: state remains" >&2; exit 1; }
+assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
 echo ""
 echo "==> scheduler-custom-group test passed"

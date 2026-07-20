@@ -165,7 +165,24 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      that it was in-place, not a replacement (e.g. an identity field like
      DynamoDB `CreationDateTime` is unchanged).
    - **Final phase — destroy** (`--force`), then assert the resource is gone, the
-     `state.json` is gone, and sweep the log groups again.
+     `state.json` is gone, and sweep the log groups again. Gone-assertions MUST
+     go through the canonical `gone_probe` / `assert_gone` helper block (copy it
+     verbatim from any swept fixture, e.g.
+     `tests/integration/dynamodb-gsi-update/verify.sh`; source of truth in
+     `scripts/check-integ-probe-not-found.ts`), inserted right after
+     `set -euo pipefail`:
+
+     ```bash
+     assert_gone "resource <name> still exists after destroy" aws <service> <read-verb> [args...]
+     assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+     ```
+
+     Never write `if aws <read-probe> ... >/dev/null 2>&1; then FAIL` (or the
+     inverse `if ! aws ...; then <gone>`): a throttled probe would silently
+     pass the leak check (issue #1097 pattern 2). Use `s3api head-object` for
+     state files, never `aws s3 ls` (exit 1 + empty output for "no keys" is
+     indistinguishable from a silenced error). Enforced by
+     `tests/unit/scripts/integ-verify-probe-not-found.test.ts`.
    - End with a single `echo "[verify] PASS — ..."` line (the run-integ harness
      greps for it).
    - `chmod +x verify.sh`.

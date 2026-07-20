@@ -47,6 +47,29 @@ both tear down correctly.
 Enforced by `tests/unit/scripts/integ-verify-signal-traps.test.ts` (issue #1097);
 the user-facing writeup is in [docs/testing.md](../../docs/testing.md).
 
+### `verify.sh` gone-probes (mandatory)
+
+A destroy/leak assertion must never be a silenced blind probe:
+`if aws <read-probe> ... >/dev/null 2>&1; then FAIL` (and the inverse
+`if ! aws ...; then <conclude gone>`) read ANY failure (throttle, auth,
+network) as "gone" and silently pass the leak check (issue #1097 pattern 2).
+Route probes through the canonical helper block every affected fixture carries
+verbatim (source of truth: `scripts/check-integ-probe-not-found.ts`):
+
+```bash
+assert_gone "<leak description>" aws <service> <read-verb> [args...]
+if ! gone_probe aws <service> <read-verb> [args...]; then ...still exists...; fi
+```
+
+`gone_probe` accepts ONLY the canonical not-found signature
+(`'not ?found|no ?such|does ?not ?exist|non ?existent|404'`) and hard-FAILs on
+anything else. Probe state files via `s3api head-object`, never `aws s3 ls`
+(which exits 1 with empty output for "no keys"). Out of scope: mutation probes,
+fail-closed existence checks, pre-flight "already exists" guards, best-effort
+cleanup guards. Enforced by
+`tests/unit/scripts/integ-verify-probe-not-found.test.ts`; user-facing writeup
+in [docs/testing.md](../../docs/testing.md).
+
 ## UPDATE Testing
 
 - Environment variable `CDKD_TEST_UPDATE=true` enables UPDATE test mode

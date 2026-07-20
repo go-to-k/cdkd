@@ -22,6 +22,34 @@
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 VARIANT="${VARIANT:-default}"
 
 REGION="${AWS_REGION:-us-east-1}"
@@ -173,10 +201,7 @@ case "${VARIANT}" in
     echo "[verify] step 3b ok: dry-run is permissive + emits the real-run hint"
 
     echo "[verify] step 4: verify CFn stack does NOT exist (dry-run)"
-    if aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" >/dev/null 2>&1; then
-      echo "[verify] FAIL: dry-run created a CFn stack — should not happen"
-      exit 1
-    fi
+    assert_gone "dry-run created a CFn stack — should not happen" aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}"
     echo "[verify] step 4 ok: no CFn stack"
     echo "[verify] step 5: verify cdkd state still exists (dry-run preserves state)"
     if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/state.json" --region "${REGION}" >/dev/null 2>&1; then
@@ -206,15 +231,9 @@ case "${VARIANT}" in
       *) echo "[verify] FAIL: expected UPDATE_COMPLETE / IMPORT_COMPLETE, got ${STATUS}"; exit 1 ;;
     esac
     # Default-name CFn stack must NOT exist (renamed-only assertion).
-    if aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" >/dev/null 2>&1; then
-      echo "[verify] FAIL: default-name CFn stack '${STACK}' should not exist (--cfn-stack-name redirects)"
-      exit 1
-    fi
+    assert_gone "default-name CFn stack '${STACK}' should not exist (--cfn-stack-name redirects)" aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"
     echo "[verify] step 4b: cdkd state cleared"
-    if aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/state.json" --region "${REGION}" >/dev/null 2>&1; then
-      echo "[verify] FAIL: cdkd state still present"
-      exit 1
-    fi
+    assert_gone "cdkd state still present" aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/state.json" --region "${REGION}"
     echo "[verify] step 4b ok"
     echo "[verify] step 5: delete-stack ${CFN_STACK}"
     aws cloudformation delete-stack --stack-name "${CFN_STACK}" --region "${REGION}"
@@ -355,10 +374,7 @@ for lid in sorted(deleted):
 
     echo "[verify] step 5: verify cdkd state is GONE"
     STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
-    if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
-      echo "[verify] FAIL: cdkd state still present at s3://${STATE_BUCKET}/${STATE_KEY}"
-      exit 1
-    fi
+    assert_gone "cdkd state still present at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}"
     echo "[verify] step 5 ok: cdkd state cleared"
 
     # Issue #319: post-export `cdk diff` must be clean against the

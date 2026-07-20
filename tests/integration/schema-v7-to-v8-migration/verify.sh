@@ -26,6 +26,34 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 PRODUCER_STACK="CdkdSchemaV7ToV8MigrationProducer"
@@ -236,14 +264,8 @@ node "${LOCAL_DIST}" destroy "${CONSUMER_STACK}" \
   --region "${REGION}" \
   --force
 
-if aws ssm get-parameter --name "${CONSUMER_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: consumer parameter still exists after destroy" >&2
-  exit 1
-fi
-if aws s3 ls "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: consumer state file still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "consumer parameter still exists after destroy" aws ssm get-parameter --name "${CONSUMER_PARAM_NAME}" --region "${REGION}"
+assert_gone "consumer state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
 echo "    OK: consumer is gone (AWS resource + state)"
 
 echo "==> Phase 4b: destroy Producer with v8 binary"
@@ -252,14 +274,8 @@ node "${LOCAL_DIST}" destroy "${PRODUCER_STACK}" \
   --region "${REGION}" \
   --force
 
-if aws ssm get-parameter --name "${PRODUCER_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: producer parameter still exists after destroy" >&2
-  exit 1
-fi
-if aws s3 ls "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: producer state file still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "producer parameter still exists after destroy" aws ssm get-parameter --name "${PRODUCER_PARAM_NAME}" --region "${REGION}"
+assert_gone "producer state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PRODUCER_STATE_KEY}"
 echo "    OK: producer is gone (AWS resource + state)"
 
 echo ""

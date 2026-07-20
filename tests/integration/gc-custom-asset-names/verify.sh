@@ -38,6 +38,34 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdGcCustomAssetNamesExample"
@@ -289,10 +317,7 @@ echo "==> Phase 3b: cdkd gc --yes (real deletion)"
 node "${LOCAL_DIST}" gc --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --older-than 0.0002h --yes
 
-if aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${GARBAGE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: seeded garbage object still exists after gc --yes" >&2
-  exit 1
-fi
+assert_gone "seeded garbage object still exists after gc --yes" aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${GARBAGE_KEY}"
 if ! aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${CODE_KEY}" >/dev/null 2>&1; then
   echo "FAIL: gc deleted the deploy-referenced asset s3://${ASSET_BUCKET}/${CODE_KEY}" >&2
   exit 1
@@ -306,14 +331,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --yes
 
-if aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: Lambda function ${FN_NAME} still exists after destroy" >&2
-  exit 1
-fi
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
-  exit 1
-fi
+assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
+assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 # Content-addressed asset storage is never deleted on `cdkd destroy` (a
 # rollback or another stack may reference the same hash) — the object must
 # survive until `bootstrap --destroy` empties the bucket.
@@ -327,19 +346,9 @@ echo "==> Phase 4b: cdkd bootstrap --destroy (names read from the marker, no --f
 node "${LOCAL_DIST}" bootstrap --destroy --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --yes
 
-if aws s3api head-bucket --bucket "${ASSET_BUCKET}" >/dev/null 2>&1; then
-  echo "FAIL: custom asset bucket ${ASSET_BUCKET} still exists after bootstrap --destroy" >&2
-  exit 1
-fi
-if aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" \
-  --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: custom container repo ${CONTAINER_REPO} still exists after bootstrap --destroy" >&2
-  exit 1
-fi
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: bootstrap marker ${MARKER_KEY} still exists after bootstrap --destroy" >&2
-  exit 1
-fi
+assert_gone "custom asset bucket ${ASSET_BUCKET} still exists after bootstrap --destroy" aws s3api head-bucket --bucket "${ASSET_BUCKET}"
+assert_gone "custom container repo ${CONTAINER_REPO} still exists after bootstrap --destroy" aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" --region "${REGION}"
+assert_gone "bootstrap marker ${MARKER_KEY} still exists after bootstrap --destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
 echo "    OK: custom bucket gone, custom repo gone, marker gone — zero residue"
 
 echo "[verify] PASS — custom-named asset storage bootstrap, publish-to-custom-bucket, gc dry-run/delete precision, and marker-driven teardown all verified"

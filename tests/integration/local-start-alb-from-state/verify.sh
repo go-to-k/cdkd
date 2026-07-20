@@ -249,14 +249,17 @@ echo "==> Verifying state is empty post-destroy"
 # after teardown and would false-FAIL here. The destroy contract is that
 # `state.json` is gone; the informational events store is swept separately
 # (see /cleanup step 3.5).
-# `aws s3 ls --recursive` returns exit 1 when nothing matches (success but
-# empty). Under `set -o pipefail` that would terminate the script BEFORE the
-# final "test passed" echo; wrap the call in `|| true` so the pipeline
-# reports its own intent (number of matching lines == 0) cleanly.
-STATE_REMAINING=$(
-  (aws s3 ls "s3://${STATE_BUCKET}/cdkd/${STACK_NAME}/" --recursive --region "${REGION}" 2>/dev/null || true) \
-    | grep -c 'state\.json' || true
-)
+# `aws s3 ls --recursive` exits 1 BOTH when nothing matches (empty output)
+# and on a real error like a throttle (non-empty error text); only the
+# empty-output case means "no keys" (#1097 pattern 2 -- an API error must
+# not silently pass this leak check).
+STATE_LISTING="$(aws s3 ls "s3://${STATE_BUCKET}/cdkd/${STACK_NAME}/" --recursive --region "${REGION}" 2>&1)" || {
+  if [ -n "${STATE_LISTING}" ]; then
+    echo "FAIL: could not list s3://${STATE_BUCKET}/cdkd/${STACK_NAME}/ to verify state deletion: ${STATE_LISTING}"
+    exit 1
+  fi
+}
+STATE_REMAINING=$(printf '%s' "${STATE_LISTING}" | grep -c 'state\.json' || true)
 if [[ "${STATE_REMAINING}" -ne 0 ]]; then
   echo "FAIL: cdkd state.json for ${STACK_NAME} still present after destroy"
   exit 1

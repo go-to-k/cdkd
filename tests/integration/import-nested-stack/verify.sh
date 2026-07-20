@@ -29,6 +29,34 @@
 # failure path so leftover orphans never persist.
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 
@@ -224,7 +252,7 @@ fi
 echo "[verify] step 9 ok: child state parent-link=${PARENT_LINK}"
 
 echo "[verify] step 10: assert source CFn stacks are retired (parent + child both gone)"
-if aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}" >/dev/null 2>&1; then
+if ! gone_probe aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}"; then
   STATUS=$(aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}" \
     --query 'Stacks[0].StackStatus' --output text)
   if [ "${STATUS}" != "DELETE_COMPLETE" ]; then
@@ -247,25 +275,13 @@ echo "[verify] step 12: cdkd destroy ${PARENT_STACK} --force"
 echo "[verify] step 12 ok: cdkd destroy exited 0"
 
 echo "[verify] step 13: assert AWS resources are GONE"
-if aws ssm get-parameter --name "${PARENT_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: parent SSM parameter ${PARENT_PARAM_NAME} still exists after destroy"
-  exit 1
-fi
-if aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: child SSM parameter ${CHILD_PARAM_NAME} still exists after destroy"
-  exit 1
-fi
+assert_gone "parent SSM parameter ${PARENT_PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${PARENT_PARAM_NAME}" --region "${REGION}"
+assert_gone "child SSM parameter ${CHILD_PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}"
 echo "[verify] step 13 ok: both SSM parameters gone"
 
 echo "[verify] step 14: assert cdkd state files GONE (both parent and child)"
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PARENT_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: parent cdkd state still present at s3://${STATE_BUCKET}/${PARENT_STATE_KEY}"
-  exit 1
-fi
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: child cdkd state still present at s3://${STATE_BUCKET}/${CHILD_STATE_KEY}"
-  exit 1
-fi
+assert_gone "parent cdkd state still present at s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PARENT_STATE_KEY}" --region "${REGION}"
+assert_gone "child cdkd state still present at s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" --region "${REGION}"
 echo "[verify] step 14 ok: both cdkd state files cleared"
 
 trap - EXIT INT TERM
