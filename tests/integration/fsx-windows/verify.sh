@@ -450,10 +450,14 @@ cleanup() {
     # cleanup no longer blocks on the directory finishing its teardown, so
     # its ENIs may still be pinning these subnets. Say so rather than
     # leaving a silent survivor — a VPC is not chargeable, but it does need
-    # sweeping once the directory is gone.
-    if aws ec2 describe-vpcs --vpc-ids "${vpcid}" --region "${REGION}" >/dev/null 2>&1; then
+    # sweeping once the directory is gone. Strict probe (#1097 pattern 2):
+    # a throttle must not hide the survivor warning, so an undetermined
+    # probe warns too instead of silently passing.
+    if vpc_probe_out=$(aws ec2 describe-vpcs --vpc-ids "${vpcid}" --region "${REGION}" 2>&1); then
       echo "    WARNING: VPC ${vpcid} survived cleanup — most likely the Managed AD's ENIs are still attached while it finishes Deleting" >&2
       echo "    WARNING: not chargeable, but sweep it once 'aws ds describe-directories' is empty" >&2
+    elif ! printf '%s' "${vpc_probe_out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      echo "    WARNING: could not verify VPC ${vpcid} teardown: ${vpc_probe_out}" >&2
     fi
   done
   if [ -n "${STATE_BUCKET:-}" ]; then
