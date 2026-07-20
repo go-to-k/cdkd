@@ -36,6 +36,7 @@ import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { assertRegionMatch, type DeleteContext } from './region-check.js';
 import { isNonProvisionable } from './unsupported-types.js';
+import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -193,7 +194,8 @@ export class CloudControlProvider implements ResourceProvider {
       const progressEvent = await this.waitForOperation(
         createResponse.ProgressEvent.RequestToken,
         logicalId,
-        'CREATE'
+        'CREATE',
+        resourceType
       );
 
       if (!progressEvent.Identifier) {
@@ -397,7 +399,8 @@ export class CloudControlProvider implements ResourceProvider {
       const progressEvent = await this.waitForOperation(
         updateResponse.ProgressEvent.RequestToken,
         logicalId,
-        'UPDATE'
+        'UPDATE',
+        resourceType
       );
 
       this.logger.debug(`Updated resource ${logicalId}`);
@@ -518,7 +521,12 @@ export class CloudControlProvider implements ResourceProvider {
         );
 
         // Wait for deletion to complete
-        await this.waitForOperation(deleteResponse.ProgressEvent.RequestToken, logicalId, 'DELETE');
+        await this.waitForOperation(
+          deleteResponse.ProgressEvent.RequestToken,
+          logicalId,
+          'DELETE',
+          resourceType
+        );
 
         this.logger.debug(`Deleted resource ${logicalId}`);
         return;
@@ -600,13 +608,25 @@ export class CloudControlProvider implements ResourceProvider {
   private async waitForOperation(
     requestToken: string,
     logicalId: string,
-    operation: 'CREATE' | 'UPDATE' | 'DELETE'
+    operation: 'CREATE' | 'UPDATE' | 'DELETE',
+    resourceType: string
   ): Promise<ProgressEvent> {
     const startTime = Date.now();
     let attempts = 0;
     let pollInterval = this.INITIAL_POLL_INTERVAL_MS;
 
-    while (Date.now() - startTime < this.MAX_WAIT_TIME_MS) {
+    // Known-slow types (OpenSearch domains, RDS / Redshift / ElastiCache
+    // clusters) legitimately exceed the flat 15-min poll cap on CREATE /
+    // DELETE, so lift the cap to their per-type floor. `Math.max` guarantees
+    // the cap only ever grows — a normal type keeps the 15-min default.
+    // See slow-cc-operation-timeouts.ts for why this floor is shared with the
+    // outer per-resource deadline (they must not drift apart).
+    const maxWaitMs = Math.max(
+      this.MAX_WAIT_TIME_MS,
+      slowCcOperationTimeoutMs(resourceType, operation)
+    );
+
+    while (Date.now() - startTime < maxWaitMs) {
       attempts++;
 
       const statusResponse = await this.cloudControlClient.send(
@@ -676,7 +696,7 @@ export class CloudControlProvider implements ResourceProvider {
     }
 
     throw new ProvisioningError(
-      `${operation} timeout for ${logicalId} after ${this.MAX_WAIT_TIME_MS / 1000}s`,
+      `${operation} timeout for ${logicalId} after ${maxWaitMs / 1000}s`,
       'Unknown',
       logicalId
     );

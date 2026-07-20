@@ -13,6 +13,7 @@ import {
 } from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
 import {
   extractDeploymentEventError,
@@ -766,9 +767,14 @@ export async function runDestroyForStack(
             ctx.resourceWarnAfterMs ??
             DEFAULT_RESOURCE_WARN_AFTER_MS;
           const globalTimeoutMs = ctx.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+          // Known-slow types (OpenSearch domains, RDS / Redshift / ElastiCache
+          // clusters) lift the outer deadline to match the CC inner poll cap so
+          // a slow DELETE is not aborted by the 30-min default. A per-type CLI
+          // override still wins (explicit escape hatch).
+          const slowTypeMinTimeoutMs = slowCcOperationTimeoutMs(resource.resourceType, 'DELETE');
           const timeoutMs =
             ctx.resourceTimeoutByType?.[resource.resourceType] ??
-            Math.max(providerMinTimeoutMs, globalTimeoutMs);
+            Math.max(providerMinTimeoutMs, slowTypeMinTimeoutMs, globalTimeoutMs);
 
           // Wrap the entire retry loop in the per-resource deadline so a
           // genuinely-stuck delete (e.g. a hung Custom Resource handler or

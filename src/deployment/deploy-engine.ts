@@ -36,6 +36,7 @@ import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -2133,9 +2134,14 @@ export class DeployEngine {
       this.options.resourceWarnAfterMs ??
       DEFAULT_RESOURCE_WARN_AFTER_MS;
     const globalTimeoutMs = this.options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+    // Known-slow types (OpenSearch domains, RDS / Redshift / ElastiCache
+    // clusters) lift the outer deadline to match the CC inner poll cap so a
+    // slow CREATE / UPDATE is not aborted by the 30-min default. A per-type CLI
+    // override still wins (explicit escape hatch).
+    const slowTypeMinTimeoutMs = slowCcOperationTimeoutMs(resourceType, operationKind);
     const timeoutMs =
       this.options.resourceTimeoutByType?.[resourceType] ??
-      Math.max(providerMinTimeoutMs, globalTimeoutMs);
+      Math.max(providerMinTimeoutMs, slowTypeMinTimeoutMs, globalTimeoutMs);
 
     // #808 best-effort event: per-resource op started. `provisionedBy`
     // is the routing inference used for the live label (same decision the

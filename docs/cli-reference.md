@@ -411,6 +411,18 @@ self-reported cap, pass an explicit per-type override
 overrides always win over the provider's self-report — they're the
 documented escape hatch.
 
+A handful of resource types are ALSO known to be slow to create or
+delete regardless of provider — an `AWS::OpenSearchService::Domain`
+deletion routinely runs 15-30 minutes, and Redshift / ElastiCache / RDS
+clusters are the same class. cdkd carries a built-in 60-minute floor for
+these (`src/provisioning/slow-cc-operation-timeouts.ts`), folded into the
+same `max(...)` resolution above, so a default `cdkd destroy` waits long
+enough for the delete to actually finish instead of aborting mid-delete.
+The same floor lifts the Cloud Control provider's internal poll cap (a
+flat 15 minutes otherwise), so a Cloud-Control-routed slow delete is not
+cut off before the outer deadline. An explicit
+`--resource-timeout <TYPE>=<DURATION>` override still wins.
+
 The error message on timeout names the resource, type, region, elapsed
 time, and operation, and reminds you that long-running resources
 self-report their needed budget — when you see CR time out, the cause
