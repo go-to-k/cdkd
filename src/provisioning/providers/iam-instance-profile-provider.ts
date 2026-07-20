@@ -13,7 +13,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -376,21 +377,25 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.iamClient.send(
-        new ListInstanceProfilesCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const profile of list.InstanceProfiles ?? []) {
-        if (!profile.InstanceProfileName) continue;
-        if (matchesCdkPath(profile.Tags, input.cdkPath)) {
-          return { physicalId: profile.InstanceProfileName, attributes: {} };
-        }
-      }
-      marker = list.IsTruncated ? list.Marker : undefined;
-    } while (marker);
-    return null;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.iamClient.send(
+          new ListInstanceProfilesCommand({ ...(marker && { Marker: marker }) })
+        );
+        return {
+          items: list.InstanceProfiles,
+          nextMarker: list.IsTruncated ? list.Marker : undefined,
+        };
+      },
+      // ListInstanceProfiles already returns Tags inline, so there is no
+      // per-candidate read to make: the walk is paginated but not N+1.
+      describe: async (profile) => (profile.InstanceProfileName ? profile : undefined),
+      tagsOf: (profile) => profile.Tags,
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a name.
+    return { physicalId: match.summary.InstanceProfileName!, attributes: {} };
   }
 }

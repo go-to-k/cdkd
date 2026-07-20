@@ -27,7 +27,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -794,31 +795,33 @@ export class KMSProvider implements ResourceProvider {
 
     if (!input.cdkPath) return null;
 
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListKeysCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const key of list.Keys ?? []) {
-        if (!key.KeyId) continue;
+    const match = await importTagWalk({
+      cdkPath: input.cdkPath,
+      logicalId: input.logicalId,
+      listPage: async (marker) => {
+        const list = await this.getClient().send(
+          new ListKeysCommand({ ...(marker && { Marker: marker }) })
+        );
+        return { items: list.Keys, nextMarker: list.NextMarker };
+      },
+      describe: async (key) => {
+        if (!key.KeyId) return undefined;
         try {
-          const tagsResp = await this.getClient().send(
-            new ListResourceTagsCommand({ KeyId: key.KeyId })
-          );
-          for (const tag of tagsResp.Tags ?? []) {
-            if (tag.TagKey === CDK_PATH_TAG && tag.TagValue === input.cdkPath) {
-              return { physicalId: key.KeyId, attributes: {} };
-            }
-          }
+          return await this.getClient().send(new ListResourceTagsCommand({ KeyId: key.KeyId }));
         } catch (err) {
           // AWS-managed keys lack ListResourceTags permission. Skip silently.
           const name = (err as { name?: string }).name;
-          if (name === 'AccessDeniedException' || err instanceof NotFoundException) continue;
+          if (name === 'AccessDeniedException' || err instanceof NotFoundException)
+            return undefined;
           throw err;
         }
-      }
-      marker = list.NextMarker;
-    } while (marker);
-    return null;
+      },
+      // KMS returns the v2-style {TagKey, TagValue} shape.
+      tagsOf: (tagsResp) =>
+        (tagsResp.Tags ?? []).map((t) => ({ Key: t.TagKey, Value: t.TagValue })),
+    });
+    if (!match) return null;
+    // Non-null by construction: `describe` skips summaries without a KeyId.
+    return { physicalId: match.summary.KeyId!, attributes: {} };
   }
 }
