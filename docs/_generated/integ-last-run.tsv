@@ -128,7 +128,7 @@ intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run);
 kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
 kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
 kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy ok+destroy 3 del 0 err (split across subshell-death; re-destroyed clean); KMS key PendingDeletion
-lambda	2026-07-20T03:12:02Z	PASS	170	verify.sh	broad refresh for #1106 resolver guard; destroy 9/9, 0 orphans
+lambda	2026-07-20T18:27:48Z	PASS	75	verify.sh	broad integ for CC-timeout fix; 9 res clean destroy
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
 lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
@@ -189,7 +189,7 @@ nested-stack	2026-06-21T11:16:17Z	PASS	24	standard	sweep-F staleness re-run (rc=
 nested-stack-3level	2026-06-20T19:37:31Z	PASS		verify.sh	first run; 4-level nested deploy/parent-link/state-tree/destroy-cascade; 9 deleted 0 errors; all state.json gone
 nested-stack-deep	2026-06-21T11:17:08Z	PASS	49	verify.sh	sweep-F staleness re-run (rc=0)
 nodejs-function	2026-06-21T03:52:27Z	PASS		verify.sh	NodejsFunction esbuild bundle invoked 200; clean destroy 0 orphan
-opensearch-domain-getatt	2026-06-21T18:03:30Z	PASS	1671	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
+opensearch-domain-getatt	2026-07-20T18:25:27Z	PASS	1796	verify.sh	FIXED: 60m CC delete floor; destroy 0 err, 0 orphans
 orphan-resource	2026-06-21T11:00:28Z	PASS	30	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 parameters	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockCloudControlSend = vi.fn();
 const mockCloudControlConfigRegion = vi.fn();
@@ -1615,5 +1615,75 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
     ).rejects.toThrow(/UPDATE failed for Thing/);
 
     expect(deleteCallIdentifiers()).toEqual([]);
+  });
+});
+
+describe('CloudControlProvider waitForOperation timeout cap (slow-type floor)', () => {
+  let provider: CloudControlProvider;
+
+  beforeEach(() => {
+    mockCloudControlSend.mockReset();
+    mockCloudControlConfigRegion.mockReset();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    provider = new CloudControlProvider();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // DeleteResource returns a token; GetResourceRequestStatus is stuck on
+  // IN_PROGRESS forever, so the wait loop runs until its timeout cap fires.
+  function wireDeleteNeverCompletes(): void {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'DeleteResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-del' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'IN_PROGRESS' } });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it('aborts a normal-type DELETE at the 15-min default cap', async () => {
+    wireDeleteNeverCompletes();
+    const rejection = expect(
+      provider.delete('MyTopic', 'arn:aws:sns:us-east-1:123:t', 'AWS::SNS::Topic', {}, {
+        expectedRegion: 'us-east-1',
+      })
+    ).rejects.toThrow(/after 900s/);
+    // Flush the poll loop past the 15-min default cap; advanceTimersByTimeAsync
+    // resolves the interleaved sleep + send microtasks as it advances.
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1000 + 5000);
+    await rejection;
+  });
+
+  it('does NOT abort a slow-type DELETE at 15 min, and aborts at the lifted 60-min floor', async () => {
+    wireDeleteNeverCompletes();
+    let settled = false;
+    let message = '';
+    const p = provider
+      .delete('MyDomain', 'my-domain', 'AWS::OpenSearchService::Domain', {}, {
+        expectedRegion: 'us-east-1',
+      })
+      .catch((e: Error) => {
+        settled = true;
+        message = e.message;
+      });
+
+    // Well past the 15-min default cap but under the 60-min slow-type floor:
+    // the OpenSearch domain delete must still be polling, not timed out.
+    await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
+    expect(settled).toBe(false);
+
+    // Past the 60-min floor: now it aborts, and the message reflects the
+    // lifted cap (3600s), not the flat 900s default.
+    await vi.advanceTimersByTimeAsync(45 * 60 * 1000);
+    await p;
+    expect(settled).toBe(true);
+    expect(message).toMatch(/after 3600s/);
   });
 });
