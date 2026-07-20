@@ -452,7 +452,10 @@ the stack is managed by `cdkd deploy`. This is the reverse direction
 of `cdkd export` (see below).
 
 ```bash
-# Adopt a whole stack previously deployed by cdk deploy (tag-based auto-lookup).
+# Adopt a whole stack, resolving each resource from its template name property.
+# NOTE: the aws:cdk:path tag fallback does not match on real AWS (see #1128), so
+# resources whose physical name CloudFormation generated come back "not found".
+# To adopt a cdk deploy-managed stack, prefer --migrate-from-cloudformation below.
 cdkd import MyStack --yes
 
 # Adopt only specific resources (CDK CLI parity).
