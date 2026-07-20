@@ -1,3 +1,10 @@
+## [0.257.1](https://github.com/go-to-k/cdkd/compare/v0.257.0...v0.257.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **import:** resolve auto-mode physical IDs from CloudFormation ([#1130](https://github.com/go-to-k/cdkd/issues/1130)) ([57ed148](https://github.com/go-to-k/cdkd/commit/57ed148754a9b4ccc706c9298d2c54b07210eff0))
+
 # [0.257.0](https://github.com/go-to-k/cdkd/compare/v0.256.0...v0.257.0) (2026-07-20)
 
 
