@@ -131,7 +131,14 @@ export function findCliVariables(content: string): Set<string> {
   const assignment =
     /^\s*(?:export\s+|readonly\s+|declare\s+(?:-\w+\s+)?|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)(.*?)\2\s*(?:#.*)?$/gm;
   for (const m of content.matchAll(assignment)) {
-    if (/cli\.js/.test(m[3]!)) vars.add(m[1]!);
+    const rhs = m[3]!;
+    if (!/cli\.js/.test(rhs)) continue;
+    // A PUBLISHED, version-pinned binary (the schema-migration fixtures install
+    // an old `@go-to-k/cdkd` to prove the state round-trip) must NOT be judged
+    // against today's option set: a flag that is correct for the pinned version
+    // would be reported the moment this repo deprecates it.
+    if (/node_modules\/@go-to-k\/cdkd/.test(rhs)) continue;
+    vars.add(m[1]!);
   }
   return vars;
 }
@@ -155,6 +162,14 @@ export function splitShellCommands(line: string): string[] {
 
   for (let i = 0; i < line.length; i++) {
     const ch = line[i]!;
+
+    // A backslash escape inside double quotes (`-c "a\"b"`) must not be read
+    // as the closing quote, or the split lands mid-string and drops the rest
+    // of the command's flags.
+    if (quote === '"' && ch === '\\' && i + 1 < line.length) {
+      current += ch + line[++i]!;
+      continue;
+    }
     if (quote) {
       if (ch === quote) quote = null;
       current += ch;
@@ -165,6 +180,7 @@ export function splitShellCommands(line: string): string[] {
       current += ch;
       continue;
     }
+
     const two = line.slice(i, i + 2);
     if (two === '&&' || two === '||') {
       parts.push(current);
@@ -172,7 +188,15 @@ export function splitShellCommands(line: string): string[] {
       i++;
       continue;
     }
-    if (ch === ';' || ch === '|' || ch === '&') {
+    if (ch === ';' || ch === '|') {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    // A bare `&` separates commands ONLY when it is not part of a redirect:
+    // `2>&1` would otherwise split mid-token and silently drop every flag
+    // that follows the redirect.
+    if (ch === '&' && !/[>\d]/.test(line[i - 1] ?? '')) {
       parts.push(current);
       current = '';
       continue;

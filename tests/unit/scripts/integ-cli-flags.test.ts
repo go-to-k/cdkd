@@ -82,6 +82,15 @@ describe('findCliVariables', () => {
   ])('recognizes the %s form', (_label, assignment) => {
     expect([...findCliVariables(assignment)]).toContain('CLI');
   });
+
+  it('skips a version-pinned published binary', () => {
+    // The schema-migration fixtures install an OLD `@go-to-k/cdkd` to prove the
+    // state round-trip. Its flags belong to that version's option set, so
+    // judging them against today's tree would report a false violation the
+    // moment this repo deprecates a flag.
+    const pinned = 'V5_BIN="${V5_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"';
+    expect([...findCliVariables(pinned)]).toEqual([]);
+  });
 });
 
 describe('joinContinuedLines', () => {
@@ -174,6 +183,26 @@ describe('extractInvocations', () => {
 
   it('does not split on an operator inside quotes', () => {
     const inv = extractInvocations(withCli('${CLI} deploy S -c "a&&b" --force'), specs);
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.longFlags).toEqual(['--force']);
+  });
+
+  // A bare `&` separates commands, but `2>&1` is a redirect. Splitting there
+  // truncated the segment and silently dropped every flag after it -- the
+  // under-detection direction.
+  it('does not split a `2>&1` redirect', () => {
+    const inv = extractInvocations(withCli('${CLI} deploy S 2>&1 --bogus-flag'), specs);
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.longFlags).toEqual(['--bogus-flag']);
+  });
+
+  it('still splits a real background `&`', () => {
+    const inv = extractInvocations(withCli('${CLI} deploy S --force & ${CLI} synth --json'), specs);
+    expect(inv.map((i) => i.commandPath)).toEqual(['deploy', 'synth']);
+  });
+
+  it('does not lose flags after an escaped quote inside a quoted argument', () => {
+    const inv = extractInvocations(withCli('${CLI} deploy S -c "a\\"b&&c" --force'), specs);
     expect(inv).toHaveLength(1);
     expect(inv[0]!.longFlags).toEqual(['--force']);
   });
@@ -287,13 +316,20 @@ describe('integ fixture CLI invocations (#1097)', () => {
     // supported by the extractor (see the unit test above) but never appears
     // as an invocation here -- every `node ../../../dist/cli.js` occurrence in
     // the tree is inside a variable ASSIGNMENT, not a call site.
+    // Anchored at the start of the invocation, so an argument that merely
+    // LOOKS like a prefix (an uppercase `KEY=VALUE` passed as a flag value)
+    // cannot stand in for the shape. Unanchored, `env prefix` matched 267
+    // invocations against 257 genuinely env-prefixed ones -- enough slack that
+    // a total regression of the env branch would still have satisfied
+    // `toBeGreaterThan(0)`.
+    const ENV = String.raw`(?:[A-Z_][A-Z0-9_]*=\S*\s+|env\s+-[iu]\S*\s+\S+\s+)*`;
     const shapes: Record<string, RegExp> = {
       // `node "${LOCAL_DIST}" deploy ...` -- how most fixtures invoke the CLI.
-      'node + variable path': /(?:^|\s)node\s+"?\$\{?[A-Za-z_]+\}?"?\s/,
+      'node + variable path': new RegExp(String.raw`^\s*${ENV}node\s+"?\$\{?[A-Za-z_]+\}?"?\s`),
       // `${CDKD} deploy ...`
-      'bare variable': /^\s*"?\$\{?[A-Za-z_]+\}?"?\s/,
+      'bare variable': new RegExp(String.raw`^\s*${ENV}"?\$\{?[A-Za-z_]+\}?"?\s`),
       // `CDKD_TEST_UPDATE=true ...` / `env -u FOO ...`
-      'env prefix': /(?:^|\s)(?:[A-Z_][A-Z0-9_]*=\S*\s+|env\s+-[iu])/,
+      'env prefix': new RegExp(String.raw`^\s*(?:[A-Z_][A-Z0-9_]*=\S*\s+|env\s+-[iu])`),
     };
     const seen = new Map<string, number>(Object.keys(shapes).map((k) => [k, 0]));
 
@@ -307,13 +343,21 @@ describe('integ fixture CLI invocations (#1097)', () => {
       }
     }
 
-    for (const name of Object.keys(shapes)) {
-      expect(seen.get(name), `no invocation parsed for shape: ${name}`).toBeGreaterThan(0);
+    // Real floors, not `> 0`. A shape can regress PARTIALLY (e.g. only the
+    // `env -u` form stops matching) and a zero-check would not notice.
+    // Current: node+var 535, bare var 294, env prefix 257.
+    const floors: Record<string, number> = {
+      // The shape whose silent loss this assertion exists to prevent:
+      // requiring a literal `cli.js` in the token made 135 of the 195 fixtures
+      // contribute ZERO invocations while the suite stayed green.
+      'node + variable path': 400,
+      'bare variable': 200,
+      'env prefix': 180,
+    };
+    for (const [name, floor] of Object.entries(floors)) {
+      expect(seen.get(name), `too few invocations parsed for shape: ${name}`).toBeGreaterThan(
+        floor,
+      );
     }
-    // `node + variable path` is the shape whose silent loss this assertion
-    // exists to prevent: requiring a literal `cli.js` in the token made 135 of
-    // the 195 fixtures contribute ZERO invocations while the suite stayed
-    // green. It should dominate the tree.
-    expect(seen.get('node + variable path')).toBeGreaterThan(200);
   });
 });
