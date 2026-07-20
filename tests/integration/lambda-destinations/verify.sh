@@ -81,6 +81,8 @@ sweep_log_groups() {
 }
 
 delete_queue_by_name() {
+  # Best-effort cleanup helper: tolerate probe errors + unset vars.
+  set +eu
   local name="$1"
   local url
   url="$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
@@ -88,6 +90,7 @@ delete_queue_by_name() {
   if [ -n "${url}" ] && [ "${url}" != "None" ]; then
     aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  set -eu
 }
 
 cleanup() {

@@ -76,7 +76,7 @@ env -u CDKD_TEST_UPDATE \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 VAL=$(aws ssm get-parameter --name "${PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 [ "${VAL}" = "base" ] || { echo "FAIL: SSM param is '${VAL}'" >&2; exit 1; }
 echo "    OK: sibling SSM parameter deployed (${VAL})"
 
@@ -109,7 +109,7 @@ CDKD_TEST_UPDATE=true \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 VAL=$(aws ssm get-parameter --name "${PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 [ "${VAL}" = "updated" ] || { echo "FAIL: updated SSM param is '${VAL}'" >&2; exit 1; }
 echo "    OK: sibling update deployed (${VAL})"
 

@@ -120,7 +120,7 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 ROLE_ID_P1="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.RoleId' --output text)"
 echo "    role created, RoleId=${ROLE_ID_P1}"
 STMTS_P1="$(aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name own \
-  --query 'length(PolicyDocument.Statement)' --output text 2>/dev/null || echo 0)"
+  --query 'length(PolicyDocument.Statement)' --output text)"
 if [ "${STMTS_P1}" != "1" ]; then
   echo "FAIL: expected 1 inline-policy statement after Phase 1, got ${STMTS_P1}" >&2
   exit 1
@@ -141,7 +141,7 @@ fi
 echo "    role identity preserved (RoleId unchanged) — no replacement"
 
 STMTS_P2="$(aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name own \
-  --query 'length(PolicyDocument.Statement)' --output text 2>/dev/null || echo 0)"
+  --query 'length(PolicyDocument.Statement)' --output text)"
 if [ "${STMTS_P2}" != "2" ]; then
   echo "FAIL: expected 2 inline-policy statements after the in-place UPDATE, got ${STMTS_P2}" >&2
   exit 1

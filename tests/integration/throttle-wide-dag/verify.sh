@@ -217,7 +217,7 @@ MID_WIDE=$((LAST_WIDE / 2))
 for IDX in 0 "${MID_WIDE}" "${LAST_WIDE}"; do
   SPOT=$(aws ssm get-parameter --region "${REGION}" \
     --name "/${STACK}/wide/${IDX}" \
-    --query 'Parameter.Name' --output text 2>/dev/null || true)
+    --query 'Parameter.Name' --output text)
   if [ "${SPOT}" != "/${STACK}/wide/${IDX}" ]; then
     echo "FAIL: spot-check SSM parameter /${STACK}/wide/${IDX} not found on AWS (got '${SPOT}')" >&2
     exit 1

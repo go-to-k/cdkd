@@ -101,20 +101,22 @@ echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 find_fixture_vpcs() {
   aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
-    --query 'Vpcs[].VpcId' --output text 2>/dev/null || true
+    --query 'Vpcs[].VpcId' --output text
 }
 
 # --- Helper: find the fixture's SecurityGroup ids by the fixture tag. ---
 find_fixture_sgs() {
   aws ec2 describe-security-groups --region "${REGION}" \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
-    --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true
+    --query 'SecurityGroups[].GroupId' --output text
 }
 
 # --- Aggressive orphan cleanup (used by the EXIT trap AND deliberately after
 # the intentional failed deploy if rollback left anything behind). ---
 aggressive_cleanup() {
   echo "[verify] aggressive cleanup: sweeping any fixture orphans"
+  # Best-effort: tolerate probe errors + unset vars while sweeping.
+  set +eu
 
   # SSM parameter (deterministic name).
   aws ssm delete-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -210,6 +212,7 @@ aggressive_cleanup() {
     done
     aws ec2 delete-vpc --vpc-id "${vpc_id}" --region "${REGION}" >/dev/null 2>&1 || true
   done
+  set -eu
 }
 
 cleanup() {
@@ -264,9 +267,7 @@ echo "[verify]   ok: SSM parameter ${SSM_PARAM_NAME} rolled back (gone)"
 
 # 3b. The failing queue itself must not linger (AWS rejected it; nothing to clean,
 #     but assert no half-created queue is left).
-Q_URL="$(aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}" \
-  --query 'QueueUrl' --output text 2>/dev/null || true)"
-if [ -n "${Q_URL}" ] && [ "${Q_URL}" != "None" ]; then
+if ! gone_probe aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}"; then
   echo "[verify] FAIL: failing queue ${FAILING_QUEUE_NAME} exists — invalid CreateQueue should have been rejected"
   exit 1
 fi

@@ -170,8 +170,8 @@ assert_number '.Job.ExecutionProperty.MaxConcurrentRuns' '2' 'Job.ExecutionPrope
 # --- Assertion 2: Workflow tags (MAP shape) reached AWS ---------------
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 WF_ARN="arn:aws:glue:${REGION}:${ACCOUNT_ID}:workflow/${WORKFLOW_NAME}"
-WF_TAGS=$(aws glue get-tags --resource-arn "${WF_ARN}" --region "${REGION}" 2>/dev/null \
-  --query 'Tags' --output json || echo "{}")
+WF_TAGS=$(aws glue get-tags --resource-arn "${WF_ARN}" --region "${REGION}" \
+  --query 'Tags' --output json)
 ENV_TAG=$(echo "${WF_TAGS}" | jq -r '.env // empty')
 TEAM_TAG=$(echo "${WF_TAGS}" | jq -r '."team" // empty')
 if [ "${ENV_TAG}" != "integ" ] || [ "${TEAM_TAG}" != "data-platform" ]; then
@@ -208,7 +208,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes
 NEW_TIMEOUT=$(aws glue get-job --job-name "${JOB_NAME}" --region "${REGION}" \
-  --query 'Job.Timeout' --output text 2>/dev/null || echo "")
+  --query 'Job.Timeout' --output text)
 if [ "${NEW_TIMEOUT}" != "90" ]; then
   echo "FAIL: Job.Timeout after update is '${NEW_TIMEOUT}', expected 90 (update numeric coercion failed)" >&2
   exit 1

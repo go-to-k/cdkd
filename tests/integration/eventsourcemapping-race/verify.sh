@@ -83,10 +83,12 @@ ESM_UUID=""
 list_esms_for_function() {
   local fn="$1"
   [ -z "${fn}" ] && return 0
-  aws lambda list-event-source-mappings \
+  local out
+  out="$(aws lambda list-event-source-mappings \
     --region "${REGION}" \
     --query "EventSourceMappings[?contains(FunctionArn, \`${fn}\`)].UUID" \
-    --output text 2>/dev/null | tr '\t' '\n' | grep -v '^$' || true
+    --output text)"
+  printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^$' || true
 }
 
 cleanup() {
@@ -218,7 +220,7 @@ echo "    resolved ESM UUID: ${ESM_UUID}"
 echo "==> Asserting ESM exists + reaches Enabled"
 ESM_STATE=""
 for _ in $(seq 1 24); do
-  ESM_JSON=$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" 2>/dev/null || true)
+  ESM_JSON=$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}")
   ESM_STATE=$(echo "${ESM_JSON}" | jq -r '.State // ""')
   if [ "${ESM_STATE}" = "Enabled" ]; then
     break
@@ -234,10 +236,11 @@ echo "    OK: ESM is Enabled on AWS"
 
 # Cross-check that list-event-source-mappings filtered by the queue ARN
 # returns exactly our UUID (proves the EventSourceArn wiring).
-LISTED=$(aws lambda list-event-source-mappings \
+LISTED_RAW=$(aws lambda list-event-source-mappings \
   --event-source-arn "${QUEUE_ARN}" \
   --region "${REGION}" \
-  --query 'EventSourceMappings[].UUID' --output text 2>/dev/null | tr '\t' '\n' | grep -v '^$' || true)
+  --query 'EventSourceMappings[].UUID' --output text)
+LISTED=$(printf '%s\n' "${LISTED_RAW}" | tr '\t' '\n' | grep -v '^$' || true)
 if ! echo "${LISTED}" | grep -qx "${ESM_UUID}"; then
   echo "FAIL: list-event-source-mappings by queue ARN did not return ${ESM_UUID}" >&2
   echo "      got: ${LISTED}" >&2

@@ -185,7 +185,7 @@ echo "    OK: Table.OnDemandThroughput.MaxWriteRequestUnits == ${EXPECTED_WRITE}
 # silent-drop is closed.
 POLICY=$(aws dynamodb get-resource-policy \
   --resource-arn "${TABLE_ARN}" --region "${REGION}" \
-  --query 'Policy' --output text 2>/dev/null || echo "")
+  --query 'Policy' --output text)
 if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
   echo "FAIL: no ResourcePolicy attached to ${TABLE_NAME} (silent-drop NOT closed)" >&2
   exit 1
@@ -283,9 +283,9 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
 UPDATE_OK=""
 for _ in $(seq 1 24); do
   STATUS=$(aws dynamodb describe-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.TableStatus' --output text 2>/dev/null || echo "")
+    --query 'Table.TableStatus' --output text)
   READ_NOW=$(aws dynamodb describe-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text 2>/dev/null || echo "")
+    --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text)
   if [ "${STATUS}" = "ACTIVE" ] && [ "${READ_NOW}" = "${PROV_UPDATED_READ}" ]; then
     UPDATE_OK=1
     break

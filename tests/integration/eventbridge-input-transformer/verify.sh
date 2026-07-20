@@ -68,11 +68,17 @@ QUEUE_NAME="cdkd-eb-transform-q"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 queue_url() {
+  if gone_probe aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"; then
+    echo ""
+    return 0
+  fi
   aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
-    --query 'QueueUrl' --output text 2>/dev/null || true
+    --query 'QueueUrl' --output text
 }
 
 delete_rule() {
+  # Best-effort cleanup helper: tolerate probe errors + unset vars.
+  set +eu
   # A rule cannot be deleted while it has targets; remove them first.
   local ids
   ids="$(aws events list-targets-by-rule --rule "${RULE_NAME}" --region "${REGION}" \
@@ -81,6 +87,7 @@ delete_rule() {
     aws events remove-targets --rule "${RULE_NAME}" --ids ${ids} --region "${REGION}" >/dev/null 2>&1 || true
   fi
   aws events delete-rule --name "${RULE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  set -eu
 }
 
 cleanup() {

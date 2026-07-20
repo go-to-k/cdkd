@@ -98,8 +98,12 @@ WORK_QUEUE_URL=""
 # Resolve a queue URL by name (empty if absent). Never aborts under set -e.
 queue_url() {
   local name="$1"
+  if gone_probe aws sqs get-queue-url --queue-name "${name}" --region "${REGION}"; then
+    echo ""
+    return 0
+  fi
   aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
-    --query 'QueueUrl' --output text 2>/dev/null || echo ""
+    --query 'QueueUrl' --output text
 }
 
 cleanup() {
@@ -161,8 +165,12 @@ ssm_exists() {
 
 # Helper: read an SSM parameter Value, or empty. Never aborts under set -e.
 ssm_value() {
+  if gone_probe aws ssm get-parameter --name "$1" --region "${REGION}"; then
+    echo ""
+    return 0
+  fi
   aws ssm get-parameter --name "$1" --region "${REGION}" \
-    --query 'Parameter.Value' --output text 2>/dev/null || echo ""
+    --query 'Parameter.Value' --output text
 }
 
 # Helper: read the WorkQueue RedrivePolicy attribute, or empty when unset.
@@ -170,7 +178,7 @@ ssm_value() {
 work_queue_redrive_policy() {
   aws sqs get-queue-attributes --queue-url "${WORK_QUEUE_URL}" \
     --attribute-names RedrivePolicy --region "${REGION}" \
-    --query 'Attributes.RedrivePolicy' --output text 2>/dev/null || echo ""
+    --query 'Attributes.RedrivePolicy' --output text
 }
 
 # Helper: print the cdkd state outputs map keys (one per line), or empty.

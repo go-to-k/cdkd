@@ -179,10 +179,14 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
 
      Never write `if aws <read-probe> ... >/dev/null 2>&1; then FAIL` (or the
      inverse `if ! aws ...; then <gone>`): a throttled probe would silently
-     pass the leak check (issue #1097 pattern 2). Use `s3api head-object` for
-     state files, never `aws s3 ls` (exit 1 + empty output for "no keys" is
-     indistinguishable from a silenced error). Enforced by
-     `tests/unit/scripts/integ-verify-probe-not-found.test.ts`.
+     pass the leak check (issue #1097 pattern 2). The same goes for the
+     capture-form spelling `N=$(aws <read-verb> ... 2>/dev/null || echo 0)`
+     (`|| true` included) and for silenced probe wrappers
+     (`fn() { aws ... >/dev/null 2>&1; }`) — use plain strict captures, or a
+     `gone_probe` branch when not-found is a legitimate outcome (issue #1120).
+     Use `s3api head-object` for state files, never `aws s3 ls` (exit 1 +
+     empty output for "no keys" is indistinguishable from a silenced error).
+     Enforced by `tests/unit/scripts/integ-verify-probe-not-found.test.ts`.
    - End with a single `echo "[verify] PASS — ..."` line (the run-integ harness
      greps for it).
    - `chmod +x verify.sh`.

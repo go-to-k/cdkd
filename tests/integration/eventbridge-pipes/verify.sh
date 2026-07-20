@@ -80,8 +80,8 @@ env -u CDKD_TEST_UPDATE -u CDKD_TEST_SOURCE_SWITCH node "${LOCAL_DIST}" deploy "
 # as proof it reached AWS; assert the SQS source arn was wired.
 STATE=""; SRCARN=""
 for _ in $(seq 1 24); do
-  STATE=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'CurrentState' --output text 2>/dev/null || echo "")
-  SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+  STATE=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'CurrentState' --output text)
+  SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text)
   if [ "${STATE}" = "RUNNING" ]; then break; fi
   sleep 5
 done
@@ -104,7 +104,7 @@ if grep -q "Replacing Pipe" "${UPDATE_LOG}"; then
   exit 1
 fi
 BS=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
-  --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text 2>/dev/null || true)
+  --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text)
 [ "${BS}" = "2" ] || { echo "FAIL: BatchSize after update is '${BS}', expected 2" >&2; exit 1; }
 echo "    OK: in-place UPDATE reached AWS (BatchSize=${BS})"
 
@@ -118,7 +118,7 @@ set -e
 [ "${COLLIDE_RC}" -ne 0 ] || { echo "FAIL: same-name replacement deploy unexpectedly succeeded without --replace" >&2; exit 1; }
 grep -q "custom-named resource requires replacing" "${COLLIDE_LOG}" \
   || { echo "FAIL: collision error is not the actionable NAMED_REPLACEMENT_COLLISION message" >&2; tail -20 "${COLLIDE_LOG}" >&2; exit 1; }
-SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text)
 case "${SRCARN}" in
   *":${SRC}") : ;;
   *) echo "FAIL: pipe Source changed despite the refused replacement ('${SRCARN}')" >&2; exit 1 ;;
@@ -128,7 +128,7 @@ echo "    OK: refused with the actionable message; AWS unchanged (Source still $
 echo "==> Same-name replacement WITH --replace (delete-first fallback)"
 env CDKD_TEST_UPDATE=true CDKD_TEST_SOURCE_SWITCH=true \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --replace
-SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text 2>/dev/null || echo "")
+SRCARN=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query 'Source' --output text)
 case "${SRCARN}" in
   *":${SRC}2") : ;;
   *) echo "FAIL: pipe Source after --replace is '${SRCARN}', expected to end with ':${SRC}2'" >&2; exit 1 ;;

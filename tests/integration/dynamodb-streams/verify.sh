@@ -170,7 +170,7 @@ echo "    OK: Table.WarmThroughput.WriteUnitsPerSecond == ${EXPECTED_WRITE} on A
 # StreamSpecification so a null field does not abort under `set -e`.
 STREAM_ENABLED_P1=$(aws dynamodb describe-table \
   --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.StreamSpecification.StreamEnabled' --output text 2>/dev/null || echo "None")
+  --query 'Table.StreamSpecification.StreamEnabled' --output text)
 if [ "${STREAM_ENABLED_P1}" = "True" ]; then
   echo "FAIL: table has a stream enabled in Phase 1, expected none" >&2
   exit 1

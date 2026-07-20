@@ -64,9 +64,13 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Resolve the fixture evaluator's id by its fixed name prefix (the service
 # appends a random 10-char suffix to EvaluatorName).
 find_evaluator_id() {
-  aws bedrock-agentcore-control list-evaluators --region "${REGION}" \
+  # Strict: a probe error aborts the caller's $( ) capture under set -e
+  # instead of silently reading as "no evaluator".
+  local out
+  out="$(aws bedrock-agentcore-control list-evaluators --region "${REGION}" \
     --query "evaluators[?starts_with(evaluatorId, '${EVALUATOR_NAME}-')].evaluatorId | [0]" \
-    --output text 2>/dev/null | grep -v '^None$' || true
+    --output text)"
+  printf '%s\n' "${out}" | grep -v '^None$' || true
 }
 
 cleanup() {
@@ -174,7 +178,8 @@ echo "    evaluator updated in-place (id unchanged, level ${LEVEL_P2})"
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if [ -n "$(find_evaluator_id)" ]; then
+LEFTOVER_EVALUATOR="$(find_evaluator_id)"
+if [ -n "${LEFTOVER_EVALUATOR}" ]; then
   echo "FAIL: evaluator ${EVALUATOR_NAME}-* still exists after destroy" >&2
   exit 1
 fi

@@ -142,13 +142,13 @@ if [ -z "${APP_ID}" ] || [ "${APP_ID}" = "None" ]; then
   exit 1
 fi
 PROFILE_ID="$(aws appconfig list-configuration-profiles --application-id "${APP_ID}" --region "${REGION}" --query 'Items[0].Id' --output text)"
-VER1="$(aws appconfig list-hosted-configuration-versions --application-id "${APP_ID}" --configuration-profile-id "${PROFILE_ID}" --region "${REGION}" --query 'Items[?VersionNumber==`1`] | [0].VersionNumber' --output text 2>/dev/null || echo None)"
+VER1="$(aws appconfig list-hosted-configuration-versions --application-id "${APP_ID}" --configuration-profile-id "${PROFILE_ID}" --region "${REGION}" --query 'Items[?VersionNumber==`1`] | [0].VersionNumber' --output text)"
 if [ "${VER1}" != "1" ]; then
   echo "FAIL: hosted configuration version 1 not found after Phase 1 (got '${VER1}')" >&2
   exit 1
 fi
 echo "    application + profile + hosted config version 1 created (Ref chain resolved correctly)"
-DEPLOY_COUNT_P1="$(aws appconfig list-deployments --application-id "${APP_ID}" --environment-id "$(aws appconfig list-environments --application-id "${APP_ID}" --region "${REGION}" --query 'Items[0].Id' --output text)" --region "${REGION}" --query 'length(Items)' --output text 2>/dev/null || echo 0)"
+DEPLOY_COUNT_P1="$(aws appconfig list-deployments --application-id "${APP_ID}" --environment-id "$(aws appconfig list-environments --application-id "${APP_ID}" --region "${REGION}" --query 'Items[0].Id' --output text)" --region "${REGION}" --query 'length(Items)' --output text)"
 if [ "${DEPLOY_COUNT_P1}" -lt 1 ] 2>/dev/null; then
   echo "FAIL: expected >=1 AppConfig deployment after Phase 1, got ${DEPLOY_COUNT_P1}" >&2
   exit 1
@@ -160,7 +160,7 @@ echo "==> Phase 2: re-deploy bumping the hosted config content (feature=v2)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-VER2="$(aws appconfig list-hosted-configuration-versions --application-id "${APP_ID}" --configuration-profile-id "${PROFILE_ID}" --region "${REGION}" --query 'Items[?VersionNumber==`2`] | [0].VersionNumber' --output text 2>/dev/null || echo None)"
+VER2="$(aws appconfig list-hosted-configuration-versions --application-id "${APP_ID}" --configuration-profile-id "${PROFILE_ID}" --region "${REGION}" --query 'Items[?VersionNumber==`2`] | [0].VersionNumber' --output text)"
 if [ "${VER2}" != "2" ]; then
   echo "FAIL: hosted configuration version 2 not found after Phase 2 (got '${VER2}')" >&2
   exit 1

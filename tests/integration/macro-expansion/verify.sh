@@ -89,6 +89,8 @@ fi
 
 cleanup() {
   rc=$?
+  # Best-effort cleanup: tolerate probe errors + unset vars (the handler exits).
+  set +eu
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true

@@ -81,7 +81,7 @@ env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVE_SCHED \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 EXPR=$(aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" \
-  --query 'ScheduleExpression' --output text 2>/dev/null || true)
+  --query 'ScheduleExpression' --output text)
 [ "${EXPR}" = "rate(1 hour)" ] || { echo "FAIL: base schedule is '${EXPR}'" >&2; exit 1; }
 echo "    OK: schedule created in custom group (${EXPR})"
 
@@ -90,7 +90,7 @@ env -u CDKD_TEST_REMOVE_SCHED CDKD_TEST_UPDATE=true \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 EXPR=$(aws scheduler get-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" \
-  --query 'ScheduleExpression' --output text 2>/dev/null || true)
+  --query 'ScheduleExpression' --output text)
 [ "${EXPR}" = "rate(2 hours)" ] || { echo "FAIL: updated schedule is '${EXPR}'" >&2; exit 1; }
 echo "    OK: in-place UPDATE reached the custom-group schedule (${EXPR})"
 

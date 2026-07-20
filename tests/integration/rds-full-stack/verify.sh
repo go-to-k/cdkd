@@ -267,7 +267,7 @@ echo "    live DBInstance endpoint: ${LIVE_ENDPOINT}"
 SSM_VALUE=$(aws ssm get-parameter \
   --name "${SSM_PARAM_NAME}" \
   --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  --query 'Parameter.Value' --output text)
 if [ -z "${SSM_VALUE}" ]; then
   echo "FAIL: SSM parameter ${SSM_PARAM_NAME} not found or empty after deploy" >&2
   exit 1
@@ -292,10 +292,14 @@ echo "    OK: state file is gone"
 
 # DBInstance must be gone or in 'deleting'. RDS Delete* is async; cdkd's delete
 # path waits for the terminal NotFound, so a clean destroy leaves it gone.
-INSTANCE_STATUS=$(aws rds describe-db-instances \
-  --db-instance-identifier "${DB_INSTANCE_ID}" \
-  --region "${REGION}" \
-  --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "gone")
+if gone_probe aws rds describe-db-instances --db-instance-identifier "${DB_INSTANCE_ID}" --region "${REGION}"; then
+  INSTANCE_STATUS="gone"
+else
+  INSTANCE_STATUS=$(aws rds describe-db-instances \
+    --db-instance-identifier "${DB_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'DBInstances[0].DBInstanceStatus' --output text)
+fi
 if [ "${INSTANCE_STATUS}" = "gone" ] || [ "${INSTANCE_STATUS}" = "deleting" ]; then
   echo "    OK: DBInstance is gone or deleting (status: ${INSTANCE_STATUS})"
 else

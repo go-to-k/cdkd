@@ -66,7 +66,18 @@ if ! gone_probe aws <service> <read-verb> [args...]; then ...still exists...; fi
 anything else. Probe state files via `s3api head-object`, never `aws s3 ls`
 (which exits 1 with empty output for "no keys"). Out of scope: mutation probes,
 fail-closed existence checks, pre-flight "already exists" guards, best-effort
-cleanup guards. Enforced by
+cleanup guards.
+
+Two more spellings of the same defect are banned (issue #1120): **capture-form
+fallbacks** (`N=$(aws <read-verb> ... 2>/dev/null || echo 0)` / `|| true` —
+a throttle reads as "0 remaining"; use a plain strict capture, or branch on
+`gone_probe` when not-found is legitimate) and **silenced function wrappers**
+(an exit-status wrapper `fn() { aws ... >/dev/null 2>&1; }` or a value wrapper
+with a swallow tail). Tail-less silenced captures/wrappers stay legal (`set -e`
+fails them loudly), as does the strict stderr-capture idiom
+(`$(cmd 2>&1 >/dev/null || true)`). Best-effort cleanup is exempt via
+`set +e[u]` spans (bounded by the enclosing function) — mark cleanup helpers
+with `set +eu` instead of silencing probes. Enforced by
 `tests/unit/scripts/integ-verify-probe-not-found.test.ts`; user-facing writeup
 in [docs/testing.md](../../docs/testing.md).
 

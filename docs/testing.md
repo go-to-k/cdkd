@@ -483,9 +483,35 @@ and refuse to report PASS on any other failure. Notes:
   `aws s3 ls`: `s3 ls` exits 1 with EMPTY output for "no keys", which is
   indistinguishable from a silenced error.
 
-`tests/unit/scripts/integ-verify-probe-not-found.test.ts` enforces this across
-the whole fixture tree (issue #1097), including a bash-level behavioral test of
-the helpers against a stubbed `aws` (success, not-found, throttle).
+The same defect hides in two more spellings, both banned (issue #1120):
+
+- **Capture-form fallbacks**: a read-verb command substitution with an
+  error-swallowing fallback, e.g. `N=$(aws ... --output text 2>/dev/null ||
+  echo 0)` or `... || true`, reads a throttle as "0 remaining" / "None" /
+  empty. Drop the silencing and the fallback (a plain `VAR=$(aws ...)` under
+  `set -e` hard-fails loudly on a probe error), or, when not-found is a
+  legitimate outcome (async deletes, recovery-window secrets), branch on
+  `gone_probe` first and then read the value with a strict capture. A plain
+  silenced capture with no fallback and the strict stderr-capture idiom
+  (`$(cmd 2>&1 >/dev/null || true)`, error text lands in the value for
+  inspection) stay legal.
+- **Function wrappers**: a function body carrying a silenced read probe whose
+  error cannot fail loudly — the exit-status shape (`ssm_exists() { aws ssm
+  get-parameter ... >/dev/null 2>&1; }`) or a value wrapper with a swallow
+  tail (`... --output text 2>/dev/null || true`). Both make `$(fn)` /
+  `if fn` read a throttle as "gone". Tail-less value wrappers are legal
+  (`$(fn)` propagates the non-zero exit under `set -e`).
+
+Best-effort cleanup code is exempt structurally: lines inside a
+`set +e`/`set +eu` ... `set -e`/`set -eu` span (bounded by the enclosing
+function) are skipped, matching the cleanup convention above — mark a
+best-effort cleanup helper with `set +eu` rather than silencing its probes.
+
+`tests/unit/scripts/integ-verify-probe-not-found.test.ts` enforces all of this
+across the whole fixture tree (issue #1097 pattern 2 + issue #1120), including
+bash-level behavioral tests against a stubbed `aws` (helpers: success /
+not-found / throttle; strict captures: value propagation vs loud throttle
+failure).
 
 ### Fixture convention: `verify.sh` CLI flags
 

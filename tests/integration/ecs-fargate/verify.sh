@@ -238,7 +238,7 @@ RESOURCE_ID="service/${CLUSTER_NAME}/${SERVICE_NAME}"
 SCALABLE_TARGET_RID=$(aws application-autoscaling describe-scalable-targets \
   --region "${REGION}" --service-namespace ecs \
   --query "ScalableTargets[?ResourceId=='${RESOURCE_ID}'].ResourceId" \
-  --output text 2>/dev/null || true)
+  --output text)
 if [ "${SCALABLE_TARGET_RID}" != "${RESOURCE_ID}" ]; then
   echo "FAIL: no ScalableTarget registered for ResourceId '${RESOURCE_ID}' (Fn::GetAtt(Service, 'Name') round-trip BROKEN)" >&2
   aws application-autoscaling describe-scalable-targets \

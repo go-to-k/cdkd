@@ -127,7 +127,7 @@ echo "    Backfill UserPool id: ${POOL_ID}"
 # --- Assertion 1: UserPoolTier (DescribeUserPool) ---------------------
 TIER=$(aws cognito-idp describe-user-pool \
   --user-pool-id "${POOL_ID}" --region "${REGION}" \
-  --query 'UserPool.UserPoolTier' --output text 2>/dev/null || echo "")
+  --query 'UserPool.UserPoolTier' --output text)
 if [ "${TIER}" != "ESSENTIALS" ]; then
   echo "FAIL: UserPool.UserPoolTier is '${TIER}', expected 'ESSENTIALS'" >&2
   exit 1
@@ -136,7 +136,7 @@ echo "    OK: UserPoolTier == ESSENTIALS"
 
 # --- Assertion 2..5: MFA config (GetUserPoolMfaConfig) ----------------
 MFA=$(aws cognito-idp get-user-pool-mfa-config \
-  --user-pool-id "${POOL_ID}" --region "${REGION}" --output json 2>/dev/null || echo "{}")
+  --user-pool-id "${POOL_ID}" --region "${REGION}" --output json)
 
 # MfaConfiguration MUST be ON/OPTIONAL (not OFF). SetUserPoolMfaConfig is a
 # full-replace: if cdkd omitted MfaConfiguration the pool would reset to OFF and

@@ -75,8 +75,14 @@ node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region
 # Provisioned-concurrency setup is async; poll for a non-empty config on the alias.
 PC_OK=""
 for _ in $(seq 1 24); do
-  REQ=$(aws lambda get-provisioned-concurrency-config --function-name "${FN}" --qualifier "${ALIAS}" --region "${REGION}" \
-    --query 'RequestedProvisionedConcurrentExecutions' --output text 2>/dev/null || echo "")
+  # The config 404s until the async provisioned-concurrency setup registers;
+  # gone_probe treats that as "not yet" and hard-FAILs on any other error.
+  if gone_probe aws lambda get-provisioned-concurrency-config --function-name "${FN}" --qualifier "${ALIAS}" --region "${REGION}"; then
+    REQ=""
+  else
+    REQ=$(aws lambda get-provisioned-concurrency-config --function-name "${FN}" --qualifier "${ALIAS}" --region "${REGION}" \
+      --query 'RequestedProvisionedConcurrentExecutions' --output text)
+  fi
   if [ "${REQ}" = "1" ]; then PC_OK=1; break; fi
   sleep 5
 done

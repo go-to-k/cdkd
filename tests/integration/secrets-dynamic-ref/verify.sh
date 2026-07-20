@@ -247,8 +247,12 @@ echo "    OK: consumer Lambda is gone"
 # excludes planned-deletion) but reappears under --include-planned-deletion.
 # Therefore "scheduled for deletion" (DeletedDate set) is a PASS; only a secret
 # that is still ACTIVE with no DeletedDate is a real failure.
-SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
-  --region "${REGION}" --query 'DeletedDate' --output text 2>/dev/null || echo "GONE")
+if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"; then
+  SECRET_DELETED_DATE="GONE"
+else
+  SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
+    --region "${REGION}" --query 'DeletedDate' --output text)
+fi
 if [ "${SECRET_DELETED_DATE}" = "GONE" ]; then
   echo "    OK: secret is gone (describe-secret reports it no longer exists)"
 elif [ -n "${SECRET_DELETED_DATE}" ] && [ "${SECRET_DELETED_DATE}" != "None" ]; then

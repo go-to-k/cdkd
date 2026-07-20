@@ -142,7 +142,7 @@ echo "    Using database '${DB_NAME}', iceberg table '${TABLE_NAME}'"
 # closed by the #609 backfill).
 TABLE_TYPE=$(aws glue get-table \
   --database-name "${DB_NAME}" --name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.Parameters.table_type' --output text 2>/dev/null || echo "")
+  --query 'Table.Parameters.table_type' --output text)
 
 # Case-insensitive comparison — Iceberg writes 'ICEBERG'.
 TABLE_TYPE_UPPER=$(echo "${TABLE_TYPE}" | tr '[:lower:]' '[:upper:]')

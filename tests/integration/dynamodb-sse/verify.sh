@@ -100,9 +100,9 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 SSE_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.SSEDescription.Status' --output text 2>/dev/null || echo NONE)"
+  --query 'Table.SSEDescription.Status' --output text)"
 SSE_TYPE="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.SSEDescription.SSEType' --output text 2>/dev/null || echo NONE)"
+  --query 'Table.SSEDescription.SSEType' --output text)"
 if [ "${SSE_STATUS}" != "ENABLED" ]; then
   echo "FAIL: expected SSEDescription.Status=ENABLED, got '${SSE_STATUS}' (the SSEEnabled->Enabled mapping was dropped -> table got AWS-owned encryption)" >&2
   exit 1
@@ -118,8 +118,12 @@ echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-status="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.TableStatus' --output text 2>/dev/null || echo "GONE")"
+if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
+  status="GONE"
+else
+  status="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text)"
+fi
 if [ "${status}" != "GONE" ] && [ "${status}" != "DELETING" ]; then
   echo "FAIL: table ${TABLE_NAME} still exists (status ${status}) after destroy" >&2
   exit 1

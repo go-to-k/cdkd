@@ -14,6 +14,7 @@ import { spawnSync } from 'node:child_process';
 import {
   classifyVerifyScript,
   joinContinuationLines,
+  extractCommandSubstitutions,
   CANONICAL_HELPER_BLOCK,
   CANONICAL_NOT_FOUND_REGEX,
 } from '../../../scripts/check-integ-probe-not-found.js';
@@ -238,6 +239,241 @@ fi
   });
 });
 
+describe('capture-form probes (issue #1120 item 1)', () => {
+  it.each([
+    [
+      'silenced + || echo literal',
+      'VER1="$(aws appconfig list-hosted-configuration-versions --application-id x --query q --output text 2>/dev/null || echo None)"\n',
+    ],
+    [
+      'silenced + || true',
+      "SSM_VALUE=$(aws ssm get-parameter --name p --query 'Parameter.Value' --output text 2>/dev/null || true)\n",
+    ],
+    [
+      'silenced + || echo 0 count',
+      `N="$(aws elbv2 describe-listeners --load-balancer-arn a --query 'length(Listeners)' --output text 2>/dev/null || echo 0)"\n`,
+    ],
+    [
+      'unsilenced fallback (stderr to terminal, value still poisoned)',
+      'URL=$(aws sqs get-queue-url --queue-name q --output text || echo "")\n',
+    ],
+    [
+      'swallow tail attached AFTER the substitution',
+      'STATUS=$(aws dynamodb describe-table --table-name t 2>/dev/null) || true\n',
+    ],
+    [
+      'multi-line continuation capture',
+      'POLICY=$(aws dynamodb get-resource-policy \\\n  --resource-arn a --region r \\\n  --query Policy --output text 2>/dev/null || echo "")\n',
+    ],
+    [
+      'spaced 2> /dev/null silencing',
+      'V=$(aws efs describe-backup-policy --file-system-id f 2> /dev/null || echo "")\n',
+    ],
+  ])('flags a swallowed capture: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).blindCaptureProbes).toHaveLength(1);
+  });
+
+  it('flags the outer capture once when a nested substitution is present', () => {
+    const script =
+      `C="$(aws appconfig list-deployments --application-id x --environment-id "$(aws appconfig list-environments --application-id x --query 'Items[0].Id' --output text)" --query 'length(Items)' --output text 2>/dev/null || echo 0)"\n`;
+    expect(classifyVerifyScript(script).blindCaptureProbes).toHaveLength(1);
+  });
+
+  it.each([
+    ['mutation-verb capture', 'V=$(aws sqs delete-queue --queue-url u 2>/dev/null || true)\n'],
+    [
+      'plain silenced assignment without fallback (set -e fails it loudly)',
+      'V=$(aws dynamodb describe-table --table-name t --query s --output text 2>/dev/null)\n',
+    ],
+    [
+      'strict stderr-capture idiom (error text lands IN the value)',
+      'EU_ERR="$(aws dynamodb describe-table --table-name t --region r 2>&1 >/dev/null || true)"\n',
+    ],
+    ['strict s3 ls listing capture', 'KEYS="$(aws s3 ls "s3://b/p" 2>&1 || true)"\n'],
+    [
+      'aws s3 cp content fetch (not a read-verb probe)',
+      'STATE=$(aws s3 cp "s3://b/k" - 2>/dev/null || true)\n',
+    ],
+    [
+      'plain unsilenced strict capture',
+      "ARN=$(aws ssm get-parameter --name p --query 'Parameter.ARN' --output text)\n",
+    ],
+    [
+      'silenced for-loop cleanup sweep without fallback (best-effort, out of scope)',
+      'for r in $(aws iam list-roles --query q --output text 2>/dev/null); do\n  echo "${r}"\ndone\n',
+    ],
+    [
+      'non-aws command substitution with a fallback',
+      'LEFT="$(find_orphans || true)"\n',
+    ],
+  ])('does not flag: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).blindCaptureProbes).toEqual([]);
+  });
+
+  it('exempts captures inside a best-effort set +eu cleanup span', () => {
+    const script = `cleanup() {
+  set +eu
+  acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+  set -eu
+}
+ACCT="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+`;
+    const c = classifyVerifyScript(script);
+    expect(c.blindCaptureProbes).toHaveLength(1);
+    expect(c.blindCaptureProbes[0]!.line).toBe(6); // only the live-phase one
+  });
+
+  it('bounds an unrestored set +e span at the enclosing function close', () => {
+    // local-run-task-from-state's cleanup opens `set +e` and never restores
+    // (it ends with exit); the span must not leak over the live phase below.
+    const script = `cleanup() {
+  set +e
+  IMGS="$(aws ecr list-images --repository-name r --query imageIds --output json 2>/dev/null || echo '[]')"
+  exit 0
+}
+LIVE="$(aws ecr list-images --repository-name r --query imageIds --output json 2>/dev/null || echo '[]')"
+`;
+    const c = classifyVerifyScript(script);
+    expect(c.blindCaptureProbes).toHaveLength(1);
+    expect(c.blindCaptureProbes[0]!.line).toBe(6);
+  });
+
+  it('extractCommandSubstitutions masks nested substitutions', () => {
+    const [outer, inner] = extractCommandSubstitutions(
+      'A="$(aws x list-y --id "$(aws x list-z --q 2>/dev/null)" --out text)"',
+    );
+    expect(outer!.body).toContain('__NESTED__');
+    expect(outer!.body).not.toContain('list-z');
+    expect(inner!.body).toContain('list-z');
+  });
+});
+
+describe('silenced probes in function bodies (issue #1120 item 2)', () => {
+  it.each([
+    [
+      'exit-status wrapper (the old ssm_exists shape)',
+      'ssm_exists() {\n  aws ssm get-parameter --name "$1" --region r >/dev/null 2>&1\n}\n',
+    ],
+    [
+      '&>/dev/null exit-status wrapper',
+      'role_exists() {\n  aws iam get-role --role-name "$1" &>/dev/null\n}\n',
+    ],
+    [
+      'value wrapper with || true swallow tail',
+      "find_fixture_vpcs() {\n  aws ec2 describe-vpcs --filters f --query 'Vpcs[].VpcId' --output text 2>/dev/null || true\n}\n",
+    ],
+    [
+      'value wrapper with || echo "" swallow tail (multi-line)',
+      `queue_url() {\n  aws sqs get-queue-url --queue-name "\${name}" --region r \\\n    --query 'QueueUrl' --output text 2>/dev/null || echo ""\n}\n`,
+    ],
+  ])('flags a silenced wrapper: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).silencedFunctionProbes).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'tail-less value wrapper ($(fn) fails loudly under set -e)',
+      "api_id() {\n  aws apigateway get-rest-apis --query q --output text 2>/dev/null\n}\n",
+    ],
+    [
+      'unsilenced strict value wrapper',
+      "find_ids() {\n  aws ec2 describe-vpcs --filters f --query 'Vpcs[].VpcId' --output text\n}\n",
+    ],
+    [
+      'gone_probe-backed expected-missing wrapper',
+      `queue_url() {\n  if gone_probe aws sqs get-queue-url --queue-name "$1"; then\n    echo ""\n    return 0\n  fi\n  aws sqs get-queue-url --queue-name "$1" --query 'QueueUrl' --output text\n}\n`,
+    ],
+    [
+      'mutation probe inside a function',
+      'drop() {\n  aws sqs delete-queue --queue-url "$1" >/dev/null 2>&1 || true\n}\n',
+    ],
+    [
+      'best-effort cleanup function marked with set +eu',
+      "sweep() {\n  set +eu\n  aws iam list-roles --query q --output text 2>/dev/null || true\n  set -eu\n}\n",
+    ],
+    [
+      'condition-position probe (owned by the condition categories)',
+      'guard() {\n  if aws s3api head-object --bucket b --key k >/dev/null 2>&1; then\n    cli destroy || true\n  fi\n}\n',
+    ],
+    [
+      'top-level bare silenced probe (not in a function)',
+      'aws ssm get-parameter --name p >/dev/null 2>&1 || true\n',
+    ],
+  ])('does not flag: %s', (_label, script) => {
+    expect(classifyVerifyScript(script).silencedFunctionProbes).toEqual([]);
+  });
+
+  it('never flags the canonical helper block itself', () => {
+    const c = classifyVerifyScript(`${CANONICAL_HELPER_BLOCK}\n`);
+    expect(c.silencedFunctionProbes).toEqual([]);
+    expect(c.blindCaptureProbes).toEqual([]);
+  });
+});
+
+describe('bash behavior of the strict capture form (issue #1120)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cdkd-capture-'));
+  const binDir = join(dir, 'bin');
+  mkdirSync(binDir);
+  writeFileSync(
+    join(binDir, 'aws'),
+    `#!/usr/bin/env bash
+case "\${AWS_STUB_MODE}" in
+  value) echo "plan-1"; exit 0 ;;
+  throttle)
+    echo "An error occurred (ThrottlingException) when calling the GetUsagePlans operation: Rate exceeded" >&2
+    exit 254 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  const run = (script: string, mode: string) => {
+    const p = join(dir, 'probe.sh');
+    writeFileSync(p, script, { mode: 0o755 });
+    return spawnSync('bash', [p], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${binDir}:${process.env['PATH']}`, AWS_STUB_MODE: mode },
+    });
+  };
+  const STRICT = `#!/usr/bin/env bash
+set -euo pipefail
+PLAN=$(aws apigateway get-usage-plans --query q --output text)
+echo "VALUE:\${PLAN}"
+`;
+
+  it('strict capture propagates the value on success', () => {
+    const r = run(STRICT, 'value');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('VALUE:plan-1');
+  });
+
+  it('strict capture hard-fails loudly on a throttle (never "0 remaining")', () => {
+    const r = run(STRICT, 'throttle');
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('ThrottlingException');
+    expect(r.stdout).not.toContain('VALUE:');
+  });
+
+  it('the banned fallback form silently reads a throttle as the fallback literal', () => {
+    // Documents WHY the capture-form category exists: same throttle, but the
+    // fallback masks it as a legitimate-looking value and the script passes.
+    const r = run(
+      `#!/usr/bin/env bash
+set -euo pipefail
+PLAN=$(aws apigateway get-usage-plans --query q --output text 2>/dev/null || echo None)
+echo "VALUE:\${PLAN}"
+`,
+      'throttle',
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('VALUE:None');
+  });
+
+  it('cleans up the temp scripts', () => {
+    rmSync(dir, { recursive: true, force: true });
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
 describe('bash behavior of the canonical helpers', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cdkd-probe-'));
   const binDir = join(dir, 'bin');
@@ -376,6 +612,20 @@ describe('integ fixture verify.sh gone-probes (#1097 pattern 2)', () => {
     const offenders = inScope
       .filter((f) => f.blindProbeLoops.length > 0)
       .map((f) => `${f.name}: ${f.blindProbeLoops.map((p) => p.line).join(',')}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('never swallows a probe error inside a read-verb capture (capture form, #1120)', () => {
+    const offenders = inScope
+      .filter((f) => f.blindCaptureProbes.length > 0)
+      .map((f) => `${f.name}: ${f.blindCaptureProbes.map((p) => p.line).join(',')}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('never hides a silenced read probe inside a function wrapper (#1120)', () => {
+    const offenders = inScope
+      .filter((f) => f.silencedFunctionProbes.length > 0)
+      .map((f) => `${f.name}: ${f.silencedFunctionProbes.map((p) => p.line).join(',')}`);
     expect(offenders).toEqual([]);
   });
 

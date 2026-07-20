@@ -110,9 +110,9 @@ echo "    OK: deploy exited 0"
 
 echo "==> Step 2 (LOAD-BEARING): assert GetAtt Endpoint.Address resolved to the REAL Redshift endpoint"
 ADDR=$(aws ssm get-parameter --name "${ADDR_PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 PORT=$(aws ssm get-parameter --name "${PORT_PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 echo "    Endpoint.Address = '${ADDR}'  Endpoint.Port = '${PORT}'"
 case "${ADDR}" in
   *.redshift.amazonaws.com)
@@ -152,7 +152,7 @@ assert_gone "state file still exists after destroy" aws s3api head-object --buck
 assert_gone "SSM parameter ${ADDR_PARAM} still exists after destroy" aws ssm get-parameter --name "${ADDR_PARAM}" --region "${REGION}"
 CL_LEFT=$(aws redshift describe-clusters --region "${REGION}" \
   --query "Clusters[?DBName=='cdkddb' && contains(ClusterIdentifier, 'cdkdredshift')] | length(@)" \
-  --output text 2>/dev/null || echo 0)
+  --output text)
 if [ "${CL_LEFT}" != "0" ]; then
   echo "FAIL: ${CL_LEFT} Redshift cluster(s) still exist after destroy (orphan)" >&2
   exit 1

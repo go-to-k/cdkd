@@ -327,10 +327,14 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 # Spot-check the DBInstance is also gone or in 'deleting'.
-INSTANCE_STATUS=$(aws rds describe-db-instances \
-  --db-instance-identifier "${DB_INSTANCE_ID}" \
-  --region "${REGION}" \
-  --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "gone")
+if gone_probe aws rds describe-db-instances --db-instance-identifier "${DB_INSTANCE_ID}" --region "${REGION}"; then
+  INSTANCE_STATUS="gone"
+else
+  INSTANCE_STATUS=$(aws rds describe-db-instances \
+    --db-instance-identifier "${DB_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'DBInstances[0].DBInstanceStatus' --output text)
+fi
 if [ "${INSTANCE_STATUS}" = "gone" ] || [ "${INSTANCE_STATUS}" = "deleting" ]; then
   echo "    OK: DBInstance is gone or deleting (status: ${INSTANCE_STATUS})"
 else

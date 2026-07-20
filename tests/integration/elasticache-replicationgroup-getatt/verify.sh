@@ -108,9 +108,9 @@ echo "    OK: deploy exited 0"
 
 echo "==> Step 2 (LOAD-BEARING): assert GetAtt PrimaryEndPoint.Address resolved to the REAL Redis hostname"
 ADDR=$(aws ssm get-parameter --name "${ADDR_PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 PORT=$(aws ssm get-parameter --name "${PORT_PARAM}" --region "${REGION}" \
-  --query 'Parameter.Value' --output text 2>/dev/null || true)
+  --query 'Parameter.Value' --output text)
 echo "    PrimaryEndPoint.Address = '${ADDR}'  PrimaryEndPoint.Port = '${PORT}'"
 
 # The RG id (physicalId) is the lowercased logical id; a physicalId-fallback bug
@@ -155,7 +155,7 @@ assert_gone "state file still exists after destroy" aws s3api head-object --buck
 assert_gone "SSM parameter ${ADDR_PARAM} still exists after destroy" aws ssm get-parameter --name "${ADDR_PARAM}" --region "${REGION}"
 RG_LEFT=$(aws elasticache describe-replication-groups --region "${REGION}" \
   --query "ReplicationGroups[?contains(Description, 'cdkd elasticache-rg getatt fixture')] | length(@)" \
-  --output text 2>/dev/null || echo 0)
+  --output text)
 if [ "${RG_LEFT}" != "0" ]; then
   echo "FAIL: ${RG_LEFT} ElastiCache ReplicationGroup(s) still exist after destroy (orphan)" >&2
   exit 1

@@ -67,11 +67,11 @@ API_NAME="cdkd-integ-gwresponse"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 api_id() {
-  # `|| true` so a transient AWS CLI failure (throttle, creds) surfaces as an
-  # empty id — which the callers turn into an explicit FAIL message — instead
-  # of aborting the `$(api_id)` assignment under `set -e` with no diagnostics.
+  # Strict: a probe error (throttle, creds) aborts the caller's `$(api_id)`
+  # capture under `set -e` with the AWS error on stderr, instead of silently
+  # reading as "no API" (issue #1120 capture-form sweep).
   aws apigateway get-rest-apis --region "${REGION}" \
-    --query "items[?name=='${API_NAME}'].id | [0]" --output text 2>/dev/null || true
+    --query "items[?name=='${API_NAME}'].id | [0]" --output text
 }
 
 cleanup() {

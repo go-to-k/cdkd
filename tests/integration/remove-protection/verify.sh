@@ -21,6 +21,38 @@
 # resources.
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STACK="CdkdRemoveProtectionExample"
@@ -75,7 +107,7 @@ ASG_NAME=""
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   ASG_NAME="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
     --query "AutoScalingGroups[?contains(AutoScalingGroupName, '${STACK}')].AutoScalingGroupName | [0]" \
-    --output text 2>/dev/null || true)"
+    --output text)"
   if [ -n "${ASG_NAME}" ] && [ "${ASG_NAME}" != "None" ]; then
     break
   fi
@@ -89,7 +121,7 @@ ASG_INSTANCE_IDS=""
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   ASG_INSTANCE_IDS="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
     --auto-scaling-group-names "${ASG_NAME}" \
-    --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text 2>/dev/null || true)"
+    --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text)"
   if [ -n "${ASG_INSTANCE_IDS}" ] && [ "${ASG_INSTANCE_IDS}" != "None" ]; then
     break
   fi
@@ -196,9 +228,14 @@ echo "[verify] step 6 ok: state cleared"
 # alone does NOT catch this, which is exactly how #796 shipped.
 echo "[verify] step 7: assert ASG-launched protected instance(s) terminated (#796)"
 for iid in ${ASG_INSTANCE_IDS}; do
-  state="$(aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}" \
-    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo 'terminated')"
-  # `terminated` is also returned when AWS has already swept the record.
+  # `terminated` is also spelled by AWS as sweeping the record entirely
+  # (InvalidInstanceID.NotFound) once the terminated instance ages out.
+  if gone_probe aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}"; then
+    state="terminated"
+  else
+    state="$(aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}" \
+      --query 'Reservations[0].Instances[0].State.Name' --output text)"
+  fi
   case "${state}" in
     shutting-down|terminated)
       echo "[verify]   ${iid}: ${state} (ok)"

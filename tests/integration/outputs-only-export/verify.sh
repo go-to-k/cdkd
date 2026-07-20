@@ -191,7 +191,7 @@ echo "==> Phase 2b: deploy consumer with --exclusively (producer NOT redeployed)
 # persisted the export, this Fn::ImportValue would fail here.
 CDKD_TEST_WITH_CONSUMER=true ${CDKD} deploy ${CONSUMER} --exclusively --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 
-SSM_VALUE=$(aws ssm get-parameter --name "${SSM_PARAM}" --region "${AWS_REGION}" --query 'Parameter.Value' --output text 2>/dev/null || true)
+SSM_VALUE=$(aws ssm get-parameter --name "${SSM_PARAM}" --region "${AWS_REGION}" --query 'Parameter.Value' --output text)
 if [[ "${SSM_VALUE}" != "${EXPORT_VAL}" ]]; then
   echo "FAIL: consumer SSM param resolved to '${SSM_VALUE}', expected the producer bucket ARN '${EXPORT_VAL}'"
   exit 1
