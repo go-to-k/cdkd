@@ -58,6 +58,18 @@ const FS_ARN = `arn:aws:fsx:us-east-1:123456789012:file-system/${FS_ID}`;
 const DNS_NAME = `${FS_ID}.fsx.us-east-1.amazonaws.com`;
 const MOUNT_NAME = 'abcdef';
 
+/**
+ * FSx's type discriminator -> the single `<Variant>Configuration` block that
+ * is legal for it. Mirrors the provider's own VARIANT_CONFIG_KEY; drives the
+ * per-type §3b placeholder assertions.
+ */
+const VARIANT_FILE_SYSTEM_TYPE_TO_KEY: Record<string, string> = {
+  LUSTRE: 'LustreConfiguration',
+  WINDOWS: 'WindowsConfiguration',
+  ONTAP: 'OntapConfiguration',
+  OPENZFS: 'OpenZFSConfiguration',
+};
+
 const LUSTRE_PROPS = {
   FileSystemType: 'LUSTRE',
   StorageCapacity: 1200,
@@ -859,6 +871,114 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     ).resolves.toBeUndefined();
   });
 
+  // ─── docs/provider-development.md §3b mandatory placeholder block ────
+  //
+  // The expected key set is DISCRIMINATOR-DEPENDENT, so §3b's single
+  // "complete key list" assertion is written once per FileSystemType. The
+  // shared (type-independent) part is the always-emit set; the per-type part
+  // is exactly one `<Variant>Configuration` key.
+  //
+  // Deliberately ABSENT from every list, per §3b's "When the guard is
+  // justified":
+  //  - SubnetIds / KmsKeyId  — registry-createOnly; update() rejects any
+  //    change, so a placeholder cannot buy drift coverage and an
+  //    undefined -> [] / '' transition could trip the immutability guard.
+  //  - SecurityGroupIds / BackupId — createOnly AND never returned by
+  //    DescribeFileSystems; declared in getDriftUnknownPaths() instead.
+  const ALWAYS_EMITTED_KEYS = [
+    'FileSystemType',
+    'FileSystemTypeVersion',
+    'NetworkType',
+    'StorageCapacity',
+    'StorageType',
+    'Tags',
+  ];
+
+  for (const [fileSystemType, variantKey] of Object.entries(VARIANT_FILE_SYSTEM_TYPE_TO_KEY)) {
+    it(`emits placeholders for every user-controllable top-level key on AWS minimum response (${fileSystemType})`, async () => {
+      // AWS minimum: the required identity fields only, every optional undefined.
+      routeSend({
+        DescribeFileSystemsCommand: {
+          FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'AVAILABLE', FileSystemType: fileSystemType }],
+        },
+      });
+
+      const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+
+      // Step 3: the COMPLETE key list, not a subset.
+      expect(Object.keys(state ?? {}).sort()).toEqual([...ALWAYS_EMITTED_KEYS, variantKey].sort());
+
+      // Step 4: spot-check the fragile placeholder values.
+      expect(state?.['FileSystemTypeVersion']).toBe('');
+      expect(state?.['NetworkType']).toBe('IPV4');
+      expect(state?.['StorageCapacity']).toBe(0);
+      expect(state?.['StorageType']).toBe('SSD');
+      expect(state?.['Tags']).toEqual([]);
+      expect(state?.[variantKey]).toEqual({});
+
+      // Class 1 carve-out: the three FOREIGN variant blocks must be absent —
+      // emitting them as {} would make `drift --revert` push a shape AWS
+      // rejects for this FileSystemType.
+      for (const foreign of Object.values(VARIANT_FILE_SYSTEM_TYPE_TO_KEY)) {
+        if (foreign === variantKey) continue;
+        expect(state).not.toHaveProperty(foreign);
+      }
+    });
+  }
+
+  it('round-trip: a discriminator-false snapshot never ships a foreign variant block to AWS', async () => {
+    // The mechanical defense that makes the Class 1 carve-out safe. If
+    // readCurrentState regressed to emitting all four blocks as {},
+    // detectVariantConfigKey() walks VARIANT_CONFIG_KEY in declaration order
+    // and would pick LustreConfiguration for this WINDOWS file system —
+    // shipping a Lustre block AWS rejects. Absence of the foreign keys in the
+    // snapshot is what stops it.
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'AVAILABLE', FileSystemType: 'WINDOWS' }],
+      },
+    });
+
+    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    expect(observed?.['WindowsConfiguration']).toEqual({});
+
+    vi.clearAllMocks();
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    // Revert a console-side ThroughputCapacity change: a mutable Windows
+    // sub-property, so this is a REAL UpdateFileSystem, not a no-op.
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...observed, WindowsConfiguration: { ThroughputCapacity: 32 } },
+      { ...observed }
+    );
+
+    const update = callsOf(UpdateFileSystemCommand)[0];
+    expect(update).toBeDefined();
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      WindowsConfiguration: { ThroughputCapacity: 32 },
+    });
+    // No foreign variant block, and no top-level always-emit placeholder
+    // leaked into the wire input (they are unchanged, so `changed()` is false).
+    for (const key of [
+      'LustreConfiguration',
+      'OntapConfiguration',
+      'OpenZFSConfiguration',
+      'StorageCapacity',
+      'StorageType',
+      'FileSystemTypeVersion',
+      'NetworkType',
+    ]) {
+      expect(update.input).not.toHaveProperty(key);
+    }
+  });
+
   it('declares only the individually-unreadable leaves as drift-unknown (not whole variant blocks)', () => {
     expect(newProvider().getDriftUnknownPaths(RESOURCE_TYPE)).toEqual([
       'SecurityGroupIds',
@@ -1295,17 +1415,52 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     });
   });
 
-  it('omits a variant block entirely when AWS returns it empty', async () => {
+  it('emits the discriminator-selected variant block as {} when AWS returns it empty', async () => {
+    // Pre-#1096 this asserted the block was OMITTED. Per docs/provider-development.md
+    // §3b the discriminator-selected block is an always-emit key: omitting it
+    // means a file system deployed with an empty OntapConfiguration never
+    // carries the key in observedProperties, and the comparator's
+    // state-keys-only walk would skip a console-side ADD of any ONTAP
+    // sub-property forever.
     routeSend({
       DescribeFileSystemsCommand: {
         FileSystems: [
-          { FileSystemId: FS_ID, Lifecycle: 'AVAILABLE', FileSystemType: 'ONTAP', OntapConfiguration: {} },
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'ONTAP',
+            OntapConfiguration: {},
+          },
         ],
       },
     });
 
     const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
-    expect(state).not.toHaveProperty('OntapConfiguration');
+    expect(state?.['OntapConfiguration']).toEqual({});
+    // The other three variant blocks stay ABSENT (Class 1 carve-out).
+    expect(state).not.toHaveProperty('LustreConfiguration');
+    expect(state).not.toHaveProperty('WindowsConfiguration');
+    expect(state).not.toHaveProperty('OpenZFSConfiguration');
+  });
+
+  it('emits no variant block at all for a FileSystemType cdkd does not support', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          { FileSystemId: FS_ID, Lifecycle: 'AVAILABLE', FileSystemType: 'SOMETHING_NEW' },
+        ],
+      },
+    });
+
+    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    for (const key of [
+      'LustreConfiguration',
+      'WindowsConfiguration',
+      'OntapConfiguration',
+      'OpenZFSConfiguration',
+    ]) {
+      expect(state).not.toHaveProperty(key);
+    }
   });
 });
 

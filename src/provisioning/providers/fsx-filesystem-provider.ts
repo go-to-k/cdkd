@@ -24,6 +24,7 @@ import {
   type OpenZFSCreateRootVolumeConfiguration,
   type OpenZFSUserOrGroupQuota,
   type OpenZFSReadCacheConfiguration,
+  type LustreFileSystemConfiguration,
   type WindowsFileSystemConfiguration,
   type OntapFileSystemConfiguration,
   type OpenZFSFileSystemConfiguration,
@@ -1536,6 +1537,44 @@ export class FSxFileSystemProvider implements ResourceProvider {
   // them would add AWS-only keys the state baseline can never match. Inputs
   // AWS does not return at all stay in `getDriftUnknownPaths`.
 
+  /** Map the read-side `LustreConfiguration` back to CFn input shape. */
+  private readLustreConfiguration(lustre: LustreFileSystemConfiguration): Record<string, unknown> {
+    const config: Record<string, unknown> = {};
+    putIfDefined(config, 'WeeklyMaintenanceStartTime', lustre.WeeklyMaintenanceStartTime);
+    putIfDefined(config, 'DeploymentType', lustre.DeploymentType);
+    putIfDefined(config, 'PerUnitStorageThroughput', lustre.PerUnitStorageThroughput);
+    putIfDefined(config, 'DailyAutomaticBackupStartTime', lustre.DailyAutomaticBackupStartTime);
+    putIfDefined(config, 'AutomaticBackupRetentionDays', lustre.AutomaticBackupRetentionDays);
+    putIfDefined(config, 'CopyTagsToBackups', lustre.CopyTagsToBackups);
+    putIfDefined(config, 'DriveCacheType', lustre.DriveCacheType);
+    putIfDefined(config, 'DataCompressionType', lustre.DataCompressionType);
+    putIfDefined(config, 'EfaEnabled', lustre.EfaEnabled);
+    putIfDefined(config, 'ThroughputCapacity', lustre.ThroughputCapacity);
+
+    if (lustre.MetadataConfiguration) {
+      const metadata: Record<string, unknown> = {};
+      putIfDefined(metadata, 'Mode', lustre.MetadataConfiguration.Mode);
+      putIfDefined(metadata, 'Iops', lustre.MetadataConfiguration.Iops);
+      if (Object.keys(metadata).length > 0) config['MetadataConfiguration'] = metadata;
+    }
+    if (lustre.DataReadCacheConfiguration) {
+      const readCache: Record<string, unknown> = {};
+      putIfDefined(readCache, 'SizingMode', lustre.DataReadCacheConfiguration.SizingMode);
+      putIfDefined(readCache, 'SizeGiB', lustre.DataReadCacheConfiguration.SizeGiB);
+      if (Object.keys(readCache).length > 0) config['DataReadCacheConfiguration'] = readCache;
+    }
+    // Data-repository fields live under DataRepositoryConfiguration on the
+    // read side but are flat LustreConfiguration inputs in CFn.
+    const dataRepo = lustre.DataRepositoryConfiguration;
+    if (dataRepo) {
+      putIfDefined(config, 'ImportPath', dataRepo.ImportPath);
+      putIfDefined(config, 'ExportPath', dataRepo.ExportPath);
+      putIfDefined(config, 'AutoImportPolicy', dataRepo.AutoImportPolicy);
+      putIfDefined(config, 'ImportedFileChunkSize', dataRepo.ImportedFileChunkSize);
+    }
+    return config;
+  }
+
   /** Map the read-side `WindowsConfiguration` back to CFn input shape. */
   private readWindowsConfiguration(
     windows: WindowsFileSystemConfiguration
@@ -1749,8 +1788,14 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * mapped back from the nested `DataRepositoryConfiguration` the API
    * returns. The Windows / ONTAP / OpenZFS variant blocks are reverse-mapped
    * by their respective `read*Configuration` helpers; the few inputs AWS
-   * never returns stay listed in {@link getDriftUnknownPaths}. At most one
-   * variant block is ever present (they key off `FileSystemType`).
+   * never returns stay listed in {@link getDriftUnknownPaths}.
+   *
+   * Emission follows `docs/provider-development.md` §3b: every top-level
+   * property `update()` can mutate is emitted unconditionally with a
+   * placeholder, registry-createOnly properties keep their guard, and the
+   * `<Variant>Configuration` blocks take the Class 1 type-discriminator
+   * carve-out — exactly the ONE block matching `FileSystemType` is emitted
+   * (at most one is ever legal on AWS), never the other three.
    * Returns `undefined` when the file system is gone.
    */
   async readCurrentState(
@@ -1773,68 +1818,60 @@ export class FSxFileSystemProvider implements ResourceProvider {
     if (!fs) return undefined;
 
     const result: Record<string, unknown> = {};
+
+    // Guarded (conditional) emits — every one is registry-createOnly, so
+    // `update()` rejects any change and a console user cannot ADD the
+    // property post-create. This is §3b's "immutable on create" carve-out:
+    // AWS returning the field as undefined is a wire-layer artifact, and a
+    // placeholder would only risk tripping the TOP_LEVEL_IMMUTABLE_PROPS
+    // guard on a later deploy.
     putIfDefined(result, 'FileSystemType', fs.FileSystemType);
-    putIfDefined(result, 'StorageCapacity', fs.StorageCapacity);
-    putIfDefined(result, 'StorageType', fs.StorageType);
     putIfDefined(result, 'SubnetIds', fs.SubnetIds ? [...fs.SubnetIds] : undefined);
     putIfDefined(result, 'KmsKeyId', fs.KmsKeyId);
-    putIfDefined(result, 'FileSystemTypeVersion', fs.FileSystemTypeVersion);
-    putIfDefined(result, 'NetworkType', fs.NetworkType);
+    // `SecurityGroupIds` / `BackupId` are createOnly AND never returned by
+    // DescribeFileSystems — they stay declared in getDriftUnknownPaths().
 
-    const lustre = fs.LustreConfiguration;
-    if (lustre) {
-      const config: Record<string, unknown> = {};
-      putIfDefined(config, 'WeeklyMaintenanceStartTime', lustre.WeeklyMaintenanceStartTime);
-      putIfDefined(config, 'DeploymentType', lustre.DeploymentType);
-      putIfDefined(config, 'PerUnitStorageThroughput', lustre.PerUnitStorageThroughput);
-      putIfDefined(config, 'DailyAutomaticBackupStartTime', lustre.DailyAutomaticBackupStartTime);
-      putIfDefined(config, 'AutomaticBackupRetentionDays', lustre.AutomaticBackupRetentionDays);
-      putIfDefined(config, 'CopyTagsToBackups', lustre.CopyTagsToBackups);
-      putIfDefined(config, 'DriveCacheType', lustre.DriveCacheType);
-      putIfDefined(config, 'DataCompressionType', lustre.DataCompressionType);
-      putIfDefined(config, 'EfaEnabled', lustre.EfaEnabled);
-      putIfDefined(config, 'ThroughputCapacity', lustre.ThroughputCapacity);
-
-      if (lustre.MetadataConfiguration) {
-        const metadata: Record<string, unknown> = {};
-        putIfDefined(metadata, 'Mode', lustre.MetadataConfiguration.Mode);
-        putIfDefined(metadata, 'Iops', lustre.MetadataConfiguration.Iops);
-        if (Object.keys(metadata).length > 0) config['MetadataConfiguration'] = metadata;
-      }
-      if (lustre.DataReadCacheConfiguration) {
-        const readCache: Record<string, unknown> = {};
-        putIfDefined(readCache, 'SizingMode', lustre.DataReadCacheConfiguration.SizingMode);
-        putIfDefined(readCache, 'SizeGiB', lustre.DataReadCacheConfiguration.SizeGiB);
-        if (Object.keys(readCache).length > 0) config['DataReadCacheConfiguration'] = readCache;
-      }
-      // Data-repository fields live under DataRepositoryConfiguration on
-      // the read side but are flat LustreConfiguration inputs in CFn.
-      const dataRepo = lustre.DataRepositoryConfiguration;
-      if (dataRepo) {
-        putIfDefined(config, 'ImportPath', dataRepo.ImportPath);
-        putIfDefined(config, 'ExportPath', dataRepo.ExportPath);
-        putIfDefined(config, 'AutoImportPolicy', dataRepo.AutoImportPolicy);
-        putIfDefined(config, 'ImportedFileChunkSize', dataRepo.ImportedFileChunkSize);
-      }
-      if (Object.keys(config).length > 0) result['LustreConfiguration'] = config;
-    }
-
-    if (fs.WindowsConfiguration) {
-      const config = this.readWindowsConfiguration(fs.WindowsConfiguration);
-      if (Object.keys(config).length > 0) result['WindowsConfiguration'] = config;
-    }
-
-    if (fs.OntapConfiguration) {
-      const config = this.readOntapConfiguration(fs.OntapConfiguration);
-      if (Object.keys(config).length > 0) result['OntapConfiguration'] = config;
-    }
-
-    if (fs.OpenZFSConfiguration) {
-      const config = this.readOpenZFSConfiguration(fs.OpenZFSConfiguration);
-      if (Object.keys(config).length > 0) result['OpenZFSConfiguration'] = config;
-    }
-
+    // Always-emit placeholders — exactly the top-level properties
+    // `update()` can mutate (StorageCapacity / StorageType /
+    // FileSystemTypeVersion / NetworkType / Tags). Without the placeholder,
+    // a file system deployed WITHOUT the property never carries the key in
+    // `observedProperties`, and the comparator's state-keys-only walk would
+    // skip a console-side ADD forever (§3b).
+    result['StorageCapacity'] = fs.StorageCapacity ?? 0;
+    result['StorageType'] = fs.StorageType ?? 'SSD'; // AWS-documented default
+    result['FileSystemTypeVersion'] = fs.FileSystemTypeVersion ?? '';
+    result['NetworkType'] = fs.NetworkType ?? 'IPV4'; // AWS-documented default
     result['Tags'] = normalizeAwsTagsToCfn(fs.Tags);
+
+    // Variant block: §3b Class 1 type-discriminator carve-out. At most ONE
+    // of the four `<Variant>Configuration` blocks may legally be present for
+    // a given `FileSystemType`, so emitting all four as `{}` would make
+    // `drift --revert` push an AWS-invalid shape. Emit EXACTLY the block the
+    // discriminator selects — unconditionally, so the always-emit contract
+    // still holds for the one legal block — and never the other three.
+    // Drift detection is not lost: a foreign variant block cannot legally
+    // exist on AWS, so a console-side ADD of one is impossible.
+    const variantKey = fs.FileSystemType ? VARIANT_CONFIG_KEY[fs.FileSystemType] : undefined;
+    switch (variantKey) {
+      case 'LustreConfiguration':
+        result[variantKey] = this.readLustreConfiguration(fs.LustreConfiguration ?? {});
+        break;
+      case 'WindowsConfiguration':
+        result[variantKey] = this.readWindowsConfiguration(fs.WindowsConfiguration ?? {});
+        break;
+      case 'OntapConfiguration':
+        result[variantKey] = this.readOntapConfiguration(fs.OntapConfiguration ?? {});
+        break;
+      case 'OpenZFSConfiguration':
+        result[variantKey] = this.readOpenZFSConfiguration(fs.OpenZFSConfiguration ?? {});
+        break;
+      default:
+        // Unknown / absent FileSystemType: emit no variant block rather than
+        // guessing one. cdkd's create() rejects such a type up front, so this
+        // is only reachable for a file system created outside cdkd on a type
+        // cdkd does not support yet.
+        break;
+    }
 
     return result;
   }
