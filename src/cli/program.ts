@@ -51,6 +51,13 @@ export function buildProgram(): Command {
     // appear in dist/).
     .version(typeof __CDKD_VERSION__ === 'string' ? __CDKD_VERSION__ : '0.0.0-dev');
 
+  program.hook('preAction', (_thisCommand, actionCommand) => {
+    const { profile } = actionCommand.opts<{ profile?: string }>();
+    if (profile !== undefined) {
+      process.env['AWS_PROFILE'] = profile;
+    }
+  });
+
   program.addCommand(createBootstrapCommand());
   program.addCommand(createSynthCommand());
   program.addCommand(createListCommand());
