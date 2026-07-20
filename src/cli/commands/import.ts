@@ -456,6 +456,17 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // retire pass, which is `--migrate-from-cloudformation`'s job. Nested-stack
     // rows are filtered out below so the AWS child-stack ARN never overwrites
     // the synthesized cdkd-local ARN `importOne` writes.
+    //
+    // Two assumptions worth naming, both shared with the bare form of
+    // `--migrate-from-cloudformation`:
+    //   - the CFn stack sharing this stack's NAME is the same application. An
+    //     unrelated same-named stack could seed wrong ids, which is why the
+    //     info line below names the stack it read from.
+    //   - the ids are only as good as the stack's state. A stack stuck in
+    //     `ROLLBACK_COMPLETE` / `DELETE_FAILED` still answers with ids of
+    //     resources that may no longer exist; providers re-read the resource
+    //     during import, so those surface as `skipped-not-found` rather than
+    //     bad state.
     if (!selectiveMode && !migrationCfnStackName) {
       const cfnResources = await tryGetCloudFormationResourceMap(
         stackInfo.stackName,
@@ -474,6 +485,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           logger.info(
             `Resolved ${derived} physical ID(s) from CloudFormation stack '${stackInfo.stackName}'. ` +
               `To adopt AND retire that stack, use --migrate-from-cloudformation.`
+          );
+        } else {
+          // Distinguish "stack exists but contributed nothing" (every id
+          // already overridden, or no overlapping logical ids) from "no such
+          // stack" -- otherwise both look identical in the logs.
+          logger.debug(
+            `CloudFormation stack '${stackInfo.stackName}' contributed no new physical IDs.`
           );
         }
       } else {
