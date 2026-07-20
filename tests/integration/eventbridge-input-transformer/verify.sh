@@ -141,17 +141,28 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# put one matching event, poll the queue until a message arrives, print its body,
-# and delete it (so phase 2 does not read a phase 1 message). Echoes the body.
+# put a matching event, poll the queue for the delivered (transformed) body,
+# delete it, and echo it. An optional 2nd arg is a substring the body MUST
+# contain before it is accepted; bodies lacking it are drained as stale and a
+# fresh event is re-put on the next iteration.
+#
+# Why re-put every iteration instead of once: an in-place Rule update does not
+# apply to the target's InputTransformer instantly -- EventBridge takes a few
+# seconds to propagate the new target config. A single event fired immediately
+# after the phase-2 update can be delivered under the OLD transform, and then
+# every poll reads that same stale message (observed as an intermittent P2
+# FAIL). Re-putting each iteration and requiring the expected marker drains the
+# stale delivery and keeps trying until the propagated transform is applied.
 put_and_read() {
   local order_id="$1"
+  local want="${2:-}"
   local url
   url="$(queue_url)"
-  aws events put-events --region "${REGION}" --entries \
-    "[{\"Source\":\"cdkd.bughunt\",\"DetailType\":\"order\",\"Detail\":\"{\\\"orderId\\\":\\\"${order_id}\\\"}\"}]" \
-    >/dev/null
   local i body rh
-  for i in 1 2 3 4 5 6 7 8; do
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    aws events put-events --region "${REGION}" --entries \
+      "[{\"Source\":\"cdkd.bughunt\",\"DetailType\":\"order\",\"Detail\":\"{\\\"orderId\\\":\\\"${order_id}\\\"}\"}]" \
+      >/dev/null
     local msg
     msg="$(aws sqs receive-message --queue-url "${url}" --wait-time-seconds 5 \
       --region "${REGION}" --output json 2>/dev/null || true)"
@@ -159,8 +170,12 @@ put_and_read() {
     if [ -n "${body}" ]; then
       rh="$(printf '%s' "${msg}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s);process.stdout.write(m.Messages[0].ReceiptHandle)})')"
       aws sqs delete-message --queue-url "${url}" --receipt-handle "${rh}" --region "${REGION}" >/dev/null 2>&1 || true
-      printf '%s' "${body}"
-      return 0
+      # Accept once the required marker (if any) is present; otherwise this is a
+      # stale pre-propagation delivery -- drop it and re-put on the next loop.
+      if [ -z "${want}" ] || printf '%s' "${body}" | grep -qF "${want}"; then
+        printf '%s' "${body}"
+        return 0
+      fi
     fi
   done
   return 1
@@ -185,9 +200,9 @@ echo "==> Phase 2: re-deploy adding version:2 to the transform (in-place Rule up
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-BODY2="$(put_and_read ORD-222 || true)"
+BODY2="$(put_and_read ORD-222 '"version":2' || true)"
 if [ -z "${BODY2}" ]; then
-  echo "FAIL: no transformed message delivered to the SQS target in Phase 2" >&2
+  echo "FAIL: updated transform (version:2) never reached the SQS target in Phase 2 after propagation retries" >&2
   exit 1
 fi
 echo "    delivered body (P2): ${BODY2}"
