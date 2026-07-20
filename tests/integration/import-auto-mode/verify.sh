@@ -113,11 +113,13 @@ if [ -z "${POLICY_ARN}" ] || [ "${POLICY_ARN}" = "None" ]; then
 fi
 echo "    policy=${POLICY_ARN}"
 
-# The name must be CloudFormation-generated (contains the stack name + a random
-# suffix). If a future edit adds an explicit `managedPolicyName`, the name stage
-# would resolve it and this fixture would stop testing anything.
+# The name must be CloudFormation-generated. CFn builds it as
+# `<Stack>-<LogicalId>-<random>`, and CDK's logical id already carries its own
+# hash (`Policy23B91518`), so there is NO dash directly after `Policy`. If a
+# future edit adds an explicit `managedPolicyName`, the name stage would resolve
+# it and this fixture would stop testing anything.
 case "${POLICY_ARN}" in
-  *"${STACK}-Policy-"*) ;;
+  *"${STACK}-Policy"*) ;;
   *)
     echo "FAIL: policy name is not CloudFormation-generated (${POLICY_ARN})." >&2
     echo "      This fixture is only meaningful without an explicit physical name." >&2
@@ -153,8 +155,17 @@ echo "==> Phase 4: assert the resource was actually adopted"
 # ---------------------------------------------------------------------------
 STATE_JSON="$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" state show "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --json)"
-IMPORTED="$(printf '%s' "${STATE_JSON}" | python3 -c \
-  'import sys, json; print(json.load(sys.stdin)["state"]["resources"]["Policy"]["physicalId"])')"
+# Look the row up by resource TYPE, not by a hardcoded logical id: CDK hashes
+# construct ids (`Policy` synthesizes as `Policy23B91518`), so a literal key
+# would break on any construct rename.
+IMPORTED="$(printf '%s' "${STATE_JSON}" | python3 -c '
+import sys, json
+res = json.load(sys.stdin)["state"]["resources"]
+hits = [r["physicalId"] for r in res.values() if r["resourceType"] == "AWS::IAM::ManagedPolicy"]
+if len(hits) != 1:
+    sys.exit(f"expected exactly 1 imported ManagedPolicy row, got {len(hits)}: {list(res)}")
+print(hits[0])
+')"
 
 if [ "${IMPORTED}" != "${POLICY_ARN}" ]; then
   echo "FAIL: state physicalId mismatch" >&2
