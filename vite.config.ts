@@ -232,6 +232,10 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/build-scenario-coverage-matrix.ts',
         cache: false,
       },
+      'integ-ledger-normalize': {
+        command: 'node --experimental-strip-types scripts/normalize-integ-ledger.ts',
+        cache: false,
+      },
       'gen:unsupported-types': {
         command: 'node --experimental-strip-types scripts/gen-unsupported-types.ts',
         cache: false,

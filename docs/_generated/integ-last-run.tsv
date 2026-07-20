@@ -4,60 +4,143 @@
 # so after any rebase/merge that touches this file, re-check with:
 #   awk -F'\t' '!/^#/{c[$1]++} END{for(t in c) if(c[t]>1) print t}' docs/_generated/integ-last-run.tsv
 acm-certificate	2026-06-21T11:00:28Z	PASS	20	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
+alb	2026-07-02T18:23:15Z	PASS	62	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 alb-advanced	2026-06-21T11:00:28Z	PASS	54	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 api-cognito	2026-06-21T11:00:28Z	PASS	66	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+apigateway	2026-07-02T17:12:19Z	PASS	55	verify.sh	re-run with final #966 binary (root-key + reset-rebuild + corpse-cleanup fixes), 0 orphans
+apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix live-verify, warn 1->0 + rendering sample, orph clean
+apigw-stage-throttling	2026-07-02T16:57:21Z	PASS	72	verify.sh	CC-route trigger swapped to AccessLogSettings (#966), all #963 assertions green, 0 orphans
+apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 appconfig	2026-06-21T08:22:45Z	PASS	61	verify.sh	AppConfig compound-id Ref fix: chain creates, UPDATE v2, destroy clean
 appsync	2026-06-21T11:00:28Z	PASS	25	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
+asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
+asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
 aws-custom-resource	2026-06-21T03:52:27Z	PASS		verify.sh	Custom::AWS onCreate/onUpdate(v1->v2 in-place)/onDelete all fired; clean destroy 0 orphan
+backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
+basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildProgram entry-point refactor (#1097)
 batch	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bedrock-agentcore	2026-06-21T11:00:28Z	PASS	33	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bench-ccapi	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
 bench-sdk	2026-06-21T11:00:28Z	PASS	24	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 bucket-deployment	2026-06-20T18:40:52Z	PASS		verify.sh	Custom::CDKBucketDeployment synced asset; clean destroy, 0 orphan
+budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-rebase (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans
 cache-streaming	2026-06-21T11:00:28Z	PASS	509	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+cc-api-fallback	2026-07-20T02:16:18Z	PASS	62	verify.sh	CC auto-route silent-drop closed, destroy clean, deployments swept
+cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transition/override #634 verified, 2 stacks destroy clean
+cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-back live-verified (#1105); destroy 8/8, 0 orphans
 ci-cd	2026-06-21T11:00:28Z	PASS	54	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 cloudfront-function-url	2026-06-21T11:00:28Z	PASS	372	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+cloudwatch	2026-07-02T18:23:15Z	PASS	50	standard	0703 staleness sweep (pre-TTL refresh); clean
+codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
+codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
 cognito	2026-06-21T16:16:44Z	PASS	56	verify.sh	stale-real re-run; 3 deleted 0 err; clean
+cognito-custom-attribute-add	2026-06-22T05:14:50Z	PASS	50	verify.sh	add-custom-attr reaches AWS via AddCustomAttributes; re-run on final tree; clean destroy
+cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 cognito-lambda-triggers	2026-06-21T06:31:35Z	PASS	60	verify.sh	triggers wired+fired; UserPoolClient Ref fix; 0 orph
+cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
+cognito-userpool-user-ref	2026-06-28T02:53:29Z	PASS	85	verify.sh	UserPoolUser Ref compound-id fix; repro FAIL->PASS; clean destroy
 composite-stack	2026-06-21T11:11:40Z	PASS	35	standard	sweep-F staleness re-run (rc=0)
 conditions	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+conditions-and-if	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); CFn Conditions + Fn::If 2-phase premium/basic; 14 assertions; clean destroy 0 err
+conditions-update-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); condition-gated resource add/remove across update; 14 assertions; clean destroy 0 err
 context-test	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+cross-region-state-bucket	2026-07-19T18:57:34Z	PASS	33	verify.sh	rc ok, temp bucket removed, orph clean
+cross-stack-references	2026-07-19T19:57:33Z	PASS	27	standard	rc ok, 2 stacks, orph clean
+custom-resource-getatt-data	2026-06-21T18:25:10Z	PASS	61	verify.sh	first run (never-run); CR Data GetAtt -> dependent SSM property; 3 params+Lambda gone; clean destroy
+custom-resource-provider	2026-06-27T16:56:19Z	PASS	293	standard	CR framework (onEvent/isComplete/waiter SFN); destroy 17 del 0 err
 data-analytics	2026-06-21T11:00:28Z	PASS	43	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
 deep-getatt-chains	2026-06-20T19:32:52Z	PASS		verify.sh	first run; deep GetAtt chain SDK+CC-API resolved; 6 deleted 0 errors; clean
+deletion-ordering-complex	2026-07-02T18:23:15Z	PASS	194	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 deletion-policy-retain	2026-06-21T11:00:28Z	PASS	24	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+deployment-events	2026-07-02T18:23:15Z	PASS	39	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+destroy-interrupt	2026-07-02T18:23:15Z	PASS	531	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 diff-intrinsic-target-change	2026-06-21T11:00:28Z	PASS	47	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
 docdb-neptune	2026-06-21T15:21:39Z	PASS	1512	verify.sh	sweep-G verify.sh re-run (rc=0)
+docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
+drift-revert	2026-07-19T19:15:52Z	PASS	93	verify.sh	rc ok, 13 deleted, orph clean
+drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
+drift-revert-vpc	2026-07-19T19:20:48Z	PASS	242	verify.sh	rc ok, 21 deleted, orph clean
+dynamodb-autoscaling	2026-06-27T16:08:39Z	PASS	68	verify.sh	CC-API ScalableTarget/Policy create + maxCap 10->20 in-place UPDATE; 0 errors 0 orphans
 dynamodb-globaltable	2026-06-20T17:59:38Z	PASS		verify.sh	BillingMode/autoscaling UPDATE + clean destroy (#887 regression); 1 deleted 0 errors
 dynamodb-gsi-update	2026-06-20T18:10:27Z	PASS		verify.sh	#887 add-GSI in-place UPDATE (no replacement); 3 phases pass, clean destroy
 dynamodb-ondemand	2026-06-20T18:12:58Z	PASS		verify.sh	BillingMode/ProvisionedThroughput in-place UPDATE (#887 regression); 3 deleted 0 errors
 dynamodb-sse	2026-06-21T08:22:45Z	PASS	41	verify.sh	SSESpecification create-path (#910 adds update-path code+unit); SSE reaches AWS as KMS; destroy clean
 dynamodb-stream-filter	2026-06-21T06:31:35Z	PASS	58	verify.sh	FilterCriteria/bisect/responseTypes; 0 orph
+dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
+dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
+dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 ec2-instance	2026-06-21T17:00:38Z	PASS	91	verify.sh	stale-real re-run; clean destroy
 ec2-vpc	2026-06-21T11:12:35Z	PASS	53	standard	sweep-F staleness re-run (rc=0)
 ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+ecr-scanning	2026-07-03T08:26:37Z	PASS	55	verify.sh	tag add/change/untag on update reach AWS; destroy clean
+ecs-fargate	2026-07-02T18:23:15Z	PASS	373	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+ecs-service-update-props	2026-07-03T07:12:17Z	PASS	50	verify.sh	EnableECSManagedTags+PropagateTags mapping; non-ECS-controller LB/SR now throws not drops
+efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
 efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
 efs-standalone	2026-06-21T16:16:44Z	PASS	135	verify.sh	stale-real re-run; 11 deleted 0 err; clean
 elasticache-replicationgroup-getatt	2026-06-21T18:03:30Z	PASS	649	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
+emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
+emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
 event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+eventbridge	2026-07-02T06:09:46Z	PASS	210	verify.sh	new Phase 1.5 custom-bus rule-drop update (issue 955 fix), destroy 10/0 err
+eventbridge-api-destination	2026-06-21T18:24:53Z	PASS	90	verify.sh	ConnectionArn+ApiDest Arn enrichment verified, destroy clean 0 orphans
+eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
 eventbridge-input-transformer	2026-06-21T07:34:45Z	PASS	53	verify.sh	InputTransformer rewrites payload; UPDATE version reached AWS; destroy clean
+eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
+eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
+eventsourcemapping-race	2026-06-21T18:33:45Z	PASS	88	verify.sh	first run (never-run); fresh-source/role ESM create + message processing + no-orphan-ESM destroy
+export	2026-07-19T19:12:00Z	PASS	302	verify.sh	rc ok, CFn stack deleted, orph clean
 export-nested-stack	2026-06-21T11:00:28Z	PASS	326	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 fifo-sqs-event-source	2026-06-21T07:42:41Z	PASS	83	verify.sh	FIFO ESM delivers + both MessageGroupIds (g1,g2) preserved; spaced poll; destroy clean 0 orphan
+fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans
+fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
+fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
+fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
 full-stack-demo	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run after review hardening (own-marker guard); clean
+getatt-fallback-guard	2026-07-20T03:13:10Z	PASS	60	verify.sh	new error-path fixture: guard hard-fails BogusArn fallback live; rollback + destroy clean
+getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (never-run); cross-region Fn::GetStackOutput (us-west-2 producer -> us-east-1 consumer); both regions clean
+glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
+glue-update-hardening	2026-07-02T18:23:15Z	PASS	68	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 iam-managed-policy	2026-06-21T11:14:04Z	PASS	22	standard	sweep-F staleness re-run (rc=0)
+iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
+iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
+iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
 iam-role-prefixed-name-update	2026-06-21T08:38:12Z	PASS	45	verify.sh	prefix-migration false-positive fix (generator-based); in-place UPDATE w/o -y, RoleId unchanged, destroy clean
+import-attributes	2026-07-19T18:00:36Z	PASS	39	verify.sh	PR #1099 final verify after provider empty-attr fixes; PolicyArn persisted; 1 del 0 err 0 orphans
 import-nested-stack	2026-06-21T11:00:28Z	PASS	146	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+import-value-strong-ref	2026-07-02T18:23:15Z	PASS	115	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+importvalue-chain	2026-07-02T18:23:15Z	PASS	75	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 infra-security	2026-06-21T11:00:28Z	PASS	307	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
 intrinsic-functions	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 intrinsics-torture	2026-06-20T19:30:47Z	PASS		verify.sh	first run; all intrinsic assertions pass; 12 deleted 0 errors; no orphan SSM
+intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); intrinsic-function torture; 12 checks; 11 deleted 0 err; SSM cleared
+kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
+kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
 kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy ok+destroy 3 del 0 err (split across subshell-death; re-destroyed clean); KMS key PendingDeletion
+lambda	2026-07-20T03:12:02Z	PASS	170	verify.sh	broad refresh for #1106 resolver guard; destroy 9/9, 0 orphans
+lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
 lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
+lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
+lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans
 lambda-layer-version-update	2026-06-21T14:58:48Z	PASS	69	verify.sh	LayerVersion content-change replacement + dependent re-point; 0 orphans
 lambda-log-retention	2026-06-20T18:40:52Z	PASS		verify.sh	logRetention 7 + in-place UPDATE to 14 (Custom::LogRetention); clean destroy, 0 orphan
+lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
+lambda-snapstart	2026-07-16T15:54:15Z	PASS	187	verify.sh	new fixture, 3 phases clean, orph clean
 lambda-versioning	2026-06-21T11:00:28Z	PASS	48	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAtt value change propagates to NO_CHANGE ASG same deploy; destroy clean
 legacy-bucket-name-fallback	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 legacy-state-migration	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-ecs-service-connect	2026-06-21T11:00:28Z	PASS	20	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+local-invoke	2026-07-20T03:08:51Z	PASS	120	verify.sh	integ-local refresh for pattern-2 sweep (local-start-alb-from-state probe change); docker sweep clean
 local-invoke-agentcore	2026-06-21T10:51:48Z	PASS	103	verify.sh	creds materialized (export-credentials); 21 tests; arm64-native container (no qemu); docker clean
 local-invoke-agentcore-from-state	2026-06-21T10:51:48Z	PASS	55	verify.sh	creds materialized; 8 del 0 err; --from-state intrinsic env-var substitution; docker clean
 local-invoke-buildkit	2026-06-21T11:00:28Z	PASS	32	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -73,178 +156,95 @@ local-invoke-python	2026-06-21T11:00:28Z	PASS	56	verify.sh	sweep-4..8 staleness 
 local-invoke-ruby	2026-06-21T11:00:28Z	PASS	51	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-run-task	2026-06-21T11:00:28Z	PASS	19	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-run-task-awsvpc	2026-06-21T11:00:28Z	PASS	9	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+local-run-task-cdkd-assets	2026-07-16T17:53:49Z	PASS	95	verify.sh	classifier regression for issue-1025 marker-based repo match; docker sweep clean
 local-run-task-from-state	2026-06-21T11:00:28Z	PASS	96	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-run-task-multi-container	2026-06-21T11:00:28Z	PASS	11	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-start-agentcore	2026-06-21T19:11:23Z	PASS	70	verify.sh	staleness re-run (15d); warm HTTP contract ping+invocations+session-id, /ws bridge, --sigv4-signed forward; aws-cdk-lib 2.260 OK; 0 container leak
 local-start-alb	2026-06-21T11:00:28Z	PASS	21	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-start-alb-from-state	2026-06-21T10:44:49Z	PASS	88	verify.sh	fixed verify.sh assertion (state.json only, ignore #885 deployments/); deploy+destroy clean 29 del 0 err
+local-start-api	2026-07-19T18:27:53Z	PASS	22	verify.sh	rc ok, 0 docker orphans; swept verify.sh (#1097 pattern 1)
 local-start-api-container	2026-06-21T14:49:02Z	PASS	14	verify.sh	sweep-G local re-run (rc=0)
 local-start-api-rest-v1-non-proxy	2026-06-21T14:49:21Z	PASS	17	verify.sh	sweep-G local re-run (rc=0)
+local-start-api-websocket	2026-07-19T18:46:28Z	PASS	103	verify.sh	rc ok, 0 docker orphans; validates restructured multi-line trap (#1097)
+local-start-cloudfront	2026-06-27T16:36:59Z	PASS	5	verify.sh	local serve pipeline + watch + SPA fallback, no AWS
 local-start-service	2026-06-21T14:52:59Z	PASS	21	verify.sh	sweep-G local re-run (rc=0)
 local-start-service-watch-fast	2026-06-21T14:56:24Z	PASS	203	verify.sh	sweep-G local re-run (rc=0)
 log-pipeline	2026-06-21T11:00:28Z	PASS	62	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard error-path + replace recreate, destroy clean 0 orphans
+loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
 macro-expansion	2026-06-21T11:15:51Z	PASS	105	verify.sh	sweep-F staleness re-run (rc=0)
+microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
 migrate-from-bare-cfn	2026-06-21T11:00:28Z	PASS	146	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 migrate-from-bare-cfn-codegen-only	2026-06-21T19:09:34Z	PASS	55	verify.sh	fixed: bumped pinned aws-cdk 2.1112->2.1128 (schema 54 float); 3/3 logical IDs + aws:cdk:path preserved; AWS-free codegen smoke
 migrate-from-cfn	2026-06-21T11:00:28Z	PASS	89	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 monitoring	2026-06-21T04:34:50Z	PASS	40	standard	CW alarms/dashboard deploy 7 / destroy 7, 0 err
 multi-asset	2026-06-21T04:31:39Z	PASS	74	verify.sh	1 ECR + 4 S3 assets, each Lambda correct marker, destroy 0 err; swept 4 log groups
 multi-region-same-stack	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+multi-resource	2026-07-17T12:05:00Z	PASS	85	standard	broad refresh for #1041 register-providers edit (post-rebase): 17 created/deleted, 0 errors, log groups swept
+multi-stack-deps	2026-07-19T19:48:39Z	PASS	63	standard	rc ok, 3 stacks 13 res, all destroyed, orph clean
 nested-stack	2026-06-21T11:16:17Z	PASS	24	standard	sweep-F staleness re-run (rc=0)
 nested-stack-3level	2026-06-20T19:37:31Z	PASS		verify.sh	first run; 4-level nested deploy/parent-link/state-tree/destroy-cascade; 9 deleted 0 errors; all state.json gone
 nested-stack-deep	2026-06-21T11:17:08Z	PASS	49	verify.sh	sweep-F staleness re-run (rc=0)
 nodejs-function	2026-06-21T03:52:27Z	PASS		verify.sh	NodejsFunction esbuild bundle invoked 200; clean destroy 0 orphan
 opensearch-domain-getatt	2026-06-21T18:03:30Z	PASS	1671	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
 orphan-resource	2026-06-21T11:00:28Z	PASS	30	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 parameters	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run); 4 fresh-principal/consumer race edges; clean destroy
+raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
 rds-aurora	2026-06-21T17:00:38Z	PASS	2088	verify.sh	stale-real re-run; clean destroy (~35min)
 rds-dbinstance-backfill	2026-06-21T19:05:04Z	PASS	560	verify.sh	re-run after pg 17.4->17.6 fixture fix (AWS retired 17.4); all #609 backfill props verified incl EngineVersion==17.6; 11 deleted 0 err
+rds-full-stack	2026-06-21T18:53:07Z	PASS	600	verify.sh	first run (never-run); RDS L2 + custom subnet/param groups + GetAtt computed endpoint via SSM; 15 deleted 0 err state gone
 recreate-mixed-direction	2026-06-21T04:29:17Z	PASS	93	verify.sh	bidirectional sdk<->cc recreate clean, destroy 0 err
+recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean
 recreate-via-sdk-provider	2026-06-21T04:27:01Z	PASS	79	verify.sh	cc-api->sdk recreate clean, destroy 0 err
 redshift-cluster-getatt	2026-06-21T18:03:30Z	PASS	416	verify.sh	stale-real re-run; getatt assert; clean destroy 0 orphan
+remove-protection	2026-07-19T19:44:06Z	PASS	1351	verify.sh	rc ok, 11 deleted, ASG orphan terminated, orph clean
 replacement-fanout	2026-06-20T19:35:04Z	PASS		verify.sh	first run; SNS replacement fanout to 10 SSM deps + TopicPolicy; 12 deleted 0 errors
+replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
+rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
 route53	2026-06-21T16:16:44Z	PASS	384	verify.sh	stale-real re-run; 6 deleted 0 err; clean
+s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-directory-bucket	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 s3-event-notification	2026-06-20T18:40:52Z	PASS		verify.sh	S3->Lambda notification fired (DynamoDB record); 3 phases pass, clean destroy, 0 orphan
+s3-lifecycle	2026-06-28T17:58:35Z	PASS	51	verify.sh	V1/V2 mix + top-level ObjectSize fold; deploy+update+destroy clean
+s3-object-lock	2026-06-27T16:08:39Z	PASS	46	verify.sh	Object Lock GOVERNANCE create + retention 1->5d in-place UPDATE; 0 errors 0 orphans
+s3-replication-and-filter	2026-06-29T05:06:19Z	PASS	55	verify.sh	And filter create+update+destroy, orph clean
+s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to table name (#974); clean destroy
 s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
 scheduled-task	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
 schema-v5-to-v6-migration	2026-06-21T14:38:30Z	PASS	57	verify.sh	sweep-G verify.sh re-run (rc=0)
 schema-v6-to-v7-migration	2026-06-21T14:39:23Z	PASS	51	verify.sh	sweep-G verify.sh re-run (rc=0)
+schema-v7-to-v8-migration	2026-07-19T19:56:03Z	PASS	100	verify.sh	rc ok, transparent auto-migration, orph clean
+sdk-ccapi-crossref	2026-06-21T18:25:10Z	PASS	80	verify.sh	first run (never-run); heterogeneous SDK/CC routing + bidirectional cross-ref; clean CC-path destroy
+secrets-dynamic-ref	2026-06-21T18:25:10Z	PASS	52	verify.sh	first run (never-run); SecretsManager dynamic-reference resolution; clean destroy state gone
+secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
+serverless-api	2026-07-02T18:23:15Z	PASS	50	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+servicediscovery	2026-07-19T19:00:29Z	PASS	111	verify.sh	rc ok, 3 deleted, orph clean
+servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
+ses-identity	2026-07-16T15:54:15Z	PASS	182	verify.sh	new fixture, 3 phases clean, orph clean
+sg-circular-dependency	2026-06-21T18:54:29Z	PASS	180	verify.sh	first run (never-run); circular SG cross-ref via standalone ingress; revoke-before-delete destroy order; 11 deleted 0 err
 sns-event-source	2026-06-21T03:52:27Z	PASS		verify.sh	SnsEventSource: publish->Lambda->DynamoDB delivered; clean destroy 0 orphan
+sns-inline-subscription	2026-07-03T09:04:10Z	PASS	47	verify.sh	inline sub create(in-try)+update+drift reach AWS; destroy clean
 sns-sqs-event	2026-06-21T16:16:44Z	PASS	56	verify.sh	stale-real re-run; 19 deleted 0 err; clean
 sns-subscription-filter	2026-06-21T06:31:35Z	PASS	38	verify.sh	FilterPolicy intact; 0 orph
 sqs-cloudwatch	2026-06-21T11:00:28Z	PASS	41	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated
 state-destroy	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055 GetBucketLocation exercised, orph clean
 stepfunctions	2026-06-21T04:32:59Z	PASS	30	standard	SFN deploy 5 / destroy 5, 0 err
+stepfunctions-logging	2026-07-03T08:44:32Z	PASS	52	verify.sh	logging/tracing removal-clear reaches AWS (OFF/0/False); destroy clean
+stepfunctions-s3-definition	2026-07-02T18:23:15Z	PASS	33	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
+tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag propagation across 9 resource types; no tag-order false-positive; 9 deleted 0 err
+throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 update-policy-mutations	2026-06-20T19:39:38Z	PASS		verify.sh	first run; DeletionPolicy/UpdateReplacePolicy mutations + retain-on-replace; 5 del +2 retain; step6 cleanup -> 0 leftover
+update-replace	2026-07-02T16:12:06Z	PASS	585	verify.sh	fixture updated: BucketName replacement now passes --force-stateful-recreation (post-#929 guard)
 vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
 vpc-nat-gateway	2026-06-21T17:00:38Z	PASS	145	verify.sh	stale-real re-run; deploy 21 + destroy 21 (split by subshell-death, re-destroyed clean); NAT GW gone
-glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
-lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans
-eventbridge-api-destination	2026-06-21T18:24:53Z	PASS	90	verify.sh	ConnectionArn+ApiDest Arn enrichment verified, destroy clean 0 orphans
-conditions-and-if	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); CFn Conditions + Fn::If 2-phase premium/basic; 14 assertions; clean destroy 0 err
-conditions-update-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); condition-gated resource add/remove across update; 14 assertions; clean destroy 0 err
-intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); intrinsic-function torture; 12 checks; 11 deleted 0 err; SSM cleared
-tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag propagation across 9 resource types; no tag-order false-positive; 9 deleted 0 err
-custom-resource-getatt-data	2026-06-21T18:25:10Z	PASS	61	verify.sh	first run (never-run); CR Data GetAtt -> dependent SSM property; 3 params+Lambda gone; clean destroy
-secrets-dynamic-ref	2026-06-21T18:25:10Z	PASS	52	verify.sh	first run (never-run); SecretsManager dynamic-reference resolution; clean destroy state gone
-sdk-ccapi-crossref	2026-06-21T18:25:10Z	PASS	80	verify.sh	first run (never-run); heterogeneous SDK/CC routing + bidirectional cross-ref; clean CC-path destroy
-eventsourcemapping-race	2026-06-21T18:33:45Z	PASS	88	verify.sh	first run (never-run); fresh-source/role ESM create + message processing + no-orphan-ESM destroy
-propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run); 4 fresh-principal/consumer race edges; clean destroy
-iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
-getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (never-run); cross-region Fn::GetStackOutput (us-west-2 producer -> us-east-1 consumer); both regions clean
-rds-full-stack	2026-06-21T18:53:07Z	PASS	600	verify.sh	first run (never-run); RDS L2 + custom subnet/param groups + GetAtt computed endpoint via SSM; 15 deleted 0 err state gone
-sg-circular-dependency	2026-06-21T18:54:29Z	PASS	180	verify.sh	first run (never-run); circular SG cross-ref via standalone ingress; revoke-before-delete destroy order; 11 deleted 0 err
-iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
-kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
-cognito-custom-attribute-add	2026-06-22T05:14:50Z	PASS	50	verify.sh	add-custom-attr reaches AWS via AddCustomAttributes; re-run on final tree; clean destroy
-dynamodb-autoscaling	2026-06-27T16:08:39Z	PASS	68	verify.sh	CC-API ScalableTarget/Policy create + maxCap 10->20 in-place UPDATE; 0 errors 0 orphans
-s3-object-lock	2026-06-27T16:08:39Z	PASS	46	verify.sh	Object Lock GOVERNANCE create + retention 1->5d in-place UPDATE; 0 errors 0 orphans
-secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
-local-start-cloudfront	2026-06-27T16:36:59Z	PASS	5	verify.sh	local serve pipeline + watch + SPA fallback, no AWS
-custom-resource-provider	2026-06-27T16:56:19Z	PASS	293	standard	CR framework (onEvent/isComplete/waiter SFN); destroy 17 del 0 err
-dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
-apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-cognito-identity-pool	2026-06-27T19:25:47Z	PASS	44	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
-cognito-userpool-user-ref	2026-06-28T02:53:29Z	PASS	85	verify.sh	UserPoolUser Ref compound-id fix; repro FAIL->PASS; clean destroy
-s3-lifecycle	2026-06-28T17:58:35Z	PASS	51	verify.sh	V1/V2 mix + top-level ObjectSize fold; deploy+update+destroy clean
-inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
-lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
-s3-replication-and-filter	2026-06-29T05:06:19Z	PASS	55	verify.sh	And filter create+update+destroy, orph clean
-codedeploy-lambda-deployment-group	2026-07-02T04:43:08Z	PASS	100	verify.sh	new fixture: IAM-propagation retry + version/alias update, 0 orphans
-eventbridge	2026-07-02T06:09:46Z	PASS	210	verify.sh	new Phase 1.5 custom-bus rule-drop update (issue 955 fix), destroy 10/0 err
-dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
-lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
-loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard error-path + replace recreate, destroy clean 0 orphans
-loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
-synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
-scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
-apigw-stage-throttling	2026-07-02T16:57:21Z	PASS	72	verify.sh	CC-route trigger swapped to AccessLogSettings (#966), all #963 assertions green, 0 orphans
-eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
-update-replace	2026-07-02T16:12:06Z	PASS	585	verify.sh	fixture updated: BucketName replacement now passes --force-stateful-recreation (post-#929 guard)
-rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
-cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
-apigateway	2026-07-02T17:12:19Z	PASS	55	verify.sh	re-run with final #966 binary (root-key + reset-rebuild + corpse-cleanup fixes), 0 orphans
 wafv2	2026-07-03T04:24:38Z	PASS	120	standard	re-run on rebased tree (PR 972 + #971 base); 0 errors, retained CW role swept, events pruned
-glue-update-hardening	2026-07-02T18:23:15Z	PASS	68	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-stepfunctions-s3-definition	2026-07-02T18:23:15Z	PASS	33	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-deletion-ordering-complex	2026-07-02T18:23:15Z	PASS	194	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-deployment-events	2026-07-02T18:23:15Z	PASS	39	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-import-value-strong-ref	2026-07-02T18:23:15Z	PASS	115	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-ecs-fargate	2026-07-02T18:23:15Z	PASS	373	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-serverless-api	2026-07-02T18:23:15Z	PASS	50	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-alb	2026-07-02T18:23:15Z	PASS	62	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-importvalue-chain	2026-07-02T18:23:15Z	PASS	75	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-destroy-interrupt	2026-07-02T18:23:15Z	PASS	531	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-cloudwatch	2026-07-02T18:23:15Z	PASS	50	standard	0703 staleness sweep (pre-TTL refresh); clean
-docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
-sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated
-ecs-service-update-props	2026-07-03T07:12:17Z	PASS	50	verify.sh	EnableECSManagedTags+PropagateTags mapping; non-ECS-controller LB/SR now throws not drops
-s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to table name (#974); clean destroy
-ecr-scanning	2026-07-03T08:26:37Z	PASS	55	verify.sh	tag add/change/untag on update reach AWS; destroy clean
-stepfunctions-logging	2026-07-03T08:44:32Z	PASS	52	verify.sh	logging/tracing removal-clear reaches AWS (OFF/0/False); destroy clean
-sns-inline-subscription	2026-07-03T09:04:10Z	PASS	47	verify.sh	inline sub create(in-try)+update+drift reach AWS; destroy clean
-launchtemplate-asg-inplace	2026-07-03T09:30:15Z	PASS	64	verify.sh	in-place GetAtt value change propagates to NO_CHANGE ASG same deploy; destroy clean
-dynamodb-streams	2026-07-03T10:26:01Z	PASS	86	verify.sh	OnDemand/Warm wait follow-up; destroy clean
-backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
-asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
-asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
-asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
-bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
-ses-identity	2026-07-16T15:54:15Z	PASS	182	verify.sh	new fixture, 3 phases clean, orph clean
-eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
-lambda-snapstart	2026-07-16T15:54:15Z	PASS	187	verify.sh	new fixture, 3 phases clean, orph clean
-iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
-apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix live-verify, warn 1->0 + rendering sample, orph clean
 wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review-nit JSDoc edit, orph clean
-raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
-multi-resource	2026-07-17T12:05:00Z	PASS	85	standard	broad refresh for #1041 register-providers edit (post-rebase): 17 created/deleted, 0 errors, log groups swept
-local-run-task-cdkd-assets	2026-07-16T17:53:49Z	PASS	95	verify.sh	classifier regression for issue-1025 marker-based repo match; docker sweep clean
-gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run after review hardening (own-marker guard); clean
-budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-rebase (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans
-servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
-agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
-dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
-codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
-bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
-emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
-fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
-drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
-import-attributes	2026-07-19T18:00:36Z	PASS	39	verify.sh	PR #1099 final verify after provider empty-attr fixes; PolicyArn persisted; 1 del 0 err 0 orphans
-emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
-local-start-api	2026-07-19T18:27:53Z	PASS	22	verify.sh	rc ok, 0 docker orphans; swept verify.sh (#1097 pattern 1)
-local-start-api-websocket	2026-07-19T18:46:28Z	PASS	103	verify.sh	rc ok, 0 docker orphans; validates restructured multi-line trap (#1097)
-cross-region-state-bucket	2026-07-19T18:57:34Z	PASS	33	verify.sh	rc ok, temp bucket removed, orph clean
-servicediscovery	2026-07-19T19:00:29Z	PASS	111	verify.sh	rc ok, 3 deleted, orph clean
-replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
-efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
-export	2026-07-19T19:12:00Z	PASS	302	verify.sh	rc ok, CFn stack deleted, orph clean
-drift-revert	2026-07-19T19:15:52Z	PASS	93	verify.sh	rc ok, 13 deleted, orph clean
-drift-revert-vpc	2026-07-19T19:20:48Z	PASS	242	verify.sh	rc ok, 21 deleted, orph clean
-remove-protection	2026-07-19T19:44:06Z	PASS	1351	verify.sh	rc ok, 11 deleted, ASG orphan terminated, orph clean
-multi-stack-deps	2026-07-19T19:48:39Z	PASS	63	standard	rc ok, 3 stacks 13 res, all destroyed, orph clean
-microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
-schema-v7-to-v8-migration	2026-07-19T19:56:03Z	PASS	100	verify.sh	rc ok, transparent auto-migration, orph clean
-cross-stack-references	2026-07-19T19:57:33Z	PASS	27	standard	rc ok, 2 stacks, orph clean
-state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055 GetBucketLocation exercised, orph clean
-cc-api-fallback	2026-07-20T02:16:18Z	PASS	62	verify.sh	CC auto-route silent-drop closed, destroy clean, deployments swept
-cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transition/override #634 verified, 2 stacks destroy clean
-recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean
-fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
-fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
-cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-back live-verified (#1105); destroy 8/8, 0 orphans
-lambda	2026-07-20T03:12:02Z	PASS	170	verify.sh	broad refresh for #1106 resolver guard; destroy 9/9, 0 orphans
-getatt-fallback-guard	2026-07-20T03:13:10Z	PASS	60	verify.sh	new error-path fixture: guard hard-fails BogusArn fallback live; rollback + destroy clean
-eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
-local-invoke	2026-07-20T03:08:51Z	PASS	120	verify.sh	integ-local refresh for pattern-2 sweep (local-start-alb-from-state probe change); docker sweep clean
-basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildProgram entry-point refactor (#1097)
-fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans

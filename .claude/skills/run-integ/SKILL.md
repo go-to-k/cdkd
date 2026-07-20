@@ -280,28 +280,24 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     - `last_run_iso`: `date -u +%Y-%m-%dT%H:%M:%SZ` (UTC). `flow`: `verify.sh` or `standard`.
     - `duration_s`: optional wall-clock seconds. `note`: short reason / finding one-liner.
 
-    Portable update (do NOT use `grep -P` — unavailable on macOS BSD grep; use awk to drop
-    the test's old row, then append the new one):
+    Append the new row, then normalize the whole file (do NOT hand-drop the old row —
+    the normalizer collapses to the newest row per test and re-sorts):
     ```bash
     LEDGER="docs/_generated/integ-last-run.tsv"
-    [ -f "$LEDGER" ] || printf '# integ-last-run ledger (update-type: one row per test). cols: test\tlast_run_iso\tresult\tduration_s\tflow\tnote\n' > "$LEDGER"
     TEST="<test-name>"; TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     RESULT="PASS"; DUR="<seconds>"; FLOW="verify.sh"; NOTE="rc ok, orph clean"
-    tmp="$(mktemp)"; awk -F'\t' -v t="$TEST" '$1!=t' "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$TEST" "$TS" "$RESULT" "$DUR" "$FLOW" "$NOTE" >> "$LEDGER"
+    vp run integ-ledger-normalize
     ```
     Commit the ledger update with the branch's changes (it is part of the integ run record;
     the file is intentionally committed so the last-run history is shared across sessions).
 
-    **After any rebase / merge that touches this file, re-check the one-row-per-test
-    invariant.** The awk above dedups against the branch's OWN base, so when two branches
-    each append a row for the same test, git concatenates BOTH on merge and neither side's
-    dedup ever sees the other. Found 2026-07-20: 9 tests carried duplicate rows, some with
-    differing timestamps (so `/pick-integ` could rank staleness off the OLDER run) and some
-    byte-identical. Cheap check, and re-run the dedup awk if it prints anything:
-    ```bash
-    awk -F'\t' '!/^#/{c[$1]++} END{for(t in c) if(c[t]>1) print t}' docs/_generated/integ-last-run.tsv
-    ```
+    The one-row-per-test invariant is now **enforced by CI** (issue #1112): the
+    `integ-last-run ledger is normalized` step re-runs the normalizer and fails on any
+    diff. No manual post-rebase re-check is needed — the whole-file rewrite makes a
+    replayed commit produce an identical file rather than an additive diff, which is what
+    used to let a rebase silently duplicate rows. If a rebase does leave the file dirty,
+    re-run `vp run integ-ledger-normalize` and commit; `--check` reports without writing.
 
 ## Important
 
