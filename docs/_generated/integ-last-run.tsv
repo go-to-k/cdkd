@@ -234,7 +234,6 @@ lambda	2026-07-19T15:42:32Z	PASS	83	verify.sh	broad integ for import-tag-walk re
 emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
 local-start-api	2026-07-19T18:27:53Z	PASS	22	verify.sh	rc ok, 0 docker orphans; swept verify.sh (#1097 pattern 1)
 local-start-api-websocket	2026-07-19T18:46:28Z	PASS	103	verify.sh	rc ok, 0 docker orphans; validates restructured multi-line trap (#1097)
-cc-getatt-readback	2026-07-19T19:55:05Z	PASS	150	verify.sh	new fixture issue-1103; GetAtt outputs equal real API values; destroy 0 err 0 orph
 cross-region-state-bucket	2026-07-19T18:57:34Z	PASS	33	verify.sh	rc ok, temp bucket removed, orph clean
 servicediscovery	2026-07-19T19:00:29Z	PASS	111	verify.sh	rc ok, 3 deleted, orph clean
 replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
@@ -253,3 +252,4 @@ cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transitio
 recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean
 fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
 fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
+cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-back live-verified (#1105); destroy 8/8, 0 orphans
