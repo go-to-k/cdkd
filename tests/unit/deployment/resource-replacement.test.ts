@@ -489,6 +489,61 @@ describe('DeployEngine - Resource Replacement', () => {
     expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName, 'us-east-1');
   });
 
+  it('ALLOWS a property-driven replacement of a stateful type when UpdateReplacePolicy is Retain', async () => {
+    // A stateful S3::Bucket with UpdateReplacePolicy: Retain is ORPHANED (not
+    // deleted) on a property-driven replacement, so there is NO data loss and
+    // the stateful guard must NOT block it even without --force-stateful-
+    // recreation. The old bucket survives (create called, delete NOT called),
+    // matching the "Retaining old ... - UpdateReplacePolicy: Retain" path.
+    const retainTemplate: CloudFormationTemplate = {
+      Resources: {
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          UpdateReplacePolicy: 'Retain',
+          Properties: { BucketName: 'new-bucket-name' },
+        },
+      },
+    };
+    const changes = new Map<string, ResourceChange>([
+      [
+        'MyBucket',
+        {
+          logicalId: 'MyBucket',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          currentProperties: { BucketName: 'old-bucket-name' },
+          desiredProperties: { BucketName: 'new-bucket-name' },
+          propertyChanges: [
+            {
+              path: 'BucketName',
+              oldValue: 'old-bucket-name',
+              newValue: 'new-bucket-name',
+              requiresReplacement: true,
+            },
+          ],
+        },
+      ],
+    ]);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+
+    const engine = new DeployEngine(
+      mockStateBackend as any,
+      mockLockManager as any,
+      mockDagBuilder as any,
+      mockDiffCalculator as any,
+      mockProviderRegistry as any,
+      {}, // NO forceStatefulRecreation -> Retain still exempts the guard
+      'us-east-1'
+    );
+
+    await engine.deploy(stackName, retainTemplate);
+
+    // Replacement proceeded (guard did NOT fire): new bucket created, and the
+    // old one was RETAINED (delete never called).
+    expect(mockProvider.create).toHaveBeenCalledTimes(1);
+    expect(mockProvider.delete).not.toHaveBeenCalled();
+  });
+
   it('ALLOWS a property-driven replacement of a NON-stateful type without the flag', async () => {
     // AWS::Lambda::Function is NOT stateful — an immutable-property change
     // replaces it freely (no --force-stateful-recreation needed), matching the
