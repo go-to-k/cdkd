@@ -12,7 +12,11 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
-import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  synthesisStatusMessage,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import {
@@ -125,7 +129,7 @@ async function diffCommand(
     logger.info(synthesisStatusMessage(app, 'Synthesizing CDK app...'));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
-    const result = await synthesizer.synthesize({
+    const synthOptions: SynthesisOptions = {
       app: options.app,
       output: options.output,
       ...(options.region && { region: options.region }),
@@ -135,7 +139,12 @@ async function diffCommand(
       // the > 51,200-byte template upload path (Issue #463).
       stateBucket,
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
-    });
+      // Issue #1150: expand macros AFTER stack selection (below), so a
+      // macro-carrying stack outside the diff set can never block or
+      // slow this diff with a CFn round-trip.
+      deferMacroExpansion: true,
+    };
+    const result = await synthesizer.synthesize(synthOptions);
 
     const { stacks: allStacks } = result;
     logger.info(`Found ${allStacks.length} stack(s) in assembly`);
@@ -164,6 +173,11 @@ async function diffCommand(
           : 'No stacks found in assembly'
       );
     }
+
+    // Issue #1150: macro expansion was deferred at synthesize() time —
+    // expand now for exactly the stacks being diffed, mutating each
+    // template in place before the diff calculator consumes it.
+    await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
 
     // 3. Initialize components
     const stateConfig = {

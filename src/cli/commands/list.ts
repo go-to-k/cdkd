@@ -141,6 +141,11 @@ async function listCommand(
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
+    // Issue #1150: listing needs only names / display paths /
+    // dependency edges from the manifest — never expanded templates —
+    // so a macro app lists without an AWS region or CloudFormation
+    // access.
+    deferMacroExpansion: true,
   };
 
   const result = await synthesizer.synthesize(synthOptions);

@@ -112,7 +112,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
-import { expandMacros } from '../../../src/synthesis/macro-expander.js';
+import { expandMacros, retryDelays } from '../../../src/synthesis/macro-expander.js';
 import { MacroExpansionError } from '../../../src/utils/error-handler.js';
 
 interface SendCall {
@@ -852,5 +852,83 @@ describe('expandMacros — concurrent UUID independence', () => {
     expect(nameA).toMatch(/^cdkd-macro-expand-/);
     expect(nameB).toMatch(/^cdkd-macro-expand-/);
     expect(nameA).not.toBe(nameB);
+  });
+});
+
+describe('expandMacros — EarlyValidation hook retry (issue #1151)', () => {
+  const EARLY_VALIDATION_REASON =
+    'The following hook(s)/validation failed: [AWS::EarlyValidation::ResourceExistenceCheck]. ' +
+    'To troubleshoot Early Validation errors, use the DescribeEvents API for detailed failure information.';
+
+  it('retries an EarlyValidation-rejected changeset with a fresh transient stack and succeeds', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      // Attempt 1: waiter fails, DescribeChangeSet reports the hook
+      // rejection. Attempt 2: waiter passes, GetTemplate returns the
+      // expanded template.
+      waitUntilChangeSetCreateCompleteMock
+        .mockRejectedValueOnce(new Error('waiter saw FAILED'))
+        .mockResolvedValueOnce({});
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
+        GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+      });
+      const result = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never });
+      expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
+      const creates = calls.filter((c) => c.name === 'CreateChangeSet');
+      expect(creates).toHaveLength(2);
+      // Each attempt mints a FRESH transient stack name.
+      expect(creates[0]!.input['StackName']).not.toBe(creates[1]!.input['StackName']);
+      // The failed attempt's transient stack was cleaned up too (one
+      // DeleteStack per attempt).
+      expect(calls.filter((c) => c.name === 'DeleteStack')).toHaveLength(2);
+      expect(sleepSpy).toHaveBeenCalledTimes(1);
+      expect(sleepSpy).toHaveBeenCalledWith(2000);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('gives up after 3 consecutive EarlyValidation rejections with the original error', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter saw FAILED'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: { Status: 'FAILED', StatusReason: EARLY_VALIDATION_REASON },
+      });
+      await expect(
+        expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+      ).rejects.toThrow(/AWS::EarlyValidation::ResourceExistenceCheck/);
+      expect(calls.filter((c) => c.name === 'CreateChangeSet')).toHaveLength(3);
+      // Exponential backoff: 2s then 4s.
+      expect(sleepSpy).toHaveBeenCalledTimes(2);
+      expect(sleepSpy).toHaveBeenNthCalledWith(1, 2000);
+      expect(sleepSpy).toHaveBeenNthCalledWith(2, 4000);
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it('does NOT retry a FAILED changeset whose reason is not an EarlyValidation hook', async () => {
+    const sleepSpy = vi.spyOn(retryDelays, 'sleep').mockResolvedValue(undefined);
+    try {
+      waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter saw FAILED'));
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        DescribeChangeSet: {
+          Status: 'FAILED',
+          StatusReason: 'No updates are to be performed.',
+        },
+      });
+      await expect(
+        expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+      ).rejects.toThrow(MacroExpansionError);
+      expect(calls.filter((c) => c.name === 'CreateChangeSet')).toHaveLength(1);
+      expect(sleepSpy).not.toHaveBeenCalled();
+    } finally {
+      sleepSpy.mockRestore();
+    }
   });
 });

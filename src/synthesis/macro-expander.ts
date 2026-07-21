@@ -97,6 +97,30 @@ void EMPIRICAL_FINDINGS_VERIFIED_2026_05_23;
 /** 600 seconds = 10 minutes. SDK waiter's `maxWaitTime` is in seconds. */
 const WAITER_MAX_WAIT_SECONDS = 600;
 const PARAMETER_PLACEHOLDER = 'cdkd-macro-expand-placeholder';
+
+/**
+ * AWS's managed pre-deployment validation hooks
+ * (`AWS::EarlyValidation::*`, e.g. `ResourceExistenceCheck`) can
+ * reject the transient expansion changeset INTERMITTENTLY (issue
+ * #1151: two consecutive rejections followed by a clean pass on the
+ * same template minutes later, with the same named resources
+ * existing throughout). The changeset is never executed — cdkd only
+ * reads the Processed-stage template — so a validation-hook rejection
+ * carries no real risk and is worth retrying with a fresh transient
+ * stack before failing the whole run.
+ */
+const EARLY_VALIDATION_MAX_ATTEMPTS = 3;
+const EARLY_VALIDATION_RETRY_BASE_DELAY_MS = 2_000;
+
+/** Matches the changeset FAILED StatusReason emitted by the hook family. */
+function isEarlyValidationRejection(err: unknown): boolean {
+  return err instanceof MacroExpansionError && /AWS::EarlyValidation::/.test(err.message);
+}
+
+/** Test seam: overridable sleep so retry tests don't wait wall-clock. */
+export const retryDelays = {
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
 /**
  * Capabilities sent on every `CreateChangeSet` call:
  *
@@ -209,6 +233,35 @@ export async function expandMacros(
     return template as CloudFormationTemplate;
   }
 
+  // Issue #1151: AWS's EarlyValidation hook family rejects the
+  // transient changeset intermittently. Each retry attempt mints a
+  // FRESH transient stack name (inside expandMacrosAttempt) and the
+  // failed attempt's stack is already torn down by its own finally.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await expandMacrosAttempt(template, opts, logger);
+    } catch (err) {
+      if (attempt < EARLY_VALIDATION_MAX_ATTEMPTS && isEarlyValidationRejection(err)) {
+        const delayMs = EARLY_VALIDATION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+        logger.warn(
+          `Macro expansion changeset was rejected by an AWS EarlyValidation hook ` +
+            `(attempt ${attempt}/${EARLY_VALIDATION_MAX_ATTEMPTS}); this rejection is ` +
+            `known to be intermittent — retrying with a fresh transient stack in ` +
+            `${delayMs / 1000}s...`
+        );
+        await retryDelays.sleep(delayMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+async function expandMacrosAttempt(
+  template: unknown,
+  opts: ExpandMacrosOptions,
+  logger: Logger
+): Promise<CloudFormationTemplate> {
   const macros = enumerateMacros(template);
   logger.debug(
     `Macro expansion: detected transforms [${macros.join(', ')}], starting CFn round-trip...`

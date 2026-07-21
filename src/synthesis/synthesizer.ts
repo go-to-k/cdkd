@@ -85,6 +85,21 @@ export interface SynthesisOptions {
    * template upload (over the inline 51,200-byte limit).
    */
   macroExpandS3ClientOpts?: ExpandMacrosOptions['s3ClientOpts'];
+
+  /**
+   * Skip the macro-expansion pre-pass inside {@link
+   * Synthesizer.synthesize} (issue #1150). Commands that SELECT a
+   * subset of stacks (deploy / diff) set this and call {@link
+   * Synthesizer.expandMacrosForStacks} themselves after stack
+   * selection, so a macro-carrying stack OUTSIDE the selection can
+   * never block (or slow) the operation with a CFn round-trip.
+   * Commands that never consume expanded templates (list — names come
+   * from the manifest; destroy — the engine works off cdkd state) set
+   * this and never expand at all. Default (unset) preserves the
+   * expand-everything behavior for whole-app consumers (synth, import,
+   * export, publish-assets, local).
+   */
+  deferMacroExpansion?: boolean;
 }
 
 /**
@@ -134,26 +149,15 @@ export class Synthesizer {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
       const stacks = this.assemblyReader.getAllStacks(appPath, manifest);
-      // Resolve region + accountId for the macro-expansion pass (parity
-      // with the synth branch below). The pre-synth branch may still
-      // hit the macro-expander when an assembly built elsewhere
-      // contains a `Transform` block, so we need the same STS hop to
-      // resolve the default state bucket.
-      const presynthRegion =
-        options.region || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
-      let presynthAccountId: string | undefined;
-      try {
-        const stsClient = new STSClient({ ...(presynthRegion && { region: presynthRegion }) });
-        const identity = await stsClient.send(new GetCallerIdentityCommand({}));
-        presynthAccountId = identity.Account;
-        stsClient.destroy();
-      } catch {
-        this.logger.debug('Could not resolve AWS account ID via STS (pre-synth branch)');
+      // The pre-synth branch may still hit the macro-expander when an
+      // assembly built elsewhere contains a `Transform` block.
+      // Region + accountId resolution (the STS hop for the default
+      // state bucket) happens INSIDE expandMacrosForStacks, and only
+      // when at least one stack actually carries a macro — a plain
+      // `-a cdk.out` read pays no STS call.
+      if (!options.deferMacroExpansion) {
+        await this.expandMacrosForStacks(stacks, options);
       }
-      await this.expandMacrosForStacks(stacks, options, {
-        region: presynthRegion,
-        ...(presynthAccountId && { accountId: presynthAccountId }),
-      });
       this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
       return { manifest, assemblyDir: appPath, stacks };
     }
@@ -179,8 +183,16 @@ export class Synthesizer {
       'aws:cdk:bundling-stacks': ['**'],
     };
 
-    // Resolve AWS account/region for context passing
-    const region = options.region || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
+    // Resolve AWS account/region for context passing. Falls back to
+    // the SDK's own default chain (shared config file profile region,
+    // etc.) so a profile-configured region reaches the CDK app as
+    // CDK_DEFAULT_REGION the same way the CDK CLI passes it, and so
+    // the macro-expansion pass below sees it too (issue #1149).
+    const region =
+      options.region ||
+      process.env['AWS_REGION'] ||
+      process.env['AWS_DEFAULT_REGION'] ||
+      (await resolveSdkDefaultRegion(options.profile));
     let accountId: string | undefined;
     try {
       const stsClient = new STSClient({ ...(region && { region }) });
@@ -231,12 +243,16 @@ export class Synthesizer {
         // CloudFormation macros / Fn::Transform via a transient CFn
         // changeset round-trip so the analyzer / provisioner pipeline
         // never sees an unexpanded Transform node. See
-        // docs/design/463-cfn-macros.md.
+        // docs/design/463-cfn-macros.md. Selection-aware callers set
+        // `deferMacroExpansion` and expand after stack selection
+        // instead (issue #1150).
         const stacks = this.assemblyReader.getAllStacks(outputDir, manifest);
-        await this.expandMacrosForStacks(stacks, options, {
-          region,
-          ...(accountId && { accountId }),
-        });
+        if (!options.deferMacroExpansion) {
+          await this.expandMacrosForStacks(stacks, options, {
+            region,
+            ...(accountId && { accountId }),
+          });
+        }
         this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
 
         return { manifest, assemblyDir: outputDir, stacks };
@@ -269,10 +285,13 @@ export class Synthesizer {
   }
 
   /**
-   * List stack names in CDK app
+   * List stack names in CDK app. Names come straight from the
+   * manifest, so the macro-expansion pre-pass is skipped entirely —
+   * listing a macro app needs no AWS region or CloudFormation access
+   * (issue #1150).
    */
   async listStacks(options: SynthesisOptions): Promise<string[]> {
-    const result = await this.synthesize(options);
+    const result = await this.synthesize({ ...options, deferMacroExpansion: true });
     return result.stacks.map((s) => s.stackName);
   }
 
@@ -283,16 +302,21 @@ export class Synthesizer {
    * analyzer / provisioner pipeline consumes the templates, so every
    * downstream stage sees the post-expansion shape.
    *
-   * Skipped silently when no stack carries a macro — pure no-op cost.
-   * When a macro IS detected and the caller did NOT thread a
-   * region into the synthesizer, falls back to resolving region from
-   * the synthesized stack's environment (set by `cdk.Stack.region`).
-   * Throws `SynthesisError` when no region can be resolved (the
-   * upstream caller treats it as a synth failure) and propagates
-   * `MacroExpansionError` (from {@link expandMacros}) on any CFn-side
-   * failure during the round-trip.
+   * PUBLIC since issue #1150: selection-aware commands (deploy / diff)
+   * synthesize with `deferMacroExpansion: true` and invoke this
+   * directly with ONLY the stacks they will actually consume, so an
+   * unselected macro-carrying sibling can never fail or slow the run.
+   *
+   * Skipped silently when no stack carries a macro — pure no-op cost
+   * (in particular, no STS hop). When a macro IS detected and the
+   * caller did NOT thread a resolved region/account, both are
+   * resolved here (STS for the default state bucket; the region chain
+   * below for the CFn client). Throws `SynthesisError` when no region
+   * can be resolved (the upstream caller treats it as a synth
+   * failure) and propagates `MacroExpansionError` (from {@link
+   * expandMacros}) on any CFn-side failure during the round-trip.
    */
-  private async expandMacrosForStacks(
+  async expandMacrosForStacks(
     stacks: StackInfo[],
     options: SynthesisOptions,
     resolved?: { region: string | undefined; accountId?: string | undefined }
@@ -304,13 +328,18 @@ export class Synthesizer {
     // resolve > options.region / env > the synthesized stack's own
     // env-resolved region (every stack we are about to expand SHARES
     // the same region in practice — multi-region apps would create
-    // siblings in different regions, but those are independent stacks).
+    // siblings in different regions, but those are independent stacks)
+    // > the SDK's own default chain (shared config file profile
+    // region, etc. — issue #1149: every other cdkd AWS call resolves
+    // that chain implicitly, so hard-erroring before consulting it
+    // stranded profile-configured users).
     const region =
       resolved?.region ||
       options.region ||
       process.env['AWS_REGION'] ||
       process.env['AWS_DEFAULT_REGION'] ||
-      stacksWithMacros[0]?.region;
+      stacksWithMacros[0]?.region ||
+      (await resolveSdkDefaultRegion(options.profile));
     if (!region) {
       throw new SynthesisError(
         `Stack(s) [${stacksWithMacros.map((s) => s.stackName).join(', ')}] use CloudFormation ` +
@@ -341,11 +370,28 @@ export class Synthesizer {
     // pre-flight check here surfaces a friendlier SynthesisError with
     // the offending stack name BEFORE expandMacros runs; the expander
     // itself will also reject (via MacroExpansionError) defense-in-depth.
+    // When the caller didn't thread a resolved account (the pre-synth
+    // branch and the public post-selection path), do the STS hop here.
+    // Macros are confirmed present at this point and the account is
+    // only needed for the default-state-bucket fallback, so a plain
+    // assembly read / an explicit --state-bucket pays no STS call.
+    let accountId = resolved?.accountId;
+    if (resolved === undefined && !options.stateBucket) {
+      try {
+        const stsClient = new STSClient({ region });
+        const identity = await stsClient.send(new GetCallerIdentityCommand({}));
+        accountId = identity.Account;
+        stsClient.destroy();
+      } catch {
+        this.logger.debug('Could not resolve AWS account ID via STS (macro expansion)');
+      }
+    }
+
     let stateBucket: string | undefined;
     if (options.stateBucket) {
       stateBucket = options.stateBucket;
-    } else if (resolved?.accountId) {
-      stateBucket = `cdkd-state-${resolved.accountId}`;
+    } else if (accountId) {
+      stateBucket = `cdkd-state-${accountId}`;
     } else {
       // Best-effort: every stack in `stacksWithMacros` has a small
       // template (≤ 51,200 bytes) → the bucket isn't consulted. Probe
@@ -393,6 +439,33 @@ export class Synthesizer {
           `(${Object.keys(expanded.Resources ?? {}).length} resources after expansion).`
       );
     }
+  }
+}
+
+/**
+ * Resolve the AWS SDK's own default region (env vars, shared config
+ * file profile region, etc.) — the same chain every cdkd AWS client
+ * consults implicitly when constructed without an explicit region.
+ * Returns `undefined` when the chain yields nothing so callers can
+ * fall through to their own hard-error (issue #1149: the
+ * macro-expansion pre-pass previously checked only explicit
+ * option/env sources and hard-errored for users whose region lives in
+ * `~/.aws/config`).
+ *
+ * Implemented by asking a throwaway STS client for its resolved
+ * region provider — that is exactly the chain the real provisioning
+ * clients use, so the two can never diverge.
+ */
+async function resolveSdkDefaultRegion(profile?: string): Promise<string | undefined> {
+  let client: STSClient | undefined;
+  try {
+    client = new STSClient({ ...(profile && { profile }) });
+    const region = await client.config.region();
+    return region || undefined;
+  } catch {
+    return undefined;
+  } finally {
+    client?.destroy?.();
   }
 }
 
