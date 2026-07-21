@@ -91,7 +91,7 @@ emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-tr
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
 event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 eventbridge	2026-07-20T17:32:58Z	PASS	82	verify.sh	EventBus+Pipes+Scheduler, 10 res clean destroy
-eventbridge-api-destination	2026-06-21T18:24:53Z	PASS	90	verify.sh	ConnectionArn+ApiDest Arn enrichment verified, destroy clean 0 orphans
+eventbridge-api-destination	2026-07-21T14:48:06Z	PASS	70	verify.sh	rc ok, orph clean
 eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
 eventbridge-input-transformer	2026-07-20T08:18:46Z	PASS	63	verify.sh	hardened P2 propagation race; passes
 eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 follow-up): named-replacement collision refused + --replace delete-first OK
@@ -135,7 +135,7 @@ lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans
 lambda-layer-version-update	2026-06-21T14:58:48Z	PASS	69	verify.sh	LayerVersion content-change replacement + dependent re-point; 0 orphans
-lambda-log-retention	2026-06-20T18:40:52Z	PASS		verify.sh	logRetention 7 + in-place UPDATE to 14 (Custom::LogRetention); clean destroy, 0 orphan
+lambda-log-retention	2026-07-21T14:46:30Z	PASS	95	verify.sh	rc ok, orph clean
 lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-snapstart	2026-07-16T15:54:15Z	PASS	187	verify.sh	new fixture, 3 phases clean, orph clean
 lambda-versioning	2026-06-21T11:00:28Z	PASS	48	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -234,7 +234,7 @@ sns-inline-subscription	2026-07-20T17:38:28Z	PASS	53	verify.sh	SNS inline subscr
 sns-sqs-event	2026-07-21T14:26:11Z	PASS	59	verify.sh	rc ok, orph clean
 sns-subscription-filter	2026-06-21T06:31:35Z	PASS	38	verify.sh	FilterPolicy intact; 0 orph
 sqs-cloudwatch	2026-06-21T11:00:28Z	PASS	41	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated
+sqs-esm-max-concurrency	2026-07-21T14:49:55Z	PASS	85	verify.sh	rc ok, orph clean
 state-destroy	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055 GetBucketLocation exercised, orph clean
 stepfunctions	2026-07-21T13:08:15Z	PASS	97	verify.sh	converted; SM ACTIVE w/ auto role, async-delete poll, 0 orphans
