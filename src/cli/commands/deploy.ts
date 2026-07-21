@@ -23,7 +23,11 @@ import {
 import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
 import { promptYesNo } from './confirm-prompt.js';
 import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
-import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  synthesisStatusMessage,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { AssetModeResolver } from '../../assets/asset-storage.js';
 import {
@@ -243,7 +247,7 @@ async function deployCommand(
     logger.info(cyan(synthesisStatusMessage(app, 'Synthesizing CDK app...')));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
-    const result = await synthesizer.synthesize({
+    const synthOptions: SynthesisOptions = {
       app: options.app,
       output: options.output,
       ...(options.region && { region: options.region }),
@@ -253,7 +257,12 @@ async function deployCommand(
       // the > 51,200-byte template upload path (Issue #463).
       stateBucket,
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
-    });
+      // Issue #1150: expand macros AFTER stack selection (below), so a
+      // macro-carrying stack outside the deploy set can never block or
+      // slow this deploy with a CFn round-trip.
+      deferMacroExpansion: true,
+    };
+    const result = await synthesizer.synthesize(synthOptions);
 
     const { stacks: allStacks } = result;
 
@@ -355,6 +364,19 @@ async function deployCommand(
         addDependencies(stack.stackName);
       }
     }
+
+    // Issue #1150: macro expansion was deferred at synthesize() time —
+    // expand now for exactly the final deploy set (incl. auto-included
+    // dependency stacks), mutating each template in place before the
+    // asset / analysis / provisioning pipeline consumes it. Known
+    // limitation: the cross-stack inference above scans raw
+    // (pre-expansion) templates, so author-written `Fn::ImportValue` /
+    // `Fn::GetStackOutput` markers are seen as before, but a marker
+    // that only EXISTS in a macro's expansion output (e.g. a custom
+    // macro injecting an ImportValue) no longer contributes an
+    // inferred edge — expansion requires selection, which requires the
+    // inference, so the cycle is broken in favor of selection scoping.
+    await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
 
     // 3. Build work graph: asset-publish → stack deploy (DAG)
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');

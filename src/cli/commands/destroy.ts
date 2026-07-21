@@ -273,10 +273,18 @@ async function destroyCommand(
           app: appCmd,
           output: options.output || 'cdk.out',
           ...(Object.keys(context).length > 0 && { context }),
-          // Threaded so the macro-expander has a real state bucket for
-          // the > 51,200-byte template upload path (Issue #463).
-          stateBucket,
-          ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+          // Issue #1150: destroy never consumes expanded templates —
+          // the destroy engine works off cdkd STATE, and the synth
+          // result feeds only stack-name matching plus the cross-stack
+          // ordering scan below. Author-written Fn::ImportValue /
+          // Fn::GetStackOutput markers are textually present in the
+          // raw template; a marker that only exists in a macro's
+          // expansion output is not seen (known limitation, same
+          // trade-off as deploy's post-selection expansion). Skipping
+          // expansion entirely means a macro-carrying stack stays
+          // destroyable even when the CFn expansion round-trip would
+          // fail (issue #1151).
+          deferMacroExpansion: true,
         });
         appStacks = result.stacks.map((s) => ({
           stackName: s.stackName,

@@ -128,7 +128,7 @@ intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run);
 kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
 kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
 kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy ok+destroy 3 del 0 err (split across subshell-death; re-destroyed clean); KMS key PendingDeletion
-lambda	2026-07-21T05:42:13Z	PASS	79	verify.sh	broad integ for deploy-engine change
+lambda	2026-07-21T19:34:23Z	PASS	78	verify.sh	broad for deploy/destroy.ts touch; 9 deleted 0 errors
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
 lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
@@ -175,7 +175,7 @@ local-start-service-watch-fast	2026-06-21T14:56:24Z	PASS	203	verify.sh	sweep-G l
 log-pipeline	2026-06-21T11:00:28Z	PASS	62	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard error-path + replace recreate, destroy clean 0 orphans
 loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
-macro-expansion	2026-06-21T11:15:51Z	PASS	105	verify.sh	sweep-F staleness re-run (rc=0)
+macro-expansion	2026-07-21T19:45:50Z	PASS	107	verify.sh	re-run w/ new diff-expands + destroy-no-expand asserts (1150)
 microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
 migrate-from-bare-cfn	2026-07-21T13:56:13Z	PASS	152	verify.sh	post import-tag-walk refactor #1139; bare-CFn migrate 3 types+destroy clean
 migrate-from-bare-cfn-codegen-only	2026-06-21T19:09:34Z	PASS	55	verify.sh	fixed: bumped pinned aws-cdk 2.1112->2.1128 (schema 54 float); 3/3 logical IDs + aws:cdk:path preserved; AWS-free codegen smoke
