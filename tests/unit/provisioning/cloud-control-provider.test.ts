@@ -186,7 +186,6 @@ describe('CloudControlProvider import (CC API fallback)', () => {
     return {
       logicalId: 'MyResource',
       resourceType: 'AWS::SES::EmailIdentity',
-      cdkPath: 'MyStack/MyResource',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

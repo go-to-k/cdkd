@@ -93,12 +93,12 @@ EMR clusters).
    **What this phase does and does not cover.** It covers the
    explicit-`--resource` half of `EMRClusterProvider.import()`, the
    `attributes` persistence, and all of `readCurrentState` (including the
-   instance-group reverse mapping). It does **not** cover the tag-walk
-   half — `ListClusters` + pagination + `matchesCdkPath` + the
-   `NON_TERMINATED_STATES` filter — which is *structurally unreachable
-   from any cdkd integ*, because that path keys on an `aws:cdk:path` tag
-   that `cdkd deploy` never emits (same root cause as the paragraph
-   above). Unit tests are the only backstop there. Also uncovered:
+   instance-group reverse mapping). The `aws:cdk:path` tag-walk half that
+   used to sit alongside it was **deleted** in issue #1134 — that path
+   keyed on a tag `cdkd deploy` never emits (AWS reserves the `aws:`
+   prefix), so it could never match and was structurally unreachable from
+   any cdkd integ. `import()` now resolves only from `--resource` or a
+   same-named CloudFormation stack (issue #1128 / #1130). Also uncovered:
    `buildAttributes` for clusters that report no DNS, CORE/TASK instance
    group bucketing, and the `INSTANCE_FLEET` branch of
    `reverseInstancesToCfn` — this fixture is master-only, on purpose, for

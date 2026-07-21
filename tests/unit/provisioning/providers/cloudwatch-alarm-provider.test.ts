@@ -41,14 +41,12 @@ describe('CloudWatchAlarmProvider import', () => {
   function makeInput(
     overrides: Partial<{
       knownPhysicalId: string;
-      cdkPath: string;
       properties: Record<string, unknown>;
     }> = {}
   ) {
     return {
       logicalId: 'MyAlarm',
       resourceType: 'AWS::CloudWatch::Alarm',
-      cdkPath: 'MyStack/MyAlarm/Resource',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

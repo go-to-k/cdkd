@@ -410,8 +410,6 @@ describe('DocDBProvider', () => {
   // ─── import ───────────────────────────────────────────────────────
 
   describe('import', () => {
-    const CDK_PATH = 'MyStack/MyDb/Resource';
-
     const importInput = (
       resourceType: string,
       overrides: Record<string, unknown> = {}
@@ -419,7 +417,6 @@ describe('DocDBProvider', () => {
       ({
         logicalId: 'MyDb',
         resourceType,
-        cdkPath: CDK_PATH,
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

@@ -291,14 +291,12 @@ describe('SNSTopicProvider import (name-based lookup)', () => {
 
   const importInput = (
     overrides: Partial<{
-      cdkPath: string;
       knownPhysicalId: string;
       properties: Record<string, unknown>;
     }> = {}
   ) => ({
     logicalId: 'MyTopic',
     resourceType: 'AWS::SNS::Topic',
-    cdkPath: 'MyStack/MyTopic/Resource',
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},
@@ -367,7 +365,7 @@ describe('SNSTopicProvider import (name-based lookup)', () => {
 
   it('returns null without any AWS call when no override and no TopicName', async () => {
     const provider = new SNSTopicProvider();
-    const result = await provider.import(importInput({ cdkPath: '' }));
+    const result = await provider.import(importInput());
 
     expect(result).toBeNull();
     expect(mockSend).not.toHaveBeenCalled();

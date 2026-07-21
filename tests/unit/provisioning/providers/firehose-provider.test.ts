@@ -244,7 +244,6 @@ describe('FirehoseProvider', () => {
       return {
         logicalId: 'MyDeliveryStream',
         resourceType: 'AWS::KinesisFirehose::DeliveryStream',
-        cdkPath: 'MyStack/MyDeliveryStream',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

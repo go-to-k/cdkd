@@ -503,7 +503,6 @@ describe('StepFunctionsProvider', () => {
       return {
         logicalId: 'MyStateMachine',
         resourceType: 'AWS::StepFunctions::StateMachine',
-        cdkPath: 'MyStack/MyStateMachine',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

@@ -517,8 +517,6 @@ describe('IAMRoleProvider', () => {
   });
 
   describe('import', () => {
-    const CDK_PATH = 'MyStack/MyRole/Resource';
-
     beforeEach(() => {
       // Drop once-queued responses leaked by earlier tests — clearAllMocks()
       // clears calls but NOT unconsumed mockResolvedValueOnce entries.
@@ -528,7 +526,6 @@ describe('IAMRoleProvider', () => {
     const importInput = (overrides: Record<string, unknown> = {}) => ({
       logicalId: 'MyRole',
       resourceType: 'AWS::IAM::Role',
-      cdkPath: CDK_PATH,
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},
@@ -547,7 +544,7 @@ describe('IAMRoleProvider', () => {
     // The `aws:cdk:path` tag walk was removed (issue #1134): AWS rejects
     // `aws:`-prefixed tag writes, so the tag never exists on a real role.
     // With no explicit id, import returns null without issuing any AWS call.
-    it('returns null without any AWS call when only cdkPath is given', async () => {
+    it('returns null without any AWS call when no explicit id is given', async () => {
       const result = await provider.import(importInput());
 
       expect(result).toBeNull();

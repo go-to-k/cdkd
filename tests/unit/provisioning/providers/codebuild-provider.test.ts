@@ -189,11 +189,10 @@ describe('CodeBuildProvider', () => {
   // ─── import ─────────────────────────────────────────────────────────
 
   describe('import', () => {
-    function makeInput(overrides: Partial<{ knownPhysicalId: string; cdkPath: string; properties: Record<string, unknown> }> = {}) {
+    function makeInput(overrides: Partial<{ knownPhysicalId: string; properties: Record<string, unknown> }> = {}) {
       return {
         logicalId: 'MyProject',
         resourceType: 'AWS::CodeBuild::Project',
-        cdkPath: 'MyStack/MyProject/Resource',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

@@ -52,7 +52,6 @@ describe('SQSQueuePolicyProvider', () => {
       return {
         logicalId: 'MyQueuePolicy',
         resourceType: 'AWS::SQS::QueuePolicy',
-        cdkPath: 'MyStack/MyQueuePolicy',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: propOverride ?? {

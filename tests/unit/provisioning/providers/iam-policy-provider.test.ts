@@ -24,7 +24,6 @@ describe('IAMPolicyProvider — import (override-only)', () => {
     return {
       logicalId: 'MyInlinePolicy',
       resourceType: 'AWS::IAM::Policy',
-      cdkPath: 'MyStack/MyInlinePolicy',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {} as Record<string, unknown>,

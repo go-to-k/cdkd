@@ -66,7 +66,6 @@ describe('WaitConditionHandleProvider', () => {
     const baseInput = {
       logicalId: 'Placeholder',
       resourceType: TYPE,
-      cdkPath: 'MyStack/Placeholder',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {} as Record<string, unknown>,

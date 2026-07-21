@@ -25,7 +25,6 @@ describe('IAMUserGroupProvider — import', () => {
     return {
       logicalId: 'MyUser',
       resourceType: 'AWS::IAM::User',
-      cdkPath: 'MyStack/MyUser',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {} as Record<string, unknown>,

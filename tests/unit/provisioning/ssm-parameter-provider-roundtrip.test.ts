@@ -162,8 +162,6 @@ describe('SSMParameterProvider read-update round-trip', () => {
 // `--resource` / `Properties.Name`; anything else returns null without a
 // lookup.
 describe('SSMParameterProvider import', () => {
-  const CDK_PATH = 'MyStack/MyParameter/Resource';
-
   beforeEach(() => {
     vi.clearAllMocks();
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
@@ -174,7 +172,6 @@ describe('SSMParameterProvider import', () => {
   const importInput = () => ({
     logicalId: 'MyParameter',
     resourceType: RESOURCE_TYPE,
-    cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},

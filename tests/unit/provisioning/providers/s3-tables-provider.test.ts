@@ -241,7 +241,6 @@ describe('S3TablesProvider', () => {
       return {
         logicalId: 'MyTableBucket',
         resourceType: 'AWS::S3Tables::TableBucket',
-        cdkPath: 'MyStack/MyTableBucket',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {} as Record<string, unknown>,

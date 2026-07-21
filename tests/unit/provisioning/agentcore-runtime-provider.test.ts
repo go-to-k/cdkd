@@ -320,7 +320,6 @@ describe('AgentCoreRuntimeProvider', () => {
       return {
         logicalId: 'MyRuntime',
         resourceType: 'AWS::BedrockAgentCore::Runtime',
-        cdkPath: 'MyStack/MyRuntime',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {

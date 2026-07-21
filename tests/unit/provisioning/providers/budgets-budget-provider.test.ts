@@ -585,7 +585,6 @@ describe('BudgetsBudgetProvider', () => {
       ({
         logicalId: 'MyBudget',
         resourceType: TYPE,
-        cdkPath: 'MyStack/MyBudget',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

@@ -805,7 +805,6 @@ describe('ELBv2Provider', () => {
       return {
         logicalId: 'MyALB',
         resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
-        cdkPath: 'MyStack/MyALB',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},
@@ -844,7 +843,6 @@ describe('ELBv2Provider', () => {
         makeInput({
           logicalId: 'MyTG',
           resourceType: 'AWS::ElasticLoadBalancingV2::TargetGroup',
-          cdkPath: 'MyStack/MyTG',
           knownPhysicalId: tgArn,
         })
       );
@@ -859,7 +857,6 @@ describe('ELBv2Provider', () => {
         makeInput({
           logicalId: 'MyTG',
           resourceType: 'AWS::ElasticLoadBalancingV2::TargetGroup',
-          cdkPath: 'MyStack/MyTG',
         })
       );
       expect(result).toBeNull();

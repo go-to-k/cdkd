@@ -50,7 +50,6 @@ describe('LambdaEventSourceMappingProvider', () => {
       return {
         logicalId: 'MyMapping',
         resourceType: 'AWS::Lambda::EventSourceMapping',
-        cdkPath: 'MyStack/MyMapping',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {

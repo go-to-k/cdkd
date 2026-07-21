@@ -764,7 +764,6 @@ describe('CustomResourceProvider', () => {
       return {
         logicalId: 'MyCustom',
         resourceType: 'Custom::MyResource',
-        cdkPath: 'MyStack/MyCustom',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {

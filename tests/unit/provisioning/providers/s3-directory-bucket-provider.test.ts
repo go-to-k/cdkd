@@ -209,7 +209,6 @@ describe('S3DirectoryBucketProvider', () => {
       return {
         logicalId: 'DirectoryBucket',
         resourceType: 'AWS::S3Express::DirectoryBucket',
-        cdkPath: 'MyStack/DirectoryBucket',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {} as Record<string, unknown>,

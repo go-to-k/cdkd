@@ -521,14 +521,12 @@ describe('DLMLifecyclePolicyProvider import', () => {
   function makeInput(
     overrides: Partial<{
       knownPhysicalId: string;
-      cdkPath: string;
       properties: Record<string, unknown>;
     }> = {}
   ) {
     return {
       logicalId: 'MyPolicy',
       resourceType: RESOURCE_TYPE,
-      cdkPath: 'MyStack/MyPolicy',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

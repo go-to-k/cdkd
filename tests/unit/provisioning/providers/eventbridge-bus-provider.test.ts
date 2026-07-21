@@ -42,7 +42,6 @@ describe('EventBridgeBusProvider import', () => {
     return {
       logicalId: 'MyBus',
       resourceType: 'AWS::Events::EventBus',
-      cdkPath: 'MyStack/MyBus',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

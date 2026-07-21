@@ -291,7 +291,6 @@ describe('WAFv2WebACLProvider', () => {
       return {
         logicalId: 'MyWebACL',
         resourceType: 'AWS::WAFv2::WebACL',
-        cdkPath: 'MyStack/MyWebACL',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: { Scope: 'REGIONAL' },

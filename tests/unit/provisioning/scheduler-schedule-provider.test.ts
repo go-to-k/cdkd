@@ -350,7 +350,6 @@ describe('SchedulerScheduleProvider', () => {
     const baseInput = {
       logicalId: 'Sched',
       resourceType: TYPE,
-      cdkPath: 'MyStack/Sched',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: { ...BASE_PROPS },

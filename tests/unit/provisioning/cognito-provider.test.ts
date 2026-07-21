@@ -622,7 +622,6 @@ describe('CognitoUserPoolProvider', () => {
     const importInput = (overrides: Record<string, unknown> = {}) => ({
       logicalId: 'MyUserPool',
       resourceType: 'AWS::Cognito::UserPool',
-      cdkPath: 'MyStack/MyUserPool/Resource',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},
@@ -693,7 +692,7 @@ describe('CognitoUserPoolProvider', () => {
     });
 
     it('returns null without any AWS call when no override and no UserPoolName', async () => {
-      const result = await provider.import(importInput({ cdkPath: undefined }));
+      const result = await provider.import(importInput());
 
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();

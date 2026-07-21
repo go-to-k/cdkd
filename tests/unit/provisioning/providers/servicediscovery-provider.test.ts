@@ -31,7 +31,6 @@ describe('ServiceDiscoveryProvider — import', () => {
     return {
       logicalId: 'MyNs',
       resourceType: 'AWS::ServiceDiscovery::PrivateDnsNamespace',
-      cdkPath: 'MyStack/MyNs',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: { Name: 'example.local' } as Record<string, unknown>,
@@ -43,7 +42,6 @@ describe('ServiceDiscoveryProvider — import', () => {
     return {
       logicalId: 'MySvc',
       resourceType: 'AWS::ServiceDiscovery::Service',
-      cdkPath: 'MyStack/MySvc',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {} as Record<string, unknown>,
