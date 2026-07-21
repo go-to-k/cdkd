@@ -26,16 +26,27 @@ This example demonstrates cdkd deployment of a caching and streaming pattern.
 - CfnOutputs for resource attributes
 - RemovalPolicy.DESTROY for cleanup
 
-## Deploy
+## Run
+
+This test uses a `verify.sh` that owns its full deploy + assert + destroy cycle:
 
 ```bash
+# via the run-integ skill (preferred)
+/run-integ cache-streaming
+
+# or directly
 cd tests/integration/cache-streaming
-vp install
-cdkd deploy CacheStreamingStack
+AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
 ```
 
-## Destroy
+`verify.sh` asserts (failure-seeking):
 
-```bash
-cdkd destroy CacheStreamingStack
-```
+- **LOAD-BEARING**: the Redis endpoint (a `Fn::GetAtt` on
+  `attrRedisEndpointAddress`, read back from the Lambda's `REDIS_ENDPOINT` env
+  var) resolves to a real `*.cache.amazonaws.com` hostname, not the cluster
+  physicalId (guards the GetAtt-enrichment path).
+- the Kinesis Data Stream is `ACTIVE`,
+- an ElastiCache cluster exists on the stack's subnet group,
+- the Lambda has an event source mapping wired to the Kinesis stream,
+- after destroy: state file, Kinesis stream, Lambda, and ElastiCache cluster
+  are all gone (0 orphans).
