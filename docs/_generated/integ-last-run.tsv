@@ -115,9 +115,9 @@ iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-ver
 iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
 iam-role-prefixed-name-update	2026-06-21T08:38:12Z	PASS	45	verify.sh	prefix-migration false-positive fix (generator-based); in-place UPDATE w/o -y, RoleId unchanged, destroy clean
-import-attributes	2026-07-20T15:36:18Z	PASS	41	verify.sh	rc 0, 0 orphans; #1091 batch 4 final
-import-auto-mode	2026-07-21T05:48:51Z	PASS	90	verify.sh	batch2+3 helper+type-surface removal; auto import via CFn, destroy clean
-import-nested-stack	2026-07-20T14:40:50Z	PASS	144	verify.sh	recursive nested import+retire+destroy clean
+import-attributes	2026-07-21T13:51:28Z	PASS	42	verify.sh	post import-tag-walk refactor #1139; attr reconstruct+destroy clean
+import-auto-mode	2026-07-21T13:53:15Z	PASS	74	verify.sh	post import-tag-walk refactor #1139; CFn physId resolve (no tag) clean
+import-nested-stack	2026-07-21T13:59:14Z	PASS	144	verify.sh	post import-tag-walk refactor #1139; recursive import+nested destroy clean
 import-value-strong-ref	2026-07-21T08:42:10Z	PASS	122	verify.sh	producer+consumer strong ref, 5 deleted 0 orphans
 importvalue-chain	2026-07-21T08:44:10Z	PASS	81	verify.sh	chain A/B/C, exports index purged, 0 orphans
 infra-security	2026-06-21T11:00:28Z	PASS	307	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -177,9 +177,9 @@ loggroup-class-guard	2026-07-02T06:26:43Z	PASS	50	verify.sh	new fixture: guard e
 loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsKeyId associate+disassociate reach AWS, destroy clean, key PendingDeletion
 macro-expansion	2026-06-21T11:15:51Z	PASS	105	verify.sh	sweep-F staleness re-run (rc=0)
 microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
-migrate-from-bare-cfn	2026-07-20T14:37:47Z	PASS	152	verify.sh	migrate+retire+destroy clean, 3 res gone
+migrate-from-bare-cfn	2026-07-21T13:56:13Z	PASS	152	verify.sh	post import-tag-walk refactor #1139; bare-CFn migrate 3 types+destroy clean
 migrate-from-bare-cfn-codegen-only	2026-06-21T19:09:34Z	PASS	55	verify.sh	fixed: bumped pinned aws-cdk 2.1112->2.1128 (schema 54 float); 3/3 logical IDs + aws:cdk:path preserved; AWS-free codegen smoke
-migrate-from-cfn	2026-07-20T09:10:31Z	PASS	330	verify.sh	run.sh preflight+assert_state_absent fixed to head-object state.json probe (deployments/ #808 no longer false-positives); full small-flow clean: 24 imported/24 destroyed 0 err, state+resources gone
+migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk refactor #1139; import+migrate+destroy clean
 monitoring	2026-06-21T04:34:50Z	PASS	40	standard	CW alarms/dashboard deploy 7 / destroy 7, 0 err
 multi-asset	2026-06-21T04:31:39Z	PASS	74	verify.sh	1 ECR + 4 S3 assets, each Lambda correct marker, destroy 0 err; swept 4 log groups
 multi-region-same-stack	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -243,7 +243,7 @@ stepfunctions-s3-definition	2026-07-02T18:23:15Z	PASS	33	verify.sh	0703 stalenes
 synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
 tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag propagation across 9 resource types; no tag-order false-positive; 9 deleted 0 err
 throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-update-policy-mutations	2026-07-21T05:39:29Z	PASS	74	verify.sh	fix verified: Retain exempts stateful guard
+update-policy-mutations	2026-07-21T14:01:35Z	PASS	74	verify.sh	post #1138 UpdateReplacePolicy Retain guard fix on merged main; retain honored, 0 leftover
 update-replace	2026-07-21T07:23:47Z	PASS	80	verify.sh	in-place+replace, 7 deleted 0 orphans
 vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
