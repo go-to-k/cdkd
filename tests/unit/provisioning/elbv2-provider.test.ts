@@ -825,67 +825,36 @@ describe('ELBv2Provider', () => {
       expect(call.input).toEqual({ LoadBalancerArns: [arn] });
     });
 
-    it('LoadBalancer tag-based lookup: matches aws:cdk:path via DescribeTags batch', async () => {
-      const otherArn = 'arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/other/aaa';
-      const targetArn = 'arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/target/bbb';
-      // DescribeLoadBalancers
-      mockSend.mockResolvedValueOnce({
-        LoadBalancers: [{ LoadBalancerArn: otherArn }, { LoadBalancerArn: targetArn }],
-      });
-      // DescribeTags
-      mockSend.mockResolvedValueOnce({
-        TagDescriptions: [
-          {
-            ResourceArn: otherArn,
-            Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-          },
-          {
-            ResourceArn: targetArn,
-            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyALB' }],
-          },
-        ],
-      });
-
-      const result = await provider.import(makeInput());
-      expect(result).toEqual({ physicalId: targetArn, attributes: {} });
-    });
-
-    it('LoadBalancer returns null when nothing matches', async () => {
-      mockSend.mockResolvedValueOnce({
-        LoadBalancers: [
-          {
-            LoadBalancerArn:
-              'arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/only/aaa',
-          },
-        ],
-      });
-      mockSend.mockResolvedValueOnce({
-        TagDescriptions: [
-          {
-            ResourceArn:
-              'arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/only/aaa',
-            Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-          },
-        ],
-      });
-
+    // The `aws:cdk:path` tag walk was removed in issue #1134: AWS rejects
+    // `aws:`-prefixed tag writes, so that tag never exists on a real resource
+    // and the walk could not match. Without an explicit override, import must
+    // report not-found without any AWS call.
+    it('LoadBalancer returns null without an override and issues no AWS call', async () => {
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('TargetGroup tag-based lookup matches via DescribeTargetGroups + DescribeTags', async () => {
+    it('TargetGroup explicit override: DescribeTargetGroups verifies and returns the ARN', async () => {
       const tgArn =
         'arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/my-tg/abcdef0123456789';
       mockSend.mockResolvedValueOnce({ TargetGroups: [{ TargetGroupArn: tgArn }] });
-      mockSend.mockResolvedValueOnce({
-        TagDescriptions: [
-          {
-            ResourceArn: tgArn,
-            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTG' }],
-          },
-        ],
-      });
 
+      const result = await provider.import(
+        makeInput({
+          logicalId: 'MyTG',
+          resourceType: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+          cdkPath: 'MyStack/MyTG',
+          knownPhysicalId: tgArn,
+        })
+      );
+
+      expect(result).toEqual({ physicalId: tgArn, attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('DescribeTargetGroupsCommand');
+    });
+
+    it('TargetGroup returns null without an override and issues no AWS call', async () => {
       const result = await provider.import(
         makeInput({
           logicalId: 'MyTG',
@@ -893,7 +862,8 @@ describe('ELBv2Provider', () => {
           cdkPath: 'MyStack/MyTG',
         })
       );
-      expect(result).toEqual({ physicalId: tgArn, attributes: {} });
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

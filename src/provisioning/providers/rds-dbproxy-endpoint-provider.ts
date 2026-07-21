@@ -16,11 +16,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -62,9 +58,9 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
  *   is already gone via CASCADE, the endpoint is too.
  * - `getAttribute`: `Endpoint` / `DBProxyEndpointArn` / `IsDefault` / `VpcId`
  *   via `DescribeDBProxyEndpoints`, cached per `(physicalId, attribute)`.
- * - `import`: explicit `--resource <id>=<DBProxyEndpointName>` first; falls
- *   back to paginated auto-lookup via `DescribeDBProxyEndpoints` +
- *   `ListTagsForResource` matching `aws:cdk:path`.
+ * - `import`: explicit `--resource <id>=<DBProxyEndpointName>` or the
+ *   template's `DBProxyEndpointName` property (issue #1134 removed the
+ *   unreachable `aws:cdk:path` tag walk).
  *
  * **physicalId** = DBProxyEndpointName (matches CFn `primaryIdentifier`).
  */
@@ -380,29 +376,11 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       return this.buildImportResult(explicit);
     }
 
-    const client = this.getClient();
-    let marker: string | undefined;
-    do {
-      const describe = await client.send(
-        new DescribeDBProxyEndpointsCommand({ Marker: marker, MaxRecords: 100 })
-      );
-      for (const ep of describe.DBProxyEndpoints ?? []) {
-        if (!ep.DBProxyEndpointArn) continue;
-        try {
-          const tags = await client.send(
-            new ListTagsForResourceCommand({ ResourceName: ep.DBProxyEndpointArn })
-          );
-          if (matchesCdkPath(tags.TagList ?? [], input.cdkPath)) {
-            return this.buildImportResult(ep.DBProxyEndpointName ?? '');
-          }
-        } catch (error) {
-          this.logger.debug(
-            `ListTagsForResource failed for ${ep.DBProxyEndpointName}: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
-      marker = describe.Marker;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // DB proxy endpoint reaching here needs an explicit `--resource` override.
     return null;
   }
 

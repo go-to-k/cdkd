@@ -4,7 +4,6 @@ import {
   DeleteProjectCommand,
   UpdateProjectCommand,
   BatchGetProjectsCommand,
-  ListProjectsCommand,
   ResourceNotFoundException,
   type SourceType,
   type EnvironmentType,
@@ -20,11 +19,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  CDK_PATH_TAG,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -426,11 +421,11 @@ export class CodeBuildProvider implements ResourceProvider {
   /**
    * Adopt an existing CodeBuild project into cdkd state.
    *
-   * Lookup order:
-   *  1. `--resource` override or `Properties.Name` → verify via `BatchGetProjects`.
-   *  2. `ListProjects` + `BatchGetProjects` (CodeBuild uses lowercase
-   *     `key`/`value` tags, not the standard `Key`/`Value`), match
-   *     `aws:cdk:path` tag.
+   * Lookup: `--resource` override or `Properties.Name` → verify via
+   * `BatchGetProjects`. There is no `aws:cdk:path` tag walk — AWS rejects
+   * `aws:`-prefixed tag writes, so that tag never exists on a real resource
+   * (issue #1134); auto-mode import resolves ids from CloudFormation's
+   * `DescribeStackResources` instead.
    */
   /**
    * Read the AWS-current CodeBuild Project configuration in CFn-property shape.
@@ -737,28 +732,11 @@ export class CodeBuildProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListProjectsCommand({ ...(nextToken && { nextToken }) })
-      );
-      const names = (list.projects ?? []).filter((n): n is string => typeof n === 'string');
-      if (names.length > 0) {
-        const batch = await this.getClient().send(new BatchGetProjectsCommand({ names }));
-        for (const proj of batch.projects ?? []) {
-          if (!proj.name) continue;
-          const tags = proj.tags ?? [];
-          for (const t of tags) {
-            if (t.key === CDK_PATH_TAG && t.value === input.cdkPath) {
-              return { physicalId: proj.name, attributes: {} };
-            }
-          }
-        }
-      }
-      nextToken = list.nextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // project reaching here needs an explicit `--resource` override.
     return null;
   }
 }

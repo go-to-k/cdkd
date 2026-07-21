@@ -39,7 +39,7 @@ import { createHash } from 'node:crypto';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1918,8 +1918,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
   /**
    * Adopt an existing FSx file system into cdkd state. Explicit physical
-   * id is verified via `DescribeFileSystems`; otherwise a paginated walk
-   * matches the `aws:cdk:path` tag (`Tags` ride inline on each item).
+   * id is verified via `DescribeFileSystems`; without an override the
+   * resource is reported as not-found.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.resourceType !== 'AWS::FSx::FileSystem') return null;
@@ -1939,21 +1939,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeFileSystemsCommand({ ...(nextToken && { NextToken: nextToken }) })
-      );
-      for (const fs of list.FileSystems ?? []) {
-        if (!fs.FileSystemId) continue;
-        if (matchesCdkPath(fs.Tags, input.cdkPath)) {
-          return { physicalId: fs.FileSystemId, attributes: this.buildAttributes(fs) };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // file system reaching here needs an explicit `--resource` override.
     return null;
   }
 }

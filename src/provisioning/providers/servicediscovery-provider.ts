@@ -19,7 +19,6 @@ import {
   GetOperationCommand,
   GetServiceCommand,
   ListNamespacesCommand,
-  ListServicesCommand,
   ListTagsForResourceCommand,
   NamespaceNotFound,
   ServiceNotFound,
@@ -39,7 +38,7 @@ import { getLogger } from '../../utils/logger.js';
 import { withRetry } from '../../deployment/retry.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1378,8 +1377,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
     }
 
+    // The `aws:cdk:path` tag leg of this walk is gone: AWS rejects
+    // `aws:`-prefixed tag writes, so that tag never exists on a real resource
+    // and the comparison could not match (issue #1134). The name leg below is
+    // reachable and is kept — without a desired `Name` there is nothing left
+    // to match on, so skip the listing entirely.
     const desiredName =
       typeof input.properties?.['Name'] === 'string' ? input.properties['Name'] : undefined;
+    if (!desiredName) return null;
 
     let token: string | undefined;
     do {
@@ -1389,21 +1394,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       for (const ns of list.Namespaces ?? []) {
         if (!ns.Id || !ns.Arn) continue;
         if (expectedKind && ns.Type && ns.Type !== expectedKind) continue;
-        if (desiredName && ns.Name === desiredName) {
+        if (ns.Name === desiredName) {
           return { physicalId: ns.Id, attributes: {} };
-        }
-        if (input.cdkPath) {
-          try {
-            const tagsResp = await this.getClient().send(
-              new ListTagsForResourceCommand({ ResourceARN: ns.Arn })
-            );
-            if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-              return { physicalId: ns.Id, attributes: {} };
-            }
-          } catch (err) {
-            if (err instanceof NamespaceNotFound) continue;
-            throw err;
-          }
         }
       }
       token = list.NextToken;
@@ -1424,29 +1416,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let token: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListServicesCommand({ ...(token && { NextToken: token }) })
-      );
-      for (const svc of list.Services ?? []) {
-        if (!svc.Id || !svc.Arn) continue;
-        try {
-          const tagsResp = await this.getClient().send(
-            new ListTagsForResourceCommand({ ResourceARN: svc.Arn })
-          );
-          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
-            return { physicalId: svc.Id, attributes: {} };
-          }
-        } catch (err) {
-          if (err instanceof ServiceNotFound) continue;
-          throw err;
-        }
-      }
-      token = list.NextToken;
-    } while (token);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // service reaching here needs an explicit `--resource` override.
     return null;
   }
 

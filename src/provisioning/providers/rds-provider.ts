@@ -20,11 +20,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  matchesCdkPath,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1287,11 +1283,11 @@ export class RDSProvider implements ResourceProvider {
    * Adopt an existing RDS resource into cdkd state.
    *
    * Supported types: `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`,
-   * `AWS::RDS::DBSubnetGroup`. Identifier name properties (`DBInstance
-   * Identifier` / `DBClusterIdentifier` / `DBSubnetGroupName`) are
-   * usually present in CDK templates; fall back to `aws:cdk:path` tag
-   * lookup via the corresponding `Describe*` + `ListTagsForResource`
-   * pair otherwise.
+   * `AWS::RDS::DBSubnetGroup`. Resolution is by identifier name property
+   * (`DBInstanceIdentifier` / `DBClusterIdentifier` / `DBSubnetGroupName`),
+   * which is usually present in CDK templates, verified against the
+   * corresponding `Describe*` call. A resource without one needs an
+   * explicit `--resource` override (issue #1134).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
@@ -1581,24 +1577,11 @@ export class RDSProvider implements ResourceProvider {
         throw err;
       }
     }
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeDBInstancesCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const inst of list.DBInstances ?? []) {
-        if (!inst.DBInstanceIdentifier || !inst.DBInstanceArn) continue;
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ ResourceName: inst.DBInstanceArn })
-        );
-        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
-          return { physicalId: inst.DBInstanceIdentifier, attributes: {} };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // DB instance reaching here needs an explicit `--resource` override.
     return null;
   }
 
@@ -1615,24 +1598,11 @@ export class RDSProvider implements ResourceProvider {
         throw err;
       }
     }
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeDBClustersCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const c of list.DBClusters ?? []) {
-        if (!c.DBClusterIdentifier || !c.DBClusterArn) continue;
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ ResourceName: c.DBClusterArn })
-        );
-        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
-          return { physicalId: c.DBClusterIdentifier, attributes: {} };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // DB cluster reaching here needs an explicit `--resource` override.
     return null;
   }
 
@@ -1651,24 +1621,11 @@ export class RDSProvider implements ResourceProvider {
         throw err;
       }
     }
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeDBSubnetGroupsCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const sg of list.DBSubnetGroups ?? []) {
-        if (!sg.DBSubnetGroupName || !sg.DBSubnetGroupArn) continue;
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ ResourceName: sg.DBSubnetGroupArn })
-        );
-        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
-          return { physicalId: sg.DBSubnetGroupName, attributes: {} };
-        }
-      }
-      marker = list.Marker;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // DB subnet group reaching here needs an explicit `--resource` override.
     return null;
   }
 }

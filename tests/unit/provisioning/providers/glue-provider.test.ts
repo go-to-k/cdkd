@@ -89,42 +89,18 @@ describe('GlueProvider import', () => {
     expect(call.input).toEqual({ Name: 'adopted_db' });
   });
 
-  it('Database tag-based lookup: matches aws:cdk:path via GetTags map', async () => {
-    // GetDatabases
-    mockGlueSend.mockResolvedValueOnce({
-      DatabaseList: [{ Name: 'other_db' }, { Name: 'target_db' }],
-    });
-    // GetTags(other_db)
-    mockGlueSend.mockResolvedValueOnce({
-      Tags: { 'aws:cdk:path': 'OtherStack/Other' },
-    });
-    // GetTags(target_db)
-    mockGlueSend.mockResolvedValueOnce({
-      Tags: { 'aws:cdk:path': 'MyStack/MyDB' },
-    });
-
+  // No `aws:cdk:path` tag walk (issue #1134): AWS rejects `aws:`-prefixed
+  // tag writes, so the tag never exists on a real resource. Without an
+  // explicit override or a template name the provider returns null without
+  // any AWS call.
+  it('Database returns null without any AWS call when nothing identifies it', async () => {
     const result = await provider.import(makeDatabaseInput());
-    expect(result).toEqual({ physicalId: 'target_db', attributes: {} });
-  });
 
-  it('Database returns null when nothing matches', async () => {
-    mockGlueSend.mockResolvedValueOnce({ DatabaseList: [{ Name: 'only_db' }] });
-    mockGlueSend.mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'OtherStack/Other' } });
-
-    const result = await provider.import(makeDatabaseInput());
     expect(result).toBeNull();
+    expect(mockGlueSend).not.toHaveBeenCalled();
   });
 
-  it('Table tag-based lookup: matches via GetTables + GetTags', async () => {
-    // GetTables
-    mockGlueSend.mockResolvedValueOnce({
-      TableList: [{ Name: 'target_table' }],
-    });
-    // GetTags
-    mockGlueSend.mockResolvedValueOnce({
-      Tags: { 'aws:cdk:path': 'MyStack/MyTable' },
-    });
-
+  it('Table returns null without any AWS call when nothing identifies it', async () => {
     const result = await provider.import({
       logicalId: 'MyTable',
       resourceType: 'AWS::Glue::Table',
@@ -134,7 +110,8 @@ describe('GlueProvider import', () => {
       properties: { DatabaseName: 'mydb' },
     });
 
-    expect(result).toEqual({ physicalId: 'mydb|target_table', attributes: {} });
+    expect(result).toBeNull();
+    expect(mockGlueSend).not.toHaveBeenCalled();
   });
 });
 

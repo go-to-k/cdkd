@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockEcSend = vi.hoisted(() => vi.fn());
-const mockStsSend = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-elasticache', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-elasticache')>();
@@ -11,14 +10,6 @@ vi.mock('@aws-sdk/client-elasticache', async (importOriginal) => {
       send: mockEcSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
-  };
-});
-
-vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
-  return {
-    ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend })),
   };
 });
 
@@ -48,7 +39,6 @@ describe('ElastiCacheProvider import', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockStsSend.mockResolvedValue({ Account: '123456789012' });
     provider = new ElastiCacheProvider();
   });
 
@@ -79,55 +69,36 @@ describe('ElastiCacheProvider import', () => {
     expect(call.input).toEqual({ CacheClusterId: 'adopted-cluster' });
   });
 
-  it('CacheCluster tag-based lookup: matches aws:cdk:path via ListTagsForResource on TagList', async () => {
-    const otherArn = 'arn:aws:elasticache:us-east-1:123456789012:cluster:other';
-    const targetArn = 'arn:aws:elasticache:us-east-1:123456789012:cluster:target';
-    // DescribeCacheClusters
-    mockEcSend.mockResolvedValueOnce({
-      CacheClusters: [
-        { CacheClusterId: 'other', ARN: otherArn },
-        { CacheClusterId: 'target', ARN: targetArn },
-      ],
-    });
-    // ListTagsForResource(other)
-    mockEcSend.mockResolvedValueOnce({
-      TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-    });
-    // ListTagsForResource(target)
-    mockEcSend.mockResolvedValueOnce({
-      TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyCluster' }],
-    });
-
-    const result = await provider.import(makeClusterInput());
-    expect(result).toEqual({ physicalId: 'target', attributes: {} });
-  });
-
-  it('CacheCluster returns null when nothing matches', async () => {
-    mockEcSend.mockResolvedValueOnce({
-      CacheClusters: [
-        {
-          CacheClusterId: 'only',
-          ARN: 'arn:aws:elasticache:us-east-1:123456789012:cluster:only',
-        },
-      ],
-    });
-    mockEcSend.mockResolvedValueOnce({
-      TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-    });
-
+  // The `aws:cdk:path` tag walk was removed in issue #1134: AWS rejects
+  // `aws:`-prefixed tag writes, so that tag never exists on a real resource
+  // and the walk could not match. Without an explicit override or a template
+  // physical name, import must report not-found without any AWS call.
+  it('CacheCluster returns null with no override and issues no AWS call', async () => {
     const result = await provider.import(makeClusterInput());
     expect(result).toBeNull();
+    expect(mockEcSend).not.toHaveBeenCalled();
   });
 
-  it('SubnetGroup tag-based lookup: matches via DescribeCacheSubnetGroups + ListTagsForResource', async () => {
-    const arn = 'arn:aws:elasticache:us-east-1:123456789012:subnetgroup:my-sg';
+  it('SubnetGroup explicit override: DescribeCacheSubnetGroups verifies', async () => {
     mockEcSend.mockResolvedValueOnce({
-      CacheSubnetGroups: [{ CacheSubnetGroupName: 'my-sg', ARN: arn }],
-    });
-    mockEcSend.mockResolvedValueOnce({
-      TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MySG' }],
+      CacheSubnetGroups: [{ CacheSubnetGroupName: 'my-sg' }],
     });
 
+    const result = await provider.import({
+      logicalId: 'MySG',
+      resourceType: 'AWS::ElastiCache::SubnetGroup',
+      cdkPath: 'MyStack/MySG',
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties: { CacheSubnetGroupName: 'my-sg' },
+    });
+
+    expect(result).toEqual({ physicalId: 'my-sg', attributes: {} });
+    const call = mockEcSend.mock.calls[0][0];
+    expect(call.constructor.name).toBe('DescribeCacheSubnetGroupsCommand');
+  });
+
+  it('SubnetGroup returns null with no override and issues no AWS call', async () => {
     const result = await provider.import({
       logicalId: 'MySG',
       resourceType: 'AWS::ElastiCache::SubnetGroup',
@@ -137,6 +108,7 @@ describe('ElastiCacheProvider import', () => {
       properties: {},
     });
 
-    expect(result).toEqual({ physicalId: 'my-sg', attributes: {} });
+    expect(result).toBeNull();
+    expect(mockEcSend).not.toHaveBeenCalled();
   });
 });

@@ -65,8 +65,6 @@ describe('ServiceDiscoveryProvider — import', () => {
       mockSend
         .mockResolvedValueOnce({
           Namespaces: [
-            // ns-mine first so the Name match short-circuits before cdk:path
-            // tag lookup of ns-other (which would need its own ListTags mock).
             { Id: 'ns-mine', Arn: 'arn:mine', Name: 'example.local' },
             { Id: 'ns-other', Arn: 'arn:other', Name: 'other.local' },
           ],
@@ -88,15 +86,14 @@ describe('ServiceDiscoveryProvider — import', () => {
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetServiceCommand);
     });
 
-    it('returns null when no service has matching cdk:path tag', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          Services: [{ Id: 'svc-other', Arn: 'arn:svc-other' }],
-          NextToken: undefined,
-        })
-        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Y' }] });
+    // Issue #1134: the `aws:cdk:path` tag walk was removed. AWS rejects
+    // `aws:`-prefixed tag writes, so that tag never exists on a real service
+    // and the walk could never match. A service without an explicit id now
+    // returns null without listing anything.
+    it('returns null without listing when no explicit id is supplied', async () => {
       const result = await provider.import!(makeServiceInput());
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

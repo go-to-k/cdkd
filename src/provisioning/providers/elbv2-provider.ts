@@ -37,7 +37,7 @@ import { withRetry } from '../../deployment/retry.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1330,16 +1330,12 @@ export class ELBv2Provider implements ResourceProvider {
   /**
    * Adopt an existing ELBv2 LoadBalancer or TargetGroup into cdkd state.
    *
-   * Lookup order:
-   *  1. `--resource <id>=<arn>` override → verify with `DescribeLoadBalancers`
-   *     or `DescribeTargetGroups`.
-   *  2. Walk `DescribeLoadBalancers` / `DescribeTargetGroups` paginators →
-   *     batch-fetch tags for each ARN with `DescribeTags(ResourceArns)`
-   *     and match `aws:cdk:path` (standard `Key`/`Value` Tag[] shape).
+   * Lookup: `--resource <id>=<arn>` override → verify with
+   * `DescribeLoadBalancers` or `DescribeTargetGroups`. Without an override
+   * the resource is reported as not-found.
    *
-   * Listener is not auto-importable (no template-supplied stable
-   * identifier and no convenient tag-by-LB-context shortcut); use
-   * `--resource <listenerId>=<arn>` for those.
+   * Listener is likewise not auto-importable (no template-supplied stable
+   * identifier); use `--resource <listenerId>=<arn>` for those.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
@@ -1375,30 +1371,11 @@ export class ELBv2Provider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeLoadBalancersCommand({ ...(marker && { Marker: marker }) })
-      );
-      const arns = (list.LoadBalancers ?? [])
-        .map((lb) => lb.LoadBalancerArn)
-        .filter((arn): arn is string => Boolean(arn));
-      // DescribeTags accepts up to 20 ARNs per call.
-      for (let i = 0; i < arns.length; i += 20) {
-        const batch = arns.slice(i, i + 20);
-        const tagsResp = await this.getClient().send(
-          new DescribeTagsCommand({ ResourceArns: batch })
-        );
-        for (const td of tagsResp.TagDescriptions ?? []) {
-          if (td.ResourceArn && matchesCdkPath(td.Tags, input.cdkPath)) {
-            return { physicalId: td.ResourceArn, attributes: {} };
-          }
-        }
-      }
-      marker = list.NextMarker;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // load balancer reaching here needs an explicit `--resource` override.
     return null;
   }
 
@@ -1419,29 +1396,11 @@ export class ELBv2Provider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeTargetGroupsCommand({ ...(marker && { Marker: marker }) })
-      );
-      const arns = (list.TargetGroups ?? [])
-        .map((tg) => tg.TargetGroupArn)
-        .filter((arn): arn is string => Boolean(arn));
-      for (let i = 0; i < arns.length; i += 20) {
-        const batch = arns.slice(i, i + 20);
-        const tagsResp = await this.getClient().send(
-          new DescribeTagsCommand({ ResourceArns: batch })
-        );
-        for (const td of tagsResp.TagDescriptions ?? []) {
-          if (td.ResourceArn && matchesCdkPath(td.Tags, input.cdkPath)) {
-            return { physicalId: td.ResourceArn, attributes: {} };
-          }
-        }
-      }
-      marker = list.NextMarker;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // target group reaching here needs an explicit `--resource` override.
     return null;
   }
 

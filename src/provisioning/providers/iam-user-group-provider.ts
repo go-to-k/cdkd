@@ -28,8 +28,6 @@ import {
   DeleteLoginProfileCommand,
   ListAccessKeysCommand,
   DeleteAccessKeyCommand,
-  ListUsersCommand,
-  ListUserTagsCommand,
   NoSuchEntityException,
   TagUserCommand,
   UntagUserCommand,
@@ -41,7 +39,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { collectInlinePolicyNamesManagedBySiblings } from './iam-role-provider.js';
 import type {
   ResourceProvider,
@@ -1666,13 +1664,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
   /**
    * Adopt an existing IAM user / group / user-to-group addition into cdkd state.
    *
-   *  - **AWS::IAM::User**: tag-based auto-lookup via `ListUsers` +
-   *    `ListUserTags`. Falls back to `--resource` override or
-   *    `Properties.UserName`.
-   *  - **AWS::IAM::Group**: explicit-override only. IAM groups are not
-   *    taggable (no `ListGroupTags` API), so tag-based auto-lookup is not
-   *    possible. Caller can still pass `Properties.GroupName` or
-   *    `--resource` to verify and adopt by name.
+   *  - **AWS::IAM::User**: `--resource` override or `Properties.UserName`,
+   *    verified via `GetUser`.
+   *  - **AWS::IAM::Group**: `--resource` override or `Properties.GroupName`,
+   *    verified via `GetGroup`.
    *  - **AWS::IAM::UserToGroupAddition**: explicit-override only. Has no
    *    AWS-side identity beyond the (group, users) attachment itself.
    */
@@ -1701,29 +1696,11 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.iamClient.send(
-        new ListUsersCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const user of list.Users ?? []) {
-        if (!user.UserName) continue;
-        try {
-          const tags = await this.iamClient.send(
-            new ListUserTagsCommand({ UserName: user.UserName })
-          );
-          if (matchesCdkPath(tags.Tags, input.cdkPath)) {
-            return { physicalId: user.UserName, attributes: {} };
-          }
-        } catch (err) {
-          if (err instanceof NoSuchEntityException) continue;
-          throw err;
-        }
-      }
-      marker = list.IsTruncated ? list.Marker : undefined;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // `DescribeStackResources` or the template's physical-name property; a
+    // user reaching here needs an explicit `--resource` override.
     return null;
   }
 

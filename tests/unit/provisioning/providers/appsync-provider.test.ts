@@ -83,40 +83,14 @@ describe('AppSyncProvider import', () => {
     expect(mockSend.mock.calls[0][0].input).toEqual({ apiId: 'abc123' });
   });
 
-  it('tag-based lookup: ListGraphqlApis matches the aws:cdk:path tag map', async () => {
-    mockSend.mockResolvedValueOnce({
-      graphqlApis: [
-        {
-          apiId: 'other123',
-          tags: { 'aws:cdk:path': 'OtherStack/Api/Resource' },
-        },
-        {
-          apiId: 'abc123',
-          tags: { 'aws:cdk:path': 'MyStack/MyApi/Resource' },
-        },
-      ],
-    });
-
-    const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: 'abc123', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(1);
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListGraphqlApisCommand);
-  });
-
-  it('returns null when no GraphQL API matches the cdkPath', async () => {
-    mockSend.mockResolvedValueOnce({
-      graphqlApis: [
-        {
-          apiId: 'unrelated',
-          tags: { 'aws:cdk:path': 'OtherStack/Api/Resource' },
-        },
-      ],
-    });
-
+  // No `aws:cdk:path` tag walk (issue #1134): AWS rejects `aws:`-prefixed
+  // tag writes, so the tag never exists on a real resource. Without an
+  // explicit override the provider returns null without any AWS call.
+  it('returns null without any AWS call when no explicit override is supplied', async () => {
     const result = await provider.import(makeInput());
 
     expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('sub-resource override-only: returns the knownPhysicalId without API calls', async () => {

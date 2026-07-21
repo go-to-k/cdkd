@@ -41,12 +41,14 @@ describe('IAMUserGroupProvider — import', () => {
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetUserCommand);
     });
 
-    it('returns null when no user matches the cdk path tag', async () => {
-      mockSend
-        .mockResolvedValueOnce({ Users: [{ UserName: 'bob' }], IsTruncated: false })
-        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Bob' }] });
+    // The `aws:cdk:path` tag walk was removed in issue #1134: AWS rejects
+    // `aws:`-prefixed tag writes, so that tag never exists on a real resource
+    // and the walk could not match. Without an override or a template
+    // `UserName`, import must report not-found without any AWS call.
+    it('returns null without an override and issues no AWS call', async () => {
       const result = await provider.import!(makeInput());
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

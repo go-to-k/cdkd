@@ -260,16 +260,33 @@ describe('S3TablesProvider', () => {
       const arn = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
       mockSend.mockResolvedValueOnce({
         tableBuckets: [
-          // mine first so the Name match short-circuits before cdk:path
-          // tag lookup of 'other' (which would need its own ListTags mock).
-          { arn, name: 'my-bucket' },
           { arn: 'arn:aws:s3tables:us-east-1:123:bucket/other', name: 'other' },
+          { arn, name: 'my-bucket' },
         ],
       });
       const result = await provider.import!(
         makeInput({ properties: { TableBucketName: 'my-bucket' } })
       );
       expect(result?.physicalId).toBe(arn);
+    });
+
+    // The `aws:cdk:path` tag match that used to ride the TableBucket walk was
+    // removed in issue #1134: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the comparison could not match.
+    // The walk now only serves the TableBucketName match, so it must be
+    // skipped entirely when the template supplies no name.
+    it('returns null for a TableBucket with no override and no TableBucketName', async () => {
+      const result = await provider.import!(makeInput());
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('returns null for a Table with no override and issues no AWS call', async () => {
+      const result = await provider.import!(
+        makeInput({ resourceType: 'AWS::S3Tables::Table', logicalId: 'MyTable' })
+      );
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('returns null for unsupported resource types', async () => {

@@ -665,27 +665,32 @@ already-deployed AWS resources of this type into cdkd state — covering
 disaster recovery (state file lost), adoption (moving from another IaC
 tool), and re-syncing after rollback. Skipping `import` is allowed (CC
 API fallback handles overrides), but providers without it can only be
-adopted via `--resource <id>=<physicalId>` and won't participate in
-tag-based auto-lookup.
+adopted via `--resource <id>=<physicalId>`.
 
-The method follows a single shape across the 35+ providers that have
-shipped it. Pick the variant that matches your service's tag API:
+> [!IMPORTANT]
+> **Do not write an `aws:cdk:path` tag walk in a new provider.** That fallback
+> can never match: AWS rejects any `aws:`-prefixed tag write, and CloudFormation
+> keeps the construct path in template `Metadata` without promoting it to a tag
+> ([#1128](https://github.com/go-to-k/cdkd/issues/1128)). Auto-mode import
+> resolves physical ids from a same-named CloudFormation stack's
+> `DescribeStackResources` ([#1130](https://github.com/go-to-k/cdkd/issues/1130))
+> or from the template's physical-name property. The existing walks are being
+> deleted ([#1134](https://github.com/go-to-k/cdkd/issues/1134)); adding a new
+> one just adds more dead code.
+
+The method follows a single shape:
 
 ```typescript
-import {
-  CDK_PATH_TAG,
-  matchesCdkPath,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
 
 async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-  // 1. Explicit override OR Properties.<NameField> from template.
-  //    Pass `null` as the second arg if the resource type has no
-  //    template-supplied name field (e.g. KMS Key, CloudFront Distribution).
+  // Explicit override OR Properties.<NameField> from template.
+  // Pass `null` as the second arg if the resource type has no
+  // template-supplied name field (e.g. KMS Key, CloudFront Distribution).
   const explicit = resolveExplicitPhysicalId(input, '<NameField>');
   if (explicit) {
     try {
@@ -696,40 +701,36 @@ async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
       throw err;
     }
   }
-  if (!input.cdkPath) return null;
 
-  // 2. Walk List* + ListTags* and match aws:cdk:path tag.
-  let token: string | undefined;
-  do {
-    const list = await this.client.send(new ListCommand({ ...(token && { NextToken: token }) }));
-    for (const item of list.Items ?? []) {
-      if (!item.Id) continue;
-      const tags = await this.client.send(new ListTagsCommand({ ResourceId: item.Id }));
-      // Choose ONE based on your service's tag API:
-      //   matchesCdkPath(tags.Tags, input.cdkPath)              ← Tag[] arrays (S3, IAM, EC2, RDS, …)
-      //   tags.Tags?.[CDK_PATH_TAG] === input.cdkPath           ← Record<string,string> maps (Lambda, SQS)
-      //   inline (key/value lowercase, not Key/Value)           ← ECS only — see ecs-provider.ts
-      if (matchesCdkPath(tags.Tags, input.cdkPath)) {
-        return { physicalId: item.Id, attributes: {} };
-      }
-    }
-    token = list.NextToken;
-  } while (token);
+  // Nothing else to resolve from. Return null so `cdkd import` reports the
+  // resource as not-found rather than guessing.
   return null;
 }
 ```
 
-#### Throttle-tolerant tag walk (`importTagWalk`)
+A `List*` walk is still correct when it matches on a **name** the template
+supplies (rather than on a tag) and the service has no direct
+`Get<Name>` lookup — see `s3-tables-provider.ts`'s `TableBucketName` walk
+and `servicediscovery-provider.ts`'s namespace `Name` walk. Guard it with an
+early `return null` when the template carries no name, so the walk never
+pages an account's entire inventory just to fail.
 
-Step 2 above is an inherent **N+1** read pattern — one `ListTags*` /
+#### Throttle-tolerant tag walk (`importTagWalk`) — legacy, being removed
+
+> [!WARNING]
+> This helper exists only to serve the `aws:cdk:path` tag walk, which cannot
+> match on real AWS (see the note above). **Do not wire a new provider into
+> it.** The remaining callers are being removed along with the helper itself
+> ([#1134](https://github.com/go-to-k/cdkd/issues/1134)); this section is kept
+> only so the still-migrated providers are readable until then.
+
+The tag walk is an inherent **N+1** read pattern — one `ListTags*` /
 `Describe*` per candidate — which is exactly what AWS rate-limits on a
 busy account. Hand-rolled loops have no backoff, so a single throttled
-call aborts the whole `cdkd import` run (issue
-[#1091](https://github.com/go-to-k/cdkd/issues/1091)).
-
-New providers should route the walk through the shared helper in
+call aborted the whole `cdkd import` run (issue
+[#1091](https://github.com/go-to-k/cdkd/issues/1091)). The shared helper in
 [src/provisioning/import-tag-walk.ts](../src/provisioning/import-tag-walk.ts)
-instead of writing the loop by hand:
+wraps it:
 
 ```typescript
 import { importTagWalk } from '../import-tag-walk.js';
@@ -781,18 +782,15 @@ Stream, S3 Bucket, ECR Repository, SSM Parameter), and the batch-3 set
 (Step Functions StateMachine, Cognito UserPool, CloudFront Distribution,
 ACM Certificate, CloudTrail Trail, DynamoDB GlobalTable, EventBridge
 EventBus + Rule, Firehose DeliveryStream, WAFv2 WebACL, S3 Directory
-Bucket, Budgets Budget); the remaining `aws:cdk:path` walkers are
-migrated incrementally.
+Bucket, Budgets Budget). The formerly-hand-rolled walkers were NOT migrated:
+issue #1134 batch 1 deleted their tag matching outright, and these remaining
+`importTagWalk` callers are removed in a follow-up batch.
 
 Reference implementations to copy from:
 
-- **Tag[] array, name field present**: `s3-bucket-provider.ts`, `iam-role-provider.ts`, `dynamodb-table-provider.ts`, `kinesis-provider.ts`, `firehose-provider.ts`, `eventbridge-rule-provider.ts`, `wafv2-provider.ts`, `route53-provider.ts`, `elasticache-provider.ts`
-- **Tag map (`Record<string,string>`)**: `lambda-function-provider.ts`, `sqs-queue-provider.ts`, `glue-provider.ts` (via `GetTags(ResourceArn)`)
-- **Tags inline on the list response (no extra `ListTags` round-trip)**: `efs-provider.ts` (`DescribeFileSystems` / `DescribeAccessPoints` return `Tags` on each item)
-- **No name field, ARN required for tag lookup**: `cloudfront-distribution-provider.ts`, `cognito-provider.ts`, `stepfunctions-provider.ts`
-- **Batch tag fetch (single `Describe*` call for many ARNs)**: `elbv2-provider.ts` uses `DescribeTags(ResourceArns: [...])` (up to 20 per call) on top of `DescribeLoadBalancers` / `DescribeTargetGroups`
-- **Filter-based one-shot lookup (no per-item ListTags)**: `ec2-provider.ts` uses `Filters: [{Name: 'tag:aws:cdk:path', Values: [path]}]` directly on `Describe*`
-- **Lowercase `key`/`value` tag shape**: `ecs-provider.ts`, `codebuild-provider.ts`, `stepfunctions-provider.ts` (the few services that use lowercase tag keys — `matchesCdkPath` from `import-helpers.ts` does NOT apply; match the lowercase fields manually)
+- **Name-matched list walk** (the only walk shape still worth writing — matches
+  a template-supplied name, not a tag): `s3-tables-provider.ts`
+  (`TableBucketName`), `servicediscovery-provider.ts` (namespace `Name`)
 - **Explicit-override only** (auto lookup is impractical, the resource is not taggable, or it is a sub-resource / attachment): `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts` for sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi; `route53-provider.ts` for RecordSets (not taggable); `efs-provider.ts` for MountTargets (not taggable); `elbv2-provider.ts` for Listeners (no taggable identity tying them to a CDK construct); `sns-subscription-provider.ts`, `sns-topic-policy-provider.ts`, `sqs-queue-policy-provider.ts`, `s3-bucket-policy-provider.ts`, `lambda-permission-provider.ts`, `lambda-eventsource-provider.ts`, `lambda-url-provider.ts`, `custom-resource-provider.ts`, `cloudfront-oai-provider.ts`, `agentcore-runtime-provider.ts` for attachments / handler-returned identity; `agentcore-evaluator-provider.ts` accepts the ARN verbatim or resolves a bare evaluator id to the canonical ARN via `GetEvaluator`. Pattern: `if (input.knownPhysicalId) return { physicalId: input.knownPhysicalId, attributes: {} }; return null;` — JSDoc the override-only choice naming the reason (no tag API, sub-resource scoping, attachment, identity carried by handler-returned PhysicalResourceId, etc).
 - **Singleton live auto-lookup (no override needed at all)**: `agentcore-browser-provider.ts` / `agentcore-code-interpreter-provider.ts` — the types are adopt-only representations of the AWS-managed defaults (`aws.browser.v1` / `aws.codeinterpreter.v1`), so `import` resolves them live via `GetBrowser` / `GetCodeInterpreter` and ignores overrides.
 
