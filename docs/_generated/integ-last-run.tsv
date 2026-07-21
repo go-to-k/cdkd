@@ -14,7 +14,7 @@ apigateway	2026-07-21T14:32:25Z	PASS	56	verify.sh	rc ok, orph clean
 apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix live-verify, warn 1->0 + rendering sample, orph clean
 apigw-stage-throttling	2026-07-02T16:57:21Z	PASS	72	verify.sh	CC-route trigger swapped to AccessLogSettings (#966), all #963 assertions green, 0 orphans
 apigw-usage-plan-key	2026-06-27T19:25:47Z	PASS	74	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
-appconfig	2026-06-21T08:22:45Z	PASS	61	verify.sh	AppConfig compound-id Ref fix: chain creates, UPDATE v2, destroy clean
+appconfig	2026-07-21T18:18:22Z	PASS	75	verify.sh	rc ok, orph clean
 appsync	2026-06-21T11:00:28Z	PASS	25	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-marker guard + prerun-scoped cleanup (issue-1052); 0 orphans
 asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
@@ -99,7 +99,7 @@ eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sa
 eventsourcemapping-race	2026-06-21T18:33:45Z	PASS	88	verify.sh	first run (never-run); fresh-source/role ESM create + message processing + no-orphan-ESM destroy
 export	2026-07-20T05:16:59Z	PASS	220	verify.sh	broad refresh for #1111 resolver/engine/deploy changes; export round-trip + CFn cleanup clean
 export-nested-stack	2026-07-21T08:39:22Z	PASS	327	verify.sh	export->CFn nested adopt, CFn delete clean, 0 orphans
-fifo-sqs-event-source	2026-06-21T07:42:41Z	PASS	83	verify.sh	FIFO ESM delivers + both MessageGroupIds (g1,g2) preserved; spaced poll; destroy clean 0 orphan
+fifo-sqs-event-source	2026-07-21T18:16:52Z	PASS	76	verify.sh	rc ok, orph clean
 fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans
 fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
 fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
@@ -114,7 +114,7 @@ iam-managed-policy	2026-07-21T13:08:15Z	PASS	29	verify.sh	converted; policy atta
 iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
 iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
-iam-role-prefixed-name-update	2026-06-21T08:38:12Z	PASS	45	verify.sh	prefix-migration false-positive fix (generator-based); in-place UPDATE w/o -y, RoleId unchanged, destroy clean
+iam-role-prefixed-name-update	2026-07-21T18:19:31Z	PASS	52	verify.sh	rc ok, orph clean
 import-attributes	2026-07-21T13:51:28Z	PASS	42	verify.sh	post import-tag-walk refactor #1139; attr reconstruct+destroy clean
 import-auto-mode	2026-07-21T13:53:15Z	PASS	74	verify.sh	post import-tag-walk refactor #1139; CFn physId resolve (no tag) clean
 import-nested-stack	2026-07-21T13:59:14Z	PASS	144	verify.sh	post import-tag-walk refactor #1139; recursive import+nested destroy clean
@@ -131,7 +131,7 @@ kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy
 lambda	2026-07-21T05:42:13Z	PASS	79	verify.sh	broad integ for deploy-engine change
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
-lambda-destinations	2026-06-21T07:09:19Z	PASS	80	verify.sh	EventInvokeConfig cc-api; write-only DestinationConfig survived UPDATE; destroy clean
+lambda-destinations	2026-07-21T18:15:21Z	PASS	81	verify.sh	fixture fix: EventInvokeConfig now sdk-routed (#919); rc ok, orph clean
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans
 lambda-layer-version-update	2026-06-21T14:58:48Z	PASS	69	verify.sh	LayerVersion content-change replacement + dependent re-point; 0 orphans
@@ -233,7 +233,7 @@ sg-circular-dependency	2026-06-21T18:54:29Z	PASS	180	verify.sh	first run (never-
 sns-event-source	2026-07-20T08:12:14Z	PASS	68	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-07-20T17:38:28Z	PASS	53	verify.sh	SNS inline subscription create+update, clean destroy
 sns-sqs-event	2026-07-21T14:26:11Z	PASS	59	verify.sh	rc ok, orph clean
-sns-subscription-filter	2026-06-21T06:31:35Z	PASS	38	verify.sh	FilterPolicy intact; 0 orph
+sns-subscription-filter	2026-07-21T18:09:46Z	PASS	46	verify.sh	rc ok, orph clean
 sqs-cloudwatch	2026-06-21T11:00:28Z	PASS	41	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 sqs-esm-max-concurrency	2026-07-21T14:49:55Z	PASS	85	verify.sh	rc ok, orph clean
 state-destroy	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
