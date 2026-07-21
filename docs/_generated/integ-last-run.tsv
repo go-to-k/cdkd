@@ -58,12 +58,12 @@ data-analytics	2026-06-21T11:00:28Z	PASS	43	verify.sh	sweep-4..8 staleness re-ru
 data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
 deep-getatt-chains	2026-07-20T08:10:49Z	PASS	66	verify.sh	rc ok, orph clean
 deletion-ordering-complex	2026-07-02T18:23:15Z	PASS	194	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-deletion-policy-retain	2026-06-21T11:00:28Z	PASS	24	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+deletion-policy-retain	2026-07-21T07:21:45Z	PASS	29	verify.sh	retain honored, manual cleanup ok, 0 orphans
 deployment-events	2026-07-02T18:23:15Z	PASS	39	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 destroy-interrupt	2026-07-02T18:23:15Z	PASS	531	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 diff-intrinsic-target-change	2026-07-20T15:00:54Z	PASS	54	verify.sh	diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
-docdb-neptune	2026-06-21T15:21:39Z	PASS	1512	verify.sh	sweep-G verify.sh re-run (rc=0)
+docdb-neptune	2026-07-21T08:30:54Z	PASS	1583	verify.sh	14 deleted 0 orphans, docdb+neptune slow-delete ok
 docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
 drift-revert	2026-07-19T19:15:52Z	PASS	93	verify.sh	rc ok, 13 deleted, orph clean
 drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
@@ -98,7 +98,7 @@ eventbridge-pipes	2026-07-02T16:12:06Z	PASS	182	verify.sh	new phases (issue 960 
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
 eventsourcemapping-race	2026-06-21T18:33:45Z	PASS	88	verify.sh	first run (never-run); fresh-source/role ESM create + message processing + no-orphan-ESM destroy
 export	2026-07-20T05:16:59Z	PASS	220	verify.sh	broad refresh for #1111 resolver/engine/deploy changes; export round-trip + CFn cleanup clean
-export-nested-stack	2026-06-21T11:00:28Z	PASS	326	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+export-nested-stack	2026-07-21T08:39:22Z	PASS	327	verify.sh	export->CFn nested adopt, CFn delete clean, 0 orphans
 fifo-sqs-event-source	2026-06-21T07:42:41Z	PASS	83	verify.sh	FIFO ESM delivers + both MessageGroupIds (g1,g2) preserved; spaced poll; destroy clean 0 orphan
 fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans
 fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
@@ -118,8 +118,8 @@ iam-role-prefixed-name-update	2026-06-21T08:38:12Z	PASS	45	verify.sh	prefix-migr
 import-attributes	2026-07-20T15:36:18Z	PASS	41	verify.sh	rc 0, 0 orphans; #1091 batch 4 final
 import-auto-mode	2026-07-21T05:48:51Z	PASS	90	verify.sh	batch2+3 helper+type-surface removal; auto import via CFn, destroy clean
 import-nested-stack	2026-07-20T14:40:50Z	PASS	144	verify.sh	recursive nested import+retire+destroy clean
-import-value-strong-ref	2026-07-02T18:23:15Z	PASS	115	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-importvalue-chain	2026-07-02T18:23:15Z	PASS	75	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+import-value-strong-ref	2026-07-21T08:42:10Z	PASS	122	verify.sh	producer+consumer strong ref, 5 deleted 0 orphans
+importvalue-chain	2026-07-21T08:44:10Z	PASS	81	verify.sh	chain A/B/C, exports index purged, 0 orphans
 infra-security	2026-06-21T11:00:28Z	PASS	307	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
 intrinsic-functions	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -197,7 +197,7 @@ propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
 rds-aurora	2026-06-21T17:00:38Z	PASS	2088	verify.sh	stale-real re-run; clean destroy (~35min)
 rds-dbinstance-backfill	2026-06-21T19:05:04Z	PASS	560	verify.sh	re-run after pg 17.4->17.6 fixture fix (AWS retired 17.4); all #609 backfill props verified incl EngineVersion==17.6; 11 deleted 0 err
-rds-full-stack	2026-06-21T18:53:07Z	PASS	600	verify.sh	first run (never-run); RDS L2 + custom subnet/param groups + GetAtt computed endpoint via SSM; 15 deleted 0 err state gone
+rds-full-stack	2026-07-21T08:03:48Z	PASS	2346	verify.sh	15 deleted 0 orphans, RDS slow-delete floor ok
 recreate-mixed-direction	2026-07-21T05:15:35Z	PASS	100	verify.sh	rc ok, orph clean
 recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean
 recreate-via-sdk-provider	2026-07-21T05:13:38Z	PASS	86	verify.sh	rc ok, orph clean
@@ -244,7 +244,7 @@ synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-c
 tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag propagation across 9 resource types; no tag-order false-positive; 9 deleted 0 err
 throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 update-policy-mutations	2026-07-21T05:39:29Z	PASS	74	verify.sh	fix verified: Retain exempts stateful guard
-update-replace	2026-07-02T16:12:06Z	PASS	585	verify.sh	fixture updated: BucketName replacement now passes --force-stateful-recreation (post-#929 guard)
+update-replace	2026-07-21T07:23:47Z	PASS	80	verify.sh	in-place+replace, 7 deleted 0 orphans
 vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
