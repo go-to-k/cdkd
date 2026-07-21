@@ -2528,11 +2528,7 @@ export class DeployEngine {
           // exempt — the property-driven path does not implement snapshot-on-
           // replace and falls through to the DELETE branch, so its data really
           // would be lost.
-          if (
-            propertyDrivenReplacement &&
-            !recreateFlagged &&
-            updateReplacePolicy !== 'Retain'
-          ) {
+          if (propertyDrivenReplacement && !recreateFlagged && updateReplacePolicy !== 'Retain') {
             const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
             if (statefulReason && this.options.forceStatefulRecreation !== true) {
               const immutableProps = change.propertyChanges
