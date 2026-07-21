@@ -51,7 +51,15 @@ import {
   softReloadAgentContainer,
   loadAgentCoreAssetContext,
   type AgentCoreWatchInvokeOutcome,
+  type RunAgentCoreWatchLoopArgs,
 } from '../../../src/local/invoke-agentcore-watch-loop.js';
+
+// Mock signatures reused from the source arg type so the typed `vi.fn<...>()`
+// mocks stay in lockstep with `runAgentCoreWatchLoop`'s callback contract.
+type InvokeOnceFn = RunAgentCoreWatchLoopArgs['invokeOnce'];
+type RebuildFn = RunAgentCoreWatchLoopArgs['rebuild'];
+type SoftReloadFn = RunAgentCoreWatchLoopArgs['softReload'];
+type WaitForPingFn = NonNullable<RunAgentCoreWatchLoopArgs['__waitForPing']>;
 import {
   createLocalInvokeAgentCoreCommand,
   isAgentCoreWatchEligible,
@@ -92,18 +100,18 @@ describe('invoke-agentcore --watch option surface', () => {
 });
 
 describe('runAgentCoreWatchLoop — classifier dispatch', () => {
-  let rebuild: ReturnType<typeof vi.fn>;
-  let softReload: ReturnType<typeof vi.fn>;
-  let waitForPing: ReturnType<typeof vi.fn>;
+  let rebuild: ReturnType<typeof vi.fn<RebuildFn>>;
+  let softReload: ReturnType<typeof vi.fn<SoftReloadFn>>;
+  let waitForPing: ReturnType<typeof vi.fn<WaitForPingFn>>;
   let onChangeRef: ((paths: readonly string[]) => void) | undefined;
   let watcher: FileWatcher;
   let synthesizer: Synthesizer;
 
   beforeEach(() => {
     onChangeRef = undefined;
-    rebuild = vi.fn();
-    softReload = vi.fn();
-    waitForPing = vi.fn().mockResolvedValue(undefined);
+    rebuild = vi.fn<RebuildFn>();
+    softReload = vi.fn<SoftReloadFn>();
+    waitForPing = vi.fn<WaitForPingFn>().mockResolvedValue(undefined);
     watcher = { close: vi.fn().mockResolvedValue(undefined) };
     synthesizer = {
       synthesize: vi.fn().mockResolvedValue({ stacks: [] }),
@@ -136,9 +144,9 @@ describe('runAgentCoreWatchLoop — classifier dispatch', () => {
    * call schedules the watcher firing on nextTick so the reload is triggered
    * while the first invoke is pending.
    */
-  function wireOneReloadThenEnd(): ReturnType<typeof vi.fn> {
+  function wireOneReloadThenEnd(): ReturnType<typeof vi.fn<InvokeOnceFn>> {
     return vi
-      .fn()
+      .fn<InvokeOnceFn>()
       .mockImplementationOnce(
         async ({ abortSignal }: { abortSignal: AbortSignal }): Promise<AgentCoreWatchInvokeOutcome> => {
           process.nextTick(() => onChangeRef?.(['/abs/handler.py']));
@@ -244,7 +252,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch', () => {
     // must abort it so the socket closes cleanly before the container swap.
     let firstAbortFired = false;
     const invokeOnce = vi
-      .fn()
+      .fn<InvokeOnceFn>()
       .mockImplementationOnce(
         async ({ abortSignal }: { abortSignal: AbortSignal }): Promise<AgentCoreWatchInvokeOutcome> => {
           process.nextTick(() => onChangeRef?.(['/abs/handler.py']));
@@ -291,7 +299,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch', () => {
       return { containerId: 'newId', hostPort: 9002, stacks: [] };
     });
     const invokeOnce = vi
-      .fn()
+      .fn<InvokeOnceFn>()
       .mockImplementationOnce(
         async ({ abortSignal }: { abortSignal: AbortSignal }): Promise<AgentCoreWatchInvokeOutcome> => {
           // Fire TWO changes nearly simultaneously.
@@ -325,11 +333,11 @@ describe('runAgentCoreWatchLoop — classifier dispatch', () => {
 
   it('exits the loop when the rebuild callback rejects (no hang on stale port)', async () => {
     let pingCalls = 0;
-    waitForPing = vi.fn().mockImplementation(async () => {
+    waitForPing = vi.fn<WaitForPingFn>().mockImplementation(async () => {
       pingCalls += 1;
     });
     const invokeOnce = vi
-      .fn()
+      .fn<InvokeOnceFn>()
       .mockImplementationOnce(
         async ({ abortSignal }: { abortSignal: AbortSignal }): Promise<AgentCoreWatchInvokeOutcome> => {
           process.nextTick(() => onChangeRef?.(['/abs/handler.py']));
@@ -364,7 +372,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch', () => {
 
   it('exits on a benign close with no pending reload', async () => {
     const invokeOnce = vi
-      .fn()
+      .fn<InvokeOnceFn>()
       .mockResolvedValue({ pendingReload: false } satisfies AgentCoreWatchInvokeOutcome);
 
     await runAgentCoreWatchLoop({

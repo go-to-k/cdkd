@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
-import { createContainerPool, type ContainerSpec } from '../../../src/local/container-pool.js';
+import {
+  createContainerPool,
+  type ContainerSpec,
+  type ZipContainerSpec,
+} from '../../../src/local/container-pool.js';
 import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
 
 vi.mock('../../../src/local/docker-runner.js', () => {
@@ -27,7 +31,7 @@ vi.mock('../../../src/local/runtime-image.js', () => ({
 import { removeContainer, runDetached, streamLogs } from '../../../src/local/docker-runner.js';
 import { waitForRieReady } from '../../../src/local/rie-client.js';
 
-function makeSpec(logicalId: string): ContainerSpec {
+function makeSpec(logicalId: string): ZipContainerSpec {
   const lambda = {
     kind: 'zip',
     stack: {

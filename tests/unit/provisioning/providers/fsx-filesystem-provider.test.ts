@@ -1847,7 +1847,6 @@ describe('FSxFileSystemProvider import', () => {
     const result = await newProvider().import({
       logicalId: 'MyFs',
       resourceType: RESOURCE_TYPE,
-      cdkPath: 'Stack/Fs/Resource',
       stackName: 'Stack',
       region: 'us-east-1',
       properties: {},
@@ -1865,7 +1864,6 @@ describe('FSxFileSystemProvider import', () => {
       newProvider().import({
         logicalId: 'MyFs',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'Stack/Fs/Resource',
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -1883,7 +1881,6 @@ describe('FSxFileSystemProvider import', () => {
       newProvider().import({
         logicalId: 'MyFs',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'Stack/Fs/Resource',
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},

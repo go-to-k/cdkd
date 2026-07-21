@@ -1260,7 +1260,7 @@ describe('CodeCommitRepositoryProvider', () => {
       ]);
       // Code + Triggers moved out of unhandledByDesign (issue #1066); the
       // provider no longer declares any by-design-unhandled property.
-      expect(provider.unhandledByDesign).toBeUndefined();
+      expect((provider as { unhandledByDesign?: unknown }).unhandledByDesign).toBeUndefined();
     });
   });
 });

@@ -772,7 +772,11 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
   it('keepRunning=true skips docker stop / rm on user containers but tears down sidecar+network', async () => {
     captured.responder = () => ({ stdout: '' });
     const state: EcsRunState = {
-      network: { networkName: 'cdkd-local-task-x', sidecarContainerId: 'sidecar-x' },
+      network: {
+        networkName: 'cdkd-local-task-x',
+        sidecarContainerId: 'sidecar-x',
+        sidecarIp: '169.254.170.2',
+      },
       dockerVolumeNames: [],
       startedContainers: [
         { name: 'a', id: 'cid-a' },
@@ -809,7 +813,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
       if (rmCalls === 2) throw new Error('rm failed');
     });
     const state: EcsRunState = {
-      network: { networkName: 'n', sidecarContainerId: 's' },
+      network: { networkName: 'n', sidecarContainerId: 's', sidecarIp: '169.254.170.2' },
       dockerVolumeNames: [],
       startedContainers: [
         { name: 'a', id: 'cid-a' },
@@ -839,7 +843,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
       order.push('destroy-network');
     });
     const state: EcsRunState = {
-      network: { networkName: 'n', sidecarContainerId: 's' },
+      network: { networkName: 'n', sidecarContainerId: 's', sidecarIp: '169.254.170.2' },
       dockerVolumeNames: ['vol-1', 'vol-2'],
       startedContainers: [{ name: 'a', id: 'cid-a' }],
       logStoppers: [],

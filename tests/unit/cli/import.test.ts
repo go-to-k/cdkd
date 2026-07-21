@@ -740,9 +740,9 @@ describe('cdkd import', () => {
       // omits it when no override exists) — they go through tag-based
       // lookup. Use `not.toHaveProperty` to assert absence.
       expect(fnImport).toHaveBeenCalledWith(expect.objectContaining({ logicalId: 'MyFn' }));
-      expect(fnImport.mock.calls[0]![0]).not.toHaveProperty('knownPhysicalId');
+      expect((fnImport.mock.calls[0]! as unknown[])[0]).not.toHaveProperty('knownPhysicalId');
       expect(tableImport).toHaveBeenCalledWith(expect.objectContaining({ logicalId: 'MyTable' }));
-      expect(tableImport.mock.calls[0]![0]).not.toHaveProperty('knownPhysicalId');
+      expect((tableImport.mock.calls[0]! as unknown[])[0]).not.toHaveProperty('knownPhysicalId');
 
       const [, , state] = mockSaveState.mock.calls[0] as unknown as [
         string,
@@ -956,7 +956,7 @@ describe('cdkd import', () => {
       // Empty object -> no overrides -> auto mode dispatches all resources
       // through tag-based lookup with no knownPhysicalId.
       expect(importSpy).toHaveBeenCalledTimes(1);
-      expect(importSpy.mock.calls[0]![0]).not.toHaveProperty('knownPhysicalId');
+      expect((importSpy.mock.calls[0]! as unknown[])[0]).not.toHaveProperty('knownPhysicalId');
     });
 
     it('rejects malformed inline JSON with a clear error', async () => {

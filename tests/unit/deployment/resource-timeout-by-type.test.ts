@@ -72,7 +72,7 @@ describe('DeployEngine — per-resource-type timeout resolution (#91 v2)', () =>
       logicalId,
       changeType: 'CREATE',
       resourceType: type,
-      newProperties: {},
+      desiredProperties: {},
       propertyChanges: [],
     };
   }

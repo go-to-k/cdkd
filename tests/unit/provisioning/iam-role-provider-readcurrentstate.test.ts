@@ -124,7 +124,11 @@ describe('IAMRoleProvider.readCurrentState', () => {
     // 10-per-role limit) so the unknown-path declaration is no longer
     // needed. If a future change re-introduces an unreadable subtree
     // here, this test must be updated consciously.
-    expect(provider.getDriftUnknownPaths?.() ?? []).toEqual([]);
+    expect(
+      (provider as { getDriftUnknownPaths?: (resourceType: string) => string[] }).getDriftUnknownPaths?.(
+        'AWS::IAM::Role'
+      ) ?? []
+    ).toEqual([]);
   });
 
   it('emits empty ManagedPolicyArns placeholder when there are none attached', async () => {

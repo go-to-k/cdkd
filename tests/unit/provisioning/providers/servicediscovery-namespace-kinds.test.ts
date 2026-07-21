@@ -143,7 +143,7 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
 
       const result = await provider.create('MyHttpNs', HTTP_NS, { Name: 'my-ns' });
       expect(result.physicalId).toBe('ns-http-2');
-      expect(result.attributes['Arn']).toBe(
+      expect(result.attributes!['Arn']).toBe(
         'arn:aws:servicediscovery:us-east-1:123456789012:namespace/ns-http-2'
       );
     });

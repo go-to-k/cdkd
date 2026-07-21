@@ -179,6 +179,7 @@ describe('validatePrefetchResult', () => {
     stackStatus: 'CREATE_COMPLETE',
     resources: [],
     transformInfo: { hasSamTransform: false, hasIncludeTransform: false },
+    sourceCfnTemplate: null,
   };
 
   it('passes on an empty stack in CREATE_COMPLETE', () => {

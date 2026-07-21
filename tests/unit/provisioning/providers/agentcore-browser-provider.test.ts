@@ -177,7 +177,6 @@ describe('AgentCoreBrowserProvider', () => {
       const result = await provider.import({
         logicalId: 'MyBrowser',
         resourceType: 'AWS::BedrockAgentCore::Browser',
-        cdkPath: 'MyStack/MyBrowser',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

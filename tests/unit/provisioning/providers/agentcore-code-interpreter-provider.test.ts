@@ -179,7 +179,6 @@ describe('AgentCoreCodeInterpreterProvider', () => {
       const result = await provider.import({
         logicalId: 'MyInterpreter',
         resourceType: 'AWS::BedrockAgentCore::CodeInterpreter',
-        cdkPath: 'MyStack/MyInterpreter',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

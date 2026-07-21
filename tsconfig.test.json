@@ -6,7 +6,12 @@
     "noPropertyAccessFromIndexSignature": false,
     "noUncheckedIndexedAccess": false,
     "noUnusedLocals": false,
-    "noUnusedParameters": false
+    "noUnusedParameters": false,
+    // Test files run under vitest (esbuild transform), never `node --strip-types`,
+    // so the `erasableSyntaxOnly` constraint the base config sets for `scripts/`
+    // does not apply to them. Leaving it on would reject the enums / namespaces
+    // several test files legitimately use.
+    "erasableSyntaxOnly": false
   },
   "include": [
     "src/**/*",

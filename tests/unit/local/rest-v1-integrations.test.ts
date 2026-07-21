@@ -10,7 +10,7 @@
  * `invokeRie`.
  */
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
 
 vi.mock('../../../src/local/rie-client.js', () => ({
   invokeRie: vi.fn(),
@@ -511,7 +511,7 @@ describe('Fix 6: HTTP non-proxy branches on upstream content-type', () => {
     // binary branch.
     const binary = Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x01, 0x02]);
     mockFetch.mockResolvedValueOnce(
-      new Response(binary as unknown as BodyInit, {
+      new Response(binary as unknown as Uint8Array, {
         status: 200,
         headers: { 'content-type': 'application/octet-stream' },
       })
@@ -529,7 +529,7 @@ describe('Fix 6: HTTP non-proxy branches on upstream content-type', () => {
   it('handles binary upstream with a ResponseTemplate by passing the bytes through (warn-and-skip VTL)', async () => {
     const binary = Buffer.from([0xff, 0xfe, 0xfd]);
     mockFetch.mockResolvedValueOnce(
-      new Response(binary as unknown as BodyInit, {
+      new Response(binary as unknown as Uint8Array, {
         status: 200,
         headers: { 'content-type': 'application/octet-stream' },
       })

@@ -70,7 +70,6 @@ describe('GlueProvider import', () => {
     return {
       logicalId: 'MyDB',
       resourceType: 'AWS::Glue::Database',
-      cdkPath: 'MyStack/MyDB',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},
@@ -104,7 +103,6 @@ describe('GlueProvider import', () => {
     const result = await provider.import({
       logicalId: 'MyTable',
       resourceType: 'AWS::Glue::Table',
-      cdkPath: 'MyStack/MyTable',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: { DatabaseName: 'mydb' },

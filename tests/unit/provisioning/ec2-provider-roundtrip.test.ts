@@ -62,7 +62,7 @@ describe('EC2Provider read-update round-trip', () => {
   });
 
   // Helpers — count mutating SDK calls (anything that writes to AWS).
-  const mutatingCommandTypes: Array<new (...args: unknown[]) => unknown> = [
+  const mutatingCommandTypes: Array<new (...args: never[]) => unknown> = [
     ModifyVpcAttributeCommand,
     CreateTagsCommand,
     DeleteTagsCommand,

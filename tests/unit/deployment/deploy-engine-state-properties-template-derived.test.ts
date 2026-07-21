@@ -280,7 +280,12 @@ describe('DeployEngine - state.properties is resolved-desired (template-derived)
             desiredProperties: desiredProps,
             currentProperties: { Name: 'bucket', Tag: 'old-value' },
             propertyChanges: [
-              { propertyPath: 'Tag', oldValue: 'old-value', newValue: 'new-value' },
+              {
+                path: 'Tag',
+                oldValue: 'old-value',
+                newValue: 'new-value',
+                requiresReplacement: false,
+              },
             ],
           },
         ],

@@ -8,6 +8,10 @@ import {
   parseTarget,
   resolveLambdaTarget,
 } from '../../../src/local/lambda-resolver.js';
+import type {
+  ResolvedAssetLambdaLayer,
+  ResolvedZipLambda,
+} from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
 
@@ -106,7 +110,7 @@ describe('resolveLambdaTarget', () => {
       },
       tmpRoot
     );
-    const result = resolveLambdaTarget('MyStack:MyHandler', [stack]);
+    const result = resolveLambdaTarget('MyStack:MyHandler', [stack]) as ResolvedZipLambda;
     expect(result.logicalId).toBe('MyHandler');
     expect(result.runtime).toBe('nodejs20.x');
     expect(result.handler).toBe('index.handler');
@@ -242,7 +246,7 @@ describe('resolveLambdaTarget', () => {
       },
       tmpRoot
     );
-    const result = resolveLambdaTarget('MyStack:Inline', [stack]);
+    const result = resolveLambdaTarget('MyStack:Inline', [stack]) as ResolvedZipLambda;
     expect(result.codePath).toBeNull();
     expect(result.inlineCode).toMatch(/exports.handler/);
   });
@@ -262,7 +266,7 @@ describe('resolveLambdaTarget', () => {
       },
       tmpRoot
     );
-    const result = resolveLambdaTarget('MyStack:PyInline', [stack]);
+    const result = resolveLambdaTarget('MyStack:PyInline', [stack]) as ResolvedZipLambda;
     expect(result.runtime).toBe('python3.12');
     expect(result.handler).toBe('index.handler');
     expect(result.codePath).toBeNull();
@@ -769,7 +773,9 @@ describe('resolveLambdaTarget', () => {
     const result = resolveLambdaTarget('MyStack:WithLayer', [stack]);
     expect(result.layers).toHaveLength(1);
     expect(result.layers[0]?.logicalId).toBe('MyLayer');
-    expect(result.layers[0]?.assetPath).toMatch(/asset\.layer1$/);
+    expect((result.layers[0] as ResolvedAssetLambdaLayer | undefined)?.assetPath).toMatch(
+      /asset\.layer1$/
+    );
   });
 
   it('resolves Fn::GetAtt-shaped layer references', () => {

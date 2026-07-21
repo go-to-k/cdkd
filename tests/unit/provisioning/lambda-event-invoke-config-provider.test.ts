@@ -259,7 +259,6 @@ describe('LambdaEventInvokeConfigProvider', () => {
       const result = await provider.import({
         logicalId: 'Cfg',
         resourceType: 'AWS::Lambda::EventInvokeConfig',
-        cdkPath: 'MyStack/Cfg',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: { FunctionName: 'my-fn' },
@@ -273,7 +272,6 @@ describe('LambdaEventInvokeConfigProvider', () => {
       const result = await provider.import({
         logicalId: 'Cfg',
         resourceType: 'AWS::Lambda::EventInvokeConfig',
-        cdkPath: 'MyStack/Cfg',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: { FunctionName: 'my-fn' },

@@ -19,6 +19,11 @@ jobs:
 
       - run: vp install --frozen-lockfile
       - run: vp run check
+      # Issue #1133 — `vp run check` type-checks tsconfig.json only (src/** +
+      # types/**), which excludes `**/*.test.ts`. Type-check the test project
+      # separately so a wrong `import type` or a stale mock shape in a test
+      # file fails CI instead of slipping through.
+      - run: vp run typecheck:test
       - run: vp run test
       - run: vp run build
 

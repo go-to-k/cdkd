@@ -464,7 +464,6 @@ describe('RDSDBProxyEndpointProvider', () => {
       const result = await provider.import({
         logicalId: 'EP',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/EP',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},
@@ -481,7 +480,6 @@ describe('RDSDBProxyEndpointProvider', () => {
       const result = await provider.import({
         logicalId: 'EP',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/EP/Resource',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},
@@ -497,7 +495,6 @@ describe('RDSDBProxyEndpointProvider', () => {
       const result = await provider.import({
         logicalId: 'EP',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/EP/Resource',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: { DBProxyEndpointName: EP_NAME },

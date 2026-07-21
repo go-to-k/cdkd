@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
+import type { StackStateRef } from '../../../src/state/s3-state-backend.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
@@ -37,7 +38,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => {
   };
 });
 
-const mockListStacks = vi.fn<() => Promise<string[]>>();
+const mockListStacks = vi.fn<() => Promise<StackStateRef[]>>();
 const mockGetState = vi.fn<(stackName: string) => Promise<{ state: StackState; etag: string } | null>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({

@@ -695,7 +695,7 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       const updateInputs = mockSend.mock.calls
         .map((c) => c[0])
         .filter((cmd) => cmd instanceof UpdateTableCommand)
-        .map((cmd) => (cmd as { input: Record<string, unknown> }).input);
+        .map((cmd) => (cmd as unknown as { input: Record<string, unknown> }).input);
       expect(updateInputs[0].OnDemandThroughput).toBeDefined();
       expect(updateInputs[1].SSESpecification).toBeDefined();
     });
@@ -735,7 +735,7 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       const updateInputs = mockSend.mock.calls
         .map((c) => c[0])
         .filter((cmd) => cmd instanceof UpdateTableCommand)
-        .map((cmd) => (cmd as { input: Record<string, unknown> }).input);
+        .map((cmd) => (cmd as unknown as { input: Record<string, unknown> }).input);
       expect(updateInputs[0].WarmThroughput).toBeDefined();
       expect(updateInputs[1].SSESpecification).toBeDefined();
     });
