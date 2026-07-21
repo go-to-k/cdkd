@@ -5,7 +5,6 @@ import {
   GetKeyPolicyCommand,
   GetKeyRotationStatusCommand,
   ListAliasesCommand,
-  ListKeysCommand,
   ListResourceTagsCommand,
   ScheduleKeyDeletionCommand,
   CreateAliasCommand,
@@ -28,7 +27,6 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -750,8 +748,8 @@ export class KMSProvider implements ResourceProvider {
    * KMS keys have no `Properties.KeyName` field — physical IDs are
    * AWS-generated UUIDs. So:
    *  - For `AWS::KMS::Key`: `--resource MyKey=<keyId>` is the only explicit
-   *    path; auto-lookup walks `ListKeys` + `ListResourceTags` matching
-   *    `aws:cdk:path`.
+   *    path; there is no auto-lookup (a key reaching here without an explicit
+   *    id or a CloudFormation-resolved physical id returns `null`).
    *  - For `AWS::KMS::Alias`: `Properties.AliasName` is explicit and reliable.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -793,35 +791,11 @@ export class KMSProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListKeysCommand({ ...(marker && { Marker: marker }) })
-        );
-        return { items: list.Keys, nextMarker: list.NextMarker };
-      },
-      describe: async (key) => {
-        if (!key.KeyId) return undefined;
-        try {
-          return await this.getClient().send(new ListResourceTagsCommand({ KeyId: key.KeyId }));
-        } catch (err) {
-          // AWS-managed keys lack ListResourceTags permission. Skip silently.
-          const name = (err as { name?: string }).name;
-          if (name === 'AccessDeniedException' || err instanceof NotFoundException)
-            return undefined;
-          throw err;
-        }
-      },
-      // KMS returns the v2-style {TagKey, TagValue} shape.
-      tagsOf: (tagsResp) =>
-        (tagsResp.Tags ?? []).map((t) => ({ Key: t.TagKey, Value: t.TagValue })),
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a KeyId.
-    return { physicalId: match.summary.KeyId!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a key
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -33,7 +33,6 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { CloudTrailProvider } from '../../../../src/provisioning/providers/cloudtrail-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   CreateTrailCommand,
   DeleteTrailCommand,
@@ -41,8 +40,6 @@ import {
   StartLoggingCommand,
   StopLoggingCommand,
   GetTrailCommand,
-  ListTrailsCommand,
-  ListTagsCommand,
   TrailNotFoundException,
 } from '@aws-sdk/client-cloudtrail';
 
@@ -289,134 +286,14 @@ describe('CloudTrailProvider', () => {
       expect(mockSend.mock.calls[0][0].input).toEqual({ Name: 'my-trail' });
     });
 
-    it('tag-based lookup: ListTrails + ListTags matches aws:cdk:path', async () => {
-      mockSend
-        // ListTrails
-        .mockResolvedValueOnce({
-          Trails: [
-            {
-              Name: 'other-trail',
-              TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/other-trail',
-            },
-            {
-              Name: 'my-trail',
-              TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
-            },
-          ],
-        })
-        // ListTags(other-trail)
-        .mockResolvedValueOnce({
-          ResourceTagList: [
-            {
-              ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/other-trail',
-              TagsList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Trail/Resource' }],
-            },
-          ],
-        })
-        // ListTags(my-trail)
-        .mockResolvedValueOnce({
-          ResourceTagList: [
-            {
-              ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
-              TagsList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTrail/Resource' }],
-            },
-          ],
-        });
-
+    it('returns null without any AWS call when no override is supplied (no aws:cdk:path tag walk)', async () => {
+      // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+      // aws:-prefixed tag writes, so the tag never exists on a real resource.
+      // With no explicit override the provider resolves nothing and returns
+      // null immediately — the import flow relies on --resource / CFn lookup.
       const result = await provider.import(makeInput());
-
-      expect(result).toEqual({ physicalId: 'my-trail', attributes: {} });
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListTrailsCommand);
-      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(ListTagsCommand);
-    });
-
-    it('returns null when no trail matches the cdkPath', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          Trails: [
-            {
-              Name: 'unrelated',
-              TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/unrelated',
-            },
-          ],
-        })
-        .mockResolvedValueOnce({
-          ResourceTagList: [
-            {
-              ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/unrelated',
-              TagsList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Trail/Resource' }],
-            },
-          ],
-        });
-
-      const result = await provider.import(makeInput());
-
       expect(result).toBeNull();
-    });
-
-    // Issue #1091 batch 3: the tag walk is an N+1 ListTags burst routed
-    // through the shared importTagWalk helper — a throttled per-candidate
-    // tag read is retried with backoff instead of aborting the whole
-    // import, while a non-throttling error still surfaces immediately.
-    describe('tag walk retry', () => {
-      beforeEach(() => {
-        // Skip the walk's real backoff waits so the retry tests stay fast.
-        importTagWalkTestHooks.sleep = async () => {};
-      });
-      afterEach(() => {
-        importTagWalkTestHooks.sleep = undefined;
-      });
-
-      it('retries a throttled ListTags mid-walk and still finds the match', async () => {
-        const throttled = new Error('Rate exceeded') as Error & {
-          $metadata: { httpStatusCode: number };
-        };
-        throttled.name = 'ThrottlingException';
-        throttled.$metadata = { httpStatusCode: 400 };
-
-        mockSend
-          .mockResolvedValueOnce({
-            Trails: [
-              {
-                Name: 'my-trail',
-                TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
-              },
-            ],
-          })
-          .mockRejectedValueOnce(throttled)
-          .mockResolvedValueOnce({
-            ResourceTagList: [
-              {
-                ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
-                TagsList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTrail/Resource' }],
-              },
-            ],
-          });
-
-        const result = await provider.import(makeInput());
-
-        expect(result).toEqual({ physicalId: 'my-trail', attributes: {} });
-        expect(mockSend).toHaveBeenCalledTimes(3);
-      });
-
-      it('does not retry a non-throttling ListTags error during the walk', async () => {
-        const denied = new Error('User is not authorized to perform cloudtrail:ListTags');
-        denied.name = 'AccessDeniedException';
-
-        mockSend
-          .mockResolvedValueOnce({
-            Trails: [
-              {
-                Name: 'my-trail',
-                TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
-              },
-            ],
-          })
-          .mockRejectedValueOnce(denied);
-
-        await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
-        expect(mockSend).toHaveBeenCalledTimes(2);
-      });
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

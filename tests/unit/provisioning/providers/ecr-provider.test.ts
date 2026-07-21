@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -33,10 +33,8 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { ECRProvider } from '../../../../src/provisioning/providers/ecr-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   DescribeRepositoriesCommand,
-  ListTagsForResourceCommand,
   RepositoryNotFoundException,
   TagResourceCommand,
   UntagResourceCommand,
@@ -48,11 +46,6 @@ describe('ECRProvider import', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new ECRProvider();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   function makeInput(
@@ -91,57 +84,6 @@ describe('ECRProvider import', () => {
     expect(mockSend.mock.calls[0][0].input).toEqual({ repositoryNames: ['my-repo'] });
   });
 
-  it('tag-based lookup: DescribeRepositories + ListTagsForResource matches aws:cdk:path', async () => {
-    mockSend
-      // DescribeRepositories
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'other-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123456789012:repository/other-repo',
-          },
-          {
-            repositoryName: 'my-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123456789012:repository/my-repo',
-          },
-        ],
-      })
-      // ListTagsForResource(other-repo)
-      .mockResolvedValueOnce({
-        tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Repo/Resource' }],
-      })
-      // ListTagsForResource(my-repo)
-      .mockResolvedValueOnce({
-        tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' }],
-      });
-
-    const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: 'my-repo', attributes: {} });
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DescribeRepositoriesCommand);
-    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(ListTagsForResourceCommand);
-    expect(mockSend.mock.calls[2][0]).toBeInstanceOf(ListTagsForResourceCommand);
-  });
-
-  it('returns null when no repository matches the cdkPath', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'unrelated',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123456789012:repository/unrelated',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Repo/Resource' }],
-      });
-
-    const result = await provider.import(makeInput());
-
-    expect(result).toBeNull();
-  });
-
   it('DescribeRepositories RepositoryNotFoundException on explicit override returns null', async () => {
     mockSend.mockRejectedValueOnce(
       new RepositoryNotFoundException({ $metadata: {}, message: 'not found' })
@@ -152,55 +94,14 @@ describe('ECRProvider import', () => {
     expect(result).toBeNull();
   });
 
-  // Issue #1091 batch 2: the tag walk is an N+1 ListTagsForResource burst
-  // routed through the shared importTagWalk helper — a throttled per-candidate
-  // tag read is retried with backoff instead of aborting the whole import,
-  // while a non-throttling error still surfaces immediately.
-  it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-    mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-    const throttled = new Error('Rate exceeded') as Error & {
-      $metadata: { httpStatusCode: number };
-    };
-    throttled.name = 'ThrottlingException';
-    throttled.$metadata = { httpStatusCode: 400 };
-
-    mockSend
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'my-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123456789012:repository/my-repo',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(throttled)
-      .mockResolvedValueOnce({
-        tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' }],
-      });
-
+  // The `aws:cdk:path` tag walk was removed (issue #1134): AWS rejects
+  // `aws:`-prefixed tag writes, so the tag never exists on a real resource.
+  // With no explicit id, import returns null without issuing any AWS call.
+  it('returns null without any AWS call when only cdkPath is given', async () => {
     const result = await provider.import(makeInput());
 
-    expect(result).toEqual({ physicalId: 'my-repo', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
-    mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-    const denied = new Error('User is not authorized to perform ecr:ListTagsForResource');
-    denied.name = 'AccessDeniedException';
-    mockSend
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'my-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123456789012:repository/my-repo',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(denied);
-
-    await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });
 

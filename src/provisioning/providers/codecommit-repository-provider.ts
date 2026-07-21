@@ -4,7 +4,6 @@ import {
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   GetRepositoryCommand,
-  ListRepositoriesCommand,
   ListTagsForResourceCommand,
   PutRepositoryTriggersCommand,
   TagResourceCommand,
@@ -24,7 +23,6 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -681,9 +679,6 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.RepositoryName` → verify via
    *     `GetRepository`.
-   *  2. `ListRepositories` paginated, then `ListTagsForResource(arn)` per
-   *     repository to match `aws:cdk:path` (CodeCommit uses the
-   *     `Record<string, string>` tag-map shape).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'RepositoryName');
@@ -701,43 +696,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       }
     }
 
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListRepositoriesCommand({ ...(marker && { nextToken: marker }) })
-        );
-        return { items: list.repositories, nextMarker: list.nextToken };
-      },
-      // Two reads per candidate: GetRepository for the ARN (and the attributes
-      // the caller needs on a hit), then ListTagsForResource. Both live inside
-      // the retried `describe` so a throttle on either is backed off.
-      describe: async (repo) => {
-        if (!repo.repositoryName) return undefined;
-        let metadata: RepositoryMetadata | undefined;
-        try {
-          metadata = await this.getRepositoryMetadata(repo.repositoryName);
-        } catch (err) {
-          // Deleted between the list and the describe — skip the candidate.
-          if (err instanceof RepositoryDoesNotExistException) return undefined;
-          throw err;
-        }
-        if (!metadata?.Arn) return undefined;
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ resourceArn: metadata.Arn })
-        );
-        return { metadata, tags: tagsResp.tags };
-      },
-      // CodeCommit returns tags as a MAP, not a {Key,Value} list.
-      tagsOf: (detail) => Object.entries(detail.tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return {
-      physicalId: match.summary.repositoryName!,
-      attributes: this.toAttributes(match.detail.metadata),
-    };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // repository reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   /**

@@ -3,7 +3,6 @@ import {
   AddTagsToCertificateCommand,
   DeleteCertificateCommand,
   DescribeCertificateCommand,
-  ListCertificatesCommand,
   ListTagsForCertificateCommand,
   RemoveTagsFromCertificateCommand,
   RequestCertificateCommand,
@@ -39,7 +38,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-certificate-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const ARN = 'arn:aws:acm:us-east-1:123456789012:certificate/abc123';
 
@@ -478,112 +476,14 @@ describe('ACMCertificateProvider', () => {
       expect(result).toBeNull();
     });
 
-    it('falls back to cdkPath tag lookup when no override is supplied', async () => {
-      mockSend.mockResolvedValueOnce({
-        CertificateSummaryList: [
-          { CertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/other' },
-          { CertificateArn: ARN },
-        ],
-      });
-      // First candidate's tags: no match.
-      mockSend.mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'Other/X' }] });
-      // Second candidate's tags: match.
-      mockSend.mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyCert' }],
-      });
-
-      const result = await provider.import!(makeInput());
-      expect(result?.physicalId).toBe(ARN);
-    });
-
-    it('paginates ListCertificates via NextToken when the cdkPath match is on page 2', async () => {
-      // Page 1: no match.
-      mockSend.mockResolvedValueOnce({
-        CertificateSummaryList: [
-          { CertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/page1' },
-        ],
-        NextToken: 'page2',
-      });
-      mockSend.mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'Other/X' }] });
-      // Page 2: match.
-      mockSend.mockResolvedValueOnce({
-        CertificateSummaryList: [{ CertificateArn: ARN }],
-      });
-      mockSend.mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyCert' }],
-      });
-
-      const result = await provider.import!(makeInput());
-      expect(result?.physicalId).toBe(ARN);
-      const lists = callsOfType(ListCertificatesCommand);
-      expect(lists).toHaveLength(2);
-      expect(lists[1].input.NextToken).toBe('page2');
-    });
-
-    it('returns null when no certificate matches the cdkPath', async () => {
-      mockSend.mockResolvedValueOnce({
-        CertificateSummaryList: [
-          { CertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/other' },
-        ],
-      });
-      mockSend.mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'Other/X' }] });
+    it('returns null without any AWS call when no override is supplied (no aws:cdk:path tag walk)', async () => {
+      // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+      // aws:-prefixed tag writes, so the tag never exists on a real resource.
+      // With no explicit override the provider resolves nothing and returns
+      // null immediately — the import flow relies on --resource / CFn lookup.
       const result = await provider.import!(makeInput());
       expect(result).toBeNull();
-    });
-
-    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForCertificate
-    // burst routed through the shared importTagWalk helper — a throttled
-    // per-candidate tag read is retried with backoff instead of aborting the
-    // whole import, while a non-throttling error still surfaces immediately.
-    describe('tag walk retry', () => {
-      beforeEach(() => {
-        // Skip the walk's real backoff waits so the retry tests stay fast.
-        importTagWalkTestHooks.sleep = async () => {};
-      });
-      afterEach(() => {
-        importTagWalkTestHooks.sleep = undefined;
-      });
-
-      it('retries a throttled ListTagsForCertificate mid-walk and still finds the match', async () => {
-        const throttled = new Error('Rate exceeded') as Error & {
-          $metadata: { httpStatusCode: number };
-        };
-        throttled.name = 'ThrottlingException';
-        throttled.$metadata = { httpStatusCode: 400 };
-
-        mockSend
-          .mockResolvedValueOnce({ CertificateSummaryList: [{ CertificateArn: ARN }] })
-          .mockRejectedValueOnce(throttled)
-          .mockResolvedValueOnce({
-            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyCert' }],
-          });
-
-        const result = await provider.import!(makeInput());
-
-        expect(result).toEqual({
-          physicalId: ARN,
-          attributes: { Arn: ARN, CertificateArn: ARN },
-        });
-        expect(mockSend).toHaveBeenCalledTimes(3);
-      });
-
-      it('does not retry a non-throttling ListTagsForCertificate error during the walk', async () => {
-        const denied = new Error(
-          'User is not authorized to perform acm:ListTagsForCertificate'
-        );
-        denied.name = 'AccessDeniedException';
-
-        mockSend
-          .mockResolvedValueOnce({ CertificateSummaryList: [{ CertificateArn: ARN }] })
-          .mockRejectedValueOnce(denied);
-
-        await expect(provider.import!(makeInput())).rejects.toThrow(/not authorized/);
-        expect(mockSend).toHaveBeenCalledTimes(2);
-      });
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });
-
-// Reference imports the test asserts via constructor.name so import elision
-// does not drop them.
-void ListCertificatesCommand;

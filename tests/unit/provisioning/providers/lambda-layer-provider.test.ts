@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { GetLayerVersionByArnCommand, ListLayersCommand } from '@aws-sdk/client-lambda';
+import { GetLayerVersionByArnCommand } from '@aws-sdk/client-lambda';
 
 const mockSend = vi.fn();
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
@@ -42,38 +42,13 @@ describe('LambdaLayerVersionProvider — import', () => {
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetLayerVersionByArnCommand);
   });
 
-  it('finds latest layer version by aws:cdk:path tag (Lambda map shape)', async () => {
-    const layerArn = 'arn:aws:lambda:us-east-1:123:layer:my-layer';
-    mockSend
-      .mockResolvedValueOnce({
-        Layers: [
-          {
-            LayerArn: layerArn,
-            LatestMatchingVersion: { LayerVersionArn: ARN },
-          },
-        ],
-        IsTruncated: false,
-      })
-      // ListTags returns a Record<string, string> map for Lambda
-      .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'MyStack/MyLayer' } });
-    const result = await provider.import!(makeInput());
-    expect(result).toEqual({ physicalId: ARN, attributes: {} });
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListLayersCommand);
-  });
-
-  it('returns null when no layer matches', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        Layers: [
-          {
-            LayerArn: 'arn:aws:lambda:us-east-1:123:layer:other',
-            LatestMatchingVersion: { LayerVersionArn: 'other-arn' },
-          },
-        ],
-        IsTruncated: false,
-      })
-      .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'OtherStack/X' } });
+  // Issue #1134: the aws:cdk:path tag walk is removed. AWS rejects
+  // aws:-prefixed tag writes, so that tag never exists on a real resource and
+  // the walk could not match. Without an explicit ARN, import() returns null
+  // with no AWS call.
+  it('returns null without any AWS call when no explicit ARN is given', async () => {
     const result = await provider.import!(makeInput());
     expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { ResourceNotFoundException } from '@aws-sdk/client-eventbridge';
 
 const mockSend = vi.fn();
@@ -29,7 +29,6 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeBusProvider } from '../../../../src/provisioning/providers/eventbridge-bus-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 
 describe('EventBridgeBusProvider import', () => {
   let provider: EventBridgeBusProvider;
@@ -37,12 +36,6 @@ describe('EventBridgeBusProvider import', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new EventBridgeBusProvider();
-    // Skip the walk's real exponential backoff in the throttle tests.
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   function makeInput(overrides: Record<string, unknown> = {}) {
@@ -57,123 +50,34 @@ describe('EventBridgeBusProvider import', () => {
     };
   }
 
-  it('tag-based lookup: matches aws:cdk:path via ListEventBuses + ListTagsForResource', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        EventBuses: [
-          { Name: 'other', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/other' },
-          { Name: 'target', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target' },
-        ],
-      })
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] })
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBus' }] });
+  it('explicit override: verifies via DescribeEventBus and returns the physicalId', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'target',
+      Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target',
+    });
 
-    const result = await provider.import(makeInput());
+    const result = await provider.import(makeInput({ knownPhysicalId: 'target' }));
 
     expect(result).toEqual({ physicalId: 'target', attributes: {} });
   });
 
-  it('skips a candidate whose tag read throws ResourceNotFoundException', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        EventBuses: [
-          { Name: 'gone', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/gone' },
-          { Name: 'target', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target' },
-        ],
-      })
-      .mockRejectedValueOnce(
-        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
-      )
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBus' }] });
+  it('explicit override: returns null when DescribeEventBus throws ResourceNotFoundException', async () => {
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+    );
 
-    const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: 'target', attributes: {} });
-  });
-
-  it('returns null when no bus matches', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        EventBuses: [
-          { Name: 'only', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/only' },
-        ],
-      })
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] });
-
-    const result = await provider.import(makeInput());
+    const result = await provider.import(makeInput({ knownPhysicalId: 'missing' }));
 
     expect(result).toBeNull();
   });
 
-  // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForResource burst
-  // routed through the shared importTagWalk helper — a throttled per-candidate
-  // tag read is retried with backoff instead of aborting the whole import,
-  // while a non-throttling error still surfaces immediately.
-  it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-    const throttled = new Error('Rate exceeded') as Error & {
-      $metadata: { httpStatusCode: number };
-    };
-    throttled.name = 'ThrottlingException';
-    throttled.$metadata = { httpStatusCode: 400 };
-
-    mockSend
-      .mockResolvedValueOnce({
-        EventBuses: [
-          { Name: 'target', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target' },
-        ],
-      })
-      .mockRejectedValueOnce(throttled)
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBus' }] });
-
+  // The `aws:cdk:path` tag walk was removed (issue #1134): AWS rejects
+  // `aws:`-prefixed tag writes, so the tag never exists on a real bus.
+  // With no explicit id, import returns null without issuing any AWS call.
+  it('returns null without any AWS call when only cdkPath is given', async () => {
     const result = await provider.import(makeInput());
 
-    expect(result).toEqual({ physicalId: 'target', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(3);
-  });
-
-  it('forwards the NextToken pagination fold to the page-2 list call', async () => {
-    mockSend
-      // Page 1: one non-matching candidate + a continuation token.
-      .mockResolvedValueOnce({
-        EventBuses: [
-          { Name: 'other', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/other' },
-        ],
-        NextToken: 'page-2',
-      })
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] })
-      // Page 2: the match.
-      .mockResolvedValueOnce({
-        EventBuses: [
-          { Name: 'target', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target' },
-        ],
-      })
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBus' }] });
-
-    const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: 'target', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(4);
-    const page1 = mockSend.mock.calls[0][0];
-    expect(page1.constructor.name).toBe('ListEventBusesCommand');
-    expect(page1.input.NextToken).toBeUndefined();
-    const page2 = mockSend.mock.calls[2][0];
-    expect(page2.constructor.name).toBe('ListEventBusesCommand');
-    expect(page2.input.NextToken).toBe('page-2');
-  });
-
-  it('does not retry a non-throttling error during the walk', async () => {
-    const denied = new Error('User is not authorized to perform events:ListTagsForResource');
-    denied.name = 'AccessDeniedException';
-
-    mockSend
-      .mockResolvedValueOnce({
-        EventBuses: [
-          { Name: 'target', Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target' },
-        ],
-      })
-      .mockRejectedValueOnce(denied);
-
-    await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

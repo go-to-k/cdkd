@@ -6,7 +6,6 @@ import {
   DeleteDistributionCommand,
   GetDistributionCommand,
   GetDistributionConfigCommand,
-  ListDistributionsCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -18,7 +17,6 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1014,8 +1012,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    *
    * CloudFront distributions don't carry a template-supplied name
    * (physical id is the AWS-generated `E...` distribution id), so the
-   * lookup is either explicit-override or `aws:cdk:path` tag match
-   * via `ListDistributions` + `ListTagsForResource(ARN)`.
+   * lookup is explicit-override only.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -1028,39 +1025,11 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.cloudFrontClient.send(
-          new ListDistributionsCommand({ ...(marker && { Marker: marker }) })
-        );
-        return {
-          items: list.DistributionList?.Items,
-          nextMarker: list.DistributionList?.IsTruncated
-            ? list.DistributionList?.NextMarker
-            : undefined,
-        };
-      },
-      describe: async (d) => {
-        if (!d.Id || !d.ARN) return undefined;
-        try {
-          return await this.cloudFrontClient.send(
-            new ListTagsForResourceCommand({ Resource: d.ARN })
-          );
-        } catch (err) {
-          // Deleted between the list and the tag read: skip the candidate.
-          if (err instanceof NoSuchDistribution) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagsResp) => tagsResp.Tags?.Items,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without an Id.
-    return { physicalId: match.summary.Id!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // distribution reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

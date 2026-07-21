@@ -3,8 +3,6 @@ import {
   PublishLayerVersionCommand,
   DeleteLayerVersionCommand,
   GetLayerVersionByArnCommand,
-  ListLayersCommand,
-  ListTagsCommand,
   ResourceNotFoundException,
   type LayerVersionContentInput,
   type Runtime,
@@ -15,7 +13,6 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -301,15 +298,6 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
    *     `GetLayerVersionByArn`. (Note: there is no `LayerName` field that
    *     uniquely names a *version*; a layer name resolves to the latest
    *     version, so an explicit ARN is the only unambiguous override.)
-   *  2. `ListLayers` paginator + `ListTags(Resource: layerArn)` (which
-   *     returns a `Tags: Record<string,string>` map keyed by tag name).
-   *     Match `aws:cdk:path` and adopt `LatestMatchingVersion.LayerVersionArn`.
-   *
-   * **Caveat**: Lambda layer versions are immutable, so auto-lookup adopts
-   * the LATEST version of the named layer that carries the matching CDK
-   * path tag. If the user's CDK app has since published newer versions
-   * outside cdkd's tracking, the adopted physical id may be stale; pass
-   * `--resource <id>=<arn>` to pin a specific version.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -324,34 +312,11 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       }
     }
 
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.lambdaClient.send(
-          new ListLayersCommand({ ...(marker && { Marker: marker }) })
-        );
-        return { items: list.Layers, nextMarker: list.NextMarker };
-      },
-      describe: async (layer) => {
-        if (!layer.LayerArn || !layer.LatestMatchingVersion?.LayerVersionArn) return undefined;
-        try {
-          return await this.lambdaClient.send(new ListTagsCommand({ Resource: layer.LayerArn }));
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof ResourceNotFoundException) return undefined;
-          throw err;
-        }
-      },
-      // Lambda returns tags as a MAP, not a {Key,Value} list.
-      tagsOf: (tagsResp) =>
-        Object.entries(tagsResp.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a version ARN.
-    return {
-      physicalId: match.summary.LatestMatchingVersion!.LayerVersionArn!,
-      attributes: {},
-    };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a layer
+    // version reaching here needs an explicit `--resource <id>=<arn>` override.
+    return null;
   }
 }

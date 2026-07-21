@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateTableCommand,
   DescribeTableCommand,
@@ -54,7 +54,6 @@ import {
   DynamoDBTableProvider,
   mapSSESpecification,
 } from '../../../../src/provisioning/providers/dynamodb-table-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 
 // Helper: a minimal ACTIVE DescribeTable response.
 const activeTable = (overrides: Record<string, unknown> = {}) => ({
@@ -1033,12 +1032,7 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
   });
 });
 
-// Issue #1091 batch 2: the tag-based import lookup costs TWO reads per
-// candidate (DescribeTable for the ARN, then ListTagsOfResource) and is routed
-// through the shared importTagWalk helper — a throttled read is retried with
-// backoff (re-running the whole per-candidate callback) instead of aborting
-// the whole import, while a non-throttling error still surfaces immediately.
-describe('DynamoDBTableProvider import tag walk', () => {
+describe('DynamoDBTableProvider import', () => {
   const CDK_PATH = 'MyStack/MyTable/Resource';
 
   beforeEach(() => {
@@ -1046,58 +1040,34 @@ describe('DynamoDBTableProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockSend.mockReset();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
-  const importInput = () => ({
+  const importInput = (overrides: Record<string, unknown> = {}) => ({
     logicalId: 'MyTable',
     resourceType: 'AWS::DynamoDB::Table',
     cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},
+    ...overrides,
   });
 
-  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-  const throttle = (): Error => {
-    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
-    err.name = 'ThrottlingException';
-    err.$metadata = { httpStatusCode: 400 };
-    return err;
-  };
+  it('verifies an explicit TableName override via DescribeTable', async () => {
+    mockSend.mockResolvedValueOnce(activeTable());
+    const provider = new DynamoDBTableProvider();
+    const result = await provider.import(importInput({ knownPhysicalId: 'MyTable' }));
+    expect(result).toEqual({ physicalId: 'MyTable', attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
 
-  it('retries a throttled ListTagsOfResource mid-walk and still finds the match', async () => {
-    mockSend
-      .mockResolvedValueOnce({ TableNames: ['MyTable'] })
-      // Candidate attempt 1: DescribeTable ok, ListTagsOfResource throttled.
-      .mockResolvedValueOnce(activeTable())
-      .mockRejectedValueOnce(throttle())
-      // Retry re-runs the WHOLE per-candidate callback: DescribeTable again,
-      // then the tag read succeeds with the match.
-      .mockResolvedValueOnce(activeTable())
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
-
+  it('returns null without any AWS call when no override is supplied (no aws:cdk:path tag walk)', async () => {
+    // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+    // aws:-prefixed tag writes, so the tag never exists on a real resource.
+    // With no explicit override the provider resolves nothing and returns
+    // null immediately — the import flow relies on --resource / CFn lookup.
     const provider = new DynamoDBTableProvider();
     const result = await provider.import(importInput());
-
-    expect(result).toEqual({ physicalId: 'MyTable', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(5);
-  });
-
-  it('does not retry a non-throttling error during the walk', async () => {
-    const denied = new Error('User is not authorized to perform dynamodb:ListTagsOfResource');
-    denied.name = 'AccessDeniedException';
-    mockSend
-      .mockResolvedValueOnce({ TableNames: ['MyTable'] })
-      .mockResolvedValueOnce(activeTable())
-      .mockRejectedValueOnce(denied);
-
-    const provider = new DynamoDBTableProvider();
-    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
-    expect(mockSend).toHaveBeenCalledTimes(3);
+    expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

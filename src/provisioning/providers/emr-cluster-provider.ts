@@ -3,7 +3,6 @@ import {
   RunJobFlowCommand,
   TerminateJobFlowsCommand,
   DescribeClusterCommand,
-  ListClustersCommand,
   ListInstanceGroupsCommand,
   ListInstanceFleetsCommand,
   SetTerminationProtectionCommand,
@@ -33,7 +32,6 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -68,19 +66,6 @@ const TERMINAL_STATES: ReadonlySet<ClusterState> = new Set<ClusterState>([
   'TERMINATED',
   'TERMINATED_WITH_ERRORS',
 ]);
-
-/**
- * Cluster states that mean "the cluster is alive" — the `ListClusters` filter
- * used by `import()` discovery so a long-gone `TERMINATED*` cluster is never
- * adopted. Everything except the two `TERMINAL_STATES`.
- */
-const NON_TERMINATED_STATES: readonly ClusterState[] = [
-  'STARTING',
-  'BOOTSTRAPPING',
-  'RUNNING',
-  'WAITING',
-  'TERMINATING',
-];
 
 /**
  * Top-level CFn properties that map to a MUTABLE EMR API surface. Every other
@@ -972,12 +957,6 @@ export class EMRClusterProvider implements ResourceProvider {
    *     the physical id — a cluster's id (`j-...`) is service-generated, while
    *     the template `Name` is only the display name — so no name fallback
    *     applies (`resolveExplicitPhysicalId(..., null)`).
-   *  2. Tag-based lookup: `ListClusters` filtered to the non-terminated states
-   *     (a `TERMINATED*` cluster is gone and must never be adopted), then a
-   *     `DescribeCluster` per candidate to read `Tags` (the list summaries do
-   *     NOT carry tags) and match `aws:cdk:path`. The walk runs through the
-   *     shared `importTagWalk` helper, so each list page / describe is retried
-   *     with exponential backoff when AWS throttles the N+1 read burst.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, null);
@@ -992,43 +971,26 @@ export class EMRClusterProvider implements ResourceProvider {
       return { physicalId: explicit, attributes: this.buildAttributes(cluster) };
     }
 
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListClustersCommand({
-            ClusterStates: [...NON_TERMINATED_STATES],
-            ...(marker && { Marker: marker }),
-          })
-        );
-        return { items: list.Clusters, nextMarker: list.Marker };
-      },
-      describe: async (summary) =>
-        summary.Id ? await this.describeClusterOrUndefined(summary.Id) : undefined,
-      tagsOf: (cluster) => cluster.Tags,
-    });
-    if (!match) return null;
-
-    // `Id` is non-null by construction: `describe` returns `undefined` for a
-    // summary without one, so the walk never yields it as a match.
-    return { physicalId: match.summary.Id!, attributes: this.buildAttributes(match.detail) };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // cluster reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   /**
    * `DescribeCluster` that maps a not-found (`InvalidRequestException` — the
    * cluster id is unknown in this region / aged out of Describe) to
    * `undefined` instead of throwing, so `import()` can treat it as "no match"
-   * rather than aborting the whole adoption run.
+   * rather than aborting the whole adoption run. Also consumed by
+   * `readCurrentState` for the same gone-cluster tolerance.
    *
-   * `undefined`, NOT `null`, is load-bearing: `importTagWalk` skips a candidate
-   * on `detail === undefined`, and an actual `null` would flow into `tagsOf`
-   * and `TypeError`. Also note the mapping is BROAD — `InvalidRequestException`
-   * covers more than not-found, so a genuine failure here degrades to "no
-   * match" and a subsequent deploy would CREATE a duplicate cluster rather than
-   * adopt the existing one. The walk logs each skip at debug so the case is at
-   * least visible under `--verbose`; narrowing the mapping needs a
-   * message/code-level discriminator AWS does not currently document.
+   * Note the mapping is BROAD — `InvalidRequestException` covers more than
+   * not-found, so a genuine failure here degrades to "no match" and a
+   * subsequent deploy would CREATE a duplicate cluster rather than adopt the
+   * existing one. Narrowing the mapping needs a message/code-level
+   * discriminator AWS does not currently document.
    */
   private async describeClusterOrUndefined(clusterId: string): Promise<Cluster | undefined> {
     try {

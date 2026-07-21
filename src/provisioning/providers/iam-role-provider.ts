@@ -18,7 +18,6 @@ import {
   UntagRoleCommand,
   PutRolePermissionsBoundaryCommand,
   DeleteRolePermissionsBoundaryCommand,
-  ListRolesCommand,
   ListRoleTagsCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
@@ -28,7 +27,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -989,12 +987,6 @@ export class IAMRoleProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.RoleName` → use directly,
    *     verify via `GetRole`.
-   *  2. `ListRoles` + `ListRoleTags`, match `aws:cdk:path` tag.
-   *
-   * `ListRoles` is paginated and IAM is global (no region scoping), so this
-   * walks every role in the account once. Acceptable for the cardinalities
-   * we expect (typically <100 roles per account); larger accounts may want
-   * to provide `--resource` overrides instead.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'RoleName');
@@ -1008,34 +1000,12 @@ export class IAMRoleProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListRoleTags burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.iamClient.send(
-          new ListRolesCommand({ ...(marker && { Marker: marker }) })
-        );
-        // IAM signals "more pages" via IsTruncated, not Marker presence alone.
-        return { items: list.Roles, nextMarker: list.IsTruncated ? list.Marker : undefined };
-      },
-      describe: async (role) => {
-        if (!role.RoleName) return undefined;
-        try {
-          return await this.iamClient.send(new ListRoleTagsCommand({ RoleName: role.RoleName }));
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof NoSuchEntityException) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tags) => tags.Tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return { physicalId: match.summary.RoleName!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a role
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 }
 

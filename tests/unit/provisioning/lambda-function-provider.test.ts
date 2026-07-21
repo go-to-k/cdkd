@@ -53,7 +53,6 @@ import {
   inlineCodeFileNameForRuntime,
 } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 import * as zlib from 'node:zlib';
 
 describe('LambdaFunctionProvider', () => {
@@ -1835,24 +1834,19 @@ describe('LambdaFunctionProvider', () => {
   });
 });
 
-// Issue #1091 batch 2: the tag-based import lookup is an N+1 ListTags burst
-// routed through the shared importTagWalk helper — a throttled per-candidate
-// tag read is retried with backoff instead of aborting the whole import, while
-// a non-throttling error still surfaces immediately.
-describe('LambdaFunctionProvider import tag walk', () => {
+// Issue #1134: the `aws:cdk:path` tag walk is removed. AWS rejects
+// `aws:`-prefixed tag writes, so that tag never exists on a real resource and
+// the walk could not match. import() now resolves only from an explicit
+// `--resource` / `Properties.FunctionName`; anything else returns null without
+// a lookup.
+describe('LambdaFunctionProvider import', () => {
   const CDK_PATH = 'MyStack/MyFunction/Resource';
-  const FN_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:fn1';
 
   beforeEach(() => {
     vi.clearAllMocks();
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockLambdaSend.mockReset();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = () => ({
@@ -1864,36 +1858,11 @@ describe('LambdaFunctionProvider import tag walk', () => {
     properties: {},
   });
 
-  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-  const throttle = (): Error => {
-    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
-    err.name = 'ThrottlingException';
-    err.$metadata = { httpStatusCode: 400 };
-    return err;
-  };
-
-  it('retries a throttled ListTags mid-walk and still finds the match', async () => {
-    mockLambdaSend
-      .mockResolvedValueOnce({ Functions: [{ FunctionName: 'fn1', FunctionArn: FN_ARN }] })
-      .mockRejectedValueOnce(throttle())
-      .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
-
+  it('returns null without any AWS call when no explicit id is given', async () => {
     const provider = new LambdaFunctionProvider();
     const result = await provider.import(importInput());
 
-    expect(result).toEqual({ physicalId: 'fn1', attributes: {} });
-    expect(mockLambdaSend).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not retry a non-throttling ListTags error during the walk', async () => {
-    const denied = new Error('User is not authorized to perform lambda:ListTags');
-    denied.name = 'AccessDeniedException';
-    mockLambdaSend
-      .mockResolvedValueOnce({ Functions: [{ FunctionName: 'fn1', FunctionArn: FN_ARN }] })
-      .mockRejectedValueOnce(denied);
-
-    const provider = new LambdaFunctionProvider();
-    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
-    expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+    expect(result).toBeNull();
+    expect(mockLambdaSend).not.toHaveBeenCalled();
   });
 });

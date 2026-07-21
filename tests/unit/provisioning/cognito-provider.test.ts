@@ -35,7 +35,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 describe('CognitoUserPoolProvider', () => {
   let provider: CognitoUserPoolProvider;
@@ -607,68 +606,42 @@ describe('CognitoUserPoolProvider', () => {
     });
   });
 
-  // Issue #1091 batch 3: the tag-based import lookup costs TWO reads per
-  // candidate (DescribeUserPool for the ARN, then ListTagsForResource) and is
-  // routed through the shared importTagWalk helper: a throttled read is
-  // retried with backoff (re-running the whole per-candidate callback)
-  // instead of aborting the whole import, while a non-throttling error still
-  // surfaces immediately. The per-candidate name match rides the same walk as
-  // a synthetic tag, checked BEFORE any tag read.
-  describe('import tag walk', () => {
-    const CDK_PATH = 'MyStack/MyUserPool/Resource';
-    const ARN_A = 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_aaa111';
-    const ARN_B = 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_bbb222';
-
+  // Auto-mode import resolves a user pool from an explicit `--resource`
+  // override or from the template's `UserPoolName` (matched against each
+  // pool's Name via a paginated ListUserPools walk). The `aws:cdk:path` tag
+  // match that used to ride the same walk is gone (issue #1134): AWS rejects
+  // `aws:`-prefixed tag writes, so that tag never exists on a real resource
+  // and the walk could not match.
+  describe('import (name-based lookup)', () => {
     beforeEach(() => {
       // Drop once-queued responses leaked by earlier tests: clearAllMocks()
       // clears calls but NOT unconsumed mockResolvedValueOnce entries.
       mockSend.mockReset();
-      // Skip the walk's real throttle backoff waits.
-      importTagWalkTestHooks.sleep = async () => {};
-    });
-    afterEach(() => {
-      importTagWalkTestHooks.sleep = undefined;
     });
 
     const importInput = (overrides: Record<string, unknown> = {}) => ({
       logicalId: 'MyUserPool',
       resourceType: 'AWS::Cognito::UserPool',
-      cdkPath: CDK_PATH,
+      cdkPath: 'MyStack/MyUserPool/Resource',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},
       ...overrides,
     });
 
-    /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-    const throttle = (): Error => {
-      const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
-      err.name = 'ThrottlingException';
-      err.$metadata = { httpStatusCode: 400 };
-      return err;
-    };
-
-    it('name match short-circuits without any tag read', async () => {
-      // Only the list page is queued: a name-matched candidate must resolve
-      // BEFORE its DescribeUserPool / ListTagsForResource reads, even when a
-      // cdkPath is also present.
-      mockSend.mockResolvedValueOnce({
-        UserPools: [{ Id: 'us-east-1_bbb222', Name: 'my-pool' }],
-      });
+    it('resolves an explicit --resource override via DescribeUserPool', async () => {
+      mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222' } });
 
       const result = await provider.import(
-        importInput({ properties: { UserPoolName: 'my-pool' } })
+        importInput({ knownPhysicalId: 'us-east-1_bbb222' })
       );
 
       expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
       expect(mockSend).toHaveBeenCalledTimes(1);
-      expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListUserPoolsCommand');
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('DescribeUserPoolCommand');
     });
 
-    // Name-only templates (no CDK path metadata): the synthetic
-    // `cdkd:cognito-user-pool-name:` walk key must still drive the walk, so
-    // the import resolves from the list alone with zero per-candidate reads.
-    it('name-only template (no cdkPath): resolves via the synthetic walk key', async () => {
+    it('matches Properties.UserPoolName against each pool Name', async () => {
       mockSend.mockResolvedValueOnce({
         UserPools: [
           { Id: 'us-east-1_aaa111', Name: 'other' },
@@ -677,16 +650,34 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       const result = await provider.import(
-        importInput({ cdkPath: undefined, properties: { UserPoolName: 'my-pool' } })
+        importInput({ properties: { UserPoolName: 'my-pool' } })
       );
 
       expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
-      // List-only: no DescribeUserPool / ListTagsForResource per candidate.
+      // List-only: no per-candidate DescribeUserPool / ListTagsForResource.
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListUserPoolsCommand');
     });
 
-    it('name-only template (no cdkPath): returns null when no pool name matches', async () => {
+    it('folds the NextToken across pages until the name matches', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          UserPools: [{ Id: 'us-east-1_aaa111', Name: 'other' }],
+          NextToken: 'page-2',
+        })
+        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'my-pool' }] });
+
+      const result = await provider.import(
+        importInput({ properties: { UserPoolName: 'my-pool' } })
+      );
+
+      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend.mock.calls[0][0].input.NextToken).toBeUndefined();
+      expect(mockSend.mock.calls[1][0].input.NextToken).toBe('page-2');
+    });
+
+    it('returns null when no pool name matches', async () => {
       mockSend.mockResolvedValueOnce({
         UserPools: [
           { Id: 'us-east-1_aaa111', Name: 'other' },
@@ -695,90 +686,17 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       const result = await provider.import(
-        importInput({ cdkPath: undefined, properties: { UserPoolName: 'my-pool' } })
+        importInput({ properties: { UserPoolName: 'my-pool' } })
       );
 
       expect(result).toBeNull();
-      expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
-    it('matches map-shaped aws:cdk:path tags via the walk (happy path)', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          UserPools: [
-            { Id: 'us-east-1_aaa111', Name: 'other' },
-            { Id: 'us-east-1_bbb222', Name: 'target' },
-          ],
-        })
-        // Candidate 1: DescribeUserPool for the ARN, tags do not match.
-        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_aaa111', Arn: ARN_A } })
-        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'OtherStack/Other/Resource' } })
-        // Candidate 2: DescribeUserPool for the ARN, tags match.
-        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
-        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
+    it('returns null without any AWS call when no override and no UserPoolName', async () => {
+      const result = await provider.import(importInput({ cdkPath: undefined }));
 
-      const result = await provider.import(importInput());
-
-      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(5);
-    });
-
-    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-      mockSend
-        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'target' }] })
-        // Candidate attempt 1: DescribeUserPool ok, ListTagsForResource throttled.
-        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
-        .mockRejectedValueOnce(throttle())
-        // Retry re-runs the WHOLE per-candidate callback: DescribeUserPool
-        // again, then the tag read succeeds with the match.
-        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
-        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
-
-      const result = await provider.import(importInput());
-
-      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(5);
-    });
-
-    it('forwards the NextToken pagination fold to the page-2 list call', async () => {
-      mockSend
-        // Page 1: one non-matching candidate + a continuation token.
-        .mockResolvedValueOnce({
-          UserPools: [{ Id: 'us-east-1_aaa111', Name: 'other' }],
-          NextToken: 'page-2',
-        })
-        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_aaa111', Arn: ARN_A } })
-        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'OtherStack/Other/Resource' } })
-        // Page 2: the match.
-        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'target' }] })
-        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
-        .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
-
-      const result = await provider.import(importInput());
-
-      expect(result).toEqual({ physicalId: 'us-east-1_bbb222', attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(6);
-      const page1 = mockSend.mock.calls[0][0];
-      expect(page1.constructor.name).toBe('ListUserPoolsCommand');
-      expect(page1.input.NextToken).toBeUndefined();
-      const page2 = mockSend.mock.calls[3][0];
-      expect(page2.constructor.name).toBe('ListUserPoolsCommand');
-      expect(page2.input.NextToken).toBe('page-2');
-    });
-
-    it('does not retry a non-throttling error during the walk', async () => {
-      const denied = new Error(
-        'User is not authorized to perform cognito-idp:ListTagsForResource'
-      );
-      denied.name = 'AccessDeniedException';
-
-      mockSend
-        .mockResolvedValueOnce({ UserPools: [{ Id: 'us-east-1_bbb222', Name: 'target' }] })
-        .mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_bbb222', Arn: ARN_B } })
-        .mockRejectedValueOnce(denied);
-
-      await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
-      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

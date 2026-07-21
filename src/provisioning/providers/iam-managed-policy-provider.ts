@@ -26,7 +26,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -479,8 +478,6 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.ManagedPolicyName` → walk
    *     `ListPolicies(Scope: 'Local')` to find the matching ARN.
-   *  2. `ListPolicies(Scope: 'Local')` → for each candidate, `ListPolicyTags`
-   *     and match against `aws:cdk:path`.
    *
    * Scope is forced to `'Local'` (customer-managed policies) — adopting an
    * AWS-managed policy would let cdkd delete it on next destroy, which would
@@ -520,38 +517,12 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       return null;
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListPolicyTags burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import. `Scope: 'Local'`
-    // keeps AWS-managed policies out of the candidate set (they can never
-    // carry a CDK path, and must never be adopted — see the explicit-ARN
-    // guard above).
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.iamClient.send(
-          new ListPoliciesCommand({ Scope: 'Local', ...(marker ? { Marker: marker } : {}) })
-        );
-        // IAM signals "more pages" via IsTruncated, not Marker presence alone.
-        return { items: list.Policies, nextMarker: list.IsTruncated ? list.Marker : undefined };
-      },
-      describe: async (policy) => {
-        if (!policy.Arn) return undefined;
-        try {
-          return await this.iamClient.send(new ListPolicyTagsCommand({ PolicyArn: policy.Arn }));
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof NoSuchEntityException) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tags) => tags.Tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without an ARN.
-    const arn = match.summary.Arn!;
-    return { physicalId: arn, attributes: { PolicyArn: arn } };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a managed
+    // policy reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   // ── helpers ───────────────────────────────────────────────────────

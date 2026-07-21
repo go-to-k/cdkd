@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -28,11 +28,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { CloudWatchAlarmProvider } from '../../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
-import {
-  DescribeAlarmsCommand,
-  ListTagsForResourceCommand,
-} from '@aws-sdk/client-cloudwatch';
+import { DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
 
 describe('CloudWatchAlarmProvider import', () => {
   let provider: CloudWatchAlarmProvider;
@@ -40,11 +36,6 @@ describe('CloudWatchAlarmProvider import', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new CloudWatchAlarmProvider();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   function makeInput(
@@ -84,108 +75,13 @@ describe('CloudWatchAlarmProvider import', () => {
     expect(mockSend.mock.calls[0][0].input).toEqual({ AlarmNames: ['my-alarm'] });
   });
 
-  it('tag-based lookup: DescribeAlarms + ListTagsForResource matches aws:cdk:path', async () => {
-    mockSend
-      // DescribeAlarms (paginated)
-      .mockResolvedValueOnce({
-        MetricAlarms: [
-          {
-            AlarmName: 'other-alarm',
-            AlarmArn: 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:other-alarm',
-          },
-          {
-            AlarmName: 'my-alarm',
-            AlarmArn: 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:my-alarm',
-          },
-        ],
-        CompositeAlarms: [],
-      })
-      // ListTagsForResource(other-alarm)
-      .mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Alarm/Resource' }],
-      })
-      // ListTagsForResource(my-alarm)
-      .mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyAlarm/Resource' }],
-      });
-
+  it('returns null without any AWS call when no override is supplied (no aws:cdk:path tag walk)', async () => {
+    // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+    // aws:-prefixed tag writes, so the tag never exists on a real resource.
+    // With no explicit override the provider resolves nothing and returns
+    // null immediately — the import flow relies on --resource / CFn lookup.
     const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: 'my-alarm', attributes: {} });
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DescribeAlarmsCommand);
-    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(ListTagsForResourceCommand);
-    expect(mockSend.mock.calls[2][0]).toBeInstanceOf(ListTagsForResourceCommand);
-  });
-
-  it('returns null when no alarm matches the cdkPath', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        MetricAlarms: [
-          {
-            AlarmName: 'unrelated',
-            AlarmArn: 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:unrelated',
-          },
-        ],
-        CompositeAlarms: [],
-      })
-      .mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Alarm/Resource' }],
-      });
-
-    const result = await provider.import(makeInput());
-
     expect(result).toBeNull();
-  });
-
-  // Issue #1091 batch 2: the tag walk is an N+1 ListTagsForResource burst
-  // routed through the shared importTagWalk helper — a throttled per-candidate
-  // tag read is retried with backoff instead of aborting the whole import,
-  // while a non-throttling error still surfaces immediately.
-  it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-    mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-    const throttled = new Error('Rate exceeded') as Error & {
-      $metadata: { httpStatusCode: number };
-    };
-    throttled.name = 'ThrottlingException';
-    throttled.$metadata = { httpStatusCode: 400 };
-
-    mockSend
-      .mockResolvedValueOnce({
-        MetricAlarms: [
-          {
-            AlarmName: 'my-alarm',
-            AlarmArn: 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:my-alarm',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(throttled)
-      .mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyAlarm/Resource' }],
-      });
-
-    const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: 'my-alarm', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
-    mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-    const denied = new Error('User is not authorized to perform cloudwatch:ListTagsForResource');
-    denied.name = 'AccessDeniedException';
-
-    mockSend
-      .mockResolvedValueOnce({
-        MetricAlarms: [
-          {
-            AlarmName: 'my-alarm',
-            AlarmArn: 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:my-alarm',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(denied);
-
-    await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

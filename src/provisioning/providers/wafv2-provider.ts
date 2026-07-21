@@ -4,7 +4,6 @@ import {
   UpdateWebACLCommand,
   DeleteWebACLCommand,
   GetWebACLCommand,
-  ListWebACLsCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -24,7 +23,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -474,12 +472,6 @@ export class WAFv2WebACLProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource <id>=<arn>` override → verify with `GetWebACL` (parses
    *     Name/Id/Scope back out of the ARN).
-   *  2. Walk `ListWebACLs(Scope)` → match `aws:cdk:path` via
-   *     `ListTagsForResource(ResourceARN)` (returns
-   *     `TagInfoForResource.TagList`, standard `Key`/`Value` shape).
-   *
-   * `Scope` is required by `ListWebACLs` — read from
-   * `Properties.Scope` (`REGIONAL` is the default).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -493,31 +485,11 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       }
     }
 
-    const scope = ((input.properties['Scope'] as string | undefined) || 'REGIONAL') as Scope;
-
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import. `Scope` is required
-    // by ListWebACLs, so it is derived once above and forwarded on every page.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListWebACLsCommand({ Scope: scope, ...(marker && { NextMarker: marker }) })
-        );
-        return { items: list.WebACLs, nextMarker: list.NextMarker };
-      },
-      describe: async (item) => {
-        if (!item.ARN) return undefined;
-        return await this.getClient().send(
-          new ListTagsForResourceCommand({ ResourceARN: item.ARN })
-        );
-      },
-      tagsOf: (tagsResp) => tagsResp.TagInfoForResource?.TagList,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without an ARN.
-    return { physicalId: match.summary.ARN!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a WebACL
+    // reaching here needs an explicit `--resource <id>=<arn>` override.
+    return null;
   }
 }

@@ -38,7 +38,6 @@ import {
   UpdateLifecyclePolicyCommand,
   DeleteLifecyclePolicyCommand,
   GetLifecyclePolicyCommand,
-  GetLifecyclePoliciesCommand,
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
@@ -567,26 +566,13 @@ describe('DLMLifecyclePolicyProvider import', () => {
     );
   });
 
-  it('tag lookup: matches aws:cdk:path in the GetLifecyclePolicies summary tag map', async () => {
-    routeSend({
-      GetLifecyclePoliciesCommand: {
-        Policies: [
-          { PolicyId: 'policy-other', Tags: { 'aws:cdk:path': 'OtherStack/Other' } },
-          { PolicyId: POLICY_ID, Tags: { 'aws:cdk:path': 'MyStack/MyPolicy' } },
-        ],
-      },
-    });
-
-    const result = await provider.import(makeInput());
-
-    expect(result).toEqual({ physicalId: POLICY_ID, attributes: {} });
-    expect(callsOf(GetLifecyclePoliciesCommand)).toHaveLength(1);
-  });
-
-  it('tag lookup: returns null when nothing matches', async () => {
-    routeSend({ GetLifecyclePoliciesCommand: { Policies: [{ PolicyId: 'policy-other' }] } });
-
+  it('returns null without any AWS call when no override is supplied (no aws:cdk:path tag walk)', async () => {
+    // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+    // aws:-prefixed tag writes, so the tag never exists on a real resource.
+    // With no explicit override the provider resolves nothing and returns
+    // null immediately — the import flow relies on --resource / CFn lookup.
     await expect(provider.import(makeInput())).resolves.toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('returns null when there is no override and no cdkPath', async () => {

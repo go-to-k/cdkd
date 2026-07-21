@@ -3,7 +3,6 @@ import {
   CreateInstanceProfileCommand,
   DeleteInstanceProfileCommand,
   GetInstanceProfileCommand,
-  ListInstanceProfilesCommand,
   AddRoleToInstanceProfileCommand,
   RemoveRoleFromInstanceProfileCommand,
   NoSuchEntityException,
@@ -14,7 +13,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -359,13 +357,6 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.InstanceProfileName` → verify
    *     via `GetInstanceProfile`.
-   *  2. `ListInstanceProfiles` paginator + a per-candidate `GetInstanceProfile`
-   *     to read the tags, matched against `aws:cdk:path`. The list API does
-   *     NOT return tags (AWS documents this on the command) even though the
-   *     `InstanceProfile` type declares `Tags?`, so reading them off the
-   *     summary typechecks and never matches.
-   *
-   * IAM is global; this walks every instance profile in the account once.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'InstanceProfileName');
@@ -379,44 +370,11 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       }
     }
 
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.iamClient.send(
-          new ListInstanceProfilesCommand({ ...(marker && { Marker: marker }) })
-        );
-        return {
-          items: list.InstanceProfiles,
-          nextMarker: list.IsTruncated ? list.Marker : undefined,
-        };
-      },
-      // `ListInstanceProfiles` does NOT return tags. The `InstanceProfile`
-      // TYPE carries `Tags?: Tag[]`, so reading them off the list summary
-      // typechecks and silently always sees `undefined` -- the walk then never
-      // matches and `cdkd import` reports the resource as not-found rather
-      // than erroring. AWS documents this explicitly on the command: "this
-      // operation does not return tags, even though they are an attribute of
-      // the returned object ... see GetInstanceProfile". So the tags come from
-      // a per-candidate GetInstanceProfile, which makes this a true N+1 walk
-      // (now retried by the helper).
-      describe: async (profile) => {
-        if (!profile.InstanceProfileName) return undefined;
-        try {
-          const resp = await this.iamClient.send(
-            new GetInstanceProfileCommand({ InstanceProfileName: profile.InstanceProfileName })
-          );
-          return resp.InstanceProfile;
-        } catch (err) {
-          // Deleted between the list and the describe -- skip the candidate.
-          if (err instanceof NoSuchEntityException) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (detail) => detail?.Tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return { physicalId: match.summary.InstanceProfileName!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; an
+    // instance profile reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

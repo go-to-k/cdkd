@@ -25,7 +25,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -554,8 +553,6 @@ export class ECRProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.RepositoryName` → verify via
    *     `DescribeRepositories`.
-   *  2. `DescribeRepositories` paginated, then `ListTagsForResource(arn)`
-   *     per repository to match `aws:cdk:path` (`Tag[]` array shape).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'RepositoryName');
@@ -573,34 +570,11 @@ export class ECRProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new DescribeRepositoriesCommand({ ...(marker && { nextToken: marker }) })
-        );
-        return { items: list.repositories, nextMarker: list.nextToken };
-      },
-      describe: async (repo) => {
-        if (!repo.repositoryArn || !repo.repositoryName) return undefined;
-        try {
-          return await this.getClient().send(
-            new ListTagsForResourceCommand({ resourceArn: repo.repositoryArn })
-          );
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof RepositoryNotFoundException) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagsResp) => tagsResp.tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return { physicalId: match.summary.repositoryName!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // repository reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

@@ -11,7 +11,6 @@ import {
   GetTrailStatusCommand,
   GetEventSelectorsCommand,
   GetInsightSelectorsCommand,
-  ListTrailsCommand,
   ListTagsCommand,
   AddTagsCommand,
   RemoveTagsCommand,
@@ -23,7 +22,6 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -573,34 +571,11 @@ export class CloudTrailProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTags burst is retried with exponential backoff when AWS throttles
-    // it instead of aborting the whole import.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListTrailsCommand({ ...(marker && { NextToken: marker }) })
-        );
-        return { items: list.Trails, nextMarker: list.NextToken };
-      },
-      describe: async (trail) => {
-        if (!trail.TrailARN || !trail.Name) return undefined;
-        try {
-          return await this.getClient().send(
-            new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
-          );
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof TrailNotFoundException) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagsResp) => tagsResp.ResourceTagList?.[0]?.TagsList,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return { physicalId: match.summary.Name!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a trail
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

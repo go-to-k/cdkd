@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -33,12 +33,10 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { EMRClusterProvider } from '../../../../src/provisioning/providers/emr-cluster-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   RunJobFlowCommand,
   TerminateJobFlowsCommand,
   DescribeClusterCommand,
-  ListClustersCommand,
   ListInstanceGroupsCommand,
   ListInstanceFleetsCommand,
   SetTerminationProtectionCommand,
@@ -726,11 +724,6 @@ function importInput(overrides: Record<string, unknown> = {}) {
 describe('EMRClusterProvider import', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   it('verifies an explicit cluster id (knownPhysicalId) via DescribeCluster and returns attributes', async () => {
@@ -742,8 +735,6 @@ describe('EMRClusterProvider import', () => {
       physicalId: CLUSTER_ID,
       attributes: { Id: CLUSTER_ID, MasterPublicDNS: DNS },
     });
-    // Explicit-id path must NOT list.
-    expect(callsOf(ListClustersCommand)).toHaveLength(0);
     expect(callsOf(DescribeClusterCommand)[0]!.input['ClusterId']).toBe(CLUSTER_ID);
   });
 
@@ -759,107 +750,14 @@ describe('EMRClusterProvider import', () => {
     expect(result).toBeNull();
   });
 
-  it('walks ListClusters (non-terminated) + DescribeCluster and matches aws:cdk:path', async () => {
-    routeSend({
-      ListClustersCommand: {
-        Clusters: [{ Id: 'j-OTHER1' }, { Id: CLUSTER_ID }],
-      },
-      DescribeClusterCommand: [
-        clusterOf('WAITING', { Id: 'j-OTHER1', Tags: [{ Key: 'aws:cdk:path', Value: 'other' }] }),
-        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] }),
-      ],
-    });
-
-    const result = await newProvider().import(importInput());
-
-    expect(result).toEqual({
-      physicalId: CLUSTER_ID,
-      attributes: { Id: CLUSTER_ID, MasterPublicDNS: DNS },
-    });
-    // ListClusters must filter to the non-terminated states.
-    const listInput = callsOf(ListClustersCommand)[0]!.input;
-    expect(listInput['ClusterStates']).toEqual([
-      'STARTING',
-      'BOOTSTRAPPING',
-      'RUNNING',
-      'WAITING',
-      'TERMINATING',
-    ]);
-  });
-
-  it('paginates ListClusters via Marker until a tag match is found', async () => {
-    routeSend({
-      ListClustersCommand: [
-        { Clusters: [{ Id: 'j-PAGE1' }], Marker: 'next' },
-        { Clusters: [{ Id: CLUSTER_ID }] },
-      ],
-      DescribeClusterCommand: [
-        clusterOf('WAITING', { Id: 'j-PAGE1', Tags: [{ Key: 'aws:cdk:path', Value: 'nope' }] }),
-        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] }),
-      ],
-    });
-
-    const result = await newProvider().import(importInput());
-
-    expect(result?.physicalId).toBe(CLUSTER_ID);
-    expect(callsOf(ListClustersCommand)).toHaveLength(2);
-    expect(callsOf(ListClustersCommand)[1]!.input['Marker']).toBe('next');
-  });
-
-  it('returns null when no cluster carries the matching aws:cdk:path', async () => {
-    routeSend({
-      ListClustersCommand: { Clusters: [{ Id: CLUSTER_ID }] },
-      DescribeClusterCommand: [
-        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: 'different' }] }),
-      ],
-    });
-    const result = await newProvider().import(importInput());
-    expect(result).toBeNull();
-  });
-
-  // Issue #1091: the tag walk is an N+1 DescribeCluster burst, exactly the
-  // shape AWS rate-limits. Before the shared importTagWalk helper a single
-  // throttled DescribeCluster aborted the whole import run.
-  it('retries a throttled DescribeCluster mid-walk and still finds the match', async () => {
-    const throttled = new Error('Rate exceeded') as Error & {
-      name: string;
-      $metadata: { httpStatusCode: number };
-    };
-    throttled.name = 'ThrottlingException';
-    throttled.$metadata = { httpStatusCode: 400 };
-
-    routeSend({
-      ListClustersCommand: { Clusters: [{ Id: CLUSTER_ID }] },
-      DescribeClusterCommand: [
-        throttled,
-        clusterOf('WAITING', { Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] }),
-      ],
-    });
-
-    const result = await newProvider().import(importInput());
-
-    expect(result?.physicalId).toBe(CLUSTER_ID);
-    expect(callsOf(DescribeClusterCommand)).toHaveLength(2);
-  });
-
-  it('does not retry a non-throttling DescribeCluster error during the walk', async () => {
-    const denied = new Error('AccessDeniedException: nope') as Error & { name: string };
-    denied.name = 'AccessDeniedException';
-
-    routeSend({
-      ListClustersCommand: { Clusters: [{ Id: CLUSTER_ID }] },
-      DescribeClusterCommand: denied,
-    });
-
-    await expect(newProvider().import(importInput())).rejects.toThrow(/AccessDeniedException/);
-    expect(callsOf(DescribeClusterCommand)).toHaveLength(1);
-  });
-
-  it('returns null when neither an explicit id nor a cdkPath is available', async () => {
+  // The `aws:cdk:path` tag walk was removed (issue #1134): AWS rejects
+  // `aws:`-prefixed tag writes, so the tag never exists on a real cluster.
+  // With no explicit id, import returns null without issuing any AWS call.
+  it('returns null without any AWS call when only a cdkPath is available', async () => {
     routeSend({});
-    const result = await newProvider().import(importInput({ cdkPath: '' }));
+    const result = await newProvider().import(importInput());
     expect(result).toBeNull();
-    expect(callsOf(ListClustersCommand)).toHaveLength(0);
+    expect(callsOf(DescribeClusterCommand)).toHaveLength(0);
   });
 });
 

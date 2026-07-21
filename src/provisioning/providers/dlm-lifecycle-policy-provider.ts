@@ -4,7 +4,6 @@ import {
   UpdateLifecyclePolicyCommand,
   DeleteLifecyclePolicyCommand,
   GetLifecyclePolicyCommand,
-  GetLifecyclePoliciesCommand,
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
@@ -18,7 +17,6 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -453,9 +451,6 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
    *  1. `--resource` override (`knownPhysicalId`) -> verify via
    *     GetLifecyclePolicy. There is no template name property — the policy
    *     id is service-generated — so no name fallback applies.
-   *  2. Tag-based lookup: GetLifecyclePolicies returns every policy summary
-   *     WITH its tag map in a single unpaginated call, so the `aws:cdk:path`
-   *     match needs no per-policy follow-up.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -480,22 +475,11 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       }
     }
 
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      // GetLifecyclePolicies is not paginated — one page, no marker. The walk
-      // is still worth routing through the helper for its retry/backoff.
-      listPage: async () => {
-        const list = await this.getClient().send(new GetLifecyclePoliciesCommand({}));
-        return { items: list.Policies };
-      },
-      // The summary already carries Tags; no per-candidate read.
-      describe: async (policy) => (policy.PolicyId ? policy : undefined),
-      // DLM returns tags as a MAP, not a {Key,Value} list.
-      tagsOf: (policy) => Object.entries(policy.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a PolicyId.
-    return { physicalId: match.summary.PolicyId!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a policy
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

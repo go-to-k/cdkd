@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -31,7 +31,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { WAFv2WebACLProvider } from '../../../src/provisioning/providers/wafv2-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const TEST_ARN =
   'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-acl/abc-123-def';
@@ -288,15 +287,6 @@ describe('WAFv2WebACLProvider', () => {
   });
 
   describe('import', () => {
-    beforeEach(() => {
-      // Skip the walk's real backoff waits in the throttle-retry tests.
-      importTagWalkTestHooks.sleep = async () => {};
-    });
-
-    afterEach(() => {
-      importTagWalkTestHooks.sleep = undefined;
-    });
-
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'MyWebACL',
@@ -320,137 +310,14 @@ describe('WAFv2WebACLProvider', () => {
       expect(call.input).toEqual({ Id: TEST_ID, Name: 'my-acl', Scope: 'REGIONAL' });
     });
 
-    it('tag-based lookup: matches aws:cdk:path via ListTagsForResource on TagInfoForResource.TagList', async () => {
-      const otherArn = 'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/other/zzz';
-      // ListWebACLs
-      mockSend.mockResolvedValueOnce({
-        WebACLs: [
-          { Id: 'zzz', Name: 'other', ARN: otherArn },
-          { Id: TEST_ID, Name: 'my-acl', ARN: TEST_ARN },
-        ],
-      });
-      // ListTagsForResource for otherArn
-      mockSend.mockResolvedValueOnce({
-        TagInfoForResource: {
-          ResourceARN: otherArn,
-          TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-        },
-      });
-      // ListTagsForResource for TEST_ARN
-      mockSend.mockResolvedValueOnce({
-        TagInfoForResource: {
-          ResourceARN: TEST_ARN,
-          TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyWebACL' }],
-        },
-      });
-
-      const result = await provider.import(makeInput());
-      expect(result).toEqual({ physicalId: TEST_ARN, attributes: {} });
-    });
-
-    it('returns null when nothing matches', async () => {
-      mockSend.mockResolvedValueOnce({
-        WebACLs: [{ Id: 'a', Name: 'a', ARN: 'arn:aws:wafv2:us-east-1:1:regional/webacl/a/a' }],
-      });
-      mockSend.mockResolvedValueOnce({
-        TagInfoForResource: {
-          TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-        },
-      });
-
+    // Issue #1134: the aws:cdk:path tag walk is removed. AWS rejects
+    // aws:-prefixed tag writes, so that tag never exists on a real resource and
+    // the walk could not match. Without an explicit id, import() returns null
+    // with no AWS call.
+    it('returns null without any AWS call when no explicit id is given', async () => {
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
-    });
-
-    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForResource burst
-    // routed through the shared importTagWalk helper: a throttled
-    // per-candidate tag read is retried with backoff instead of aborting the
-    // whole import, while a non-throttling error still surfaces immediately.
-    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-      const throttled = new Error('Rate exceeded') as Error & {
-        $metadata: { httpStatusCode: number };
-      };
-      throttled.name = 'ThrottlingException';
-      throttled.$metadata = { httpStatusCode: 400 };
-
-      mockSend
-        .mockResolvedValueOnce({
-          WebACLs: [{ Id: TEST_ID, Name: 'my-acl', ARN: TEST_ARN }],
-        })
-        .mockRejectedValueOnce(throttled)
-        .mockResolvedValueOnce({
-          TagInfoForResource: {
-            ResourceARN: TEST_ARN,
-            TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyWebACL' }],
-          },
-        });
-
-      const result = await provider.import(makeInput());
-
-      expect(result).toEqual({ physicalId: TEST_ARN, attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(3);
-      // The required Scope (from Properties.Scope) is forwarded on the list call.
-      const listCall = mockSend.mock.calls[0][0];
-      expect(listCall.constructor.name).toBe('ListWebACLsCommand');
-      expect(listCall.input.Scope).toBe('REGIONAL');
-    });
-
-    it('forwards NextMarker AND Scope to the page-2 list call', async () => {
-      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-      const otherArn = 'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/other/zzz';
-
-      mockSend
-        // Page 1: one non-matching candidate + a continuation marker.
-        .mockResolvedValueOnce({
-          WebACLs: [{ Id: 'zzz', Name: 'other', ARN: otherArn }],
-          NextMarker: 'page-2',
-        })
-        .mockResolvedValueOnce({
-          TagInfoForResource: {
-            ResourceARN: otherArn,
-            TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-          },
-        })
-        // Page 2: the match.
-        .mockResolvedValueOnce({
-          WebACLs: [{ Id: TEST_ID, Name: 'my-acl', ARN: TEST_ARN }],
-        })
-        .mockResolvedValueOnce({
-          TagInfoForResource: {
-            ResourceARN: TEST_ARN,
-            TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyWebACL' }],
-          },
-        });
-
-      const result = await provider.import(makeInput());
-
-      expect(result).toEqual({ physicalId: TEST_ARN, attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(4);
-      const page1 = mockSend.mock.calls[0][0];
-      expect(page1.constructor.name).toBe('ListWebACLsCommand');
-      expect(page1.input.NextMarker).toBeUndefined();
-      expect(page1.input.Scope).toBe('REGIONAL');
-      const page2 = mockSend.mock.calls[2][0];
-      expect(page2.constructor.name).toBe('ListWebACLsCommand');
-      expect(page2.input.NextMarker).toBe('page-2');
-      // Scope is REQUIRED by ListWebACLs, so it must ride every page.
-      expect(page2.input.Scope).toBe('REGIONAL');
-    });
-
-    it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
-      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-      const denied = new Error('User is not authorized to perform wafv2:ListTagsForResource');
-      denied.name = 'AccessDeniedException';
-
-      mockSend
-        .mockResolvedValueOnce({
-          WebACLs: [{ Id: TEST_ID, Name: 'my-acl', ARN: TEST_ARN }],
-        })
-        .mockRejectedValueOnce(denied);
-
-      await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

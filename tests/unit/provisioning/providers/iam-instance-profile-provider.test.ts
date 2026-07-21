@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { GetInstanceProfileCommand, ListInstanceProfilesCommand } from '@aws-sdk/client-iam';
+import { GetInstanceProfileCommand, NoSuchEntityException } from '@aws-sdk/client-iam';
 
 const mockSend = vi.fn();
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
@@ -40,49 +40,20 @@ describe('IAMInstanceProfileProvider — import', () => {
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetInstanceProfileCommand);
   });
 
-  // `ListInstanceProfiles` does NOT return tags -- AWS documents this on the
-  // command ("this operation does not return tags, even though they are an
-  // attribute of the returned object ... see GetInstanceProfile"), even though
-  // the `InstanceProfile` TYPE declares `Tags?: Tag[]`. These cases previously
-  // hand-fed inline Tags, which made a walk that could never match in
-  // production look correct. Tags now come from a per-candidate
-  // `GetInstanceProfile`.
-  it('finds profile by aws:cdk:path tag via a per-candidate GetInstanceProfile', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        InstanceProfiles: [{ InstanceProfileName: 'other' }, { InstanceProfileName: 'mine' }],
-        IsTruncated: false,
-      })
-      .mockResolvedValueOnce({
-        InstanceProfile: {
-          InstanceProfileName: 'other',
-          Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/X' }],
-        },
-      })
-      .mockResolvedValueOnce({
-        InstanceProfile: {
-          InstanceProfileName: 'mine',
-          Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyInstanceProfile' }],
-        },
-      });
-    const result = await provider.import!(makeInput());
-    expect(result).toEqual({ physicalId: 'mine', attributes: {} });
-    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListInstanceProfilesCommand);
+  it('returns null when explicit knownPhysicalId does not exist (NoSuchEntity)', async () => {
+    mockSend.mockRejectedValueOnce(
+      new NoSuchEntityException({ $metadata: {}, message: 'no such entity' })
+    );
+    const result = await provider.import!(makeInput({ knownPhysicalId: 'gone' }));
+    expect(result).toBeNull();
   });
 
-  it('returns null when no profile has matching cdkPath tag', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        InstanceProfiles: [{ InstanceProfileName: 'other' }],
-        IsTruncated: false,
-      })
-      .mockResolvedValueOnce({
-        InstanceProfile: {
-          InstanceProfileName: 'other',
-          Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/X' }],
-        },
-      });
+  // The `aws:cdk:path` tag walk was removed (issue #1134): AWS rejects
+  // `aws:`-prefixed tag writes, so the tag never exists on a real profile.
+  // With no explicit id, import returns null without issuing any AWS call.
+  it('returns null without any AWS call when only cdkPath is given', async () => {
     const result = await provider.import!(makeInput());
     expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });
