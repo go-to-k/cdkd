@@ -56,6 +56,21 @@ This example tests the following cdkd features:
    - Conditional property configuration using Fn::If
    - JSON Patch generation based on conditions
 
+## Run (integ)
+
+This fixture has a `verify.sh` that owns the full deploy + assert + destroy
+cycle. Its load-bearing check: under the default Development parameters the
+`isProduction` condition is false, so the production bucket must NOT be created
+(`Fn::If` gate), while the always-on basic bucket is; then a clean destroy with
+0 orphans. Run it via the skill:
+
+```bash
+/run-integ conditions
+# or: AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
+```
+
+The parameter-variation commands below remain valid for ad-hoc human runs.
+
 ## Deployment Instructions
 
 ### Prerequisites

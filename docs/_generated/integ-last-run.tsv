@@ -46,7 +46,7 @@ cognito-lambda-triggers	2026-06-21T06:31:35Z	PASS	60	verify.sh	triggers wired+fi
 cognito-resource-server	2026-07-02T16:12:06Z	PASS	82	verify.sh	ledger backfill (fixture verified at PR time; row was missing)
 cognito-userpool-user-ref	2026-06-28T02:53:29Z	PASS	85	verify.sh	UserPoolUser Ref compound-id fix; repro FAIL->PASS; clean destroy
 composite-stack	2026-06-21T11:11:40Z	PASS	35	standard	sweep-F staleness re-run (rc=0)
-conditions	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+conditions	2026-07-21T13:08:15Z	PASS	25	verify.sh	converted; Fn::If suppressed prod bucket, 0 orphans
 conditions-and-if	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); CFn Conditions + Fn::If 2-phase premium/basic; 14 assertions; clean destroy 0 err
 conditions-update-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); condition-gated resource add/remove across update; 14 assertions; clean destroy 0 err
 context-test	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -110,7 +110,7 @@ getatt-fallback-guard	2026-07-20T05:59:44Z	PASS	300	verify.sh	4-phase incl. stri
 getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (never-run); cross-region Fn::GetStackOutput (us-west-2 producer -> us-east-1 consumer); both regions clean
 glue-securityconfig-replace	2026-06-21T15:47:49Z	PASS	46	verify.sh	--replace + Glue S3Encryptions silent-drop fix; 0 orphans
 glue-update-hardening	2026-07-02T18:23:15Z	PASS	68	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-iam-managed-policy	2026-06-21T11:14:04Z	PASS	22	standard	sweep-F staleness re-run (rc=0)
+iam-managed-policy	2026-07-21T13:08:15Z	PASS	29	verify.sh	converted; policy attached, detach-before-delete clean, 0 orphans
 iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
 iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
@@ -237,7 +237,7 @@ sqs-cloudwatch	2026-06-21T11:00:28Z	PASS	41	standard	sweep-4..8 staleness re-run
 sqs-esm-max-concurrency	2026-07-03T06:53:49Z	PASS	70	verify.sh	removal clears FilterCriteria+ScalingConfig; stream-numeric restores kind-gated
 state-destroy	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055 GetBucketLocation exercised, orph clean
-stepfunctions	2026-06-21T04:32:59Z	PASS	30	standard	SFN deploy 5 / destroy 5, 0 err
+stepfunctions	2026-07-21T13:08:15Z	PASS	97	verify.sh	converted; SM ACTIVE w/ auto role, async-delete poll, 0 orphans
 stepfunctions-logging	2026-07-20T17:36:15Z	PASS	117	verify.sh	SFN Express logging/tracing removal-clear, clean destroy
 stepfunctions-s3-definition	2026-07-02T18:23:15Z	PASS	33	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean

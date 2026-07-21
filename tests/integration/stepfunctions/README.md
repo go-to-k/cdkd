@@ -27,6 +27,19 @@ Start → InvokeProcessor (Lambda) → WaitOneSecond (1s) → CheckResult (Choic
 5. **Resource Dependencies**: StateMachine → Lambda → IAM Role dependency chain
 6. **Fn::GetAtt**: Retrieve StateMachine ARN and Lambda function name in outputs
 
+## Run (integ)
+
+This fixture has a `verify.sh` that owns the full deploy + assert + destroy
+cycle (state machine reaches ACTIVE with an auto-created role, then a clean
+destroy with 0 orphans). Run it via the skill:
+
+```bash
+/run-integ stepfunctions
+# or: AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
+```
+
+The manual commands below remain valid for ad-hoc human runs.
+
 ## Deploy
 
 ```bash
