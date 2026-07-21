@@ -183,16 +183,19 @@ export class Synthesizer {
       'aws:cdk:bundling-stacks': ['**'],
     };
 
-    // Resolve AWS account/region for context passing. Falls back to
-    // the SDK's own default chain (shared config file profile region,
-    // etc.) so a profile-configured region reaches the CDK app as
-    // CDK_DEFAULT_REGION the same way the CDK CLI passes it, and so
-    // the macro-expansion pass below sees it too (issue #1149).
-    const region =
-      options.region ||
-      process.env['AWS_REGION'] ||
-      process.env['AWS_DEFAULT_REGION'] ||
-      (await resolveSdkDefaultRegion(options.profile));
+    // Resolve AWS account/region for context passing. `region` falls
+    // back to the SDK's own default chain (shared config file profile
+    // region, etc.) so a profile-configured region reaches the CDK app
+    // as CDK_DEFAULT_REGION the same way the CDK CLI passes it (issue
+    // #1149). `explicitRegion` (no SDK fallback) is what the
+    // macro-expansion pass receives: inside expandMacrosForStacks the
+    // synthesized stack's own env region must beat the profile default
+    // (a stack pinned to ap-northeast-1 expands there even when the
+    // profile says eu-central-1), so the SDK-chain fallback is applied
+    // LAST, inside that method's chain — not pre-folded here.
+    const explicitRegion =
+      options.region || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
+    const region = explicitRegion || (await resolveSdkDefaultRegion(options.profile));
     let accountId: string | undefined;
     try {
       const stsClient = new STSClient({ ...(region && { region }) });
@@ -249,7 +252,7 @@ export class Synthesizer {
         const stacks = this.assemblyReader.getAllStacks(outputDir, manifest);
         if (!options.deferMacroExpansion) {
           await this.expandMacrosForStacks(stacks, options, {
-            region,
+            region: explicitRegion,
             ...(accountId && { accountId }),
           });
         }

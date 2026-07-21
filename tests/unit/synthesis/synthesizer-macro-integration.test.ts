@@ -313,6 +313,53 @@ describe('Synthesizer — deferred / selection-aware macro expansion (issues #11
     await s.synthesize({ app: 'node app.js' });
     const opts = mockExpandMacros.mock.calls[0]?.[1] as { region: string };
     expect(opts.region).toBe('eu-central-1');
+    // The same fallback region reaches the CDK app subprocess as
+    // CDK_DEFAULT_REGION (via the app executor), matching the CDK CLI.
+    expect(mockExecute).toHaveBeenCalledWith(expect.objectContaining({ region: 'eu-central-1' }));
+  });
+
+  it('the synthesized stack env region wins over the SDK default chain', async () => {
+    mockStsConfigRegion.mockResolvedValue('eu-central-1');
+    mockGetAllStacks.mockReturnValue([
+      { stackName: 'A', template: SAM_TEMPLATE, region: 'ap-northeast-1' },
+    ]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'node app.js' });
+    const opts = mockExpandMacros.mock.calls[0]?.[1] as { region: string };
+    expect(opts.region).toBe('ap-northeast-1');
+  });
+
+  it('threads options.profile into the SDK default-region client', async () => {
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    (STSClient as unknown as ReturnType<typeof vi.fn>).mockClear();
+    mockStsConfigRegion.mockResolvedValue('eu-west-2');
+    mockGetAllStacks.mockReturnValue([
+      { stackName: 'A', template: SAM_TEMPLATE, region: undefined },
+    ]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'node app.js', profile: 'my-profile' });
+    const ctorCalls = (STSClient as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(ctorCalls.some((c) => (c[0] as { profile?: string })?.profile === 'my-profile')).toBe(
+      true
+    );
+  });
+
+  it('public expandMacrosForStacks with an explicit stateBucket pays no STS call', async () => {
+    preSynth();
+    const macroStack = { stackName: 'Macro', template: SAM_TEMPLATE, region: 'us-east-1' };
+    mockGetAllStacks.mockReturnValue([macroStack]);
+    const s = new Synthesizer();
+    const options = {
+      app: '/path/to/cdk.out',
+      deferMacroExpansion: true,
+      stateBucket: 'explicit-bucket',
+    };
+    const result = await s.synthesize(options);
+    await s.expandMacrosForStacks(result.stacks, options);
+    expect(mockExpandMacros).toHaveBeenCalledTimes(1);
+    const opts = mockExpandMacros.mock.calls[0]?.[1] as { stateBucket: string };
+    expect(opts.stateBucket).toBe('explicit-bucket');
+    expect(mockStsSend).not.toHaveBeenCalled();
   });
 
   it('deferMacroExpansion skips expansion inside synthesize()', async () => {

@@ -368,10 +368,14 @@ async function deployCommand(
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
     // dependency stacks), mutating each template in place before the
-    // asset / analysis / provisioning pipeline consumes it. The
-    // cross-stack inference above scans raw (pre-expansion) templates;
-    // `Fn::ImportValue` / `Fn::GetStackOutput` markers are textually
-    // present pre-expansion, so the inferred edges are unaffected.
+    // asset / analysis / provisioning pipeline consumes it. Known
+    // limitation: the cross-stack inference above scans raw
+    // (pre-expansion) templates, so author-written `Fn::ImportValue` /
+    // `Fn::GetStackOutput` markers are seen as before, but a marker
+    // that only EXISTS in a macro's expansion output (e.g. a custom
+    // macro injecting an ImportValue) no longer contributes an
+    // inferred edge — expansion requires selection, which requires the
+    // inference, so the cycle is broken in favor of selection scoping.
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
 
     // 3. Build work graph: asset-publish → stack deploy (DAG)

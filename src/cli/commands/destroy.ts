@@ -276,11 +276,14 @@ async function destroyCommand(
           // Issue #1150: destroy never consumes expanded templates —
           // the destroy engine works off cdkd STATE, and the synth
           // result feeds only stack-name matching plus the cross-stack
-          // ordering scan below (whose Fn::ImportValue /
+          // ordering scan below. Author-written Fn::ImportValue /
           // Fn::GetStackOutput markers are textually present in the
-          // raw template). Skipping expansion entirely means a
-          // macro-carrying stack stays destroyable even when the CFn
-          // expansion round-trip would fail (issue #1151).
+          // raw template; a marker that only exists in a macro's
+          // expansion output is not seen (known limitation, same
+          // trade-off as deploy's post-selection expansion). Skipping
+          // expansion entirely means a macro-carrying stack stays
+          // destroyable even when the CFn expansion round-trip would
+          // fail (issue #1151).
           deferMacroExpansion: true,
         });
         appStacks = result.stacks.map((s) => ({
