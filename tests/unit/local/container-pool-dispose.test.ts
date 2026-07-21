@@ -54,8 +54,11 @@ function fakeSpec(logicalId: string): ContainerSpec {
       memoryMb: 128,
       timeoutSec: 3,
       codePath: '/tmp/code',
+      layers: [],
+      architecture: 'x86_64',
     } as ResolvedZipLambda,
     codeDir: '/tmp/code',
+    platform: 'linux/amd64',
     env: {},
     containerHost: '127.0.0.1',
   };

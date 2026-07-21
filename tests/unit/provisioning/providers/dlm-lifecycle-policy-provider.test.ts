@@ -577,7 +577,7 @@ describe('DLMLifecyclePolicyProvider import', () => {
 
   it('returns null when there is no override and no cdkPath', async () => {
     const input = makeInput();
-    await expect(provider.import({ ...input, cdkPath: undefined as unknown as string })).resolves.toBeNull();
+    await expect(provider.import({ ...input })).resolves.toBeNull();
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

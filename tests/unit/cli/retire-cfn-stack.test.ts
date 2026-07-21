@@ -17,6 +17,13 @@ vi.mock('../../../src/utils/logger.js', () => ({
 const waitUpdateMock = vi.hoisted(() => vi.fn(async () => undefined));
 const waitDeleteMock = vi.hoisted(() => vi.fn(async () => undefined));
 
+// Type-only mirror of the FakeCommand shape constructed inside the vi.hoisted
+// factory below. The concrete class lives in the hoisted closure (so it is
+// available when vi.mock's factory runs), which is invisible to tsc at
+// test-body scope; this alias lets the `send` mocks annotate `cmd` without
+// reaching into that closure. Erased at runtime -> no TDZ interaction.
+type FakeCommand = { readonly _name: string; readonly input: Record<string, unknown> };
+
 const cfnCommands = vi.hoisted(() => {
   // Defined inside vi.hoisted so they are available when vi.mock's factory
   // is called (vi.mock is hoisted above the rest of the module).

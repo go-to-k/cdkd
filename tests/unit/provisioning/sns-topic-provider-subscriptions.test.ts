@@ -145,7 +145,7 @@ describe('SNSTopicProvider inline Subscription (issue #980)', () => {
     const subCall = mockSend.mock.calls
       .map((c) => c[0])
       .find((c) => c instanceof SubscribeCommand);
-    expect(subCall.input.Attributes.FilterPolicy).toBe('{"eventType":["important"]}');
+    expect(subCall!.input.Attributes!.FilterPolicy).toBe('{"eventType":["important"]}');
   });
 
   it('update() adds a newly-declared subscription via Subscribe', async () => {

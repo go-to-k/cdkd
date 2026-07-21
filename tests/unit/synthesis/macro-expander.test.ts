@@ -58,7 +58,7 @@ vi.mock('@aws-sdk/client-cloudformation', () => ({
 }));
 
 // S3 mocks for the >51,200-byte TemplateURL fallback path.
-const s3SendMock = vi.hoisted(() => vi.fn(async () => ({})));
+const s3SendMock = vi.hoisted(() => vi.fn(async (_cmd: unknown) => ({})));
 const s3DestroyMock = vi.hoisted(() => vi.fn());
 const s3Commands = vi.hoisted(() => {
   class FakeS3Command {

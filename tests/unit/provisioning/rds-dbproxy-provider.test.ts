@@ -490,7 +490,6 @@ describe('RDSDBProxyProvider', () => {
       const result = await provider.import({
         logicalId: 'Proxy',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/Proxy',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

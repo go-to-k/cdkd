@@ -103,7 +103,7 @@ describe('AppExecutor', () => {
       mockProc.emit('close', 0);
       await promise;
 
-      const callEnv = vi.mocked(spawn).mock.calls[0][1] as { env: Record<string, string> };
+      const callEnv = vi.mocked(spawn).mock.calls[0][1] as unknown as { env: Record<string, string> };
       const env = callEnv.env;
 
       expect(env['CDK_OUTDIR']).toBe('/tmp/cdk.out');
@@ -143,7 +143,7 @@ describe('AppExecutor', () => {
       );
 
       // Should set CONTEXT_OVERFLOW_LOCATION_ENV instead of CDK_CONTEXT_JSON
-      const callEnv = vi.mocked(spawn).mock.calls[0][1] as { env: Record<string, string> };
+      const callEnv = vi.mocked(spawn).mock.calls[0][1] as unknown as { env: Record<string, string> };
       const env = callEnv.env;
       expect(env['CONTEXT_OVERFLOW_LOCATION_ENV']).toBe(`${fakeTempDir}/context.json`);
       expect(env['CDK_CONTEXT_JSON']).toBeUndefined();
@@ -235,7 +235,7 @@ describe('AppExecutor', () => {
       mockProc.emit('close', 0);
       await promise;
 
-      const callEnv = vi.mocked(spawn).mock.calls[0][1] as { env: Record<string, string> };
+      const callEnv = vi.mocked(spawn).mock.calls[0][1] as unknown as { env: Record<string, string> };
       const env = callEnv.env;
       expect(env['CDK_DEFAULT_REGION']).toBeUndefined();
       expect(env['CDK_DEFAULT_ACCOUNT']).toBeUndefined();

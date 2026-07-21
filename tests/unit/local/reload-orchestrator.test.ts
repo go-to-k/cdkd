@@ -16,7 +16,7 @@ import type { ServerState } from '../../../src/local/http-server.js';
 function fakePool(specs: Map<string, ContainerSpec>): ContainerPool & { disposed: boolean } {
   const pool = {
     disposed: false,
-    acquire: vi.fn<[string], Promise<ContainerHandle>>(),
+    acquire: vi.fn<(logicalId: string) => Promise<ContainerHandle>>(),
     release: vi.fn(),
     dispose: vi.fn(async () => {
       (pool as { disposed: boolean }).disposed = true;
@@ -47,10 +47,13 @@ function fakeSpec(
       memoryMb: 128,
       timeoutSec: 3,
       codePath: '/tmp/code',
+      architecture: 'x86_64',
+      layers: [],
     } as Extract<ContainerSpec, { kind: 'zip' }>['lambda'],
     codeDir: '/tmp/code',
     env: {},
     containerHost: '127.0.0.1',
+    platform: 'linux/amd64',
     ...overrides,
   };
 }

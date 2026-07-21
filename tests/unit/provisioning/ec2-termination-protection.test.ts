@@ -32,13 +32,13 @@ describe('ec2-termination-protection helpers', () => {
 
   describe('disableInstanceApiTermination', () => {
     it('sends ModifyInstanceAttribute with DisableApiTermination=false', async () => {
-      const send = vi.fn(() => Promise.resolve({}));
+      const send = vi.fn((_cmd: unknown) => Promise.resolve({}));
       const client = { send } as unknown as EC2Client;
 
       await disableInstanceApiTermination(client, 'i-abc', logger);
 
       expect(send).toHaveBeenCalledTimes(1);
-      const cmd = send.mock.calls[0][0] as { constructor: { name: string }; input: unknown };
+      const cmd = send.mock.calls[0]![0] as { constructor: { name: string }; input: unknown };
       expect(cmd.constructor.name).toBe('ModifyInstanceAttributeCommand');
       expect(cmd.input).toEqual({ InstanceId: 'i-abc', DisableApiTermination: { Value: false } });
     });

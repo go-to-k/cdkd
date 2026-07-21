@@ -99,7 +99,7 @@ describe('LambdaPermissionProvider read-update round-trip', () => {
     );
     expect(addCalls).toHaveLength(1);
     const firstAdd = addCalls[0] as [AddPermissionCommand];
-    const input = firstAdd[0].input as Record<string, unknown>;
+    const input = firstAdd[0].input as unknown as Record<string, unknown>;
     // Optional fields must be entirely absent — not '' / null / undefined-as-key.
     expect(input).not.toHaveProperty('SourceArn');
     expect(input).not.toHaveProperty('SourceAccount');
@@ -131,7 +131,7 @@ describe('LambdaPermissionProvider read-update round-trip', () => {
     );
     expect(addCalls).toHaveLength(1);
     const firstAdd = addCalls[0] as [AddPermissionCommand];
-    const input = firstAdd[0].input as Record<string, unknown>;
+    const input = firstAdd[0].input as unknown as Record<string, unknown>;
     expect(input['SourceArn']).toBe('arn:aws:s3:::my-bucket');
     expect(input['SourceAccount']).toBe('123456789012');
     expect(input['Principal']).toBe('s3.amazonaws.com');

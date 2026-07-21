@@ -613,7 +613,6 @@ describe('AgentCoreEvaluatorProvider', () => {
       const result = await provider.import({
         logicalId: 'MyEvaluator',
         resourceType: 'AWS::BedrockAgentCore::Evaluator',
-        cdkPath: 'MyStack/MyEvaluator',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},
@@ -637,7 +636,6 @@ describe('AgentCoreEvaluatorProvider', () => {
       const result = await provider.import({
         logicalId: 'MyEvaluator',
         resourceType: 'AWS::BedrockAgentCore::Evaluator',
-        cdkPath: 'MyStack/MyEvaluator',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},
@@ -655,7 +653,6 @@ describe('AgentCoreEvaluatorProvider', () => {
         provider.import({
           logicalId: 'MyEvaluator',
           resourceType: 'AWS::BedrockAgentCore::Evaluator',
-          cdkPath: 'MyStack/MyEvaluator',
           stackName: 'MyStack',
           region: 'us-east-1',
           properties: {},

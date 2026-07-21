@@ -832,7 +832,15 @@ describe('cdkd drift', () => {
           }),
         })
       );
-      const updateMock = vi.fn(async () => ({ physicalId: 'phys-b', wasReplaced: false }));
+      const updateMock = vi.fn<
+        (
+          logicalId: string,
+          physicalId: string,
+          resourceType: string,
+          newProperties: Record<string, unknown>,
+          previousProperties: Record<string, unknown>
+        ) => Promise<{ physicalId: string; wasReplaced: boolean }>
+      >(async () => ({ physicalId: 'phys-b', wasReplaced: false }));
       mockRegistryGetProvider.mockReturnValue({
         readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
         update: updateMock,
@@ -1072,6 +1080,7 @@ describe('cdkd drift', () => {
         outputs: {},
         lastModified: 0,
       },
+      etag: '"etag-1"',
     }));
     mockRegistryGetProvider.mockImplementation(() => ({
       readCurrentState: async (physicalId: string) => ({ BucketName: physicalId }),
@@ -1250,7 +1259,15 @@ describe('cdkd drift --revert (placeholder isolation regression)', () => {
         }),
       })
     );
-    const updateMock = vi.fn(async () => ({
+    const updateMock = vi.fn<
+      (
+        logicalId: string,
+        physicalId: string,
+        resourceType: string,
+        newProperties: Record<string, unknown>,
+        previousProperties: Record<string, unknown>
+      ) => Promise<{ physicalId: string; wasReplaced: boolean }>
+    >(async () => ({
       physicalId: 'arn:aws:sns:us-east-1:0:t',
       wasReplaced: false,
     }));

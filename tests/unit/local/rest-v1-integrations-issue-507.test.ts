@@ -9,7 +9,7 @@
  * mocks; this file lives separately so the issue (#507) changes have a
  * dedicated coverage anchor.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
 
 const { mockSend: _unused, debugSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -40,7 +40,7 @@ vi.mock('../../../src/local/rie-client.js', () => ({
 }));
 
 import { invokeRie } from '../../../src/local/rie-client.js';
-import type { ContainerPool } from '../../../src/local/container-pool.js';
+import type { ContainerHandle, ContainerPool } from '../../../src/local/container-pool.js';
 import {
   dispatchAwsLambdaIntegration,
   dispatchMockIntegration,
@@ -94,7 +94,7 @@ describe('Issue (#507) item 1: dispatchAwsLambdaIntegration release in finally',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     const releaseSpy = vi.fn();
-    const handle = { containerHost: '127.0.0.1', hostPort: 9000 };
+    const handle = { containerHost: '127.0.0.1', hostPort: 9000 } as unknown as ContainerHandle;
     const pool: MockContainerPool = {
       acquire: vi.fn(async () => handle),
       release: releaseSpy,
@@ -130,7 +130,7 @@ describe('Issue (#507) item 1: dispatchAwsLambdaIntegration release in finally',
     // regression where the refactor accidentally introduces double-release.
     vi.mocked(invokeRie).mockRejectedValueOnce(new Error('boom'));
     const releaseSpy = vi.fn();
-    const handle = { containerHost: '127.0.0.1', hostPort: 9000 };
+    const handle = { containerHost: '127.0.0.1', hostPort: 9000 } as unknown as ContainerHandle;
     const pool: MockContainerPool = {
       acquire: vi.fn(async () => handle),
       release: releaseSpy,

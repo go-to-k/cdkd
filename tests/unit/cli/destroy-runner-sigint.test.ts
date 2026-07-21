@@ -141,7 +141,7 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     capturedSigintHandlers = [];
     const realOn = process.on.bind(process);
     const realRemove = process.removeListener.bind(process);
-    onSpy = vi.spyOn(process, 'on').mockImplementation((event: string, handler: () => void) => {
+    onSpy = vi.spyOn(process, 'on').mockImplementation((event: string | symbol, handler: () => void) => {
       if (event === 'SIGINT') {
         capturedSigintHandlers.push(handler);
         return process;
@@ -150,7 +150,7 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     }) as never;
     removeListenerSpy = vi
       .spyOn(process, 'removeListener')
-      .mockImplementation((event: string, handler: () => void) => {
+      .mockImplementation((event: string | symbol, handler: () => void) => {
         if (event === 'SIGINT') {
           capturedSigintHandlers = capturedSigintHandlers.filter((h) => h !== handler);
           return process;

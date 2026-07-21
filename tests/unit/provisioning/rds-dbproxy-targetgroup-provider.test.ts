@@ -482,7 +482,6 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       const result = await provider.import({
         logicalId: 'TG',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/TG',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},
@@ -500,7 +499,6 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       const result = await provider.import({
         logicalId: 'TG',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'MyStack/TG',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

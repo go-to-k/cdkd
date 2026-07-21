@@ -24,8 +24,9 @@ Run these sequentially and report results:
    fresh worktree.
 
 1. `vp check --fix` — typecheck + lint + Prettier formatting, with auto-fix. **Use this, not `vp run lint:fix`**: the CI workflow runs `vp check` (which includes Prettier), and `lint:fix` does NOT touch Prettier formatting — so a `lint:fix`-only run passes locally but CI fails with `Formatting issues found` on the same branch. See memory rule `feedback_vp_check_vs_lint_fix.md` for the underlying gotcha and PR #363 for a concrete trap.
-2. `vp run build`
-3. `vp run test`
+2. `vp run typecheck:test` — type-checks `tsconfig.test.json` (the `tests/**` project). **`vp check` above only type-checks `tsconfig.json` (src/** + types/**), which excludes `**/*.test.ts`** — so a wrong `import type` or a stale mock shape in a test file would pass `vp check` AND `vp test` (whose "Type Errors" line only covers `*.test-d.ts`). This step is what makes test-file type errors fail locally the same way CI now fails them (issue #1133).
+3. `vp run build`
+4. `vp run test`
 
 ## Output
 
@@ -34,6 +35,7 @@ Report as a table:
 | Check | Result |
 |-------|--------|
 | typecheck + lint + format (`vp check --fix`) | pass/fail |
+| test-project typecheck (`vp run typecheck:test`) | pass/fail |
 | build | pass/fail |
 | tests (N files, M tests) | pass/fail |
 

@@ -775,6 +775,7 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
           resourceType: 'AWS::Lambda::Function',
           physicalId: 'fn-pid',
           statefulReason: null,
+          direction: 'to-cc-api',
         },
       ],
       client,

@@ -2644,7 +2644,6 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       const result = await provider.import({
         logicalId: 'L',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'Stack/L/Resource',
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -2658,7 +2657,6 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       const result = await provider.import({
         logicalId: 'L',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'Stack/L/Resource',
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -2675,7 +2673,6 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       const result = await provider.import({
         logicalId: 'L',
         resourceType: RESOURCE_TYPE,
-        cdkPath: 'Stack/L/Resource',
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},

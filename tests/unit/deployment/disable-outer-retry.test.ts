@@ -115,7 +115,7 @@ describe('DeployEngine — provider.disableOuterRetry bypasses withRetry', () =>
       logicalId: 'CR',
       changeType: 'CREATE',
       resourceType: 'AWS::CloudFormation::CustomResource',
-      newProperties: {},
+      desiredProperties: {},
       propertyChanges: [],
     };
     const changes = new Map<string, ResourceChange>([['CR', change]]);

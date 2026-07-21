@@ -630,7 +630,7 @@ describe('$connect-deny listener safety (B4 regression guard)', () => {
       // Wait for the server to receive all 150 frames before releasing
       // the verdict.
       await new Promise((r) => setTimeout(r, 100));
-      releaseConnect?.();
+      (releaseConnect as (() => void) | null)?.();
       // Wait for $connect + drain to settle (101 invokeRie calls expected).
       await waitFor(() => rieModule.invokeRie.mock.calls.length >= 101);
       // The cap is enforced: only 100 buffered frames drained, NOT 150.
@@ -693,7 +693,7 @@ describe('$connect-deny listener safety (B4 regression guard)', () => {
       await new Promise((r) => setTimeout(r, 50));
       // Now release the $connect verdict — the post-await branch
       // should observe readyState !== OPEN and bail.
-      releaseConnect?.();
+      (releaseConnect as (() => void) | null)?.();
       // Give the post-await branch a tick to run.
       await new Promise((r) => setTimeout(r, 100));
       // (a) Registry has no entry — the connection was never registered.

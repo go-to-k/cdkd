@@ -58,7 +58,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
       logicalId,
       changeType: 'CREATE',
       resourceType: type,
-      newProperties: {},
+      desiredProperties: {},
       propertyChanges: [],
     };
   }

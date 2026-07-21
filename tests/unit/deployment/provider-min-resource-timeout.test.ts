@@ -78,7 +78,7 @@ describe('DeployEngine — provider.getMinResourceTimeoutMs() lifts the deadline
       logicalId,
       changeType: 'CREATE',
       resourceType: type,
-      newProperties: {},
+      desiredProperties: {},
       propertyChanges: [],
     };
   }

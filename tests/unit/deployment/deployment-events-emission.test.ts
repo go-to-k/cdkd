@@ -47,7 +47,7 @@ describe('DeployEngine - #808 deployment events', () => {
       logicalId,
       changeType: 'CREATE',
       resourceType: type,
-      newProperties: { Secret: 'super-secret-value' },
+      desiredProperties: { Secret: 'super-secret-value' },
       propertyChanges: [],
     };
   }

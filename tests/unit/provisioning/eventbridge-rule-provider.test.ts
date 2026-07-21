@@ -536,6 +536,8 @@ describe('EventBridgeRuleProvider', () => {
       const result = await provider.import({
         logicalId: 'MyRule',
         resourceType: 'AWS::Events::Rule',
+        stackName: 'MyStack',
+        region: 'us-east-1',
         // At import time the template property can still be an unresolved
         // intrinsic object — it must NOT be forwarded to DescribeRule.
         properties: { EventBusName: { Ref: 'Bus' } as unknown as string },

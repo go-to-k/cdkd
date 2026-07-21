@@ -152,7 +152,7 @@ describe('FirehoseProvider read-update round-trip', () => {
     const result = await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, observed);
     expect(result.wasReplaced).toBe(false);
     expect(result.physicalId).toBe(PHYSICAL_ID);
-    expect(result.attributes['Arn']).toBe(
+    expect(result.attributes!['Arn']).toBe(
       `arn:aws:firehose:us-east-1:111:deliverystream/${PHYSICAL_ID}`
     );
 

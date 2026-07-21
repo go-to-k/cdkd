@@ -46,7 +46,6 @@ describe('ElastiCacheProvider import', () => {
     return {
       logicalId: 'MyCluster',
       resourceType: 'AWS::ElastiCache::CacheCluster',
-      cdkPath: 'MyStack/MyCluster',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},
@@ -87,7 +86,6 @@ describe('ElastiCacheProvider import', () => {
     const result = await provider.import({
       logicalId: 'MySG',
       resourceType: 'AWS::ElastiCache::SubnetGroup',
-      cdkPath: 'MyStack/MySG',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: { CacheSubnetGroupName: 'my-sg' },
@@ -102,7 +100,6 @@ describe('ElastiCacheProvider import', () => {
     const result = await provider.import({
       logicalId: 'MySG',
       resourceType: 'AWS::ElastiCache::SubnetGroup',
-      cdkPath: 'MyStack/MySG',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

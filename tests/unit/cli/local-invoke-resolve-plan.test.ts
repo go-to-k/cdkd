@@ -56,6 +56,7 @@ function makeImageLambda(overrides: Partial<ResolvedImageLambda> = {}): Resolved
     imageUri: '111111111111.dkr.ecr.us-east-1.amazonaws.com/repo:abcdef',
     imageConfig: {},
     architecture: 'x86_64',
+    layers: [],
     ...overrides,
   };
 }

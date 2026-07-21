@@ -65,7 +65,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
 // `buildAssetRedirectMap` stays REAL (pure) so the wiring test exercises the
 // actual table construction.
 const { mockLoadPublishableManifest, mockModeResolve } = vi.hoisted(() => ({
-  mockLoadPublishableManifest: vi.fn((): unknown => null),
+  mockLoadPublishableManifest: vi.fn((_p: string): unknown => null),
   mockModeResolve: vi.fn(),
 }));
 vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({

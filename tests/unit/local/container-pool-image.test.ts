@@ -107,6 +107,7 @@ function makeZipSpec(logicalId: string): ContainerSpec {
     kind: 'zip',
     lambda,
     codeDir: '/tmp/code',
+    platform: 'linux/amd64',
     env: {},
     containerHost: '127.0.0.1',
   };

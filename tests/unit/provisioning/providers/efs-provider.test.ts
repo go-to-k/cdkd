@@ -481,7 +481,7 @@ describe('EFSProvider', () => {
 
       it('should not throw when file system not found', async () => {
         mockSend.mockRejectedValueOnce(
-          new FileSystemNotFound({ message: 'not found', $metadata: {} })
+          new FileSystemNotFound({ message: 'not found', ErrorCode: 'FileSystemNotFound', $metadata: {} })
         );
 
         await expect(
@@ -533,7 +533,7 @@ describe('EFSProvider', () => {
           }
           if (cmd instanceof DescribeMountTargetsCommand) {
             return Promise.reject(
-              new MountTargetNotFound({ message: 'not found', $metadata: {} })
+              new MountTargetNotFound({ message: 'not found', ErrorCode: 'MountTargetNotFound', $metadata: {} })
             );
           }
           return Promise.resolve({});
@@ -548,7 +548,7 @@ describe('EFSProvider', () => {
 
       it('should not throw when mount target not found', async () => {
         mockSend.mockRejectedValueOnce(
-          new MountTargetNotFound({ message: 'not found', $metadata: {} })
+          new MountTargetNotFound({ message: 'not found', ErrorCode: 'MountTargetNotFound', $metadata: {} })
         );
 
         await expect(
@@ -616,7 +616,7 @@ describe('EFSProvider', () => {
 
       it('should not throw when access point not found', async () => {
         mockSend.mockRejectedValueOnce(
-          new AccessPointNotFound({ message: 'not found', $metadata: {} })
+          new AccessPointNotFound({ message: 'not found', ErrorCode: 'AccessPointNotFound', $metadata: {} })
         );
 
         await expect(

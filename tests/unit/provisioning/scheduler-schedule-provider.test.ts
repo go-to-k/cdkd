@@ -49,7 +49,7 @@ const GROUP = 'my-custom-group';
 const SCHED_ARN = `arn:aws:scheduler:us-east-1:123456789012:schedule/${GROUP}/my-sched`;
 
 const notFound = () =>
-  new ResourceNotFoundException({ message: 'Schedule not found.', $metadata: {} });
+  new ResourceNotFoundException({ message: 'Schedule not found.', Message: 'Schedule not found.', $metadata: {} });
 
 const BASE_PROPS = {
   Name: 'my-sched',
@@ -101,7 +101,7 @@ describe('SchedulerScheduleProvider', () => {
 
       await provider.create('Sched', TYPE, { ...props });
 
-      const input = sentInput(CreateScheduleCommand) as Record<string, unknown>;
+      const input = sentInput(CreateScheduleCommand) as unknown as Record<string, unknown>;
       expect('GroupName' in input).toBe(false);
     });
 
@@ -243,7 +243,7 @@ describe('SchedulerScheduleProvider', () => {
 
       await provider.delete('Sched', 'my-sched', TYPE, undefined);
 
-      const input = sentInput(DeleteScheduleCommand) as Record<string, unknown>;
+      const input = sentInput(DeleteScheduleCommand) as unknown as Record<string, unknown>;
       expect(input).toEqual({ Name: 'my-sched' });
       // The degraded-record warning names the manual escape hatch — a
       // custom-group schedule cannot be addressed without properties.

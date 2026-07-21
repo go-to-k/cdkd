@@ -2512,7 +2512,7 @@ describe('injectRetainAndRewriteTemplateUrl (issue #464 PR B2)', () => {
     const result = injectRetainAndRewriteTemplateUrl(row, 'https://new.url');
     expect(result).not.toBe(row);
     expect((row['Properties'] as { TemplateURL: string }).TemplateURL).toBe('old');
-    expect(row['DeletionPolicy']).toBeUndefined();
+    expect((row as Record<string, unknown>)['DeletionPolicy']).toBeUndefined();
   });
 
   it('handles missing Properties (synthesizes the field)', () => {
@@ -2626,7 +2626,7 @@ describe('buildPerStackImportNodes (issue #464 PR B2)', () => {
 
   function fixturePath(relPath: string, content: Record<string, unknown>): string {
     return (
-      globalThis as Record<
+      globalThis as unknown as Record<
         string,
         (relPath: string, content: Record<string, unknown>) => string
       >

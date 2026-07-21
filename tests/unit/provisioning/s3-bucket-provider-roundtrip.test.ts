@@ -351,8 +351,10 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
    * primary assertion point so unrelated commands (PutBucketVersioning
    * etc. fired by applyConfiguration) don't pollute the assertion.
    */
-  function callsOf(cmdClass: new (...args: never[]) => unknown): unknown[] {
-    return mockSend.mock.calls.filter((c) => c[0] instanceof cmdClass).map((c) => c[0]);
+  function callsOf(cmdClass: new (...args: never[]) => unknown): { input: unknown }[] {
+    return mockSend.mock.calls
+      .filter((c) => c[0] instanceof cmdClass)
+      .map((c) => c[0] as { input: unknown });
   }
 
   // -------------------------------------------------------------------

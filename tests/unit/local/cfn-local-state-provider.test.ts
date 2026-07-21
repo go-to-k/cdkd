@@ -50,7 +50,7 @@ interface SentCall {
 const sentCalls = vi.hoisted(() => [] as SentCall[]);
 const clientCtorOpts = vi.hoisted(() => [] as Array<{ region?: string; profile?: string }>);
 const cfnSendMock = vi.hoisted(() =>
-  vi.fn(async (_cmd: { _name: string; input: Record<string, unknown> }) => undefined)
+  vi.fn(async (_cmd: { _name: string; input: Record<string, unknown> }): Promise<unknown> => undefined)
 );
 const cfnDestroyMock = vi.hoisted(() => vi.fn());
 

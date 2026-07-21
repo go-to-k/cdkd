@@ -200,8 +200,25 @@ export default defineConfig({
       typecheck: {
         command: 'tsc --project tsconfig.json --noEmit',
       },
+      // `vp check` (and the `typecheck` task above) type-check only
+      // tsconfig.json, whose `include` is `src/**` + `types/**` and whose
+      // `exclude` drops `**/*.test.ts`. Test files were therefore never
+      // type-checked by any gate — a wrong `import type` or a mock whose
+      // shape no longer matches the real type slipped through both `vp check`
+      // and `vp test` (whose "Type Errors" line only covers `*.test-d.ts`).
+      // This task closes that hole by checking the test project explicitly;
+      // CI runs it as its own step (issue #1133).
+      'typecheck:test': {
+        command: 'tsc --project tsconfig.test.json --noEmit',
+        // Must NOT be cached: Vite+'s task cache did not invalidate on a
+        // `tests/**/*.test.ts` content change (a deliberate bad-import break
+        // replayed as a green "cache hit"), which would let exactly the
+        // errors this gate exists to catch slip through both locally and in
+        // CI. A ~1s type-check is cheap insurance against a false green.
+        cache: false,
+      },
       verify: {
-        command: 'vp run check && vp run test && vp run build',
+        command: 'vp run check && vp run typecheck:test && vp run test && vp run build',
       },
       'runtime:smoke': {
         command: 'node dist/cli.js --version',

@@ -75,7 +75,7 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       const created = callOf(CreateServiceCommand);
       expect(created).toBeDefined();
       // ServiceAttributes is NOT forwarded to CreateService.
-      expect((created!.input as Record<string, unknown>)['ServiceAttributes']).toBeUndefined();
+      expect((created!.input as unknown as Record<string, unknown>)['ServiceAttributes']).toBeUndefined();
 
       const updateAttrs = callOf(UpdateServiceAttributesCommand);
       expect(updateAttrs).toBeDefined();
@@ -133,7 +133,7 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
 
       const del = callOf(DeleteServiceCommand);
       expect(del).toBeDefined();
-      expect((del!.input as Record<string, unknown>)['Id']).toBe('srv-1');
+      expect((del!.input as unknown as Record<string, unknown>)['Id']).toBe('srv-1');
     });
   });
 

@@ -59,7 +59,7 @@ function stubSdkProvider(): ResourceProvider {
     update: () => Promise.resolve({ physicalId: 'phys' }),
     delete: () => Promise.resolve(),
     getAttribute: () => Promise.resolve(undefined),
-  } as ResourceProvider;
+  } as unknown as ResourceProvider;
 }
 
 describe('ProviderRegistry.getProviderFor', () => {
