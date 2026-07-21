@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — stepfunctions: a Step Functions state machine (LambdaInvoke +
+# verify.sh - stepfunctions: a Step Functions state machine (LambdaInvoke +
 # Wait + Choice + Succeed/Fail) driving an inline-code Lambda, with the IAM
 # roles for both auto-created by CDK.
 #
@@ -84,7 +84,7 @@ echo "==> Installing fixture deps"
 
 echo "==> Pre-flight orphan scan"
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state already exists at ${STATE_KEY} — clean up first." >&2
+  echo "FAIL: state already exists at ${STATE_KEY} - clean up first." >&2
   exit 1
 fi
 

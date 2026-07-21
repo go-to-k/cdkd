@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — iam-managed-policy: an IAM Role plus a standalone customer-managed
+# verify.sh - iam-managed-policy: an IAM Role plus a standalone customer-managed
 # AWS::IAM::ManagedPolicy attached to that role via the policy's `roles: [...]`.
 #
 # Converted from a standard-flow smoke test to a verify.sh so it owns its own
@@ -10,7 +10,7 @@
 #
 # LOAD-BEARING assertion: after deploy the customer-managed policy is ATTACHED
 # to the role (the `roles: [role]` linkage), and the destroy path detaches the
-# policy before deleting it and then deletes the role — a clean destroy with
+# policy before deleting it and then deletes the role - a clean destroy with
 # both gone proves the detach-before-delete ordering held.
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
@@ -85,7 +85,7 @@ echo "==> Installing fixture deps"
 
 echo "==> Pre-flight orphan scan"
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state already exists at ${STATE_KEY} — clean up first." >&2
+  echo "FAIL: state already exists at ${STATE_KEY} - clean up first." >&2
   exit 1
 fi
 

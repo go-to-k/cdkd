@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — conditions: CfnParameter + CfnCondition + Fn::If conditional
+# verify.sh - conditions: CfnParameter + CfnCondition + Fn::If conditional
 # resource creation. With the default parameters (Environment=Development,
 # EnableVersioning=false) the `isProduction` condition is FALSE, so the
 # production S3 bucket (guarded by `cfnOptions.condition = isProduction`) must
@@ -88,7 +88,7 @@ echo "==> Installing fixture deps"
 
 echo "==> Pre-flight orphan scan"
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null 2>&1; then
-  echo "FAIL: state already exists at ${STATE_KEY} — clean up first." >&2
+  echo "FAIL: state already exists at ${STATE_KEY} - clean up first." >&2
   exit 1
 fi
 
