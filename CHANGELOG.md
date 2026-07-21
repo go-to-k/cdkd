@@ -1,3 +1,10 @@
+## [0.257.4](https://github.com/go-to-k/cdkd/compare/v0.257.3...v0.257.4) (2026-07-21)
+
+
+### Bug Fixes
+
+* **synthesis:** selection-aware macro expansion, SDK-default region fallback, EarlyValidation retry ([#1152](https://github.com/go-to-k/cdkd/issues/1152)) ([955191f](https://github.com/go-to-k/cdkd/commit/955191f73c08a3dd1cf11cf881b6caead6b14dd6))
+
 ## [0.257.3](https://github.com/go-to-k/cdkd/compare/v0.257.2...v0.257.3) (2026-07-21)
 
 
