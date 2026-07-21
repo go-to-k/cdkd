@@ -686,56 +686,22 @@ describe('EFSProvider', () => {
       expect(call.input).toEqual({ FileSystemId: 'fs-abc' });
     });
 
-    it('FileSystem tag-based lookup: matches aws:cdk:path on inline Tags', async () => {
-      mockSend.mockResolvedValueOnce({
-        FileSystems: [
-          {
-            FileSystemId: 'fs-other',
-            Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-          },
-          {
-            FileSystemId: 'fs-target',
-            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyFS' }],
-          },
-        ],
-      });
-
-      const result = await provider.import(makeInput());
-      expect(result).toEqual({ physicalId: 'fs-target', attributes: {} });
-    });
-
-    it('FileSystem returns null when no fs matches', async () => {
-      mockSend.mockResolvedValueOnce({
-        FileSystems: [
-          {
-            FileSystemId: 'fs-only',
-            Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-          },
-        ],
-      });
-
+    // The `aws:cdk:path` tag walk is gone (issue #1134): AWS rejects
+    // `aws:`-prefixed tag writes, so that tag never exists on a real resource
+    // and the walk could not match. Without an explicit override, import
+    // returns null WITHOUT any list call.
+    it('FileSystem returns null without any list call when no override is given', async () => {
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('AccessPoint tag-based lookup: matches via DescribeAccessPoints inline Tags', async () => {
-      mockSend.mockResolvedValueOnce({
-        AccessPoints: [
-          {
-            AccessPointId: 'fsap-target',
-            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyAP' }],
-          },
-        ],
-      });
-
+    it('AccessPoint returns null without any list call when no override is given', async () => {
       const result = await provider.import(
-        makeInput({
-          logicalId: 'MyAP',
-          resourceType: 'AWS::EFS::AccessPoint',
-          cdkPath: 'MyStack/MyAP',
-        })
+        makeInput({ logicalId: 'MyAP', resourceType: 'AWS::EFS::AccessPoint' })
       );
-      expect(result).toEqual({ physicalId: 'fsap-target', attributes: {} });
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('MountTarget: explicit override returned as-is, no AWS calls', async () => {

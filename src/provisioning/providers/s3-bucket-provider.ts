@@ -4,7 +4,6 @@ import {
   CreateBucketCommand,
   DeleteBucketCommand,
   HeadBucketCommand,
-  ListBucketsCommand,
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
   DeleteBucketTaggingCommand,
@@ -55,7 +54,6 @@ import {
   type CORSRule,
 } from '@aws-sdk/client-s3';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -2498,8 +2496,6 @@ export class S3BucketProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource <id>=<name>` override or `Properties.BucketName` → use directly,
    *     verify with `HeadBucket`.
-   *  2. `ListBuckets` + `GetBucketTagging`, match `aws:cdk:path` against the
-   *     CDK construct path.
    *
    * Returns `null` when nothing matches — caller treats this as
    * "not deployed yet" rather than a failure.
@@ -2519,40 +2515,12 @@ export class S3BucketProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // GetBucketTagging burst (one call per bucket in the account) is retried
-    // with exponential backoff when AWS throttles it instead of aborting the
-    // whole import. ListBuckets is a single unpaginated call, so the walk
-    // sees exactly one page.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async () => {
-        const list = await this.s3Client.send(new ListBucketsCommand({}));
-        return { items: list.Buckets, nextMarker: undefined };
-      },
-      describe: async (b) => {
-        if (!b.Name) return undefined;
-        try {
-          return await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
-        } catch (err) {
-          // NoSuchTagSet / cross-region 301 / access denied → skip this bucket
-          const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
-          if (
-            e.name === 'NoSuchTagSet' ||
-            e.name === 'AccessDenied' ||
-            e.$metadata?.httpStatusCode === 301
-          ) {
-            return undefined;
-          }
-          throw err;
-        }
-      },
-      tagsOf: (tagging) => tagging.TagSet,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips buckets without a name.
-    return { physicalId: match.summary.Name!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a bucket
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   /**

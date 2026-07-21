@@ -4,7 +4,6 @@ import {
   DeleteQueueCommand,
   GetQueueAttributesCommand,
   GetQueueUrlCommand,
-  ListQueuesCommand,
   ListQueueTagsCommand,
   SetQueueAttributesCommand,
   TagQueueCommand,
@@ -19,7 +18,6 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -632,7 +630,6 @@ export class SQSQueueProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override (URL) → verify via `GetQueueAttributes`.
    *  2. `Properties.QueueName` → `GetQueueUrl` for direct lookup.
-   *  3. `aws:cdk:path` tag match via `ListQueues` + `ListQueueTags`.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -662,33 +659,11 @@ export class SQSQueueProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListQueueTags burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import. SQS returns tags as
-    // a `Record<string, string>` map, re-shaped to `{Key, Value}` entries for
-    // the walk's matcher; the candidate summary is the queue URL itself.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.sqsClient.send(
-          new ListQueuesCommand({ ...(marker && { NextToken: marker }) })
-        );
-        return { items: list.QueueUrls, nextMarker: list.NextToken };
-      },
-      describe: async (url) => {
-        try {
-          return await this.sqsClient.send(new ListQueueTagsCommand({ QueueUrl: url }));
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof QueueDoesNotExist) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagsResp) =>
-        Object.entries(tagsResp.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
-    });
-    if (!match) return null;
-    return { physicalId: match.summary, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a queue
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

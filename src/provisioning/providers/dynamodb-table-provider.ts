@@ -10,7 +10,6 @@ import {
   DisableKinesisStreamingDestinationCommand,
   EnableKinesisStreamingDestinationCommand,
   GetResourcePolicyCommand,
-  ListTablesCommand,
   ListTagsOfResourceCommand,
   PutResourcePolicyCommand,
   DeleteResourcePolicyCommand,
@@ -42,7 +41,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1918,11 +1916,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *
    * Lookup order:
    *  1. `--resource` override or `Properties.TableName` → verify via `DescribeTable`.
-   *  2. `ListTables` + `ListTagsOfResource`, match `aws:cdk:path` tag.
-   *
-   * Tags require the table ARN, which `DescribeTable` provides; the loop
-   * therefore costs one `DescribeTable` per table just to read the ARN.
-   * Acceptable for typical DynamoDB cardinalities.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'TableName');
@@ -1936,39 +1929,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: each
-    // candidate costs TWO reads (DescribeTable for the ARN, then
-    // ListTagsOfResource), so the N+1 burst is even hotter than most — the
-    // walk retries both with exponential backoff when AWS throttles them
-    // instead of aborting the whole import.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.dynamoDBClient.send(
-          new ListTablesCommand({ ...(marker && { ExclusiveStartTableName: marker }) })
-        );
-        return { items: list.TableNames, nextMarker: list.LastEvaluatedTableName };
-      },
-      describe: async (name) => {
-        try {
-          const desc = await this.dynamoDBClient.send(
-            new DescribeTableCommand({ TableName: name })
-          );
-          const arn = desc.Table?.TableArn;
-          if (!arn) return undefined;
-          return await this.dynamoDBClient.send(
-            new ListTagsOfResourceCommand({ ResourceArn: arn })
-          );
-        } catch (err) {
-          // Deleted between the list and the reads — skip the candidate.
-          if (err instanceof ResourceNotFoundException) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagsResp) => tagsResp.Tags,
-    });
-    if (!match) return null;
-    return { physicalId: match.summary, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a table
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());
@@ -56,7 +56,6 @@ import {
   DuplicateRecordException,
 } from '@aws-sdk/client-budgets';
 import { BudgetsBudgetProvider } from '../../../../src/provisioning/providers/budgets-budget-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 import {
   ReplacementRulesRegistry,
   budgetNameChanged,
@@ -582,15 +581,6 @@ describe('BudgetsBudgetProvider', () => {
   });
 
   describe('import', () => {
-    beforeEach(() => {
-      // Skip the walk's real backoff waits in the throttle-retry tests.
-      importTagWalkTestHooks.sleep = async () => {};
-    });
-
-    afterEach(() => {
-      importTagWalkTestHooks.sleep = undefined;
-    });
-
     const input = (overrides: Record<string, unknown> = {}): never =>
       ({
         logicalId: 'MyBudget',
@@ -623,57 +613,6 @@ describe('BudgetsBudgetProvider', () => {
       expect(result).toBeNull();
     });
 
-    it('looks budgets up by the aws:cdk:path tag', async () => {
-      mockSend.mockImplementation((cmd: unknown) => {
-        if (cmd instanceof DescribeBudgetsCommand) {
-          return Promise.resolve({ Budgets: [{ BudgetName: 'tagged' }] });
-        }
-        if (cmd instanceof ListTagsForResourceCommand) {
-          return Promise.resolve({
-            ResourceTags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBudget' }],
-          });
-        }
-        return Promise.resolve({});
-      });
-
-      const result = await provider.import(input());
-      expect(result?.physicalId).toBe('tagged');
-    });
-
-    it('walks DescribeBudgets pagination and forwards NextToken', async () => {
-      mockSend.mockImplementation((cmd: unknown) => {
-        if (cmd instanceof DescribeBudgetsCommand) {
-          const token = (cmd as { input: { NextToken?: string } }).input.NextToken;
-          if (!token) {
-            return Promise.resolve({ Budgets: [{ BudgetName: 'other' }], NextToken: 't1' });
-          }
-          return Promise.resolve({ Budgets: [{ BudgetName: 'tagged' }] });
-        }
-        if (cmd instanceof ListTagsForResourceCommand) {
-          const arn = (cmd as { input: { ResourceARN: string } }).input.ResourceARN;
-          return Promise.resolve({
-            ResourceTags: arn.endsWith('/tagged')
-              ? [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBudget' }]
-              : [],
-          });
-        }
-        return Promise.resolve({});
-      });
-
-      const result = await provider.import(input());
-      expect(result?.physicalId).toBe('tagged');
-
-      const describeCalls = callsOf(DescribeBudgetsCommand) as Array<Record<string, unknown>>;
-      expect(describeCalls).toHaveLength(2);
-      expect(describeCalls[1]!['NextToken']).toBe('t1');
-    });
-
-    it('returns null when there is no explicit name and no cdkPath', async () => {
-      const result = await provider.import(input({ cdkPath: '' }));
-      expect(result).toBeNull();
-      expect(callsOf(DescribeBudgetsCommand)).toHaveLength(0);
-    });
-
     it('rethrows non-NotFound errors from the explicit DescribeBudget unwrapped', async () => {
       mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
       await expect(provider.import(input({ knownPhysicalId: 'team-budget' }))).rejects.toThrow(
@@ -681,72 +620,15 @@ describe('BudgetsBudgetProvider', () => {
       );
     });
 
-    it('returns null when no budget carries the cdk path tag', async () => {
-      mockSend.mockImplementation((cmd: unknown) => {
-        if (cmd instanceof DescribeBudgetsCommand) {
-          return Promise.resolve({ Budgets: [{ BudgetName: 'other' }] });
-        }
-        if (cmd instanceof ListTagsForResourceCommand) {
-          return Promise.resolve({ ResourceTags: [] });
-        }
-        return Promise.resolve({});
-      });
-
+    it('returns null without a DescribeBudgets/tag call when no explicit name is supplied (no aws:cdk:path tag walk)', async () => {
+      // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+      // aws:-prefixed tag writes, so the tag never exists on a real resource.
+      // With no explicit override / BudgetName the provider resolves nothing
+      // and returns null — the import flow relies on --resource / CFn lookup.
       const result = await provider.import(input());
       expect(result).toBeNull();
-    });
-
-    // Issue #1091 batch 3: the tag walk is an N+1 ListTagsForResource burst
-    // routed through the shared importTagWalk helper: a throttled
-    // per-candidate tag read is retried with backoff instead of aborting the
-    // whole import, while a non-throttling error still surfaces immediately.
-    it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-      const throttled = new Error('Rate exceeded') as Error & {
-        $metadata: { httpStatusCode: number };
-      };
-      throttled.name = 'ThrottlingException';
-      throttled.$metadata = { httpStatusCode: 400 };
-
-      let tagCalls = 0;
-      mockSend.mockImplementation((cmd: unknown) => {
-        if (cmd instanceof DescribeBudgetsCommand) {
-          return Promise.resolve({ Budgets: [{ BudgetName: 'tagged' }] });
-        }
-        if (cmd instanceof ListTagsForResourceCommand) {
-          tagCalls += 1;
-          if (tagCalls === 1) return Promise.reject(throttled);
-          return Promise.resolve({
-            ResourceTags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBudget' }],
-          });
-        }
-        return Promise.resolve({});
-      });
-
-      const result = await provider.import(input());
-
-      expect(result).toEqual({
-        physicalId: 'tagged',
-        attributes: { Arn: `arn:aws:budgets::${ACCOUNT}:budget/tagged` },
-      });
-      expect(callsOf(ListTagsForResourceCommand)).toHaveLength(2);
-    });
-
-    it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
-      const denied = new Error('User is not authorized to perform budgets:ListTagsForResource');
-      denied.name = 'AccessDeniedException';
-
-      mockSend.mockImplementation((cmd: unknown) => {
-        if (cmd instanceof DescribeBudgetsCommand) {
-          return Promise.resolve({ Budgets: [{ BudgetName: 'tagged' }] });
-        }
-        if (cmd instanceof ListTagsForResourceCommand) {
-          return Promise.reject(denied);
-        }
-        return Promise.resolve({});
-      });
-
-      await expect(provider.import(input())).rejects.toThrow(/not authorized/);
-      expect(callsOf(ListTagsForResourceCommand)).toHaveLength(1);
+      expect(callsOf(DescribeBudgetsCommand)).toHaveLength(0);
+      expect(callsOf(ListTagsForResourceCommand)).toHaveLength(0);
     });
   });
 });

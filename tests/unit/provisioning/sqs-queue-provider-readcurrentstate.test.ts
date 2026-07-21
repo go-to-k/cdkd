@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   GetQueueAttributesCommand,
   ListQueueTagsCommand,
@@ -34,7 +34,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SQSQueueProvider } from '../../../src/provisioning/providers/sqs-queue-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/my-queue';
 
@@ -183,11 +182,12 @@ describe('SQSQueueProvider.readCurrentState', () => {
   });
 });
 
-// Issue #1091 batch 2: the tag-based import lookup is an N+1 ListQueueTags
-// burst routed through the shared importTagWalk helper — a throttled
-// per-candidate tag read is retried with backoff instead of aborting the whole
-// import, while a non-throttling error still surfaces immediately.
-describe('SQSQueueProvider import tag walk', () => {
+// Issue #1134: the `aws:cdk:path` tag walk is removed. AWS rejects
+// `aws:`-prefixed tag writes, so that tag never exists on a real resource and
+// the walk could not match. import() now resolves only from an explicit
+// `--resource` (queue URL) / `Properties.QueueName`; anything else returns null
+// without a lookup.
+describe('SQSQueueProvider import', () => {
   const CDK_PATH = 'MyStack/MyQueue/Resource';
 
   beforeEach(() => {
@@ -195,11 +195,6 @@ describe('SQSQueueProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockSend.mockReset();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = () => ({
@@ -211,34 +206,11 @@ describe('SQSQueueProvider import tag walk', () => {
     properties: {},
   });
 
-  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-  const throttle = (): Error => {
-    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
-    err.name = 'ThrottlingException';
-    err.$metadata = { httpStatusCode: 400 };
-    return err;
-  };
-
-  it('retries a throttled ListQueueTags mid-walk and still finds the match', async () => {
-    mockSend
-      .mockResolvedValueOnce({ QueueUrls: [QUEUE_URL] })
-      .mockRejectedValueOnce(throttle())
-      .mockResolvedValueOnce({ Tags: { 'aws:cdk:path': CDK_PATH } });
-
+  it('returns null without any AWS call when no explicit id is given', async () => {
     const provider = new SQSQueueProvider();
     const result = await provider.import(importInput());
 
-    expect(result).toEqual({ physicalId: QUEUE_URL, attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not retry a non-throttling ListQueueTags error during the walk', async () => {
-    const denied = new Error('User is not authorized to perform sqs:ListQueueTags');
-    denied.name = 'AccessDeniedException';
-    mockSend.mockResolvedValueOnce({ QueueUrls: [QUEUE_URL] }).mockRejectedValueOnce(denied);
-
-    const provider = new SQSQueueProvider();
-    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

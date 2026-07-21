@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateLogGroupCommand,
   DeleteIndexPolicyCommand,
@@ -45,7 +45,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
 const PHYSICAL_ID = '/aws/lambda/my-fn';
@@ -397,12 +396,12 @@ describe('LogsLogGroupProvider read-update round-trip', () => {
   });
 });
 
-// Issue #1091 batch 2: the tag-based import lookup is an N+1
-// ListTagsForResource burst routed through the shared importTagWalk helper —
-// a throttled per-candidate tag read is retried with backoff instead of
-// aborting the whole import, while a non-throttling error still surfaces
-// immediately.
-describe('LogsLogGroupProvider import tag walk', () => {
+// Issue #1134: the `aws:cdk:path` tag walk is removed. AWS rejects
+// `aws:`-prefixed tag writes, so that tag never exists on a real resource and
+// the walk could not match. import() now resolves only from an explicit
+// `--resource` / `Properties.LogGroupName`; anything else returns null without
+// a lookup.
+describe('LogsLogGroupProvider import', () => {
   const CDK_PATH = 'MyStack/MyLogGroup/Resource';
 
   beforeEach(() => {
@@ -410,11 +409,6 @@ describe('LogsLogGroupProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockSend.mockReset();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = () => ({
@@ -426,55 +420,11 @@ describe('LogsLogGroupProvider import tag walk', () => {
     properties: {},
   });
 
-  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-  const throttle = (): Error => {
-    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
-    err.name = 'ThrottlingException';
-    err.$metadata = { httpStatusCode: 400 };
-    return err;
-  };
-
-  it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        logGroups: [
-          {
-            logGroupName: '/aws/lambda/my-fn',
-            arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/my-fn:*',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(throttle())
-      .mockResolvedValueOnce({ tags: { 'aws:cdk:path': CDK_PATH } });
-
+  it('returns null without any AWS call when no explicit id is given', async () => {
     const provider = new LogsLogGroupProvider();
     const result = await provider.import(importInput());
 
-    expect(result).toEqual({ physicalId: '/aws/lambda/my-fn', attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(3);
-    // The trailing ":*" CloudWatch appends to log-group ARNs must be stripped
-    // before the tag read (both the throttled attempt and the retry).
-    const tagArn = (mockSend.mock.calls[1][0] as { input: { resourceArn: string } }).input
-      .resourceArn;
-    expect(tagArn).toBe('arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/my-fn');
-  });
-
-  it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
-    const denied = new Error('User is not authorized to perform logs:ListTagsForResource');
-    denied.name = 'AccessDeniedException';
-    mockSend
-      .mockResolvedValueOnce({
-        logGroups: [
-          {
-            logGroupName: '/aws/lambda/my-fn',
-            arn: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/my-fn:*',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(denied);
-
-    const provider = new LogsLogGroupProvider();
-    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

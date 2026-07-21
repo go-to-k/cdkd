@@ -5,7 +5,6 @@ import {
   RemoveTargetsCommand,
   DeleteRuleCommand,
   DescribeRuleCommand,
-  ListRulesCommand,
   ListTargetsByRuleCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
@@ -19,7 +18,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -563,12 +561,6 @@ export class EventBridgeRuleProvider implements ResourceProvider {
    *  2. If the template carries `Properties.Name` use that as the rule
    *     name lookup, then verify with `DescribeRule` and return the
    *     rule's ARN as physicalId.
-   *  3. Walk `ListRules(EventBusName?)` and match `aws:cdk:path` via
-   *     `ListTagsForResource(ResourceARN=rule.Arn)`. Returns the rule
-   *     ARN as physicalId — same shape that `create` returns.
-   *
-   * EventBridge tags use the standard `Tag[]` array shape
-   * (`Key`/`Value`).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const eventBusName = input.properties['EventBusName'] as string | undefined;
@@ -617,34 +609,12 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import. The template's
-    // EventBusName (when literal) scopes every ListRules page, matching the
-    // previous inline loop.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.eventBridgeClient.send(
-          new ListRulesCommand({
-            ...(eventBusName && { EventBusName: eventBusName }),
-            ...(marker && { NextToken: marker }),
-          })
-        );
-        return { items: list.Rules, nextMarker: list.NextToken };
-      },
-      describe: async (rule) => {
-        if (!rule.Arn) return undefined;
-        return await this.eventBridgeClient.send(
-          new ListTagsForResourceCommand({ ResourceARN: rule.Arn })
-        );
-      },
-      tagsOf: (tagsResp) => tagsResp.Tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without an ARN.
-    return { physicalId: match.summary.Arn!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a rule
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   /**

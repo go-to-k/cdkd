@@ -3,7 +3,6 @@ import {
   CreateSecretCommand,
   DeleteSecretCommand,
   DescribeSecretCommand,
-  ListSecretsCommand,
   UpdateSecretCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -18,7 +17,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -445,7 +443,6 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override (ARN) → verify via `DescribeSecret`.
    *  2. `Properties.Name` → `DescribeSecret` (accepts name).
-   *  3. `aws:cdk:path` tag match via `ListSecrets` (which already returns Tags).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -472,22 +469,11 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       }
     }
 
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.smClient.send(
-          new ListSecretsCommand({ ...(marker && { NextToken: marker }) })
-        );
-        return { items: list.SecretList, nextMarker: list.NextToken };
-      },
-      // ListSecrets already returns Tags inline, so there is no per-candidate
-      // read to make: the walk is paginated but not N+1.
-      describe: async (secret) => (secret.ARN ? secret : undefined),
-      tagsOf: (secret) => secret.Tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without an ARN.
-    return { physicalId: match.summary.ARN!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a secret
+    // reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

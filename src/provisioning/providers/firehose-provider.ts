@@ -3,7 +3,6 @@ import {
   CreateDeliveryStreamCommand,
   DeleteDeliveryStreamCommand,
   DescribeDeliveryStreamCommand,
-  ListDeliveryStreamsCommand,
   ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
   UpdateDestinationCommand,
@@ -35,7 +34,6 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2022,37 +2020,12 @@ export class FirehoseProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForDeliveryStream burst is retried with exponential backoff
-    // when AWS throttles it instead of aborting the whole import.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListDeliveryStreamsCommand({
-            ...(marker && { ExclusiveStartDeliveryStreamName: marker }),
-          })
-        );
-        const names = list.DeliveryStreamNames ?? [];
-        // ListDeliveryStreams paginates via `ExclusiveStartDeliveryStreamName`
-        // rather than `NextToken` — the next page boundary is the last name on
-        // this page, and only when `HasMoreDeliveryStreams` says another page
-        // exists.
-        return {
-          items: names,
-          nextMarker:
-            list.HasMoreDeliveryStreams && names.length > 0 ? names[names.length - 1] : undefined,
-        };
-      },
-      describe: async (name) =>
-        await this.getClient().send(
-          new ListTagsForDeliveryStreamCommand({ DeliveryStreamName: name })
-        ),
-      tagsOf: (tagsResp) => tagsResp.Tags,
-    });
-    if (!match) return null;
-    return { physicalId: match.summary, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so that
+    // tag never exists on a real resource and the walk could not match (issue
+    // #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // delivery stream reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   /**

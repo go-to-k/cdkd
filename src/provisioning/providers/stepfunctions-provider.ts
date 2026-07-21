@@ -4,7 +4,6 @@ import {
   UpdateStateMachineCommand,
   DeleteStateMachineCommand,
   DescribeStateMachineCommand,
-  ListStateMachinesCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -22,7 +21,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -432,10 +430,6 @@ export class StepFunctionsProvider implements ResourceProvider {
    *
    * Lookup order:
    *  1. `--resource <id>=<arn>` override → verify with `DescribeStateMachine`.
-   *  2. Walk `ListStateMachines` → `ListTagsForResource(arn)` via the shared
-   *     `importTagWalk` helper. SFN returns lowercase `key`/`value` tags, so
-   *     `tagsOf` maps them to the `Key`/`Value` shape the walk's
-   *     `aws:cdk:path` matcher expects.
    *
    * SFN state machines do not expose a template-supplied name field
    * usable as a stable physicalId — the physicalId is the ARN — so the
@@ -455,31 +449,12 @@ export class StepFunctionsProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import. SFN returns
-    // lowercase `{key, value}` tags, so `tagsOf` maps them to the walk's
-    // `{Key, Value}` shape before matching.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListStateMachinesCommand({ ...(marker && { nextToken: marker }) })
-        );
-        return { items: list.stateMachines, nextMarker: list.nextToken };
-      },
-      describe: async (sm) => {
-        if (!sm.stateMachineArn) return undefined;
-        return await this.getClient().send(
-          new ListTagsForResourceCommand({ resourceArn: sm.stateMachineArn })
-        );
-      },
-      tagsOf: (tagsResp) => (tagsResp.tags ?? []).map((t) => ({ Key: t.key, Value: t.value })),
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without an ARN.
-    return { physicalId: match.summary.stateMachineArn!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a state
+    // machine reaching here needs an explicit `--resource <id>=<arn>` override.
+    return null;
   }
 
   /**

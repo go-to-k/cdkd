@@ -4,7 +4,6 @@ import {
   DeleteVectorBucketCommand,
   GetVectorBucketCommand,
   ListIndexesCommand,
-  ListVectorBucketsCommand,
   ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -15,7 +14,6 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -470,8 +468,6 @@ export class S3VectorsProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource <id>=<name>` override or `Properties.VectorBucketName`
    *     → verify via `GetVectorBucket`. The physical id is the bucket name.
-   *  2. `ListVectorBuckets` paginator + `ListTagsForResource(resourceArn)`
-   *     (tags map keyed by tag name) and match `aws:cdk:path`.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit =
@@ -491,34 +487,12 @@ export class S3VectorsProvider implements ResourceProvider {
       }
     }
 
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new ListVectorBucketsCommand({ ...(marker && { nextToken: marker }) })
-        );
-        return { items: list.vectorBuckets, nextMarker: list.nextToken };
-      },
-      describe: async (bucket) => {
-        if (!bucket.vectorBucketName || !bucket.vectorBucketArn) return undefined;
-        try {
-          return await this.getClient().send(
-            new ListTagsForResourceCommand({ resourceArn: bucket.vectorBucketArn })
-          );
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (this.isNotFoundError(err)) return undefined;
-          throw err;
-        }
-      },
-      // S3 Vectors returns tags as a MAP, not a {Key,Value} list.
-      tagsOf: (tagsResp) =>
-        Object.entries(tagsResp.tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return { physicalId: match.summary.vectorBucketName!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a vector
+    // bucket reaching here needs an explicit `--resource` override.
+    return null;
   }
 
   private isNotFoundError(error: unknown): boolean {

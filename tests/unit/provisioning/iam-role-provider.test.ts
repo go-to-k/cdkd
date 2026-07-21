@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   GetRoleCommand,
   NoSuchEntityException,
@@ -34,7 +34,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
@@ -517,62 +516,42 @@ describe('IAMRoleProvider', () => {
     });
   });
 
-  // Issue #1091 batch 2: the tag-based import lookup is an N+1 ListRoleTags
-  // burst routed through the shared importTagWalk helper — a throttled
-  // per-candidate tag read is retried with backoff instead of aborting the
-  // whole import, while a non-throttling error still surfaces immediately.
-  describe('import tag walk', () => {
+  describe('import', () => {
     const CDK_PATH = 'MyStack/MyRole/Resource';
 
     beforeEach(() => {
       // Drop once-queued responses leaked by earlier tests — clearAllMocks()
       // clears calls but NOT unconsumed mockResolvedValueOnce entries.
       mockSend.mockReset();
-      // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-      importTagWalkTestHooks.sleep = async () => {};
-    });
-    afterEach(() => {
-      importTagWalkTestHooks.sleep = undefined;
     });
 
-    const importInput = () => ({
+    const importInput = (overrides: Record<string, unknown> = {}) => ({
       logicalId: 'MyRole',
       resourceType: 'AWS::IAM::Role',
       cdkPath: CDK_PATH,
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},
+      ...overrides,
     });
 
-    /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-    const throttle = (): Error => {
-      const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
-      err.name = 'ThrottlingException';
-      err.$metadata = { httpStatusCode: 400 };
-      return err;
-    };
+    it('explicit override: verifies via GetRole and returns the physicalId', async () => {
+      mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
 
-    it('retries a throttled ListRoleTags mid-walk and still finds the match', async () => {
-      mockSend
-        .mockResolvedValueOnce({ Roles: [{ RoleName: 'my-role' }], IsTruncated: false })
-        .mockRejectedValueOnce(throttle())
-        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
-
-      const result = await provider.import(importInput());
+      const result = await provider.import(importInput({ knownPhysicalId: 'my-role' }));
 
       expect(result).toEqual({ physicalId: 'my-role', attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetRoleCommand);
     });
 
-    it('does not retry a non-throttling ListRoleTags error during the walk', async () => {
-      const denied = new Error('User is not authorized to perform iam:ListRoleTags');
-      denied.name = 'AccessDeniedException';
-      mockSend
-        .mockResolvedValueOnce({ Roles: [{ RoleName: 'my-role' }], IsTruncated: false })
-        .mockRejectedValueOnce(denied);
+    // The `aws:cdk:path` tag walk was removed (issue #1134): AWS rejects
+    // `aws:`-prefixed tag writes, so the tag never exists on a real role.
+    // With no explicit id, import returns null without issuing any AWS call.
+    it('returns null without any AWS call when only cdkPath is given', async () => {
+      const result = await provider.import(importInput());
 
-      await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

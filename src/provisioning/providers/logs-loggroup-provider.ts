@@ -28,7 +28,6 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -745,11 +744,6 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.LogGroupName` → verify via
    *     `DescribeLogGroups` (filtered by name prefix).
-   *  2. `aws:cdk:path` tag match via `DescribeLogGroups` + `ListTagsForResource`.
-   *
-   * `ListTagsForResource` for log groups uses the log-group ARN. The
-   * `DescribeLogGroups` response includes the ARN, so no extra round-trip
-   * is needed beyond the per-group tag lookup.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'LogGroupName');
@@ -766,40 +760,11 @@ export class LogsLogGroupProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import. CloudWatch Logs
-    // returns tags as a `Record<string, string>` map, re-shaped to
-    // `{Key, Value}` entries for the walk's matcher.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.logsClient.send(
-          new DescribeLogGroupsCommand({ ...(marker && { nextToken: marker }) })
-        );
-        return { items: list.logGroups, nextMarker: list.nextToken };
-      },
-      describe: async (g) => {
-        if (!g.logGroupName || !g.arn) return undefined;
-        // ListTagsForResource expects an ARN without the trailing ":*" CloudWatch
-        // appends to log-group ARNs in API responses. Strip it before the call.
-        const arnForTags = g.arn.replace(/:\*$/, '');
-        try {
-          return await this.logsClient.send(
-            new ListTagsForResourceCommand({ resourceArn: arnForTags })
-          );
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof ResourceNotFoundException) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagsResp) =>
-        Object.entries(tagsResp.tags ?? {}).map(([Key, Value]) => ({ Key, Value })),
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return { physicalId: match.summary.logGroupName!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a log
+    // group reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

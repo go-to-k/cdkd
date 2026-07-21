@@ -32,7 +32,7 @@ import { createHash } from 'node:crypto';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1304,21 +1304,11 @@ export class EFSProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    let marker: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeFileSystemsCommand({ ...(marker && { Marker: marker }) })
-      );
-      for (const fs of list.FileSystems ?? []) {
-        if (!fs.FileSystemId) continue;
-        if (matchesCdkPath(fs.Tags, input.cdkPath)) {
-          return { physicalId: fs.FileSystemId, attributes: {} };
-        }
-      }
-      marker = list.NextMarker;
-    } while (marker);
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources; a file system reaching here needs an explicit
+    // `--resource` override.
     return null;
   }
 
@@ -1338,27 +1328,9 @@ export class EFSProvider implements ResourceProvider {
       }
     }
 
-    if (!input.cdkPath) return null;
-
-    // Scope to the parent FileSystemId when the template provides one,
-    // otherwise scan all access points in the account.
-    const fileSystemId = input.properties['FileSystemId'] as string | undefined;
-    let nextToken: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new DescribeAccessPointsCommand({
-          ...(nextToken && { NextToken: nextToken }),
-          ...(fileSystemId && { FileSystemId: fileSystemId }),
-        })
-      );
-      for (const ap of list.AccessPoints ?? []) {
-        if (!ap.AccessPointId) continue;
-        if (matchesCdkPath(ap.Tags, input.cdkPath)) {
-          return { physicalId: ap.AccessPointId, attributes: {} };
-        }
-      }
-      nextToken = list.NextToken;
-    } while (nextToken);
+    // No `aws:cdk:path` tag walk (issue #1134): the tag can never exist on a
+    // real resource, so the walk could not match. An access point reaching
+    // here needs an explicit `--resource` override.
     return null;
   }
 }

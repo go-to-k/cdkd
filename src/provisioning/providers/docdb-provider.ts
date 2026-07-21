@@ -15,14 +15,12 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
-  type Tag,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -954,11 +952,10 @@ export class DocDBProvider implements ResourceProvider {
    * Supported types: `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`,
    * `AWS::DocDB::DBSubnetGroup`. Identifier name properties (`DBInstance
    * Identifier` / `DBClusterIdentifier` / `DBSubnetGroupName`) are usually
-   * present in CDK templates; fall back to `aws:cdk:path` tag lookup via
-   * the corresponding `Describe*` + `ListTagsForResource` pair otherwise.
-   * The fallback walk runs through the shared `importTagWalk` helper, so the
-   * N+1 `ListTagsForResource` burst is retried with exponential backoff when
-   * AWS throttles it instead of aborting the whole import.
+   * present in CDK templates and are resolved via the corresponding
+   * `Describe*` existence check. There is no `aws:cdk:path` tag fallback:
+   * AWS rejects `aws:`-prefixed tag writes, so that tag never exists on a
+   * real resource and the walk could not match (issue #1134).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
@@ -1145,25 +1142,10 @@ export class DocDBProvider implements ResourceProvider {
         throw err;
       }
     }
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new DescribeDBInstancesCommand({ ...(marker && { Marker: marker }) })
-        );
-        return { items: list.DBInstances, nextMarker: list.Marker };
-      },
-      describe: async (inst) =>
-        inst.DBInstanceIdentifier && inst.DBInstanceArn
-          ? await this.listTagsForResource(inst.DBInstanceArn)
-          : undefined,
-      tagsOf: (tags) => tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` returns `undefined` for a summary
-    // without both fields, so the walk never yields it as a match.
-    return { physicalId: match.summary.DBInstanceIdentifier!, attributes: {} };
+    // No `aws:cdk:path` tag walk: the tag never exists on a real resource
+    // (issue #1134). A DBInstance reaching here needs an explicit `--resource`
+    // override or a `DBInstanceIdentifier` in the template.
+    return null;
   }
 
   private async importDBCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -1179,25 +1161,10 @@ export class DocDBProvider implements ResourceProvider {
         throw err;
       }
     }
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new DescribeDBClustersCommand({ ...(marker && { Marker: marker }) })
-        );
-        return { items: list.DBClusters, nextMarker: list.Marker };
-      },
-      describe: async (c) =>
-        c.DBClusterIdentifier && c.DBClusterArn
-          ? await this.listTagsForResource(c.DBClusterArn)
-          : undefined,
-      tagsOf: (tags) => tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` returns `undefined` for a summary
-    // without both fields, so the walk never yields it as a match.
-    return { physicalId: match.summary.DBClusterIdentifier!, attributes: {} };
+    // No `aws:cdk:path` tag walk: the tag never exists on a real resource
+    // (issue #1134). A DBCluster reaching here needs an explicit `--resource`
+    // override or a `DBClusterIdentifier` in the template.
+    return null;
   }
 
   private async importDBSubnetGroup(
@@ -1215,37 +1182,9 @@ export class DocDBProvider implements ResourceProvider {
         throw err;
       }
     }
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.getClient().send(
-          new DescribeDBSubnetGroupsCommand({ ...(marker && { Marker: marker }) })
-        );
-        return { items: list.DBSubnetGroups, nextMarker: list.Marker };
-      },
-      describe: async (sg) =>
-        sg.DBSubnetGroupName && sg.DBSubnetGroupArn
-          ? await this.listTagsForResource(sg.DBSubnetGroupArn)
-          : undefined,
-      tagsOf: (tags) => tags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` returns `undefined` for a summary
-    // without both fields, so the walk never yields it as a match.
-    return { physicalId: match.summary.DBSubnetGroupName!, attributes: {} };
-  }
-
-  /**
-   * `ListTagsForResource` for the tag-walk import path. Returns the tag list
-   * (possibly empty) so `importTagWalk` can match `aws:cdk:path` against it;
-   * `undefined` is reserved for "skip this candidate", which the callers signal
-   * before calling this.
-   */
-  private async listTagsForResource(resourceArn: string): Promise<Tag[]> {
-    const resp = await this.getClient().send(
-      new ListTagsForResourceCommand({ ResourceName: resourceArn })
-    );
-    return resp.TagList ?? [];
+    // No `aws:cdk:path` tag walk: the tag never exists on a real resource
+    // (issue #1134). A DBSubnetGroup reaching here needs an explicit
+    // `--resource` override or a `DBSubnetGroupName` in the template.
+    return null;
   }
 }

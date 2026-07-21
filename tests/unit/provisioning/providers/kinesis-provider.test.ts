@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -47,7 +47,6 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
 import { KinesisStreamProvider } from '../../../../src/provisioning/providers/kinesis-provider.js';
-import { importTagWalkTestHooks } from '../../../../src/provisioning/import-tag-walk.js';
 
 describe('KinesisStreamProvider', () => {
   let provider: KinesisStreamProvider;
@@ -379,14 +378,6 @@ describe('KinesisStreamProvider', () => {
   });
 
   describe('import', () => {
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    beforeEach(() => {
-      importTagWalkTestHooks.sleep = async () => {};
-    });
-    afterEach(() => {
-      importTagWalkTestHooks.sleep = undefined;
-    });
-
     function makeInput(overrides: Record<string, unknown> = {}) {
       return {
         logicalId: 'MyStream',
@@ -410,98 +401,14 @@ describe('KinesisStreamProvider', () => {
       expect(call.input).toEqual({ StreamName: 'adopted' });
     });
 
-    it('tag-based lookup: matches aws:cdk:path on Tag[] array', async () => {
-      // ListStreams
-      mockSend.mockResolvedValueOnce({ StreamNames: ['other', 'target'], HasMoreStreams: false });
-      // ListTagsForStream(other)
-      mockSend.mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-      });
-      // ListTagsForStream(target)
-      mockSend.mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream' }],
-      });
-
-      const result = await provider.import(makeInput());
-      expect(result).toEqual({ physicalId: 'target', attributes: {} });
-    });
-
-    it('returns null when no stream matches', async () => {
-      mockSend.mockResolvedValueOnce({ StreamNames: ['only'], HasMoreStreams: false });
-      mockSend.mockResolvedValueOnce({
-        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
-      });
-
-      const result = await provider.import(makeInput());
-      expect(result).toBeNull();
-    });
-
-    // Issue #1091 batch 2: the tag walk is an N+1 ListTagsForStream burst
-    // routed through the shared importTagWalk helper — a throttled
-    // per-candidate tag read is retried with backoff instead of aborting the
-    // whole import, while a non-throttling error still surfaces immediately.
-    it('retries a throttled ListTagsForStream mid-walk and still finds the match', async () => {
-      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-      const throttled = new Error('Rate exceeded') as Error & {
-        $metadata: { httpStatusCode: number };
-      };
-      throttled.name = 'ThrottlingException';
-      throttled.$metadata = { httpStatusCode: 400 };
-
-      mockSend
-        .mockResolvedValueOnce({ StreamNames: ['target'], HasMoreStreams: false })
-        .mockRejectedValueOnce(throttled)
-        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream' }] });
-
-      const result = await provider.import(makeInput());
-
-      expect(result).toEqual({ physicalId: 'target', attributes: {} });
-      expect(mockSend).toHaveBeenCalledTimes(3);
-    });
-
-    it('does not retry a non-throttling ListTagsForStream error during the walk', async () => {
-      mockSend.mockReset(); // drop once-queued leftovers from earlier tests
-      const denied = new Error('User is not authorized to perform kinesis:ListTagsForStream');
-      denied.name = 'AccessDeniedException';
-      mockSend
-        .mockResolvedValueOnce({ StreamNames: ['target'], HasMoreStreams: false })
-        .mockRejectedValueOnce(denied);
-
-      await expect(provider.import(makeInput())).rejects.toThrow(/not authorized/);
-      expect(mockSend).toHaveBeenCalledTimes(2);
-    });
-
-    // The ListStreams pagination fold is the one non-mechanical piece of the
-    // batch-2 migration: the next page boundary is the LAST name of the
-    // current page (ExclusiveStartStreamName), and only when HasMoreStreams
-    // says another page exists.
-    it('paginates via ExclusiveStartStreamName = last name of the previous page', async () => {
-      mockSend.mockReset();
-      mockSend
-        // page 1: no match, more pages
-        .mockResolvedValueOnce({ StreamNames: ['a-stream', 'b-stream'], HasMoreStreams: true })
-        .mockResolvedValueOnce({ Tags: [] }) // tags(a-stream)
-        .mockResolvedValueOnce({ Tags: [] }) // tags(b-stream)
-        // page 2: the match
-        .mockResolvedValueOnce({ StreamNames: ['target'], HasMoreStreams: false })
-        .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream' }] });
-
-      const result = await provider.import(makeInput());
-
-      expect(result).toEqual({ physicalId: 'target', attributes: {} });
-      const secondList = mockSend.mock.calls[3][0];
-      expect(secondList.constructor.name).toBe('ListStreamsCommand');
-      expect(secondList.input).toEqual({ ExclusiveStartStreamName: 'b-stream' });
-    });
-
-    it('stops on an empty page even when HasMoreStreams is true', async () => {
-      mockSend.mockReset();
-      mockSend.mockResolvedValueOnce({ StreamNames: [], HasMoreStreams: true });
-
+    // The `aws:cdk:path` tag walk was removed (issue #1134): AWS rejects
+    // `aws:`-prefixed tag writes, so the tag never exists on a real stream.
+    // With no explicit id, import returns null without issuing any AWS call.
+    it('returns null without any AWS call when only cdkPath is given', async () => {
       const result = await provider.import(makeInput());
 
       expect(result).toBeNull();
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

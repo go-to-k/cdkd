@@ -32,7 +32,6 @@ import {
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
 import { buildReadCurrentStateContext } from './drift.js';
-import { readCdkPath } from '../cdk-path.js';
 import {
   retireCloudFormationStack,
   getCloudFormationResourceTree,
@@ -996,7 +995,6 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
     };
   }
 
-  const cdkPath = readCdkPath(resource);
   // Pre-resolve `{Ref: <X>}` intrinsics in Properties against the overrides
   // map. For `--migrate-from-cloudformation` this map is pre-populated from
   // CFn's `DescribeStackResources` with every resource's PhysicalResourceId,
@@ -1013,7 +1011,6 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
   const input: ResourceImportInput = {
     logicalId,
     resourceType: resource.Type,
-    cdkPath,
     stackName,
     region,
     properties,
@@ -1023,11 +1020,19 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
   try {
     const result: ResourceImportResult | null = await provider.import(input);
     if (!result) {
+      // The provider could not resolve a physical id: no `--resource`
+      // override, no same-named CloudFormation stack to answer
+      // `DescribeStackResources`, and no physical-name property in the
+      // template. (There is deliberately no `aws:cdk:path` tag lookup — AWS
+      // reserves the `aws:` prefix, so that tag never exists on a real
+      // resource; issue #1134.)
       return {
         logicalId,
         resourceType: resource.Type,
         outcome: 'skipped-not-found',
-        reason: 'no matching AWS resource',
+        reason:
+          'no matching AWS resource — pass --resource ' +
+          `${logicalId}=<physicalId> to adopt it explicitly`,
       };
     }
     return {

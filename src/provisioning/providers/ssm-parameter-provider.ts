@@ -16,7 +16,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -477,12 +476,10 @@ export class SSMParameterProvider implements ResourceProvider {
    *
    * SSM physical IDs ARE the parameter names (`/foo/bar`). The CDK template
    * usually carries `Properties.Name` explicitly, so the explicit-name path
-   * covers most cases. The tag-based fallback is rarely needed.
+   * covers most cases.
    *
    * Lookup order:
    *  1. `--resource` override or `Properties.Name` → verify via `GetParameter`.
-   *  2. `aws:cdk:path` tag match via `DescribeParameters` + `ListTagsForResource`
-   *     (`ResourceType: 'Parameter'`, `ResourceId: <name>`).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'Name');
@@ -496,34 +493,11 @@ export class SSMParameterProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.ssmClient.send(
-          new DescribeParametersCommand({ ...(marker && { NextToken: marker }) })
-        );
-        return { items: list.Parameters, nextMarker: list.NextToken };
-      },
-      describe: async (p) => {
-        if (!p.Name) return undefined;
-        try {
-          return await this.ssmClient.send(
-            new ListTagsForResourceCommand({ ResourceType: 'Parameter', ResourceId: p.Name })
-          );
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof ParameterNotFound) return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagsResp) => tagsResp.TagList,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips summaries without a name.
-    return { physicalId: match.summary.Name!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // parameter reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

@@ -27,8 +27,11 @@ Both pre-existing import integs bypass the path:
 - `import-nested-stack` passes `--migrate-from-cloudformation` (which reads
   `DescribeStackResources` directly).
 
-Four rounds of `importTagWalk` work (#1091, ~33 providers) went into a code path
-no integ exercised. That gap is what this fixture closes.
+Four rounds of tag-walk work (#1091, ~33 providers) went into a code path no
+integ exercised — and it turned out the path could never match on real AWS, so
+the tag walk was deleted from every provider (#1134). This fixture pins the
+resolution that actually works (the CloudFormation `DescribeStackResources`
+lookup added in #1128) so that path cannot silently regress.
 
 ## The two constraints that make it meaningful
 

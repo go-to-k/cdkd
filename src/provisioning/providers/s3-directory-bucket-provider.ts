@@ -3,8 +3,6 @@ import {
   CreateBucketCommand,
   DeleteBucketCommand,
   HeadBucketCommand,
-  ListDirectoryBucketsCommand,
-  GetBucketTaggingCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
@@ -16,7 +14,6 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -343,10 +340,6 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource <id>=<name>` override or `Properties.BucketName` →
    *     verify via `HeadBucket`.
-   *  2. `ListDirectoryBuckets` paginator + `GetBucketTagging` (TagSet:
-   *     Tag[]) and match `aws:cdk:path`. `GetBucketTagging` may surface
-   *     `NoSuchTagSet` / `AccessDenied` per-bucket — those are skipped
-   *     rather than fatal.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'BucketName');
@@ -361,35 +354,11 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // GetBucketTagging burst (one call per directory bucket in the account)
-    // is retried with exponential backoff when AWS throttles it instead of
-    // aborting the whole import. NoSuchTagSet / AccessDenied candidates are
-    // still skipped rather than fatal.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (token) => {
-        const list = await this.s3Client.send(
-          new ListDirectoryBucketsCommand({ ...(token && { ContinuationToken: token }) })
-        );
-        return { items: list.Buckets, nextMarker: list.ContinuationToken };
-      },
-      describe: async (b) => {
-        if (!b.Name) return undefined;
-        try {
-          return await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
-        } catch (err) {
-          // NoSuchTagSet / access denied → skip this bucket
-          const e = err as { name?: string };
-          if (e.name === 'NoSuchTagSet' || e.name === 'AccessDenied') return undefined;
-          throw err;
-        }
-      },
-      tagsOf: (tagging) => tagging.TagSet,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips buckets without a name.
-    return { physicalId: match.summary.Name!, attributes: {} };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // directory bucket reaching here needs an explicit `--resource` override.
+    return null;
   }
 }

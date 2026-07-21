@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateDBClusterCommand,
   CreateDBInstanceCommand,
@@ -44,7 +44,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -408,17 +407,9 @@ describe('DocDBProvider', () => {
     });
   });
 
-  // ─── import (aws:cdk:path tag walk) ───────────────────────────────
+  // ─── import ───────────────────────────────────────────────────────
 
-  describe('import tag walk', () => {
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    beforeEach(() => {
-      importTagWalkTestHooks.sleep = async () => {};
-    });
-    afterEach(() => {
-      importTagWalkTestHooks.sleep = undefined;
-    });
-
+  describe('import', () => {
     const CDK_PATH = 'MyStack/MyDb/Resource';
 
     const importInput = (
@@ -435,93 +426,34 @@ describe('DocDBProvider', () => {
         ...overrides,
       }) as Parameters<NonNullable<DocDBProvider['import']>>[0];
 
-    /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-    const throttle = (): Error => {
-      const err = new Error('Rate exceeded') as Error & {
-        name: string;
-        $metadata: { httpStatusCode: number };
-      };
-      err.name = 'ThrottlingException';
-      err.$metadata = { httpStatusCode: 400 };
-      return err;
-    };
-
-    it('DBInstance matches aws:cdk:path via ListTagsForResource', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          DBInstances: [
-            { DBInstanceIdentifier: 'other', DBInstanceArn: 'arn:aws:rds:::db:other' },
-            { DBInstanceIdentifier: 'mine', DBInstanceArn: 'arn:aws:rds:::db:mine' },
-          ],
-        })
-        .mockResolvedValueOnce({ TagList: [{ Key: 'aws:cdk:path', Value: 'somewhere/else' }] })
-        .mockResolvedValueOnce({ TagList: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
-
-      const result = await new DocDBProvider().import!(importInput('AWS::DocDB::DBInstance'));
+    it('DBInstance verifies an explicit id override via DescribeDBInstances', async () => {
+      mockSend.mockResolvedValueOnce({ DBInstances: [{ DBInstanceIdentifier: 'mine' }] });
+      const result = await new DocDBProvider().import!(
+        importInput('AWS::DocDB::DBInstance', { knownPhysicalId: 'mine' })
+      );
       expect(result).toEqual({ physicalId: 'mine', attributes: {} });
     });
 
-    it('DBCluster paginates via Marker until the tag matches', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          DBClusters: [{ DBClusterIdentifier: 'p1', DBClusterArn: 'arn:aws:rds:::cluster:p1' }],
-          Marker: 'next',
-        })
-        .mockResolvedValueOnce({ TagList: [{ Key: 'aws:cdk:path', Value: 'nope' }] })
-        .mockResolvedValueOnce({
-          DBClusters: [{ DBClusterIdentifier: 'p2', DBClusterArn: 'arn:aws:rds:::cluster:p2' }],
-        })
-        .mockResolvedValueOnce({ TagList: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
-
-      const result = await new DocDBProvider().import!(importInput('AWS::DocDB::DBCluster'));
-      expect(result).toEqual({ physicalId: 'p2', attributes: {} });
-      expect((mockSend.mock.calls[2]![0] as { input: Record<string, unknown> }).input['Marker']).toBe(
-        'next'
-      );
+    // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+    // aws:-prefixed tag writes, so the tag never exists on a real resource.
+    // With no explicit id / name property each sub-type resolves nothing and
+    // returns null immediately, issuing NO list / tag AWS call.
+    it('DBInstance returns null without any AWS call when no override / name is supplied', async () => {
+      const result = await new DocDBProvider().import!(importInput('AWS::DocDB::DBInstance'));
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('DBSubnetGroup returns null when nothing carries the cdk path', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          DBSubnetGroups: [
-            { DBSubnetGroupName: 'sg1', DBSubnetGroupArn: 'arn:aws:rds:::subgrp:sg1' },
-          ],
-        })
-        .mockResolvedValueOnce({ TagList: [{ Key: 'aws:cdk:path', Value: 'other' }] });
+    it('DBCluster returns null without any AWS call when no override / name is supplied', async () => {
+      const result = await new DocDBProvider().import!(importInput('AWS::DocDB::DBCluster'));
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
 
+    it('DBSubnetGroup returns null without any AWS call when no override / name is supplied', async () => {
       const result = await new DocDBProvider().import!(importInput('AWS::DocDB::DBSubnetGroup'));
       expect(result).toBeNull();
-    });
-
-    // Issue #1091: the N+1 ListTagsForResource burst is exactly what AWS
-    // rate-limits. Before the shared importTagWalk helper this rejected the
-    // whole import on the first throttle instead of backing off.
-    it('retries a throttled ListTagsForResource instead of failing the walk', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          DBInstances: [{ DBInstanceIdentifier: 'mine', DBInstanceArn: 'arn:aws:rds:::db:mine' }],
-        })
-        .mockRejectedValueOnce(throttle())
-        .mockResolvedValueOnce({ TagList: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
-
-      const result = await new DocDBProvider().import!(importInput('AWS::DocDB::DBInstance'));
-      expect(result).toEqual({ physicalId: 'mine', attributes: {} });
-    });
-
-    it('does NOT retry a non-throttling error from the walk', async () => {
-      const denied = new Error('AccessDeniedException: nope') as Error & { name: string };
-      denied.name = 'AccessDeniedException';
-      mockSend
-        .mockResolvedValueOnce({
-          DBInstances: [{ DBInstanceIdentifier: 'mine', DBInstanceArn: 'arn:aws:rds:::db:mine' }],
-        })
-        .mockRejectedValueOnce(denied);
-
-      await expect(
-        new DocDBProvider().import!(importInput('AWS::DocDB::DBInstance'))
-      ).rejects.toThrow(/AccessDeniedException/);
-      // list + one tag read, no retry.
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

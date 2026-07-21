@@ -274,10 +274,7 @@ export const THROTTLING_ERROR_NAMES: ReadonlySet<string> = new Set([
  *
  * BOTH signals are checked at EVERY depth. An earlier version checked the name
  * to depth 5 but the HTTP status only at depths 0 and 1, so a 429 nested two
- * links deep was missed. This is the single shared cause-walk: the read-only
- * import tag walk (`src/provisioning/import-tag-walk.ts`) composes its own
- * classifier on top of this function rather than re-implementing the traversal,
- * so the two cannot drift apart again.
+ * links deep was missed.
  */
 export function isThrottlingError(error: unknown): boolean {
   let current: unknown = error;

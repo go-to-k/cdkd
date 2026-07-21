@@ -13,7 +13,6 @@ import {
   UntagResourceCommand,
   NotFoundException,
   type CreateTopicCommandInput,
-  type ListTagsForResourceCommandOutput,
   type SubscribeCommandInput,
   type Tag,
 } from '@aws-sdk/client-sns';
@@ -23,12 +22,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import {
-  CDK_PATH_TAG,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-} from '../import-helpers.js';
-import { importTagWalk } from '../import-tag-walk.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -798,17 +792,13 @@ export class SNSTopicProvider implements ResourceProvider {
    *
    * Lookup order:
    *  1. `--resource` override → trust as ARN, verify via `GetTopicAttributes`.
-   *  2. `Properties.TopicName` → `ListTopics` to find matching ARN.
-   *  3. `aws:cdk:path` tag match via `ListTopics` + `ListTagsForResource`.
+   *  2. `Properties.TopicName` → `ListTopics` to find the matching ARN.
    *
-   * Steps 2 and 3 share ONE `ListTopics` walk (per candidate: name check
-   * first, then the tag read — only when a `cdkPath` is present), which runs
-   * through the shared `importTagWalk` helper so the N+1 `ListTagsForResource`
-   * burst is retried with exponential backoff when AWS throttles it instead
-   * of aborting the whole import. The name match is expressed to the walk as
-   * a synthetic `aws:cdk:path` tag carrying the walk's own lookup key, so a
-   * name-only template (no CDK path metadata) still resolves without any tag
-   * API call — matching the previous inline loop.
+   * The `aws:cdk:path` tag match that used to ride the same `ListTopics` walk
+   * is gone (issue #1134): AWS rejects `aws:`-prefixed tag writes, so that tag
+   * never exists on a real resource and the walk could not match. Auto-mode
+   * import resolves ids from CloudFormation's `DescribeStackResources` or the
+   * template's physical name; without a `TopicName` there is nothing to match.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -827,55 +817,24 @@ export class SNSTopicProvider implements ResourceProvider {
       typeof input.properties?.['TopicName'] === 'string'
         ? input.properties['TopicName']
         : undefined;
+    if (!desiredName) return null;
 
-    // The walk key: the template's CDK path when present, else a synthetic
-    // key for name-only lookups (never a real tag value — it only ever
-    // matches the synthetic name-match tag below). Neither present → the
-    // helper short-circuits to null without any API call.
-    const walkCdkPath =
-      input.cdkPath || (desiredName ? `cdkd:sns-topic-name:${desiredName}` : undefined);
-    /** Sentinel detail for a candidate matched by its ARN-tail topic name. */
-    const NAME_MATCH = { nameMatch: true } as const;
-
-    const match = await importTagWalk({
-      cdkPath: walkCdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await this.snsClient.send(
-          new ListTopicsCommand({ ...(marker && { NextToken: marker }) })
-        );
-        return { items: list.Topics, nextMarker: list.NextToken };
-      },
-      describe: async (
-        t
-      ): Promise<typeof NAME_MATCH | ListTagsForResourceCommandOutput | undefined> => {
-        if (!t.TopicArn) return undefined;
-        // ARN tail is the topic name: arn:aws:sns:...:NAME
+    // Match the template's TopicName against each topic's ARN tail
+    // (arn:aws:sns:...:NAME).
+    let marker: string | undefined;
+    do {
+      const list = await this.snsClient.send(
+        new ListTopicsCommand({ ...(marker && { NextToken: marker }) })
+      );
+      for (const t of list.Topics ?? []) {
+        if (!t.TopicArn) continue;
         const arnTail = t.TopicArn.substring(t.TopicArn.lastIndexOf(':') + 1);
-        if (desiredName && arnTail === desiredName) return NAME_MATCH;
-        // Only issue the tag read when the template carries a CDK path —
-        // a name-only lookup walks the list without any tag API call.
-        if (!input.cdkPath) return undefined;
-        try {
-          return await this.snsClient.send(
-            new ListTagsForResourceCommand({ ResourceArn: t.TopicArn })
-          );
-        } catch (err) {
-          // Deleted between the list and the tag read — skip the candidate.
-          if (err instanceof NotFoundException) return undefined;
-          throw err;
+        if (arnTail === desiredName) {
+          return { physicalId: t.TopicArn, attributes: {} };
         }
-      },
-      tagsOf: (detail) =>
-        'nameMatch' in detail ? [{ Key: CDK_PATH_TAG, Value: walkCdkPath }] : detail.Tags,
-    });
-    if (match?.summary.TopicArn) {
-      return { physicalId: match.summary.TopicArn, attributes: {} };
-    }
-
-    // resolveExplicitPhysicalId would have returned an explicit value above
-    // — this branch is reachable only when nothing matched.
-    void resolveExplicitPhysicalId;
+      }
+      marker = list.NextToken;
+    } while (marker);
     return null;
   }
 }

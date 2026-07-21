@@ -57,7 +57,6 @@ import {
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   GetRepositoryCommand,
-  ListRepositoriesCommand,
   ListTagsForResourceCommand,
   PutRepositoryTriggersCommand,
   TagResourceCommand,
@@ -988,70 +987,15 @@ describe('CodeCommitRepositoryProvider', () => {
       expect(result).toBeNull();
     });
 
-    it('tag-based lookup: ListRepositories + GetRepository + ListTagsForResource (tag-map shape)', async () => {
-      mockSend
-        .mockResolvedValueOnce({
-          repositories: [{ repositoryName: 'other' }, { repositoryName: 'my-repo' }],
-        }) // ListRepositories
-        .mockResolvedValueOnce({
-          repositoryMetadata: metadata({
-            repositoryName: 'other',
-            Arn: 'arn:aws:codecommit:us-east-1:123456789012:other',
-          }),
-        }) // GetRepository(other)
-        .mockResolvedValueOnce({ tags: { 'aws:cdk:path': 'MyStack/Other/Resource' } }) // ListTags(other)
-        .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository(my-repo)
-        .mockResolvedValueOnce({ tags: { 'aws:cdk:path': 'MyStack/MyRepo/Resource' } }); // ListTags(my-repo)
-
+    it('returns null without any AWS call when no override / name is supplied (no aws:cdk:path tag walk)', async () => {
+      // The aws:cdk:path tag walk is gone (issue #1134): AWS rejects
+      // aws:-prefixed tag writes, so the tag never exists on a real resource.
+      // With no explicit override / RepositoryName the provider resolves
+      // nothing and returns null immediately — the import flow relies on
+      // --resource / CFn lookup.
       const result = await provider.import(makeInput());
-
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListRepositoriesCommand);
-      expect(mockSend.mock.calls[2][0]).toBeInstanceOf(ListTagsForResourceCommand);
-      expect(result).toEqual({
-        physicalId: 'my-repo',
-        attributes: expect.objectContaining({ RepositoryId: REPO_ID }),
-      });
-    });
-
-    it('tag-based lookup paginates ListRepositories via nextToken', async () => {
-      mockSend
-        .mockResolvedValueOnce({ repositories: [{ repositoryName: 'other' }], nextToken: 't1' }) // page 1
-        .mockResolvedValueOnce({
-          repositoryMetadata: metadata({
-            repositoryName: 'other',
-            Arn: 'arn:aws:codecommit:us-east-1:123456789012:other',
-          }),
-        })
-        .mockResolvedValueOnce({ tags: {} }) // other: no match
-        .mockResolvedValueOnce({ repositories: [{ repositoryName: 'my-repo' }] }) // page 2 (no nextToken)
-        .mockResolvedValueOnce({ repositoryMetadata: metadata() })
-        .mockResolvedValueOnce({ tags: { 'aws:cdk:path': 'MyStack/MyRepo/Resource' } });
-
-      const result = await provider.import(makeInput());
-
-      const page1 = mockSend.mock.calls[0][0];
-      expect(page1).toBeInstanceOf(ListRepositoriesCommand);
-      expect('nextToken' in page1.input).toBe(false);
-      const page2 = mockSend.mock.calls[3][0];
-      expect(page2).toBeInstanceOf(ListRepositoriesCommand);
-      expect(page2.input.nextToken).toBe('t1');
-      expect(result?.physicalId).toBe('my-repo');
-    });
-
-    it('tag-based lookup with no match: returns null', async () => {
-      mockSend
-        .mockResolvedValueOnce({ repositories: [{ repositoryName: 'other' }] })
-        .mockResolvedValueOnce({
-          repositoryMetadata: metadata({
-            repositoryName: 'other',
-            Arn: 'arn:aws:codecommit:us-east-1:123456789012:other',
-          }),
-        })
-        .mockResolvedValueOnce({ tags: {} });
-
-      const result = await provider.import(makeInput());
-
       expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

@@ -29,7 +29,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
-import { importTagWalkTestHooks } from '../../../src/provisioning/import-tag-walk.js';
 
 const STANDARD_TOPIC_ARN = 'arn:aws:sns:us-east-1:0:standard-topic';
 const FIFO_TOPIC_ARN = 'arn:aws:sns:us-east-1:0:fifo-topic.fifo';
@@ -274,15 +273,13 @@ describe('SNSTopicProvider read-update round-trip', () => {
   });
 });
 
-// Issue #1091 batch 2: the tag-based import lookup is an N+1
-// ListTagsForResource burst routed through the shared importTagWalk helper —
-// a throttled per-candidate tag read is retried with backoff instead of
-// aborting the whole import, while a non-throttling error still surfaces
-// immediately. The SNS walk ALSO matches by `Properties.TopicName` (ARN tail)
-// per candidate BEFORE the tag read, and that name path must keep working
-// even without a CDK path.
-describe('SNSTopicProvider import tag walk', () => {
-  const CDK_PATH = 'MyStack/MyTopic/Resource';
+// Auto-mode import resolves a topic from an explicit `--resource` override
+// (an ARN, verified via GetTopicAttributes) or from the template's
+// `Properties.TopicName`, matched against each topic's ARN tail via a
+// paginated ListTopics walk. The `aws:cdk:path` tag match that used to ride
+// the same walk is gone (issue #1134): AWS rejects `aws:`-prefixed tag writes,
+// so that tag never exists on a real resource and the walk could not match.
+describe('SNSTopicProvider import (name-based lookup)', () => {
   const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
 
   beforeEach(() => {
@@ -290,59 +287,36 @@ describe('SNSTopicProvider import tag walk', () => {
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
     // clears calls but NOT unconsumed mockResolvedValueOnce entries.
     mockSend.mockReset();
-    // Skip the walk's real backoff sleeps (module-level seam; cleared in afterEach).
-    importTagWalkTestHooks.sleep = async () => {};
-  });
-  afterEach(() => {
-    importTagWalkTestHooks.sleep = undefined;
   });
 
   const importInput = (
-    overrides: Partial<{ cdkPath: string; properties: Record<string, unknown> }> = {}
+    overrides: Partial<{
+      cdkPath: string;
+      knownPhysicalId: string;
+      properties: Record<string, unknown>;
+    }> = {}
   ) => ({
     logicalId: 'MyTopic',
     resourceType: 'AWS::SNS::Topic',
-    cdkPath: CDK_PATH,
+    cdkPath: 'MyStack/MyTopic/Resource',
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},
     ...overrides,
   });
 
-  /** AWS-SDK-shaped throttling rejection (HTTP 400 + throttling name). */
-  const throttle = (): Error => {
-    const err = new Error('Rate exceeded') as Error & { $metadata: { httpStatusCode: number } };
-    err.name = 'ThrottlingException';
-    err.$metadata = { httpStatusCode: 400 };
-    return err;
-  };
-
-  it('retries a throttled ListTagsForResource mid-walk and still finds the match', async () => {
-    mockSend
-      .mockResolvedValueOnce({ Topics: [{ TopicArn: TOPIC_ARN }] })
-      .mockRejectedValueOnce(throttle())
-      .mockResolvedValueOnce({ Tags: [{ Key: 'aws:cdk:path', Value: CDK_PATH }] });
+  it('resolves an explicit --resource override via GetTopicAttributes', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { TopicArn: TOPIC_ARN } });
 
     const provider = new SNSTopicProvider();
-    const result = await provider.import(importInput());
+    const result = await provider.import(importInput({ knownPhysicalId: TOPIC_ARN }));
 
     expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
-    expect(mockSend).toHaveBeenCalledTimes(3);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetTopicAttributesCommand');
   });
 
-  it('does not retry a non-throttling ListTagsForResource error during the walk', async () => {
-    const denied = new Error('User is not authorized to perform sns:ListTagsForResource');
-    denied.name = 'AuthorizationErrorException';
-    mockSend
-      .mockResolvedValueOnce({ Topics: [{ TopicArn: TOPIC_ARN }] })
-      .mockRejectedValueOnce(denied);
-
-    const provider = new SNSTopicProvider();
-    await expect(provider.import(importInput())).rejects.toThrow(/not authorized/);
-    expect(mockSend).toHaveBeenCalledTimes(2);
-  });
-
-  it('matches Properties.TopicName by ARN tail without any tag read (no cdkPath)', async () => {
+  it('matches Properties.TopicName by ARN tail via ListTopics', async () => {
     mockSend.mockResolvedValueOnce({
       Topics: [
         { TopicArn: 'arn:aws:sns:us-east-1:123456789012:other-topic' },
@@ -352,22 +326,50 @@ describe('SNSTopicProvider import tag walk', () => {
 
     const provider = new SNSTopicProvider();
     const result = await provider.import(
-      importInput({ cdkPath: '', properties: { TopicName: 'my-topic' } })
+      importInput({ properties: { TopicName: 'my-topic' } })
     );
 
     expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
-    // ListTopics only — a name-only lookup must never issue tag reads.
+    // ListTopics only — no per-candidate tag read.
     expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0].constructor.name).toBe('ListTopicsCommand');
   });
 
-  it('name match short-circuits the tag read even when a cdkPath is present', async () => {
-    mockSend.mockResolvedValueOnce({ Topics: [{ TopicArn: TOPIC_ARN }] });
+  it('folds the NextToken across pages until the ARN tail matches', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Topics: [{ TopicArn: 'arn:aws:sns:us-east-1:123456789012:other-topic' }],
+        NextToken: 'page-2',
+      })
+      .mockResolvedValueOnce({ Topics: [{ TopicArn: TOPIC_ARN }] });
+
+    const provider = new SNSTopicProvider();
+    const result = await provider.import(
+      importInput({ properties: { TopicName: 'my-topic' } })
+    );
+
+    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0][0].input.NextToken).toBeUndefined();
+    expect(mockSend.mock.calls[1][0].input.NextToken).toBe('page-2');
+  });
+
+  it('returns null when no topic name matches', async () => {
+    mockSend.mockResolvedValueOnce({
+      Topics: [{ TopicArn: 'arn:aws:sns:us-east-1:123456789012:other-topic' }],
+    });
 
     const provider = new SNSTopicProvider();
     const result = await provider.import(importInput({ properties: { TopicName: 'my-topic' } }));
 
-    expect(result).toEqual({ physicalId: TOPIC_ARN, attributes: {} });
-    // The matching candidate is resolved by name — no ListTagsForResource.
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(result).toBeNull();
+  });
+
+  it('returns null without any AWS call when no override and no TopicName', async () => {
+    const provider = new SNSTopicProvider();
+    const result = await provider.import(importInput({ cdkPath: '' }));
+
+    expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

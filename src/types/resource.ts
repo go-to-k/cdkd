@@ -108,12 +108,6 @@ export interface ResourceImportInput {
   /** CloudFormation resource type (e.g., `AWS::S3::Bucket`). */
   resourceType: string;
 
-  /**
-   * CDK construct path that CDK encodes into the `aws:cdk:path` tag, e.g.
-   * `MyStack/MyConstruct/MyBucket`. The most reliable lookup key when present.
-   */
-  cdkPath: string;
-
   /** Physical CloudFormation stack name (used for naming-pattern fallback). */
   stackName: string;
 

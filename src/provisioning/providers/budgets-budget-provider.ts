@@ -4,12 +4,10 @@ import {
   UpdateBudgetCommand,
   DeleteBudgetCommand,
   DescribeBudgetCommand,
-  DescribeBudgetsCommand,
   CreateNotificationCommand,
   DeleteNotificationCommand,
   CreateSubscriberCommand,
   DeleteSubscriberCommand,
-  ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
   NotFoundException,
@@ -28,7 +26,6 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { importTagWalk } from '../import-tag-walk.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -724,9 +721,6 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * Lookup order:
    *  1. `--resource` override or `Properties.Budget.BudgetName` → verify via
    *     `DescribeBudget`.
-   *  2. `aws:cdk:path` tag match: walk `DescribeBudgets` and check each
-   *     budget's tags via `ListTagsForResource` (budget ARNs are
-   *     region-free, so the lookup works from any deploy region).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const rawBudget = (input.properties['Budget'] ?? {}) as Record<string, unknown>;
@@ -754,38 +748,11 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       }
     }
 
-    // Tag-based fallback via the shared throttle-tolerant walk: the N+1
-    // ListTagsForResource burst is retried with exponential backoff when AWS
-    // throttles it instead of aborting the whole import. Every DescribeBudgets
-    // page carries the required AccountId resolved above.
-    const match = await importTagWalk({
-      cdkPath: input.cdkPath,
-      logicalId: input.logicalId,
-      listPage: async (marker) => {
-        const list = await client.send(
-          new DescribeBudgetsCommand({
-            AccountId: accountId,
-            ...(marker && { NextToken: marker }),
-          })
-        );
-        return { items: list.Budgets, nextMarker: list.NextToken };
-      },
-      describe: async (budget) => {
-        if (!budget.BudgetName) return undefined;
-        return await client.send(
-          new ListTagsForResourceCommand({
-            ResourceARN: this.budgetArn(accountId, budget.BudgetName),
-          })
-        );
-      },
-      tagsOf: (tags) => tags.ResourceTags,
-    });
-    if (!match) return null;
-    // Non-null by construction: `describe` skips budgets without a name.
-    const budgetName = match.summary.BudgetName!;
-    return {
-      physicalId: budgetName,
-      attributes: { Arn: this.budgetArn(accountId, budgetName) },
-    };
+    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+    // that tag never exists on a real resource and the walk could not match
+    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+    // DescribeStackResources or the template's physical-name property; a
+    // budget reaching here needs an explicit `--resource` override.
+    return null;
   }
 }
