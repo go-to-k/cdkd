@@ -1,3 +1,10 @@
+## [0.257.3](https://github.com/go-to-k/cdkd/compare/v0.257.2...v0.257.3) (2026-07-21)
+
+
+### Bug Fixes
+
+* **deploy:** honor UpdateReplacePolicy Retain in the property-driven stateful guard ([#1138](https://github.com/go-to-k/cdkd/issues/1138)) ([9f72271](https://github.com/go-to-k/cdkd/commit/9f722712521f7c610e075b5c50eb9e8c47055ab4))
+
 ## [0.257.2](https://github.com/go-to-k/cdkd/compare/v0.257.1...v0.257.2) (2026-07-20)
 
 
