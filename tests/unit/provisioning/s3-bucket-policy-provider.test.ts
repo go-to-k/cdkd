@@ -52,7 +52,6 @@ describe('S3BucketPolicyProvider', () => {
       return {
         logicalId: 'MyBucketPolicy',
         resourceType: 'AWS::S3::BucketPolicy',
-        cdkPath: 'MyStack/MyBucketPolicy',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: propOverride ?? {

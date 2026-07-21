@@ -27,7 +27,6 @@ describe('LambdaLayerVersionProvider — import', () => {
     return {
       logicalId: 'MyLayer',
       resourceType: 'AWS::Lambda::LayerVersion',
-      cdkPath: 'MyStack/MyLayer',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {} as Record<string, unknown>,

@@ -50,7 +50,6 @@ describe('ApiGatewayV2Provider import', () => {
   function makeInput(
     overrides: Partial<{
       knownPhysicalId: string;
-      cdkPath: string;
       resourceType: string;
       properties: Record<string, unknown>;
     }> = {}
@@ -58,7 +57,6 @@ describe('ApiGatewayV2Provider import', () => {
     return {
       logicalId: 'MyApi',
       resourceType: 'AWS::ApiGatewayV2::Api',
-      cdkPath: 'MyStack/MyApi/Resource',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

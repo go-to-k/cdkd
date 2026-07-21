@@ -713,7 +713,6 @@ function importInput(overrides: Record<string, unknown> = {}) {
   return {
     logicalId: 'MyCluster',
     resourceType: RESOURCE_TYPE,
-    cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: { ...BASE_PROPS },

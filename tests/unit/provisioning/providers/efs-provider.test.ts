@@ -667,7 +667,6 @@ describe('EFSProvider', () => {
       return {
         logicalId: 'MyFS',
         resourceType: 'AWS::EFS::FileSystem',
-        cdkPath: 'MyStack/MyFS',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

@@ -25,7 +25,6 @@ describe('IAMInstanceProfileProvider — import', () => {
     return {
       logicalId: 'MyInstanceProfile',
       resourceType: 'AWS::IAM::InstanceProfile',
-      cdkPath: 'MyStack/MyInstanceProfile',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {} as Record<string, unknown>,

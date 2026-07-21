@@ -151,7 +151,6 @@ describe('SNSSubscriptionProvider', () => {
       return {
         logicalId: 'MySubscription',
         resourceType: 'AWS::SNS::Subscription',
-        cdkPath: 'MyStack/MySubscription',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {

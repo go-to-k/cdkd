@@ -188,8 +188,6 @@ describe('SQSQueueProvider.readCurrentState', () => {
 // `--resource` (queue URL) / `Properties.QueueName`; anything else returns null
 // without a lookup.
 describe('SQSQueueProvider import', () => {
-  const CDK_PATH = 'MyStack/MyQueue/Resource';
-
   beforeEach(() => {
     vi.clearAllMocks();
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
@@ -200,7 +198,6 @@ describe('SQSQueueProvider import', () => {
   const importInput = () => ({
     logicalId: 'MyQueue',
     resourceType: 'AWS::SQS::Queue',
-    cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},

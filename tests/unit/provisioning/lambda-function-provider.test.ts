@@ -1840,8 +1840,6 @@ describe('LambdaFunctionProvider', () => {
 // `--resource` / `Properties.FunctionName`; anything else returns null without
 // a lookup.
 describe('LambdaFunctionProvider import', () => {
-  const CDK_PATH = 'MyStack/MyFunction/Resource';
-
   beforeEach(() => {
     vi.clearAllMocks();
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
@@ -1852,7 +1850,6 @@ describe('LambdaFunctionProvider import', () => {
   const importInput = () => ({
     logicalId: 'MyFunction',
     resourceType: 'AWS::Lambda::Function',
-    cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},

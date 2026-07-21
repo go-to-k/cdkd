@@ -411,7 +411,6 @@ describe('S3VectorsProvider', () => {
       return {
         logicalId: 'MyVectorBucket',
         resourceType: 'AWS::S3Vectors::VectorBucket',
-        cdkPath: 'MyStack/MyVectorBucket',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {} as Record<string, unknown>,
@@ -433,8 +432,8 @@ describe('S3VectorsProvider', () => {
       expect(result?.physicalId).toBe('my-bucket');
     });
 
-    it('returns null without override and without cdkPath', async () => {
-      const result = await provider.import!(makeInput({ cdkPath: '' }));
+    it('returns null without override and without an explicit id', async () => {
+      const result = await provider.import!(makeInput());
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
     });

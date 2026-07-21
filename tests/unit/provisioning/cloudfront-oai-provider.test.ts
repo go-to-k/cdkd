@@ -314,7 +314,6 @@ describe('CloudFrontOAIProvider', () => {
       return {
         logicalId: 'MyOai',
         resourceType: 'AWS::CloudFront::CloudFrontOriginAccessIdentity',
-        cdkPath: 'MyStack/MyOai',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

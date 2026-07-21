@@ -51,14 +51,12 @@ describe('ECRProvider import', () => {
   function makeInput(
     overrides: Partial<{
       knownPhysicalId: string;
-      cdkPath: string;
       properties: Record<string, unknown>;
     }> = {}
   ) {
     return {
       logicalId: 'MyRepo',
       resourceType: 'AWS::ECR::Repository',
-      cdkPath: 'MyStack/MyRepo/Resource',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

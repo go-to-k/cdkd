@@ -398,7 +398,6 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
       return {
         logicalId: 'MyNs',
         resourceType: HTTP_NS,
-        cdkPath: 'MyStack/MyNs',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: { Name: 'shared-name' } as Record<string, unknown>,

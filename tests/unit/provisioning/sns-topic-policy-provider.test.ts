@@ -53,7 +53,6 @@ describe('SNSTopicPolicyProvider', () => {
       return {
         logicalId: 'MyTopicPolicy',
         resourceType: 'AWS::SNS::TopicPolicy',
-        cdkPath: 'MyStack/MyTopicPolicy',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: propOverride ?? {

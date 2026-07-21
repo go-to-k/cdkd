@@ -382,7 +382,6 @@ describe('KinesisStreamProvider', () => {
       return {
         logicalId: 'MyStream',
         resourceType: 'AWS::Kinesis::Stream',
-        cdkPath: 'MyStack/MyStream',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

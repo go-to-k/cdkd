@@ -258,11 +258,10 @@ describe('CloudTrailProvider', () => {
   // ─── import ─────────────────────────────────────────────────────────
 
   describe('import', () => {
-    function makeInput(overrides: Partial<{ knownPhysicalId: string; cdkPath: string; properties: Record<string, unknown> }> = {}) {
+    function makeInput(overrides: Partial<{ knownPhysicalId: string; properties: Record<string, unknown> }> = {}) {
       return {
         logicalId: 'MyTrail',
         resourceType: 'AWS::CloudTrail::Trail',
-        cdkPath: 'MyStack/MyTrail/Resource',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

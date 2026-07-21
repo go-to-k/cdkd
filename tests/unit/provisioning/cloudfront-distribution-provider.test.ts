@@ -1051,8 +1051,6 @@ describe('CloudFrontDistributionProvider', () => {
   // #1134): AWS rejects `aws:`-prefixed tag writes, so that tag never exists on
   // a real resource and the walk could not match.
   describe('import', () => {
-    const CDK_PATH = 'MyStack/MyDistribution/Resource';
-
     beforeEach(() => {
       // Drop once-queued responses leaked by earlier tests: clearAllMocks()
       // clears calls but NOT unconsumed mockResolvedValueOnce entries.
@@ -1062,7 +1060,6 @@ describe('CloudFrontDistributionProvider', () => {
     const importInput = (overrides: Record<string, unknown> = {}) => ({
       logicalId: 'MyDistribution',
       resourceType: 'AWS::CloudFront::Distribution',
-      cdkPath: CDK_PATH,
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

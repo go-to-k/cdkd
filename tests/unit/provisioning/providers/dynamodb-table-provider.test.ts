@@ -1033,8 +1033,6 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
 });
 
 describe('DynamoDBTableProvider import', () => {
-  const CDK_PATH = 'MyStack/MyTable/Resource';
-
   beforeEach(() => {
     vi.clearAllMocks();
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
@@ -1045,7 +1043,6 @@ describe('DynamoDBTableProvider import', () => {
   const importInput = (overrides: Record<string, unknown> = {}) => ({
     logicalId: 'MyTable',
     resourceType: 'AWS::DynamoDB::Table',
-    cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},

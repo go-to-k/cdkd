@@ -44,7 +44,6 @@ describe('LambdaUrlProvider', () => {
       return {
         logicalId: 'MyUrl',
         resourceType: 'AWS::Lambda::Url',
-        cdkPath: 'MyStack/MyUrl',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {

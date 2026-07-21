@@ -1755,8 +1755,6 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
 // `--resource` / `Properties.BucketName`; anything else returns null without a
 // lookup.
 describe('S3BucketProvider import', () => {
-  const CDK_PATH = 'MyStack/MyBucket/Resource';
-
   beforeEach(() => {
     vi.clearAllMocks();
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
@@ -1767,7 +1765,6 @@ describe('S3BucketProvider import', () => {
   const importInput = () => ({
     logicalId: 'MyBucket',
     resourceType: 'AWS::S3::Bucket',
-    cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},

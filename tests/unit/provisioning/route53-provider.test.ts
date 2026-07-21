@@ -833,7 +833,6 @@ describe('Route53Provider', () => {
       return {
         logicalId: 'MyZone',
         resourceType: 'AWS::Route53::HostedZone',
-        cdkPath: 'MyStack/MyZone',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},

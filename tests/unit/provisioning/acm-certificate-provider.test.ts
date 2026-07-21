@@ -445,7 +445,6 @@ describe('ACMCertificateProvider', () => {
       return {
         logicalId: 'MyCert',
         resourceType: 'AWS::CertificateManager::Certificate',
-        cdkPath: 'MyStack/MyCert',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {} as Record<string, unknown>,

@@ -443,7 +443,6 @@ describe('IAMManagedPolicyProvider', () => {
       return {
         logicalId: 'MyManagedPolicy',
         resourceType: 'AWS::IAM::ManagedPolicy',
-        cdkPath: 'MyStack/MyManagedPolicy',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {} as Record<string, unknown>,

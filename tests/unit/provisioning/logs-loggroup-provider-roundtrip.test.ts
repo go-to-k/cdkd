@@ -402,8 +402,6 @@ describe('LogsLogGroupProvider read-update round-trip', () => {
 // `--resource` / `Properties.LogGroupName`; anything else returns null without
 // a lookup.
 describe('LogsLogGroupProvider import', () => {
-  const CDK_PATH = 'MyStack/MyLogGroup/Resource';
-
   beforeEach(() => {
     vi.clearAllMocks();
     // Drop once-queued responses leaked by earlier tests - clearAllMocks()
@@ -414,7 +412,6 @@ describe('LogsLogGroupProvider import', () => {
   const importInput = () => ({
     logicalId: 'MyLogGroup',
     resourceType: RESOURCE_TYPE,
-    cdkPath: CDK_PATH,
     stackName: 'MyStack',
     region: 'us-east-1',
     properties: {},

@@ -44,7 +44,6 @@ describe('LambdaPermissionProvider', () => {
       return {
         logicalId: 'MyPermission',
         resourceType: 'AWS::Lambda::Permission',
-        cdkPath: 'MyStack/MyPermission',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {

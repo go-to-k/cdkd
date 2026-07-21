@@ -51,7 +51,6 @@ describe('AppSyncProvider import', () => {
   function makeInput(
     overrides: Partial<{
       knownPhysicalId: string;
-      cdkPath: string;
       resourceType: string;
       properties: Record<string, unknown>;
     }> = {}
@@ -59,7 +58,6 @@ describe('AppSyncProvider import', () => {
     return {
       logicalId: 'MyApi',
       resourceType: 'AWS::AppSync::GraphQLApi',
-      cdkPath: 'MyStack/MyApi/Resource',
       stackName: 'MyStack',
       region: 'us-east-1',
       properties: {},

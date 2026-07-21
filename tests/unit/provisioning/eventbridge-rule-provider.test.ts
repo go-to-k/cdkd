@@ -520,7 +520,6 @@ describe('EventBridgeRuleProvider', () => {
       return {
         logicalId: 'MyRule',
         resourceType: 'AWS::Events::Rule',
-        cdkPath: 'MyStack/MyRule',
         stackName: 'MyStack',
         region: 'us-east-1',
         properties: {},
@@ -577,7 +576,7 @@ describe('EventBridgeRuleProvider', () => {
     // `aws:`-prefixed tag writes, so the tag never exists on a real rule.
     // With no explicit id and no template Name, import returns null without
     // issuing any AWS call.
-    it('returns null without any AWS call when only cdkPath is given', async () => {
+    it('returns null without any AWS call when no explicit id and no template Name are given', async () => {
       const result = await provider.import(makeInput());
 
       expect(result).toBeNull();
