@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd Lambda async destinations (EventInvokeConfig) integ.
 #
-# AWS::Lambda::EventInvokeConfig has NO SDK provider in cdkd, so it routes via
-# Cloud Control. It carries a write-only DestinationConfig (OnSuccess/OnFailure)
-# that Cloud Control read handlers cannot return. The regression this pins: an
-# in-place UPDATE that changes MaximumRetryAttempts must still re-include the
-# write-only DestinationConfig in the patch, or the destinations get silently
-# dropped (write-only-properties.ts re-include; issue #809).
+# AWS::Lambda::EventInvokeConfig has a dedicated SDK provider in cdkd (issue
+# #919), so it routes via `sdk`, not Cloud Control. The provider issues
+# PutFunctionEventInvokeConfig, a synchronous full-replace write (exactly what
+# CloudFormation uses for this type) that sends the template's DestinationConfig
+# (OnSuccess/OnFailure) verbatim on every write. The regression this pins: an
+# in-place UPDATE that changes MaximumRetryAttempts must still re-send the
+# DestinationConfig so BOTH destinations survive. The prior CC read-modify-write
+# route dropped them (read handlers cannot return the write-only
+# DestinationConfig, and an AWS-injected empty OnSuccess:{} even failed CC model
+# validation on every UPDATE) -- the full-replace SDK write sidesteps that
+# entirely (issue #809 / #919).
 #
 # Phases:
 #   1. Deploy baseline (retryAttempts=2). Assert the EventInvokeConfig reached
 #      AWS with MaximumRetryAttempts=2, MaximumEventAgeInSeconds=300, and BOTH
-#      OnSuccess + OnFailure destinations wired; assert it routed via cc-api.
+#      OnSuccess + OnFailure destinations wired; assert it routed via sdk.
 #      Functional: async-invoke the function with a success payload and confirm
 #      the onSuccess record lands in the success SQS queue (condition=Success).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (retryAttempts 2 -> 1). Assert the
@@ -168,15 +173,15 @@ if [[ "${FAIL_DEST_P1}" != *":${FAILURE_Q}" ]]; then
 fi
 echo "    EventInvokeConfig: retries=2, maxAge=300, OnSuccess+OnFailure wired"
 
-# Assert it routed via Cloud Control (no SDK provider for this type).
+# Assert it routed via the SDK provider (issue #919 added one for this type).
 PROVISIONED_BY="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::Lambda::EventInvokeConfig");process.stdout.write((r[k]&&r[k].provisionedBy)||"")})')"
-if [ "${PROVISIONED_BY}" != "cc-api" ]; then
-  echo "FAIL: expected EventInvokeConfig provisionedBy=cc-api, got '${PROVISIONED_BY}'" >&2
+if [ "${PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: expected EventInvokeConfig provisionedBy=sdk, got '${PROVISIONED_BY}'" >&2
   exit 1
 fi
-echo "    EventInvokeConfig routed via Cloud Control (provisionedBy=cc-api)"
+echo "    EventInvokeConfig routed via SDK provider (provisionedBy=sdk)"
 
 # Functional: async-invoke success path -> onSuccess record in success queue.
 echo "==> Phase 1 functional: async invoke -> onSuccess SQS delivery"
@@ -239,4 +244,4 @@ echo "    cdkd state removed"
 
 sweep_log_groups
 
-echo "[verify] PASS — Lambda EventInvokeConfig CREATE + functional onSuccess + in-place UPDATE (write-only DestinationConfig preserved) + destroy, all 3 phases passed"
+echo "[verify] PASS — Lambda EventInvokeConfig CREATE + functional onSuccess + in-place UPDATE (DestinationConfig preserved via SDK full-replace) + destroy, all 3 phases passed"
