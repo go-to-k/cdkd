@@ -12,11 +12,12 @@ Stack: `CdkdRenameRefactorExample`.
 
 ## What it exercises
 
-1. **Rename = create new + retarget kept + delete old, in dependency order.**
-   Generation "a" (`WorkQueueA` / `DataA` / `HandlerA`) becomes generation "b"
-   under `CDKD_TEST_UPDATE=true`. The deploy must create the new resources
-   FIRST, update the kept rule's target to the new lambda ARN, and only then
-   delete the old generation.
+1. **Rename = create new + retarget kept + delete old.** Generation "a"
+   (`WorkQueueA` / `DataA` / `HandlerA`) becomes generation "b" under
+   `CDKD_TEST_UPDATE=true`. verify.sh asserts the END STATE after one deploy:
+   the new generation exists, the kept rule's single target is the new lambda
+   ARN, and every old-generation resource is gone. (Intra-deploy ordering is
+   the engine's concern and is not asserted here.)
 2. **Reference rewiring.** The renamed lambda's env (`QUEUE_URL` /
    `TABLE_NAME`) must carry the NEW generation's values (verified by API
    read-back AND a real invoke).

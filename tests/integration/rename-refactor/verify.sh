@@ -115,7 +115,11 @@ cleanup() {
     [ -n "${url}" ] && aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1
     aws dynamodb delete-table --table-name "${PFX}-data-${gen}" --region "${REGION}" >/dev/null 2>&1
   done
-  aws events remove-targets --rule "${RULE_NAME}" --ids Target0 --region "${REGION}" >/dev/null 2>&1
+  # Resolve target ids dynamically -- hardcoding CDK's generated "Target0"
+  # would silently no-op if the id convention ever changes, leaking the rule.
+  target_ids="$(aws events list-targets-by-rule --rule "${RULE_NAME}" --region "${REGION}" --query 'Targets[].Id' --output text 2>/dev/null)"
+  # shellcheck disable=SC2086 # word splitting of the id list is intentional
+  [ -n "${target_ids}" ] && aws events remove-targets --rule "${RULE_NAME}" --ids ${target_ids} --region "${REGION}" >/dev/null 2>&1
   aws events delete-rule --name "${RULE_NAME}" --region "${REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
   sweep_log_groups
@@ -221,7 +225,15 @@ if [ "${RULE_TARGET_P2}" != "${FN_ARN_B}" ]; then
   echo "FAIL: kept rule target expected ${FN_ARN_B}, got ${RULE_TARGET_P2}" >&2
   exit 1
 fi
-echo "    kept rule ${RULE_NAME} retargeted to handler-b"
+# Exactly ONE target: a retarget that ADDED the new ARN instead of replacing
+# would leave a stale handler-a target behind while Targets[0] still matches.
+RULE_TARGET_COUNT_P2="$(aws events list-targets-by-rule --rule "${RULE_NAME}" --region "${REGION}" \
+  --query 'length(Targets)' --output text)"
+if [ "${RULE_TARGET_COUNT_P2}" != "1" ]; then
+  echo "FAIL: kept rule expected exactly 1 target after retarget, got ${RULE_TARGET_COUNT_P2}" >&2
+  exit 1
+fi
+echo "    kept rule ${RULE_NAME} retargeted to handler-b (single target)"
 
 # Old generation must be gone after the rename deploy.
 assert_gone "old lambda ${PFX}-handler-a still exists after rename" \
