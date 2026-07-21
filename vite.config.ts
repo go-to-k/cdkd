@@ -199,6 +199,11 @@ export default defineConfig({
       },
       typecheck: {
         command: 'tsc --project tsconfig.json --noEmit',
+        // Same reason as `typecheck:test` below: Vite+'s task cache does not
+        // invalidate on a `src/**` change, so a stale green replays as a
+        // "cache hit" even after a real type error is introduced (verified).
+        // A type-check gate must never be skipped by the cache.
+        cache: false,
       },
       // `vp check` (and the `typecheck` task above) type-check only
       // tsconfig.json, whose `include` is `src/**` + `types/**` and whose
