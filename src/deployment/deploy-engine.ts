@@ -2503,6 +2503,13 @@ export class DeployEngine {
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
         const dependencies = this.extractAllDependencies(template, logicalId);
 
+        // `UpdateReplacePolicy: Retain` orphans the OLD physical resource on a
+        // replacement (the create-first path below leaves it in place — see the
+        // "Retaining old" branch), so a property-driven replacement of a
+        // Retain-policy resource loses NO data. Read it here so the stateful
+        // guard can honor it (and reuse it at the replace/delete site below).
+        const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
+
         if (needsReplacement) {
           // Stateful guard for PROPERTY-DRIVEN replacement (an immutable /
           // createOnly property changed in the template). DELETE+CREATEing a
@@ -2515,8 +2522,13 @@ export class DeployEngine {
           // recreate-flagged target has already been validated. Uses the
           // conservative mid-deploy variant (treats a non-probed S3 bucket as
           // stateful) since the diff loop has no chance to run the async
-          // object-count probe.
-          if (propertyDrivenReplacement && !recreateFlagged) {
+          // object-count probe. A `Retain` UpdateReplacePolicy is exempt: the
+          // old resource + its data survive the replacement (orphaned, not
+          // deleted), so there is no data loss to confirm. `Snapshot` is NOT
+          // exempt — the property-driven path does not implement snapshot-on-
+          // replace and falls through to the DELETE branch, so its data really
+          // would be lost.
+          if (propertyDrivenReplacement && !recreateFlagged && updateReplacePolicy !== 'Retain') {
             const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
             if (statefulReason && this.options.forceStatefulRecreation !== true) {
               const immutableProps = change.propertyChanges
@@ -2593,8 +2605,8 @@ export class DeployEngine {
           // explicit cost of opting into recreate; the design doc § 2
           // calls this out as "Old physical resource: destroyed via SDK
           // Provider ... New physical resource: created via CC API",
-          // i.e. destroy-then-create.
-          const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
+          // i.e. destroy-then-create. (`updateReplacePolicy` is read once
+          // above, before the stateful guard, and reused here.)
           const oldDeleteProvider = this.providerRegistry.getProviderFor({
             resourceType,
             provisionedBy: currentResource.provisionedBy,
