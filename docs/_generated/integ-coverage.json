@@ -824,6 +824,7 @@
         "multi-resource",
         "multi-stack-deps",
         "remove-protection",
+        "rename-refactor",
         "s3-event-notification",
         "serverless-api",
         "sns-event-source",
@@ -893,6 +894,10 @@
           "l2"
         ],
         "remove-protection": [
+          "l2",
+          "literal"
+        ],
+        "rename-refactor": [
           "l2",
           "literal"
         ],
@@ -2815,6 +2820,7 @@
         "eventbridge-api-destination",
         "eventbridge-input-transformer",
         "iam-propagation-stress",
+        "rename-refactor",
         "replacement-immutable-name",
         "scheduled-task"
       ],
@@ -2832,6 +2838,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "rename-refactor": [
+          "l2",
+          "literal"
         ],
         "replacement-immutable-name": [
           "l2",
@@ -3530,6 +3540,7 @@
         "recreate-mixed-direction",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
+        "rename-refactor",
         "rollback-failure-injection",
         "s3-asset-deploy",
         "s3-event-notification",
@@ -3799,6 +3810,10 @@
         "recreate-via-sdk-provider": [
           "l1"
         ],
+        "rename-refactor": [
+          "l2",
+          "literal"
+        ],
         "rollback-failure-injection": [
           "l2"
         ],
@@ -3880,6 +3895,7 @@
         "export",
         "migrate-from-cfn",
         "propagation-races-2",
+        "rename-refactor",
         "s3-event-notification",
         "secrets-rotation-schedule",
         "serverless-api",
@@ -3904,6 +3920,9 @@
         ],
         "propagation-races-2": [
           "l1",
+          "literal"
+        ],
+        "rename-refactor": [
           "literal"
         ],
         "s3-event-notification": [
@@ -4607,6 +4626,7 @@
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
+        "rename-refactor",
         "rollback-failure-injection",
         "scheduler-custom-group",
         "sns-inline-subscription",
@@ -4689,6 +4709,10 @@
         ],
         "multi-resource": [
           "l2"
+        ],
+        "rename-refactor": [
+          "l2",
+          "literal"
         ],
         "rollback-failure-injection": [
           "l1"
@@ -4773,6 +4797,7 @@
         "outputs-only-export",
         "rds-full-stack",
         "redshift-cluster-getatt",
+        "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-failure-injection",
@@ -4910,6 +4935,10 @@
         ],
         "redshift-cluster-getatt": [
           "l1"
+        ],
+        "rename-refactor": [
+          "l2",
+          "literal"
         ],
         "replacement-fanout": [
           "l2",

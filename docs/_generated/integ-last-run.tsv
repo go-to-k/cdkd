@@ -203,6 +203,7 @@ recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life mig
 recreate-via-sdk-provider	2026-07-21T05:13:38Z	PASS	86	verify.sh	rc ok, orph clean
 redshift-cluster-getatt	2026-07-20T14:58:06Z	PASS	330	verify.sh	CC GetAtt Endpoint real hostname, 0 orphans
 remove-protection	2026-07-19T19:44:06Z	PASS	1351	verify.sh	rc ok, 11 deleted, ASG orphan terminated, orph clean
+rename-refactor	2026-07-21T14:26:17Z	PASS	113	verify.sh	new fixture; sweep-17 rename pattern pinned; destroy 0 err 0 orph
 replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
 replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
 rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean

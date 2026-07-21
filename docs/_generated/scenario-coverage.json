@@ -1491,6 +1491,11 @@
       ]
     },
     {
+      "name": "rename-refactor",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "replacement-fanout",
       "annotated": true,
       "scenarios": [
@@ -2416,6 +2421,7 @@
     "recreate-mixed-direction",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
+    "rename-refactor",
     "replacement-immutable-name",
     "s3-event-notification",
     "s3-lifecycle",
