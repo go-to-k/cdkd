@@ -3507,6 +3507,7 @@
         "lambda",
         "lambda-alias-provisioned-concurrency",
         "lambda-arch-switch",
+        "lambda-config-field-removal",
         "lambda-destinations",
         "lambda-env-removal",
         "lambda-event-invoke-config-update",
@@ -3690,6 +3691,10 @@
         ],
         "lambda-arch-switch": [
           "l2"
+        ],
+        "lambda-config-field-removal": [
+          "l2",
+          "literal"
         ],
         "lambda-destinations": [
           "l2",

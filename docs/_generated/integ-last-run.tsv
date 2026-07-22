@@ -131,6 +131,7 @@ kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy
 lambda	2026-07-22T05:14:50Z	PASS	180	verify.sh	broad integ for register-providers.ts change (microvm provider PR), 9 deleted 0 orphans
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
+lambda-config-field-removal	2026-07-22T07:16:46Z	PASS	140	verify.sh	issue #1155 fix live-verified; 5-field removal reset + destroy clean
 lambda-destinations	2026-07-21T18:15:21Z	PASS	81	verify.sh	fixture fix: EventInvokeConfig now sdk-routed (#919); rc ok, orph clean
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 lambda-event-invoke-config-update	2026-06-21T16:20:26Z	PASS		verify.sh	deploy+drift-clean+update+destroy clean, 0 orphans
