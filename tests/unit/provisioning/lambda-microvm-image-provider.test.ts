@@ -418,6 +418,13 @@ describe('LambdaMicrovmImageProvider', () => {
       expect(await provider.readCurrentState(ARN, 'MyImage', TYPE)).toBeUndefined();
     });
 
+    it('omits Name when GetMicrovmImage returns no name', async () => {
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' }); // Get without name
+      mockSend.mockResolvedValueOnce({ Tags: { env: 'dev' } });
+      const state = await provider.readCurrentState(ARN, 'MyImage', TYPE);
+      expect(state).toEqual({ Tags: [{ Key: 'env', Value: 'dev' }] });
+    });
+
     it('declares every writeOnly build property as drift-unknown (not Name/Tags)', () => {
       const paths = provider.getDriftUnknownPaths(TYPE);
       expect(paths).toContain('BaseImageArn');
@@ -436,6 +443,16 @@ describe('LambdaMicrovmImageProvider', () => {
       const guarded = new LambdaMicrovmImageProvider();
       mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' }); // Create
       mockSend.mockResolvedValueOnce({ state: 'CREATED' }); // poll (would never run if attempts were NaN)
+
+      const result = await guarded.create('MyImage', TYPE, minimalProps());
+      expect(result.physicalId).toBe(ARN);
+    });
+
+    it('falls back to defaults on a non-positive POLL_ATTEMPTS', async () => {
+      process.env['CDKD_MICROVM_IMAGE_POLL_ATTEMPTS'] = '0';
+      const guarded = new LambdaMicrovmImageProvider();
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' }); // would never run if attempts were 0
 
       const result = await guarded.create('MyImage', TYPE, minimalProps());
       expect(result.physicalId).toBe(ARN);
