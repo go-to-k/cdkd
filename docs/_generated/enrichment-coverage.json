@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 129,
+    "classifiedCount": 130,
     "enriched": 7,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 108,
-    "allowListedTypes": 13
+    "sdkFallbackGap": 109,
+    "allowListedTypes": 14
   },
   "types": [
     {
@@ -2223,6 +2223,54 @@
       ],
       "gaps": [
         "LayerVersionArn"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::MicrovmImage",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CreatedAt",
+        "ImageArn",
+        "LatestActiveImageVersion",
+        "LatestFailedImageVersion",
+        "State",
+        "UpdatedAt"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CreatedAt",
+          "status": "gap"
+        },
+        {
+          "name": "ImageArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "LatestActiveImageVersion",
+          "status": "gap"
+        },
+        {
+          "name": "LatestFailedImageVersion",
+          "status": "gap"
+        },
+        {
+          "name": "State",
+          "status": "gap"
+        },
+        {
+          "name": "UpdatedAt",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CreatedAt",
+        "LatestActiveImageVersion",
+        "LatestFailedImageVersion",
+        "State",
+        "UpdatedAt"
       ]
     },
     {

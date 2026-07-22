@@ -25,6 +25,7 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::AppStream::Fleet',
   'AWS::AppSync::ApiCache',
   'AWS::AutoScalingPlans::ScalingPlan',
+  'AWS::Bedrock::DefaultPromptRouter',
   'AWS::Bedrock::ModelInvocationJob',
   'AWS::BedrockAgentCore::TokenVault',
   'AWS::Cloud9::EnvironmentEC2',
