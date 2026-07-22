@@ -264,7 +264,8 @@
     {
       "flag": "--no-wait",
       "integs": [
-        "acm-certificate"
+        "acm-certificate",
+        "lambda-microvm-image"
       ]
     },
     {

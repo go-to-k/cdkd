@@ -453,6 +453,7 @@ have no taggable identity either. Provide the physical id via
 - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - AWS::BedrockAgentCore::Runtime (adopt by ARN via `--resource`)
 - AWS::BedrockAgentCore::Evaluator (accepts the evaluator ARN or bare id; an id is resolved to the canonical ARN via `GetEvaluator`)
+- AWS::Lambda::MicrovmImage (adopt by image ARN via `--resource`; a bare name is rejected — `GetMicrovmImage` requires the ARN)
 
 Note: `AWS::BedrockAgentCore::Browser` / `AWS::BedrockAgentCore::CodeInterpreter`
 are adopt-only singletons pointing at the AWS-managed defaults; their import is
@@ -497,11 +498,6 @@ sub-resources with no standalone name (they are listed
 via `ListInstanceGroups` / `ListInstanceFleets` under a parent
 `ClusterId`), so a future override-only `import()` keyed on the group /
 fleet id (`ig-XXXX` / `if-XXXX`) is the natural follow-up.
-
-`AWS::Lambda::MicrovmImage` is currently unsupported for import — the SDK
-provider exists for create / update / delete but not `import()`. A future
-override-only `import()` keyed on the image ARN (`GetMicrovmImage` on the
-`--resource` value) is the natural follow-up.
 
 ### Adding a new entry
 
