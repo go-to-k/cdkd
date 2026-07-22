@@ -343,6 +343,11 @@
       ]
     },
     {
+      "name": "apigatewayv2-update-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "apigw-gateway-response",
       "annotated": true,
       "scenarios": []
@@ -2371,6 +2376,7 @@
   "orphanScenarios": [],
   "unannotatedFixtures": [
     "acm-certificate",
+    "apigatewayv2-update-removal",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
     "appconfig",

@@ -3,6 +3,7 @@ import {
   CreateApiCommand,
   DeleteApiCommand,
   UpdateApiCommand,
+  DeleteCorsConfigurationCommand,
   CreateStageCommand,
   DeleteStageCommand,
   GetStageCommand,
@@ -1227,17 +1228,27 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const input: UpdateApiCommandInput = { ApiId: physicalId };
     let changed = false;
 
+    // Name is required on AWS::ApiGatewayV2::Api, so it is never removed —
+    // pass it through as a plain change (no reset value).
     if (properties['Name'] !== undefined && properties['Name'] !== previousProperties['Name']) {
       input.Name = properties['Name'] as string;
       changed = true;
     }
-    if (
-      properties['Description'] !== undefined &&
-      properties['Description'] !== previousProperties['Description']
-    ) {
-      input.Description = properties['Description'] as string;
-      changed = true;
+    // Description clears on '' when removed (#1160).
+    {
+      const r = this.clearableUpdate(
+        properties['Description'] as string | undefined,
+        previousProperties['Description'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.Description = r.value;
+        changed = true;
+      }
     }
+    // CorsConfiguration is set here on change; REMOVAL is handled out-of-band
+    // via DeleteCorsConfiguration below (an empty Cors in UpdateApi does not
+    // clear it — live-probed #1160).
     if (
       properties['CorsConfiguration'] !== undefined &&
       !this.deepEqual(properties['CorsConfiguration'], previousProperties['CorsConfiguration'])
@@ -1247,20 +1258,36 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       ] as UpdateApiCommandInput['CorsConfiguration'];
       changed = true;
     }
-    if (
-      properties['DisableExecuteApiEndpoint'] !== undefined &&
-      properties['DisableExecuteApiEndpoint'] !== previousProperties['DisableExecuteApiEndpoint']
-    ) {
-      input.DisableExecuteApiEndpoint = properties['DisableExecuteApiEndpoint'] as boolean;
-      changed = true;
+    const corsRemoved =
+      properties['CorsConfiguration'] === undefined &&
+      previousProperties['CorsConfiguration'] !== undefined;
+    // DisableExecuteApiEndpoint resets to false (CFn default) on removal.
+    {
+      const r = this.clearableUpdate(
+        properties['DisableExecuteApiEndpoint'] as boolean | undefined,
+        previousProperties['DisableExecuteApiEndpoint'] as boolean | undefined,
+        false
+      );
+      if (r.changed) {
+        input.DisableExecuteApiEndpoint = r.value;
+        changed = true;
+      }
     }
-    if (
-      properties['Version'] !== undefined &&
-      properties['Version'] !== previousProperties['Version']
-    ) {
-      input.Version = properties['Version'] as string;
-      changed = true;
+    // Version clears on '' when removed.
+    {
+      const r = this.clearableUpdate(
+        properties['Version'] as string | undefined,
+        previousProperties['Version'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.Version = r.value;
+        changed = true;
+      }
     }
+    // RouteSelectionExpression is NOT cleared: required (and immutable in
+    // practice) for WebSocket APIs, fixed for HTTP APIs, so removal is not a
+    // valid template transition — pass it through as a plain change only.
     if (
       properties['RouteSelectionExpression'] !== undefined &&
       properties['RouteSelectionExpression'] !== previousProperties['RouteSelectionExpression']
@@ -1268,22 +1295,34 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.RouteSelectionExpression = properties['RouteSelectionExpression'] as string;
       changed = true;
     }
-    if (
-      properties['ApiKeySelectionExpression'] !== undefined &&
-      properties['ApiKeySelectionExpression'] !== previousProperties['ApiKeySelectionExpression']
-    ) {
-      input.ApiKeySelectionExpression = properties['ApiKeySelectionExpression'] as string;
-      changed = true;
+    // ApiKeySelectionExpression is WebSocket-only; its CFn default is the
+    // header expression, so removal resets to that (a WebSocket API is the
+    // only place `previous` is ever set).
+    {
+      const r = this.clearableUpdate(
+        properties['ApiKeySelectionExpression'] as string | undefined,
+        previousProperties['ApiKeySelectionExpression'] as string | undefined,
+        '$request.header.x-api-key'
+      );
+      if (r.changed) {
+        input.ApiKeySelectionExpression = r.value;
+        changed = true;
+      }
     }
-    if (
-      properties['IpAddressType'] !== undefined &&
-      properties['IpAddressType'] !== previousProperties['IpAddressType']
-    ) {
-      input.IpAddressType = properties['IpAddressType'] as IpAddressType;
-      changed = true;
+    // IpAddressType resets to 'ipv4' (CFn default) on removal.
+    {
+      const r = this.clearableUpdate(
+        properties['IpAddressType'] as IpAddressType | undefined,
+        previousProperties['IpAddressType'] as IpAddressType | undefined,
+        'ipv4' as IpAddressType
+      );
+      if (r.changed) {
+        input.IpAddressType = r.value;
+        changed = true;
+      }
     }
 
-    if (!changed) {
+    if (!changed && !corsRemoved) {
       this.logger.debug(`No mutable Api fields changed for ${logicalId}; skipping UpdateApi`);
       return { physicalId, wasReplaced: false };
     }
@@ -1291,7 +1330,13 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     this.logger.debug(`Updating API Gateway V2 Api ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(new UpdateApiCommand(input));
+      if (changed) {
+        await this.getClient().send(new UpdateApiCommand(input));
+      }
+      if (corsRemoved) {
+        this.logger.debug(`Clearing CORS configuration for Api ${logicalId}: ${physicalId}`);
+        await this.getClient().send(new DeleteCorsConfigurationCommand({ ApiId: physicalId }));
+      }
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1355,13 +1400,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const input: UpdateStageCommandInput = { ApiId: apiId, StageName: physicalId };
     let changed = false;
 
-    if (
-      properties['AutoDeploy'] !== undefined &&
-      properties['AutoDeploy'] !== previousProperties['AutoDeploy']
-    ) {
-      input.AutoDeploy = properties['AutoDeploy'] as boolean;
-      changed = true;
+    // AutoDeploy resets to false (CFn default) on removal (#1160).
+    {
+      const r = this.clearableUpdate(
+        properties['AutoDeploy'] as boolean | undefined,
+        previousProperties['AutoDeploy'] as boolean | undefined,
+        false
+      );
+      if (r.changed) {
+        input.AutoDeploy = r.value;
+        changed = true;
+      }
     }
+    // Description is NOT cleared: UpdateStage silently ignores an empty-string
+    // reset (live-probed #1160 — unlike UpdateApi, the value persists), so the
+    // API cannot clear it and CloudFormation faces the same constraint.
     if (
       properties['Description'] !== undefined &&
       properties['Description'] !== previousProperties['Description']
@@ -1369,13 +1422,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Description = properties['Description'] as string;
       changed = true;
     }
-    if (
-      properties['StageVariables'] !== undefined &&
-      !this.deepEqual(properties['StageVariables'], previousProperties['StageVariables'])
-    ) {
-      input.StageVariables = properties['StageVariables'] as Record<string, string>;
-      changed = true;
+    // StageVariables merges on the AWS side; removed keys (or the whole block)
+    // are cleared by sending them with an empty-string value (#1160).
+    {
+      const merged = this.mapWithRemovals(
+        properties['StageVariables'],
+        previousProperties['StageVariables']
+      );
+      if (merged !== undefined) {
+        input.StageVariables = merged;
+        changed = true;
+      }
     }
+    // DefaultRouteSettings is NOT cleared: UpdateStage merges it and offers no
+    // whole-block reset (the throttle sub-fields have no account-default
+    // sentinel), so removal is left to match the CFn/API constraint (#1160).
     if (
       properties['DefaultRouteSettings'] !== undefined &&
       !this.deepEqual(
@@ -1482,19 +1543,35 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.TimeoutInMillis = properties['TimeoutInMillis'] as number;
       changed = true;
     }
-    if (
-      properties['RequestParameters'] !== undefined &&
-      !this.deepEqual(properties['RequestParameters'], previousProperties['RequestParameters'])
-    ) {
-      input.RequestParameters = properties['RequestParameters'] as Record<string, string>;
-      changed = true;
+    // IntegrationType / IntegrationUri / IntegrationMethod /
+    // PayloadFormatVersion above are required per integration type — the API
+    // rejects an empty reset for them, so removal is not a valid transition and
+    // they pass through as plain changes only. TimeoutInMillis is likewise left
+    // alone (its default is integration-type-dependent with no clean reset).
+    // RequestParameters merges per key on the AWS side; removed keys (or the
+    // whole block) are cleared by sending them with an empty-string value
+    // (live-probed #1160 — `{}` does NOT clear).
+    {
+      const merged = this.mapWithRemovals(
+        properties['RequestParameters'],
+        previousProperties['RequestParameters']
+      );
+      if (merged !== undefined) {
+        input.RequestParameters = merged;
+        changed = true;
+      }
     }
-    if (
-      properties['Description'] !== undefined &&
-      properties['Description'] !== previousProperties['Description']
-    ) {
-      input.Description = properties['Description'] as string;
-      changed = true;
+    // Description clears on '' when removed (#1160).
+    {
+      const r = this.clearableUpdate(
+        properties['Description'] as string | undefined,
+        previousProperties['Description'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.Description = r.value;
+        changed = true;
+      }
     }
 
     if (!changed) {
@@ -1558,6 +1635,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const input: UpdateRouteCommandInput = { ApiId: apiId, RouteId: physicalId };
     let changed = false;
 
+    // RouteKey and Target are required in practice (a route cannot exist
+    // without a key, and a non-Mock route needs a target) — pass through as
+    // plain changes only.
     if (
       properties['RouteKey'] !== undefined &&
       properties['RouteKey'] !== previousProperties['RouteKey']
@@ -1572,33 +1652,53 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Target = properties['Target'] as string;
       changed = true;
     }
-    if (
-      properties['AuthorizationType'] !== undefined &&
-      properties['AuthorizationType'] !== previousProperties['AuthorizationType']
-    ) {
-      input.AuthorizationType = properties['AuthorizationType'] as AuthorizationType;
-      changed = true;
+    // AuthorizationType resets to 'NONE' (CFn default) on removal (#1160).
+    {
+      const r = this.clearableUpdate(
+        properties['AuthorizationType'] as AuthorizationType | undefined,
+        previousProperties['AuthorizationType'] as AuthorizationType | undefined,
+        'NONE' as AuthorizationType
+      );
+      if (r.changed) {
+        input.AuthorizationType = r.value;
+        changed = true;
+      }
     }
-    if (
-      properties['AuthorizerId'] !== undefined &&
-      properties['AuthorizerId'] !== previousProperties['AuthorizerId']
-    ) {
-      input.AuthorizerId = properties['AuthorizerId'] as string;
-      changed = true;
+    // AuthorizerId clears on '' (detaches the authorizer) when removed.
+    {
+      const r = this.clearableUpdate(
+        properties['AuthorizerId'] as string | undefined,
+        previousProperties['AuthorizerId'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.AuthorizerId = r.value;
+        changed = true;
+      }
     }
-    if (
-      properties['AuthorizationScopes'] !== undefined &&
-      !this.deepEqual(properties['AuthorizationScopes'], previousProperties['AuthorizationScopes'])
-    ) {
-      input.AuthorizationScopes = properties['AuthorizationScopes'] as string[];
-      changed = true;
+    // AuthorizationScopes clears on [] when removed.
+    {
+      const r = this.clearableUpdate(
+        properties['AuthorizationScopes'] as string[] | undefined,
+        previousProperties['AuthorizationScopes'] as string[] | undefined,
+        []
+      );
+      if (r.changed) {
+        input.AuthorizationScopes = r.value;
+        changed = true;
+      }
     }
-    if (
-      properties['OperationName'] !== undefined &&
-      properties['OperationName'] !== previousProperties['OperationName']
-    ) {
-      input.OperationName = properties['OperationName'] as string;
-      changed = true;
+    // OperationName clears on '' when removed.
+    {
+      const r = this.clearableUpdate(
+        properties['OperationName'] as string | undefined,
+        previousProperties['OperationName'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.OperationName = r.value;
+        changed = true;
+      }
     }
 
     if (!changed) {
@@ -1696,6 +1796,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       ] as UpdateAuthorizerCommandInput['JwtConfiguration'];
       changed = true;
     }
+    // AuthorizerUri is required for REQUEST authorizers (a JWT authorizer has
+    // none) — removal implies a type change, not a clean reset, so it passes
+    // through as a plain change only.
     if (
       properties['AuthorizerUri'] !== undefined &&
       properties['AuthorizerUri'] !== previousProperties['AuthorizerUri']
@@ -1703,29 +1806,45 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.AuthorizerUri = properties['AuthorizerUri'] as string;
       changed = true;
     }
-    if (
-      properties['AuthorizerCredentialsArn'] !== undefined &&
-      properties['AuthorizerCredentialsArn'] !== previousProperties['AuthorizerCredentialsArn']
-    ) {
-      input.AuthorizerCredentialsArn = properties['AuthorizerCredentialsArn'] as string;
-      changed = true;
+    // AuthorizerCredentialsArn clears on '' when removed (#1160).
+    {
+      const r = this.clearableUpdate(
+        properties['AuthorizerCredentialsArn'] as string | undefined,
+        previousProperties['AuthorizerCredentialsArn'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.AuthorizerCredentialsArn = r.value;
+        changed = true;
+      }
     }
-    if (
-      properties['AuthorizerPayloadFormatVersion'] !== undefined &&
-      properties['AuthorizerPayloadFormatVersion'] !==
-        previousProperties['AuthorizerPayloadFormatVersion']
-    ) {
-      input.AuthorizerPayloadFormatVersion = properties['AuthorizerPayloadFormatVersion'] as string;
-      changed = true;
+    // AuthorizerPayloadFormatVersion clears on '' when removed.
+    {
+      const r = this.clearableUpdate(
+        properties['AuthorizerPayloadFormatVersion'] as string | undefined,
+        previousProperties['AuthorizerPayloadFormatVersion'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.AuthorizerPayloadFormatVersion = r.value;
+        changed = true;
+      }
     }
-    if (
-      properties['AuthorizerResultTtlInSeconds'] !== undefined &&
-      properties['AuthorizerResultTtlInSeconds'] !==
-        previousProperties['AuthorizerResultTtlInSeconds']
-    ) {
-      input.AuthorizerResultTtlInSeconds = properties['AuthorizerResultTtlInSeconds'] as number;
-      changed = true;
+    // AuthorizerResultTtlInSeconds resets to 0 (CFn default = no cache) on removal.
+    {
+      const r = this.clearableUpdate(
+        properties['AuthorizerResultTtlInSeconds'] as number | undefined,
+        previousProperties['AuthorizerResultTtlInSeconds'] as number | undefined,
+        0
+      );
+      if (r.changed) {
+        input.AuthorizerResultTtlInSeconds = r.value;
+        changed = true;
+      }
     }
+    // EnableSimpleResponses is REQUEST-authorizer-only — UpdateAuthorizer
+    // rejects it (even `false`) on a JWT authorizer, so it cannot be blindly
+    // reset; pass through as a plain change only (#1160).
     if (
       properties['EnableSimpleResponses'] !== undefined &&
       properties['EnableSimpleResponses'] !== previousProperties['EnableSimpleResponses']
@@ -1733,13 +1852,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.EnableSimpleResponses = properties['EnableSimpleResponses'] as boolean;
       changed = true;
     }
-    if (
-      properties['IdentityValidationExpression'] !== undefined &&
-      properties['IdentityValidationExpression'] !==
-        previousProperties['IdentityValidationExpression']
-    ) {
-      input.IdentityValidationExpression = properties['IdentityValidationExpression'] as string;
-      changed = true;
+    // IdentityValidationExpression clears on '' when removed.
+    {
+      const r = this.clearableUpdate(
+        properties['IdentityValidationExpression'] as string | undefined,
+        previousProperties['IdentityValidationExpression'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.IdentityValidationExpression = r.value;
+        changed = true;
+      }
     }
 
     if (!changed) {
@@ -1767,6 +1890,71 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Resolve an optional update field so that a property REMOVED from the
+   * template is reset to its CloudFormation default instead of silently
+   * retaining the old live value (issue #1160 — the absent-field removal
+   * silent-drop bug class; reference fix `LambdaFunctionProvider`, #1157).
+   *
+   * Every API Gateway V2 `Update*` API uses PATCH / merge semantics: an
+   * ABSENT input field means "no change", so passing `undefined` for a
+   * field the user just dropped leaves the old value live on AWS while
+   * CloudFormation resets it to the property default. For each removable
+   * field we therefore send its explicit reset value (`resetValue`) when
+   * it was present before and is now absent.
+   *
+   * The reset values below were live-probed against real AWS (2026-07-22):
+   * string fields clear on `''`, boolean/enum fields on their CFn default,
+   * `AuthorizationScopes` on `[]`, `AuthorizerResultTtlInSeconds` on `0`.
+   * `CorsConfiguration` is the ONE exception — an empty `Cors` in
+   * `UpdateApi` does NOT clear it, so removal is handled out-of-band via
+   * `DeleteCorsConfiguration` (see `updateApi`). Fields that are required
+   * per protocol/authorizer type (`Name`, `RouteKey`, `Target`,
+   * `RouteSelectionExpression`, `IntegrationType`/`Uri`/`Method`,
+   * `PayloadFormatVersion`, `IdentitySource`, `JwtConfiguration`,
+   * `EnableSimpleResponses`) are NOT cleared: the underlying API rejects a
+   * reset value for them, so CloudFormation faces the same constraint and
+   * cdkd leaving them matches CFn. `Stage.Description` /
+   * `DefaultRouteSettings` are likewise left alone — the API silently
+   * ignores an empty-string / empty-object reset for them.
+   *
+   * Returns `{ changed, value }`: `changed` is true only when the resolved
+   * value actually differs from the previous one (so a no-op field never
+   * forces an Update call), and `value` is the value to place in the input.
+   */
+  private clearableUpdate<T>(
+    next: T | undefined,
+    previous: T | undefined,
+    resetValue: T
+  ): { changed: boolean; value: T | undefined } {
+    const resolved = next !== undefined ? next : previous !== undefined ? resetValue : undefined;
+    const changed = resolved !== undefined && !this.deepEqual(resolved, previous);
+    return { changed, value: resolved };
+  }
+
+  /**
+   * Resolve a `Record<string, string>` update field (`StageVariables`,
+   * Integration `RequestParameters`) with per-key removal awareness.
+   *
+   * These maps also merge on the AWS side: sending `{}` (or a map missing
+   * a previously-present key) does NOT delete the dropped key — it is kept
+   * live. Live-probed 2026-07-22: a key is cleared only by sending it with
+   * an empty-string value. So the resolved map is `next` plus every key
+   * present in `previous` but absent from `next`, set to `''`. Whole-block
+   * removal (next `undefined`, previous populated) therefore sends every
+   * old key as `''`. Returns `undefined` when nothing changed.
+   */
+  private mapWithRemovals(next: unknown, previous: unknown): Record<string, string> | undefined {
+    if (this.deepEqual(next, previous)) return undefined;
+    const nextMap = (next ?? {}) as Record<string, string>;
+    const prevMap = (previous ?? {}) as Record<string, string>;
+    const merged: Record<string, string> = { ...nextMap };
+    for (const key of Object.keys(prevMap)) {
+      if (!(key in nextMap)) merged[key] = '';
+    }
+    return merged;
+  }
 
   /**
    * Convert CloudFormation Tags (Array<{Key, Value}>) to SDK Tags (Record<string, string>).

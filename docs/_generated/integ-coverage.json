@@ -257,6 +257,7 @@
     {
       "resourceType": "AWS::ApiGatewayV2::Api",
       "integs": [
+        "apigatewayv2-update-removal",
         "drift-revert",
         "export",
         "local-start-api",
@@ -266,6 +267,10 @@
         "serverless-api"
       ],
       "signals": {
+        "apigatewayv2-update-removal": [
+          "l1",
+          "literal"
+        ],
         "drift-revert": [
           "l1"
         ],
@@ -294,9 +299,13 @@
     {
       "resourceType": "AWS::ApiGatewayV2::Authorizer",
       "integs": [
+        "apigatewayv2-update-removal",
         "serverless-api"
       ],
       "signals": {
+        "apigatewayv2-update-removal": [
+          "l1"
+        ],
         "serverless-api": [
           "l1"
         ]
@@ -305,6 +314,7 @@
     {
       "resourceType": "AWS::ApiGatewayV2::Integration",
       "integs": [
+        "apigatewayv2-update-removal",
         "export",
         "local-start-api",
         "local-start-api-container",
@@ -313,6 +323,9 @@
         "serverless-api"
       ],
       "signals": {
+        "apigatewayv2-update-removal": [
+          "l1"
+        ],
         "export": [
           "l2",
           "literal"
@@ -339,6 +352,7 @@
     {
       "resourceType": "AWS::ApiGatewayV2::Route",
       "integs": [
+        "apigatewayv2-update-removal",
         "export",
         "local-start-api",
         "local-start-api-container",
@@ -347,6 +361,9 @@
         "serverless-api"
       ],
       "signals": {
+        "apigatewayv2-update-removal": [
+          "l1"
+        ],
         "export": [
           "l2"
         ],
@@ -372,6 +389,7 @@
     {
       "resourceType": "AWS::ApiGatewayV2::Stage",
       "integs": [
+        "apigatewayv2-update-removal",
         "drift-revert",
         "export",
         "local-start-api",
@@ -381,6 +399,9 @@
         "serverless-api"
       ],
       "signals": {
+        "apigatewayv2-update-removal": [
+          "l1"
+        ],
         "drift-revert": [
           "l1"
         ],
@@ -3470,6 +3491,7 @@
         "agentcore-tools",
         "api-cognito",
         "apigateway",
+        "apigatewayv2-update-removal",
         "apigw-stage-throttling",
         "asset-auto-create",
         "asset-bootstrap",
@@ -3573,6 +3595,10 @@
         ],
         "apigateway": [
           "l2"
+        ],
+        "apigatewayv2-update-removal": [
+          "l2",
+          "literal"
         ],
         "apigw-stage-throttling": [
           "l2",
