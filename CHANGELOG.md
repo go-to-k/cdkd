@@ -1,3 +1,10 @@
+## [0.259.1](https://github.com/go-to-k/cdkd/compare/v0.259.0...v0.259.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* **provider:** reset removed Lambda config fields to CFn defaults on update ([#1157](https://github.com/go-to-k/cdkd/issues/1157)) ([79a5632](https://github.com/go-to-k/cdkd/commit/79a563283a78b565f2e9f0d9ca1e72d39d39fd60))
+
 # [0.259.0](https://github.com/go-to-k/cdkd/compare/v0.258.0...v0.259.0) (2026-07-22)
 
 
