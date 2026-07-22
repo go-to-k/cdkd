@@ -1,24 +1,32 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd ECS Service UPDATE-props integ test (issue #975).
+# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #1160).
 #
-# Asserts that a change to `EnableECSManagedTags` / `PropagateTags` on an
-# SDK-routed `AWS::ECS::Service` reaches AWS after `cdkd deploy` — both were
-# silent-drops before the #975 fix (the properties were in the provider's
-# handledProperties allow-list, so the resource stayed SDK-routed, cdkd diff
-# detected the change, deploy went green, state.json recorded the NEW value,
-# but ECSProvider.updateService() never mapped them into UpdateServiceCommand
-# so AWS kept the OLD value).
+# Exercises two silent-drop classes on an SDK-routed `AWS::ECS::Service`
+# UpdateService path:
+#
+#   #975  (add-on-update):  a CHANGE to EnableECSManagedTags / PropagateTags
+#         must reach AWS. Before the #975 fix ECSProvider.updateService() never
+#         mapped them into UpdateServiceCommand, so cdkd diff detected the
+#         change, deploy went green, state recorded the NEW value, but AWS kept
+#         the OLD one.
+#   #1160 (reset-on-removal): a field DROPPED from the template must reset to
+#         its CloudFormation default. UpdateService uses merge semantics (an
+#         absent input field means "no change"), so before the #1160 fix a
+#         removed PlatformVersion / HealthCheckGracePeriodSeconds silently kept
+#         its old live value.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
 # SDK provider path — the sibling `ecs-fargate` fixture's Service routes via
-# Cloud Control and would NOT exercise the updateService() code path the
-# #975 fix touches.
+# Cloud Control and would NOT exercise the updateService() code path these
+# fixes touch.
 #
-#   Phase 1 (base):   enableECSManagedTags == false, propagateTags == NONE
-#   Phase 2 (update): CDKD_TEST_UPDATE=true flips to
-#                     enableECSManagedTags == true, propagateTags == TASK_DEFINITION
-#                     -> assert BOTH reach AWS via describe-services.
+#   Phase 1 (base):   enableECSManagedTags == false, propagateTags == NONE;
+#                     PlatformVersion == 1.4.0, grace == 30.
+#   Phase 2 (update): CDKD_TEST_UPDATE=true flips enableECSManagedTags == true,
+#                     propagateTags == TASK_DEFINITION (#975) AND drops
+#                     PlatformVersion / grace -> assert the #975 changes reach
+#                     AWS AND the #1160 removals reset to LATEST / 0.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -168,8 +176,27 @@ case "${BASE_PROPAGATE}" in
 esac
 echo "    OK: base state on AWS is enableECSManagedTags=false, propagateTags=${BASE_PROPAGATE}"
 
-# --- Phase 2: UPDATE pass (issue #975) --------------------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags)"
+# Base assertion for the #1160 removable fields: PlatformVersion / grace period
+# were SET by the phase-1 template (via L1 override).
+BASE_PLATFORM=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].platformVersion' --output text 2>/dev/null)
+BASE_GRACE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].healthCheckGracePeriodSeconds' --output json 2>/dev/null)
+
+if [ "${BASE_PLATFORM}" != "1.4.0" ]; then
+  echo "FAIL: base platformVersion is '${BASE_PLATFORM}', expected '1.4.0'" >&2
+  exit 1
+fi
+if [ "${BASE_GRACE}" != "30" ]; then
+  echo "FAIL: base healthCheckGracePeriodSeconds is '${BASE_GRACE}', expected '30'" >&2
+  exit 1
+fi
+echo "    OK: base #1160 fields on AWS are platformVersion=1.4.0, grace=30"
+
+# --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -196,6 +223,25 @@ if [ "${AFTER_PROPAGATE}" != "TASK_DEFINITION" ]; then
 fi
 echo "    OK: after update, AWS shows enableECSManagedTags=true, propagateTags=TASK_DEFINITION (#975 silent-drop CLOSED)"
 
+# #1160: the removed fields must have reset to their CFn defaults, NOT kept the
+# phase-1 values (the merge-semantics silent drop this PR closes).
+AFTER_PLATFORM=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].platformVersion' --output text 2>/dev/null)
+AFTER_GRACE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].healthCheckGracePeriodSeconds' --output json 2>/dev/null)
+
+if [ "${AFTER_PLATFORM}" != "LATEST" ]; then
+  echo "FAIL: after removal, platformVersion is '${AFTER_PLATFORM}', expected 'LATEST' (#1160 PlatformVersion silent-drop NOT closed)" >&2
+  exit 1
+fi
+if [ "${AFTER_GRACE}" != "0" ]; then
+  echo "FAIL: after removal, healthCheckGracePeriodSeconds is '${AFTER_GRACE}', expected '0' (#1160 HealthCheckGracePeriodSeconds silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: after removal, AWS reset platformVersion=LATEST, grace=0 (#1160 silent-drop CLOSED)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -207,4 +253,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975) + clean destroy)"
+echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); clean destroy)"

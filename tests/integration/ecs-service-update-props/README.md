@@ -1,8 +1,8 @@
-# ECS Service UPDATE-props Example (issue #975)
+# ECS Service UPDATE-props Example (issues #975 + #1160)
 
-An integration test that verifies `EnableECSManagedTags` and `PropagateTags`
-changes on an SDK-routed `AWS::ECS::Service` reach AWS via
-`ECSProvider.updateService()`.
+An integration test that verifies `AWS::ECS::Service` property changes reach
+AWS via `ECSProvider.updateService()` for two silent-drop classes: a CHANGED
+field (#975) and a REMOVED field (#1160).
 
 ## Background
 
@@ -13,6 +13,18 @@ allow-list, so the resource stayed SDK-routed and `cdkd diff` correctly
 detected a change — but deploy went green and state.json recorded the NEW
 value while AWS silently kept the OLD value (a poisoned-state silent drop,
 same class as #951 / #952).
+
+The #1160 fix closes the mirror-image case: a field REMOVED from the template.
+`UpdateService` uses merge semantics (an absent input field means "no change"),
+so `updateService()` passing `undefined` for a dropped field silently kept the
+old live value. The provider now resets each removed field to its
+CloudFormation default (live-probed 2026-07-22): `PlatformVersion` -> `LATEST`,
+`HealthCheckGracePeriodSeconds` -> `0`, `PropagateTags` -> `NONE`,
+`EnableECSManagedTags` / `EnableExecuteCommand` -> `false`, and
+`CapacityProviderStrategy` / `PlacementConstraints` / `PlacementStrategies` ->
+empty array. (`DeploymentConfiguration` removal is deferred — its reset is
+entangled with a separate pre-existing CFn-PascalCase -> SDK-camelCase
+nested-object conversion gap.)
 
 This fixture is deliberately plain (no `ServiceConnectConfiguration` /
 `VolumeConfigurations`) so the Service stays on cdkd's **SDK** provider path.
@@ -31,12 +43,14 @@ so it would NOT exercise the `updateService()` code path the #975 fix touches.
 ## Phases (verify.sh)
 
 1. **Phase 1 (base)**: deploy with `EnableECSManagedTags: false`,
-   `PropagateTags: NONE`; assert `describe-services` shows both, and assert the
-   Service is SDK-routed (`provisionedBy != cc-api`) so the test can't pass for
-   the wrong reason.
+   `PropagateTags: NONE`, `PlatformVersion: 1.4.0`,
+   `HealthCheckGracePeriodSeconds: 30` (the last two via the L1 escape hatch);
+   assert `describe-services` shows them, and assert the Service is SDK-routed
+   (`provisionedBy != cc-api`) so the test can't pass for the wrong reason.
 2. **Phase 2 (update)**: redeploy with `CDKD_TEST_UPDATE=true` flipping to
-   `enableECSManagedTags: true` / `propagateTags: TASK_DEFINITION`; assert both
-   reach AWS.
+   `enableECSManagedTags: true` / `propagateTags: TASK_DEFINITION` (#975) AND
+   dropping `PlatformVersion` / `HealthCheckGracePeriodSeconds` (#1160); assert
+   the #975 changes reach AWS AND the #1160 removals reset to `LATEST` / `0`.
 3. **Phase 3 (destroy)**: destroy and assert the state file is gone.
 
 ## Run
