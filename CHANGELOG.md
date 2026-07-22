@@ -1,3 +1,10 @@
+## [0.260.1](https://github.com/go-to-k/cdkd/compare/v0.260.0...v0.260.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* **provider:** normalize Variables-less Lambda Environment to explicit clear on update ([#1161](https://github.com/go-to-k/cdkd/issues/1161)) ([061fc3c](https://github.com/go-to-k/cdkd/commit/061fc3c08ba4edb54bfdd9bdd120370dae0919de))
+
 # [0.260.0](https://github.com/go-to-k/cdkd/compare/v0.259.1...v0.260.0) (2026-07-22)
 
 
