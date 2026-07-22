@@ -830,6 +830,80 @@ export class ECSProvider implements ResourceProvider {
         ? ((properties['ServiceRegistries'] as ServiceRegistry[] | undefined) ?? [])
         : undefined;
 
+    // issue #1160 — reset removed fields to their CloudFormation defaults.
+    // UpdateService uses merge semantics: an ABSENT input field means "no
+    // change", so a property dropped from the template silently keeps its old
+    // live value (deploy goes green, state.json records the removal, next diff
+    // says "No changes" — the divergence is permanent and invisible). For each
+    // removable field we send its explicit reset value when it was present
+    // before and is now absent. Reset values were live-probed against real AWS
+    // (2026-07-22, issue #1160): platformVersion clears on 'LATEST',
+    // healthCheckGracePeriodSeconds on 0, propagateTags on 'NONE',
+    // enableECSManagedTags on false, and each array field on an empty array
+    // ([] accepted + AWS-documented as the clear sentinel). enableExecuteCommand
+    // resets on false per the CFn default (a plain boolean; not live-probed
+    // because execute-command requires an SSM-capable task role). LoadBalancers /
+    // ServiceRegistries already clear via #975 (their change-detected empty-list
+    // sentinel above).
+    //
+    // NOT reset here: `DeploymentConfiguration` — its removal reset is entangled
+    // with a separate, pre-existing CFn-PascalCase (`MaximumPercent`) ->
+    // SDK-camelCase (`maximumPercent`) nested-object conversion gap (the field
+    // is passed raw, unlike NetworkConfiguration which has convertNetwork-
+    // Configuration()), and it merges at the SUB-FIELD level so a correct reset
+    // must send the full default shape. Fixing it properly means converting the
+    // SET path too, which is out of this batch's scope; tracked separately on
+    // issue #1160. Also not reset (immutable / required / always-carried):
+    // ServiceName (immutable, guarded above), Cluster / TaskDefinition /
+    // DesiredCount / NetworkConfiguration, SchedulingStrategy (create-only).
+    const capacityProviderStrategyInput = this.clearOnUpdateRemoval(
+      properties['CapacityProviderStrategy'] as CapacityProviderStrategyItem[] | undefined,
+      previousProperties['CapacityProviderStrategy'] as CapacityProviderStrategyItem[] | undefined,
+      // Empty list reverts the service to its launch type (AWS-documented). If
+      // the service was created with a capacity provider and no launch type,
+      // AWS rejects the reset — the same constraint CloudFormation faces.
+      []
+    );
+    const placementConstraintsInput = this.clearOnUpdateRemoval(
+      properties['PlacementConstraints'] as PlacementConstraint[] | undefined,
+      previousProperties['PlacementConstraints'] as PlacementConstraint[] | undefined,
+      []
+    );
+    const placementStrategyInput = this.clearOnUpdateRemoval(
+      (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
+        | PlacementStrategy[]
+        | undefined,
+      (previousProperties['PlacementStrategies'] ?? previousProperties['PlacementStrategy']) as
+        | PlacementStrategy[]
+        | undefined,
+      []
+    );
+    const platformVersionInput = this.clearOnUpdateRemoval(
+      properties['PlatformVersion'] as string | undefined,
+      previousProperties['PlatformVersion'] as string | undefined,
+      'LATEST'
+    );
+    const healthCheckGracePeriodSecondsInput = this.clearOnUpdateRemoval(
+      properties['HealthCheckGracePeriodSeconds'] as number | undefined,
+      previousProperties['HealthCheckGracePeriodSeconds'] as number | undefined,
+      0
+    );
+    const enableECSManagedTagsInput = this.clearOnUpdateRemoval(
+      properties['EnableECSManagedTags'] as boolean | undefined,
+      previousProperties['EnableECSManagedTags'] as boolean | undefined,
+      false
+    );
+    const propagateTagsInput = this.clearOnUpdateRemoval(
+      properties['PropagateTags'] as PropagateTags | undefined,
+      previousProperties['PropagateTags'] as PropagateTags | undefined,
+      'NONE'
+    );
+    const enableExecuteCommandInput = this.clearOnUpdateRemoval(
+      properties['EnableExecuteCommand'] as boolean | undefined,
+      previousProperties['EnableExecuteCommand'] as boolean | undefined,
+      false
+    );
+
     try {
       const response = await client.send(
         new UpdateServiceCommand({
@@ -840,24 +914,19 @@ export class ECSProvider implements ResourceProvider {
           networkConfiguration: this.convertNetworkConfiguration(
             properties['NetworkConfiguration'] as Record<string, unknown> | undefined
           ),
-          capacityProviderStrategy: properties['CapacityProviderStrategy'] as
-            | CapacityProviderStrategyItem[]
-            | undefined,
+          capacityProviderStrategy: capacityProviderStrategyInput,
+          // DeploymentConfiguration is passed raw (removal reset deferred — see
+          // the reset-value comment block above).
           deploymentConfiguration: properties['DeploymentConfiguration'] as
             | DeploymentConfiguration
             | undefined,
-          placementConstraints: properties['PlacementConstraints'] as
-            | PlacementConstraint[]
-            | undefined,
-          placementStrategy: (properties['PlacementStrategies'] ??
-            properties['PlacementStrategy']) as PlacementStrategy[] | undefined,
-          platformVersion: properties['PlatformVersion'] as string | undefined,
-          healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
-            | number
-            | undefined,
-          enableECSManagedTags: properties['EnableECSManagedTags'] as boolean | undefined,
-          propagateTags: properties['PropagateTags'] as PropagateTags | undefined,
-          enableExecuteCommand: properties['EnableExecuteCommand'] as boolean | undefined,
+          placementConstraints: placementConstraintsInput,
+          placementStrategy: placementStrategyInput,
+          platformVersion: platformVersionInput,
+          healthCheckGracePeriodSeconds: healthCheckGracePeriodSecondsInput,
+          enableECSManagedTags: enableECSManagedTagsInput,
+          propagateTags: propagateTagsInput,
+          enableExecuteCommand: enableExecuteCommandInput,
           loadBalancers: loadBalancersInput,
           serviceRegistries: serviceRegistriesInput,
         })
@@ -892,6 +961,26 @@ export class ECSProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Resolve an optional UpdateService field so that a property REMOVED from the
+   * template is reset to its CloudFormation default instead of silently
+   * retaining the old live value (issue #1160 — the absent-field removal
+   * silent-drop bug class; reference fix `LambdaFunctionProvider`, #1157).
+   *
+   * Returns `newValue` when present, the `clearValue` when the field was
+   * present before and is now absent (removal), and `undefined` when it was
+   * never present (so a genuinely-absent field stays absent = no change).
+   */
+  private clearOnUpdateRemoval<T>(
+    newValue: T | undefined,
+    previousValue: T | undefined,
+    clearValue: T
+  ): T | undefined {
+    if (newValue !== undefined) return newValue;
+    if (previousValue !== undefined) return clearValue;
+    return undefined;
   }
 
   private async deleteService(

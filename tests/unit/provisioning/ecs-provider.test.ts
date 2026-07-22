@@ -1085,6 +1085,98 @@ describe('ECSProvider', () => {
         expect(updateCall.input.serviceRegistries).toBeUndefined();
       });
 
+      // --- issue #1160: absent-field removal reset to CFn defaults -----------
+      // UpdateService uses merge semantics, so a field DROPPED from the template
+      // must be sent as its explicit CFn-default reset value (live-probed against
+      // real AWS 2026-07-22), else the old live value silently persists.
+      describe('removal reset to CFn defaults (issue #1160)', () => {
+        const arn = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+        const okResponse = { service: { serviceArn: arn, serviceName: 'my-service' } };
+
+        it('resets removed scalar/enum fields to their CFn defaults on update', async () => {
+          mockSend.mockResolvedValueOnce(okResponse);
+
+          await provider.update('MyService', arn, 'AWS::ECS::Service', {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+          }, {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            PlatformVersion: '1.4.0',
+            HealthCheckGracePeriodSeconds: 30,
+            PropagateTags: 'TASK_DEFINITION',
+            EnableECSManagedTags: true,
+            EnableExecuteCommand: true,
+            CapacityProviderStrategy: [{ capacityProvider: 'FARGATE', weight: 1 }],
+            PlacementConstraints: [{ type: 'distinctInstance' }],
+            PlacementStrategies: [{ type: 'spread', field: 'attribute:ecs.availability-zone' }],
+          });
+
+          const input = mockSend.mock.calls[0][0].input;
+          expect(input.platformVersion).toBe('LATEST');
+          expect(input.healthCheckGracePeriodSeconds).toBe(0);
+          expect(input.propagateTags).toBe('NONE');
+          expect(input.enableECSManagedTags).toBe(false);
+          expect(input.enableExecuteCommand).toBe(false);
+          expect(input.capacityProviderStrategy).toEqual([]);
+          expect(input.placementConstraints).toEqual([]);
+          expect(input.placementStrategy).toEqual([]);
+        });
+
+        it('leaves a never-present field absent (no spurious reset value)', async () => {
+          mockSend.mockResolvedValueOnce(okResponse);
+
+          await provider.update('MyService', arn, 'AWS::ECS::Service', {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DesiredCount: 3,
+          }, {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DesiredCount: 1,
+          });
+
+          const input = mockSend.mock.calls[0][0].input;
+          expect(input.platformVersion).toBeUndefined();
+          expect(input.healthCheckGracePeriodSeconds).toBeUndefined();
+          expect(input.propagateTags).toBeUndefined();
+          expect(input.enableECSManagedTags).toBeUndefined();
+          expect(input.enableExecuteCommand).toBeUndefined();
+          expect(input.capacityProviderStrategy).toBeUndefined();
+          expect(input.placementConstraints).toBeUndefined();
+          expect(input.placementStrategy).toBeUndefined();
+          expect(input.deploymentConfiguration).toBeUndefined();
+        });
+
+        it('passes kept/changed fields through unchanged (no reset when present)', async () => {
+          mockSend.mockResolvedValueOnce(okResponse);
+
+          await provider.update('MyService', arn, 'AWS::ECS::Service', {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            PlatformVersion: '1.4.0',
+            HealthCheckGracePeriodSeconds: 45,
+            PropagateTags: 'SERVICE',
+            EnableECSManagedTags: true,
+            PlacementConstraints: [{ type: 'distinctInstance' }],
+          }, {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            PlatformVersion: '1.3.0',
+            HealthCheckGracePeriodSeconds: 30,
+            PropagateTags: 'TASK_DEFINITION',
+            EnableECSManagedTags: false,
+          });
+
+          const input = mockSend.mock.calls[0][0].input;
+          expect(input.platformVersion).toBe('1.4.0');
+          expect(input.healthCheckGracePeriodSeconds).toBe(45);
+          expect(input.propagateTags).toBe('SERVICE');
+          expect(input.enableECSManagedTags).toBe(true);
+          expect(input.placementConstraints).toEqual([{ type: 'distinctInstance' }]);
+        });
+      });
+
       it('should throw on immutable ServiceName change', async () => {
         await expect(
           provider.update(

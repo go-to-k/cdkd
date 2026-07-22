@@ -76,11 +76,20 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
     // Plain Fargate Service (desiredCount: 0). NO serviceConnectConfiguration,
     // NO addVolume — stays SDK-routed.
     //
-    // Phase 1 (base):   EnableECSManagedTags: false, PropagateTags: NONE (CDK
-    //                   renders nothing for NONE, so the property is absent).
-    // Phase 2 (update): enableECSManagedTags: true, propagateTags:
-    //                   TASK_DEFINITION. verify.sh asserts both reach AWS via
-    //                   describe-services.
+    // Two directions are exercised across the phases:
+    //
+    // #975 (add-on-update): EnableECSManagedTags / PropagateTags
+    //   Phase 1 (base):   EnableECSManagedTags: false, PropagateTags: NONE (CDK
+    //                     renders nothing for NONE, so the property is absent).
+    //   Phase 2 (update): enableECSManagedTags: true, propagateTags:
+    //                     TASK_DEFINITION -> verify.sh asserts both reach AWS.
+    //
+    // #1160 (reset-on-removal): PlatformVersion / HealthCheckGracePeriodSeconds
+    //   are SET in phase 1 and DROPPED in phase 2. Under UpdateService merge
+    //   semantics an absent input field means "no change", so without the #1160
+    //   fix AWS would keep the phase-1 values. verify.sh asserts they reset to
+    //   their CloudFormation defaults (LATEST / 0). Injected via the L1 escape
+    //   hatch so the phase-2 template genuinely omits them.
     const service = new ecs.FargateService(this, 'Svc', {
       cluster,
       taskDefinition,
@@ -90,6 +99,19 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
       enableECSManagedTags: isUpdate ? true : false,
       propagateTags: isUpdate ? ecs.PropagatedTagSource.TASK_DEFINITION : ecs.PropagatedTagSource.NONE,
     });
+
+    const cfnService = service.node.defaultChild as ecs.CfnService;
+    if (!isUpdate) {
+      cfnService.addPropertyOverride('PlatformVersion', '1.4.0');
+      cfnService.addPropertyOverride('HealthCheckGracePeriodSeconds', 30);
+    } else {
+      // Phase 2: genuinely REMOVE the fields so cdkd's UpdateService sees an
+      // ABSENT field (removal), not a value change. PlatformVersion /
+      // HealthCheckGracePeriodSeconds are not emitted by L2 without an explicit
+      // prop, so these deletion overrides drop the phase-1 values cleanly.
+      cfnService.addPropertyDeletionOverride('PlatformVersion');
+      cfnService.addPropertyDeletionOverride('HealthCheckGracePeriodSeconds');
+    }
 
     new cdk.CfnOutput(this, 'ClusterName', {
       value: cluster.clusterName,
