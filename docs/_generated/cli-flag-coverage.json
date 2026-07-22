@@ -1309,6 +1309,7 @@
     "--subscription-arn",
     "--table-bucket-arn",
     "--table-name",
+    "--tags",
     "--tags-to-add",
     "--target",
     "--target-group-arn",

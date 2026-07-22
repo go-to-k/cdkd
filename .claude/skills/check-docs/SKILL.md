@@ -28,7 +28,7 @@ You are checking whether documentation is up to date with recent code changes in
    - `src/synthesis/` changes → check docs/architecture.md synthesis section, CLAUDE.md synthesis section
    - `src/assets/` changes → check docs/architecture.md asset section, CLAUDE.md asset section
    - `src/deployment/` changes → check docs/architecture.md deployment section, CLAUDE.md deployment section
-   - `src/provisioning/` changes → check docs/provider-development.md, CLAUDE.md provider section
+   - `src/provisioning/` changes → check docs/provider-development.md, CLAUDE.md provider section. For a NEW SDK provider ALSO check docs/supported-resources.md + docs/import.md (per `.claude/rules/providers.md` "Adding a New SDK Provider"). **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), its resource type MUST appear in the `--no-wait` resource lists: the table + intro in docs/cli-reference.md, the `--no-wait` bullet in README.md, and the `noWaitOption` help + JSDoc in src/cli/options.ts. Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (CI fails if a `CDKD_NO_WAIT` provider is absent from the cli-reference `--no-wait` table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — this bullet + that test are the backstop.
    - `src/analyzer/` changes → check docs/architecture.md analysis section
    - `src/state/` changes → check docs/state-management.md
    - New files added → check if they're mentioned in CLAUDE.md "Key Files and Directories"

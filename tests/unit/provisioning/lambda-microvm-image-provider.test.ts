@@ -6,6 +6,7 @@ import {
   DeleteMicrovmImageCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  ListTagsCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-lambda-microvms';
 
@@ -384,6 +385,77 @@ describe('LambdaMicrovmImageProvider', () => {
     it('rejects a non-ARN physical id override', async () => {
       await expect(provider.import(importInput('my-image'))).rejects.toThrow(/must be a MicroVM image ARN/);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('readCurrentState (drift)', () => {
+    it('reads Name + Tags (the only readable managed properties)', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, name: 'my-image', state: 'CREATED' }); // Get
+      mockSend.mockResolvedValueOnce({ Tags: { env: 'prod', team: 'infra' } }); // ListTags
+
+      const state = await provider.readCurrentState(ARN, 'MyImage', TYPE);
+
+      expect(state).toEqual({
+        Name: 'my-image',
+        Tags: [
+          { Key: 'env', Value: 'prod' },
+          { Key: 'team', Value: 'infra' },
+        ],
+      });
+      expect(callsOfType(ListTagsCommand)[0].input.Resource).toBe(ARN);
+    });
+
+    it('strips aws:-prefixed tags (never user-managed)', async () => {
+      mockSend.mockResolvedValueOnce({ name: 'my-image', state: 'CREATED' });
+      mockSend.mockResolvedValueOnce({ Tags: { 'aws:cloudformation:stack': 'x', env: 'dev' } });
+
+      const state = await provider.readCurrentState(ARN, 'MyImage', TYPE);
+      expect(state?.['Tags']).toEqual([{ Key: 'env', Value: 'dev' }]);
+    });
+
+    it('returns undefined when the image is gone', async () => {
+      mockSend.mockRejectedValueOnce(notFound());
+      expect(await provider.readCurrentState(ARN, 'MyImage', TYPE)).toBeUndefined();
+    });
+
+    it('omits Name when GetMicrovmImage returns no name', async () => {
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' }); // Get without name
+      mockSend.mockResolvedValueOnce({ Tags: { env: 'dev' } });
+      const state = await provider.readCurrentState(ARN, 'MyImage', TYPE);
+      expect(state).toEqual({ Tags: [{ Key: 'env', Value: 'dev' }] });
+    });
+
+    it('declares every writeOnly build property as drift-unknown (not Name/Tags)', () => {
+      const paths = provider.getDriftUnknownPaths(TYPE);
+      expect(paths).toContain('BaseImageArn');
+      expect(paths).toContain('CodeArtifact');
+      expect(paths).toContain('Logging');
+      expect(paths).toContain('EnvironmentVariables');
+      // Name + Tags ARE read back, so they must NOT be declared unknown.
+      expect(paths).not.toContain('Name');
+      expect(paths).not.toContain('Tags');
+    });
+  });
+
+  describe('poll-config env guard', () => {
+    it('falls back to defaults on a non-numeric POLL_ATTEMPTS (no spurious immediate timeout)', async () => {
+      process.env['CDKD_MICROVM_IMAGE_POLL_ATTEMPTS'] = 'garbage';
+      const guarded = new LambdaMicrovmImageProvider();
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' }); // Create
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' }); // poll (would never run if attempts were NaN)
+
+      const result = await guarded.create('MyImage', TYPE, minimalProps());
+      expect(result.physicalId).toBe(ARN);
+    });
+
+    it('falls back to defaults on a non-positive POLL_ATTEMPTS', async () => {
+      process.env['CDKD_MICROVM_IMAGE_POLL_ATTEMPTS'] = '0';
+      const guarded = new LambdaMicrovmImageProvider();
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' }); // would never run if attempts were 0
+
+      const result = await guarded.create('MyImage', TYPE, minimalProps());
+      expect(result.physicalId).toBe(ARN);
     });
   });
 });
