@@ -118,8 +118,8 @@ iam-role-prefixed-name-update	2026-07-21T18:19:31Z	PASS	52	verify.sh	rc ok, orph
 import-attributes	2026-07-21T13:51:28Z	PASS	42	verify.sh	post import-tag-walk refactor #1139; attr reconstruct+destroy clean
 import-auto-mode	2026-07-21T13:53:15Z	PASS	74	verify.sh	post import-tag-walk refactor #1139; CFn physId resolve (no tag) clean
 import-nested-stack	2026-07-21T13:59:14Z	PASS	144	verify.sh	post import-tag-walk refactor #1139; recursive import+nested destroy clean
-import-value-strong-ref	2026-07-21T08:42:10Z	PASS	122	verify.sh	producer+consumer strong ref, 5 deleted 0 orphans
-importvalue-chain	2026-07-21T08:44:10Z	PASS	81	verify.sh	chain A/B/C, exports index purged, 0 orphans
+import-value-strong-ref	2026-07-22T07:11:17Z	PASS		verify.sh	TTL-refresh sweep; 2-stack S3+SSM strong-ref, Producer 5 del 0 err, state.json gone both stacks, 0 orphans
+importvalue-chain	2026-07-22T07:13:56Z	PASS		verify.sh	TTL-refresh sweep; 3-stack A->B->C ImportValue chain, all destroyed 0 err, exports index purged, state gone
 infra-security	2026-06-21T11:00:28Z	PASS	307	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
 intrinsic-functions	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
@@ -196,7 +196,7 @@ outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep 
 parameters	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run); 4 fresh-principal/consumer race edges; clean destroy
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
-rds-aurora	2026-06-21T17:00:38Z	PASS	2088	verify.sh	stale-real re-run; clean destroy (~35min)
+rds-aurora	2026-07-22T07:49:42Z	PASS		verify.sh	TTL-refresh sweep; Aurora cluster + #609 security backfill, 23 del 0 err, cluster/instances/subnet-groups gone, state gone
 rds-dbinstance-backfill	2026-06-21T19:05:04Z	PASS	560	verify.sh	re-run after pg 17.4->17.6 fixture fix (AWS retired 17.4); all #609 backfill props verified incl EngineVersion==17.6; 11 deleted 0 err
 rds-full-stack	2026-07-21T08:03:48Z	PASS	2346	verify.sh	15 deleted 0 orphans, RDS slow-delete floor ok
 recreate-mixed-direction	2026-07-21T05:15:35Z	PASS	100	verify.sh	rc ok, orph clean
@@ -208,7 +208,7 @@ rename-refactor	2026-07-21T14:37:30Z	PASS	107	verify.sh	new fixture; review-fix 
 replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
 replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
 rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
-route53	2026-07-21T14:24:50Z	PASS	266	verify.sh	rc ok, orph clean
+route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-directory-bucket	2026-07-20T09:10:31Z	PASS	60	standard	clean deploy+destroy from #1124 tree (integ-destroy gate refresh): 1 deleted 0 err, directory bucket + state gone
@@ -223,7 +223,7 @@ scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue
 schema-v5-to-v6-migration	2026-06-21T14:38:30Z	PASS	57	verify.sh	sweep-G verify.sh re-run (rc=0)
 schema-v6-to-v7-migration	2026-06-21T14:39:23Z	PASS	51	verify.sh	sweep-G verify.sh re-run (rc=0)
 schema-v7-to-v8-migration	2026-07-19T19:56:03Z	PASS	100	verify.sh	rc ok, transparent auto-migration, orph clean
-sdk-ccapi-crossref	2026-06-21T18:25:10Z	PASS	80	verify.sh	first run (never-run); heterogeneous SDK/CC routing + bidirectional cross-ref; clean CC-path destroy
+sdk-ccapi-crossref	2026-07-22T07:07:07Z	PASS		verify.sh	P0: CC-provider changes (#1135/#1109) covered; heterogeneous SDK/CC routing + bidirectional cross-ref, 4 del 0 err, state.json gone (deployments/ logs retained)
 secrets-dynamic-ref	2026-07-21T14:30:00Z	PASS	58	verify.sh	rc ok, orph clean
 secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
 serverless-api	2026-07-02T18:23:15Z	PASS	50	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
@@ -250,6 +250,6 @@ update-replace	2026-07-21T07:23:47Z	PASS	80	verify.sh	in-place+replace, 7 delete
 vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
 vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
-vpc-nat-gateway	2026-06-21T17:00:38Z	PASS	145	verify.sh	stale-real re-run; deploy 21 + destroy 21 (split by subshell-death, re-destroyed clean); NAT GW gone
+vpc-nat-gateway	2026-07-22T08:08:02Z	PASS		standard	TTL-refresh sweep; standard flow (classifier-approved direct deploy/destroy); 21 created / 21 deleted 0 err; NAT GW + VPC + EIP + ENI all gone, state gone
 wafv2	2026-07-03T04:24:38Z	PASS	120	standard	re-run on rebased tree (PR 972 + #971 base); 0 errors, retained CW role swept, events pruned
 wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review-nit JSDoc edit, orph clean
