@@ -144,6 +144,34 @@ echo "    GetMicrovmImage state: ${STATE_ON_AWS}"
 [ "${STATE_ON_AWS}" = "CREATED" ] || { echo "FAIL: expected image state CREATED, got '${STATE_ON_AWS}'" >&2; exit 1; }
 echo "    MicroVM image reached CREATED on AWS"
 
+# Record the active version so the tags-only UPDATE below can prove it did NOT
+# rebuild (a rebuild would bump the version).
+VERSION_BEFORE="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN}" \
+  --region "${REGION}" --query 'latestActiveImageVersion' --output text)"
+echo "    active version after create: ${VERSION_BEFORE}"
+
+# --- Phase 1b: tags-only UPDATE (reconcile via Tag/UntagResource, no rebuild) --
+echo "==> Phase 1b: re-deploy with a tags-only change (env dev->prod, +team)"
+MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+# NOTE: ListTags returns the map under `Tags` (capital) even though
+# GetMicrovmImage / CreateMicrovmImage use lowercase `tags` -- the service
+# model is inconsistent, so query the exact `Tags` key here.
+ENV_TAG="$(aws lambda-microvms list-tags --resource "${IMAGE_ARN}" --region "${REGION}" \
+  --query 'Tags.env' --output text)"
+TEAM_TAG="$(aws lambda-microvms list-tags --resource "${IMAGE_ARN}" --region "${REGION}" \
+  --query 'Tags.team' --output text)"
+echo "    tags after update: env=${ENV_TAG} team=${TEAM_TAG}"
+[ "${ENV_TAG}" = "prod" ] || { echo "FAIL: expected env=prod after tags update, got '${ENV_TAG}'" >&2; exit 1; }
+[ "${TEAM_TAG}" = "infra" ] || { echo "FAIL: expected team=infra added on update, got '${TEAM_TAG}'" >&2; exit 1; }
+
+VERSION_AFTER="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN}" \
+  --region "${REGION}" --query 'latestActiveImageVersion' --output text)"
+echo "    active version after tags-only update: ${VERSION_AFTER}"
+[ "${VERSION_AFTER}" = "${VERSION_BEFORE}" ] || { echo "FAIL: tags-only update rebuilt the image (version ${VERSION_BEFORE} -> ${VERSION_AFTER}); expected no rebuild" >&2; exit 1; }
+echo "    tags reconciled via Tag/UntagResource with NO image rebuild"
+
 # --- Phase 2: destroy ----------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -158,4 +186,4 @@ echo "    cdkd state removed"
 # Remove the code artifact we uploaded in Phase 0 (not a cdkd-managed resource).
 aws s3 rm "s3://${STATE_BUCKET}/${ARTIFACT_KEY}" --region "${REGION}" >/dev/null
 
-echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, clean async destroy"
+echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update reconciled with no rebuild, clean async destroy"

@@ -4,6 +4,8 @@ import {
   GetMicrovmImageCommand,
   UpdateMicrovmImageCommand,
   DeleteMicrovmImageCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-lambda-microvms';
 
@@ -141,6 +143,35 @@ describe('LambdaMicrovmImageProvider', () => {
       expect(req.tags).toEqual({ team: 'infra' });
     });
 
+    it('maps a partial Logging.CloudWatch (LogGroup only) without a LogStream', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' });
+
+      await provider.create('MyImage', TYPE, {
+        ...minimalProps(),
+        Logging: { CloudWatch: { LogGroup: '/only/group' } },
+      });
+
+      expect(callsOfType(CreateMicrovmImageCommand)[0].input.logging).toEqual({
+        cloudWatch: { logGroup: '/only/group' },
+      });
+    });
+
+    it('filters out a Resources entry missing a numeric MinimumMemoryInMiB', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' });
+
+      await provider.create('MyImage', TYPE, {
+        ...minimalProps(),
+        Resources: [{ MinimumMemoryInMiB: 4096 }, { NotMemory: 1 }],
+      });
+
+      // The malformed entry is dropped rather than sent as NaN.
+      expect(callsOfType(CreateMicrovmImageCommand)[0].input.resources).toEqual([
+        { minimumMemoryInMiB: 4096 },
+      ]);
+    });
+
     it('maps Logging { Disabled: true } to the tagged-union { disabled: {} }', async () => {
       mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
       mockSend.mockResolvedValueOnce({ state: 'CREATED' });
@@ -189,18 +220,52 @@ describe('LambdaMicrovmImageProvider', () => {
   });
 
   describe('update', () => {
-    it('updates via imageIdentifier and polls until UPDATED', async () => {
+    it('issues UpdateMicrovmImage on a build-affecting change and polls until UPDATED', async () => {
       mockSend.mockResolvedValueOnce({}); // Update
       mockSend.mockResolvedValueOnce({ state: 'UPDATING' }); // poll 1
       mockSend.mockResolvedValueOnce({ state: 'UPDATED' }); // poll 2
 
-      const result = await provider.update('MyImage', ARN, TYPE, minimalProps(), minimalProps());
+      const prev = minimalProps();
+      const next = { ...minimalProps(), Description: 'changed' };
+      const result = await provider.update('MyImage', ARN, TYPE, next, prev);
 
       expect(result.wasReplaced).toBe(false);
       expect(result.physicalId).toBe(ARN);
       const req = callsOfType(UpdateMicrovmImageCommand)[0].input;
       expect(req.imageIdentifier).toBe(ARN);
       expect(req.name).toBeUndefined(); // update input has no name field
+      expect(req.description).toBe('changed');
+      // Always sends environmentVariables so removal is applied, not dropped.
+      expect(req.environmentVariables).toEqual({});
+    });
+
+    it('reconciles a tags-only change via Tag/UntagResource WITHOUT an image rebuild', async () => {
+      mockSend.mockResolvedValueOnce({}); // UntagResource
+      mockSend.mockResolvedValueOnce({}); // TagResource
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' }); // GetMicrovmImage (no rebuild)
+
+      const prev = { ...minimalProps(), Tags: [{ Key: 'env', Value: 'dev' }, { Key: 'old', Value: 'x' }] };
+      const next = { ...minimalProps(), Tags: [{ Key: 'env', Value: 'prod' }] };
+      const result = await provider.update('MyImage', ARN, TYPE, next, prev);
+
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOfType(UpdateMicrovmImageCommand)).toHaveLength(0); // no rebuild
+      const untag = callsOfType(UntagResourceCommand)[0].input;
+      expect(untag.Resource).toBe(ARN);
+      expect(untag.TagKeys).toEqual(['old']);
+      const tag = callsOfType(TagResourceCommand)[0].input;
+      expect(tag.Tags).toEqual({ env: 'prod' });
+    });
+
+    it('clears environmentVariables when the last one is removed (sends {})', async () => {
+      mockSend.mockResolvedValueOnce({}); // Update
+      mockSend.mockResolvedValueOnce({ state: 'UPDATED' }); // poll
+
+      const prev = { ...minimalProps(), EnvironmentVariables: [{ Key: 'FOO', Value: 'bar' }] };
+      const next = { ...minimalProps(), EnvironmentVariables: [] };
+      await provider.update('MyImage', ARN, TYPE, next, prev);
+
+      expect(callsOfType(UpdateMicrovmImageCommand)[0].input.environmentVariables).toEqual({});
     });
 
     it('refuses a create-only Name change in place', async () => {
@@ -210,6 +275,15 @@ describe('LambdaMicrovmImageProvider', () => {
         /create-only/
       );
       expect(callsOfType(UpdateMicrovmImageCommand)).toHaveLength(0);
+    });
+
+    it('throws when a required build property is missing on a build-affecting update', async () => {
+      const prev = minimalProps();
+      const next: Record<string, unknown> = { ...minimalProps(), Description: 'changed' };
+      delete next['BaseImageArn'];
+      await expect(provider.update('MyImage', ARN, TYPE, next, prev)).rejects.toThrow(
+        /BaseImageArn.*required/
+      );
     });
   });
 
@@ -240,6 +314,14 @@ describe('LambdaMicrovmImageProvider', () => {
 
       await expect(provider.delete('MyImage', ARN, TYPE)).rejects.toThrow(/DELETE_FAILED/);
     });
+
+    it('refuses to treat NotFound as success when the client region does not match', async () => {
+      mockSend.mockRejectedValueOnce(notFound()); // Delete -> NotFound
+      // client region is us-east-1 (mock), expectedRegion is eu-west-1 -> mismatch
+      await expect(
+        provider.delete('MyImage', ARN, TYPE, undefined, { expectedRegion: 'eu-west-1' })
+      ).rejects.toThrow();
+    });
   });
 
   describe('getAttribute', () => {
@@ -255,6 +337,18 @@ describe('LambdaMicrovmImageProvider', () => {
       });
       expect(await provider.getAttribute(ARN, TYPE, 'State')).toBe('CREATED');
       expect(await provider.getAttribute(ARN, TYPE, 'LatestActiveImageVersion')).toBe('1.0');
+    });
+
+    it('serializes CreatedAt / UpdatedAt Date attributes to ISO strings', async () => {
+      const created = new Date('2026-07-22T00:00:00.000Z');
+      mockSend.mockResolvedValue({ state: 'CREATED', createdAt: created, updatedAt: created });
+      expect(await provider.getAttribute(ARN, TYPE, 'CreatedAt')).toBe('2026-07-22T00:00:00.000Z');
+      expect(await provider.getAttribute(ARN, TYPE, 'UpdatedAt')).toBe('2026-07-22T00:00:00.000Z');
+    });
+
+    it('returns undefined for an unknown attribute', async () => {
+      mockSend.mockResolvedValue({ state: 'CREATED' });
+      expect(await provider.getAttribute(ARN, TYPE, 'Nope')).toBeUndefined();
     });
   });
 });

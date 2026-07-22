@@ -4,10 +4,13 @@ import {
   GetMicrovmImageCommand,
   UpdateMicrovmImageCommand,
   DeleteMicrovmImageCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
   type CreateMicrovmImageRequest,
   type UpdateMicrovmImageRequest,
   type CodeArtifact,
+  type Capability,
   type Logging,
   type Hooks,
   type CpuConfiguration,
@@ -61,6 +64,12 @@ import type {
  * `logging: { disabled: {} }`). The mapping helpers below translate each field
  * explicitly so this provider accepts the exact same template the Cloud Control
  * fallback would.
+ *
+ * **Tags update out-of-band.** `Tags` is `tagUpdatable` but is NOT a field on
+ * `UpdateMicrovmImage`, so `update()` reconciles tag changes via `TagResource`
+ * / `UntagResource` (no rebuild). A change limited to `Tags` skips the
+ * `UpdateMicrovmImage` rebuild entirely; only a build-affecting property change
+ * ({@link BUILD_AFFECTING_CFN_KEYS}) issues the async rebuild.
  */
 export class LambdaMicrovmImageProvider implements ResourceProvider {
   private client: LambdaMicrovmsClient;
@@ -226,27 +235,57 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
       );
     }
 
-    const baseImageArn = properties['BaseImageArn'] as string | undefined;
-    const buildRoleArn = properties['BuildRoleArn'] as string | undefined;
-    const codeArtifact = mapCodeArtifact(properties['CodeArtifact']);
-    if (!baseImageArn || !buildRoleArn || !codeArtifact) {
-      throw new ProvisioningError(
-        `BaseImageArn, BuildRoleArn, and CodeArtifact.Uri are required to update MicroVM image ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    const input: UpdateMicrovmImageRequest = {
-      imageIdentifier: physicalId,
-      baseImageArn,
-      buildRoleArn,
-      codeArtifact,
-      ...buildCommonImageInput(properties),
-    };
-
     try {
+      // Tags are `tagUpdatable` and are NOT a field on UpdateMicrovmImage —
+      // they are reconciled out-of-band via TagResource / UntagResource, and a
+      // tags-only change must NOT trigger an image rebuild. Reconcile them
+      // first (a build rebuild below re-applies nothing tag-related).
+      await this.reconcileTags(physicalId, properties['Tags'], previousProperties['Tags']);
+
+      // Only issue an UpdateMicrovmImage (which triggers an async rebuild) when
+      // a build-affecting property actually changed. A tags-only update skips
+      // the rebuild entirely.
+      const buildChanged = BUILD_AFFECTING_CFN_KEYS.some(
+        (key) => JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])
+      );
+      if (!buildChanged) {
+        this.logger.debug(
+          `MicroVM image ${logicalId}: only tags changed, skipping UpdateMicrovmImage rebuild`
+        );
+        const current = (await this.client.send(
+          new GetMicrovmImageCommand({ imageIdentifier: physicalId })
+        )) as GetImageResult;
+        return {
+          physicalId,
+          wasReplaced: false,
+          attributes: this.buildAttributes(physicalId, current.state, current),
+        };
+      }
+
+      const baseImageArn = properties['BaseImageArn'] as string | undefined;
+      const buildRoleArn = properties['BuildRoleArn'] as string | undefined;
+      const codeArtifact = mapCodeArtifact(properties['CodeArtifact']);
+      if (!baseImageArn || !buildRoleArn || !codeArtifact) {
+        throw new ProvisioningError(
+          `BaseImageArn, BuildRoleArn, and CodeArtifact.Uri are required to update MicroVM image ${logicalId}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+
+      const input: UpdateMicrovmImageRequest = {
+        imageIdentifier: physicalId,
+        baseImageArn,
+        buildRoleArn,
+        codeArtifact,
+        ...buildCommonImageInput(properties),
+        // UpdateMicrovmImage rebuilds from the full desired config; send
+        // environmentVariables explicitly (`{}` when cleared) so removing the
+        // last variable is applied, not silently dropped.
+        environmentVariables: mapKeyValueListToRecord(properties['EnvironmentVariables']) ?? {},
+      };
+
       await this.client.send(new UpdateMicrovmImageCommand(input));
 
       const noWait = process.env['CDKD_NO_WAIT'] === 'true';
@@ -439,6 +478,36 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * Reconcile the resource's tags to the desired set via TagResource /
+   * UntagResource (diff of the CFn `Tags` list, old vs new). Tags are NOT a
+   * field on UpdateMicrovmImage, so this is the only way a tag change reaches
+   * AWS on update — and it applies without an image rebuild.
+   */
+  private async reconcileTags(
+    physicalId: string,
+    newTags: unknown,
+    oldTags: unknown
+  ): Promise<void> {
+    const newMap = mapKeyValueListToRecord(newTags) ?? {};
+    const oldMap = mapKeyValueListToRecord(oldTags) ?? {};
+
+    const keysToRemove = Object.keys(oldMap).filter((k) => !(k in newMap));
+    const tagsToAdd: Record<string, string> = {};
+    for (const [k, v] of Object.entries(newMap)) {
+      if (oldMap[k] !== v) tagsToAdd[k] = v;
+    }
+
+    if (keysToRemove.length > 0) {
+      await this.client.send(
+        new UntagResourceCommand({ Resource: physicalId, TagKeys: keysToRemove })
+      );
+    }
+    if (Object.keys(tagsToAdd).length > 0) {
+      await this.client.send(new TagResourceCommand({ Resource: physicalId, Tags: tagsToAdd }));
+    }
+  }
+
   private wrapError(
     operation: string,
     logicalId: string,
@@ -457,6 +526,27 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     );
   }
 }
+
+/**
+ * CFn property names whose change requires an UpdateMicrovmImage call (an async
+ * image rebuild). Everything the SDK's UpdateMicrovmImage accepts EXCEPT tags
+ * (which reconcile out-of-band via TagResource / UntagResource) and Name
+ * (create-only). A change limited to `Tags` skips the rebuild.
+ */
+const BUILD_AFFECTING_CFN_KEYS = [
+  'BaseImageArn',
+  'BaseImageVersion',
+  'BuildRoleArn',
+  'Description',
+  'CodeArtifact',
+  'Logging',
+  'EgressNetworkConnectors',
+  'CpuConfigurations',
+  'Resources',
+  'AdditionalOsCapabilities',
+  'Hooks',
+  'EnvironmentVariables',
+] as const;
 
 /** Minimal shape of the `GetMicrovmImage` response fields the provider reads. */
 interface GetImageResult {
@@ -497,7 +587,7 @@ function buildCommonImageInput(
   const resources = mapResources(properties['Resources']);
   if (resources) input.resources = resources;
   if (Array.isArray(properties['AdditionalOsCapabilities'])) {
-    input.additionalOsCapabilities = properties['AdditionalOsCapabilities'] as ['ALL'];
+    input.additionalOsCapabilities = properties['AdditionalOsCapabilities'] as Capability[];
   }
   const hooks = mapHooks(properties['Hooks']);
   if (hooks) input.hooks = hooks;
@@ -537,7 +627,9 @@ function mapResources(value: unknown): Resources[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value
     .filter(isRecord)
-    .map((r) => ({ minimumMemoryInMiB: Number(r['MinimumMemoryInMiB']) }));
+    .map((r) => Number(r['MinimumMemoryInMiB']))
+    .filter((n) => Number.isFinite(n))
+    .map((minimumMemoryInMiB) => ({ minimumMemoryInMiB }));
 }
 
 /**

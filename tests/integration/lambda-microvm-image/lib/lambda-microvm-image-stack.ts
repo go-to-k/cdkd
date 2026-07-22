@@ -48,6 +48,17 @@ export class LambdaMicrovmImageStack extends cdk.Stack {
       })
     );
 
+    // CDKD_TEST_UPDATE flips the tags to a NEW set (add + remove + change) so
+    // verify.sh can exercise the tags-only UPDATE path: it must reconcile via
+    // TagResource / UntagResource WITHOUT triggering an image rebuild.
+    const update = process.env['CDKD_TEST_UPDATE'] === 'true';
+    const tags = update
+      ? [
+          { Key: 'env', Value: 'prod' },
+          { Key: 'team', Value: 'infra' },
+        ]
+      : [{ Key: 'env', Value: 'dev' }];
+
     const image = new cdk.CfnResource(this, 'MicrovmImage', {
       type: 'AWS::Lambda::MicrovmImage',
       properties: {
@@ -60,6 +71,7 @@ export class LambdaMicrovmImageStack extends cdk.Stack {
         Description: 'cdkd integ MicroVM image',
         CpuConfigurations: [{ Architecture: 'ARM_64' }],
         Resources: [{ MinimumMemoryInMiB: 4096 }],
+        Tags: tags,
       },
     });
 
