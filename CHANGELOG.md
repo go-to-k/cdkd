@@ -1,3 +1,10 @@
+# [0.260.0](https://github.com/go-to-k/cdkd/compare/v0.259.1...v0.260.0) (2026-07-22)
+
+
+### Features
+
+* **providers:** MicrovmImage drift detection + --no-wait docs completion ([#1159](https://github.com/go-to-k/cdkd/issues/1159)) ([dd7d9ca](https://github.com/go-to-k/cdkd/commit/dd7d9cac3a1e4d1e218398988a4e3bda0798a248))
+
 ## [0.259.1](https://github.com/go-to-k/cdkd/compare/v0.259.0...v0.259.1) (2026-07-22)
 
 
