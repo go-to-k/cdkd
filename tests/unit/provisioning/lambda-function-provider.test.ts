@@ -396,6 +396,127 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.LoggingConfig).toBeUndefined();
     });
 
+    it('sends CFn-default resets when core config fields are removed on update (issue #1155)', async () => {
+      // Removing Timeout / MemorySize / Description / Environment / Layers /
+      // TracingConfig / EphemeralStorage from the template previously passed
+      // `undefined` straight through, which UpdateFunctionConfiguration reads
+      // as "no change" — the old value stayed live while CFn would reset it
+      // to the property default. Confirmed live on 2026-07-22 (issue #1155).
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-core-clear',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-core-clear',
+          },
+        });
+
+      await provider.update(
+        'CoreClearFn',
+        'fn-core-clear',
+        'AWS::Lambda::Function',
+        {
+          // All seven fields removed from the template.
+          Role: 'arn:aws:iam::123456789012:role/exec',
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 30,
+          MemorySize: 256,
+          Description: 'old description',
+          Environment: { Variables: { FOO: 'bar' } },
+          Layers: ['arn:aws:lambda:us-east-1:123456789012:layer:l1:1'],
+          TracingConfig: { Mode: 'Active' },
+          EphemeralStorage: { Size: 2048 },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.Timeout).toBe(3);
+      expect(cmd.input.MemorySize).toBe(128);
+      expect(cmd.input.Description).toBe('');
+      expect(cmd.input.Environment).toEqual({ Variables: {} });
+      expect(cmd.input.Layers).toEqual([]);
+      expect(cmd.input.TracingConfig).toEqual({ Mode: 'PassThrough' });
+      expect(cmd.input.EphemeralStorage).toEqual({ Size: 512 });
+    });
+
+    it('passes still-present fields through unchanged while resetting only the removed ones', async () => {
+      // A kept field must reach AWS with its (possibly changed) template
+      // value, never a reset — guards clearOnUpdateRemoval's branch order
+      // (returning clearValue whenever previousValue is set would pass the
+      // all-removed test above but reset every kept field on real updates).
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-mixed',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-mixed',
+          },
+        });
+
+      await provider.update(
+        'MixedFn',
+        'fn-mixed',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 30, // kept, unchanged
+          MemorySize: 512, // kept, changed 256 -> 512
+          // Environment + EphemeralStorage removed.
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 30,
+          MemorySize: 256,
+          Environment: { Variables: { FOO: 'bar' } },
+          EphemeralStorage: { Size: 2048 },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.Timeout).toBe(30);
+      expect(cmd.input.MemorySize).toBe(512);
+      expect(cmd.input.Environment).toEqual({ Variables: {} });
+      expect(cmd.input.EphemeralStorage).toEqual({ Size: 512 });
+    });
+
+    it('omits the core config fields entirely when neither previous nor new sets them', async () => {
+      // Never-present fields must stay absent — synthesizing a reset for a
+      // field that was never set would be a spurious (and noisy) write.
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-core-none',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-core-none',
+          },
+        });
+
+      await provider.update(
+        'CoreNoneFn',
+        'fn-core-none',
+        'AWS::Lambda::Function',
+        { Role: 'arn:aws:iam::123456789012:role/exec', Handler: 'index.handler2' },
+        { Role: 'arn:aws:iam::123456789012:role/exec', Handler: 'index.handler' }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.Timeout).toBeUndefined();
+      expect(cmd.input.MemorySize).toBeUndefined();
+      expect(cmd.input.Description).toBeUndefined();
+      expect(cmd.input.Environment).toBeUndefined();
+      expect(cmd.input.Layers).toBeUndefined();
+      expect(cmd.input.TracingConfig).toBeUndefined();
+      expect(cmd.input.EphemeralStorage).toBeUndefined();
+    });
+
     it('sends a LoggingConfig change via UpdateFunctionConfiguration', async () => {
       // LoggingConfig must be in the configFields change-detection list so a
       // log-format-only change is not silently no-op'd.

@@ -1036,6 +1036,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-config-field-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-destinations",
       "annotated": false,
       "scenarios": []
@@ -2405,6 +2410,7 @@
     "kinesis-stream-mode-switch",
     "lambda-alias-provisioned-concurrency",
     "lambda-arch-switch",
+    "lambda-config-field-removal",
     "lambda-destinations",
     "lambda-env-removal",
     "lambda-event-invoke-config-update",

@@ -398,24 +398,62 @@ export class LambdaFunctionProvider implements ResourceProvider {
           Role: properties['Role'] as string | undefined,
           Handler: properties['Handler'] as string | undefined,
           Runtime: properties['Runtime'] as Runtime | undefined,
-          Timeout: properties['Timeout'] as number | undefined,
-          MemorySize: properties['MemorySize'] as number | undefined,
-          Description: properties['Description'] as string | undefined,
-          Environment: properties['Environment'] as
-            | { Variables?: Record<string, string> }
-            | undefined,
-          Layers: properties['Layers'] as string[] | undefined,
-          TracingConfig: properties['TracingConfig'] as TracingConfig | undefined,
-          EphemeralStorage: properties['EphemeralStorage'] as EphemeralStorage | undefined,
+          // Every optional field below is cleared-on-removal (see
+          // clearOnUpdateRemoval): UpdateFunctionConfiguration treats an
+          // ABSENT field as "no change", so a template that drops a
+          // previously-set field must send an explicit reset value or AWS
+          // silently keeps the old one — while CFn resets it to the
+          // property's default. Same hazard VpcConfig handles via
+          // buildVpcConfigForUpdate. (Role/Handler/Runtime are required by
+          // CFn for their package type, so removal is not a valid template
+          // transition and they pass through directly.)
+          // CFn default: 3 seconds.
+          Timeout: this.clearOnUpdateRemoval(
+            properties['Timeout'] as number | undefined,
+            previousProperties['Timeout'] as number | undefined,
+            3
+          ),
+          // CFn default: 128 MB.
+          MemorySize: this.clearOnUpdateRemoval(
+            properties['MemorySize'] as number | undefined,
+            previousProperties['MemorySize'] as number | undefined,
+            128
+          ),
+          // Empty string clears the description.
+          Description: this.clearOnUpdateRemoval(
+            properties['Description'] as string | undefined,
+            previousProperties['Description'] as string | undefined,
+            ''
+          ),
+          // Empty Variables map removes all env vars (the whole-block
+          // removal twin of the per-key removal the diff already handles).
+          Environment: this.clearOnUpdateRemoval(
+            properties['Environment'] as { Variables?: Record<string, string> } | undefined,
+            previousProperties['Environment'] as { Variables?: Record<string, string> } | undefined,
+            { Variables: {} }
+          ),
+          // Empty list detaches all layers.
+          Layers: this.clearOnUpdateRemoval(
+            properties['Layers'] as string[] | undefined,
+            previousProperties['Layers'] as string[] | undefined,
+            []
+          ),
+          // CFn default: PassThrough.
+          TracingConfig: this.clearOnUpdateRemoval(
+            properties['TracingConfig'] as TracingConfig | undefined,
+            previousProperties['TracingConfig'] as TracingConfig | undefined,
+            { Mode: 'PassThrough' }
+          ),
+          // CFn default: 512 MB.
+          EphemeralStorage: this.clearOnUpdateRemoval(
+            properties['EphemeralStorage'] as EphemeralStorage | undefined,
+            previousProperties['EphemeralStorage'] as EphemeralStorage | undefined,
+            { Size: 512 }
+          ),
           VpcConfig: this.buildVpcConfigForUpdate(
             properties['VpcConfig'],
             previousProperties['VpcConfig']
           ),
-          // Each of these five is cleared-on-removal (see clearOnUpdateRemoval):
-          // UpdateFunctionConfiguration treats an ABSENT field as "no change",
-          // so a template that drops a previously-set field must send an
-          // explicit reset value or AWS silently keeps the old one. Same
-          // hazard VpcConfig handles via buildVpcConfigForUpdate.
           DeadLetterConfig: this.clearOnUpdateRemoval(
             properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
             previousProperties['DeadLetterConfig'] as DeadLetterConfig | undefined,
@@ -763,9 +801,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * `UpdateFunctionConfiguration` treats an absent field as "no change", so
    * passing `undefined` for a field the user just dropped from the template
    * leaves the old value live on AWS — the update reports success while the
-   * field silently persists. For fields that support an explicit reset value
-   * (DeadLetterConfig `{TargetArn:''}`, KMSKeyArn `''`, FileSystemConfigs `[]`,
-   * ImageConfig `{}`, SnapStart `{ApplyOn:'None'}`) we send that reset when the
+   * field silently persists. For every optional config field we send its
+   * CFn-default / explicit reset value (e.g. Timeout `3`, MemorySize `128`,
+   * Environment `{Variables:{}}`, Layers `[]`, TracingConfig
+   * `{Mode:'PassThrough'}`, EphemeralStorage `{Size:512}`, DeadLetterConfig
+   * `{TargetArn:''}`, KMSKeyArn `''`, FileSystemConfigs `[]`, ImageConfig `{}`,
+   * SnapStart `{ApplyOn:'None'}`, LoggingConfig `{LogFormat:'Text'}`) when the
    * field was present before and is now absent. Mirrors `buildVpcConfigForUpdate`.
    */
   private clearOnUpdateRemoval<T>(
