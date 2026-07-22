@@ -1,0 +1,6 @@
+# Override the parent integ .gitignore (which ignores all *.js) so the MicroVM
+# image code artifact's source files are tracked. verify.sh zips app/app.js +
+# app/Dockerfile and uploads them to S3 as the MicroVM image build's
+# CodeArtifact; without these committed the fixture cannot build.
+!app/*.js
+!app/Dockerfile

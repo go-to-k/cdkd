@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **129**
+- Classified types (cached schema): **130**
 - Fully enriched: **7**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **108**
-- Types with allow-listed (not-a-gap) attributes: **13**
+- SDK-fallback gaps (informational, #614 path only): **109**
+- Types with allow-listed (not-a-gap) attributes: **14**
 
 ## Pure-CC latent gaps
 
@@ -107,6 +107,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::EventSourceMapping` | `EventSourceMappingArn`, `Id` |
 | `AWS::Lambda::Function` | `Arn`, `SnapStartResponse` |
 | `AWS::Lambda::LayerVersion` | `LayerVersionArn` |
+| `AWS::Lambda::MicrovmImage` | `CreatedAt`, `LatestActiveImageVersion`, `LatestFailedImageVersion`, `State`, `UpdatedAt` |
 | `AWS::Lambda::Permission` | `Id` |
 | `AWS::Logs::LogGroup` | `Arn` |
 | `AWS::Neptune::DBCluster` | `ClusterResourceId`, `Endpoint`, `Port`, `ReadEndpoint` |
@@ -235,6 +236,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::EventSourceMapping` | yes | sdk-fallback-gap | `EventSourceMappingArn` (GAP), `Id` (GAP) |
 | `AWS::Lambda::Function` | yes | sdk-fallback-gap | `Arn` (GAP), `SnapStartResponse` (GAP) |
 | `AWS::Lambda::LayerVersion` | yes | sdk-fallback-gap | `LayerVersionArn` (GAP) |
+| `AWS::Lambda::MicrovmImage` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `ImageArn` (allow), `LatestActiveImageVersion` (GAP), `LatestFailedImageVersion` (GAP), `State` (GAP), `UpdatedAt` (GAP) |
 | `AWS::Lambda::Permission` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::Lambda::Url` | yes | enriched | `FunctionArn` (OK), `FunctionUrl` (OK) |
 | `AWS::Logs::LogGroup` | yes | sdk-fallback-gap | `Arn` (GAP) |

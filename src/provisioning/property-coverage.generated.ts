@@ -1870,6 +1870,28 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Lambda::MicrovmImage',
+    {
+      handled: new Set<string>([
+        'AdditionalOsCapabilities',
+        'BaseImageArn',
+        'BaseImageVersion',
+        'BuildRoleArn',
+        'CodeArtifact',
+        'CpuConfigurations',
+        'Description',
+        'EgressNetworkConnectors',
+        'EnvironmentVariables',
+        'Hooks',
+        'Logging',
+        'Name',
+        'Resources',
+        'Tags',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::Lambda::Permission',
     {
       handled: new Set<string>([

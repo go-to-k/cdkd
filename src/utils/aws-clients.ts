@@ -17,6 +17,7 @@ import { CloudWatchClient } from '@aws-sdk/client-cloudwatch';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
 import { ACMClient } from '@aws-sdk/client-acm';
+import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 
 /**
  * AWS client configuration
@@ -54,6 +55,7 @@ export class AwsClients {
   private cloudWatchLogsClient?: CloudWatchLogsClient;
   private bedrockAgentCoreControlClient?: BedrockAgentCoreControlClient;
   private acmClient?: ACMClient;
+  private lambdaMicrovmsClient?: LambdaMicrovmsClient;
   private config: AwsClientConfig;
 
   constructor(config: AwsClientConfig = {}) {
@@ -400,6 +402,32 @@ export class AwsClients {
   }
 
   /**
+   * Get Lambda MicroVMs client.
+   *
+   * Backs `AWS::Lambda::MicrovmImage` (`LambdaMicrovmImageProvider`). This is
+   * the dedicated `lambda-microvms` service, NOT `@aws-sdk/client-lambda` —
+   * the MicroVM image / MicroVM run APIs live in their own service model.
+   * Region-scoped: MicroVM images and their code-artifact S3 buckets must be
+   * in the same region.
+   */
+  getLambdaMicrovmsClient(): LambdaMicrovmsClient {
+    if (!this.lambdaMicrovmsClient) {
+      this.lambdaMicrovmsClient = new LambdaMicrovmsClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.lambdaMicrovmsClient;
+  }
+
+  /**
+   * Convenience getter for Lambda MicroVMs client
+   */
+  get lambdaMicrovms(): LambdaMicrovmsClient {
+    return this.getLambdaMicrovmsClient();
+  }
+
+  /**
    * Get CloudWatch client
    */
   getCloudWatchClient(): CloudWatchClient {
@@ -482,6 +510,7 @@ export class AwsClients {
     this.cloudWatchLogsClient?.destroy();
     this.bedrockAgentCoreControlClient?.destroy();
     this.acmClient?.destroy();
+    this.lambdaMicrovmsClient?.destroy();
   }
 }
 
