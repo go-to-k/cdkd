@@ -1,3 +1,10 @@
+# [0.258.0](https://github.com/go-to-k/cdkd/compare/v0.257.4...v0.258.0) (2026-07-22)
+
+
+### Features
+
+* **providers:** add AWS::Lambda::MicrovmImage SDK provider ([#1154](https://github.com/go-to-k/cdkd/issues/1154)) ([762ce54](https://github.com/go-to-k/cdkd/commit/762ce54fa4bfaed0907efef9d6ef93e950f72733))
+
 ## [0.257.4](https://github.com/go-to-k/cdkd/compare/v0.257.3...v0.257.4) (2026-07-21)
 
 
