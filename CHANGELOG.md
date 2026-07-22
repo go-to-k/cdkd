@@ -1,3 +1,10 @@
+## [0.260.2](https://github.com/go-to-k/cdkd/compare/v0.260.1...v0.260.2) (2026-07-22)
+
+
+### Bug Fixes
+
+* **providers:** reset ApiGatewayV2 update fields to CFn defaults on removal ([#1160](https://github.com/go-to-k/cdkd/issues/1160)) ([#1163](https://github.com/go-to-k/cdkd/issues/1163)) ([08cc115](https://github.com/go-to-k/cdkd/commit/08cc115e5f86ffd8032412c79099e29233a576f3))
+
 ## [0.260.1](https://github.com/go-to-k/cdkd/compare/v0.260.0...v0.260.1) (2026-07-22)
 
 
