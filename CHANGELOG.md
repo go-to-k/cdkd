@@ -1,3 +1,10 @@
+# [0.259.0](https://github.com/go-to-k/cdkd/compare/v0.258.0...v0.259.0) (2026-07-22)
+
+
+### Features
+
+* **providers:** MicrovmImage import() + --no-wait integ coverage ([#1156](https://github.com/go-to-k/cdkd/issues/1156)) ([43bdb44](https://github.com/go-to-k/cdkd/commit/43bdb44ca95ab2ed9a755f237bf341e994c77762))
+
 # [0.258.0](https://github.com/go-to-k/cdkd/compare/v0.257.4...v0.258.0) (2026-07-22)
 
 
