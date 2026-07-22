@@ -443,6 +443,71 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.EphemeralStorage).toEqual({ Size: 512 });
     });
 
+    it('normalizes a Variables-less Environment block to an explicit clear (issue #1158)', async () => {
+      // `Environment: {}` (present, no Variables key) passed through verbatim
+      // does NOT clear live env vars — the API keeps the old Variables when
+      // the input Environment carries none (live-verified 2026-07-22). The
+      // template's declarative meaning is "no env vars", so the provider must
+      // send {Variables: {}}.
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-env-shape',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-env-shape',
+          },
+        });
+
+      await provider.update(
+        'EnvShapeFn',
+        'fn-env-shape',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Environment: {},
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Environment: { Variables: { FOO: 'bar' } },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.Environment).toEqual({ Variables: {} });
+    });
+
+    it('passes a populated Environment block through without normalization', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-env-keep',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-env-keep',
+          },
+        });
+
+      await provider.update(
+        'EnvKeepFn',
+        'fn-env-keep',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Environment: { Variables: { KEEP: 'yes' } },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Environment: { Variables: { KEEP: 'yes', DROP: 'no' } },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.Environment).toEqual({ Variables: { KEEP: 'yes' } });
+    });
+
     it('passes still-present fields through unchanged while resetting only the removed ones', async () => {
       // A kept field must reach AWS with its (possibly changed) template
       // value, never a reset — guards clearOnUpdateRemoval's branch order

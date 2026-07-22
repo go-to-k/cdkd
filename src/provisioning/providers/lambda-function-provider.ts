@@ -427,8 +427,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
           ),
           // Empty Variables map removes all env vars (the whole-block
           // removal twin of the per-key removal the diff already handles).
+          // The new side is normalized first: `Environment: {}` (present,
+          // no Variables key) must become `{Variables: {}}` — live-verified
+          // 2026-07-22 that the API keeps the old env vars for a
+          // Variables-less Environment, while the template's declarative
+          // meaning is "no env vars" (issue #1158).
           Environment: this.clearOnUpdateRemoval(
-            properties['Environment'] as { Variables?: Record<string, string> } | undefined,
+            this.normalizeEnvironmentForUpdate(
+              properties['Environment'] as { Variables?: Record<string, string> } | undefined
+            ),
             previousProperties['Environment'] as { Variables?: Record<string, string> } | undefined,
             { Variables: {} }
           ),
@@ -817,6 +824,28 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (newValue !== undefined) return newValue;
     if (previousValue !== undefined) return clearValue;
     return undefined;
+  }
+
+  /**
+   * Normalize a template `Environment` block for UpdateFunctionConfiguration.
+   *
+   * `Environment: {}` (present, but no `Variables` key — a hand-written L1 /
+   * imported-template shape CDK never emits) passed through verbatim does NOT
+   * clear the live env vars: the API keeps the old `Variables` when the input
+   * `Environment` carries none (live-verified 2026-07-22, issue #1158). The
+   * template's declarative meaning is "no env vars", so a Variables-less
+   * block is rewritten to the explicit-clear `{Variables: {}}`. A present
+   * `Variables` map (even empty) and an absent `Environment` pass through
+   * unchanged — removal handling stays with `clearOnUpdateRemoval`. A `null`
+   * block (hand-written JSON) is treated like absent rather than crashing on
+   * the property read.
+   */
+  private normalizeEnvironmentForUpdate(
+    environment: { Variables?: Record<string, string> } | undefined
+  ): { Variables?: Record<string, string> } | undefined {
+    if (environment == null) return undefined;
+    if (environment.Variables === undefined) return { Variables: {} };
+    return environment;
   }
 
   /**

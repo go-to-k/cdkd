@@ -906,6 +906,73 @@ been threaded with state region. When set, a region mismatch throws a
 `ProvisioningError` that surfaces both regions and a hint to rerun with
 the correct `--region`.
 
+### 2a. UPDATE removal semantics — clear-on-removal (issue #1155)
+
+CloudFormation resets a property **removed** from the template to its
+default. Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
+input field means "no change" (merge semantics). A provider `update()` that
+maps template properties straight into the SDK input therefore silently
+drops removals:
+
+```typescript
+// BROKEN for removal: properties['Timeout'] is undefined when the user
+// deletes `timeout` from their template → the SDK omits the field → AWS
+// keeps the old value, while CFn would reset it to the default.
+Timeout: properties['Timeout'] as number | undefined,
+```
+
+The failure is invisible end-to-end: the diff layer correctly reports
+`old → undefined`, the deploy reports `updated` + success, state drops the
+field — so the very next `cdkd diff` says "No changes" while AWS still holds
+the old value. Permanent, undetectable divergence from CloudFormation
+(confirmed live for Lambda in issue #1155).
+
+**Rule: every optional, mutable property passed to a merge-semantics update
+API needs an explicit reset when it was present before and is absent now.**
+The reference pattern is `LambdaFunctionProvider.clearOnUpdateRemoval`:
+
+```typescript
+private clearOnUpdateRemoval<T>(
+  newValue: T | undefined,
+  previousValue: T | undefined,
+  clearValue: T
+): T | undefined {
+  if (newValue !== undefined) return newValue;   // still present: pass through
+  if (previousValue !== undefined) return clearValue; // removed: explicit reset
+  return undefined;                               // never set: stay absent
+}
+
+// Usage — the reset value is the property's CFn default:
+Timeout: this.clearOnUpdateRemoval(newTimeout, prevTimeout, 3),
+MemorySize: this.clearOnUpdateRemoval(newMem, prevMem, 128),
+Environment: this.clearOnUpdateRemoval(newEnv, prevEnv, { Variables: {} }),
+```
+
+Checklist when writing or reviewing an `update()`:
+
+- Classify the API: **merge** (absent = unchanged — most `Update*` /
+  `Modify*` calls) vs **full-replace** (the whole config object is replaced,
+  or removal is handled by a dedicated `Delete*` call, like the S3 bucket
+  sub-config pattern). Only merge APIs need clear-on-removal.
+- For each optional mutable property: what does AWS need to receive to get
+  back to the CFn default? Common shapes: the documented default scalar
+  (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
+  string (`''` for description/KMS-key fields), or a sentinel
+  (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
+- Never synthesize a reset for a field that was **never** set — that turns
+  every unrelated update into a spurious (and sometimes invalid) write.
+- Sub-structures can carry the same hazard one level down: an object that is
+  present but missing its inner key (e.g. `Environment: {}` without
+  `Variables`) may also read as "no change" — normalize it to the explicit
+  clear shape (issue #1158; live-verified). Conversely some config objects
+  are replaced wholesale (Lambda's `LoggingConfig`: sending
+  `{LogFormat: 'Text'}` alone resets an unspecified custom `LogGroup` to the
+  default — also live-verified), so verify per API, not by analogy.
+- Unit-test **three** shapes: removed → exact reset value; never-present →
+  stays absent; mixed kept/removed → kept fields pass through unchanged.
+- A per-key removal test (one key dropped from a still-present map) does NOT
+  cover whole-block removal (the map itself dropped) — test both.
+
 ### 3. Returning Attributes
 
 Return attributes accessible via `Fn::GetAtt`:
