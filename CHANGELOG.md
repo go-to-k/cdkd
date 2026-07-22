@@ -1,3 +1,10 @@
+## [0.260.3](https://github.com/go-to-k/cdkd/compare/v0.260.2...v0.260.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* **providers:** reset ECS Service update fields to CFn defaults on removal ([#1160](https://github.com/go-to-k/cdkd/issues/1160)) ([#1164](https://github.com/go-to-k/cdkd/issues/1164)) ([d6d983b](https://github.com/go-to-k/cdkd/commit/d6d983b6bcfc492e8de56f2a40160023ec4cbf5d))
+
 ## [0.260.2](https://github.com/go-to-k/cdkd/compare/v0.260.1...v0.260.2) (2026-07-22)
 
 
