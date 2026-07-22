@@ -351,4 +351,39 @@ describe('LambdaMicrovmImageProvider', () => {
       expect(await provider.getAttribute(ARN, TYPE, 'Nope')).toBeUndefined();
     });
   });
+
+  describe('import', () => {
+    function importInput(knownPhysicalId?: string): any {
+      return {
+        logicalId: 'MyImage',
+        resourceType: TYPE,
+        stackName: 'Stack',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId,
+      };
+    }
+
+    it('adopts an existing image by ARN via --resource and confirms it exists', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATED' }); // GetMicrovmImage
+      const result = await provider.import(importInput(ARN));
+      expect(result).toEqual({ physicalId: ARN, attributes: { ImageArn: ARN } });
+      expect(callsOfType(GetMicrovmImageCommand)[0].input.imageIdentifier).toBe(ARN);
+    });
+
+    it('returns null when the image ARN does not exist', async () => {
+      mockSend.mockRejectedValueOnce(notFound());
+      expect(await provider.import(importInput(ARN))).toBeNull();
+    });
+
+    it('returns null (override-only) when no physical id is supplied', async () => {
+      expect(await provider.import(importInput(undefined))).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-ARN physical id override', async () => {
+      await expect(provider.import(importInput('my-image'))).rejects.toThrow(/must be a MicroVM image ARN/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
 });

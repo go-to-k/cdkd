@@ -13,8 +13,14 @@
 #   1. Deploy. cdkd's provider polls until the image reaches CREATED. Assert the
 #      state records the image ARN as physicalId, the CfnOutput resolves the
 #      ARN, and GetMicrovmImage reports state == CREATED on AWS.
+#   1b. Tags-only UPDATE: assert the tags are reconciled (Tag/UntagResource)
+#      with the active image version UNCHANGED (no rebuild).
 #   2. Destroy + assert the image is gone (GetMicrovmImage 404s) and the cdkd
 #      state file is removed.
+#   3. --no-wait deploy: assert cdkd returns while the image is still CREATING
+#      (it does NOT wait for CREATED, unlike the always-polling CC fallback),
+#      then wait for CREATED.
+#   4. Destroy the --no-wait image + assert gone.
 #
 # NOTE: the MicroVM image build runs the user's Dockerfile + boots the app + a
 # Firecracker snapshot, so Phase 1's deploy can take several minutes. If the
@@ -172,7 +178,7 @@ echo "    active version after tags-only update: ${VERSION_AFTER}"
 [ "${VERSION_AFTER}" = "${VERSION_BEFORE}" ] || { echo "FAIL: tags-only update rebuilt the image (version ${VERSION_BEFORE} -> ${VERSION_AFTER}); expected no rebuild" >&2; exit 1; }
 echo "    tags reconciled via Tag/UntagResource with NO image rebuild"
 
-# --- Phase 2: destroy ----------------------------------------------------
+# --- Phase 2: destroy (the waited-create image) --------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -183,7 +189,71 @@ assert_gone "state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
+# --- Phase 3: --no-wait deploy returns BEFORE the build finishes ---------
+# The whole point of the Tier-1 SDK provider (vs the Cloud Control fallback,
+# which always polls to a terminal state) is that --no-wait short-circuits the
+# CREATING -> CREATED poll. Verify cdkd returns while the image is still
+# CREATING, with the ARN already resolved in state.
+echo "==> Phase 3: --no-wait deploy (must return at CREATING, not wait for CREATED)"
+DEPLOY_START="$(date +%s)"
+MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --no-wait --yes
+DEPLOY_SECS="$(( $(date +%s) - DEPLOY_START ))"
+echo "    --no-wait deploy returned in ${DEPLOY_SECS}s"
+
+STATE_JSON2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+IMAGE_ARN2="$(echo "${STATE_JSON2}" | python3 -c '
+import json, sys
+for v in json.load(sys.stdin)["resources"].values():
+    if v["resourceType"] == "AWS::Lambda::MicrovmImage":
+        print(v["physicalId"])
+        break
+')"
+if [ -z "${IMAGE_ARN2}" ]; then
+  echo "FAIL: --no-wait deploy did not record the image ARN in state" >&2; exit 1
+fi
+echo "    state records image ARN under --no-wait: ${IMAGE_ARN2}"
+
+# The image must still be CREATING right after --no-wait returned (a normal
+# deploy would have blocked for minutes and returned CREATED). The build takes
+# minutes, so it cannot have finished in the seconds --no-wait took to return.
+NW_STATE="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN2}" \
+  --region "${REGION}" --query 'state' --output text)"
+echo "    image state immediately after --no-wait deploy: ${NW_STATE}"
+if [ "${NW_STATE}" != "CREATING" ]; then
+  echo "FAIL: expected CREATING immediately after --no-wait (cdkd must not wait for CREATED); got '${NW_STATE}'" >&2
+  exit 1
+fi
+echo "    --no-wait returned without waiting for CREATED (state CREATING)"
+
+# Wait for the build to reach CREATED before destroying (a CREATING image
+# cannot be cleanly deleted).
+echo "    waiting for the --no-wait build to reach CREATED before destroy..."
+NW_FINAL=""
+for _ in $(seq 1 180); do
+  NW_FINAL="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN2}" \
+    --region "${REGION}" --query 'state' --output text)"
+  [ "${NW_FINAL}" = "CREATED" ] && break
+  if [ "${NW_FINAL}" = "CREATE_FAILED" ]; then
+    echo "FAIL: --no-wait build entered CREATE_FAILED" >&2; exit 1
+  fi
+  sleep 10
+done
+if [ "${NW_FINAL}" != "CREATED" ]; then
+  echo "FAIL: --no-wait build did not reach CREATED within the poll budget (last state ${NW_FINAL})" >&2; exit 1
+fi
+echo "    --no-wait build reached CREATED"
+
+# --- Phase 4: destroy the --no-wait image --------------------------------
+echo "==> Phase 4: destroy (--no-wait image)"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+assert_gone "MicroVM image ${IMAGE_ARN2} still exists after destroy" \
+  aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN2}" --region "${REGION}"
+assert_gone "state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    --no-wait image + state removed"
+
 # Remove the code artifact we uploaded in Phase 0 (not a cdkd-managed resource).
 aws s3 rm "s3://${STATE_BUCKET}/${ARTIFACT_KEY}" --region "${REGION}" >/dev/null
 
-echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update reconciled with no rebuild, clean async destroy"
+echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update no-rebuild, --no-wait returns at CREATING, clean async destroy"

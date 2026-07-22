@@ -24,6 +24,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -374,6 +376,36 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
         return resp.updatedAt?.toISOString();
       default:
         return undefined;
+    }
+  }
+
+  /**
+   * Adopt an existing MicroVM image into cdkd state.
+   *
+   * Override-only: the image ARN must be supplied via `--resource
+   * <logicalId>=<arn>`. There is no auto-lookup — MicroVM images have no
+   * `aws:cdk:path` tag (AWS reserves the `aws:` tag prefix) and a bare `Name`
+   * is rejected by `GetMicrovmImage` ("Invalid ARN format"), so the physical id
+   * must be the image ARN. Returns `null` when the image does not exist.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const arn = input.knownPhysicalId;
+    if (!arn) {
+      // No auto-lookup — the user must pass the image ARN via --resource.
+      return null;
+    }
+    if (!arn.startsWith('arn:')) {
+      throw new Error(
+        `--resource override for ${input.logicalId} must be a MicroVM image ARN ` +
+          `(got '${arn}'). A bare image name is not accepted; use the arn:...:microvm-image:... ARN.`
+      );
+    }
+    try {
+      await this.client.send(new GetMicrovmImageCommand({ imageIdentifier: arn }));
+      return { physicalId: arn, attributes: { ImageArn: arn } };
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return null;
+      throw error;
     }
   }
 
