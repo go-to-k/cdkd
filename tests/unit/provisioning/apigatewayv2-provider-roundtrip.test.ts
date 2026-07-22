@@ -733,6 +733,21 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
     ).toBe(true);
   });
 
+  it('Api: removed ApiKeySelectionExpression resets to the WebSocket default', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      { ProtocolType: 'WEBSOCKET' },
+      { ProtocolType: 'WEBSOCKET', ApiKeySelectionExpression: '$request.querystring.apikey' }
+    );
+    expect(updateApiInput()).toEqual({
+      ApiId: API_ID,
+      ApiKeySelectionExpression: '$request.header.x-api-key',
+    });
+  });
+
   it('Api: removed RouteSelectionExpression is NOT reset (required/fixed) — no SDK call', async () => {
     await provider.update(
       'ApiLogical',
