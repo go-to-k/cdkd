@@ -443,6 +443,48 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.EphemeralStorage).toEqual({ Size: 512 });
     });
 
+    it('passes still-present fields through unchanged while resetting only the removed ones', async () => {
+      // A kept field must reach AWS with its (possibly changed) template
+      // value, never a reset — guards clearOnUpdateRemoval's branch order
+      // (returning clearValue whenever previousValue is set would pass the
+      // all-removed test above but reset every kept field on real updates).
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-mixed',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-mixed',
+          },
+        });
+
+      await provider.update(
+        'MixedFn',
+        'fn-mixed',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 30, // kept, unchanged
+          MemorySize: 512, // kept, changed 256 -> 512
+          // Environment + EphemeralStorage removed.
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 30,
+          MemorySize: 256,
+          Environment: { Variables: { FOO: 'bar' } },
+          EphemeralStorage: { Size: 2048 },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.Timeout).toBe(30);
+      expect(cmd.input.MemorySize).toBe(512);
+      expect(cmd.input.Environment).toEqual({ Variables: {} });
+      expect(cmd.input.EphemeralStorage).toEqual({ Size: 512 });
+    });
+
     it('omits the core config fields entirely when neither previous nor new sets them', async () => {
       // Never-present fields must stay absent — synthesizing a reset for a
       // field that was never set would be a spurious (and noisy) write.

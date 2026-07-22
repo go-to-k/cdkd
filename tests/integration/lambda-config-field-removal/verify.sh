@@ -7,16 +7,16 @@
 # Timeout / MemorySize / Description / Environment / Layers / TracingConfig /
 # EphemeralStorage straight through as `undefined` on update — the deploy
 # reported success, state dropped the field, and the next diff said "No
-# changes" while AWS still held the old value. This test removes five of those
+# changes" while AWS still held the old value. This test removes six of those
 # fields on UPDATE and asserts AWS reverted each to its CloudFormation default.
 #
 # Phases:
 #   1. Deploy with Timeout 30 / MemorySize 256 / Description / env {FOO} /
-#      EphemeralStorage 1024; assert all live on AWS.
-#   2. Re-deploy with CDKD_TEST_UPDATE=true (all five fields removed). Assert
+#      EphemeralStorage 1024 / Tracing ACTIVE; assert all live on AWS.
+#   2. Re-deploy with CDKD_TEST_UPDATE=true (all six fields removed). Assert
 #      AWS shows the CFn defaults: Timeout 3, MemorySize 128, empty
-#      Description, no env vars, EphemeralStorage 512 (a pre-fix run keeps the
-#      old values).
+#      Description, no env vars, EphemeralStorage 512, TracingConfig
+#      PassThrough (a pre-fix run keeps the old values).
 #   3. Destroy; assert the function is gone and the state file is removed.
 #
 # Required env vars:
@@ -105,26 +105,28 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: deploy with all five fields set --------------------------
-echo "==> Phase 1: deploy with Timeout/MemorySize/Description/Environment/EphemeralStorage set"
+echo "==> Phase 1: deploy with Timeout/MemorySize/Description/Environment/EphemeralStorage/TracingConfig set"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 if [ "$(fncfg Timeout)" != "30" ] || [ "$(fncfg MemorySize)" != "256" ] \
   || [ "$(fncfg Description)" != "before removal" ] \
   || [ "$(fncfg 'Environment.Variables.FOO')" != "bar" ] \
-  || [ "$(fncfg 'EphemeralStorage.Size')" != "1024" ]; then
-  echo "FAIL: Phase 1 fields not all live: Timeout=$(fncfg Timeout) MemorySize=$(fncfg MemorySize) Description='$(fncfg Description)' FOO=$(fncfg 'Environment.Variables.FOO') Eph=$(fncfg 'EphemeralStorage.Size')" >&2
+  || [ "$(fncfg 'EphemeralStorage.Size')" != "1024" ] \
+  || [ "$(fncfg 'TracingConfig.Mode')" != "Active" ]; then
+  echo "FAIL: Phase 1 fields not all live: Timeout=$(fncfg Timeout) MemorySize=$(fncfg MemorySize) Description='$(fncfg Description)' FOO=$(fncfg 'Environment.Variables.FOO') Eph=$(fncfg 'EphemeralStorage.Size') Tracing=$(fncfg 'TracingConfig.Mode')" >&2
   exit 1
 fi
-echo "    all five fields live"
+echo "    all six fields live"
 
-# --- Phase 2: remove all five fields -----------------------------------
-echo "==> Phase 2: re-deploy with all five fields removed (must reset to CFn defaults)"
+# --- Phase 2: remove all six fields ------------------------------------
+echo "==> Phase 2: re-deploy with all six fields removed (must reset to CFn defaults)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 T="$(fncfg Timeout)"; M="$(fncfg MemorySize)"; D="$(fncfg Description)"
 F="$(fncfg 'Environment.Variables.FOO')"; E="$(fncfg 'EphemeralStorage.Size')"
+TR="$(fncfg 'TracingConfig.Mode')"
 if [ "${T}" != "3" ]; then
   echo "FAIL: Timeout not reset to 3 after removal (got '${T}')" >&2; exit 1
 fi
@@ -134,13 +136,20 @@ fi
 if [ "${D}" != "" ] && [ "${D}" != "None" ]; then
   echo "FAIL: Description not cleared after removal (got '${D}')" >&2; exit 1
 fi
-if [ "${F}" = "bar" ]; then
-  echo "FAIL: Environment.Variables.FOO still present after removal" >&2; exit 1
+# `--output text` prints the literal `None` for an absent key; an empty
+# string means the probe itself failed (throttle/auth), which must NOT be
+# read as "removed" (issue #1097 pattern 2 — negative assertion over an
+# error-swallowing probe).
+if [ "${F}" != "None" ]; then
+  echo "FAIL: Environment.Variables.FOO not removed (got '${F}'; empty = probe error)" >&2; exit 1
 fi
 if [ "${E}" != "512" ]; then
   echo "FAIL: EphemeralStorage not reset to 512 after removal (got '${E}')" >&2; exit 1
 fi
-echo "    all five fields reset to CFn defaults"
+if [ "${TR}" != "PassThrough" ]; then
+  echo "FAIL: TracingConfig not reset to PassThrough after removal (got '${TR}')" >&2; exit 1
+fi
+echo "    all six fields reset to CFn defaults"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

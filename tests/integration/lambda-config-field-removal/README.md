@@ -25,16 +25,16 @@ Environment `{Variables: {}}`, Layers `[]`, TracingConfig
 ## Phases
 
 1. **Deploy** with Timeout 30 / MemorySize 256 / Description / env `{FOO}` /
-   EphemeralStorage 1024 — assert all five live on AWS.
-2. **Re-deploy** with `CDKD_TEST_UPDATE=true` (all five fields removed) —
+   EphemeralStorage 1024 / Tracing ACTIVE — assert all six live on AWS.
+2. **Re-deploy** with `CDKD_TEST_UPDATE=true` (all six fields removed) —
    assert AWS shows the CFn defaults: Timeout 3, MemorySize 128, empty
-   Description, no env vars, EphemeralStorage 512 (a pre-fix run keeps the old
-   values).
+   Description, no env vars, EphemeralStorage 512, TracingConfig PassThrough
+   (a pre-fix run keeps the old values).
 3. **Destroy** — assert the function is gone and the cdkd state file is removed.
 
-`Layers` / `TracingConfig` removal is covered by unit tests only (an integ
-layer would need an extra `LayerVersion` resource for no additional coverage of
-the reset mechanism, which is shared).
+`Layers` removal is covered by unit tests only: an integ layer would need an
+extra `LayerVersion` resource for no additional coverage of the reset
+mechanism, which is shared across all seven fields.
 
 ## Run
 

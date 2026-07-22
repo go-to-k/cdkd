@@ -11,13 +11,14 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * success and state drops the field, baking in invisible drift. cdkd
  * previously passed Timeout / MemorySize / Description / Environment / Layers /
  * TracingConfig / EphemeralStorage straight through as `undefined` on update.
- * This fixture removes five of them on UPDATE and asserts AWS reverted each to
+ * This fixture removes six of them on UPDATE and asserts AWS reverted each to
  * its CloudFormation default.
  *
  *   covers: AWS::Lambda::Function
  *
  * Phase 1 sets Timeout 30 / MemorySize 256 / Description / env {FOO} /
- * EphemeralStorage 1024; Phase 2 (CDKD_TEST_UPDATE=true) sets none of them.
+ * EphemeralStorage 1024 / Tracing ACTIVE; Phase 2 (CDKD_TEST_UPDATE=true)
+ * sets none of them.
  */
 export class LambdaConfigFieldRemovalStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -38,6 +39,7 @@ export class LambdaConfigFieldRemovalStack extends cdk.Stack {
             description: 'before removal',
             environment: { FOO: 'bar' },
             ephemeralStorageSize: cdk.Size.mebibytes(1024),
+            tracing: lambda.Tracing.ACTIVE,
           }),
     });
   }
