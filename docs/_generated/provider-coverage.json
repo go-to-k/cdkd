@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-19T10:05:46.370Z",
+  "generatedAt": "2026-07-22T04:56:42.784Z",
   "summary": {
-    "tier1Count": 129,
+    "tier1Count": 130,
     "tier2Count": 1352,
-    "tier3Count": 162,
-    "totalCount": 1643
+    "tier3Count": 163,
+    "totalCount": 1645
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -102,6 +102,7 @@
     "AWS::Lambda::EventSourceMapping",
     "AWS::Lambda::Function",
     "AWS::Lambda::LayerVersion",
+    "AWS::Lambda::MicrovmImage",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Url",
     "AWS::Logs::LogGroup",
@@ -783,6 +784,7 @@
     "AWS::GuardDuty::ThreatIntelSet",
     "AWS::GuardDuty::TrustedEntitySet",
     "AWS::HealthImaging::Datastore",
+    "AWS::HealthLake::DataTransformationProfile",
     "AWS::HealthLake::FHIRDatastore",
     "AWS::IAM::GroupPolicy",
     "AWS::IAM::OIDCProvider",
@@ -913,7 +915,6 @@
     "AWS::Lambda::CapacityProvider",
     "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::LayerVersionPermission",
-    "AWS::Lambda::MicrovmImage",
     "AWS::Lambda::NetworkConnector",
     "AWS::Lambda::Version",
     "AWS::LaunchWizard::Deployment",
@@ -1505,6 +1506,7 @@
     "AWS::AppStream::Fleet",
     "AWS::AppSync::ApiCache",
     "AWS::AutoScalingPlans::ScalingPlan",
+    "AWS::Bedrock::DefaultPromptRouter",
     "AWS::Bedrock::ModelInvocationJob",
     "AWS::BedrockAgentCore::TokenVault",
     "AWS::Cloud9::EnvironmentEC2",

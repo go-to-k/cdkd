@@ -1,0 +1,584 @@
+import {
+  LambdaMicrovmsClient,
+  CreateMicrovmImageCommand,
+  GetMicrovmImageCommand,
+  UpdateMicrovmImageCommand,
+  DeleteMicrovmImageCommand,
+  ResourceNotFoundException,
+  type CreateMicrovmImageRequest,
+  type UpdateMicrovmImageRequest,
+  type CodeArtifact,
+  type Logging,
+  type Hooks,
+  type CpuConfiguration,
+  type Resources,
+} from '@aws-sdk/client-lambda-microvms';
+import { getLogger } from '../../utils/logger.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import type {
+  ResourceProvider,
+  ResourceCreateResult,
+  ResourceUpdateResult,
+} from '../../types/resource.js';
+
+/**
+ * AWS Lambda MicroVM Image Provider
+ *
+ * Implements `AWS::Lambda::MicrovmImage` using the dedicated `lambda-microvms`
+ * service SDK (`@aws-sdk/client-lambda-microvms`) — NOT `@aws-sdk/client-lambda`.
+ * The MicroVM image APIs (`CreateMicrovmImage` / `GetMicrovmImage` /
+ * `UpdateMicrovmImage` / `DeleteMicrovmImage`) live in their own service model.
+ *
+ * **The build is asynchronous.** `CreateMicrovmImage` returns immediately with
+ * the image in `CREATING` state; Lambda then downloads the code artifact zip
+ * from S3, runs the Dockerfile, starts the application, and captures a
+ * Firecracker snapshot. The image reaches `CREATED` on success or
+ * `CREATE_FAILED` on failure (build logs land in CloudWatch under
+ * `/aws/lambda/microvms/<name>`). `create()` polls `GetMicrovmImage` until the
+ * image reaches `CREATED`. `UpdateMicrovmImage` triggers the same async rebuild
+ * (`UPDATING` -> `UPDATED` / `UPDATE_FAILED`).
+ *
+ * `CDKD_NO_WAIT=true` (or `cdkd deploy --no-wait`) short-circuits the create /
+ * update poll and returns immediately with the image ARN. The build continues
+ * asynchronously on the AWS side — cdkd will NOT observe a later
+ * `CREATE_FAILED`, and an immediate `destroy` may race the in-flight build.
+ * The Cloud Control fallback path does NOT honor `--no-wait` (it always polls
+ * its request token to a terminal state), so this SDK provider is what makes
+ * `--no-wait` effective for this resource type.
+ *
+ * **Physical id is the image ARN** (`primaryIdentifier` = `/properties/ImageArn`,
+ * an AWS-assigned read-only attribute). CFn `Ref` returns the ARN. `Name` is a
+ * create-only property, so a `Name` change is routed to REPLACEMENT by cdkd's
+ * create-only detection (`getCreateOnlyPropertyPaths`) and never reaches
+ * `update()`.
+ *
+ * **CFn <-> SDK shape translation.** The template carries CloudFormation-schema
+ * PascalCase properties (e.g. `CodeArtifact: { Uri }`, `Tags: [{Key, Value}]`,
+ * `Logging: { Disabled: true }`); the SDK expects camelCase with different
+ * container shapes (`codeArtifact: { uri }`, `tags: Record<string,string>`,
+ * `logging: { disabled: {} }`). The mapping helpers below translate each field
+ * explicitly so this provider accepts the exact same template the Cloud Control
+ * fallback would.
+ */
+export class LambdaMicrovmImageProvider implements ResourceProvider {
+  private client: LambdaMicrovmsClient;
+  private logger = getLogger().child('LambdaMicrovmImageProvider');
+
+  // Configurable via env for test runs. Default = 30 min (180 polls x 10s):
+  // a MicroVM image build runs the user's Dockerfile + boots the app +
+  // snapshots, which can take several minutes. `getMinResourceTimeoutMs()`
+  // lifts the deploy engine's per-resource deadline to match so the outer
+  // wrapper never truncates the inner poll.
+  private readonly maxPollAttempts = Number(process.env['CDKD_MICROVM_IMAGE_POLL_ATTEMPTS'] ?? 180);
+  private readonly pollIntervalMs = Number(
+    process.env['CDKD_MICROVM_IMAGE_POLL_INTERVAL_MS'] ?? 10000
+  );
+
+  constructor() {
+    this.client = getAwsClients().lambdaMicrovms;
+  }
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::MicrovmImage',
+      new Set([
+        'Name',
+        'BaseImageArn',
+        'BaseImageVersion',
+        'BuildRoleArn',
+        'Description',
+        'CodeArtifact',
+        'Logging',
+        'EgressNetworkConnectors',
+        'CpuConfigurations',
+        'Resources',
+        'AdditionalOsCapabilities',
+        'Hooks',
+        'EnvironmentVariables',
+        'Tags',
+      ]),
+    ],
+  ]);
+
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::Lambda::MicrovmImage',
+      new Map([
+        ['ImageArn', 'AWS-managed read-only attribute (primaryIdentifier / physical id)'],
+        ['State', 'AWS-managed read-only attribute'],
+        ['LatestActiveImageVersion', 'AWS-managed read-only attribute'],
+        ['LatestFailedImageVersion', 'AWS-managed read-only attribute'],
+        ['CreatedAt', 'AWS-managed read-only attribute'],
+        ['UpdatedAt', 'AWS-managed read-only attribute'],
+      ]),
+    ],
+  ]);
+
+  getMinResourceTimeoutMs(): number {
+    return this.maxPollAttempts * this.pollIntervalMs;
+  }
+
+  async create(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating MicroVM image ${logicalId}`);
+
+    const name = properties['Name'] as string | undefined;
+    const baseImageArn = properties['BaseImageArn'] as string | undefined;
+    const buildRoleArn = properties['BuildRoleArn'] as string | undefined;
+    const codeArtifact = mapCodeArtifact(properties['CodeArtifact']);
+    const missing = [
+      !name && 'Name',
+      !baseImageArn && 'BaseImageArn',
+      !buildRoleArn && 'BuildRoleArn',
+      !codeArtifact && 'CodeArtifact.Uri',
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      throw new ProvisioningError(
+        `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required for MicroVM image ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    const input: CreateMicrovmImageRequest = {
+      name: name!,
+      baseImageArn: baseImageArn!,
+      buildRoleArn: buildRoleArn!,
+      codeArtifact: codeArtifact!,
+      ...buildCommonImageInput(properties),
+    };
+    const tags = mapKeyValueListToRecord(properties['Tags']);
+    if (tags) input.tags = tags;
+
+    try {
+      const response = await this.client.send(new CreateMicrovmImageCommand(input));
+      const imageArn = response.imageArn;
+      if (!imageArn) {
+        throw new ProvisioningError(
+          `CreateMicrovmImage succeeded but no imageArn returned for ${logicalId}`,
+          resourceType,
+          logicalId
+        );
+      }
+      this.logger.debug(
+        `Created MicroVM image ${logicalId}: ${imageArn} (state=${response.state})`
+      );
+
+      const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+      // Prefer the terminal poll result for the returned attributes (State
+      // CREATED, populated version); under --no-wait fall back to the
+      // still-CREATING create response.
+      let latest: GetImageResult = {
+        state: response.state,
+        latestActiveImageVersion: response.latestActiveImageVersion,
+        latestFailedImageVersion: response.latestFailedImageVersion,
+        createdAt: response.createdAt,
+        updatedAt: response.updatedAt,
+      };
+      if (!noWait) {
+        latest = await this.waitForTerminalState(imageArn, logicalId, 'create');
+      } else {
+        this.logger.warn(
+          `Skipping wait for MicroVM image ${logicalId} (CDKD_NO_WAIT=true). ` +
+            `The build continues asynchronously; a CREATE_FAILED will not be observed here.`
+        );
+      }
+
+      return {
+        physicalId: imageArn,
+        attributes: this.buildAttributes(imageArn, latest.state, {
+          latestActiveImageVersion: latest.latestActiveImageVersion,
+          latestFailedImageVersion: latest.latestFailedImageVersion,
+          createdAt: latest.createdAt,
+          updatedAt: latest.updatedAt,
+        }),
+      };
+    } catch (error) {
+      throw this.wrapError('create', logicalId, resourceType, undefined, error);
+    }
+  }
+
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating MicroVM image ${logicalId}: ${physicalId}`);
+
+    // Name is create-only; cdkd's create-only detection routes a Name change to
+    // REPLACEMENT before reaching here. Guard defensively: the SDK
+    // UpdateMicrovmImage input has no name field, so a Name change would be
+    // silently dropped if it ever slipped through.
+    if (properties['Name'] !== previousProperties['Name']) {
+      throw new ProvisioningError(
+        `MicroVM image ${logicalId} Name is create-only and cannot be changed in place ` +
+          `(${String(previousProperties['Name'])} -> ${String(properties['Name'])}); this requires replacement.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const baseImageArn = properties['BaseImageArn'] as string | undefined;
+    const buildRoleArn = properties['BuildRoleArn'] as string | undefined;
+    const codeArtifact = mapCodeArtifact(properties['CodeArtifact']);
+    if (!baseImageArn || !buildRoleArn || !codeArtifact) {
+      throw new ProvisioningError(
+        `BaseImageArn, BuildRoleArn, and CodeArtifact.Uri are required to update MicroVM image ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const input: UpdateMicrovmImageRequest = {
+      imageIdentifier: physicalId,
+      baseImageArn,
+      buildRoleArn,
+      codeArtifact,
+      ...buildCommonImageInput(properties),
+    };
+
+    try {
+      await this.client.send(new UpdateMicrovmImageCommand(input));
+
+      const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+      let latest;
+      if (!noWait) {
+        latest = await this.waitForTerminalState(physicalId, logicalId, 'update');
+      } else {
+        this.logger.warn(
+          `Skipping wait for MicroVM image ${logicalId} update (CDKD_NO_WAIT=true). ` +
+            `The rebuild continues asynchronously.`
+        );
+      }
+
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: this.buildAttributes(physicalId, latest?.state, {
+          latestActiveImageVersion: latest?.latestActiveImageVersion,
+          latestFailedImageVersion: latest?.latestFailedImageVersion,
+          createdAt: latest?.createdAt,
+          updatedAt: latest?.updatedAt,
+        }),
+      };
+    } catch (error) {
+      throw this.wrapError('update', logicalId, resourceType, physicalId, error);
+    }
+  }
+
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
+    this.logger.debug(`Deleting MicroVM image ${logicalId}: ${physicalId}`);
+
+    try {
+      try {
+        await this.client.send(new DeleteMicrovmImageCommand({ imageIdentifier: physicalId }));
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) {
+          const clientRegion = await this.client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+          this.logger.debug(`MicroVM image ${physicalId} does not exist, skipping deletion`);
+          return;
+        }
+        throw error;
+      }
+      // DeleteMicrovmImage is asynchronous (DELETING -> DELETED). Poll until the
+      // image is gone so the destroy leaves no orphan behind.
+      await this.waitForDeleted(physicalId, logicalId);
+      this.logger.debug(`Successfully deleted MicroVM image ${logicalId}`);
+    } catch (error) {
+      throw this.wrapError('delete', logicalId, resourceType, physicalId, error);
+    }
+  }
+
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    // Ref returns the ARN (handled by physicalId); ImageArn is a defensive alias.
+    if (attributeName === 'ImageArn') return physicalId;
+
+    const resp = await this.client.send(
+      new GetMicrovmImageCommand({ imageIdentifier: physicalId })
+    );
+    switch (attributeName) {
+      case 'State':
+        return resp.state;
+      case 'LatestActiveImageVersion':
+        return resp.latestActiveImageVersion;
+      case 'LatestFailedImageVersion':
+        return resp.latestFailedImageVersion;
+      case 'CreatedAt':
+        return resp.createdAt?.toISOString();
+      case 'UpdatedAt':
+        return resp.updatedAt?.toISOString();
+      default:
+        return undefined;
+    }
+  }
+
+  // -- helpers -------------------------------------------------------------
+
+  private buildAttributes(
+    imageArn: string,
+    state: string | undefined,
+    extra: {
+      latestActiveImageVersion?: string | undefined;
+      latestFailedImageVersion?: string | undefined;
+      createdAt?: Date | undefined;
+      updatedAt?: Date | undefined;
+    }
+  ): Record<string, unknown> {
+    const attributes: Record<string, unknown> = { ImageArn: imageArn };
+    if (state !== undefined) attributes['State'] = state;
+    if (extra.latestActiveImageVersion !== undefined) {
+      attributes['LatestActiveImageVersion'] = extra.latestActiveImageVersion;
+    }
+    if (extra.latestFailedImageVersion !== undefined) {
+      attributes['LatestFailedImageVersion'] = extra.latestFailedImageVersion;
+    }
+    if (extra.createdAt !== undefined) attributes['CreatedAt'] = extra.createdAt.toISOString();
+    if (extra.updatedAt !== undefined) attributes['UpdatedAt'] = extra.updatedAt.toISOString();
+    return attributes;
+  }
+
+  /**
+   * Poll `GetMicrovmImage` until the image reaches a terminal success state
+   * (`CREATED` after create, `CREATED` / `UPDATED` after update). Throws on the
+   * matching failure state (`CREATE_FAILED` / `UPDATE_FAILED`) or on
+   * poll-cap exhaustion.
+   */
+  private async waitForTerminalState(
+    imageArn: string,
+    logicalId: string,
+    operation: 'create' | 'update'
+  ): Promise<GetImageResult> {
+    this.logger.debug(`Waiting for MicroVM image ${imageArn} to finish ${operation}...`);
+
+    for (let attempt = 1; attempt <= this.maxPollAttempts; attempt++) {
+      const resp = (await this.client.send(
+        new GetMicrovmImageCommand({ imageIdentifier: imageArn })
+      )) as GetImageResult;
+      const state = resp.state;
+
+      if (state === 'CREATED' || state === 'UPDATED') {
+        this.logger.debug(`MicroVM image ${imageArn} reached ${state}`);
+        return resp;
+      }
+      if (state === 'CREATE_FAILED' || state === 'UPDATE_FAILED') {
+        throw new Error(
+          `MicroVM image ${logicalId} (${imageArn}) entered ${state} during ${operation}. ` +
+            `Check the build logs in CloudWatch under /aws/lambda/microvms/ to diagnose.`
+        );
+      }
+
+      this.logger.debug(
+        `MicroVM image ${imageArn} state: ${state} (attempt ${attempt}/${this.maxPollAttempts})`
+      );
+      await sleep(this.pollIntervalMs);
+    }
+
+    throw new Error(
+      `MicroVM image ${logicalId} (${imageArn}) did not finish ${operation} within ` +
+        `${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
+        `Increase --resource-timeout AWS::Lambda::MicrovmImage=<duration> or set CDKD_NO_WAIT=true.`
+    );
+  }
+
+  /**
+   * Poll `GetMicrovmImage` until it 404s (image fully deleted). Throws on
+   * `DELETE_FAILED` or poll-cap exhaustion.
+   */
+  private async waitForDeleted(imageArn: string, logicalId: string): Promise<void> {
+    for (let attempt = 1; attempt <= this.maxPollAttempts; attempt++) {
+      let resp: GetImageResult;
+      try {
+        resp = (await this.client.send(
+          new GetMicrovmImageCommand({ imageIdentifier: imageArn })
+        )) as GetImageResult;
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return; // gone
+        throw error;
+      }
+      if (resp.state === 'DELETE_FAILED') {
+        throw new Error(
+          `MicroVM image ${logicalId} (${imageArn}) entered DELETE_FAILED. ` +
+            `Check the CloudWatch build logs under /aws/lambda/microvms/ to diagnose.`
+        );
+      }
+      this.logger.debug(
+        `MicroVM image ${imageArn} state: ${resp.state} (delete attempt ${attempt}/${this.maxPollAttempts})`
+      );
+      await sleep(this.pollIntervalMs);
+    }
+
+    throw new Error(
+      `MicroVM image ${logicalId} (${imageArn}) was not fully deleted within ` +
+        `${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s.`
+    );
+  }
+
+  private wrapError(
+    operation: string,
+    logicalId: string,
+    resourceType: string,
+    physicalId: string | undefined,
+    error: unknown
+  ): ProvisioningError {
+    if (error instanceof ProvisioningError) return error;
+    const cause = error instanceof Error ? error : undefined;
+    return new ProvisioningError(
+      `Failed to ${operation} MicroVM image ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+      resourceType,
+      logicalId,
+      physicalId,
+      cause
+    );
+  }
+}
+
+/** Minimal shape of the `GetMicrovmImage` response fields the provider reads. */
+interface GetImageResult {
+  state?: string | undefined;
+  latestActiveImageVersion?: string | undefined;
+  latestFailedImageVersion?: string | undefined;
+  createdAt?: Date | undefined;
+  updatedAt?: Date | undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Build the optional create/update input fields shared by both operations,
+ * translating each from its CloudFormation-schema shape to the SDK shape.
+ * Only defined fields are included so the request never carries `undefined`.
+ */
+function buildCommonImageInput(
+  properties: Record<string, unknown>
+): Partial<CreateMicrovmImageRequest> {
+  const input: Partial<CreateMicrovmImageRequest> = {};
+
+  if (typeof properties['BaseImageVersion'] === 'string') {
+    input.baseImageVersion = properties['BaseImageVersion'];
+  }
+  if (typeof properties['Description'] === 'string') {
+    input.description = properties['Description'];
+  }
+  const logging = mapLogging(properties['Logging']);
+  if (logging) input.logging = logging;
+  if (Array.isArray(properties['EgressNetworkConnectors'])) {
+    input.egressNetworkConnectors = properties['EgressNetworkConnectors'] as string[];
+  }
+  const cpuConfigurations = mapCpuConfigurations(properties['CpuConfigurations']);
+  if (cpuConfigurations) input.cpuConfigurations = cpuConfigurations;
+  const resources = mapResources(properties['Resources']);
+  if (resources) input.resources = resources;
+  if (Array.isArray(properties['AdditionalOsCapabilities'])) {
+    input.additionalOsCapabilities = properties['AdditionalOsCapabilities'] as ['ALL'];
+  }
+  const hooks = mapHooks(properties['Hooks']);
+  if (hooks) input.hooks = hooks;
+  const environmentVariables = mapKeyValueListToRecord(properties['EnvironmentVariables']);
+  if (environmentVariables) input.environmentVariables = environmentVariables;
+
+  return input;
+}
+
+function mapCodeArtifact(value: unknown): CodeArtifact | undefined {
+  if (!isRecord(value)) return undefined;
+  const uri = value['Uri'];
+  return typeof uri === 'string' ? { uri } : undefined;
+}
+
+function mapLogging(value: unknown): Logging | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value['Disabled'] === true) return { disabled: {} };
+  const cloudWatch = value['CloudWatch'];
+  if (isRecord(cloudWatch)) {
+    const cw: { logGroup?: string; logStream?: string } = {};
+    if (typeof cloudWatch['LogGroup'] === 'string') cw.logGroup = cloudWatch['LogGroup'];
+    if (typeof cloudWatch['LogStream'] === 'string') cw.logStream = cloudWatch['LogStream'];
+    return { cloudWatch: cw };
+  }
+  return undefined;
+}
+
+function mapCpuConfigurations(value: unknown): CpuConfiguration[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter(isRecord)
+    .map((c) => ({ architecture: c['Architecture'] as CpuConfiguration['architecture'] }));
+}
+
+function mapResources(value: unknown): Resources[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter(isRecord)
+    .map((r) => ({ minimumMemoryInMiB: Number(r['MinimumMemoryInMiB']) }));
+}
+
+/**
+ * Translate the CFn `Hooks` structure (PascalCase keys throughout, all leaf
+ * values are strings/numbers) to the SDK `hooks` shape (camelCase keys). Safe
+ * to lower-case the first character of every key recursively because Hooks
+ * carries no tagged unions and no array-of-record members.
+ */
+function mapHooks(value: unknown): Hooks | undefined {
+  if (!isRecord(value)) return undefined;
+  return lowerFirstKeysDeep(value) as Hooks;
+}
+
+/**
+ * Convert a CFn `[{Key, Value}]` list (used by both `Tags` and
+ * `EnvironmentVariables`) to the SDK `Record<string, string>` shape. Returns
+ * `undefined` for an empty / absent list so the request omits the field.
+ */
+function mapKeyValueListToRecord(value: unknown): Record<string, string> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const entry of value) {
+    if (isRecord(entry) && typeof entry['Key'] === 'string') {
+      out[entry['Key']] = typeof entry['Value'] === 'string' ? entry['Value'] : '';
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function lowerFirstKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(lowerFirstKeysDeep);
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k.charAt(0).toLowerCase() + k.slice(1)] = lowerFirstKeysDeep(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

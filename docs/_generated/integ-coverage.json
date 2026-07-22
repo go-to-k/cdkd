@@ -94,6 +94,7 @@
     "AWS::Lambda::EventSourceMapping",
     "AWS::Lambda::Function",
     "AWS::Lambda::LayerVersion",
+    "AWS::Lambda::MicrovmImage",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Url",
     "AWS::Logs::LogGroup",
@@ -3068,6 +3069,7 @@
         "iam-role-prefixed-name-update",
         "infra-security",
         "intrinsic-functions",
+        "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
         "local-invoke-java",
@@ -3188,6 +3190,9 @@
           "l2"
         ],
         "intrinsic-functions": [
+          "l2"
+        ],
+        "lambda-microvm-image": [
           "l2"
         ],
         "lambda-snapstart": [
@@ -3883,6 +3888,17 @@
         ],
         "local-invoke-layers": [
           "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::MicrovmImage",
+      "integs": [
+        "lambda-microvm-image"
+      ],
+      "signals": {
+        "lambda-microvm-image": [
+          "literal"
         ]
       }
     },

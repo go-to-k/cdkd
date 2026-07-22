@@ -498,6 +498,11 @@ via `ListInstanceGroups` / `ListInstanceFleets` under a parent
 `ClusterId`), so a future override-only `import()` keyed on the group /
 fleet id (`ig-XXXX` / `if-XXXX`) is the natural follow-up.
 
+`AWS::Lambda::MicrovmImage` is currently unsupported for import — the SDK
+provider exists for create / update / delete but not `import()`. A future
+override-only `import()` keyed on the image ARN (`GetMicrovmImage` on the
+`--resource` value) is the natural follow-up.
+
 ### Adding a new entry
 
 When adding `import()` support to a provider, add the resource type to

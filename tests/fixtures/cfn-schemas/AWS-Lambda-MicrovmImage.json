@@ -1,0 +1,40 @@
+{
+  "resourceType": "AWS::Lambda::MicrovmImage",
+  "generatedAt": "2026-07-22",
+  "properties": [
+    "AdditionalOsCapabilities",
+    "BaseImageArn",
+    "BaseImageVersion",
+    "BuildRoleArn",
+    "CodeArtifact",
+    "CpuConfigurations",
+    "CreatedAt",
+    "Description",
+    "EgressNetworkConnectors",
+    "EnvironmentVariables",
+    "Hooks",
+    "ImageArn",
+    "LatestActiveImageVersion",
+    "LatestFailedImageVersion",
+    "Logging",
+    "Name",
+    "Resources",
+    "State",
+    "Tags",
+    "UpdatedAt"
+  ],
+  "readOnlyProperties": [
+    "CreatedAt",
+    "ImageArn",
+    "LatestActiveImageVersion",
+    "LatestFailedImageVersion",
+    "State",
+    "UpdatedAt"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ],
+  "primaryIdentifier": [
+    "ImageArn"
+  ]
+}
