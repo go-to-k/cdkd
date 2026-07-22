@@ -15,6 +15,8 @@
 #      ARN, and GetMicrovmImage reports state == CREATED on AWS.
 #   1b. Tags-only UPDATE: assert the tags are reconciled (Tag/UntagResource)
 #      with the active image version UNCHANGED (no rebuild).
+#   1c. Drift: cdkd drift is clean after deploy; an out-of-band tag mutation is
+#      detected as drift; reverting realigns (readCurrentState).
 #   2. Destroy + assert the image is gone (GetMicrovmImage 404s) and the cdkd
 #      state file is removed.
 #   3. --no-wait deploy: assert cdkd returns while the image is still CREATING
@@ -178,6 +180,31 @@ echo "    active version after tags-only update: ${VERSION_AFTER}"
 [ "${VERSION_AFTER}" = "${VERSION_BEFORE}" ] || { echo "FAIL: tags-only update rebuilt the image (version ${VERSION_BEFORE} -> ${VERSION_AFTER}); expected no rebuild" >&2; exit 1; }
 echo "    tags reconciled via Tag/UntagResource with NO image rebuild"
 
+# --- Phase 1c: drift detection (readCurrentState) ------------------------
+# The provider's readCurrentState maps GetMicrovmImage + ListTags back to the
+# Name + Tags cdkd stores (the build config is writeOnly and excluded via
+# getDriftUnknownPaths). A freshly-deployed image reports ZERO drift; an
+# out-of-band tag mutation must be detected as drift; reverting realigns.
+echo "==> Phase 1c: drift is clean right after deploy (exit 0 expected)"
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after clean deploy, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    no drift on a freshly-deployed image"
+
+echo "==> Phase 1c: mutate a tag out-of-band, expect drift (exit 1 expected)"
+aws lambda-microvms tag-resource --resource "${IMAGE_ARN}" --tags env=drifted --region "${REGION}"
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 1 ] || { echo "FAIL: expected drift (exit 1) after out-of-band tag change, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    out-of-band tag change detected as drift"
+
+echo "==> Phase 1c: revert the tag so state and AWS realign"
+aws lambda-microvms tag-resource --resource "${IMAGE_ARN}" --tags env=prod --region "${REGION}"
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after reverting the tag, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    drift clean again after revert"
+
 # --- Phase 2: destroy (the waited-create image) --------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -256,4 +283,4 @@ echo "    --no-wait image + state removed"
 # Remove the code artifact we uploaded in Phase 0 (not a cdkd-managed resource).
 aws s3 rm "s3://${STATE_BUCKET}/${ARTIFACT_KEY}" --region "${REGION}" >/dev/null
 
-echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update no-rebuild, --no-wait returns at CREATING, clean async destroy"
+echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update no-rebuild, tag drift detect/revert, --no-wait returns at CREATING, clean async destroy"

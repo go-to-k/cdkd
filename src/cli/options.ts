@@ -489,7 +489,7 @@ export function effectiveResourceTimeoutMs(
 
 /**
  * Skip waiting for async-stabilization resources (CloudFront, RDS,
- * ElastiCache, NAT Gateway) on deploy. Setting the flag mutates
+ * ElastiCache, NAT Gateway, Lambda MicroVM Image) on deploy. Setting the flag mutates
  * `process.env.CDKD_NO_WAIT='true'`; provider code checks that env
  * var, not the parsed CLI option (this lets nested call paths — e.g.
  * asset publish, lifecycle hooks — see the same setting without
@@ -503,7 +503,7 @@ export function effectiveResourceTimeoutMs(
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (CloudFront, RDS, ElastiCache, NAT Gateway)'
+  'Skip waiting for async resources to stabilize (CloudFront, RDS, ElastiCache, NAT Gateway, Lambda MicroVM Image)'
 );
 
 /**

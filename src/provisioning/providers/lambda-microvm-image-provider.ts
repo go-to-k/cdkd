@@ -6,6 +6,7 @@ import {
   DeleteMicrovmImageCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  ListTagsCommand,
   ResourceNotFoundException,
   type CreateMicrovmImageRequest,
   type UpdateMicrovmImageRequest,
@@ -20,6 +21,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -82,9 +84,13 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
   // snapshots, which can take several minutes. `getMinResourceTimeoutMs()`
   // lifts the deploy engine's per-resource deadline to match so the outer
   // wrapper never truncates the inner poll.
-  private readonly maxPollAttempts = Number(process.env['CDKD_MICROVM_IMAGE_POLL_ATTEMPTS'] ?? 180);
-  private readonly pollIntervalMs = Number(
-    process.env['CDKD_MICROVM_IMAGE_POLL_INTERVAL_MS'] ?? 10000
+  private readonly maxPollAttempts = positiveIntFromEnv(
+    process.env['CDKD_MICROVM_IMAGE_POLL_ATTEMPTS'],
+    180
+  );
+  private readonly pollIntervalMs = positiveIntFromEnv(
+    process.env['CDKD_MICROVM_IMAGE_POLL_INTERVAL_MS'],
+    10000
   );
 
   constructor() {
@@ -409,6 +415,58 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Read the AWS-current MicroVM image state for `cdkd drift`.
+   *
+   * Only `Name` and `Tags` are readable back: `GetMicrovmImage` returns just
+   * `imageArn` / `name` / `state` / versions / timestamps / `tags`, so the
+   * build configuration (`BaseImageArn` / `BuildRoleArn` / `CodeArtifact` /
+   * `Logging` / `Hooks` / ...) never comes back. Those paths are excluded from
+   * the drift comparison via {@link getDriftUnknownPaths}; drift is therefore
+   * scoped to the mutable, readable surface (Tags — updated in place via
+   * TagResource/UntagResource).
+   *
+   * Tags are read via the dedicated `ListTags` (the authoritative tag source),
+   * not the `GetMicrovmImage` response's `tags` field, whose population is not
+   * guaranteed (the "type != populated" trap).
+   *
+   * Returns `undefined` when the image is gone.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let name: string | undefined;
+    try {
+      const resp = await this.client.send(
+        new GetMicrovmImageCommand({ imageIdentifier: physicalId })
+      );
+      name = resp.name;
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
+    }
+
+    const result: Record<string, unknown> = {};
+    if (name !== undefined) result['Name'] = name;
+    const tagsResp = await this.client.send(new ListTagsCommand({ Resource: physicalId }));
+    result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
+    return result;
+  }
+
+  /**
+   * Drift comparison paths this provider cannot read back from AWS: the build
+   * configuration `GetMicrovmImage` never returns (its response carries only
+   * `imageArn` / `name` / `state` / versions / timestamps / `tags`). Only
+   * `Name` + `Tags` are read back (see {@link readCurrentState}), so every
+   * other managed property is declared unknown to avoid guaranteed
+   * false-positive drift on every run.
+   */
+  getDriftUnknownPaths(_resourceType: string): string[] {
+    return [...MICROVM_UNREADABLE_CFN_KEYS];
+  }
+
   // -- helpers -------------------------------------------------------------
 
   private buildAttributes(
@@ -579,6 +637,29 @@ const BUILD_AFFECTING_CFN_KEYS = [
   'Hooks',
   'EnvironmentVariables',
 ] as const;
+
+/**
+ * CFn property names `GetMicrovmImage` does NOT return (its response carries
+ * only `imageArn` / `name` / `state` / versions / timestamps / `tags`), so
+ * `cdkd drift` cannot read the build configuration back from AWS.
+ * `getDriftUnknownPaths` declares them so they don't fire guaranteed
+ * false-positive drift. Currently identical to {@link BUILD_AFFECTING_CFN_KEYS}
+ * (the build config is exactly the set that is both rebuild-triggering and
+ * unreadable) but kept separate as the two model different concerns
+ * (drift-readability vs rebuild-triggering).
+ */
+const MICROVM_UNREADABLE_CFN_KEYS = BUILD_AFFECTING_CFN_KEYS;
+
+/**
+ * Parse a positive-integer poll-config env var, falling back to `dflt` for an
+ * unset / non-numeric / non-positive value (so a garbage override cannot yield
+ * `NaN`, which would make the poll loop exit immediately with a spurious
+ * timeout).
+ */
+function positiveIntFromEnv(value: string | undefined, dflt: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : dflt;
+}
 
 /** Minimal shape of the `GetMicrovmImage` response fields the provider reads. */
 interface GetImageResult {

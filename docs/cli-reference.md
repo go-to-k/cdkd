@@ -20,8 +20,9 @@ resource provisioning. Each level has its own concurrency knob.
 ## `--no-wait`
 
 By default, cdkd waits for async resources (CloudFront Distribution,
-RDS Cluster/Instance, ElastiCache, NAT Gateway) to reach a ready
-state before completing — the same behavior as CloudFormation.
+RDS Cluster/Instance, ElastiCache, NAT Gateway, Lambda MicroVM Image)
+to reach a ready state before completing — the same behavior as
+CloudFormation.
 
 Use `--no-wait` to skip this and return immediately after resource
 creation:
@@ -37,8 +38,12 @@ functional once AWS finishes the async deployment.
 | --- | --- | --- |
 | `AWS::CloudFront::Distribution` | Wait for `Deployed` status (3–15 min) | Return after `CreateDistribution` |
 | `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` | Wait for `available` status (5–10 min) | Return after Create call |
+| `AWS::DocDB::DBCluster` / `AWS::DocDB::DBInstance` | Wait for `available` status (5–10 min) | Return after Create call |
+| `AWS::Neptune::DBCluster` / `AWS::Neptune::DBInstance` | Wait for `available` status (5–10 min) | Return after Create call |
 | `AWS::ElastiCache::CacheCluster` etc. | Wait for `available` status | Return after Create call |
+| `AWS::CertificateManager::Certificate` | Wait for `ISSUED` (DNS/EMAIL validation) | Return after `RequestCertificate` (cert is `PENDING_VALIDATION`; downstream CloudFront/ALB fail until it issues) |
 | `AWS::EC2::NatGateway` | Wait for `available` state (1–2 min) | Return after `CreateNatGateway` (gateway is `pending`; AWS finishes async) |
+| `AWS::Lambda::MicrovmImage` | Wait for `CREATED` (the Firecracker snapshot build; several minutes) | Return after `CreateMicrovmImage` (image is `CREATING`; the build finishes async). The image ARN is resolved before the wait, so outputs still work. Only the SDK provider honors this — the Cloud Control fallback always polls to a terminal state |
 
 For NAT Gateway specifically: `CreateNatGateway` returns the
 `NatGatewayId` immediately, so dependent Routes that only need the ID
