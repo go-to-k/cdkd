@@ -558,6 +558,19 @@ describe('ECSProvider', () => {
         expect(c.volumesFrom).toBeUndefined();
         expect(c.dependsOn).toBeUndefined();
         expect(c.ulimits).toBeUndefined();
+        // issue #1173 sub-fields also stay undefined when the template omits them:
+        expect(c.repositoryCredentials).toBeUndefined();
+        expect(c.firelensConfiguration).toBeUndefined();
+        expect(c.resourceRequirements).toBeUndefined();
+        expect(c.systemControls).toBeUndefined();
+        expect(c.extraHosts).toBeUndefined();
+        expect(c.restartPolicy).toBeUndefined();
+        expect(c.dnsServers).toBeUndefined();
+        expect(c.dnsSearchDomains).toBeUndefined();
+        expect(c.dockerSecurityOptions).toBeUndefined();
+        expect(c.credentialSpecs).toBeUndefined();
+        expect(c.hostname).toBeUndefined();
+        expect(c.versionConsistency).toBeUndefined();
       });
 
       it('forwards EnableFaultInjection=true onto RegisterTaskDefinition (#609 backfill)', async () => {
