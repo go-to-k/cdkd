@@ -149,6 +149,184 @@ describe('ECSProvider.readCurrentState', () => {
     });
   });
 
+  // --- issue #1167: reverse-map nested objects SDK camelCase -> CFn PascalCase ---
+  // The drift baseline is state `properties` (PascalCase) or `observedProperties`;
+  // readCurrentState must return PascalCase nested shapes so a resource whose
+  // baseline falls back to the template `properties` does not phantom-drift.
+  it('reverse-maps Cluster DefaultCapacityProviderStrategy + Configuration to PascalCase (issue #1167)', async () => {
+    mockSend.mockResolvedValueOnce({
+      clusters: [
+        {
+          clusterName: 'my-cluster',
+          defaultCapacityProviderStrategy: [{ capacityProvider: 'FARGATE', weight: 1, base: 2 }],
+          configuration: {
+            executeCommandConfiguration: {
+              logging: 'OVERRIDE',
+              kmsKeyId: 'key-abc',
+              logConfiguration: { cloudWatchLogGroupName: '/ecs/exec', s3BucketName: 'b' },
+            },
+          },
+        },
+      ],
+    });
+
+    const result = (await provider.readCurrentState(
+      'my-cluster',
+      'ClusterLogical',
+      'AWS::ECS::Cluster'
+    )) as Record<string, unknown>;
+
+    expect(result['DefaultCapacityProviderStrategy']).toEqual([
+      { CapacityProvider: 'FARGATE', Weight: 1, Base: 2 },
+    ]);
+    expect(result['Configuration']).toEqual({
+      ExecuteCommandConfiguration: {
+        Logging: 'OVERRIDE',
+        KmsKeyId: 'key-abc',
+        LogConfiguration: { CloudWatchLogGroupName: '/ecs/exec', S3BucketName: 'b' },
+      },
+    });
+  });
+
+  it('reverse-maps Service DeploymentConfiguration / CapacityProviderStrategy / PlacementConstraints / PlacementStrategy / ServiceRegistries to PascalCase (issue #1167)', async () => {
+    mockSend.mockResolvedValueOnce({
+      services: [
+        {
+          serviceName: 'my-svc',
+          clusterArn: 'arn:aws:ecs:us-east-1:123:cluster/my-cluster',
+          launchType: 'EC2',
+          networkConfiguration: {
+            awsvpcConfiguration: {
+              subnets: ['subnet-1'],
+              securityGroups: ['sg-1'],
+              assignPublicIp: 'ENABLED',
+            },
+          },
+          loadBalancers: [
+            {
+              targetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:0:targetgroup/tg/abc',
+              containerName: 'web',
+              containerPort: 8080,
+            },
+          ],
+          capacityProviderStrategy: [{ capacityProvider: 'FARGATE', weight: 2, base: 1 }],
+          deploymentConfiguration: {
+            maximumPercent: 150,
+            minimumHealthyPercent: 50,
+            deploymentCircuitBreaker: { enable: true, rollback: true },
+            alarms: { alarmNames: ['a'], enable: true, rollback: false },
+            lifecycleHooks: [
+              {
+                hookTargetArn: 'arn:aws:lambda:us-east-1:0:function:h',
+                roleArn: 'arn:aws:iam::0:role/r',
+                lifecycleStages: ['POST_TEST_TRAFFIC_SHIFT'],
+                // Free-form document: inner keys must be preserved verbatim.
+                hookDetails: { CustomKey: 'CustomValue', Nested: { KeepMe: 1 } },
+              },
+            ],
+          },
+          placementConstraints: [{ type: 'memberOf', expression: 'attribute:ecs.os-type == linux' }],
+          placementStrategy: [{ type: 'spread', field: 'attribute:ecs.availability-zone' }],
+          serviceRegistries: [
+            { registryArn: 'arn:aws:servicediscovery:us-east-1:0:service/srv', containerName: 'web', containerPort: 8080 },
+          ],
+        },
+      ],
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:cluster/my-cluster|my-svc',
+      'SvcLogical',
+      'AWS::ECS::Service'
+    )) as Record<string, unknown>;
+
+    expect(result['NetworkConfiguration']).toEqual({
+      AwsvpcConfiguration: {
+        Subnets: ['subnet-1'],
+        SecurityGroups: ['sg-1'],
+        AssignPublicIp: 'ENABLED',
+      },
+    });
+    expect(result['LoadBalancers']).toEqual([
+      {
+        TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:0:targetgroup/tg/abc',
+        ContainerName: 'web',
+        ContainerPort: 8080,
+      },
+    ]);
+    expect(result['CapacityProviderStrategy']).toEqual([
+      { CapacityProvider: 'FARGATE', Weight: 2, Base: 1 },
+    ]);
+    expect(result['DeploymentConfiguration']).toEqual({
+      MaximumPercent: 150,
+      MinimumHealthyPercent: 50,
+      DeploymentCircuitBreaker: { Enable: true, Rollback: true },
+      Alarms: { AlarmNames: ['a'], Enable: true, Rollback: false },
+      LifecycleHooks: [
+        {
+          HookTargetArn: 'arn:aws:lambda:us-east-1:0:function:h',
+          RoleArn: 'arn:aws:iam::0:role/r',
+          LifecycleStages: ['POST_TEST_TRAFFIC_SHIFT'],
+          HookDetails: { CustomKey: 'CustomValue', Nested: { KeepMe: 1 } },
+        },
+      ],
+    });
+    expect(result['PlacementConstraints']).toEqual([
+      { Type: 'memberOf', Expression: 'attribute:ecs.os-type == linux' },
+    ]);
+    // EC2 launch type surfaces both spellings.
+    expect(result['PlacementStrategy']).toEqual([
+      { Type: 'spread', Field: 'attribute:ecs.availability-zone' },
+    ]);
+    expect(result['PlacementStrategies']).toEqual([
+      { Type: 'spread', Field: 'attribute:ecs.availability-zone' },
+    ]);
+    expect(result['ServiceRegistries']).toEqual([
+      { RegistryArn: 'arn:aws:servicediscovery:us-east-1:0:service/srv', ContainerName: 'web', ContainerPort: 8080 },
+    ]);
+  });
+
+  it('reverse-maps TaskDefinition RuntimePlatform / ProxyConfiguration / PlacementConstraints to PascalCase (issue #1167)', async () => {
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        runtimePlatform: { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' },
+        proxyConfiguration: {
+          type: 'APPMESH',
+          containerName: 'envoy',
+          properties: [
+            { name: 'AppPorts', value: '80' },
+            { name: 'IgnoredUID', value: '1337' },
+          ],
+        },
+        placementConstraints: [{ type: 'memberOf', expression: 'attribute:ecs.os-type == linux' }],
+      },
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/my-td:1',
+      'TDLogical',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result['RuntimePlatform']).toEqual({
+      CpuArchitecture: 'ARM64',
+      OperatingSystemFamily: 'LINUX',
+    });
+    // SDK `properties` maps back to CFn `ProxyConfigurationProperties`.
+    expect(result['ProxyConfiguration']).toEqual({
+      Type: 'APPMESH',
+      ContainerName: 'envoy',
+      ProxyConfigurationProperties: [
+        { Name: 'AppPorts', Value: '80' },
+        { Name: 'IgnoredUID', Value: '1337' },
+      ],
+    });
+    expect(result['PlacementConstraints']).toEqual([
+      { Type: 'memberOf', Expression: 'attribute:ecs.os-type == linux' },
+    ]);
+  });
+
   it('normalizes camelCase SDK volume shape back to PascalCase CFn form (issue #815)', async () => {
     // DescribeTaskDefinition returns camelCase volume sub-keys; the
     // readCurrentState snapshot must match the deploy-time PascalCase

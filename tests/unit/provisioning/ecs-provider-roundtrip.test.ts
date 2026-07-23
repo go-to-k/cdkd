@@ -450,8 +450,10 @@ describe('ECSProvider read-update round-trip', () => {
     );
 
     expect(result).not.toBeUndefined();
+    // issue #1167: readCurrentState reverse-maps SDK camelCase -> CFn PascalCase
+    // so the drift baseline (state properties, PascalCase) compares cleanly.
     expect(result!['PlacementStrategy']).toEqual([
-      { type: 'spread', field: 'instanceId' },
+      { Type: 'spread', Field: 'instanceId' },
     ]);
     expect(Object.keys(result!)).not.toContain('PlatformVersion');
   });
@@ -468,7 +470,9 @@ describe('ECSProvider read-update round-trip', () => {
       TaskDefinition: TD_ARN,
       DesiredCount: 2,
       LaunchType: 'EC2',
-      PlacementStrategy: [{ type: 'spread', field: 'instanceId' }],
+      // issue #1167: readCurrentState now emits PascalCase; update() converts
+      // it back to the SDK camelCase shape (asserted below).
+      PlacementStrategy: [{ Type: 'spread', Field: 'instanceId' }],
       EnableExecuteCommand: false,
       LoadBalancers: [],
       PlacementConstraints: [],

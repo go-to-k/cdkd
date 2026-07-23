@@ -19,6 +19,12 @@
 #         input shape. Before the #1165 fix ECSProvider passed the block raw,
 #         so the SDK read absent keys and silently dropped the whole value on
 #         create AND update -> AWS applied the defaults.
+#   #1167 (readCurrentState reverse-map): the READ side must map those nested
+#         objects back from SDK camelCase to CFn PascalCase so `cdkd drift`
+#         does not phantom-drift when the baseline falls back to the template
+#         `properties` (PascalCase). Phase 1b asserts the deploy-time
+#         observedProperties baseline (captured FROM readCurrentState) carries
+#         the nested RuntimePlatform in CFn PascalCase.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
@@ -272,6 +278,40 @@ if [ "${BASE_INIT_PROCESS}" != "true" ]; then
   exit 1
 fi
 echo "    OK: base #1165 TaskDefinition on AWS is runtimePlatform.cpuArchitecture=ARM64, ephemeralStorage.sizeInGiB=30, linuxParameters.initProcessEnabled=true"
+
+# --- Phase 1b: observedProperties captured in CFn PascalCase (issue #1167) --
+# `observedProperties` (the drift baseline) is captured FROM readCurrentState at
+# deploy time. #1167 makes readCurrentState reverse-map the nested objects from
+# SDK camelCase back to CFn PascalCase, so the captured RuntimePlatform must use
+# the PascalCase key `RuntimePlatform.CpuArchitecture`. Before #1167 the read
+# side emitted camelCase (`runtimePlatform.cpuArchitecture`), so the PascalCase
+# lookup below would be MISSING — a robust, whole-stack-drift-free check that
+# readCurrentState round-trips the nested casing against real AWS.
+#
+# (A whole-stack `cdkd drift` assertion is deliberately NOT used: this fixture's
+# TaskDefinition also carries ContainerDefinitions, which readCurrentState still
+# surfaces as raw SDK camelCase — a larger structural gap out of #1167 scope —
+# and the ECS Service reads back drift-unknown because its physicalId is the ARN
+# rather than the composite `<clusterArn>|<serviceName>` form readCurrentState
+# expects; both would make a whole-stack drift assertion fail for reasons
+# unrelated to #1167.)
+echo "==> Phase 1b: assert deploy-time observedProperties captured RuntimePlatform in CFn PascalCase (#1167 readCurrentState reverse-map)"
+OBS_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+OBS_CPU_ARCH=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.RuntimePlatform.CpuArchitecture] | first // "MISSING"')
+OBS_EPHEMERAL=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.EphemeralStorage.SizeInGiB] | first // "MISSING"')
+
+if [ "${OBS_CPU_ARCH}" != "ARM64" ]; then
+  echo "FAIL: TaskDefinition observedProperties.RuntimePlatform.CpuArchitecture is '${OBS_CPU_ARCH}', expected 'ARM64' (#1167 readCurrentState did NOT reverse-map RuntimePlatform to CFn PascalCase)" >&2
+  echo "${OBS_STATE}" | jq '[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.RuntimePlatform] | first'
+  exit 1
+fi
+# EphemeralStorage was already PascalCase before #1167 (the one already-correct
+# field); asserting it guards against a regression in the reverse-map pass.
+if [ "${OBS_EPHEMERAL}" != "30" ]; then
+  echo "FAIL: TaskDefinition observedProperties.EphemeralStorage.SizeInGiB is '${OBS_EPHEMERAL}', expected '30'" >&2
+  exit 1
+fi
+echo "    OK: deploy-time observedProperties captured RuntimePlatform.CpuArchitecture=ARM64 + EphemeralStorage.SizeInGiB=30 in CFn PascalCase (#1167 readCurrentState reverse-map verified against real AWS)"
 
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"

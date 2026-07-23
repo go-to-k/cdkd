@@ -68,7 +68,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { pascalToCamelCaseKeys } from './agentcore-case-convert.js';
+import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-convert.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -94,6 +94,15 @@ function convertTags(tags?: Array<{ Key: string; Value: string }>): Tag[] | unde
  * See `convertDeploymentConfiguration`.
  */
 const DEPLOYMENT_CONFIG_PRESERVE_KEYS: ReadonlySet<string> = new Set(['HookDetails']);
+
+/**
+ * Read-side (camelCase -> PascalCase) counterpart of
+ * `DEPLOYMENT_CONFIG_PRESERVE_KEYS` for `readCurrentState` (issue #1165 /
+ * #1167). The SDK response carries the free-form document under the camelCase
+ * key `hookDetails`, so the reverse key-flip must copy its value subtree
+ * verbatim (the key itself is still flipped to `HookDetails`).
+ */
+const DEPLOYMENT_CONFIG_PRESERVE_KEYS_CAMEL: ReadonlySet<string> = new Set(['hookDetails']);
 
 /**
  * AWS ECS Provider
@@ -1597,6 +1606,28 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * Reverse of `convertProxyConfiguration` for `readCurrentState` (issue
+   * #1167): map the SDK camelCase `ProxyConfiguration` back to the CFn
+   * PascalCase shape so the drift baseline (state `properties`, PascalCase)
+   * and the AWS-current read compare apples-to-apples. Unlike the pure
+   * first-letter flips, the SDK field `properties` maps back to the CFn key
+   * `ProxyConfigurationProperties` (a `{Name,Value}[]`), so it needs an
+   * explicit remap rather than `camelToPascalCaseKeys`.
+   */
+  private proxyConfigurationToCfn(config: ProxyConfiguration): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (config.type !== undefined) out['Type'] = config.type;
+    if (config.containerName !== undefined) out['ContainerName'] = config.containerName;
+    if (config.properties !== undefined) {
+      out['ProxyConfigurationProperties'] = config.properties.map((p) => ({
+        Name: p.name,
+        Value: p.value,
+      }));
+    }
+    return out;
+  }
+
+  /**
    * Coerce a CFn boolean property to a real boolean at the wire boundary.
    * CFn templates can carry booleans as the strings "true" / "false"
    * (e.g. via Fn::Sub / parameter plumbing), so the SDK input must
@@ -1929,8 +1960,13 @@ export class ECSProvider implements ResourceProvider {
 
     const result: Record<string, unknown> = { ClusterName: c.clusterName };
     result['CapacityProviders'] = c.capacityProviders ? [...c.capacityProviders] : [];
-    result['DefaultCapacityProviderStrategy'] = c.defaultCapacityProviderStrategy ?? [];
-    if (c.configuration) result['Configuration'] = c.configuration;
+    // Reverse-map SDK camelCase -> CFn PascalCase so the drift baseline
+    // (state `properties`, PascalCase) and this AWS-current read compare
+    // apples-to-apples (issue #1167 — mirror of the #1165 SET-path fix).
+    result['DefaultCapacityProviderStrategy'] = camelToPascalCaseKeys(
+      c.defaultCapacityProviderStrategy ?? []
+    );
+    if (c.configuration) result['Configuration'] = camelToPascalCaseKeys(c.configuration);
     result['ClusterSettings'] = (c.settings ?? []).map((s) => ({
       Name: s.name,
       Value: s.value,
@@ -2012,21 +2048,39 @@ export class ECSProvider implements ResourceProvider {
     if (s.healthCheckGracePeriodSeconds !== undefined) {
       result['HealthCheckGracePeriodSeconds'] = s.healthCheckGracePeriodSeconds;
     }
-    if (s.networkConfiguration) result['NetworkConfiguration'] = s.networkConfiguration;
-    result['LoadBalancers'] = s.loadBalancers ?? [];
+    // NetworkConfiguration / LoadBalancers are also converted on the SET path
+    // (convertNetworkConfiguration / convertLoadBalancers); reverse-map them here
+    // too so the read side is consistently PascalCase (issue #1167). Both are
+    // pure first-letter flips (`awsvpcConfiguration.{subnets,securityGroups,
+    // assignPublicIp}`, `{targetGroupArn,containerName,containerPort,
+    // loadBalancerName}`).
+    if (s.networkConfiguration) {
+      result['NetworkConfiguration'] = camelToPascalCaseKeys(s.networkConfiguration);
+    }
+    result['LoadBalancers'] = camelToPascalCaseKeys(s.loadBalancers ?? []);
     // Class 1: LaunchType vs CapacityProviderStrategy are mutually exclusive
     // on the AWS API side. UpdateService rejects when both arrive together
     // (e.g. `launchType=FARGATE` + `capacityProviderStrategy=[]`). Skip the
     // empty placeholder when LaunchType is set so `cdkd drift --revert`
     // doesn't push a structurally-invalid input back to AWS. A non-empty
     // strategy still surfaces (drift detection on the strategy itself).
+    // Reverse-map SDK camelCase -> CFn PascalCase (issue #1167 — mirror of the
+    // #1165 SET-path fix) so a resource whose drift baseline falls back to the
+    // template `properties` (PascalCase) does not phantom-drift on these nested
+    // fields. `DeploymentConfiguration.LifecycleHooks[].HookDetails` is a
+    // free-form document copied verbatim.
     if (s.capacityProviderStrategy && s.capacityProviderStrategy.length > 0) {
-      result['CapacityProviderStrategy'] = s.capacityProviderStrategy;
+      result['CapacityProviderStrategy'] = camelToPascalCaseKeys(s.capacityProviderStrategy);
     } else if (!s.launchType) {
       result['CapacityProviderStrategy'] = [];
     }
-    if (s.deploymentConfiguration) result['DeploymentConfiguration'] = s.deploymentConfiguration;
-    result['PlacementConstraints'] = s.placementConstraints ?? [];
+    if (s.deploymentConfiguration) {
+      result['DeploymentConfiguration'] = camelToPascalCaseKeys(
+        s.deploymentConfiguration,
+        DEPLOYMENT_CONFIG_PRESERVE_KEYS_CAMEL
+      );
+    }
+    result['PlacementConstraints'] = camelToPascalCaseKeys(s.placementConstraints ?? []);
     // Class 1: PlacementStrategy is EC2-only. Emitting `[]` on a Fargate
     // service means `cdkd drift --revert` pushes `placementStrategy: []` to
     // UpdateService, which AWS rejects with "Placement strategies are not
@@ -2041,16 +2095,17 @@ export class ECSProvider implements ResourceProvider {
     // AND post-fix templates that use the CFn-canonical
     // `PlacementStrategies` both round-trip cleanly.
     if (s.launchType === 'EC2' || s.launchType === 'EXTERNAL') {
-      const strategy = s.placementStrategy ?? [];
+      const strategy = camelToPascalCaseKeys(s.placementStrategy ?? []);
       result['PlacementStrategy'] = strategy;
       result['PlacementStrategies'] = strategy;
     } else if (s.placementStrategy && s.placementStrategy.length > 0) {
       // Defensive: surface a non-empty strategy regardless of launch type
       // (so drift still flags an out-of-band attach if AWS ever permits it).
-      result['PlacementStrategy'] = s.placementStrategy;
-      result['PlacementStrategies'] = s.placementStrategy;
+      const strategy = camelToPascalCaseKeys(s.placementStrategy);
+      result['PlacementStrategy'] = strategy;
+      result['PlacementStrategies'] = strategy;
     }
-    result['ServiceRegistries'] = s.serviceRegistries ?? [];
+    result['ServiceRegistries'] = camelToPascalCaseKeys(s.serviceRegistries ?? []);
     const tags = normalizeAwsTagsToCfn(s.tags);
     result['Tags'] = tags;
     return result;
@@ -2101,9 +2156,14 @@ export class ECSProvider implements ResourceProvider {
     if (td.executionRoleArn !== undefined) result['ExecutionRoleArn'] = td.executionRoleArn;
     if (td.taskRoleArn !== undefined) result['TaskRoleArn'] = td.taskRoleArn;
     result['Volumes'] = this.volumesToCfn(td.volumes);
-    result['PlacementConstraints'] = td.placementConstraints ?? [];
-    if (td.runtimePlatform) result['RuntimePlatform'] = td.runtimePlatform;
-    if (td.proxyConfiguration) result['ProxyConfiguration'] = td.proxyConfiguration;
+    // Reverse-map SDK camelCase -> CFn PascalCase (issue #1167 — mirror of the
+    // #1165 SET-path fix). `ProxyConfiguration` uses an explicit remap because
+    // the SDK field `properties` maps back to CFn `ProxyConfigurationProperties`.
+    result['PlacementConstraints'] = camelToPascalCaseKeys(td.placementConstraints ?? []);
+    if (td.runtimePlatform) result['RuntimePlatform'] = camelToPascalCaseKeys(td.runtimePlatform);
+    if (td.proxyConfiguration) {
+      result['ProxyConfiguration'] = this.proxyConfigurationToCfn(td.proxyConfiguration);
+    }
     if (td.pidMode !== undefined) result['PidMode'] = td.pidMode;
     if (td.ipcMode !== undefined) result['IpcMode'] = td.ipcMode;
     if (td.ephemeralStorage?.sizeInGiB !== undefined) {
