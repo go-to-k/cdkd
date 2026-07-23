@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 130,
-    "enriched": 7,
+    "classifiedCount": 131,
+    "enriched": 8,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 109,
@@ -986,6 +986,30 @@
       "gaps": [
         "Arn"
       ]
+    },
+    {
+      "resourceType": "AWS::EC2::EIP",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AllocationId",
+        "PublicIp"
+      ],
+      "enrichedKeys": [
+        "AllocationId",
+        "PublicIp"
+      ],
+      "attributes": [
+        {
+          "name": "AllocationId",
+          "status": "enriched"
+        },
+        {
+          "name": "PublicIp",
+          "status": "enriched"
+        }
+      ],
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::Instance",
@@ -3179,7 +3203,6 @@
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
     "AWS::CloudFront::OriginAccessControl",
-    "AWS::EC2::EIP",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::Events::ApiDestination",
     "AWS::Events::Connection",

@@ -12,6 +12,8 @@ import {
   AllocateAddressCommand,
   ReleaseAddressCommand,
   DescribeAddressesCommand,
+  AssociateAddressCommand,
+  DisassociateAddressCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -1058,6 +1060,54 @@ describe('EC2Provider - EIP (Elastic IP) SDK provider', () => {
     expect(mockSend.mock.calls[1][0]).toBeInstanceOf(ReleaseAddressCommand);
     expect((mockSend.mock.calls[1][0] as ReleaseAddressCommand).input.AllocationId).toBe(
       'eipalloc-r'
+    );
+  });
+
+  it('associates to an instance on create when InstanceId is set (fast SDK path)', async () => {
+    mockSend
+      .mockResolvedValueOnce({ AllocationId: 'eipalloc-i', PublicIp: '4.4.4.4' }) // AllocateAddress
+      .mockResolvedValueOnce({ AssociationId: 'eipassoc-x' }); // AssociateAddress
+    const result = await provider.create('Eip', 'AWS::EC2::EIP', {
+      Domain: 'vpc',
+      InstanceId: 'i-0abc',
+    });
+    expect(result.physicalId).toBe('4.4.4.4|eipalloc-i');
+    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(AssociateAddressCommand);
+    const input = (mockSend.mock.calls[1][0] as AssociateAddressCommand).input;
+    expect(input.AllocationId).toBe('eipalloc-i');
+    expect(input.InstanceId).toBe('i-0abc');
+  });
+
+  it('re-associates on update when InstanceId changes (AllowReassociation)', async () => {
+    mockSend.mockResolvedValueOnce({ AssociationId: 'eipassoc-y' }); // AssociateAddress
+    await provider.update(
+      'Eip',
+      '4.4.4.4|eipalloc-i',
+      'AWS::EC2::EIP',
+      { InstanceId: 'i-new' },
+      { InstanceId: 'i-old' }
+    );
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(AssociateAddressCommand);
+    const input = (mockSend.mock.calls[0][0] as AssociateAddressCommand).input;
+    expect(input.InstanceId).toBe('i-new');
+    expect(input.AllowReassociation).toBe(true);
+  });
+
+  it('disassociates on update when InstanceId is removed', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Addresses: [{ AssociationId: 'eipassoc-z' }] }) // DescribeAddresses
+      .mockResolvedValueOnce({}); // DisassociateAddress
+    await provider.update(
+      'Eip',
+      '4.4.4.4|eipalloc-i',
+      'AWS::EC2::EIP',
+      {},
+      { InstanceId: 'i-old' }
+    );
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DescribeAddressesCommand);
+    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DisassociateAddressCommand);
+    expect((mockSend.mock.calls[1][0] as DisassociateAddressCommand).input.AssociationId).toBe(
+      'eipassoc-z'
     );
   });
 });

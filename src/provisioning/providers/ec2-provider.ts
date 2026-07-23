@@ -20,6 +20,8 @@ import {
   AllocateAddressCommand,
   ReleaseAddressCommand,
   DescribeAddressesCommand,
+  AssociateAddressCommand,
+  DisassociateAddressCommand,
   waitUntilNatGatewayDeleted,
   CreateRouteTableCommand,
   DeleteRouteTableCommand,
@@ -121,7 +123,10 @@ export class EC2Provider implements ResourceProvider {
       new Set(['VpcId', 'CidrBlock', 'AvailabilityZone', 'MapPublicIpOnLaunch', 'Tags']),
     ],
     ['AWS::EC2::InternetGateway', new Set(['Tags'])],
-    ['AWS::EC2::EIP', new Set(['Domain', 'NetworkBorderGroup', 'PublicIpv4Pool', 'Tags'])],
+    [
+      'AWS::EC2::EIP',
+      new Set(['Domain', 'InstanceId', 'NetworkBorderGroup', 'PublicIpv4Pool', 'Tags']),
+    ],
     ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId'])],
     [
       'AWS::EC2::NatGateway',
@@ -266,10 +271,6 @@ export class EC2Provider implements ResourceProvider {
         [
           'TransferAddress',
           'Accepting a transferred Elastic IP is not yet supported (out-of-band EIP transfer flow)',
-        ],
-        [
-          'InstanceId',
-          'The SDK create path does not associate the EIP to an instance (ec2:AssociateAddress); an EIP that sets InstanceId auto-routes to Cloud Control (which does associate it), while the common no-InstanceId EIP takes the fast SDK path',
         ],
       ]),
     ],
@@ -1171,6 +1172,17 @@ export class EC2Provider implements ResourceProvider {
 
       await this.applyTags(allocationId, properties, logicalId);
 
+      // Associate to an instance on the fast SDK path (the EIP depends on the
+      // instance in the DAG, so it is already running by now). Keeps EIP+
+      // InstanceId off the ~20s Cloud Control async-poll route.
+      const instanceId = properties['InstanceId'] as string | undefined;
+      if (instanceId) {
+        await this.ec2Client.send(
+          new AssociateAddressCommand({ AllocationId: allocationId, InstanceId: instanceId })
+        );
+        this.logger.debug(`Associated EIP ${logicalId} (${allocationId}) to ${instanceId}`);
+      }
+
       this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
 
       return {
@@ -1198,8 +1210,8 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    // Only Tags are mutable in place; Domain / pool / border group are
-    // create-only and handled by the replacement path.
+    // Tags and InstanceId (association) are mutable in place; Domain / pool /
+    // border group are create-only and handled by the replacement path.
     this.logger.debug(`Updating EIP ${logicalId}: ${physicalId}`);
     const { allocationId } = this.parseEipPhysicalId(physicalId);
     if (allocationId) {
@@ -1208,6 +1220,32 @@ export class EC2Provider implements ResourceProvider {
         previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
         properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
+
+      const oldInstanceId = previousProperties['InstanceId'] as string | undefined;
+      const newInstanceId = properties['InstanceId'] as string | undefined;
+      if (oldInstanceId !== newInstanceId) {
+        if (newInstanceId) {
+          // Associate (or re-associate to a different instance).
+          await this.ec2Client.send(
+            new AssociateAddressCommand({
+              AllocationId: allocationId,
+              InstanceId: newInstanceId,
+              AllowReassociation: true,
+            })
+          );
+        } else {
+          // InstanceId removed → disassociate via the current AssociationId.
+          const desc = await this.ec2Client.send(
+            new DescribeAddressesCommand({ AllocationIds: [allocationId] })
+          );
+          const associationId = desc.Addresses?.[0]?.AssociationId;
+          if (associationId) {
+            await this.ec2Client.send(
+              new DisassociateAddressCommand({ AssociationId: associationId })
+            );
+          }
+        }
+      }
     }
     return { physicalId, wasReplaced: false };
   }

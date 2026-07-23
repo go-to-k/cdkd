@@ -855,15 +855,17 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::EC2::EIP',
     {
-      handled: new Set<string>(['Domain', 'NetworkBorderGroup', 'PublicIpv4Pool', 'Tags']),
+      handled: new Set<string>([
+        'Domain',
+        'InstanceId',
+        'NetworkBorderGroup',
+        'PublicIpv4Pool',
+        'Tags',
+      ]),
       silentDrop: new Map<string, string>([
         [
           'Address',
           'Bring-your-own-IP: allocating a specific address you own is not yet supported; cdkd allocates an Amazon-owned address',
-        ],
-        [
-          'InstanceId',
-          'The SDK create path does not associate the EIP to an instance (ec2:AssociateAddress); an EIP that sets InstanceId auto-routes to Cloud Control (which does associate it), while the common no-InstanceId EIP takes the fast SDK path',
         ],
         ['IpamPoolId', 'Allocation from an IPAM pool is not yet supported'],
         [

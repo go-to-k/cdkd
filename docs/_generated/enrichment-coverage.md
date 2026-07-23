@@ -11,8 +11,8 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **130**
-- Fully enriched: **7**
+- Classified types (cached schema): **131**
+- Fully enriched: **8**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **109**
@@ -180,6 +180,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::DocDB::DBSubnetGroup` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::DynamoDB::GlobalTable` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (GAP), `TableId` (GAP) |
 | `AWS::DynamoDB::Table` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (OK) |
+| `AWS::EC2::EIP` | yes | enriched | `AllocationId` (OK), `PublicIp` (OK) |
 | `AWS::EC2::Instance` | yes | sdk-fallback-gap | `InstanceId` (GAP), `PrivateDnsName` (GAP), `PrivateIp` (GAP), `PublicDnsName` (GAP), `PublicIp` (GAP), `State` (GAP), `VpcId` (GAP) |
 | `AWS::EC2::InternetGateway` | yes | sdk-fallback-gap | `InternetGatewayId` (GAP) |
 | `AWS::EC2::NatGateway` | yes | sdk-fallback-gap | `AutoProvisionZones` (GAP), `AutoScalingIps` (GAP), `EniId` (GAP), `NatGatewayId` (GAP), `RouteTableId` (GAP) |
@@ -282,7 +283,6 @@ These types have an `enrichResourceAttributes` case but no cached CFn schema, so
 - `AWS::Backup::BackupSelection`
 - `AWS::Backup::BackupVault`
 - `AWS::CloudFront::OriginAccessControl`
-- `AWS::EC2::EIP`
 - `AWS::ElastiCache::ReplicationGroup`
 - `AWS::Events::ApiDestination`
 - `AWS::Events::Connection`
