@@ -131,6 +131,120 @@ describe('ECSProvider', () => {
         const createCall = mockSend.mock.calls[0][0];
         expect(createCall.input.serviceConnectDefaults).toBeUndefined();
       });
+
+      it('should convert Configuration PascalCase -> camelCase on CreateCluster (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          cluster: {
+            clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            clusterName: 'my-cluster',
+          },
+        });
+
+        await provider.create('MyCluster', 'AWS::ECS::Cluster', {
+          ClusterName: 'my-cluster',
+          Configuration: {
+            ExecuteCommandConfiguration: {
+              Logging: 'OVERRIDE',
+              KmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+              LogConfiguration: {
+                CloudWatchLogGroupName: '/ecs/exec',
+                CloudWatchEncryptionEnabled: true,
+                S3BucketName: 'my-exec-bucket',
+              },
+            },
+          },
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.input.configuration).toEqual({
+          executeCommandConfiguration: {
+            logging: 'OVERRIDE',
+            kmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+            logConfiguration: {
+              cloudWatchLogGroupName: '/ecs/exec',
+              cloudWatchEncryptionEnabled: true,
+              s3BucketName: 'my-exec-bucket',
+            },
+          },
+        });
+      });
+
+      it('should convert DefaultCapacityProviderStrategy PascalCase -> camelCase on CreateCluster (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          cluster: {
+            clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            clusterName: 'my-cluster',
+          },
+        });
+
+        await provider.create('MyCluster', 'AWS::ECS::Cluster', {
+          ClusterName: 'my-cluster',
+          DefaultCapacityProviderStrategy: [
+            { CapacityProvider: 'FARGATE', Weight: 1, Base: 2 },
+            { CapacityProvider: 'FARGATE_SPOT', Weight: 4 },
+          ],
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.input.defaultCapacityProviderStrategy).toEqual([
+          { capacityProvider: 'FARGATE', weight: 1, base: 2 },
+          { capacityProvider: 'FARGATE_SPOT', weight: 4 },
+        ]);
+      });
+    });
+
+    describe('update', () => {
+      it('should convert DefaultCapacityProviderStrategy PascalCase -> camelCase on PutClusterCapacityProviders (issue #1165)', async () => {
+        // PutClusterCapacityProviders, then DescribeClusters for the ARN.
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({
+          clusters: [{ clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster' }],
+        });
+
+        await provider.update(
+          'MyCluster',
+          'my-cluster',
+          'AWS::ECS::Cluster',
+          {
+            ClusterName: 'my-cluster',
+            DefaultCapacityProviderStrategy: [{ CapacityProvider: 'FARGATE', Weight: 1, Base: 3 }],
+          },
+          { ClusterName: 'my-cluster' }
+        );
+
+        const putCall = mockSend.mock.calls[0][0];
+        expect(putCall.constructor.name).toBe('PutClusterCapacityProvidersCommand');
+        expect(putCall.input.defaultCapacityProviderStrategy).toEqual([
+          { capacityProvider: 'FARGATE', weight: 1, base: 3 },
+        ]);
+      });
+
+      it('should convert Configuration PascalCase -> camelCase on UpdateCluster (issue #1165)', async () => {
+        // UpdateCluster (config changed), then DescribeClusters for the ARN.
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({
+          clusters: [{ clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster' }],
+        });
+
+        await provider.update(
+          'MyCluster',
+          'my-cluster',
+          'AWS::ECS::Cluster',
+          {
+            ClusterName: 'my-cluster',
+            Configuration: {
+              ExecuteCommandConfiguration: { Logging: 'OVERRIDE', KmsKeyId: 'key-abc' },
+            },
+          },
+          { ClusterName: 'my-cluster' }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateClusterCommand');
+        expect(updateCall.input.configuration).toEqual({
+          executeCommandConfiguration: { logging: 'OVERRIDE', kmsKeyId: 'key-abc' },
+        });
+      });
     });
 
     describe('delete', () => {
@@ -221,6 +335,95 @@ describe('ECSProvider', () => {
             ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
           })
         ).rejects.toThrow('Failed to create ECS task definition MyTask');
+      });
+
+      it('should convert RuntimePlatform / EphemeralStorage / ProxyConfiguration PascalCase -> camelCase (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
+          },
+        });
+
+        await provider.create('MyTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'my-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          RequiresCompatibilities: ['FARGATE'],
+          // Graviton — before the fix this was passed raw and silently dropped,
+          // so the task definition registered as the default X86_64.
+          RuntimePlatform: { CpuArchitecture: 'ARM64', OperatingSystemFamily: 'LINUX' },
+          EphemeralStorage: { SizeInGiB: 30 },
+          PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:ecs.os-type == linux' }],
+          ProxyConfiguration: {
+            Type: 'APPMESH',
+            ContainerName: 'envoy',
+            ProxyConfigurationProperties: [
+              { Name: 'AppPorts', Value: '80' },
+              { Name: 'IgnoredUID', Value: '1337' },
+            ],
+          },
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.runtimePlatform).toEqual({
+          cpuArchitecture: 'ARM64',
+          operatingSystemFamily: 'LINUX',
+        });
+        expect(input.ephemeralStorage).toEqual({ sizeInGiB: 30 });
+        expect(input.placementConstraints).toEqual([
+          { type: 'memberOf', expression: 'attribute:ecs.os-type == linux' },
+        ]);
+        expect(input.proxyConfiguration).toEqual({
+          type: 'APPMESH',
+          containerName: 'envoy',
+          properties: [
+            { name: 'AppPorts', value: '80' },
+            { name: 'IgnoredUID', value: '1337' },
+          ],
+        });
+      });
+
+      it('should convert ContainerDefinition LinuxParameters + LogConfiguration.SecretOptions PascalCase -> camelCase (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
+          },
+        });
+
+        await provider.create('MyTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'my-task',
+          ContainerDefinitions: [
+            {
+              Name: 'web',
+              Image: 'nginx:latest',
+              LinuxParameters: {
+                InitProcessEnabled: true,
+                SharedMemorySize: 64,
+                Capabilities: { Add: ['NET_ADMIN'], Drop: ['ALL'] },
+                Devices: [{ HostPath: '/dev/null', ContainerPath: '/dev/null', Permissions: ['read'] }],
+                Tmpfs: [{ ContainerPath: '/run', Size: 100, MountOptions: ['noexec'] }],
+              },
+              LogConfiguration: {
+                LogDriver: 'awslogs',
+                Options: { 'awslogs-group': '/ecs/web' },
+                SecretOptions: [
+                  { Name: 'token', ValueFrom: 'arn:aws:secretsmanager:us-east-1:0:secret:tok' },
+                ],
+              },
+            },
+          ],
+        });
+
+        const container = mockSend.mock.calls[0][0].input.containerDefinitions[0];
+        expect(container.linuxParameters).toEqual({
+          initProcessEnabled: true,
+          sharedMemorySize: 64,
+          capabilities: { add: ['NET_ADMIN'], drop: ['ALL'] },
+          devices: [{ hostPath: '/dev/null', containerPath: '/dev/null', permissions: ['read'] }],
+          tmpfs: [{ containerPath: '/run', size: 100, mountOptions: ['noexec'] }],
+        });
+        expect(container.logConfiguration.secretOptions).toEqual([
+          { name: 'token', valueFrom: 'arn:aws:secretsmanager:us-east-1:0:secret:tok' },
+        ]);
       });
 
       it('converts ContainerDefinition PascalCase array fields to ECS SDK camelCase', async () => {
@@ -765,6 +968,123 @@ describe('ECSProvider', () => {
           })
         ).rejects.toThrow('Failed to create ECS service MyService');
       });
+
+      // --- issue #1165: CFn PascalCase nested-object -> SDK camelCase ---------
+      // These five fields were previously passed RAW (PascalCase) into the SDK's
+      // camelCase input slots, so the SDK read absent keys and silently dropped
+      // the whole value on create. Every test feeds the CFn PascalCase shape and
+      // asserts the SDK command receives camelCase.
+      it('should convert DeploymentConfiguration PascalCase -> camelCase on create (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.create('MyService', 'AWS::ECS::Service', {
+          Cluster: 'my-cluster',
+          ServiceName: 'my-service',
+          DeploymentConfiguration: {
+            MaximumPercent: 250,
+            MinimumHealthyPercent: 50,
+            DeploymentCircuitBreaker: { Enable: true, Rollback: true },
+            Alarms: { AlarmNames: ['alarm-a', 'alarm-b'], Enable: true, Rollback: false },
+          },
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.deploymentConfiguration).toEqual({
+          maximumPercent: 250,
+          minimumHealthyPercent: 50,
+          deploymentCircuitBreaker: { enable: true, rollback: true },
+          alarms: { alarmNames: ['alarm-a', 'alarm-b'], enable: true, rollback: false },
+        });
+      });
+
+      it('should preserve DeploymentConfiguration LifecycleHooks HookDetails verbatim (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.create('MyService', 'AWS::ECS::Service', {
+          Cluster: 'my-cluster',
+          ServiceName: 'my-service',
+          DeploymentConfiguration: {
+            Strategy: 'BLUE_GREEN',
+            BakeTimeInMinutes: 5,
+            LifecycleHooks: [
+              {
+                HookTargetArn: 'arn:aws:lambda:us-east-1:123456789012:function:hook',
+                RoleArn: 'arn:aws:iam::123456789012:role/hook-role',
+                LifecycleStages: ['POST_TEST_TRAFFIC_SHIFT'],
+                // Free-form document: inner keys are user data, not CFn props,
+                // so they must reach the SDK byte-identical (NOT case-flipped).
+                HookDetails: { CustomKey: 'CustomValue', Nested: { KeepMe: 1 } },
+              },
+            ],
+          },
+        });
+
+        const dc = mockSend.mock.calls[0][0].input.deploymentConfiguration;
+        expect(dc.strategy).toBe('BLUE_GREEN');
+        expect(dc.bakeTimeInMinutes).toBe(5);
+        expect(dc.lifecycleHooks).toEqual([
+          {
+            hookTargetArn: 'arn:aws:lambda:us-east-1:123456789012:function:hook',
+            roleArn: 'arn:aws:iam::123456789012:role/hook-role',
+            lifecycleStages: ['POST_TEST_TRAFFIC_SHIFT'],
+            hookDetails: { CustomKey: 'CustomValue', Nested: { KeepMe: 1 } },
+          },
+        ]);
+      });
+
+      it('should convert CapacityProviderStrategy / PlacementConstraints / PlacementStrategies / ServiceRegistries PascalCase -> camelCase on create (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.create('MyService', 'AWS::ECS::Service', {
+          Cluster: 'my-cluster',
+          ServiceName: 'my-service',
+          CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE_SPOT', Weight: 2, Base: 1 }],
+          PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:ecs.instance-type =~ t2.*' }],
+          PlacementStrategies: [{ Type: 'spread', Field: 'attribute:ecs.availability-zone' }],
+          ServiceRegistries: [
+            {
+              RegistryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc',
+              Port: 8080,
+              ContainerName: 'web',
+              ContainerPort: 8080,
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.capacityProviderStrategy).toEqual([
+          { capacityProvider: 'FARGATE_SPOT', weight: 2, base: 1 },
+        ]);
+        expect(input.placementConstraints).toEqual([
+          { type: 'memberOf', expression: 'attribute:ecs.instance-type =~ t2.*' },
+        ]);
+        expect(input.placementStrategy).toEqual([
+          { type: 'spread', field: 'attribute:ecs.availability-zone' },
+        ]);
+        expect(input.serviceRegistries).toEqual([
+          {
+            registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc',
+            port: 8080,
+            containerName: 'web',
+            containerPort: 8080,
+          },
+        ]);
+      });
     });
 
     describe('update', () => {
@@ -929,7 +1249,14 @@ describe('ECSProvider', () => {
           {
             Cluster: 'my-cluster',
             ServiceName: 'my-service',
-            ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc' }],
+            // CFn PascalCase input — must reach the SDK as camelCase (issue #1165).
+            ServiceRegistries: [
+              {
+                RegistryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc',
+                ContainerName: 'web',
+                ContainerPort: 8080,
+              },
+            ],
           },
           {
             Cluster: 'my-cluster',
@@ -938,7 +1265,11 @@ describe('ECSProvider', () => {
         );
 
         expect(mockSend.mock.calls[0][0].input.serviceRegistries).toEqual([
-          { registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc' },
+          {
+            registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc',
+            containerName: 'web',
+            containerPort: 8080,
+          },
         ]);
 
         // Removed: empty list
@@ -960,7 +1291,9 @@ describe('ECSProvider', () => {
           {
             Cluster: 'my-cluster',
             ServiceName: 'my-service',
-            ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc' }],
+            ServiceRegistries: [
+              { RegistryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc' },
+            ],
           }
         );
 
@@ -989,7 +1322,9 @@ describe('ECSProvider', () => {
                   ContainerPort: 8080,
                 },
               ],
-              ServiceRegistries: [{ registryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-new' }],
+              ServiceRegistries: [
+                { RegistryArn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-new' },
+              ],
             },
             {
               Cluster: 'my-cluster',
@@ -1107,9 +1442,9 @@ describe('ECSProvider', () => {
             PropagateTags: 'TASK_DEFINITION',
             EnableECSManagedTags: true,
             EnableExecuteCommand: true,
-            CapacityProviderStrategy: [{ capacityProvider: 'FARGATE', weight: 1 }],
-            PlacementConstraints: [{ type: 'distinctInstance' }],
-            PlacementStrategies: [{ type: 'spread', field: 'attribute:ecs.availability-zone' }],
+            CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE', Weight: 1 }],
+            PlacementConstraints: [{ Type: 'distinctInstance' }],
+            PlacementStrategies: [{ Type: 'spread', Field: 'attribute:ecs.availability-zone' }],
           });
 
           const input = mockSend.mock.calls[0][0].input;
@@ -1158,7 +1493,7 @@ describe('ECSProvider', () => {
             HealthCheckGracePeriodSeconds: 45,
             PropagateTags: 'SERVICE',
             EnableECSManagedTags: true,
-            PlacementConstraints: [{ type: 'distinctInstance' }],
+            PlacementConstraints: [{ Type: 'distinctInstance' }],
           }, {
             Cluster: 'my-cluster',
             ServiceName: 'my-service',
@@ -1175,6 +1510,49 @@ describe('ECSProvider', () => {
           expect(input.enableECSManagedTags).toBe(true);
           expect(input.placementConstraints).toEqual([{ type: 'distinctInstance' }]);
         });
+      });
+
+      // --- issue #1165: nested-object casing on the update SET path ----------
+      it('should convert DeploymentConfiguration + CapacityProviderStrategy PascalCase -> camelCase on update (issue #1165)', async () => {
+        const arn = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+        mockSend.mockResolvedValueOnce({ service: { serviceArn: arn, serviceName: 'my-service' } });
+
+        await provider.update(
+          'MyService',
+          arn,
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DeploymentConfiguration: {
+              MaximumPercent: 150,
+              MinimumHealthyPercent: 75,
+              DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+            },
+            CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE', Weight: 1, Base: 2 }],
+            PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:ecs.os-type == linux' }],
+            PlacementStrategies: [{ Type: 'binpack', Field: 'memory' }],
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DeploymentConfiguration: { MaximumPercent: 200 },
+          }
+        );
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.deploymentConfiguration).toEqual({
+          maximumPercent: 150,
+          minimumHealthyPercent: 75,
+          deploymentCircuitBreaker: { enable: true, rollback: false },
+        });
+        expect(input.capacityProviderStrategy).toEqual([
+          { capacityProvider: 'FARGATE', weight: 1, base: 2 },
+        ]);
+        expect(input.placementConstraints).toEqual([
+          { type: 'memberOf', expression: 'attribute:ecs.os-type == linux' },
+        ]);
+        expect(input.placementStrategy).toEqual([{ type: 'binpack', field: 'memory' }]);
       });
 
       it('should throw on immutable ServiceName change', async () => {
