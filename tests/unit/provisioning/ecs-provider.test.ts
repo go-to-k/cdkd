@@ -352,6 +352,7 @@ describe('ECSProvider', () => {
           // so the task definition registered as the default X86_64.
           RuntimePlatform: { CpuArchitecture: 'ARM64', OperatingSystemFamily: 'LINUX' },
           EphemeralStorage: { SizeInGiB: 30 },
+          PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:ecs.os-type == linux' }],
           ProxyConfiguration: {
             Type: 'APPMESH',
             ContainerName: 'envoy',
@@ -368,6 +369,9 @@ describe('ECSProvider', () => {
           operatingSystemFamily: 'LINUX',
         });
         expect(input.ephemeralStorage).toEqual({ sizeInGiB: 30 });
+        expect(input.placementConstraints).toEqual([
+          { type: 'memberOf', expression: 'attribute:ecs.os-type == linux' },
+        ]);
         expect(input.proxyConfiguration).toEqual({
           type: 'APPMESH',
           containerName: 'envoy',
@@ -376,6 +380,50 @@ describe('ECSProvider', () => {
             { name: 'IgnoredUID', value: '1337' },
           ],
         });
+      });
+
+      it('should convert ContainerDefinition LinuxParameters + LogConfiguration.SecretOptions PascalCase -> camelCase (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
+          },
+        });
+
+        await provider.create('MyTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'my-task',
+          ContainerDefinitions: [
+            {
+              Name: 'web',
+              Image: 'nginx:latest',
+              LinuxParameters: {
+                InitProcessEnabled: true,
+                SharedMemorySize: 64,
+                Capabilities: { Add: ['NET_ADMIN'], Drop: ['ALL'] },
+                Devices: [{ HostPath: '/dev/null', ContainerPath: '/dev/null', Permissions: ['read'] }],
+                Tmpfs: [{ ContainerPath: '/run', Size: 100, MountOptions: ['noexec'] }],
+              },
+              LogConfiguration: {
+                LogDriver: 'awslogs',
+                Options: { 'awslogs-group': '/ecs/web' },
+                SecretOptions: [
+                  { Name: 'token', ValueFrom: 'arn:aws:secretsmanager:us-east-1:0:secret:tok' },
+                ],
+              },
+            },
+          ],
+        });
+
+        const container = mockSend.mock.calls[0][0].input.containerDefinitions[0];
+        expect(container.linuxParameters).toEqual({
+          initProcessEnabled: true,
+          sharedMemorySize: 64,
+          capabilities: { add: ['NET_ADMIN'], drop: ['ALL'] },
+          devices: [{ hostPath: '/dev/null', containerPath: '/dev/null', permissions: ['read'] }],
+          tmpfs: [{ containerPath: '/run', size: 100, mountOptions: ['noexec'] }],
+        });
+        expect(container.logConfiguration.secretOptions).toEqual([
+          { name: 'token', valueFrom: 'arn:aws:secretsmanager:us-east-1:0:secret:tok' },
+        ]);
       });
 
       it('converts ContainerDefinition PascalCase array fields to ECS SDK camelCase', async () => {

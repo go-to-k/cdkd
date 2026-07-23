@@ -260,7 +260,18 @@ if [ "${BASE_EPHEMERAL}" != "30" ]; then
   echo "FAIL: task definition ephemeralStorage.sizeInGiB is '${BASE_EPHEMERAL}', expected '30' (#1165 EphemeralStorage casing silent-drop NOT closed)" >&2
   exit 1
 fi
-echo "    OK: base #1165 TaskDefinition on AWS is runtimePlatform.cpuArchitecture=ARM64, ephemeralStorage.sizeInGiB=30"
+# Container-level nested object: LinuxParameters.InitProcessEnabled (dropped raw
+# before the #1165 fix -> the container would register without initProcessEnabled).
+BASE_INIT_PROCESS=$(aws ecs describe-task-definition \
+  --task-definition "${TASKDEF_ARN}" --region "${REGION}" \
+  --query 'taskDefinition.containerDefinitions[0].linuxParameters.initProcessEnabled' --output json 2>/dev/null)
+if [ "${BASE_INIT_PROCESS}" != "true" ]; then
+  echo "FAIL: container linuxParameters.initProcessEnabled is '${BASE_INIT_PROCESS}', expected 'true' (#1165 LinuxParameters casing silent-drop NOT closed)" >&2
+  aws ecs describe-task-definition --task-definition "${TASKDEF_ARN}" --region "${REGION}" \
+    --query 'taskDefinition.containerDefinitions[0].linuxParameters' | jq .
+  exit 1
+fi
+echo "    OK: base #1165 TaskDefinition on AWS is runtimePlatform.cpuArchitecture=ARM64, ephemeralStorage.sizeInGiB=30, linuxParameters.initProcessEnabled=true"
 
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"

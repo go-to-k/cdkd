@@ -34,6 +34,7 @@ import {
   type PlacementConstraint,
   type PlacementStrategy,
   type ServiceRegistry,
+  type LinuxParameters,
   type ClusterConfiguration,
   type NetworkMode,
   type Compatibility,
@@ -571,9 +572,9 @@ export class ECSProvider implements ResourceProvider {
           volumes: this.convertVolumes(
             properties['Volumes'] as Array<Record<string, unknown>> | undefined
           ),
-          placementConstraints: properties['PlacementConstraints'] as
-            | TaskDefinitionPlacementConstraint[]
-            | undefined,
+          placementConstraints: this.convertTaskDefinitionPlacementConstraints(
+            properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
+          ),
           tags: convertTags(
             properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
           ),
@@ -1223,7 +1224,9 @@ export class ECSProvider implements ResourceProvider {
       healthCheck: this.convertHealthCheck(
         def['HealthCheck'] as Record<string, unknown> | undefined
       ),
-      linuxParameters: def['LinuxParameters'] as Record<string, unknown> | undefined,
+      linuxParameters: this.convertLinuxParameters(
+        def['LinuxParameters'] as Record<string, unknown> | undefined
+      ),
       dockerLabels: def['DockerLabels'] as Record<string, string> | undefined,
       startTimeout: def['StartTimeout'] as number | undefined,
       stopTimeout: def['StopTimeout'] as number | undefined,
@@ -1359,7 +1362,9 @@ export class ECSProvider implements ResourceProvider {
     return {
       logDriver: config['LogDriver'] as LogDriver,
       options: config['Options'] as Record<string, string> | undefined,
-      secretOptions: config['SecretOptions'] as Secret[] | undefined,
+      secretOptions: this.convertSecrets(
+        config['SecretOptions'] as Array<Record<string, unknown>> | undefined
+      ),
     };
   }
 
@@ -1763,6 +1768,36 @@ export class ECSProvider implements ResourceProvider {
         config['ProxyConfigurationProperties'] as Array<Record<string, unknown>> | undefined
       ),
     };
+  }
+
+  /**
+   * Convert the CFn PascalCase `TaskDefinition.PlacementConstraints` array to
+   * the ECS SDK camelCase input shape (issue #1165). Each element `{Type,
+   * Expression}` -> `{type, expression}`. Distinct from the Service's
+   * `PlacementConstraints` only in the SDK element type
+   * (`TaskDefinitionPlacementConstraint` vs `PlacementConstraint`); both are a
+   * pure first-letter flip.
+   */
+  private convertTaskDefinitionPlacementConstraints(
+    items?: Array<Record<string, unknown>>
+  ): TaskDefinitionPlacementConstraint[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as TaskDefinitionPlacementConstraint[];
+  }
+
+  /**
+   * Convert the CFn PascalCase `ContainerDefinitions[].LinuxParameters` to the
+   * ECS SDK camelCase input shape (issue #1165). Every key is a pure
+   * first-letter flip (`Capabilities.{Add,Drop}`, `Devices[].{HostPath,
+   * ContainerPath,Permissions}`, `Tmpfs[].{ContainerPath,Size,MountOptions}`,
+   * `InitProcessEnabled` / `SharedMemorySize` / `MaxSwap` / `Swappiness`), so
+   * the shared recursive converter handles the whole subtree. Before this fix
+   * the block was passed raw, so a `LinuxParameters.Capabilities` /
+   * `Devices` / `InitProcessEnabled` was silently dropped on register.
+   */
+  private convertLinuxParameters(config?: Record<string, unknown>): LinuxParameters | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(config) as LinuxParameters;
   }
 
   private convertNetworkConfiguration(

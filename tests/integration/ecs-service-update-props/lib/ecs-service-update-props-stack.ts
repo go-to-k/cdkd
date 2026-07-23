@@ -86,6 +86,13 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
         streamPrefix: 'cdkd-ecs-svc-update-props',
       }),
       command: ['echo', 'hello'],
+      // issue #1165: LinuxParameters is a nested CFn PascalCase object on the
+      // container definition that ECSProvider passed raw into the SDK's
+      // camelCase `linuxParameters` slot, silently dropping it. `initProcessEnabled`
+      // is Fargate-compatible; verify.sh reads it back via describe-task-definition.
+      linuxParameters: new ecs.LinuxParameters(this, 'LinuxParams', {
+        initProcessEnabled: true,
+      }),
     });
 
     // Plain Fargate Service (desiredCount: 0). NO serviceConnectConfiguration,
