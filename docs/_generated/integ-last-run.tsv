@@ -26,7 +26,7 @@ basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildPr
 batch	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bedrock-agentcore	2026-06-21T11:00:28Z	PASS	33	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bench-ccapi	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-bench-cdk-sample	2026-07-19T11:38:56Z	PASS	540	standard	deploy+destroy clean (37 del, 2 retained LG cleaned); 0 orphans
+bench-cdk-sample	2026-07-23T15:04:21Z	PASS	258	standard	deploy 248s (39 res, CloudFront-critical); destroy 0 err 0 orphan; PR #1175
 bench-sdk	2026-06-21T11:00:28Z	PASS	24	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 bucket-deployment	2026-07-21T18:02:21Z	PASS	125	verify.sh	rc ok, orph clean
