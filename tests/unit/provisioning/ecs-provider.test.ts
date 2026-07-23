@@ -168,6 +168,83 @@ describe('ECSProvider', () => {
           },
         });
       });
+
+      it('should convert DefaultCapacityProviderStrategy PascalCase -> camelCase on CreateCluster (issue #1165)', async () => {
+        mockSend.mockResolvedValueOnce({
+          cluster: {
+            clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            clusterName: 'my-cluster',
+          },
+        });
+
+        await provider.create('MyCluster', 'AWS::ECS::Cluster', {
+          ClusterName: 'my-cluster',
+          DefaultCapacityProviderStrategy: [
+            { CapacityProvider: 'FARGATE', Weight: 1, Base: 2 },
+            { CapacityProvider: 'FARGATE_SPOT', Weight: 4 },
+          ],
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.input.defaultCapacityProviderStrategy).toEqual([
+          { capacityProvider: 'FARGATE', weight: 1, base: 2 },
+          { capacityProvider: 'FARGATE_SPOT', weight: 4 },
+        ]);
+      });
+    });
+
+    describe('update', () => {
+      it('should convert DefaultCapacityProviderStrategy PascalCase -> camelCase on PutClusterCapacityProviders (issue #1165)', async () => {
+        // PutClusterCapacityProviders, then DescribeClusters for the ARN.
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({
+          clusters: [{ clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster' }],
+        });
+
+        await provider.update(
+          'MyCluster',
+          'my-cluster',
+          'AWS::ECS::Cluster',
+          {
+            ClusterName: 'my-cluster',
+            DefaultCapacityProviderStrategy: [{ CapacityProvider: 'FARGATE', Weight: 1, Base: 3 }],
+          },
+          { ClusterName: 'my-cluster' }
+        );
+
+        const putCall = mockSend.mock.calls[0][0];
+        expect(putCall.constructor.name).toBe('PutClusterCapacityProvidersCommand');
+        expect(putCall.input.defaultCapacityProviderStrategy).toEqual([
+          { capacityProvider: 'FARGATE', weight: 1, base: 3 },
+        ]);
+      });
+
+      it('should convert Configuration PascalCase -> camelCase on UpdateCluster (issue #1165)', async () => {
+        // UpdateCluster (config changed), then DescribeClusters for the ARN.
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({
+          clusters: [{ clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster' }],
+        });
+
+        await provider.update(
+          'MyCluster',
+          'my-cluster',
+          'AWS::ECS::Cluster',
+          {
+            ClusterName: 'my-cluster',
+            Configuration: {
+              ExecuteCommandConfiguration: { Logging: 'OVERRIDE', KmsKeyId: 'key-abc' },
+            },
+          },
+          { ClusterName: 'my-cluster' }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateClusterCommand');
+        expect(updateCall.input.configuration).toEqual({
+          executeCommandConfiguration: { logging: 'OVERRIDE', kmsKeyId: 'key-abc' },
+        });
+      });
     });
 
     describe('delete', () => {
@@ -1405,6 +1482,8 @@ describe('ECSProvider', () => {
               DeploymentCircuitBreaker: { Enable: true, Rollback: false },
             },
             CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE', Weight: 1, Base: 2 }],
+            PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:ecs.os-type == linux' }],
+            PlacementStrategies: [{ Type: 'binpack', Field: 'memory' }],
           },
           {
             Cluster: 'my-cluster',
@@ -1422,6 +1501,10 @@ describe('ECSProvider', () => {
         expect(input.capacityProviderStrategy).toEqual([
           { capacityProvider: 'FARGATE', weight: 1, base: 2 },
         ]);
+        expect(input.placementConstraints).toEqual([
+          { type: 'memberOf', expression: 'attribute:ecs.os-type == linux' },
+        ]);
+        expect(input.placementStrategy).toEqual([{ type: 'binpack', field: 'memory' }]);
       });
 
       it('should throw on immutable ServiceName change', async () => {

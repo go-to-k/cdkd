@@ -319,9 +319,11 @@ export class ECSProvider implements ResourceProvider {
         new CreateClusterCommand({
           clusterName,
           capacityProviders: properties['CapacityProviders'] as string[] | undefined,
-          defaultCapacityProviderStrategy: properties['DefaultCapacityProviderStrategy'] as
-            | CapacityProviderStrategyItem[]
-            | undefined,
+          defaultCapacityProviderStrategy: this.convertCapacityProviderStrategy(
+            properties['DefaultCapacityProviderStrategy'] as
+              | Array<Record<string, unknown>>
+              | undefined
+          ),
           configuration: this.convertClusterConfiguration(
             properties['Configuration'] as Record<string, unknown> | undefined
           ),
@@ -387,8 +389,11 @@ export class ECSProvider implements ResourceProvider {
             cluster: physicalId,
             capacityProviders: (properties['CapacityProviders'] as string[]) || [],
             defaultCapacityProviderStrategy:
-              (properties['DefaultCapacityProviderStrategy'] as CapacityProviderStrategyItem[]) ||
-              [],
+              this.convertCapacityProviderStrategy(
+                properties['DefaultCapacityProviderStrategy'] as
+                  | Array<Record<string, unknown>>
+                  | undefined
+              ) || [],
           })
         );
         this.logger.debug(`Updated capacity providers for ECS cluster ${physicalId}`);
