@@ -1830,7 +1830,13 @@ export class ECSProvider implements ResourceProvider {
         out['CredentialSpecs'] = [...c.credentialSpecs];
       }
       if (c.hostname !== undefined) out['Hostname'] = c.hostname;
-      if (c.versionConsistency !== undefined) out['VersionConsistency'] = c.versionConsistency;
+      // AWS returns `versionConsistency: 'enabled'` by default even when the
+      // template omits it, so drop that default to equal "absent" (mirrors the
+      // Cpu: 0 / empty-array normalization above); a non-default 'disabled'
+      // still surfaces so real drift is caught.
+      if (c.versionConsistency !== undefined && c.versionConsistency !== 'enabled') {
+        out['VersionConsistency'] = c.versionConsistency;
+      }
       return out;
     });
   }

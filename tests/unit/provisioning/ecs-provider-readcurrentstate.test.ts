@@ -383,6 +383,26 @@ describe('ECSProvider.readCurrentState', () => {
     ]);
   });
 
+  it('drops the AWS-default VersionConsistency=enabled so it does not phantom-drift (issue #1173)', async () => {
+    // AWS returns versionConsistency: 'enabled' by default even when the
+    // template omits it; the read must drop the default (like Cpu: 0) so a
+    // template that omits it does not phantom-drift on the properties baseline.
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        containerDefinitions: [{ name: 'c1', image: 'img', versionConsistency: 'enabled' }],
+      },
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/my-td:1',
+      'TDLogical',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result['ContainerDefinitions']).toEqual([{ Name: 'c1', Image: 'img' }]);
+  });
+
   // --- issue #1167: reverse-map nested objects SDK camelCase -> CFn PascalCase ---
   // The drift baseline is state `properties` (PascalCase) or `observedProperties`;
   // readCurrentState must return PascalCase nested shapes so a resource whose
