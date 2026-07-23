@@ -1,3 +1,10 @@
+## [0.260.12](https://github.com/go-to-k/cdkd/compare/v0.260.11...v0.260.12) (2026-07-23)
+
+
+### Performance Improvements
+
+* **deploy:** prefetch create-only DescribeType schemas off the critical path ([#1180](https://github.com/go-to-k/cdkd/issues/1180)) ([#1182](https://github.com/go-to-k/cdkd/issues/1182)) ([a2315ec](https://github.com/go-to-k/cdkd/commit/a2315ecb64c27776ca882543b71c25b7652a53b1))
+
 ## [0.260.11](https://github.com/go-to-k/cdkd/compare/v0.260.10...v0.260.11) (2026-07-23)
 
 
