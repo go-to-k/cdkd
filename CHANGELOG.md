@@ -1,3 +1,10 @@
+## [0.260.10](https://github.com/go-to-k/cdkd/compare/v0.260.9...v0.260.10) (2026-07-23)
+
+
+### Performance Improvements
+
+* **providers:** tighten remaining sparse poll-loop caps to 10s ([#1176](https://github.com/go-to-k/cdkd/issues/1176)) ([#1177](https://github.com/go-to-k/cdkd/issues/1177)) ([7cb2534](https://github.com/go-to-k/cdkd/commit/7cb2534de2b809a3aafd615c17f3b25fdcf1b2ab))
+
 ## [0.260.9](https://github.com/go-to-k/cdkd/compare/v0.260.8...v0.260.9) (2026-07-23)
 
 
