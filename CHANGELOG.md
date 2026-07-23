@@ -1,3 +1,10 @@
+## [0.260.7](https://github.com/go-to-k/cdkd/compare/v0.260.6...v0.260.7) (2026-07-23)
+
+
+### Bug Fixes
+
+* **providers:** reverse-map ECS ContainerDefinitions to CFn PascalCase on readCurrentState ([#1169](https://github.com/go-to-k/cdkd/issues/1169)) ([#1172](https://github.com/go-to-k/cdkd/issues/1172)) ([abfd892](https://github.com/go-to-k/cdkd/commit/abfd892c586df93a24d78d2a298497be11a0c530))
+
 ## [0.260.6](https://github.com/go-to-k/cdkd/compare/v0.260.5...v0.260.6) (2026-07-23)
 
 
