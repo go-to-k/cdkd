@@ -1,3 +1,10 @@
+## [0.260.8](https://github.com/go-to-k/cdkd/compare/v0.260.7...v0.260.8) (2026-07-23)
+
+
+### Bug Fixes
+
+* **providers:** map previously-dropped ECS ContainerDefinition sub-fields ([#1173](https://github.com/go-to-k/cdkd/issues/1173)) ([#1174](https://github.com/go-to-k/cdkd/issues/1174)) ([6a4b364](https://github.com/go-to-k/cdkd/commit/6a4b364adb76c37bebf533d79cff4853cc95c052))
+
 ## [0.260.7](https://github.com/go-to-k/cdkd/compare/v0.260.6...v0.260.7) (2026-07-23)
 
 
