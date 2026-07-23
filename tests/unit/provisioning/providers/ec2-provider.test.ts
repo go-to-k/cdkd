@@ -11,6 +11,7 @@ import {
   DescribeSecurityGroupsCommand,
   AllocateAddressCommand,
   ReleaseAddressCommand,
+  DescribeAddressesCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -1003,5 +1004,60 @@ describe('EC2Provider - EIP (Elastic IP) SDK provider', () => {
       physicalId: '107.21.112.12|eipalloc-0a47ec3f',
       attributes: { AllocationId: 'eipalloc-0a47ec3f', PublicIp: '107.21.112.12' },
     });
+  });
+
+  it('imports via an explicit public IP form and recovers the allocation id', async () => {
+    mockSend.mockResolvedValueOnce({
+      Addresses: [{ AllocationId: 'eipalloc-byip', PublicIp: '9.9.9.9' }],
+    });
+    const result = await provider.import!({
+      logicalId: 'Eip',
+      resourceType: 'AWS::EC2::EIP',
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: '9.9.9.9',
+    });
+    expect((mockSend.mock.calls[0][0] as DescribeAddressesCommand).input.PublicIps).toEqual([
+      '9.9.9.9',
+    ]);
+    expect(result?.physicalId).toBe('9.9.9.9|eipalloc-byip');
+  });
+
+  it('updateEip applies a tag diff against the allocation id', async () => {
+    mockSend.mockResolvedValueOnce({}); // CreateTags for the added tag
+    const result = await provider.update(
+      'Eip',
+      '1.2.3.4|eipalloc-tag',
+      'AWS::EC2::EIP',
+      { Tags: [{ Key: 'env', Value: 'prod' }] },
+      {}
+    );
+    expect(result).toEqual({ physicalId: '1.2.3.4|eipalloc-tag', wasReplaced: false });
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(CreateTagsCommand);
+    const input = (mockSend.mock.calls[0][0] as CreateTagsCommand).input;
+    expect(input.Resources).toEqual(['eipalloc-tag']);
+  });
+
+  it('getAttribute falls back to DescribeAddresses when the id lacks the segment', async () => {
+    // Bare allocation id (no public IP encoded) -> PublicIp requires a live read.
+    mockSend.mockResolvedValueOnce({
+      Addresses: [{ AllocationId: 'eipalloc-bare', PublicIp: '5.6.7.8' }],
+    });
+    const ip = await provider.getAttribute('eipalloc-bare', 'AWS::EC2::EIP', 'PublicIp');
+    expect(ip).toBe('5.6.7.8');
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DescribeAddressesCommand);
+  });
+
+  it('deletes a bare-public-IP physical id by resolving the allocation id first', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Addresses: [{ AllocationId: 'eipalloc-r', PublicIp: '3.3.3.3' }] })
+      .mockResolvedValueOnce({}); // ReleaseAddress
+    await provider.delete('Eip', '3.3.3.3', 'AWS::EC2::EIP');
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DescribeAddressesCommand);
+    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(ReleaseAddressCommand);
+    expect((mockSend.mock.calls[1][0] as ReleaseAddressCommand).input.AllocationId).toBe(
+      'eipalloc-r'
+    );
   });
 });

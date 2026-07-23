@@ -2966,6 +2966,8 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     ['AWS::ApiGateway::DocumentationPart', 'abc123|jkmnpf9ay0', 'abc123'],
     // SDK-provisioned instances store a bare id — pass through unchanged.
     ['AWS::ApiGateway::Deployment', 'd5b52m', 'd5b52m'],
+    // EIP physicalId is `PublicIp|AllocationId`; Ref returns the public IP.
+    ['AWS::EC2::EIP', '107.21.112.12|eipalloc-0a47ec3f', '107.21.112.12'],
   ])(
     'Ref to %s returns the FIRST segment of the reversed compound physical id',
     async (resourceType, physicalId, expected) => {

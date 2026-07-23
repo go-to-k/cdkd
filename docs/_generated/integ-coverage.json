@@ -38,6 +38,7 @@
     "AWS::DocDB::DBSubnetGroup",
     "AWS::DynamoDB::GlobalTable",
     "AWS::DynamoDB::Table",
+    "AWS::EC2::EIP",
     "AWS::EC2::Instance",
     "AWS::EC2::InternetGateway",
     "AWS::EC2::NatGateway",
@@ -934,6 +935,17 @@
         ],
         "tags-propagation": [
           "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::EIP",
+      "integs": [
+        "ec2-vpc"
+      ],
+      "signals": {
+        "ec2-vpc": [
+          "l1"
         ]
       }
     },
@@ -5250,7 +5262,6 @@
     "AWS::Cognito::UserPoolGroup",
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
-    "AWS::EC2::EIP",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::ELBv2::LoadBalancer",
     "AWS::ElastiCache::ReplicationGroup",

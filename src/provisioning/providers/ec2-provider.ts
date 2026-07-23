@@ -121,10 +121,7 @@ export class EC2Provider implements ResourceProvider {
       new Set(['VpcId', 'CidrBlock', 'AvailabilityZone', 'MapPublicIpOnLaunch', 'Tags']),
     ],
     ['AWS::EC2::InternetGateway', new Set(['Tags'])],
-    [
-      'AWS::EC2::EIP',
-      new Set(['Domain', 'NetworkBorderGroup', 'PublicIpv4Pool', 'InstanceId', 'Tags']),
-    ],
+    ['AWS::EC2::EIP', new Set(['Domain', 'NetworkBorderGroup', 'PublicIpv4Pool', 'Tags'])],
     ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId'])],
     [
       'AWS::EC2::NatGateway',
@@ -269,6 +266,10 @@ export class EC2Provider implements ResourceProvider {
         [
           'TransferAddress',
           'Accepting a transferred Elastic IP is not yet supported (out-of-band EIP transfer flow)',
+        ],
+        [
+          'InstanceId',
+          'Associating the EIP to an instance (ec2:AssociateAddress) is not yet supported; the create path only allocates the address',
         ],
       ]),
     ],
@@ -1218,7 +1219,22 @@ export class EC2Provider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting EIP ${logicalId}: ${physicalId}`);
-    const { allocationId } = this.parseEipPhysicalId(physicalId);
+    const parsed = this.parseEipPhysicalId(physicalId);
+    let allocationId = parsed.allocationId;
+
+    // cdkd always stores the composite `IP|AllocationId`, but tolerate a
+    // bare-public-IP physical id by resolving its allocation id first —
+    // ReleaseAddress requires the allocation id for a VPC EIP.
+    if (!allocationId && parsed.publicIp) {
+      const lookup = await this.ec2Client.send(
+        new DescribeAddressesCommand({ PublicIps: [parsed.publicIp] })
+      );
+      allocationId = lookup.Addresses?.[0]?.AllocationId;
+      if (!allocationId) {
+        this.logger.debug(`EIP ${physicalId} not found on lookup, skipping deletion`);
+        return;
+      }
+    }
 
     try {
       await this.withDependencyViolationRetry(
@@ -3859,7 +3875,9 @@ export class EC2Provider implements ResourceProvider {
       name === 'InvalidRoute.NotFound' ||
       name === 'InvalidInstanceID.NotFound' ||
       name === 'InvalidNetworkAclID.NotFound' ||
-      name === 'InvalidNetworkAclEntry.NotFound'
+      name === 'InvalidNetworkAclEntry.NotFound' ||
+      name === 'InvalidAllocationID.NotFound' ||
+      name === 'InvalidAddressID.NotFound'
     );
   }
 
