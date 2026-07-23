@@ -1,3 +1,10 @@
+## [0.260.4](https://github.com/go-to-k/cdkd/compare/v0.260.3...v0.260.4) (2026-07-23)
+
+
+### Bug Fixes
+
+* **providers:** convert ECS CFn PascalCase nested objects to SDK camelCase ([#1165](https://github.com/go-to-k/cdkd/issues/1165)) ([#1166](https://github.com/go-to-k/cdkd/issues/1166)) ([76d27a3](https://github.com/go-to-k/cdkd/commit/76d27a348350ec661e5601a2a9aa037664a775c1))
+
 ## [0.260.3](https://github.com/go-to-k/cdkd/compare/v0.260.2...v0.260.3) (2026-07-22)
 
 
