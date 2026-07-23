@@ -1,3 +1,10 @@
+## [0.260.11](https://github.com/go-to-k/cdkd/compare/v0.260.10...v0.260.11) (2026-07-23)
+
+
+### Performance Improvements
+
+* **deploy:** overlap state-bucket resolution + preflight with CDK synth ([#1181](https://github.com/go-to-k/cdkd/issues/1181)) ([70ccc93](https://github.com/go-to-k/cdkd/commit/70ccc93e110abfcfcf5f52f40077dcbd857b69ca))
+
 ## [0.260.10](https://github.com/go-to-k/cdkd/compare/v0.260.9...v0.260.10) (2026-07-23)
 
 
