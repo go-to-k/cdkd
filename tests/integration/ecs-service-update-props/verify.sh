@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #1160).
+# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #1160 + #1165).
 #
-# Exercises two silent-drop classes on an SDK-routed `AWS::ECS::Service`
-# UpdateService path:
+# Exercises three silent-drop classes on an SDK-routed `AWS::ECS::Service`
+# create/update path:
 #
 #   #975  (add-on-update):  a CHANGE to EnableECSManagedTags / PropagateTags
 #         must reach AWS. Before the #975 fix ECSProvider.updateService() never
@@ -14,6 +14,11 @@
 #         absent input field means "no change"), so before the #1160 fix a
 #         removed PlatformVersion / HealthCheckGracePeriodSeconds silently kept
 #         its old live value.
+#   #1165 (nested-object casing): a CFn PascalCase nested object
+#         (DeploymentConfiguration) must be converted to the SDK's camelCase
+#         input shape. Before the #1165 fix ECSProvider passed the block raw,
+#         so the SDK read absent keys and silently dropped the whole value on
+#         create AND update -> AWS applied the defaults.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
@@ -195,6 +200,68 @@ if [ "${BASE_GRACE}" != "30" ]; then
 fi
 echo "    OK: base #1160 fields on AWS are platformVersion=1.4.0, grace=30"
 
+# Base assertion for issue #1165 (nested-object casing): the custom
+# DeploymentConfiguration set by phase 1 (MaximumPercent 150 /
+# MinimumHealthyPercent 50 / DeploymentCircuitBreaker Enable) must have reached
+# AWS. Before the fix the raw PascalCase block was dropped and AWS applied the
+# defaults (200 / 100 / circuit-breaker off).
+BASE_MAXPCT=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.maximumPercent' --output text 2>/dev/null)
+BASE_MINPCT=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.minimumHealthyPercent' --output text 2>/dev/null)
+BASE_CB_ENABLE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.enable' --output json 2>/dev/null)
+
+if [ "${BASE_MAXPCT}" != "150" ]; then
+  echo "FAIL: base deploymentConfiguration.maximumPercent is '${BASE_MAXPCT}', expected '150' (#1165 DeploymentConfiguration casing silent-drop NOT closed)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+    --query 'services[0].deploymentConfiguration' | jq .
+  exit 1
+fi
+if [ "${BASE_MINPCT}" != "50" ]; then
+  echo "FAIL: base deploymentConfiguration.minimumHealthyPercent is '${BASE_MINPCT}', expected '50' (#1165 casing silent-drop NOT closed)" >&2
+  exit 1
+fi
+if [ "${BASE_CB_ENABLE}" != "true" ]; then
+  echo "FAIL: base deploymentConfiguration.deploymentCircuitBreaker.enable is '${BASE_CB_ENABLE}', expected 'true' (#1165 nested casing silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: base #1165 DeploymentConfiguration on AWS is maximumPercent=150, minimumHealthyPercent=50, circuitBreaker.enable=true"
+
+# Base assertion for issue #1165 on the TaskDefinition: RuntimePlatform
+# (ARM64 / Graviton) and EphemeralStorage (SizeInGiB) are nested CFn PascalCase
+# objects that were passed raw into RegisterTaskDefinition's camelCase slots and
+# silently dropped before the fix (task would register as the default X86_64 /
+# default ephemeral storage). Read them back via describe-task-definition.
+TASKDEF_ARN=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].taskDefinition' --output text 2>/dev/null)
+if [ -z "${TASKDEF_ARN}" ] || [ "${TASKDEF_ARN}" = "None" ]; then
+  echo "FAIL: could not resolve task definition ARN from the service" >&2
+  exit 1
+fi
+BASE_CPU_ARCH=$(aws ecs describe-task-definition \
+  --task-definition "${TASKDEF_ARN}" --region "${REGION}" \
+  --query 'taskDefinition.runtimePlatform.cpuArchitecture' --output text 2>/dev/null)
+BASE_EPHEMERAL=$(aws ecs describe-task-definition \
+  --task-definition "${TASKDEF_ARN}" --region "${REGION}" \
+  --query 'taskDefinition.ephemeralStorage.sizeInGiB' --output text 2>/dev/null)
+
+if [ "${BASE_CPU_ARCH}" != "ARM64" ]; then
+  echo "FAIL: task definition runtimePlatform.cpuArchitecture is '${BASE_CPU_ARCH}', expected 'ARM64' (#1165 RuntimePlatform casing silent-drop NOT closed)" >&2
+  aws ecs describe-task-definition --task-definition "${TASKDEF_ARN}" --region "${REGION}" \
+    --query 'taskDefinition.{runtimePlatform:runtimePlatform,ephemeralStorage:ephemeralStorage}' | jq .
+  exit 1
+fi
+if [ "${BASE_EPHEMERAL}" != "30" ]; then
+  echo "FAIL: task definition ephemeralStorage.sizeInGiB is '${BASE_EPHEMERAL}', expected '30' (#1165 EphemeralStorage casing silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: base #1165 TaskDefinition on AWS is runtimePlatform.cpuArchitecture=ARM64, ephemeralStorage.sizeInGiB=30"
+
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -242,6 +309,35 @@ if [ "${AFTER_GRACE}" != "0" ]; then
 fi
 echo "    OK: after removal, AWS reset platformVersion=LATEST, grace=0 (#1160 silent-drop CLOSED)"
 
+# #1165 update SET path: phase 2 CHANGED the DeploymentConfiguration to a new
+# custom shape (MaximumPercent 175 / MinimumHealthyPercent 25 /
+# DeploymentCircuitBreaker Rollback off). Assert the changed nested values
+# reached AWS through updateService() (they would be dropped if the block were
+# still passed raw).
+AFTER_MAXPCT=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.maximumPercent' --output text 2>/dev/null)
+AFTER_MINPCT=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.minimumHealthyPercent' --output text 2>/dev/null)
+AFTER_CB_ROLLBACK=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.rollback' --output json 2>/dev/null)
+
+if [ "${AFTER_MAXPCT}" != "175" ]; then
+  echo "FAIL: after update, deploymentConfiguration.maximumPercent is '${AFTER_MAXPCT}', expected '175' (#1165 update-path casing silent-drop NOT closed)" >&2
+  exit 1
+fi
+if [ "${AFTER_MINPCT}" != "25" ]; then
+  echo "FAIL: after update, deploymentConfiguration.minimumHealthyPercent is '${AFTER_MINPCT}', expected '25' (#1165 update-path casing silent-drop NOT closed)" >&2
+  exit 1
+fi
+if [ "${AFTER_CB_ROLLBACK}" != "false" ]; then
+  echo "FAIL: after update, deploymentConfiguration.deploymentCircuitBreaker.rollback is '${AFTER_CB_ROLLBACK}', expected 'false' (#1165 update-path nested casing silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: after update, AWS shows DeploymentConfiguration maximumPercent=175, minimumHealthyPercent=25, circuitBreaker.rollback=false (#1165 update-path silent-drop CLOSED)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -253,4 +349,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); clean destroy)"
+echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); clean destroy)"

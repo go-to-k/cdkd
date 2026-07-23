@@ -67,6 +67,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { pascalToCamelCaseKeys } from './agentcore-case-convert.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -82,6 +83,16 @@ function convertTags(tags?: Array<{ Key: string; Value: string }>): Tag[] | unde
   if (!tags || tags.length === 0) return undefined;
   return tags.map((t) => ({ key: t.Key, value: t.Value }));
 }
+
+/**
+ * `DeploymentConfiguration.LifecycleHooks[].HookDetails` is a free-form JSON
+ * document (SDK `__DocumentType`) whose inner keys are user-supplied hook
+ * payload fields, NOT CloudFormation property names. The recursive
+ * PascalCase->camelCase key flip must therefore copy its value subtree
+ * verbatim (the `HookDetails` key itself is still flipped to `hookDetails`).
+ * See `convertDeploymentConfiguration`.
+ */
+const DEPLOYMENT_CONFIG_PRESERVE_KEYS: ReadonlySet<string> = new Set(['HookDetails']);
 
 /**
  * AWS ECS Provider
@@ -311,7 +322,9 @@ export class ECSProvider implements ResourceProvider {
           defaultCapacityProviderStrategy: properties['DefaultCapacityProviderStrategy'] as
             | CapacityProviderStrategyItem[]
             | undefined,
-          configuration: properties['Configuration'] as ClusterConfiguration | undefined,
+          configuration: this.convertClusterConfiguration(
+            properties['Configuration'] as Record<string, unknown> | undefined
+          ),
           settings: properties['ClusterSettings']
             ? (properties['ClusterSettings'] as Array<Record<string, unknown>>).map((s) => ({
                 name: (s['Name'] || s['name']) as string as 'containerInsights',
@@ -426,7 +439,9 @@ export class ECSProvider implements ResourceProvider {
             cluster: physicalId,
             ...(settingsChanged && { settings: settingsInput }),
             ...(configChanged && {
-              configuration: properties['Configuration'] as ClusterConfiguration | undefined,
+              configuration: this.convertClusterConfiguration(
+                properties['Configuration'] as Record<string, unknown> | undefined
+              ),
             }),
             ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
           })
@@ -557,11 +572,17 @@ export class ECSProvider implements ResourceProvider {
           tags: convertTags(
             properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
           ),
-          runtimePlatform: properties['RuntimePlatform'] as RuntimePlatform | undefined,
-          proxyConfiguration: properties['ProxyConfiguration'] as ProxyConfiguration | undefined,
+          runtimePlatform: this.convertRuntimePlatform(
+            properties['RuntimePlatform'] as Record<string, unknown> | undefined
+          ),
+          proxyConfiguration: this.convertProxyConfiguration(
+            properties['ProxyConfiguration'] as Record<string, unknown> | undefined
+          ),
           pidMode: properties['PidMode'] as PidMode | undefined,
           ipcMode: properties['IpcMode'] as IpcMode | undefined,
-          ephemeralStorage: properties['EphemeralStorage'] as { sizeInGiB: number } | undefined,
+          ephemeralStorage: this.convertEphemeralStorage(
+            properties['EphemeralStorage'] as Record<string, unknown> | undefined
+          ),
           enableFaultInjection: properties['EnableFaultInjection'] as boolean | undefined,
         })
       );
@@ -700,17 +721,20 @@ export class ECSProvider implements ResourceProvider {
           loadBalancers: this.convertLoadBalancers(
             properties['LoadBalancers'] as Array<Record<string, unknown>> | undefined
           ),
-          capacityProviderStrategy: properties['CapacityProviderStrategy'] as
-            | CapacityProviderStrategyItem[]
-            | undefined,
-          deploymentConfiguration: properties['DeploymentConfiguration'] as
-            | DeploymentConfiguration
-            | undefined,
-          placementConstraints: properties['PlacementConstraints'] as
-            | PlacementConstraint[]
-            | undefined,
-          placementStrategy: (properties['PlacementStrategies'] ??
-            properties['PlacementStrategy']) as PlacementStrategy[] | undefined,
+          capacityProviderStrategy: this.convertCapacityProviderStrategy(
+            properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
+          ),
+          deploymentConfiguration: this.convertDeploymentConfiguration(
+            properties['DeploymentConfiguration'] as Record<string, unknown> | undefined
+          ),
+          placementConstraints: this.convertPlacementConstraints(
+            properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
+          ),
+          placementStrategy: this.convertPlacementStrategies(
+            (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
+              | Array<Record<string, unknown>>
+              | undefined
+          ),
           platformVersion: properties['PlatformVersion'] as string | undefined,
           healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
             | number
@@ -719,7 +743,9 @@ export class ECSProvider implements ResourceProvider {
           enableECSManagedTags: properties['EnableECSManagedTags'] as boolean | undefined,
           propagateTags: properties['PropagateTags'] as PropagateTags | undefined,
           enableExecuteCommand: properties['EnableExecuteCommand'] as boolean | undefined,
-          serviceRegistries: properties['ServiceRegistries'] as ServiceRegistry[] | undefined,
+          serviceRegistries: this.convertServiceRegistries(
+            properties['ServiceRegistries'] as Array<Record<string, unknown>> | undefined
+          ),
           tags: convertTags(
             properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
           ),
@@ -827,7 +853,9 @@ export class ECSProvider implements ResourceProvider {
         : undefined;
     const serviceRegistriesInput =
       isEcsController && serviceRegistriesChanged
-        ? ((properties['ServiceRegistries'] as ServiceRegistry[] | undefined) ?? [])
+        ? (this.convertServiceRegistries(
+            properties['ServiceRegistries'] as Array<Record<string, unknown>> | undefined
+          ) ?? [])
         : undefined;
 
     // issue #1160 — reset removed fields to their CloudFormation defaults.
@@ -846,18 +874,27 @@ export class ECSProvider implements ResourceProvider {
     // ServiceRegistries already clear via #975 (their change-detected empty-list
     // sentinel above).
     //
-    // NOT reset here: `DeploymentConfiguration` — its removal reset is entangled
-    // with a separate, pre-existing CFn-PascalCase (`MaximumPercent`) ->
-    // SDK-camelCase (`maximumPercent`) nested-object conversion gap (the field
-    // is passed raw, unlike NetworkConfiguration which has convertNetwork-
-    // Configuration()), and it merges at the SUB-FIELD level so a correct reset
-    // must send the full default shape. Fixing it properly means converting the
-    // SET path too, which is out of this batch's scope; tracked separately on
-    // issue #1160. Also not reset (immutable / required / always-carried):
-    // ServiceName (immutable, guarded above), Cluster / TaskDefinition /
-    // DesiredCount / NetworkConfiguration, SchedulingStrategy (create-only).
+    // The array fields below are converted from CFn PascalCase to SDK camelCase
+    // via their `convert*` helpers before the removal-reset check (issue #1165 —
+    // the same silent-drop class as `DeploymentConfiguration` below; without the
+    // conversion the SDK reads the camelCase keys, finds them absent, and drops
+    // the whole value on update). `clearOnUpdateRemoval` only inspects the
+    // PREVIOUS side for presence, so it may stay raw.
+    //
+    // `DeploymentConfiguration` casing is now fixed on both create() and
+    // update() (converted via `convertDeploymentConfiguration`). Its removal
+    // RESET to CFn defaults is still deferred to issue #1160: unlike the array
+    // fields (whose reset is a plain empty list), it merges at the SUB-FIELD
+    // level, so a correct reset must send the full default shape whose exact
+    // values need a per-field live probe against real AWS (the #1160 rule).
+    // Absent-from-template still passes `undefined` (no reset) below. Also not
+    // reset (immutable / required / always-carried): ServiceName (immutable,
+    // guarded above), Cluster / TaskDefinition / DesiredCount /
+    // NetworkConfiguration, SchedulingStrategy (create-only).
     const capacityProviderStrategyInput = this.clearOnUpdateRemoval(
-      properties['CapacityProviderStrategy'] as CapacityProviderStrategyItem[] | undefined,
+      this.convertCapacityProviderStrategy(
+        properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
+      ),
       previousProperties['CapacityProviderStrategy'] as CapacityProviderStrategyItem[] | undefined,
       // Empty list reverts the service to its launch type (AWS-documented). If
       // the service was created with a capacity provider and no launch type,
@@ -865,14 +902,18 @@ export class ECSProvider implements ResourceProvider {
       []
     );
     const placementConstraintsInput = this.clearOnUpdateRemoval(
-      properties['PlacementConstraints'] as PlacementConstraint[] | undefined,
+      this.convertPlacementConstraints(
+        properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
+      ),
       previousProperties['PlacementConstraints'] as PlacementConstraint[] | undefined,
       []
     );
     const placementStrategyInput = this.clearOnUpdateRemoval(
-      (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
-        | PlacementStrategy[]
-        | undefined,
+      this.convertPlacementStrategies(
+        (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
+          | Array<Record<string, unknown>>
+          | undefined
+      ),
       (previousProperties['PlacementStrategies'] ?? previousProperties['PlacementStrategy']) as
         | PlacementStrategy[]
         | undefined,
@@ -915,11 +956,13 @@ export class ECSProvider implements ResourceProvider {
             properties['NetworkConfiguration'] as Record<string, unknown> | undefined
           ),
           capacityProviderStrategy: capacityProviderStrategyInput,
-          // DeploymentConfiguration is passed raw (removal reset deferred — see
-          // the reset-value comment block above).
-          deploymentConfiguration: properties['DeploymentConfiguration'] as
-            | DeploymentConfiguration
-            | undefined,
+          // DeploymentConfiguration is converted PascalCase->camelCase (issue
+          // #1165); a change is sent through, an absent value passes undefined
+          // (removal RESET to defaults still deferred — see the comment block
+          // above).
+          deploymentConfiguration: this.convertDeploymentConfiguration(
+            properties['DeploymentConfiguration'] as Record<string, unknown> | undefined
+          ),
           placementConstraints: placementConstraintsInput,
           placementStrategy: placementStrategyInput,
           platformVersion: platformVersionInput,
@@ -1573,6 +1616,148 @@ export class ECSProvider implements ResourceProvider {
       containerPort: lb['ContainerPort'] as number | undefined,
       loadBalancerName: lb['LoadBalancerName'] as string | undefined,
     }));
+  }
+
+  /**
+   * Convert the CFn PascalCase `DeploymentConfiguration` block to the ECS SDK
+   * camelCase input shape (issue #1165). Every field is a pure first-letter
+   * case flip (`MaximumPercent` -> `maximumPercent`, `DeploymentCircuitBreaker`
+   * -> `deploymentCircuitBreaker` with `{Enable, Rollback}` -> `{enable,
+   * rollback}`, `Alarms.AlarmNames` -> `alarms.alarmNames`, and the blue/green
+   * `Strategy` / `BakeTimeInMinutes` / `LifecycleHooks` / `LinearConfiguration`
+   * / `CanaryConfiguration` fields), so the shared recursive key-flip converter
+   * handles the whole subtree — including fields CDK/CFn add later, which avoids
+   * re-introducing the silent-drop this fix closes. The one exception is
+   * `LifecycleHooks[].HookDetails`, a free-form document copied verbatim (see
+   * `DEPLOYMENT_CONFIG_PRESERVE_KEYS`).
+   *
+   * Before this fix the block was passed RAW into the SDK's camelCase
+   * `deploymentConfiguration` field, so the SDK read `.maximumPercent` (absent)
+   * and serialized nothing — a custom `minHealthyPercent` / `maxHealthyPercent`
+   * / circuit breaker / deployment alarms deployed as the AWS defaults, silently
+   * (state recorded the intended value, `cdkd diff` showed "No changes").
+   */
+  private convertDeploymentConfiguration(
+    config?: Record<string, unknown>
+  ): DeploymentConfiguration | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(
+      config,
+      DEPLOYMENT_CONFIG_PRESERVE_KEYS
+    ) as DeploymentConfiguration;
+  }
+
+  /**
+   * Convert the CFn PascalCase `CapacityProviderStrategy` array to the ECS SDK
+   * camelCase input shape (issue #1165). Each element `{CapacityProvider,
+   * Weight, Base}` is a pure first-letter case flip to `{capacityProvider,
+   * weight, base}`.
+   */
+  private convertCapacityProviderStrategy(
+    items?: Array<Record<string, unknown>>
+  ): CapacityProviderStrategyItem[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as CapacityProviderStrategyItem[];
+  }
+
+  /**
+   * Convert the CFn PascalCase `PlacementConstraints` array to the ECS SDK
+   * camelCase input shape (issue #1165). Each element `{Type, Expression}` ->
+   * `{type, expression}`.
+   */
+  private convertPlacementConstraints(
+    items?: Array<Record<string, unknown>>
+  ): PlacementConstraint[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as PlacementConstraint[];
+  }
+
+  /**
+   * Convert the CFn PascalCase `PlacementStrategies` array to the ECS SDK
+   * camelCase input shape (issue #1165). Each element `{Type, Field}` ->
+   * `{type, field}`.
+   */
+  private convertPlacementStrategies(
+    items?: Array<Record<string, unknown>>
+  ): PlacementStrategy[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as PlacementStrategy[];
+  }
+
+  /**
+   * Convert the CFn PascalCase `ServiceRegistries` array to the ECS SDK
+   * camelCase input shape (issue #1165). Each element `{RegistryArn, Port,
+   * ContainerName, ContainerPort}` -> `{registryArn, port, containerName,
+   * containerPort}`.
+   */
+  private convertServiceRegistries(
+    items?: Array<Record<string, unknown>>
+  ): ServiceRegistry[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as ServiceRegistry[];
+  }
+
+  /**
+   * Convert the CFn PascalCase `TaskDefinition.RuntimePlatform` to the ECS SDK
+   * camelCase input shape (issue #1165). `{CpuArchitecture,
+   * OperatingSystemFamily}` -> `{cpuArchitecture, operatingSystemFamily}`.
+   *
+   * High-impact: before the fix a `RuntimePlatform: { CpuArchitecture: ARM64 }`
+   * (Graviton Fargate) was passed raw into the SDK's camelCase slot and
+   * silently dropped, so the task definition registered as the default X86_64.
+   */
+  private convertRuntimePlatform(config?: Record<string, unknown>): RuntimePlatform | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(config) as RuntimePlatform;
+  }
+
+  /**
+   * Convert the CFn PascalCase `TaskDefinition.EphemeralStorage` to the ECS SDK
+   * camelCase input shape (issue #1165). `{SizeInGiB}` -> `{sizeInGiB}` — the
+   * value under the wrong-cased key was silently dropped before the fix, so a
+   * custom ephemeral storage size reverted to the AWS default.
+   */
+  private convertEphemeralStorage(
+    config?: Record<string, unknown>
+  ): { sizeInGiB: number } | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(config) as { sizeInGiB: number };
+  }
+
+  /**
+   * Convert the CFn PascalCase `Cluster.Configuration` to the ECS SDK camelCase
+   * input shape (issue #1165). Every key is a pure first-letter flip
+   * (`ExecuteCommandConfiguration` / `ManagedStorageConfiguration` and their
+   * nested `KmsKeyId` / `LogConfiguration` / `CloudWatchLogGroupName` /
+   * `S3BucketName` fields), so the shared recursive converter handles the whole
+   * subtree.
+   */
+  private convertClusterConfiguration(
+    config?: Record<string, unknown>
+  ): ClusterConfiguration | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(config) as ClusterConfiguration;
+  }
+
+  /**
+   * Convert the CFn PascalCase `TaskDefinition.ProxyConfiguration` to the ECS
+   * SDK camelCase input shape (issue #1165). Unlike the other nested fields,
+   * this is NOT a pure first-letter flip: the CFn key
+   * `ProxyConfigurationProperties` maps to the SDK's `properties` field (a
+   * `KeyValuePair[]`), so it needs an explicit remap rather than the recursive
+   * converter.
+   */
+  private convertProxyConfiguration(
+    config?: Record<string, unknown>
+  ): ProxyConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      type: config['Type'] as ProxyConfiguration['type'],
+      containerName: config['ContainerName'] as string | undefined,
+      properties: this.convertEnvironment(
+        config['ProxyConfigurationProperties'] as Array<Record<string, unknown>> | undefined
+      ),
+    };
   }
 
   private convertNetworkConfiguration(
