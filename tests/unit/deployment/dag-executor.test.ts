@@ -316,4 +316,87 @@ describe('DagExecutor', () => {
 
     await expect(exec.execute(4, async () => {})).rejects.toThrow(/Deadlock/);
   });
+
+  it('dispatches longest-pole nodes first (more transitive dependents win)', async () => {
+    // Ready set is {Leaf1, Leaf2, Feeder} — all zero-dependency. Feeder is
+    // inserted LAST but has a dependent (Consumer), so it has 1 transitive
+    // dependent vs 0 for the leaves. With concurrency 1, Feeder must be
+    // dispatched before the earlier-inserted leaves so its downstream chain
+    // starts as early as possible (the EIP -> NAT scheduling fix).
+    const exec = new DagExecutor<null>();
+    exec.add(node('Leaf1'));
+    exec.add(node('Leaf2'));
+    exec.add(node('Feeder'));
+    exec.add(node('Consumer', ['Feeder']));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    expect(ran[0]).toBe('Feeder');
+    expect(ran.indexOf('Consumer')).toBeGreaterThan(ran.indexOf('Feeder'));
+    expect(ran).toContain('Leaf1');
+    expect(ran).toContain('Leaf2');
+  });
+
+  it('orders a longer dependent chain ahead of a shorter one', async () => {
+    // Deep has a 2-node transitive tail (Mid -> Tail); Shallow has 1 (One).
+    // Both are zero-dependency and ready at t0; Deep must go first.
+    const exec = new DagExecutor<null>();
+    exec.add(node('Shallow'));
+    exec.add(node('One', ['Shallow']));
+    exec.add(node('Deep'));
+    exec.add(node('Mid', ['Deep']));
+    exec.add(node('Tail', ['Mid']));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    expect(ran[0]).toBe('Deep');
+  });
+
+  it('preserves insertion order among equal-priority ready nodes (stable sort)', async () => {
+    const exec = new DagExecutor<null>();
+    exec.add(node('A'));
+    exec.add(node('B'));
+    exec.add(node('C'));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    expect(ran).toEqual(['A', 'B', 'C']);
+  });
+
+  it('dedups a diamond dependent reachable via two paths (Set union, not sum)', async () => {
+    // Diamond: Root -> {A, B}; A -> Sink; B -> Sink. Root's transitive
+    // dependents are {A, B, Sink} = 3 (Sink counted ONCE despite two paths).
+    // Wide: Wide -> {C1, C2, C3, C4} = 4 distinct dependents. Wide is inserted
+    // AFTER Root, so only a correct dedup (Root=3 < Wide=4) puts Wide first; a
+    // naive sum would double-count Sink (Root=4 == Wide=4) and, being a tie,
+    // dispatch the earlier-inserted Root first. Asserting Wide-first pins the
+    // Set-union semantics against a sum regression.
+    const exec = new DagExecutor<null>();
+    exec.add(node('Root'));
+    exec.add(node('A', ['Root']));
+    exec.add(node('B', ['Root']));
+    exec.add(node('Sink', ['A', 'B']));
+    exec.add(node('Wide'));
+    exec.add(node('C1', ['Wide']));
+    exec.add(node('C2', ['Wide']));
+    exec.add(node('C3', ['Wide']));
+    exec.add(node('C4', ['Wide']));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    // At t=0 the only zero-dependency ready nodes are Root and Wide.
+    expect(ran[0]).toBe('Wide');
+  });
 });

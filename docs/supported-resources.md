@@ -116,6 +116,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Networking** | AWS::EC2::VPC | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::Subnet | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::InternetGateway | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::EIP | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::VPCGatewayAttachment | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::NatGateway | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::RouteTable | SDK Provider | ✅ |

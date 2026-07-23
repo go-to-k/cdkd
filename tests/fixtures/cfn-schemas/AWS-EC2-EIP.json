@@ -1,0 +1,30 @@
+{
+  "resourceType": "AWS::EC2::EIP",
+  "generatedAt": "2026-07-23",
+  "properties": [
+    "Address",
+    "AllocationId",
+    "Domain",
+    "InstanceId",
+    "IpamPoolId",
+    "NetworkBorderGroup",
+    "PublicIp",
+    "PublicIpv4Pool",
+    "Tags",
+    "TransferAddress"
+  ],
+  "readOnlyProperties": [
+    "AllocationId",
+    "PublicIp"
+  ],
+  "createOnlyProperties": [
+    "Address",
+    "IpamPoolId",
+    "NetworkBorderGroup",
+    "TransferAddress"
+  ],
+  "primaryIdentifier": [
+    "AllocationId",
+    "PublicIp"
+  ]
+}

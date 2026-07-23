@@ -35,8 +35,73 @@ export class DagExecutor<T = unknown> {
   private nodes = new Map<string, DagNode<T>>();
   private logger = getLogger().child('DagExecutor');
 
+  /**
+   * Per-node scheduling priority = number of transitive dependents (how many
+   * other registered nodes ultimately wait on this one). Computed once, lazily,
+   * on the first dispatch and cached for the run.
+   *
+   * The ready set is ordered by this priority (descending) so bottleneck-feeding
+   * resources on the critical path start as early as their deps allow, instead
+   * of in template logical-id (node insertion) order.
+   *
+   * Motivation: a zero-dependency `AWS::EC2::EIP` was starting 28th of 43 in a
+   * VPC deploy because it sorts late by logical id, which pushed its dependent
+   * NAT Gateway (a ~2 min AWS-side create) to the tail of the run. Front-loading
+   * by transitive-dependent count starts the EIP -> NAT chain immediately so the
+   * long NAT wait overlaps the rest of the stack — the effect CloudFormation's
+   * parallel walk already achieves. Ties keep insertion order (stable sort).
+   */
+  private priorityById: Map<string, number> | null = null;
+
   add(node: DagNode<T>): void {
     this.nodes.set(node.id, node);
+  }
+
+  /**
+   * Compute the transitive-dependent count for every node, once. A node's
+   * dependents are the registered nodes that list it in their `dependencies`;
+   * the transitive count is the size of the union of its direct dependents and
+   * all of theirs. Memoized per node; a cycle guard keeps a malformed graph
+   * from recursing forever (the executor itself rejects on deadlock later).
+   */
+  private computePriorities(): Map<string, number> {
+    if (this.priorityById) return this.priorityById;
+
+    // Reverse adjacency: dependentsOf[dep] = nodes that depend on `dep`.
+    const dependentsOf = new Map<string, Set<string>>();
+    for (const node of this.nodes.values()) {
+      for (const depId of node.dependencies) {
+        if (!this.nodes.has(depId)) continue; // external-to-DAG dep
+        let set = dependentsOf.get(depId);
+        if (!set) {
+          set = new Set<string>();
+          dependentsOf.set(depId, set);
+        }
+        set.add(node.id);
+      }
+    }
+
+    const memo = new Map<string, Set<string>>();
+    const visiting = new Set<string>();
+    const collect = (id: string): Set<string> => {
+      const cached = memo.get(id);
+      if (cached) return cached;
+      const acc = new Set<string>();
+      if (visiting.has(id)) return acc; // cycle guard
+      visiting.add(id);
+      for (const dependent of dependentsOf.get(id) ?? []) {
+        acc.add(dependent);
+        for (const t of collect(dependent)) acc.add(t);
+      }
+      visiting.delete(id);
+      memo.set(id, acc);
+      return acc;
+    };
+
+    const priorities = new Map<string, number>();
+    for (const id of this.nodes.keys()) priorities.set(id, collect(id).size);
+    this.priorityById = priorities;
+    return priorities;
   }
 
   has(id: string): boolean {
@@ -58,6 +123,7 @@ export class DagExecutor<T = unknown> {
   ): Promise<void> {
     let active = 0;
     const errors: Array<{ id: string; error: unknown }> = [];
+    const priority = this.computePriorities();
 
     return new Promise<void>((resolve, reject) => {
       const dispatch = (): void => {
@@ -92,6 +158,11 @@ export class DagExecutor<T = unknown> {
           });
           if (depsReady) ready.push(node);
         }
+
+        // Order the ready set longest-pole-first: a node blocking more
+        // transitive dependents starts before a leaf. Array.sort is stable, so
+        // nodes of equal priority keep their insertion (template) order.
+        ready.sort((a, b) => (priority.get(b.id) ?? 0) - (priority.get(a.id) ?? 0));
 
         // Dispatch up to concurrency limit, unless cancellation requested.
         if (!cancelled()) {

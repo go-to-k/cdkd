@@ -490,9 +490,15 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     distributionId: string,
     expectedEnabled?: boolean
   ): Promise<void> {
-    const maxAttempts = 60;
+    // A CloudFront distribution reaches Deployed in ~3-6 min. The poll ramps
+    // 5s * 1.5x but is capped tight (10s, not the old 30s) so detection lag
+    // stays small — a sparse late poll is exactly what made cdkd trail
+    // tight-polling tools on CloudFront-bound stacks (same class as the EC2
+    // waiter fix). maxAttempts is raised to keep the ~20 min total budget with
+    // the tighter cap.
+    const maxAttempts = 120;
     let delay = 5000; // start at 5s
-    const maxDelay = 30000;
+    const maxDelay = 10000;
     let interrupted = false;
 
     const sigintHandler = () => {

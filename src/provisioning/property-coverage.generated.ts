@@ -853,6 +853,29 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::EC2::EIP',
+    {
+      handled: new Set<string>([
+        'Domain',
+        'InstanceId',
+        'NetworkBorderGroup',
+        'PublicIpv4Pool',
+        'Tags',
+      ]),
+      silentDrop: new Map<string, string>([
+        [
+          'Address',
+          'Bring-your-own-IP: allocating a specific address you own is not yet supported; cdkd allocates an Amazon-owned address',
+        ],
+        ['IpamPoolId', 'Allocation from an IPAM pool is not yet supported'],
+        [
+          'TransferAddress',
+          'Accepting a transferred Elastic IP is not yet supported (out-of-band EIP transfer flow)',
+        ],
+      ]),
+    },
+  ],
+  [
     'AWS::EC2::Instance',
     {
       handled: new Set<string>([

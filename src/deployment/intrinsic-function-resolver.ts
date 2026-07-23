@@ -171,6 +171,10 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
  * type's own `describe-type` primaryIdentifier.
  */
 const REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE = new Set<string>([
+  // EIP physicalId is `PublicIp|AllocationId`; CloudFormation's `Ref` returns the
+  // public IP (the segment before the first pipe). GetAtt AllocationId / PublicIp
+  // are served separately by EC2Provider.getAttribute.
+  'AWS::EC2::EIP',
   'AWS::ApiGateway::Deployment',
   'AWS::ApiGateway::DocumentationPart',
   'AWS::ApiGatewayV2::Authorizer',
