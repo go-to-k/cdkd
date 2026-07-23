@@ -25,6 +25,15 @@
 #         `properties` (PascalCase). Phase 1b asserts the deploy-time
 #         observedProperties baseline (captured FROM readCurrentState) carries
 #         the nested RuntimePlatform in CFn PascalCase.
+#   #1170 (Service readCurrentState accepts the ARN physicalId): the Service
+#         physicalId `createService` stores is the service ARN, but
+#         readCurrentStateService only understood the composite
+#         `<clusterArn>|<serviceName>` form and returned undefined for the ARN,
+#         so every cdkd-created Service read back as drift-unknown and NO
+#         observedProperties were captured for it. Phase 1c asserts the
+#         Service's deploy-time observedProperties ARE captured (proving the
+#         ARN-form read works) AND carry DeploymentConfiguration in CFn
+#         PascalCase.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
@@ -290,11 +299,11 @@ echo "    OK: base #1165 TaskDefinition on AWS is runtimePlatform.cpuArchitectur
 #
 # (A whole-stack `cdkd drift` assertion is deliberately NOT used: this fixture's
 # TaskDefinition also carries ContainerDefinitions, which readCurrentState still
-# surfaces as raw SDK camelCase — a larger structural gap out of #1167 scope —
-# and the ECS Service reads back drift-unknown because its physicalId is the ARN
-# rather than the composite `<clusterArn>|<serviceName>` form readCurrentState
-# expects; both would make a whole-stack drift assertion fail for reasons
-# unrelated to #1167.)
+# surfaces as raw SDK camelCase — a larger structural gap tracked by #1169 —
+# so a whole-stack drift assertion would still phantom-drift on the
+# TaskDefinition for reasons unrelated to the Service. The Service side is
+# proven directly by Phase 1c below: #1170 makes its ARN-form physicalId read
+# back, so its observedProperties are now captured.)
 echo "==> Phase 1b: assert deploy-time observedProperties captured RuntimePlatform in CFn PascalCase (#1167 readCurrentState reverse-map)"
 OBS_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 OBS_CPU_ARCH=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.RuntimePlatform.CpuArchitecture] | first // "MISSING"')
@@ -312,6 +321,26 @@ if [ "${OBS_EPHEMERAL}" != "30" ]; then
   exit 1
 fi
 echo "    OK: deploy-time observedProperties captured RuntimePlatform.CpuArchitecture=ARM64 + EphemeralStorage.SizeInGiB=30 in CFn PascalCase (#1167 readCurrentState reverse-map verified against real AWS)"
+
+# --- Phase 1c: Service observedProperties captured via ARN-form physicalId ----
+# #1170: `createService` stores the service ARN as the physicalId, but
+# `readCurrentStateService` only understood the composite
+# `<clusterArn>|<serviceName>` form and returned undefined for the ARN. That
+# made `cdkd drift` report every cdkd-created Service as drift-unknown AND meant
+# NO observedProperties were captured for the Service at deploy time. After the
+# fix the ARN-form read works, so the Service's observedProperties are present.
+# We assert a nested field (DeploymentConfiguration.MaximumPercent = 150, set in
+# phase 1) so the check also confirms the #1167 nested reverse-map ran on the
+# Service read path. Before #1170 the whole `observedProperties` object would be
+# absent for the Service, so this lookup would be MISSING.
+echo "==> Phase 1c: assert Service observedProperties captured via ARN-form physicalId (#1170)"
+OBS_SVC_MAXPCT=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::Service") | .observedProperties.DeploymentConfiguration.MaximumPercent] | first // "MISSING"')
+if [ "${OBS_SVC_MAXPCT}" != "150" ]; then
+  echo "FAIL: Service observedProperties.DeploymentConfiguration.MaximumPercent is '${OBS_SVC_MAXPCT}', expected '150' (#1170 readCurrentStateService did NOT read back the ARN-form physicalId, so no observedProperties were captured for the Service)" >&2
+  echo "${OBS_STATE}" | jq '[.resources[] | select(.resourceType=="AWS::ECS::Service") | {physicalId, hasObserved: (.observedProperties != null)}] | first'
+  exit 1
+fi
+echo "    OK: Service observedProperties captured (DeploymentConfiguration.MaximumPercent=150) — ARN-form readCurrentState verified against real AWS (#1170)"
 
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
