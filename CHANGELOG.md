@@ -1,3 +1,10 @@
+## [0.260.5](https://github.com/go-to-k/cdkd/compare/v0.260.4...v0.260.5) (2026-07-23)
+
+
+### Bug Fixes
+
+* **providers:** reverse-map ECS readCurrentState nested objects to CFn PascalCase ([#1167](https://github.com/go-to-k/cdkd/issues/1167)) ([#1168](https://github.com/go-to-k/cdkd/issues/1168)) ([7fb0724](https://github.com/go-to-k/cdkd/commit/7fb0724f369eb6a6d7b1f4a2461556bde1f0e494))
+
 ## [0.260.4](https://github.com/go-to-k/cdkd/compare/v0.260.3...v0.260.4) (2026-07-23)
 
 
