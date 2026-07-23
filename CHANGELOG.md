@@ -1,3 +1,10 @@
+## [0.260.9](https://github.com/go-to-k/cdkd/compare/v0.260.8...v0.260.9) (2026-07-23)
+
+
+### Performance Improvements
+
+* faster deploys (longest-pole scheduling, EIP SDK provider incl. instance association, tighter EC2 + CloudFront waiter polling) ([#1175](https://github.com/go-to-k/cdkd/issues/1175)) ([bf6dec8](https://github.com/go-to-k/cdkd/commit/bf6dec817dc651d6458e972e43e87f7ef0706877))
+
 ## [0.260.8](https://github.com/go-to-k/cdkd/compare/v0.260.7...v0.260.8) (2026-07-23)
 
 
