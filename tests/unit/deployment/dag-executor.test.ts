@@ -371,4 +371,32 @@ describe('DagExecutor', () => {
 
     expect(ran).toEqual(['A', 'B', 'C']);
   });
+
+  it('dedups a diamond dependent reachable via two paths (Set union, not sum)', async () => {
+    // Diamond: Root -> {A, B}; A -> Sink; B -> Sink. Root's transitive
+    // dependents are {A, B, Sink} = 3 (Sink counted ONCE despite two paths).
+    // Wide: Wide -> {C1, C2, C3, C4} = 4 distinct dependents. Wide is inserted
+    // AFTER Root, so only a correct dedup (Root=3 < Wide=4) puts Wide first; a
+    // naive sum would double-count Sink (Root=4 == Wide=4) and, being a tie,
+    // dispatch the earlier-inserted Root first. Asserting Wide-first pins the
+    // Set-union semantics against a sum regression.
+    const exec = new DagExecutor<null>();
+    exec.add(node('Root'));
+    exec.add(node('A', ['Root']));
+    exec.add(node('B', ['Root']));
+    exec.add(node('Sink', ['A', 'B']));
+    exec.add(node('Wide'));
+    exec.add(node('C1', ['Wide']));
+    exec.add(node('C2', ['Wide']));
+    exec.add(node('C3', ['Wide']));
+    exec.add(node('C4', ['Wide']));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    // At t=0 the only zero-dependency ready nodes are Root and Wide.
+    expect(ran[0]).toBe('Wide');
+  });
 });

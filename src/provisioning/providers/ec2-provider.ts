@@ -269,7 +269,7 @@ export class EC2Provider implements ResourceProvider {
         ],
         [
           'InstanceId',
-          'Associating the EIP to an instance (ec2:AssociateAddress) is not yet supported; the create path only allocates the address',
+          'The SDK create path does not associate the EIP to an instance (ec2:AssociateAddress); an EIP that sets InstanceId auto-routes to Cloud Control (which does associate it), while the common no-InstanceId EIP takes the fast SDK path',
         ],
       ]),
     ],
