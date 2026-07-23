@@ -37,6 +37,7 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
+import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -872,6 +873,26 @@ export class DeployEngine {
   ): Promise<DeployResult> {
     const startTime = Date.now();
     this.logger.debug(`Starting deployment for stack: ${stackName}`);
+
+    // Warm the create-only DescribeType cache in parallel with the lock + state
+    // read below. calculateDiff (further down) resolves each UPDATE resource's
+    // create-only property paths via cloudformation:DescribeType (~0.8s cold per
+    // type, cached per-type for the deploy lifetime). Kicking those lookups off
+    // here for the template's distinct resource types — fire-and-forget — lets
+    // the diff's awaits hit a warm cache instead of paying the round-trip inline
+    // on the critical path. getCreateOnlyPropertyPaths is idempotent (per-type
+    // module cache) and never throws (it swallows DescribeType errors), so this
+    // is pure latency-hiding with no correctness impact. Custom types short-
+    // circuit without an API call; on a pure-CREATE (first) deploy the diff makes
+    // no create-only lookups at all, so the prefetched entries simply go unused
+    // that run — bounded, deduped, non-blocking waste, never a correctness issue.
+    // Part of #1180.
+    for (const type of new Set(Object.values(template.Resources).map((r) => r.Type))) {
+      // getCreateOnlyPropertyPaths already swallows DescribeType errors, but a
+      // .catch here defends against any unexpected rejection so a fire-and-forget
+      // prefetch never surfaces as an unhandled promise rejection.
+      void getCreateOnlyPropertyPaths(type).catch(() => {});
+    }
 
     // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
     await this.lockManager.acquireLockWithRetry(stackName, this.stackRegion, undefined, 'deploy');
