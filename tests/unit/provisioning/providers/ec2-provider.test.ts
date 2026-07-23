@@ -9,6 +9,8 @@ import {
   DescribeVpcsCommand,
   DescribeNetworkAclsCommand,
   DescribeSecurityGroupsCommand,
+  AllocateAddressCommand,
+  ReleaseAddressCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -905,6 +907,101 @@ describe('EC2Provider - NatGateway', () => {
           expectedRegion: 'us-east-1',
         })
       ).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('EC2Provider - EIP (Elastic IP) SDK provider', () => {
+  let provider: EC2Provider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    provider = new EC2Provider();
+  });
+
+  it('declares handledProperties so the engine routes to SDK instead of Cloud Control', () => {
+    const props = provider.handledProperties.get('AWS::EC2::EIP');
+    expect(props).toBeDefined();
+    expect(props?.has('Domain')).toBe(true);
+    expect(props?.has('Tags')).toBe(true);
+  });
+
+  it('allocates synchronously and returns composite physicalId + attributes (no polling)', async () => {
+    mockSend.mockResolvedValueOnce({
+      AllocationId: 'eipalloc-0a47ec3f',
+      PublicIp: '107.21.112.12',
+    });
+
+    const result = await provider.create('Eip', 'AWS::EC2::EIP', { Domain: 'vpc' });
+
+    expect(result.physicalId).toBe('107.21.112.12|eipalloc-0a47ec3f');
+    expect(result.attributes).toEqual({
+      AllocationId: 'eipalloc-0a47ec3f',
+      PublicIp: '107.21.112.12',
+    });
+    // Exactly ONE send: AllocateAddress. No async stabilization poll.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(AllocateAddressCommand);
+    expect((mockSend.mock.calls[0][0] as AllocateAddressCommand).input.Domain).toBe('vpc');
+  });
+
+  it('defaults Domain to vpc and applies tags via CreateTags', async () => {
+    mockSend
+      .mockResolvedValueOnce({ AllocationId: 'eipalloc-tag', PublicIp: '1.2.3.4' })
+      .mockResolvedValueOnce({}); // CreateTags
+
+    await provider.create('Eip', 'AWS::EC2::EIP', {
+      Tags: [{ Key: 'Name', Value: 'my-eip' }],
+    });
+
+    expect((mockSend.mock.calls[0][0] as AllocateAddressCommand).input.Domain).toBe('vpc');
+    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(CreateTagsCommand);
+    const tagInput = (mockSend.mock.calls[1][0] as CreateTagsCommand).input;
+    expect(tagInput.Resources).toEqual(['eipalloc-tag']);
+  });
+
+  it('resolves AllocationId / PublicIp from the composite physicalId without an API call', async () => {
+    const pid = '107.21.112.12|eipalloc-0a47ec3f';
+    expect(await provider.getAttribute(pid, 'AWS::EC2::EIP', 'AllocationId')).toBe('eipalloc-0a47ec3f');
+    expect(await provider.getAttribute(pid, 'AWS::EC2::EIP', 'PublicIp')).toBe('107.21.112.12');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('deletes via ReleaseAddress using the AllocationId parsed from the physicalId', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.delete('Eip', '107.21.112.12|eipalloc-0a47ec3f', 'AWS::EC2::EIP');
+    expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ReleaseAddressCommand);
+    expect((mockSend.mock.calls[0][0] as ReleaseAddressCommand).input.AllocationId).toBe(
+      'eipalloc-0a47ec3f'
+    );
+  });
+
+  it('treats a NotFound on delete as idempotent success', async () => {
+    const notFound = Object.assign(new Error('address not found'), {
+      name: 'InvalidAllocationID.NotFound',
+    });
+    mockSend.mockRejectedValueOnce(notFound);
+    await expect(
+      provider.delete('Eip', '1.2.3.4|eipalloc-missing', 'AWS::EC2::EIP')
+    ).resolves.toBeUndefined();
+  });
+
+  it('imports via an explicit allocation id (--resource) and returns the composite id', async () => {
+    mockSend.mockResolvedValueOnce({
+      Addresses: [{ AllocationId: 'eipalloc-0a47ec3f', PublicIp: '107.21.112.12' }],
+    });
+    const result = await provider.import!({
+      logicalId: 'Eip',
+      resourceType: 'AWS::EC2::EIP',
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'eipalloc-0a47ec3f',
+    });
+    expect(result).toEqual({
+      physicalId: '107.21.112.12|eipalloc-0a47ec3f',
+      attributes: { AllocationId: 'eipalloc-0a47ec3f', PublicIp: '107.21.112.12' },
     });
   });
 });

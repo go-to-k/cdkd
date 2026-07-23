@@ -142,6 +142,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::EC2::VPC', ec2Provider);
   registry.register('AWS::EC2::Subnet', ec2Provider);
   registry.register('AWS::EC2::InternetGateway', ec2Provider);
+  registry.register('AWS::EC2::EIP', ec2Provider);
   registry.register('AWS::EC2::VPCGatewayAttachment', ec2Provider);
   registry.register('AWS::EC2::NatGateway', ec2Provider);
   registry.register('AWS::EC2::RouteTable', ec2Provider);

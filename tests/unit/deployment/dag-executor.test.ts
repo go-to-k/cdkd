@@ -316,4 +316,59 @@ describe('DagExecutor', () => {
 
     await expect(exec.execute(4, async () => {})).rejects.toThrow(/Deadlock/);
   });
+
+  it('dispatches longest-pole nodes first (more transitive dependents win)', async () => {
+    // Ready set is {Leaf1, Leaf2, Feeder} — all zero-dependency. Feeder is
+    // inserted LAST but has a dependent (Consumer), so it has 1 transitive
+    // dependent vs 0 for the leaves. With concurrency 1, Feeder must be
+    // dispatched before the earlier-inserted leaves so its downstream chain
+    // starts as early as possible (the EIP -> NAT scheduling fix).
+    const exec = new DagExecutor<null>();
+    exec.add(node('Leaf1'));
+    exec.add(node('Leaf2'));
+    exec.add(node('Feeder'));
+    exec.add(node('Consumer', ['Feeder']));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    expect(ran[0]).toBe('Feeder');
+    expect(ran.indexOf('Consumer')).toBeGreaterThan(ran.indexOf('Feeder'));
+    expect(ran).toContain('Leaf1');
+    expect(ran).toContain('Leaf2');
+  });
+
+  it('orders a longer dependent chain ahead of a shorter one', async () => {
+    // Deep has a 2-node transitive tail (Mid -> Tail); Shallow has 1 (One).
+    // Both are zero-dependency and ready at t0; Deep must go first.
+    const exec = new DagExecutor<null>();
+    exec.add(node('Shallow'));
+    exec.add(node('One', ['Shallow']));
+    exec.add(node('Deep'));
+    exec.add(node('Mid', ['Deep']));
+    exec.add(node('Tail', ['Mid']));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    expect(ran[0]).toBe('Deep');
+  });
+
+  it('preserves insertion order among equal-priority ready nodes (stable sort)', async () => {
+    const exec = new DagExecutor<null>();
+    exec.add(node('A'));
+    exec.add(node('B'));
+    exec.add(node('C'));
+
+    const ran: string[] = [];
+    await exec.execute(1, async (n) => {
+      ran.push(n.id);
+    });
+
+    expect(ran).toEqual(['A', 'B', 'C']);
+  });
 });

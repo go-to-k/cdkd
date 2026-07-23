@@ -17,6 +17,9 @@ import {
   DeleteNatGatewayCommand,
   DescribeNatGatewaysCommand,
   waitUntilNatGatewayAvailable,
+  AllocateAddressCommand,
+  ReleaseAddressCommand,
+  DescribeAddressesCommand,
   waitUntilNatGatewayDeleted,
   CreateRouteTableCommand,
   DeleteRouteTableCommand,
@@ -118,6 +121,10 @@ export class EC2Provider implements ResourceProvider {
       new Set(['VpcId', 'CidrBlock', 'AvailabilityZone', 'MapPublicIpOnLaunch', 'Tags']),
     ],
     ['AWS::EC2::InternetGateway', new Set(['Tags'])],
+    [
+      'AWS::EC2::EIP',
+      new Set(['Domain', 'NetworkBorderGroup', 'PublicIpv4Pool', 'InstanceId', 'Tags']),
+    ],
     ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId'])],
     [
       'AWS::EC2::NatGateway',
@@ -251,6 +258,20 @@ export class EC2Provider implements ResourceProvider {
         ],
       ]),
     ],
+    [
+      'AWS::EC2::EIP',
+      new Map<string, string>([
+        [
+          'Address',
+          'Bring-your-own-IP: allocating a specific address you own is not yet supported; cdkd allocates an Amazon-owned address',
+        ],
+        ['IpamPoolId', 'Allocation from an IPAM pool is not yet supported'],
+        [
+          'TransferAddress',
+          'Accepting a transferred Elastic IP is not yet supported (out-of-band EIP transfer flow)',
+        ],
+      ]),
+    ],
   ]);
 
   constructor() {
@@ -272,6 +293,8 @@ export class EC2Provider implements ResourceProvider {
         return this.createSubnet(logicalId, resourceType, properties);
       case 'AWS::EC2::InternetGateway':
         return this.createInternetGateway(logicalId, resourceType, properties);
+      case 'AWS::EC2::EIP':
+        return this.createEip(logicalId, resourceType, properties);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.createVpcGatewayAttachment(logicalId, resourceType, properties);
       case 'AWS::EC2::NatGateway':
@@ -317,6 +340,8 @@ export class EC2Provider implements ResourceProvider {
         return this.updateSubnet(logicalId, physicalId);
       case 'AWS::EC2::InternetGateway':
         return this.updateInternetGateway(logicalId, physicalId);
+      case 'AWS::EC2::EIP':
+        return this.updateEip(logicalId, physicalId, properties, previousProperties);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.updateVpcGatewayAttachment(logicalId, physicalId);
       case 'AWS::EC2::NatGateway':
@@ -392,6 +417,8 @@ export class EC2Provider implements ResourceProvider {
         return this.deleteSubnet(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::InternetGateway':
         return this.deleteInternetGateway(logicalId, physicalId, resourceType, context);
+      case 'AWS::EC2::EIP':
+        return this.deleteEip(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.deleteVpcGatewayAttachment(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::NatGateway':
@@ -446,6 +473,8 @@ export class EC2Provider implements ResourceProvider {
         return this.getSecurityGroupAttribute(physicalId, attributeName);
       case 'AWS::EC2::Instance':
         return this.getInstanceAttribute(physicalId, attributeName);
+      case 'AWS::EC2::EIP':
+        return this.getEipAttribute(physicalId, attributeName);
       default:
         return undefined;
     }
@@ -1092,6 +1121,157 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  // ─── AWS::EC2::EIP ────────────────────────────────────────────────
+  //
+  // Elastic IPs allocate synchronously (AllocateAddress returns the id + IP
+  // immediately), so an SDK provider skips the Cloud Control async-polling
+  // backoff (~20s for an instant resource) that the CC fallback pays. This
+  // matters because an EIP feeds the NAT Gateway on the critical path.
+  //
+  // physicalId is the composite `PublicIp|AllocationId`, matching the shape the
+  // Cloud Control fallback produced (see cloud-control-provider.ts), so Ref /
+  // GetAtt resolution and existing state stay byte-compatible.
+
+  private eipPhysicalId(publicIp: string, allocationId: string): string {
+    return `${publicIp}|${allocationId}`;
+  }
+
+  private parseEipPhysicalId(physicalId: string): {
+    publicIp?: string | undefined;
+    allocationId?: string | undefined;
+  } {
+    if (physicalId.includes('|')) {
+      const [publicIp, allocationId] = physicalId.split('|');
+      return { publicIp, allocationId };
+    }
+    // Tolerate a bare allocation id (eipalloc-…) or a bare public IP.
+    if (physicalId.startsWith('eipalloc-')) return { allocationId: physicalId };
+    return { publicIp: physicalId };
+  }
+
+  private async createEip(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating EIP ${logicalId}`);
+
+    try {
+      const response = await this.ec2Client.send(
+        new AllocateAddressCommand({
+          Domain: (properties['Domain'] as 'vpc' | 'standard' | undefined) ?? 'vpc',
+          NetworkBorderGroup: properties['NetworkBorderGroup'] as string | undefined,
+          PublicIpv4Pool: properties['PublicIpv4Pool'] as string | undefined,
+        })
+      );
+
+      const allocationId = response.AllocationId!;
+      const publicIp = response.PublicIp!;
+
+      await this.applyTags(allocationId, properties, logicalId);
+
+      this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
+
+      return {
+        physicalId: this.eipPhysicalId(publicIp, allocationId),
+        attributes: {
+          AllocationId: allocationId,
+          PublicIp: publicIp,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async updateEip(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // Only Tags are mutable in place; Domain / pool / border group are
+    // create-only and handled by the replacement path.
+    this.logger.debug(`Updating EIP ${logicalId}: ${physicalId}`);
+    const { allocationId } = this.parseEipPhysicalId(physicalId);
+    if (allocationId) {
+      await this.applyTagDiff(
+        allocationId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
+    }
+    return { physicalId, wasReplaced: false };
+  }
+
+  private async deleteEip(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context?: DeleteContext
+  ): Promise<void> {
+    this.logger.debug(`Deleting EIP ${logicalId}: ${physicalId}`);
+    const { allocationId } = this.parseEipPhysicalId(physicalId);
+
+    try {
+      await this.withDependencyViolationRetry(
+        () => this.ec2Client.send(new ReleaseAddressCommand({ AllocationId: allocationId })),
+        { description: `ReleaseAddress ${logicalId} (${allocationId})` }
+      );
+      this.logger.debug(`Successfully deleted EIP ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`EIP ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async getEipAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    const { publicIp, allocationId } = this.parseEipPhysicalId(physicalId);
+    if (attributeName === 'AllocationId' && allocationId) return allocationId;
+    if (attributeName === 'PublicIp' && publicIp) return publicIp;
+
+    // Fall back to a live read for anything not encoded in the physical id.
+    const filter = allocationId
+      ? { AllocationIds: [allocationId] }
+      : { PublicIps: publicIp ? [publicIp] : [] };
+    const response = await this.ec2Client.send(new DescribeAddressesCommand(filter));
+    const addr = response.Addresses?.[0];
+    if (!addr) return undefined;
+    switch (attributeName) {
+      case 'AllocationId':
+        return addr.AllocationId;
+      case 'PublicIp':
+        return addr.PublicIp;
+      default:
+        return undefined;
+    }
+  }
+
   // ─── AWS::EC2::VPCGatewayAttachment ───────────────────────────────
 
   private async createVpcGatewayAttachment(
@@ -1274,7 +1454,15 @@ export class EC2Provider implements ResourceProvider {
           // 15-min cap matches AWS's documented worst case for NAT
           // provisioning. Per-resource `--resource-timeout` (default
           // 30 min) still bounds the outer call as a backstop.
-          { client: this.ec2Client, maxWaitTime: 15 * 60 },
+          //
+          // minDelay/maxDelay override the AWS SDK defaults (15s / 120s). A NAT
+          // typically reaches `available` in ~90s, so the default exponential
+          // backoff — whose late polls are up to 120s apart — can detect the
+          // ready state up to ~2 min late (and with wild variance depending on
+          // where the ready moment falls relative to the sparse poll schedule).
+          // That made cdkd systematically slower than tools that poll on a
+          // tight interval. A 5-15s poll caps the detection lag at ~15s.
+          { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 15 },
           { NatGatewayIds: [natGatewayId] }
         );
         this.logger.debug(`NatGateway ${natGatewayId} is available`);
@@ -1383,7 +1571,10 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Waiting for NatGateway ${physicalId} to reach deleted state...`);
     try {
       await waitUntilNatGatewayDeleted(
-        { client: this.ec2Client, maxWaitTime: 15 * 60 },
+        // Tighten the poll interval off the AWS SDK defaults (15s / 120s) for
+        // the same reason as the available-state wait above: a sparse late poll
+        // adds up to ~2 min of dead time detecting the terminal state.
+        { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 15 },
         { NatGatewayIds: [physicalId] }
       );
     } catch (error) {
@@ -2326,7 +2517,10 @@ export class EC2Provider implements ResourceProvider {
         // Wait for instance to reach running state
         this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
         await waitUntilInstanceRunning(
-          { client: this.ec2Client, maxWaitTime: 300 },
+          // Tighten off the AWS SDK defaults (15s / 120s) — see the NAT gateway
+          // wait for the full rationale. An instance reaches `running` in
+          // ~30-60s, so a 120s late poll can add up to ~2 min of dead time.
+          { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
           { InstanceIds: [instanceId] }
         );
 
@@ -2769,7 +2963,10 @@ export class EC2Provider implements ResourceProvider {
 
         // Wait for instance to reach terminated state so ENIs are released
         await waitUntilInstanceTerminated(
-          { client: this.ec2Client, maxWaitTime: 300 },
+          // Tighten off the AWS SDK defaults (15s / 120s) — same rationale as
+          // the running-state wait; ENI release gating a re-deploy should not
+          // wait out a sparse late poll.
+          { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
           { InstanceIds: [physicalId] }
         );
 
@@ -4545,6 +4742,20 @@ export class EC2Provider implements ResourceProvider {
           );
           const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
           return gw ? { physicalId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::EIP': {
+          // Accept an allocation id, a public IP, or the composite `IP|alloc`.
+          const { allocationId, publicIp } = this.parseEipPhysicalId(physicalId);
+          const filter = allocationId
+            ? { AllocationIds: [allocationId] }
+            : { PublicIps: publicIp ? [publicIp] : [] };
+          const resp = await this.ec2Client.send(new DescribeAddressesCommand(filter));
+          const addr = resp.Addresses?.[0];
+          if (!addr?.AllocationId || !addr.PublicIp) return null;
+          return {
+            physicalId: this.eipPhysicalId(addr.PublicIp, addr.AllocationId),
+            attributes: { AllocationId: addr.AllocationId, PublicIp: addr.PublicIp },
+          };
         }
         default:
           return null;
