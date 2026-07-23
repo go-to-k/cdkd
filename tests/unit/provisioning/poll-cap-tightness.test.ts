@@ -79,11 +79,15 @@ describe('provider poll-loop cap tightness (#1175 / #1176)', () => {
 
     // Prove the scanner actually saw its inputs — a green result must mean
     // "all caps tight", never "parsed nothing" (see .claude/rules/testing.md
-    // "A checker must prove it sees its input"). The tightened set is asg(1) +
-    // docdb(4) + neptune(4) + rds(4) + elasticache(2) = 15 inline sites, plus
-    // the two named caps (ec2 maxDelayMs, lambda eniWaitMaxDelayMs).
+    // "A checker must prove it sees its input"). The #1176-tightened set is
+    // asg(1) + docdb(4) + neptune(4) + rds(4) + elasticache(2) = 15 inline
+    // sites, plus 2 named caps (ec2 maxDelayMs, lambda eniWaitMaxDelayMs). The
+    // scanner ALSO picks up already-tight sites not touched by #1176
+    // (servicediscovery's inline 10s loop; cloudfront's named `maxDelay` 10s),
+    // so live counts are >= 16 inline / >= 3 named — the floors keep margin and
+    // are the "saw nothing = fail" backstop, not an exact-count assertion.
     expect(inlineSites, 'expected the inline `Math.min(delay * N, cap)` poll loops to be found').toBeGreaterThanOrEqual(15);
-    expect(namedSites, 'expected the named maxDelay cap constants (ec2, lambda) to be found').toBeGreaterThanOrEqual(2);
+    expect(namedSites, 'expected the named maxDelay cap constants to be found').toBeGreaterThanOrEqual(2);
 
     expect(violations, `sparse poll-loop caps found (tighten to <= ${MAX_ALLOWED_CAP_MS}ms):\n${violations.join('\n')}`).toEqual([]);
   });
