@@ -1,3 +1,10 @@
+## [0.260.6](https://github.com/go-to-k/cdkd/compare/v0.260.5...v0.260.6) (2026-07-23)
+
+
+### Bug Fixes
+
+* **providers:** accept ARN-form physicalId in ECS Service readCurrentState + getServiceAttribute ([#1170](https://github.com/go-to-k/cdkd/issues/1170)) ([#1171](https://github.com/go-to-k/cdkd/issues/1171)) ([7b5bb41](https://github.com/go-to-k/cdkd/commit/7b5bb418c43bd8ec12762bfe46bbab56a03072b1))
+
 ## [0.260.5](https://github.com/go-to-k/cdkd/compare/v0.260.4...v0.260.5) (2026-07-23)
 
 
