@@ -874,7 +874,7 @@ export class NeptuneProvider implements ResourceProvider {
       if (status === 'available') return;
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(
@@ -908,7 +908,7 @@ export class NeptuneProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for Neptune DBCluster ${dbClusterIdentifier} to be deleted`);
@@ -933,7 +933,7 @@ export class NeptuneProvider implements ResourceProvider {
       if (status === 'available') return;
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(
@@ -964,7 +964,7 @@ export class NeptuneProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(

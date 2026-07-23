@@ -118,7 +118,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
   // (LastUpdateStatus -> Successful) after pre-delete VPC detach.
   private readonly eniWaitTimeoutMs: number = 10 * 60 * 1000;
   private readonly eniWaitInitialDelayMs: number = 10_000;
-  private readonly eniWaitMaxDelayMs: number = 30_000;
+  private readonly eniWaitMaxDelayMs: number = 10_000;
 
   // Budget for the post-Update wait that blocks until LastUpdateStatus
   // === 'Successful'. Required to prevent the SECOND in-flight call (e.g.
@@ -886,7 +886,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * "myfn" matching for function "fn".
    *
    * Polling: starts at eniWaitInitialDelayMs (10s), exponential backoff up
-   * to eniWaitMaxDelayMs (30s), bounded by eniWaitTimeoutMs (10min).
+   * to eniWaitMaxDelayMs (10s), bounded by eniWaitTimeoutMs (10min).
    * Timeout is a soft warning — downstream Subnet/SG deletion has its own
    * retries.
    */

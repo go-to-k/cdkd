@@ -635,7 +635,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       if (status === 'available') return;
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for CacheCluster ${cacheClusterId} to become available`);
@@ -664,7 +664,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for CacheCluster ${cacheClusterId} to be deleted`);
