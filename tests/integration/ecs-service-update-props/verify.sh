@@ -43,6 +43,12 @@
 #         (free-form log-driver option keys preserved, AWS-defaulted empties
 #         normalized), and Phase 1e runs a real `cdkd drift` asserting NO
 #         ContainerDefinitions drift.
+#   #1173 (ContainerDefinition sub-field silent-drop): convertContainerDefinitions
+#         never mapped RestartPolicy (+ RepositoryCredentials / FirelensConfiguration
+#         / ResourceRequirements / SystemControls / ...), so they were silently
+#         dropped on RegisterTaskDefinition. Phase 1f sets RestartPolicy via the
+#         L1 escape hatch and asserts it (a) reached AWS and (b) round-tripped
+#         into observedProperties in CFn PascalCase.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
@@ -418,6 +424,31 @@ if echo "${DRIFT_OUT}" | grep -q "ContainerDefinitions"; then
   exit 1
 fi
 echo "    OK: 'cdkd drift' (rc=${DRIFT_RC}) reports NO ContainerDefinitions drift — reverse-map + normalization round-trip verified against real AWS (#1169)"
+
+# --- Phase 1f: RestartPolicy container sub-field write + read round-trip (#1173) --
+# #1173: convertContainerDefinitions never mapped RestartPolicy (and 11 other
+# container sub-fields), so they were silently dropped on RegisterTaskDefinition.
+# The fixture sets RestartPolicy via the L1 escape hatch. Assert (a) AWS actually
+# registered it (describe-task-definition) — before the fix it would be absent —
+# AND (b) the deploy-time observedProperties captured it back in CFn PascalCase
+# (the #1173 read-side reverse-map).
+echo "==> Phase 1f: assert RestartPolicy reached AWS + round-tripped into observedProperties (#1173)"
+AWS_RESTART_ENABLED=$(aws ecs describe-task-definition \
+  --task-definition "${TASKDEF_ARN}" --region "${REGION}" \
+  --query 'taskDefinition.containerDefinitions[0].restartPolicy.enabled' --output text 2>/dev/null)
+if [ "${AWS_RESTART_ENABLED}" != "True" ]; then
+  echo "FAIL: task definition containerDefinitions[0].restartPolicy.enabled is '${AWS_RESTART_ENABLED}', expected 'True' (#1173 RestartPolicy silently dropped on RegisterTaskDefinition)" >&2
+  aws ecs describe-task-definition --task-definition "${TASKDEF_ARN}" --region "${REGION}" \
+    --query 'taskDefinition.containerDefinitions[0].restartPolicy' | jq .
+  exit 1
+fi
+OBS_CD_RESTART=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.ContainerDefinitions[0].RestartPolicy.Enabled] | first // "MISSING"')
+if [ "${OBS_CD_RESTART}" != "true" ]; then
+  echo "FAIL: TaskDefinition observedProperties.ContainerDefinitions[0].RestartPolicy.Enabled is '${OBS_CD_RESTART}', expected 'true' (#1173 read-side reverse-map did NOT surface RestartPolicy in CFn PascalCase)" >&2
+  echo "${OBS_STATE}" | jq '[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.ContainerDefinitions[0]] | first'
+  exit 1
+fi
+echo "    OK: RestartPolicy registered on AWS (enabled=True) AND captured in observedProperties as CFn PascalCase RestartPolicy.Enabled=true (#1173 write + read round-trip verified against real AWS)"
 
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"

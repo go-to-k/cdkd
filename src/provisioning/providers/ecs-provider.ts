@@ -62,6 +62,14 @@ import {
   type ContainerCondition,
   type EnvironmentFileType,
   type UlimitName,
+  type RepositoryCredentials,
+  type FirelensConfiguration,
+  type FirelensConfigurationType,
+  type ResourceRequirement,
+  type SystemControl,
+  type HostEntry,
+  type ContainerRestartPolicy,
+  type VersionConsistency,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -1264,6 +1272,35 @@ export class ECSProvider implements ResourceProvider {
       stopTimeout: def['StopTimeout'] as number | undefined,
       interactive: def['Interactive'] as boolean | undefined,
       pseudoTerminal: def['PseudoTerminal'] as boolean | undefined,
+      // issue #1173: these container sub-fields were previously unmapped, so
+      // they were silently dropped on RegisterTaskDefinition. Each is a
+      // mechanical first-letter flip (pascalToCamelCaseKeys) EXCEPT
+      // FirelensConfiguration, whose `Options` is a free-form map whose keys
+      // are user data (NOT CFn property names) and must be copied verbatim.
+      repositoryCredentials: def['RepositoryCredentials']
+        ? (pascalToCamelCaseKeys(def['RepositoryCredentials']) as RepositoryCredentials)
+        : undefined,
+      firelensConfiguration: this.convertFirelensConfiguration(
+        def['FirelensConfiguration'] as Record<string, unknown> | undefined
+      ),
+      resourceRequirements: def['ResourceRequirements']
+        ? (pascalToCamelCaseKeys(def['ResourceRequirements']) as ResourceRequirement[])
+        : undefined,
+      systemControls: def['SystemControls']
+        ? (pascalToCamelCaseKeys(def['SystemControls']) as SystemControl[])
+        : undefined,
+      extraHosts: def['ExtraHosts']
+        ? (pascalToCamelCaseKeys(def['ExtraHosts']) as HostEntry[])
+        : undefined,
+      restartPolicy: def['RestartPolicy']
+        ? (pascalToCamelCaseKeys(def['RestartPolicy']) as ContainerRestartPolicy)
+        : undefined,
+      dnsServers: def['DnsServers'] as string[] | undefined,
+      dnsSearchDomains: def['DnsSearchDomains'] as string[] | undefined,
+      dockerSecurityOptions: def['DockerSecurityOptions'] as string[] | undefined,
+      credentialSpecs: def['CredentialSpecs'] as string[] | undefined,
+      hostname: def['Hostname'] as string | undefined,
+      versionConsistency: def['VersionConsistency'] as VersionConsistency | undefined,
     }));
   }
 
@@ -1397,6 +1434,23 @@ export class ECSProvider implements ResourceProvider {
       secretOptions: this.convertSecrets(
         config['SecretOptions'] as Array<Record<string, unknown>> | undefined
       ),
+    };
+  }
+
+  /**
+   * Convert CFn `ContainerDefinitions[].FirelensConfiguration` to the ECS SDK
+   * shape (issue #1173). `Type` flips to `type`, but `Options` is a free-form
+   * map of user-supplied FireLens options (e.g. `enable-ecs-log-metadata`,
+   * `config-file-value`) whose keys are NOT CFn property names, so it is copied
+   * verbatim rather than case-flipped.
+   */
+  private convertFirelensConfiguration(
+    config?: Record<string, unknown>
+  ): FirelensConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      type: config['Type'] as FirelensConfigurationType | undefined,
+      options: config['Options'] as Record<string, string> | undefined,
     };
   }
 
@@ -1738,6 +1792,45 @@ export class ECSProvider implements ResourceProvider {
       if (c.stopTimeout !== undefined) out['StopTimeout'] = c.stopTimeout;
       if (c.interactive !== undefined) out['Interactive'] = c.interactive;
       if (c.pseudoTerminal !== undefined) out['PseudoTerminal'] = c.pseudoTerminal;
+      // issue #1173: reverse-map the newly-settable sub-fields (see
+      // convertContainerDefinitions). FirelensConfiguration.Options is a
+      // free-form map copied verbatim; the rest are first-letter flips.
+      if (c.repositoryCredentials) {
+        out['RepositoryCredentials'] = camelToPascalCaseKeys(c.repositoryCredentials);
+      }
+      if (c.firelensConfiguration) {
+        const fc: Record<string, unknown> = {};
+        if (c.firelensConfiguration.type !== undefined) fc['Type'] = c.firelensConfiguration.type;
+        if (
+          c.firelensConfiguration.options &&
+          Object.keys(c.firelensConfiguration.options).length > 0
+        ) {
+          fc['Options'] = { ...c.firelensConfiguration.options };
+        }
+        if (Object.keys(fc).length > 0) out['FirelensConfiguration'] = fc;
+      }
+      if (c.resourceRequirements && c.resourceRequirements.length > 0) {
+        out['ResourceRequirements'] = camelToPascalCaseKeys(c.resourceRequirements);
+      }
+      if (c.systemControls && c.systemControls.length > 0) {
+        out['SystemControls'] = camelToPascalCaseKeys(c.systemControls);
+      }
+      if (c.extraHosts && c.extraHosts.length > 0) {
+        out['ExtraHosts'] = camelToPascalCaseKeys(c.extraHosts);
+      }
+      if (c.restartPolicy) out['RestartPolicy'] = camelToPascalCaseKeys(c.restartPolicy);
+      if (c.dnsServers && c.dnsServers.length > 0) out['DnsServers'] = [...c.dnsServers];
+      if (c.dnsSearchDomains && c.dnsSearchDomains.length > 0) {
+        out['DnsSearchDomains'] = [...c.dnsSearchDomains];
+      }
+      if (c.dockerSecurityOptions && c.dockerSecurityOptions.length > 0) {
+        out['DockerSecurityOptions'] = [...c.dockerSecurityOptions];
+      }
+      if (c.credentialSpecs && c.credentialSpecs.length > 0) {
+        out['CredentialSpecs'] = [...c.credentialSpecs];
+      }
+      if (c.hostname !== undefined) out['Hostname'] = c.hostname;
+      if (c.versionConsistency !== undefined) out['VersionConsistency'] = c.versionConsistency;
       return out;
     });
   }
