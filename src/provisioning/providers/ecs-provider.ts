@@ -1138,9 +1138,13 @@ export class ECSProvider implements ResourceProvider {
   private async getServiceAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     const client = this.getClient();
 
-    // Extract cluster from service ARN if possible
+    // physicalId is the service ARN (what createService stores). DescribeServices
+    // scopes to the default cluster unless a cluster is given, so a Service in a
+    // non-default cluster would come back MISSING; derive the cluster from the
+    // ARN so the lookup is scoped correctly (issue #1170).
     const response = await client.send(
       new DescribeServicesCommand({
+        cluster: clusterNameFromServiceArn(physicalId),
         services: [physicalId],
       })
     );
