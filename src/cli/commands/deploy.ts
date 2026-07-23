@@ -180,16 +180,14 @@ async function deployCommand(
   }
   options.app = app;
 
-  // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId};
-  // legacy cdkd-state-{accountId}-{region} is consulted only as a fallback)
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
-  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
   logger.debug('Starting deployment...');
   logger.debug('Options:', options);
 
-  // Initialize AWS clients with region/profile
-  // Also set AWS_REGION env for providers using local SDK clients
+  // Initialize AWS clients with region/profile (synchronous — client
+  // construction only, no network). Also set AWS_REGION env for providers
+  // using local SDK clients.
   if (options.region) {
     process.env['AWS_REGION'] = options.region;
     process.env['AWS_DEFAULT_REGION'] = options.region;
@@ -200,35 +198,51 @@ async function deployCommand(
   });
   setAwsClients(awsClients);
 
-  // Fail fast if the state bucket is missing, before running synth / docker builds / asset uploads.
-  // Passing region/profile lets the backend rebuild its S3 client when the
-  // state bucket lives in a region different from the CLI's profile region.
-  const preflightStateBackend = new S3StateBackend(
-    awsClients.s3,
-    {
-      bucket: stateBucket,
-      prefix: options.statePrefix,
-    },
-    {
-      region,
-      ...(options.profile && { profile: options.profile }),
-    }
-  );
-  await preflightStateBackend.verifyBucketExists();
+  // Overlap the slow state-infra I/O with CDK synth (both ~2s and independent).
+  // Resolving the default state bucket (STS GetCallerIdentity + GetBucketLocation)
+  // and the fail-fast bucket-exists preflight do NOT need the synthesized
+  // template, and synth needs neither the state bucket (only the DEFERRED
+  // macro-expander consumes it) nor these clients (context providers build
+  // their own). Started here, awaited alongside synth in the Promise.all below.
+  // Fail-fast on a missing bucket is preserved — the preflight rejects the
+  // Promise.all; the only cost of overlap is a wasted ~2s synth on the rare
+  // misconfigured-bucket path.
+  const statePrepPromise = (async () => {
+    // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId};
+    // legacy cdkd-state-{accountId}-{region} is consulted only as a fallback).
+    const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
-  // Shared exports index store for this deploy session. Lifecycle: created
-  // here once and threaded through every per-stack DeployEngine so its
-  // in-memory cache survives across all stacks in a `cdkd deploy --all`
-  // run. Lazy-loaded — the first Fn::ImportValue resolution triggers the
-  // rebuild from state.json (when index file is absent post-upgrade) or
-  // a single GET (when index file already exists).
-  const exportIndexStore = new ExportIndexStore(
-    awsClients.s3,
-    stateBucket,
-    options.statePrefix,
-    region,
-    preflightStateBackend
-  );
+    // Fail fast if the state bucket is missing, before docker builds / asset uploads.
+    // Passing region/profile lets the backend rebuild its S3 client when the
+    // state bucket lives in a region different from the CLI's profile region.
+    const preflightStateBackend = new S3StateBackend(
+      awsClients.s3,
+      {
+        bucket: stateBucket,
+        prefix: options.statePrefix,
+      },
+      {
+        region,
+        ...(options.profile && { profile: options.profile }),
+      }
+    );
+    await preflightStateBackend.verifyBucketExists();
+
+    // Shared exports index store for this deploy session. Lifecycle: created
+    // here once and threaded through every per-stack DeployEngine so its
+    // in-memory cache survives across all stacks in a `cdkd deploy --all`
+    // run. Lazy-loaded — the first Fn::ImportValue resolution triggers the
+    // rebuild from state.json (when index file is absent post-upgrade) or
+    // a single GET (when index file already exists).
+    const exportIndexStore = new ExportIndexStore(
+      awsClients.s3,
+      stateBucket,
+      options.statePrefix,
+      region,
+      preflightStateBackend
+    );
+    return { stateBucket, preflightStateBackend, exportIndexStore };
+  })();
 
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
@@ -244,6 +258,8 @@ async function deployCommand(
   try {
     // 1. Synthesize CDK app (or read a pre-synthesized assembly when --app
     // points at an existing directory — synthesis is skipped in that case).
+    // Run synth CONCURRENTLY with the state-infra prep started above (bucket
+    // resolution + preflight) — two independent ~2s I/O phases overlap.
     logger.info(cyan(synthesisStatusMessage(app, 'Synthesizing CDK app...')));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
@@ -253,16 +269,23 @@ async function deployCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
-      // Threaded so the macro-expander has a real state bucket for
-      // the > 51,200-byte template upload path (Issue #463).
-      stateBucket,
+      // stateBucket is set below once statePrepPromise resolves — only the
+      // DEFERRED macro-expander (post-synth, for the > 51,200-byte template
+      // upload path, Issue #463) consumes it, so synthesize() does not need it.
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
       // Issue #1150: expand macros AFTER stack selection (below), so a
       // macro-carrying stack outside the deploy set can never block or
       // slow this deploy with a CFn round-trip.
       deferMacroExpansion: true,
     };
-    const result = await synthesizer.synthesize(synthOptions);
+    const [result, statePrep] = await Promise.all([
+      synthesizer.synthesize(synthOptions),
+      statePrepPromise,
+    ]);
+    const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;
+    // The deferred macro-expander (expandMacrosForStacks, below) needs the
+    // resolved state bucket for its > 51,200-byte template upload path (#463).
+    synthOptions.stateBucket = stateBucket;
 
     const { stacks: allStacks } = result;
 

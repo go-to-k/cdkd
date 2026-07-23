@@ -822,6 +822,14 @@ complementary to the per-flow diagrams above:
    └── synth does NOT publish assets or deploy (deploy only)
 ```
 
+> Note: the top-to-bottom order above is the logical flow, not a strict serial
+> schedule. As a latency optimization, `cdkd deploy` resolves the default state
+> bucket (STS `GetCallerIdentity` + `GetBucketLocation`) and runs the fail-fast
+> bucket-exists preflight **concurrently with CDK synthesis** — synth needs
+> neither the state bucket (only the deferred macro-expander consumes it) nor
+> the provisioning clients, so the two independent I/O phases overlap instead of
+> running back-to-back.
+
 ## Design Principles
 
 ### 1. Single Responsibility Principle (SRP)
