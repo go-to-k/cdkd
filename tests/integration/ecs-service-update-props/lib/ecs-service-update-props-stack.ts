@@ -95,6 +95,19 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
       }),
     });
 
+    // issue #1173: RestartPolicy is a ContainerDefinition sub-field that
+    // convertContainerDefinitions never mapped, so it was silently dropped on
+    // RegisterTaskDefinition. It is Fargate-compatible (platform 1.4.0+), so it
+    // registers on this task def. Injected via the L1 escape hatch (PascalCase)
+    // so the wire shape is exactly what a hand-written template emits; verify.sh
+    // reads it back via describe-task-definition AND asserts the deploy-time
+    // observedProperties captured it in CFn PascalCase.
+    const cfnTaskDef = taskDefinition.node.defaultChild as ecs.CfnTaskDefinition;
+    cfnTaskDef.addPropertyOverride('ContainerDefinitions.0.RestartPolicy', {
+      Enabled: true,
+      RestartAttemptPeriod: 60,
+    });
+
     // Plain Fargate Service (desiredCount: 0). NO serviceConnectConfiguration,
     // NO addVolume — stays SDK-routed.
     //

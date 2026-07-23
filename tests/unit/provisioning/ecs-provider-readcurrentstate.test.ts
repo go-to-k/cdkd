@@ -321,6 +321,88 @@ describe('ECSProvider.readCurrentState', () => {
     ]);
   });
 
+  it('reverse-maps the #1173 ContainerDefinition sub-fields to PascalCase (issue #1173)', async () => {
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        containerDefinitions: [
+          {
+            name: 'c1',
+            image: 'img',
+            repositoryCredentials: {
+              credentialsParameter: 'arn:aws:secretsmanager:us-east-1:123:secret:reg',
+            },
+            firelensConfiguration: {
+              type: 'fluentbit',
+              options: { 'enable-ecs-log-metadata': 'true' },
+            },
+            resourceRequirements: [{ type: 'GPU', value: '1' }],
+            systemControls: [{ namespace: 'net.core.somaxconn', value: '1024' }],
+            extraHosts: [{ hostname: 'db.local', ipAddress: '10.0.0.5' }],
+            restartPolicy: { enabled: true, ignoredExitCodes: [1], restartAttemptPeriod: 60 },
+            dnsServers: ['10.0.0.2'],
+            dnsSearchDomains: ['example.internal'],
+            dockerSecurityOptions: ['label:user:me'],
+            credentialSpecs: ['credentialspecdomainless:arn:aws:...'],
+            hostname: 'web-host',
+            versionConsistency: 'disabled',
+          },
+        ],
+      },
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/my-td:1',
+      'TDLogical',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result['ContainerDefinitions']).toEqual([
+      {
+        Name: 'c1',
+        Image: 'img',
+        RepositoryCredentials: {
+          CredentialsParameter: 'arn:aws:secretsmanager:us-east-1:123:secret:reg',
+        },
+        // free-form FireLens option keys preserved verbatim:
+        FirelensConfiguration: {
+          Type: 'fluentbit',
+          Options: { 'enable-ecs-log-metadata': 'true' },
+        },
+        ResourceRequirements: [{ Type: 'GPU', Value: '1' }],
+        SystemControls: [{ Namespace: 'net.core.somaxconn', Value: '1024' }],
+        ExtraHosts: [{ Hostname: 'db.local', IpAddress: '10.0.0.5' }],
+        RestartPolicy: { Enabled: true, IgnoredExitCodes: [1], RestartAttemptPeriod: 60 },
+        DnsServers: ['10.0.0.2'],
+        DnsSearchDomains: ['example.internal'],
+        DockerSecurityOptions: ['label:user:me'],
+        CredentialSpecs: ['credentialspecdomainless:arn:aws:...'],
+        Hostname: 'web-host',
+        VersionConsistency: 'disabled',
+      },
+    ]);
+  });
+
+  it('drops the AWS-default VersionConsistency=enabled so it does not phantom-drift (issue #1173)', async () => {
+    // AWS returns versionConsistency: 'enabled' by default even when the
+    // template omits it; the read must drop the default (like Cpu: 0) so a
+    // template that omits it does not phantom-drift on the properties baseline.
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        containerDefinitions: [{ name: 'c1', image: 'img', versionConsistency: 'enabled' }],
+      },
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/my-td:1',
+      'TDLogical',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result['ContainerDefinitions']).toEqual([{ Name: 'c1', Image: 'img' }]);
+  });
+
   // --- issue #1167: reverse-map nested objects SDK camelCase -> CFn PascalCase ---
   // The drift baseline is state `properties` (PascalCase) or `observedProperties`;
   // readCurrentState must return PascalCase nested shapes so a resource whose

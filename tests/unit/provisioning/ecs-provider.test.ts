@@ -476,6 +476,65 @@ describe('ECSProvider', () => {
         expect(c.ulimits).toEqual([{ name: 'nofile', softLimit: 1024, hardLimit: 2048 }]);
       });
 
+      it('maps the previously-dropped ContainerDefinition sub-fields to SDK camelCase (issue #1173)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/subfields:1',
+          },
+        });
+
+        await provider.create('SubfieldsTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'subfields',
+          ContainerDefinitions: [
+            {
+              Name: 'web',
+              Image: 'nginx:latest',
+              RepositoryCredentials: {
+                CredentialsParameter: 'arn:aws:secretsmanager:us-east-1:123:secret:reg',
+              },
+              FirelensConfiguration: {
+                Type: 'fluentbit',
+                // free-form keys must survive verbatim:
+                Options: { 'enable-ecs-log-metadata': 'true', 'config-file-value': '/extra.conf' },
+              },
+              ResourceRequirements: [{ Type: 'GPU', Value: '1' }],
+              SystemControls: [{ Namespace: 'net.core.somaxconn', Value: '1024' }],
+              ExtraHosts: [{ Hostname: 'db.local', IpAddress: '10.0.0.5' }],
+              RestartPolicy: { Enabled: true, IgnoredExitCodes: [1], RestartAttemptPeriod: 60 },
+              DnsServers: ['10.0.0.2'],
+              DnsSearchDomains: ['example.internal'],
+              DockerSecurityOptions: ['label:user:me'],
+              CredentialSpecs: ['credentialspecdomainless:arn:aws:...'],
+              Hostname: 'web-host',
+              VersionConsistency: 'disabled',
+            },
+          ],
+        });
+
+        const c = mockSend.mock.calls[0][0].input.containerDefinitions[0];
+        expect(c.repositoryCredentials).toEqual({
+          credentialsParameter: 'arn:aws:secretsmanager:us-east-1:123:secret:reg',
+        });
+        expect(c.firelensConfiguration).toEqual({
+          type: 'fluentbit',
+          options: { 'enable-ecs-log-metadata': 'true', 'config-file-value': '/extra.conf' },
+        });
+        expect(c.resourceRequirements).toEqual([{ type: 'GPU', value: '1' }]);
+        expect(c.systemControls).toEqual([{ namespace: 'net.core.somaxconn', value: '1024' }]);
+        expect(c.extraHosts).toEqual([{ hostname: 'db.local', ipAddress: '10.0.0.5' }]);
+        expect(c.restartPolicy).toEqual({
+          enabled: true,
+          ignoredExitCodes: [1],
+          restartAttemptPeriod: 60,
+        });
+        expect(c.dnsServers).toEqual(['10.0.0.2']);
+        expect(c.dnsSearchDomains).toEqual(['example.internal']);
+        expect(c.dockerSecurityOptions).toEqual(['label:user:me']);
+        expect(c.credentialSpecs).toEqual(['credentialspecdomainless:arn:aws:...']);
+        expect(c.hostname).toBe('web-host');
+        expect(c.versionConsistency).toBe('disabled');
+      });
+
       it('passes through undefined ContainerDefinition array fields without crashing', async () => {
         // Defensive — most container definitions don't set most of these
         // optional fields; the converter must not blow up on undefined.
@@ -499,6 +558,19 @@ describe('ECSProvider', () => {
         expect(c.volumesFrom).toBeUndefined();
         expect(c.dependsOn).toBeUndefined();
         expect(c.ulimits).toBeUndefined();
+        // issue #1173 sub-fields also stay undefined when the template omits them:
+        expect(c.repositoryCredentials).toBeUndefined();
+        expect(c.firelensConfiguration).toBeUndefined();
+        expect(c.resourceRequirements).toBeUndefined();
+        expect(c.systemControls).toBeUndefined();
+        expect(c.extraHosts).toBeUndefined();
+        expect(c.restartPolicy).toBeUndefined();
+        expect(c.dnsServers).toBeUndefined();
+        expect(c.dnsSearchDomains).toBeUndefined();
+        expect(c.dockerSecurityOptions).toBeUndefined();
+        expect(c.credentialSpecs).toBeUndefined();
+        expect(c.hostname).toBeUndefined();
+        expect(c.versionConsistency).toBeUndefined();
       });
 
       it('forwards EnableFaultInjection=true onto RegisterTaskDefinition (#609 backfill)', async () => {
