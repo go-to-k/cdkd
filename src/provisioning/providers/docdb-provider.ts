@@ -846,7 +846,7 @@ export class DocDBProvider implements ResourceProvider {
       if (status === 'available') return;
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(
@@ -880,7 +880,7 @@ export class DocDBProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for DocDB DBCluster ${dbClusterIdentifier} to be deleted`);
@@ -905,7 +905,7 @@ export class DocDBProvider implements ResourceProvider {
       if (status === 'available') return;
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(
@@ -936,7 +936,7 @@ export class DocDBProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for DocDB DBInstance ${dbInstanceIdentifier} to be deleted`);

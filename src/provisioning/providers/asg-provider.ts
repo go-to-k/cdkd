@@ -955,7 +955,7 @@ export class ASGProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(

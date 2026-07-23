@@ -3831,7 +3831,7 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<T> {
     const totalBudgetMs = opts.totalBudgetMs ?? 600_000; // 10 min default
     const initialDelayMs = 5_000;
-    const maxDelayMs = 60_000;
+    const maxDelayMs = 10_000;
     const startedAt = Date.now();
 
     let attempt = 0;

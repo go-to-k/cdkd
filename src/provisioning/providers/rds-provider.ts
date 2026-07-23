@@ -1180,7 +1180,7 @@ export class RDSProvider implements ResourceProvider {
       if (status === 'available') return;
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for DBCluster ${dbClusterIdentifier} to become available`);
@@ -1212,7 +1212,7 @@ export class RDSProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for DBCluster ${dbClusterIdentifier} to be deleted`);
@@ -1237,7 +1237,7 @@ export class RDSProvider implements ResourceProvider {
       if (status === 'available') return;
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for DBInstance ${dbInstanceIdentifier} to become available`);
@@ -1269,7 +1269,7 @@ export class RDSProvider implements ResourceProvider {
       }
 
       await this.sleep(delay);
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(delay * 2, 10_000);
     }
 
     throw new Error(`Timed out waiting for DBInstance ${dbInstanceIdentifier} to be deleted`);
