@@ -1651,6 +1651,143 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * Reverse of `convertContainerDefinitions` for `readCurrentState` (issue
+   * #1169). Emits CFn PascalCase so the drift baseline (state `properties`
+   * PascalCase, or `observedProperties` captured via this same reader) compares
+   * apples-to-apples instead of phantom-drifting on the whole array — the drift
+   * comparator compares arrays wholesale via `deepEqual`, so the previous raw
+   * SDK camelCase read (`result['ContainerDefinitions'] = td.containerDefinitions`)
+   * never matched a PascalCase baseline.
+   *
+   * Two rules keep the read side matching a template that omits AWS's defaults:
+   *   1. Only the fields `convertContainerDefinitions` can SET are emitted, so
+   *      the round-trip is symmetric — a field cdkd cannot set is never surfaced
+   *      as drift against a template that lacks it.
+   *   2. AWS-defaulted-empty divergences are normalized away — `Cpu: 0`, empty
+   *      arrays (`PortMappings` / `Environment` / ...), and an empty
+   *      `LinuxParameters.Capabilities: {Add:[],Drop:[]}` are dropped so they
+   *      equal "absent" (what the template has). AWS returns these defaults on
+   *      EVERY read, so without this the `properties` fallback baseline
+   *      (pre-observedProperties state) would phantom-drift on every run; the
+   *      normalization trades that for a rare edge — a template that EXPLICITLY
+   *      sets one of these to its empty/zero default AND has no observed baseline
+   *      (CDK L2 never emits e.g. an explicit `Cpu: 0`). On the normal
+   *      `observedProperties` path both sides run through this reader, so the
+   *      snapshot is self-consistent regardless.
+   *
+   * Free-form maps (`DockerLabels`, `LogConfiguration.Options`) are copied
+   * verbatim — their keys are user data (log-driver options / container labels),
+   * NOT CFn property names, so they must not be case-flipped.
+   */
+  private containerDefinitionsToCfn(defs?: ContainerDefinition[]): Array<Record<string, unknown>> {
+    if (!defs) return [];
+    return defs.map((c) => {
+      const out: Record<string, unknown> = {};
+      if (c.name !== undefined) out['Name'] = c.name;
+      if (c.image !== undefined) out['Image'] = c.image;
+      // Cpu 0 is the AWS default for a container that omits it; drop so it
+      // matches a template without an explicit Cpu.
+      if (c.cpu !== undefined && c.cpu !== 0) out['Cpu'] = c.cpu;
+      if (c.memory !== undefined) out['Memory'] = c.memory;
+      if (c.memoryReservation !== undefined) out['MemoryReservation'] = c.memoryReservation;
+      if (c.essential !== undefined) out['Essential'] = c.essential;
+      if (c.command && c.command.length > 0) out['Command'] = [...c.command];
+      if (c.entryPoint && c.entryPoint.length > 0) out['EntryPoint'] = [...c.entryPoint];
+      if (c.environment && c.environment.length > 0) {
+        out['Environment'] = c.environment.map((e) => ({ Name: e.name, Value: e.value }));
+      }
+      if (c.environmentFiles && c.environmentFiles.length > 0) {
+        out['EnvironmentFiles'] = c.environmentFiles.map((e) => ({ Type: e.type, Value: e.value }));
+      }
+      if (c.secrets && c.secrets.length > 0) {
+        out['Secrets'] = c.secrets.map((s) => ({ Name: s.name, ValueFrom: s.valueFrom }));
+      }
+      if (c.portMappings && c.portMappings.length > 0) {
+        out['PortMappings'] = camelToPascalCaseKeys(c.portMappings);
+      }
+      if (c.mountPoints && c.mountPoints.length > 0) {
+        out['MountPoints'] = camelToPascalCaseKeys(c.mountPoints);
+      }
+      if (c.volumesFrom && c.volumesFrom.length > 0) {
+        out['VolumesFrom'] = camelToPascalCaseKeys(c.volumesFrom);
+      }
+      if (c.dependsOn && c.dependsOn.length > 0) {
+        out['DependsOn'] = camelToPascalCaseKeys(c.dependsOn);
+      }
+      if (c.links && c.links.length > 0) out['Links'] = [...c.links];
+      if (c.workingDirectory !== undefined) out['WorkingDirectory'] = c.workingDirectory;
+      if (c.disableNetworking !== undefined) out['DisableNetworking'] = c.disableNetworking;
+      if (c.privileged !== undefined) out['Privileged'] = c.privileged;
+      if (c.readonlyRootFilesystem !== undefined) {
+        out['ReadonlyRootFilesystem'] = c.readonlyRootFilesystem;
+      }
+      if (c.user !== undefined) out['User'] = c.user;
+      if (c.ulimits && c.ulimits.length > 0) out['Ulimits'] = camelToPascalCaseKeys(c.ulimits);
+      if (c.logConfiguration) {
+        out['LogConfiguration'] = this.logConfigurationToCfn(c.logConfiguration);
+      }
+      if (c.healthCheck) out['HealthCheck'] = camelToPascalCaseKeys(c.healthCheck);
+      if (c.linuxParameters) {
+        const lp = this.linuxParametersToCfn(c.linuxParameters);
+        if (Object.keys(lp).length > 0) out['LinuxParameters'] = lp;
+      }
+      if (c.dockerLabels && Object.keys(c.dockerLabels).length > 0) {
+        out['DockerLabels'] = { ...c.dockerLabels };
+      }
+      if (c.startTimeout !== undefined) out['StartTimeout'] = c.startTimeout;
+      if (c.stopTimeout !== undefined) out['StopTimeout'] = c.stopTimeout;
+      if (c.interactive !== undefined) out['Interactive'] = c.interactive;
+      if (c.pseudoTerminal !== undefined) out['PseudoTerminal'] = c.pseudoTerminal;
+      return out;
+    });
+  }
+
+  /**
+   * Reverse of `convertLogConfiguration` for `containerDefinitionsToCfn`.
+   * `LogDriver` flips; `Options` is a free-form log-driver option map copied
+   * verbatim (its keys, e.g. `awslogs-group`, are NOT CFn property names);
+   * `SecretOptions` is a `{Name, ValueFrom}[]` list. Emit-when-present so an
+   * absent / empty sub-field does not phantom-drift.
+   */
+  private logConfigurationToCfn(lc: LogConfiguration): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (lc.logDriver !== undefined) out['LogDriver'] = lc.logDriver;
+    if (lc.options && Object.keys(lc.options).length > 0) out['Options'] = { ...lc.options };
+    if (lc.secretOptions && lc.secretOptions.length > 0) {
+      out['SecretOptions'] = lc.secretOptions.map((s) => ({
+        Name: s.name,
+        ValueFrom: s.valueFrom,
+      }));
+    }
+    return out;
+  }
+
+  /**
+   * Reverse of `convertLinuxParameters` for `containerDefinitionsToCfn`. The
+   * SET side is a mechanical first-letter flip (`pascalToCamelCaseKeys`), so the
+   * read side is the inverse `camelToPascalCaseKeys` — plus normalization of the
+   * AWS-defaulted-empty `Capabilities` / `Devices` / `Tmpfs`: AWS returns
+   * `capabilities: {add:[], drop:[]}` even when the template set neither, so the
+   * empty `Add` / `Drop` (and an otherwise-empty `Capabilities`) and empty
+   * `Devices` / `Tmpfs` arrays are dropped to equal a template that omits them.
+   */
+  private linuxParametersToCfn(lp: LinuxParameters): Record<string, unknown> {
+    const out = camelToPascalCaseKeys(lp) as Record<string, unknown>;
+    const caps = out['Capabilities'] as Record<string, unknown> | undefined;
+    if (caps) {
+      const normalized: Record<string, unknown> = {};
+      if (Array.isArray(caps['Add']) && caps['Add'].length > 0) normalized['Add'] = caps['Add'];
+      if (Array.isArray(caps['Drop']) && caps['Drop'].length > 0) normalized['Drop'] = caps['Drop'];
+      if (Object.keys(normalized).length > 0) out['Capabilities'] = normalized;
+      else delete out['Capabilities'];
+    }
+    for (const key of ['Devices', 'Tmpfs']) {
+      if (Array.isArray(out[key]) && (out[key] as unknown[]).length === 0) delete out[key];
+    }
+    return out;
+  }
+
+  /**
    * Coerce a CFn boolean property to a real boolean at the wire boundary.
    * CFn templates can carry booleans as the strings "true" / "false"
    * (e.g. via Fn::Sub / parameter plumbing), so the SDK input must
@@ -2211,7 +2348,12 @@ export class ECSProvider implements ResourceProvider {
     if (td.enableFaultInjection !== undefined) {
       result['EnableFaultInjection'] = td.enableFaultInjection;
     }
-    result['ContainerDefinitions'] = td.containerDefinitions ?? [];
+    // Reverse-map the container definitions from SDK camelCase to CFn
+    // PascalCase (issue #1169). The previous raw `td.containerDefinitions`
+    // surfaced camelCase, so the drift comparator (which compares this array
+    // wholesale via deepEqual) phantom-drifted the whole block against the
+    // PascalCase baseline.
+    result['ContainerDefinitions'] = this.containerDefinitionsToCfn(td.containerDefinitions);
     const tags = normalizeAwsTagsToCfn(resp.tags);
     result['Tags'] = tags;
     return result;

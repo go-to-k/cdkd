@@ -83,7 +83,7 @@ ec2-vpc	2026-06-21T11:12:35Z	PASS	53	standard	sweep-F staleness re-run (rc=0)
 ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
 ecs-fargate	2026-07-02T18:23:15Z	PASS	373	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-ecs-service-update-props	2026-07-23T07:13:07Z	PASS		verify.sh	#1170 re-run after getServiceAttribute polish; destroy 15 del 0 err 0 orph
+ecs-service-update-props	2026-07-23T07:43:53Z	PASS		verify.sh	#1169 Phase1d/1e ContainerDefinitions drift-clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
 efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
 efs-standalone	2026-06-21T16:16:44Z	PASS	135	verify.sh	stale-real re-run; 11 deleted 0 err; clean

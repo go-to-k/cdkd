@@ -204,6 +204,123 @@ describe('ECSProvider.readCurrentState', () => {
     });
   });
 
+  // --- issue #1169: reverse-map ContainerDefinitions SDK camelCase -> CFn PascalCase ---
+  it('reverse-maps ContainerDefinitions to CFn PascalCase and normalizes AWS-defaulted empties (issue #1169)', async () => {
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        containerDefinitions: [
+          {
+            name: 'AppContainer',
+            image: 'public.ecr.aws/amazonlinux/amazonlinux:latest',
+            memory: 512,
+            essential: true,
+            command: ['echo', 'hello'],
+            // AWS-defaulted empties that must be dropped so they equal a
+            // template that omits them:
+            cpu: 0,
+            portMappings: [],
+            environment: [],
+            mountPoints: [],
+            volumesFrom: [],
+            systemControls: [],
+            logConfiguration: {
+              logDriver: 'awslogs',
+              // free-form option keys must be preserved verbatim (NOT flipped):
+              options: {
+                'awslogs-group': '/ecs/app',
+                'awslogs-region': 'us-east-1',
+                'awslogs-stream-prefix': 'cdkd',
+              },
+            },
+            linuxParameters: {
+              initProcessEnabled: true,
+              // AWS always returns the capability pair even when empty:
+              capabilities: { add: [], drop: [] },
+            },
+          },
+        ],
+      },
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/my-td:1',
+      'TDLogical',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result['ContainerDefinitions']).toEqual([
+      {
+        Name: 'AppContainer',
+        Image: 'public.ecr.aws/amazonlinux/amazonlinux:latest',
+        Memory: 512,
+        Essential: true,
+        Command: ['echo', 'hello'],
+        LogConfiguration: {
+          LogDriver: 'awslogs',
+          Options: {
+            'awslogs-group': '/ecs/app',
+            'awslogs-region': 'us-east-1',
+            'awslogs-stream-prefix': 'cdkd',
+          },
+        },
+        LinuxParameters: {
+          InitProcessEnabled: true,
+        },
+      },
+    ]);
+  });
+
+  it('reverse-maps populated ContainerDefinitions sub-lists to PascalCase (issue #1169)', async () => {
+    mockSend.mockResolvedValueOnce({
+      taskDefinition: {
+        family: 'my-td',
+        containerDefinitions: [
+          {
+            name: 'c1',
+            image: 'img',
+            cpu: 256,
+            environment: [{ name: 'FOO', value: 'bar' }],
+            secrets: [{ name: 'SEC', valueFrom: 'arn:aws:ssm:...:parameter/x' }],
+            portMappings: [{ containerPort: 8080, hostPort: 8080, protocol: 'tcp' }],
+            mountPoints: [{ sourceVolume: 'v', containerPath: '/data', readOnly: true }],
+            dependsOn: [{ containerName: 'c0', condition: 'START' }],
+            ulimits: [{ name: 'nofile', softLimit: 1024, hardLimit: 2048 }],
+            linuxParameters: {
+              initProcessEnabled: false,
+              capabilities: { add: ['NET_ADMIN'], drop: [] },
+            },
+          },
+        ],
+      },
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:task-definition/my-td:1',
+      'TDLogical',
+      'AWS::ECS::TaskDefinition'
+    )) as Record<string, unknown>;
+
+    expect(result['ContainerDefinitions']).toEqual([
+      {
+        Name: 'c1',
+        Image: 'img',
+        Cpu: 256,
+        Environment: [{ Name: 'FOO', Value: 'bar' }],
+        Secrets: [{ Name: 'SEC', ValueFrom: 'arn:aws:ssm:...:parameter/x' }],
+        PortMappings: [{ ContainerPort: 8080, HostPort: 8080, Protocol: 'tcp' }],
+        MountPoints: [{ SourceVolume: 'v', ContainerPath: '/data', ReadOnly: true }],
+        DependsOn: [{ ContainerName: 'c0', Condition: 'START' }],
+        Ulimits: [{ Name: 'nofile', SoftLimit: 1024, HardLimit: 2048 }],
+        LinuxParameters: {
+          InitProcessEnabled: false,
+          // non-empty Add survives; empty Drop is dropped:
+          Capabilities: { Add: ['NET_ADMIN'] },
+        },
+      },
+    ]);
+  });
+
   // --- issue #1167: reverse-map nested objects SDK camelCase -> CFn PascalCase ---
   // The drift baseline is state `properties` (PascalCase) or `observedProperties`;
   // readCurrentState must return PascalCase nested shapes so a resource whose

@@ -34,6 +34,15 @@
 #         Service's deploy-time observedProperties ARE captured (proving the
 #         ARN-form read works) AND carry DeploymentConfiguration in CFn
 #         PascalCase.
+#   #1169 (ContainerDefinitions reverse-map): readCurrentStateTaskDefinition
+#         surfaced the whole ContainerDefinitions array as raw SDK camelCase,
+#         while the drift baseline is CFn PascalCase, so `cdkd drift`
+#         phantom-drifted the TaskDefinition on ContainerDefinitions (the drift
+#         comparator compares arrays wholesale via deepEqual). Phase 1d asserts
+#         the deploy-time observedProperties.ContainerDefinitions is PascalCase
+#         (free-form log-driver option keys preserved, AWS-defaulted empties
+#         normalized), and Phase 1e runs a real `cdkd drift` asserting NO
+#         ContainerDefinitions drift.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
@@ -297,13 +306,12 @@ echo "    OK: base #1165 TaskDefinition on AWS is runtimePlatform.cpuArchitectur
 # lookup below would be MISSING — a robust, whole-stack-drift-free check that
 # readCurrentState round-trips the nested casing against real AWS.
 #
-# (A whole-stack `cdkd drift` assertion is deliberately NOT used: this fixture's
-# TaskDefinition also carries ContainerDefinitions, which readCurrentState still
-# surfaces as raw SDK camelCase — a larger structural gap tracked by #1169 —
-# so a whole-stack drift assertion would still phantom-drift on the
-# TaskDefinition for reasons unrelated to the Service. The Service side is
-# proven directly by Phase 1c below: #1170 makes its ARN-form physicalId read
-# back, so its observedProperties are now captured.)
+# (Phase 1c proves the Service side reads back (#1170); Phase 1d + 1e prove the
+# TaskDefinition ContainerDefinitions reverse-map (#1169). Phase 1e runs a real
+# `cdkd drift` and asserts it reports NO ContainerDefinitions drift — before
+# #1169 readCurrentState surfaced ContainerDefinitions as raw SDK camelCase,
+# which the drift comparator (wholesale array deepEqual) phantom-drifted against
+# the PascalCase baseline.)
 echo "==> Phase 1b: assert deploy-time observedProperties captured RuntimePlatform in CFn PascalCase (#1167 readCurrentState reverse-map)"
 OBS_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 OBS_CPU_ARCH=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.RuntimePlatform.CpuArchitecture] | first // "MISSING"')
@@ -341,6 +349,75 @@ if [ "${OBS_SVC_MAXPCT}" != "150" ]; then
   exit 1
 fi
 echo "    OK: Service observedProperties captured (DeploymentConfiguration.MaximumPercent=150) — ARN-form readCurrentState verified against real AWS (#1170)"
+
+# --- Phase 1d: TaskDefinition observedProperties.ContainerDefinitions PascalCase (#1169) --
+# #1169: readCurrentStateTaskDefinition surfaced the whole ContainerDefinitions
+# array as RAW SDK camelCase (`result['ContainerDefinitions'] =
+# td.containerDefinitions`), while the drift baseline is CFn PascalCase. Since
+# observedProperties is captured FROM readCurrentState, the deploy-time snapshot
+# must now carry PascalCase container keys (`Name` / `Image` /
+# `LogConfiguration.LogDriver` / `LinuxParameters.InitProcessEnabled`). Before
+# the fix these PascalCase lookups would be MISSING (the keys were camelCase).
+echo "==> Phase 1d: assert deploy-time observedProperties.ContainerDefinitions in CFn PascalCase (#1169 reverse-map)"
+CD_JQ='[.resources[] | select(.resourceType=="AWS::ECS::TaskDefinition") | .observedProperties.ContainerDefinitions[0]] | first'
+OBS_CD_NAME=$(echo "${OBS_STATE}" | jq -r "${CD_JQ}.Name // \"MISSING\"")
+OBS_CD_LOGDRIVER=$(echo "${OBS_STATE}" | jq -r "${CD_JQ}.LogConfiguration.LogDriver // \"MISSING\"")
+OBS_CD_INITPROC=$(echo "${OBS_STATE}" | jq -r "${CD_JQ}.LinuxParameters.InitProcessEnabled // \"MISSING\"")
+# The free-form awslogs option keys must be preserved verbatim (NOT case-flipped).
+OBS_CD_AWSLOGS_GROUP=$(echo "${OBS_STATE}" | jq -r "${CD_JQ}.LogConfiguration.Options.\"awslogs-group\" // \"MISSING\"")
+# camelCase leak guard: the lowercase `name` key must NOT be present.
+OBS_CD_CAMEL_NAME=$(echo "${OBS_STATE}" | jq -r "${CD_JQ} | has(\"name\")")
+
+if [ "${OBS_CD_NAME}" != "AppContainer" ]; then
+  echo "FAIL: TaskDefinition observedProperties.ContainerDefinitions[0].Name is '${OBS_CD_NAME}', expected 'AppContainer' (#1169 readCurrentState did NOT reverse-map ContainerDefinitions to CFn PascalCase)" >&2
+  echo "${OBS_STATE}" | jq "${CD_JQ}"
+  exit 1
+fi
+if [ "${OBS_CD_LOGDRIVER}" != "awslogs" ]; then
+  echo "FAIL: TaskDefinition observedProperties.ContainerDefinitions[0].LogConfiguration.LogDriver is '${OBS_CD_LOGDRIVER}', expected 'awslogs' (#1169 reverse-map)" >&2
+  exit 1
+fi
+if [ "${OBS_CD_INITPROC}" != "true" ]; then
+  echo "FAIL: TaskDefinition observedProperties.ContainerDefinitions[0].LinuxParameters.InitProcessEnabled is '${OBS_CD_INITPROC}', expected 'true' (#1169 reverse-map of nested LinuxParameters)" >&2
+  exit 1
+fi
+if [ "${OBS_CD_AWSLOGS_GROUP}" = "MISSING" ]; then
+  echo "FAIL: TaskDefinition observedProperties.ContainerDefinitions[0].LogConfiguration.Options.awslogs-group is MISSING (#1169 must preserve free-form log-driver option keys verbatim)" >&2
+  echo "${OBS_STATE}" | jq "${CD_JQ}.LogConfiguration"
+  exit 1
+fi
+if [ "${OBS_CD_CAMEL_NAME}" = "true" ]; then
+  echo "FAIL: TaskDefinition observedProperties.ContainerDefinitions[0] carries a camelCase 'name' key (#1169 reverse-map leaked SDK camelCase)" >&2
+  exit 1
+fi
+echo "    OK: observedProperties.ContainerDefinitions[0] captured in CFn PascalCase (Name/LogDriver/InitProcessEnabled), free-form awslogs option keys preserved, no camelCase leak (#1169)"
+
+# --- Phase 1e: `cdkd drift` reports NO ContainerDefinitions drift (#1169) --
+# End-to-end proof against real AWS: with the reverse-map + AWS-defaulted-empty
+# normalization, a `cdkd drift` right after deploy must not phantom-drift the
+# TaskDefinition on ContainerDefinitions. drift is state-driven (no synth) and
+# exits 1 if ANY resource drifts, so we capture the exit code and grep the
+# report for the specific symptom rather than gating on the whole-stack result
+# (unrelated CC-API drift on other resources must not fail this check).
+echo "==> Phase 1e: assert 'cdkd drift' reports NO ContainerDefinitions drift on the TaskDefinition (#1169)"
+set +e
+DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" 2>&1)
+DRIFT_RC=$?
+set -e
+# rc 0 = no drift, 1 = drift detected; rc 2 = command error (must not pass vacuously).
+if [ "${DRIFT_RC}" != "0" ] && [ "${DRIFT_RC}" != "1" ]; then
+  echo "FAIL: 'cdkd drift' exited ${DRIFT_RC} (command error, not a drift result) — cannot conclude anything about ContainerDefinitions" >&2
+  echo "${DRIFT_OUT}" | tail -20
+  exit 1
+fi
+if echo "${DRIFT_OUT}" | grep -q "ContainerDefinitions"; then
+  echo "FAIL: 'cdkd drift' reported ContainerDefinitions drift on the TaskDefinition (#1169 reverse-map did NOT round-trip against real AWS)" >&2
+  echo "${DRIFT_OUT}" | grep -B2 -A8 "ContainerDefinitions" | head -40
+  exit 1
+fi
+echo "    OK: 'cdkd drift' (rc=${DRIFT_RC}) reports NO ContainerDefinitions drift — reverse-map + normalization round-trip verified against real AWS (#1169)"
 
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
