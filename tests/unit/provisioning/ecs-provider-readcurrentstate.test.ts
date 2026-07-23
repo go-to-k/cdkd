@@ -195,6 +195,20 @@ describe('ECSProvider.readCurrentState', () => {
           serviceName: 'my-svc',
           clusterArn: 'arn:aws:ecs:us-east-1:123:cluster/my-cluster',
           launchType: 'EC2',
+          networkConfiguration: {
+            awsvpcConfiguration: {
+              subnets: ['subnet-1'],
+              securityGroups: ['sg-1'],
+              assignPublicIp: 'ENABLED',
+            },
+          },
+          loadBalancers: [
+            {
+              targetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:0:targetgroup/tg/abc',
+              containerName: 'web',
+              containerPort: 8080,
+            },
+          ],
           capacityProviderStrategy: [{ capacityProvider: 'FARGATE', weight: 2, base: 1 }],
           deploymentConfiguration: {
             maximumPercent: 150,
@@ -226,6 +240,20 @@ describe('ECSProvider.readCurrentState', () => {
       'AWS::ECS::Service'
     )) as Record<string, unknown>;
 
+    expect(result['NetworkConfiguration']).toEqual({
+      AwsvpcConfiguration: {
+        Subnets: ['subnet-1'],
+        SecurityGroups: ['sg-1'],
+        AssignPublicIp: 'ENABLED',
+      },
+    });
+    expect(result['LoadBalancers']).toEqual([
+      {
+        TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:0:targetgroup/tg/abc',
+        ContainerName: 'web',
+        ContainerPort: 8080,
+      },
+    ]);
     expect(result['CapacityProviderStrategy']).toEqual([
       { CapacityProvider: 'FARGATE', Weight: 2, Base: 1 },
     ]);

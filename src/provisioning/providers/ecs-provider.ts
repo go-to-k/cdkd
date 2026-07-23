@@ -2048,8 +2048,16 @@ export class ECSProvider implements ResourceProvider {
     if (s.healthCheckGracePeriodSeconds !== undefined) {
       result['HealthCheckGracePeriodSeconds'] = s.healthCheckGracePeriodSeconds;
     }
-    if (s.networkConfiguration) result['NetworkConfiguration'] = s.networkConfiguration;
-    result['LoadBalancers'] = s.loadBalancers ?? [];
+    // NetworkConfiguration / LoadBalancers are also converted on the SET path
+    // (convertNetworkConfiguration / convertLoadBalancers); reverse-map them here
+    // too so the read side is consistently PascalCase (issue #1167). Both are
+    // pure first-letter flips (`awsvpcConfiguration.{subnets,securityGroups,
+    // assignPublicIp}`, `{targetGroupArn,containerName,containerPort,
+    // loadBalancerName}`).
+    if (s.networkConfiguration) {
+      result['NetworkConfiguration'] = camelToPascalCaseKeys(s.networkConfiguration);
+    }
+    result['LoadBalancers'] = camelToPascalCaseKeys(s.loadBalancers ?? []);
     // Class 1: LaunchType vs CapacityProviderStrategy are mutually exclusive
     // on the AWS API side. UpdateService rejects when both arrive together
     // (e.g. `launchType=FARGATE` + `capacityProviderStrategy=[]`). Skip the
