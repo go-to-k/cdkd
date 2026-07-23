@@ -1666,8 +1666,14 @@ export class ECSProvider implements ResourceProvider {
    *   2. AWS-defaulted-empty divergences are normalized away — `Cpu: 0`, empty
    *      arrays (`PortMappings` / `Environment` / ...), and an empty
    *      `LinuxParameters.Capabilities: {Add:[],Drop:[]}` are dropped so they
-   *      equal "absent" (what the template has). This keeps the `properties`
-   *      fallback baseline (pre-observedProperties state) drift-clean too.
+   *      equal "absent" (what the template has). AWS returns these defaults on
+   *      EVERY read, so without this the `properties` fallback baseline
+   *      (pre-observedProperties state) would phantom-drift on every run; the
+   *      normalization trades that for a rare edge — a template that EXPLICITLY
+   *      sets one of these to its empty/zero default AND has no observed baseline
+   *      (CDK L2 never emits e.g. an explicit `Cpu: 0`). On the normal
+   *      `observedProperties` path both sides run through this reader, so the
+   *      snapshot is self-consistent regardless.
    *
    * Free-form maps (`DockerLabels`, `LogConfiguration.Options`) are copied
    * verbatim — their keys are user data (log-driver options / container labels),
