@@ -1617,6 +1617,36 @@ describe('ECSProvider', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
       });
     });
+
+    describe('getAttribute', () => {
+      it('scopes DescribeServices to the cluster derived from the service ARN (issue #1170)', async () => {
+        // Without the cluster, DescribeServices defaults to the `default`
+        // cluster and a Service in a named cluster comes back MISSING. The
+        // cluster is derived from the long-format service ARN.
+        mockSend.mockResolvedValueOnce({
+          services: [
+            {
+              serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+              serviceName: 'my-service',
+            },
+          ],
+        });
+
+        const arn = await provider.getAttribute(
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          'ServiceArn'
+        );
+
+        const call = mockSend.mock.calls[0][0];
+        expect(call.constructor.name).toBe('DescribeServicesCommand');
+        expect(call.input.cluster).toBe('my-cluster');
+        expect(call.input.services).toEqual([
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+        ]);
+        expect(arn).toBe('arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service');
+      });
+    });
   });
 
   // ─── Unsupported resource type ──────────────────────────────────

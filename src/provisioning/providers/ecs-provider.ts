@@ -105,6 +105,25 @@ const DEPLOYMENT_CONFIG_PRESERVE_KEYS: ReadonlySet<string> = new Set(['HookDetai
 const DEPLOYMENT_CONFIG_PRESERVE_KEYS_CAMEL: ReadonlySet<string> = new Set(['hookDetails']);
 
 /**
+ * Derive the cluster name from a long-format ECS Service ARN
+ * (`arn:<partition>:ecs:<region>:<account>:service/<clusterName>/<serviceName>`)
+ * so `DescribeServices` can be scoped to the right cluster (issue #1170).
+ * Returns `undefined` for the legacy short-format ARN
+ * (`.../service/<serviceName>`, which does not encode a cluster) or any input
+ * that does not match the ARN shape — the caller then falls back to the default
+ * cluster, matching what the short-format ARN implies.
+ */
+function clusterNameFromServiceArn(arn: string): string | undefined {
+  // ARN = arn:<partition>:<service>:<region>:<account>:<resource>
+  const resource = arn.split(':')[5];
+  if (!resource) return undefined;
+  // resource = service/<clusterName>/<serviceName> (long) OR service/<serviceName> (short)
+  const segments = resource.split('/');
+  if (segments[0] !== 'service') return undefined;
+  return segments.length >= 3 ? segments[1] : undefined;
+}
+
+/**
  * AWS ECS Provider
  *
  * Implements resource provisioning for ECS resources:
@@ -1119,9 +1138,13 @@ export class ECSProvider implements ResourceProvider {
   private async getServiceAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     const client = this.getClient();
 
-    // Extract cluster from service ARN if possible
+    // physicalId is the service ARN (what createService stores). DescribeServices
+    // scopes to the default cluster unless a cluster is given, so a Service in a
+    // non-default cluster would come back MISSING; derive the cluster from the
+    // ARN so the lookup is scoped correctly (issue #1170).
     const response = await client.send(
       new DescribeServicesCommand({
+        cluster: clusterNameFromServiceArn(physicalId),
         services: [physicalId],
       })
     );
@@ -1895,8 +1918,9 @@ export class ECSProvider implements ResourceProvider {
    *
    * Dispatches by resource type:
    *   - `AWS::ECS::Cluster` → `DescribeClusters`
-   *   - `AWS::ECS::Service` → `DescribeServices`. Service physicalIds use
-   *     the composite form `<clusterArn>|<serviceName>`; we split on `|`.
+   *   - `AWS::ECS::Service` → `DescribeServices`. Service physicalIds come in
+   *     two forms — the service ARN (what `createService` stores) and the
+   *     composite `<clusterArn>|<serviceName>` — and both are accepted (#1170).
    *   - `AWS::ECS::TaskDefinition` → `DescribeTaskDefinition`
    *
    * Each branch surfaces only the keys cdkd's `create()` accepts, mapping
@@ -1987,11 +2011,26 @@ export class ECSProvider implements ResourceProvider {
   private async readCurrentStateService(
     physicalId: string
   ): Promise<Record<string, unknown> | undefined> {
-    // Service physicalId is `<clusterArn>|<serviceName>` (composite form).
+    // Service physicalId can be either the composite form `<clusterArn>|<serviceName>`
+    // or the service ARN. `createService` stores the ARN (which has no `|`), so a
+    // clusterArn|name split alone made `cdkd drift` report every cdkd-created
+    // Service as drift-unknown (issue #1170). Accept BOTH: the composite form
+    // still splits on `|`, while the ARN form derives the cluster from the ARN
+    // (DescribeServices scopes to that cluster, falling back to the default
+    // cluster when the legacy short-format ARN does not encode one).
+    // `cluster` holds a cluster ARN (composite form) or a cluster name (derived
+    // from the service ARN); DescribeServices accepts either, or the default
+    // cluster when undefined.
+    let cluster: string | undefined;
+    let serviceName: string;
     const sep = physicalId.indexOf('|');
-    if (sep < 0) return undefined;
-    const clusterArn = physicalId.substring(0, sep);
-    const serviceName = physicalId.substring(sep + 1);
+    if (sep >= 0) {
+      cluster = physicalId.substring(0, sep);
+      serviceName = physicalId.substring(sep + 1);
+    } else {
+      serviceName = physicalId;
+      cluster = clusterNameFromServiceArn(physicalId);
+    }
 
     let resp: {
       services?: Array<{
@@ -2019,7 +2058,7 @@ export class ECSProvider implements ResourceProvider {
     try {
       resp = (await this.getClient().send(
         new DescribeServicesCommand({
-          cluster: clusterArn,
+          cluster,
           services: [serviceName],
           include: ['TAGS'],
         })
@@ -2185,10 +2224,11 @@ export class ECSProvider implements ResourceProvider {
    * `AWS::ECS::TaskDefinition` — all explicit-override only (see the
    * per-branch notes on why the `aws:cdk:path` tag walk was removed).
    *
-   * Service has a composite physical id of `<clusterArn>|<serviceName>`
-   * (the form ECSProvider uses internally for mutation operations),
-   * so the explicit-override path takes that composite form when
-   * supplied.
+   * `createService` stores the service ARN as the Service physical id (and
+   * the mutation ops pass it straight through as the `service` argument, with
+   * the cluster read from the template `Cluster` property). The explicit
+   * `--resource` override is honored verbatim, so a caller may also supply the
+   * composite `<clusterArn>|<serviceName>` form that `readCurrentState` accepts.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
@@ -2229,8 +2269,9 @@ export class ECSProvider implements ResourceProvider {
   }
 
   private async importService(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    // Service physical id is `<clusterArn>|<serviceName>` (cdkd internal
-    // composite form). Explicit override is honored as-is.
+    // `createService` stores the service ARN as the physical id; an explicit
+    // override is honored as-is (the composite `<clusterArn>|<serviceName>`
+    // form is also accepted by readCurrentState).
     if (input.knownPhysicalId) {
       return { physicalId: input.knownPhysicalId, attributes: {} };
     }

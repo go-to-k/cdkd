@@ -114,6 +114,61 @@ describe('ECSProvider.readCurrentState', () => {
     });
   });
 
+  it('accepts a bare service ARN physicalId and scopes DescribeServices to the ARN cluster (issue #1170)', async () => {
+    // `createService` stores the service ARN (no `|`), so `readCurrentState`
+    // must accept the ARN form or every cdkd-created Service reads back as
+    // drift-unknown. The cluster is derived from the long-format ARN.
+    mockSend.mockResolvedValueOnce({
+      services: [
+        {
+          serviceName: 'my-svc',
+          clusterArn: 'arn:aws:ecs:us-east-1:123:cluster/my-cluster',
+          taskDefinition: 'arn:aws:ecs:us-east-1:123:task-definition/td:1',
+          desiredCount: 2,
+          launchType: 'FARGATE',
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:service/my-cluster/my-svc',
+      'SvcLogical',
+      'AWS::ECS::Service'
+    );
+
+    const cmd = mockSend.mock.calls[0]?.[0];
+    expect(cmd).toBeInstanceOf(DescribeServicesCommand);
+    // Cluster derived from the ARN, service name is the full ARN.
+    expect((cmd as DescribeServicesCommand).input).toMatchObject({
+      cluster: 'my-cluster',
+      services: ['arn:aws:ecs:us-east-1:123:service/my-cluster/my-svc'],
+    });
+    expect(result).not.toBeUndefined();
+    expect(result?.['ServiceName']).toBe('my-svc');
+  });
+
+  it('accepts a short-format service ARN physicalId and falls back to the default cluster (issue #1170)', async () => {
+    // Legacy short-format ARN does not encode a cluster; the reader must not
+    // return undefined — it passes an undefined cluster (AWS default cluster).
+    mockSend.mockResolvedValueOnce({
+      services: [{ serviceName: 'my-svc', desiredCount: 1, launchType: 'FARGATE' }],
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:service/my-svc',
+      'SvcLogical',
+      'AWS::ECS::Service'
+    );
+
+    const cmd = mockSend.mock.calls[0]?.[0];
+    expect(cmd).toBeInstanceOf(DescribeServicesCommand);
+    expect((cmd as DescribeServicesCommand).input.cluster).toBeUndefined();
+    expect((cmd as DescribeServicesCommand).input.services).toEqual([
+      'arn:aws:ecs:us-east-1:123:service/my-svc',
+    ]);
+    expect(result?.['ServiceName']).toBe('my-svc');
+  });
+
   it('returns CFn-shaped TaskDefinition fields from DescribeTaskDefinition', async () => {
     mockSend.mockResolvedValueOnce({
       taskDefinition: {
