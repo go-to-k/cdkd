@@ -59,6 +59,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 import { DescribeImagesCommand } from '@aws-sdk/client-ecr';
 import {
   DockerAssetPublisher,
+  isDockerAuthFailure,
   resetEcrLoginCache,
 } from '../../../src/assets/docker-asset-publisher.js';
 import { AssetError } from '../../../src/utils/error-handler.js';
@@ -83,6 +84,50 @@ describe('DockerAssetPublisher', () => {
 
   const authToken = Buffer.from('AWS:mock-password').toString('base64');
 
+  // Wire the ECR client so DescribeImages reports "not found" (build + push
+  // path runs) and GetAuthorizationToken returns a valid token.
+  const wireEcrMocks = (proxyEndpoint?: string) => {
+    mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+      if (cmd._type === 'DescribeImages') {
+        const err = new Error('Image not found') as Error & { name: string };
+        err.name = 'ImageNotFoundException';
+        throw err;
+      }
+      if (cmd._type === 'GetAuthorizationToken') {
+        return {
+          authorizationData: [
+            {
+              authorizationToken: authToken,
+              ...(proxyEndpoint ? { proxyEndpoint } : {}),
+            },
+          ],
+        };
+      }
+      return {};
+    });
+  };
+
+  // A `docker push` reject shaped like an ECR auth failure.
+  const authFailurePush = (stderr = 'no basic auth credentials') => (args: string[]) => {
+    if (args[0] === 'push') {
+      const err = new Error('push failed') as Error & { stderr: string };
+      err.stderr = stderr;
+      return Promise.reject(err);
+    }
+    return Promise.resolve({ stdout: '', stderr: '' });
+  };
+
+  const countAuthTokenCalls = () =>
+    mockEcrSend.mock.calls.filter(
+      ([cmd]) => (cmd as { _type?: string })?._type === 'GetAuthorizationToken'
+    ).length;
+
+  const countLoginExecs = () =>
+    mockRunDocker.mock.calls.filter(([args]) => Array.isArray(args) && args[0] === 'login').length;
+
+  const countPushExecs = () =>
+    mockRunDocker.mock.calls.filter(([args]) => Array.isArray(args) && args[0] === 'push').length;
+
   beforeEach(() => {
     mockEcrSend.mockReset();
     mockEcrDestroy.mockReset();
@@ -94,24 +139,8 @@ describe('DockerAssetPublisher', () => {
     publisher = new DockerAssetPublisher();
   });
 
-  it('should build and push Docker image to ECR', async () => {
-    // DescribeImages -> image not found
-    mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
-      if (cmd._type === 'DescribeImages') {
-        const err = new Error('Image not found') as Error & { name: string };
-        err.name = 'ImageNotFoundException';
-        throw err;
-      }
-      if (cmd._type === 'GetAuthorizationToken') {
-        return {
-          authorizationData: [{
-            authorizationToken: authToken,
-            proxyEndpoint: 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
-          }],
-        };
-      }
-      return {};
-    });
+  it('should build and push Docker image to ECR (no login when the push succeeds)', async () => {
+    wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
 
     await publisher.publish(
       'docker123',
@@ -133,19 +162,10 @@ describe('DockerAssetPublisher', () => {
     // flags (--secret src=foo.txt, --build-context name=./path) resolve.
     expect((buildCall![1] as { cwd?: string }).cwd).toBe('/tmp/cdk.out/asset.docker123');
 
-    // Verify docker login was called via runDockerStreaming (input carries password).
-    const loginCall = mockRunDocker.mock.calls.find(
-      ([args]) => Array.isArray(args) && args[0] === 'login'
-    );
-    expect(loginCall).toBeDefined();
-    expect(loginCall![0]).toEqual([
-      'login',
-      '--username',
-      'AWS',
-      '--password-stdin',
-      'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
-    ]);
-    expect((loginCall![1] as { input?: string }).input).toBe('mock-password');
+    // Lazy login: with a successful push there is NO docker login and NO
+    // GetAuthorizationToken call (inv 3 — the ~3.3s saving on a valid cred).
+    expect(countLoginExecs()).toBe(0);
+    expect(countAuthTokenCalls()).toBe(0);
 
     // Verify docker tag was called
     const fullUri = '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdk-assets-123456789012-us-east-1:abc123';
@@ -189,22 +209,7 @@ describe('DockerAssetPublisher', () => {
   });
 
   it('should handle docker build with args, target, and dockerfile', async () => {
-    mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
-      if (cmd._type === 'DescribeImages') {
-        const err = new Error('Image not found') as Error & { name: string };
-        err.name = 'ImageNotFoundException';
-        throw err;
-      }
-      if (cmd._type === 'GetAuthorizationToken') {
-        return {
-          authorizationData: [{
-            authorizationToken: authToken,
-            proxyEndpoint: 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
-          }],
-        };
-      }
-      return {};
-    });
+    wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
 
     const asset = makeDockerAsset({
       source: {
@@ -238,22 +243,7 @@ describe('DockerAssetPublisher', () => {
   });
 
   it('forwards BuildKit fields (--build-context, --secret, --ssh, --cache-from/to, --no-cache, --network, --platform)', async () => {
-    mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
-      if (cmd._type === 'DescribeImages') {
-        const err = new Error('Image not found') as Error & { name: string };
-        err.name = 'ImageNotFoundException';
-        throw err;
-      }
-      if (cmd._type === 'GetAuthorizationToken') {
-        return {
-          authorizationData: [{
-            authorizationToken: authToken,
-            proxyEndpoint: 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
-          }],
-        };
-      }
-      return {};
-    });
+    wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
 
     const asset = makeDockerAsset({
       source: {
@@ -291,44 +281,6 @@ describe('DockerAssetPublisher', () => {
     expect(args[args.indexOf('--cache-from') + 1]).toBe('type=registry,ref=example.com/c:l');
     expect(args[args.indexOf('--cache-to') + 1]).toBe('type=inline');
     expect(args).toContain('--no-cache');
-  });
-
-  it('should authenticate with ECR before push', async () => {
-    const callOrder: string[] = [];
-
-    mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
-      if (cmd._type === 'DescribeImages') {
-        const err = new Error('Image not found') as Error & { name: string };
-        err.name = 'ImageNotFoundException';
-        throw err;
-      }
-      if (cmd._type === 'GetAuthorizationToken') {
-        callOrder.push('getAuthToken');
-        return {
-          authorizationData: [{
-            authorizationToken: authToken,
-            proxyEndpoint: 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
-          }],
-        };
-      }
-      return {};
-    });
-
-    mockRunDocker.mockImplementation((args: string[]) => {
-      callOrder.push(args[0]!);
-      return Promise.resolve({ stdout: '', stderr: '' });
-    });
-
-    await publisher.publish(
-      'docker123',
-      makeDockerAsset(),
-      '/tmp/cdk.out',
-      '123456789012',
-      'us-east-1'
-    );
-
-    // Build first, then auth, then login, then tag+push
-    expect(callOrder).toEqual(['build', 'getAuthToken', 'login', 'tag', 'push']);
   });
 
   it('should resolve placeholders in repository name and tag', async () => {
@@ -403,87 +355,152 @@ describe('DockerAssetPublisher', () => {
     ).rejects.toThrow('Docker build failed: ERROR: failed to solve');
   });
 
-  describe('ECR login caching (issue #1184)', () => {
-    // Wire ECR mock so DescribeImages always reports "not found" (so the
-    // build + push path runs) and GetAuthorizationToken returns a valid token.
-    const wireLoginMocks = () => {
-      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
-        if (cmd._type === 'DescribeImages') {
-          const err = new Error('Image not found') as Error & { name: string };
-          err.name = 'ImageNotFoundException';
-          throw err;
+  describe('isDockerAuthFailure', () => {
+    it('matches the ECR auth-failure signatures (case-insensitive)', () => {
+      for (const s of [
+        'no basic auth credentials',
+        'NO BASIC AUTH CREDENTIALS',
+        'unauthorized: authentication required',
+        'authentication required',
+        'denied: requested access to the resource is denied',
+        'received unexpected HTTP status: 401 Unauthorized',
+        'received unexpected HTTP status: 403 Forbidden',
+      ]) {
+        expect(isDockerAuthFailure(s)).toBe(true);
+      }
+    });
+
+    it('does NOT match non-auth failures', () => {
+      for (const s of [
+        'net/http: TLS handshake timeout',
+        'name unknown: The repository does not exist',
+        'connection refused',
+        'manifest blob unknown',
+        '',
+      ]) {
+        expect(isDockerAuthFailure(s)).toBe(false);
+      }
+    });
+  });
+
+  describe('lazy ECR login (push-first, login-on-auth-failure)', () => {
+    it('skips login entirely when the push succeeds with a valid cred (inv 3)', async () => {
+      wireEcrMocks();
+
+      await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
+
+      // No login, no auth-token call, exactly one successful push.
+      expect(countLoginExecs()).toBe(0);
+      expect(countAuthTokenCalls()).toBe(0);
+      expect(countPushExecs()).toBe(1);
+    });
+
+    it('logs in and retries when there is NO pre-existing cred (inv 1)', async () => {
+      wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
+      // First push fails auth ("no basic auth credentials"), the post-login
+      // retry succeeds.
+      let pushAttempts = 0;
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          pushAttempts += 1;
+          if (pushAttempts === 1) {
+            const err = new Error('push failed') as Error & { stderr: string };
+            err.stderr = 'no basic auth credentials';
+            return Promise.reject(err);
+          }
         }
-        if (cmd._type === 'GetAuthorizationToken') {
-          return {
-            authorizationData: [
-              {
-                authorizationToken: authToken,
-                proxyEndpoint: 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
-              },
-            ],
-          };
-        }
-        return {};
+        return Promise.resolve({ stdout: '', stderr: '' });
       });
-    };
-
-    const countAuthTokenCalls = () =>
-      mockEcrSend.mock.calls.filter(
-        ([cmd]) => (cmd as { _type?: string })?._type === 'GetAuthorizationToken'
-      ).length;
-
-    const countLoginExecs = () =>
-      mockRunDocker.mock.calls.filter(([args]) => Array.isArray(args) && args[0] === 'login').length;
-
-    it('logs in on the first publish to a registry (GetAuthorizationToken + docker login once)', async () => {
-      wireLoginMocks();
 
       await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
 
       expect(countAuthTokenCalls()).toBe(1);
       expect(countLoginExecs()).toBe(1);
+      // push tried twice: the failing optimistic push + the successful retry.
+      expect(countPushExecs()).toBe(2);
+
+      // The login used the token's username/password over --password-stdin.
+      const loginCall = mockRunDocker.mock.calls.find(
+        ([args]) => Array.isArray(args) && args[0] === 'login'
+      );
+      expect(loginCall![0]).toEqual([
+        'login',
+        '--username',
+        'AWS',
+        '--password-stdin',
+        'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
+      ]);
+      expect((loginCall![1] as { input?: string }).input).toBe('mock-password');
     });
 
-    it('does NOT re-login on a second publish to the SAME registry', async () => {
-      wireLoginMocks();
+    it('self-heals a STALE / expired cred via the `unauthorized` branch (inv 2)', async () => {
+      wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
+      let pushAttempts = 0;
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          pushAttempts += 1;
+          if (pushAttempts === 1) {
+            const err = new Error('push failed') as Error & { stderr: string };
+            // A stale token surfaces as `unauthorized` rather than "no basic
+            // auth credentials" — must take the SAME re-login branch.
+            err.stderr = 'unauthorized: authentication required';
+            return Promise.reject(err);
+          }
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
 
-      // First publish logs in.
       await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
-      // Second publish (fresh publisher instance too — cache is process-wide).
+
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+      expect(countPushExecs()).toBe(2);
+    });
+
+    it('short-circuits via the per-process cache after a prior forced login', async () => {
+      wireEcrMocks();
+      // First publish: build + tag succeed, the optimistic push fails auth ->
+      // forced login -> retry push succeeds, and the registry is now in the
+      // per-process cache. Remaining calls succeed via the default mock.
+      mockRunDocker.mockImplementationOnce(() => Promise.resolve({ stdout: '', stderr: '' })); // build
+      mockRunDocker.mockImplementationOnce(() => Promise.resolve({ stdout: '', stderr: '' })); // tag
+      mockRunDocker.mockImplementationOnce(authFailurePush()); // push (auth fail)
+
+      await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
+      expect(countLoginExecs()).toBe(1);
+
+      // Second publish to the SAME registry: the per-process cache holds the
+      // registry, so ecrLogin's cache short-circuit means the push proceeds
+      // directly and (since it succeeds) does NOT log in again.
       const second = new DockerAssetPublisher();
-      await second.publish('h2', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
+      await second.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
 
       // Still exactly one login across BOTH publishes.
-      expect(countAuthTokenCalls()).toBe(1);
       expect(countLoginExecs()).toBe(1);
-      // But the second publish still built + pushed its own image.
-      const pushCalls = mockRunDocker.mock.calls.filter(
-        ([args]) => Array.isArray(args) && args[0] === 'push'
-      );
-      expect(pushCalls.length).toBe(2);
+      expect(countPushExecs()).toBe(3); // fail + retry (publish 1) + direct (publish 2)
     });
 
-    it('DOES log in again for a DIFFERENT region (different registry host)', async () => {
-      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
-        if (cmd._type === 'DescribeImages') {
-          const err = new Error('Image not found') as Error & { name: string };
-          err.name = 'ImageNotFoundException';
-          throw err;
+    it('keys the login per (account, region) — a DIFFERENT region re-logs in', async () => {
+      wireEcrMocks();
+      // Fail the FIRST push to each of the two registries so each forces its
+      // own login (attempts 1 & 3); the post-login retries (2 & 4) succeed.
+      let pushCount = 0;
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          pushCount += 1;
+          if (pushCount === 1 || pushCount === 3) {
+            const err = new Error('push failed') as Error & { stderr: string };
+            err.stderr = 'no basic auth credentials';
+            return Promise.reject(err);
+          }
         }
-        if (cmd._type === 'GetAuthorizationToken') {
-          return { authorizationData: [{ authorizationToken: authToken }] };
-        }
-        return {};
+        return Promise.resolve({ stdout: '', stderr: '' });
       });
 
       const asset = (region: string): DockerImageAsset =>
         makeDockerAsset({
           destinations: {
-            d: {
-              repositoryName: 'repo-${AWS::AccountId}',
-              imageTag: 'tag',
-              region,
-            },
+            d: { repositoryName: 'repo-${AWS::AccountId}', imageTag: 'tag', region },
           },
         });
 
@@ -495,17 +512,19 @@ describe('DockerAssetPublisher', () => {
       expect(countLoginExecs()).toBe(2);
     });
 
-    it('DOES log in again for a DIFFERENT account (different registry host)', async () => {
-      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
-        if (cmd._type === 'DescribeImages') {
-          const err = new Error('Image not found') as Error & { name: string };
-          err.name = 'ImageNotFoundException';
-          throw err;
+    it('keys the login per (account, region) — a DIFFERENT account re-logs in', async () => {
+      wireEcrMocks();
+      let pushCount = 0;
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          pushCount += 1;
+          if (pushCount === 1 || pushCount === 3) {
+            const err = new Error('push failed') as Error & { stderr: string };
+            err.stderr = 'no basic auth credentials';
+            return Promise.reject(err);
+          }
         }
-        if (cmd._type === 'GetAuthorizationToken') {
-          return { authorizationData: [{ authorizationToken: authToken }] };
-        }
-        return {};
+        return Promise.resolve({ stdout: '', stderr: '' });
       });
 
       const asset: DockerImageAsset = makeDockerAsset({
@@ -522,21 +541,35 @@ describe('DockerAssetPublisher', () => {
       expect(countLoginExecs()).toBe(2);
     });
 
-    it('push() (WorkGraph asset-publish path) also caches the login', async () => {
-      wireLoginMocks();
+    it('does NOT retry a NON-auth push failure (surfaces the AssetError)', async () => {
+      wireEcrMocks();
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          const err = new Error('push failed') as Error & { stderr: string };
+          err.stderr = 'name unknown: The repository does not exist';
+          return Promise.reject(err);
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
 
-      await publisher.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
-      const second = new DockerAssetPublisher();
-      await second.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
+      await expect(
+        publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
+      ).rejects.toThrow(AssetError);
 
-      expect(countAuthTokenCalls()).toBe(1);
-      expect(countLoginExecs()).toBe(1);
+      // No login attempted, push tried exactly once.
+      expect(countLoginExecs()).toBe(0);
+      expect(countAuthTokenCalls()).toBe(0);
+      expect(countPushExecs()).toBe(1);
     });
 
-    it('does NOT cache a FAILED login (retries on the next publish)', async () => {
-      wireLoginMocks();
-      // Make the docker login subprocess fail.
+    it('surfaces an AssetError when the forced login DURING the retry fails', async () => {
+      wireEcrMocks();
       mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          const err = new Error('push failed') as Error & { stderr: string };
+          err.stderr = 'no basic auth credentials';
+          return Promise.reject(err);
+        }
         if (args[0] === 'login') {
           const err = new Error('login failed') as Error & { stderr: string };
           err.stderr = 'denied';
@@ -549,13 +582,31 @@ describe('DockerAssetPublisher', () => {
         publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
       ).rejects.toThrow(AssetError);
 
-      // Second attempt must try to log in again (the failed one was not cached).
-      await expect(
-        publisher.publish('h2', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
-      ).rejects.toThrow(AssetError);
+      // The failed login is NOT cached, so a follow-up publish tries again.
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+    });
 
-      expect(countAuthTokenCalls()).toBe(2);
-      expect(countLoginExecs()).toBe(2);
+    it('push() (WorkGraph asset-publish path) uses the lazy-login path too', async () => {
+      wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
+      let pushAttempts = 0;
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          pushAttempts += 1;
+          if (pushAttempts === 1) {
+            const err = new Error('push failed') as Error & { stderr: string };
+            err.stderr = 'no basic auth credentials';
+            return Promise.reject(err);
+          }
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      await publisher.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
+
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+      expect(countPushExecs()).toBe(2);
     });
   });
 });

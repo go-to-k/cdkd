@@ -33,13 +33,25 @@ export function resetEcrLoginCache(): void {
 }
 
 /**
+ * Whether a `docker push` failure looks like an ECR authentication failure
+ * (missing / stale / expired credential) rather than a network / repo / other
+ * error. Case-insensitive. Used by the lazy-login path to decide whether to
+ * log in and retry — a NON-auth failure is surfaced unchanged, never retried.
+ */
+export function isDockerAuthFailure(errText: string): boolean {
+  return /no basic auth credentials|unauthorized|authentication required|denied|\b401\b|\b403\b/i.test(
+    errText
+  );
+}
+
+/**
  * Publishes Docker image assets to ECR
  *
  * Handles:
  * - Placeholder resolution
  * - Existence check (skip if already pushed)
  * - docker build with Dockerfile, build args, target
- * - ECR authentication
+ * - lazy ECR authentication (push first, log in only on an auth failure)
  * - docker tag + docker push
  */
 export class DockerAssetPublisher {
@@ -79,13 +91,9 @@ export class DockerAssetPublisher {
         const localTag = `cdkd-asset-${assetHash}`;
         await this.buildImage(asset, cdkOutputDir, localTag);
 
-        // Authenticate with ECR
-        await this.ecrLogin(client, accountId, destRegion);
-
-        // Tag and push
+        // Tag and push (login lazily, only if the push hits an auth failure).
         const fullUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
-        await this.tagImage(localTag, fullUri);
-        await this.pushImage(fullUri);
+        await this.tagAndPushWithLazyLogin(client, localTag, fullUri, accountId, destRegion);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
       } finally {
@@ -133,11 +141,8 @@ export class DockerAssetPublisher {
           continue;
         }
 
-        await this.ecrLogin(client, accountId, destRegion);
-
         const fullUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
-        await this.tagImage(localTag, fullUri);
-        await this.pushImage(fullUri);
+        await this.tagAndPushWithLazyLogin(client, localTag, fullUri, accountId, destRegion);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
       } finally {
@@ -207,6 +212,58 @@ export class DockerAssetPublisher {
   }
 
   /**
+   * Tag then push an image, logging in to ECR lazily — only if the push fails
+   * with an auth-failure signature.
+   *
+   * cdkd (like `cdk --hotswap`) leans on the developer's persistent docker
+   * credential store: a valid ECR credential (`~/.docker/config.json` /
+   * keychain; ECR tokens live ~12h) left by an earlier login this session lets
+   * a fresh cdkd process push with NO `GetAuthorizationToken` + `docker login`
+   * round-trip (~3.3s saved). We attempt the push FIRST and only pay the login
+   * when it is actually needed:
+   *
+   *   1. If this PROCESS already logged into the registry (issue #1184 cache),
+   *      push directly — still self-healing: a mid-process token expiry falls
+   *      into the same auth-failure retry below.
+   *   2. Otherwise push optimistically. On a NON-auth failure (network,
+   *      repo-not-found, etc.) surface the error unchanged. On an auth failure
+   *      (no pre-existing cred, OR a stale/expired cred), run a forced ECR
+   *      login and retry the push ONCE.
+   *
+   * A stale cred and a missing cred take the SAME branch, so cdkd never
+   * fail-hard on an expired credential — it re-logs in and retries.
+   */
+  private async tagAndPushWithLazyLogin(
+    client: ECRClient,
+    localTag: string,
+    fullUri: string,
+    accountId: string,
+    region: string
+  ): Promise<void> {
+    await this.tagImage(localTag, fullUri);
+
+    try {
+      await this.pushImage(fullUri);
+      return;
+    } catch (err) {
+      const e = err as { stderr?: string; message?: string };
+      const errText = e.stderr || e.message || String(err);
+      if (!isDockerAuthFailure(errText)) {
+        // Non-auth failure (network, repo-not-found, ...) — surface unchanged.
+        throw err;
+      }
+      this.logger.debug(
+        `Docker push to ${fullUri} failed with an auth error; logging in to ECR and retrying`
+      );
+    }
+
+    // Auth failure: force a fresh login (bypassing the per-process cache, which
+    // may hold a now-stale token), then retry the push exactly once.
+    await this.ecrLogin(client, accountId, region, { force: true });
+    await this.pushImage(fullUri);
+  }
+
+  /**
    * Authenticate with ECR via `docker login --password-stdin`.
    *
    * The login is cached per registry (`<accountId>.dkr.ecr.<region>`) for the
@@ -215,10 +272,19 @@ export class DockerAssetPublisher {
    * (mirrors `cdk-assets`). ECR tokens are valid ~12h and a deploy process is
    * short-lived, so this is safe. Keyed per registry so cross-account /
    * cross-region assets each get their own login.
+   *
+   * `force: true` bypasses the per-process cache short-circuit — used by the
+   * lazy-login retry after a push fails auth, where the cached entry may hold a
+   * token that AWS has already expired.
    */
-  private async ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
+  private async ecrLogin(
+    client: ECRClient,
+    accountId: string,
+    region: string,
+    options: { force?: boolean } = {}
+  ): Promise<void> {
     const registryKey = `${accountId}.dkr.ecr.${region}.amazonaws.com`;
-    if (loggedInRegistries.has(registryKey)) {
+    if (!options.force && loggedInRegistries.has(registryKey)) {
       this.logger.debug(`Reusing cached ECR login for ${registryKey}`);
       return;
     }
