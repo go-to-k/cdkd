@@ -17,6 +17,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { type DeleteContext } from '../region-check.js';
 import type {
@@ -171,6 +172,15 @@ export class CustomResourceProvider implements ResourceProvider {
   private responsePrefix: string;
 
   /**
+   * Memoization for the lazy response-bucket region correction
+   * (`ensureResponseClient`). Mirrors the `clientResolved` /
+   * `resolveInFlight` pattern of the three other state-bucket S3
+   * consumers (S3StateBackend / LockManager / ExportIndexStore).
+   */
+  private responseClientResolved = false;
+  private responseClientResolveInFlight: Promise<void> | null = null;
+
+  /**
    * Opt out of the deploy engine's outer transient-error retry loop.
    *
    * The loop re-invokes `provider.create()` from the top on a transient
@@ -256,11 +266,66 @@ export class CustomResourceProvider implements ResourceProvider {
    */
   setResponseBucket(bucket: string, bucketRegion?: string): void {
     this.responseBucket = bucket;
-    // For cross-region deploy: S3 client for response bucket must use the bucket's region,
-    // not the stack's region. The state bucket is always in the base region.
+    // The supplied bucketRegion is only a starting HINT (deploy.ts passes the
+    // deploy/base region, which is NOT necessarily where the state bucket
+    // lives — the account-scoped default bucket is region-free, issue #1195).
+    // The bucket's ACTUAL region is resolved lazily via ensureResponseClient()
+    // before the first S3 operation, so the pre-signed ResponseURL always
+    // targets the right regional endpoint.
     if (bucketRegion) {
-      this.s3Client = new S3Client(bucketRegion ? { region: bucketRegion } : {});
+      this.s3Client = new S3Client({ region: bucketRegion });
     }
+    this.responseClientResolved = false;
+    this.responseClientResolveInFlight = null;
+  }
+
+  /**
+   * Resolve the response bucket's actual region and, if it differs from the
+   * current S3 client's configured region, swap in a region-corrected client
+   * before any response-bucket S3 operation (placeholder `PutObject`,
+   * pre-signed `ResponseURL` signing, response polling, cleanup).
+   *
+   * The response bucket is cdkd's state bucket, which can live in a
+   * different region from the deploy region (`cdkd deploy --region` /
+   * `AWS_REGION` against the account-scoped region-free default bucket).
+   * A pre-signed URL's host is region-specific, so signing with the deploy
+   * region against a foreign-region bucket makes S3 return a
+   * 301 PermanentRedirect (issue #1195). Mirrors the lazy
+   * `ensureClientForBucket()` correction the state backend (#60), the
+   * LockManager (#803), and the ExportIndexStore (#819) already do via the
+   * shared `rebuildClientForBucketRegion` helper (#827).
+   *
+   * `tolerateNonStandardClient` keeps test doubles (a bare `{ send }`
+   * object from a mocked `getAwsClients`) on the no-rebuild path, and
+   * `resolveBucketRegion` never throws (probe failures degrade to
+   * "no rebuild"), so this can only improve the client's region.
+   */
+  private async ensureResponseClient(): Promise<void> {
+    if (this.responseClientResolved || !this.responseBucket) return;
+    if (this.responseClientResolveInFlight) return this.responseClientResolveInFlight;
+
+    const bucket = this.responseBucket;
+    this.responseClientResolveInFlight = (async (): Promise<void> => {
+      try {
+        const replacement = await rebuildClientForBucketRegion(this.s3Client, bucket, {
+          reuseClientCredentials: true,
+          tolerateNonStandardClient: true,
+          onRebuild: ({ bucketRegion, currentRegion }) => {
+            this.logger.debug(
+              `Custom resource response bucket '${bucket}' is in '${bucketRegion}' (client was '${String(currentRegion)}'); building a region-corrected S3 client for response operations.`
+            );
+          },
+        });
+        if (replacement) {
+          this.s3Client = replacement;
+        }
+        this.responseClientResolved = true;
+      } finally {
+        this.responseClientResolveInFlight = null;
+      }
+    })();
+
+    return this.responseClientResolveInFlight;
   }
 
   /**
@@ -914,6 +979,10 @@ export class CustomResourceProvider implements ResourceProvider {
       // Fallback: return a dummy URL (legacy behavior)
       return 'https://localhost/cfn-response-not-configured';
     }
+
+    // The pre-signed URL's host is region-specific: sign against the bucket's
+    // ACTUAL region, not the deploy region (issue #1195).
+    await this.ensureResponseClient();
 
     // Create an empty placeholder object first (so the key exists for cleanup)
     await this.s3Client.send(

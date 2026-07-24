@@ -268,13 +268,17 @@ cleanly — the protocol parser falls through and produces a synthetic
 #### Solution
 
 cdkd resolves this automatically: the state backend (PR #60, shipped
-v0.10.0) and the lock manager (issue #803 — between PR #60 and that fix,
+v0.10.0), the lock manager (issue #803 — between PR #60 and that fix,
 state operations succeeded against a cross-region bucket but lock
-acquisition failed with the PermanentRedirect error above) look up the
-bucket region via `GetBucketLocation` (a GET request, not a HEAD —
-avoids the SDK glitch) and rebuild their S3 clients to that region
-before any state or lock operation. If you still see either error,
-please file a bug with the full stack trace.
+acquisition failed with the PermanentRedirect error above), and the
+custom-resource response path (issue #1195 — before that fix, deploying
+a stack with a Lambda-backed Custom Resource to a region different from
+the state bucket's region failed with the same 301 on the pre-signed
+`ResponseURL`) look up the bucket region via `GetBucketLocation` (a GET
+request, not a HEAD — avoids the SDK glitch) and rebuild their S3
+clients to that region before any state, lock, or custom-resource
+response operation. If you still see either error, please file a bug
+with the full stack trace.
 
 You no longer need to set the region to match the bucket region (the
 state-bucket client auto-detects it via `GetBucketLocation`). As of
