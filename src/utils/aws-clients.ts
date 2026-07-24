@@ -406,8 +406,7 @@ export class AwsClients {
   getLambdaMicrovmsClient(): LambdaMicrovmsClient {
     if (!this.lambdaMicrovmsClient) {
       this.lambdaMicrovmsClient = new LambdaMicrovmsClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.lambdaMicrovmsClient;

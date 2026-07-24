@@ -24,9 +24,9 @@ describe('CLI profile propagation', () => {
         observedProfile = process.env['AWS_PROFILE'];
       });
 
-    await program.parseAsync(['node', 'cdkd', 'profile-test', '--profile', 'haruki-default']);
+    await program.parseAsync(['node', 'cdkd', 'profile-test', '--profile', 'test-profile']);
 
-    expect(observedProfile).toBe('haruki-default');
+    expect(observedProfile).toBe('test-profile');
   });
 
   it('sets AWS_PROFILE when --profile belongs to the parent command', async () => {
@@ -44,10 +44,44 @@ describe('CLI profile propagation', () => {
       'cdkd',
       'profile-parent',
       '--profile',
-      'haruki-default',
+      'test-profile',
       'profile-child',
     ]);
 
-    expect(observedProfile).toBe('haruki-default');
+    expect(observedProfile).toBe('test-profile');
+  });
+
+  it('leaves an existing AWS_PROFILE untouched when --profile is not passed', async () => {
+    process.env['AWS_PROFILE'] = 'preset-profile';
+    const program = buildProgram();
+    let observedProfile: string | undefined;
+
+    program
+      .command('profile-test')
+      .option('--profile <profile>')
+      .action(() => {
+        observedProfile = process.env['AWS_PROFILE'];
+      });
+
+    await program.parseAsync(['node', 'cdkd', 'profile-test']);
+
+    expect(observedProfile).toBe('preset-profile');
+  });
+
+  it('overrides an existing AWS_PROFILE with the --profile flag', async () => {
+    process.env['AWS_PROFILE'] = 'preset-profile';
+    const program = buildProgram();
+    let observedProfile: string | undefined;
+
+    program
+      .command('profile-test')
+      .option('--profile <profile>')
+      .action(() => {
+        observedProfile = process.env['AWS_PROFILE'];
+      });
+
+    await program.parseAsync(['node', 'cdkd', 'profile-test', '--profile', 'flag-profile']);
+
+    expect(observedProfile).toBe('flag-profile');
   });
 });
