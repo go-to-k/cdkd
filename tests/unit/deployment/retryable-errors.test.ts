@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
+import {
+  isNameCollisionError,
+  isRetryableTransientError,
+} from '../../../src/deployment/retryable-errors.js';
 
 describe('isRetryableTransientError', () => {
   describe('HTTP status code based retries', () => {
@@ -396,6 +399,15 @@ describe('isRetryableTransientError', () => {
     });
   });
 
+  describe('name collision is NOT transient-retryable', () => {
+    it('does not classify a bare "already exists" as transient (collision retries are site-scoped)', () => {
+      // The collision matcher is deliberately kept OUT of the transient
+      // pattern table: only the delete-then-re-create sites retry it.
+      const message = 'Queue already exists: my-queue';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
+  });
+
   describe('robustness', () => {
     it('handles non-Error inputs (string thrown) by falling back to message matching', () => {
       expect(
@@ -409,5 +421,32 @@ describe('isRetryableTransientError', () => {
     it('handles plain objects without $metadata', () => {
       expect(isRetryableTransientError({}, 'unrelated')).toBe(false);
     });
+  });
+});
+
+describe('isNameCollisionError', () => {
+  it.each([
+    // SQS CreateQueue against a name still held by another queue
+    ['A queue already exists with the same name and a different value for attribute Foo', 'SQS'],
+    // Case-insensitive match ("Already Exists" / "ALREADY EXISTS" variants)
+    ['Resource Already Exists', 'case-insensitive phrase'],
+    // Error-code style with no spaces (Lambda / S3 / SSM shapes)
+    ['ResourceAlreadyExistsException: function my-fn', 'AlreadyExists error-code style'],
+    ['ParameterAlreadyExists', 'SSM parameter'],
+    // Provider-wrapped message (cdkd wraps the SDK error text)
+    ['Failed to create S3 bucket MyBucket: BucketAlreadyExists', 'provider-wrapped'],
+  ])('matches %j (%s)', (message) => {
+    expect(isNameCollisionError(message)).toBe(true);
+  });
+
+  it.each([
+    // A generic conflict that is NOT a name collision
+    ['OperationAborted: A conflicting conditional operation is in progress', 'S3 conflict'],
+    // "exists" alone must not match
+    ['The specified bucket does not exist', 'not-found'],
+    // Lowercase run-on ("alreadyexists") is not an AWS shape; stay strict
+    ['resource alreadyexists', 'run-on lowercase'],
+  ])('does not match %j (%s)', (message) => {
+    expect(isNameCollisionError(message)).toBe(false);
   });
 });
