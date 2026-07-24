@@ -252,6 +252,29 @@ describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () 
     expect(state.MyLambda?.physicalId).toBe('new-sdk-pid');
   });
 
+  it('retries the re-create through the SQS QueueDeletedRecently cooldown (issue #1214)', async () => {
+    // The destroy-then-create order just released the old name, so a
+    // custom-named SQS-like re-create can hit the 60s cooldown. Uses the
+    // error-CODE form, which the generic transient table does NOT match —
+    // the inner retry rethrows immediately, so only the outer
+    // isRecreateRetryableError filter (the fix under test) can absorb it.
+    let failures = 1;
+    sdkProvider.create = vi.fn().mockImplementation(async () => {
+      callOrder.push('sdk.create');
+      if (failures-- > 0) {
+        throw new Error(
+          'Failed to create SQS queue MyLambda: AWS.SimpleQueueService.QueueDeletedRecently'
+        );
+      }
+      return { physicalId: 'new-sdk-pid', attributes: {} };
+    });
+    const engine = makeEngine();
+    const state = makeState();
+    await invokeProvision(engine, makeUpdateChange(), state, makeTemplate());
+    expect(callOrder).toEqual(['cc.delete', 'sdk.create', 'sdk.create']);
+    expect(state.MyLambda?.physicalId).toBe('new-sdk-pid');
+  }, 15_000);
+
   it('re-throws when the destroy fails — does NOT warn-and-continue (load-bearing for the destroy-then-create path)', async () => {
     // Override ccProvider.delete to reject (the legacy CC-managed copy
     // is destroyed via the CC provider in the reverse direction).
