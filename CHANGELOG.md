@@ -1,3 +1,10 @@
+## [0.262.1](https://github.com/go-to-k/cdkd/compare/v0.262.0...v0.262.1) (2026-07-24)
+
+
+### Performance Improvements
+
+* **assets:** skip ECR login on warm container-asset pushes (lazy login) ([#1193](https://github.com/go-to-k/cdkd/issues/1193)) ([3a21441](https://github.com/go-to-k/cdkd/commit/3a21441ff322bc3044eb3a113fba37a0946198a0))
+
 # [0.262.0](https://github.com/go-to-k/cdkd/compare/v0.261.0...v0.262.0) (2026-07-24)
 
 
