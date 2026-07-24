@@ -1,3 +1,10 @@
+# [0.261.0](https://github.com/go-to-k/cdkd/compare/v0.260.14...v0.261.0) (2026-07-24)
+
+
+### Features
+
+* **providers:** enrich AWS::BedrockAgentCore::Runtime import() attributes ([#1188](https://github.com/go-to-k/cdkd/issues/1188)) ([#1189](https://github.com/go-to-k/cdkd/issues/1189)) ([01511b4](https://github.com/go-to-k/cdkd/commit/01511b45757997d083672564f1a6429fecb2c456))
+
 ## [0.260.14](https://github.com/go-to-k/cdkd/compare/v0.260.13...v0.260.14) (2026-07-24)
 
 
