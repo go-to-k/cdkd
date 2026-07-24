@@ -54,7 +54,7 @@ context-test	2026-06-21T11:00:28Z	PASS	16	standard	sweep-4..8 staleness re-run (
 cross-region-state-bucket	2026-07-19T18:57:34Z	PASS	33	verify.sh	rc ok, temp bucket removed, orph clean
 cross-stack-references	2026-07-19T19:57:33Z	PASS	27	standard	rc ok, 2 stacks, orph clean
 custom-resource-getatt-data	2026-07-20T14:59:39Z	PASS	63	verify.sh	CR Data GetAtt->dependent prop, 6 res clean
-custom-resource-provider	2026-07-24T08:11:30Z	PASS	510	standard	cross-region us-west-2 vs us-east-1 bucket (issue #1195 fix live-verified); 17 res, destroy 0 err 0 orphan
+custom-resource-provider	2026-07-24T08:31:58Z	PASS	480	standard	cross-region us-west-2 vs us-east-1 bucket (issue #1195 fix + hardening live-verified); 17 res, destroy 0 err 0 orphan
 data-analytics	2026-07-21T18:30:46Z	PASS	50	verify.sh	rc ok, orph clean
 data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
 deep-getatt-chains	2026-07-20T08:10:49Z	PASS	66	verify.sh	rc ok, orph clean
