@@ -24,7 +24,7 @@ aws-custom-resource	2026-07-21T05:26:32Z	PASS	82	verify.sh	rc ok, orph clean
 backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
 basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildProgram entry-point refactor (#1097)
 batch	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-bedrock-agentcore	2026-07-24T03:53:50Z	PASS	34	standard	AgentRuntimeArn GetAtt now resolves to real ARN (issue #1179 fix verified); 6 del 0 err; state.json gone
+bedrock-agentcore	2026-07-24T04:22:29Z	PASS	42	standard	import() attr enrich (#1188); GetAgentRuntime live-probe confirms field shape; 6 del 0 err
 bench-ccapi	2026-06-21T11:00:28Z	PASS	80	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 bench-cdk-sample	2026-07-23T15:04:21Z	PASS	258	standard	deploy 248s (39 res, CloudFront-critical); destroy 0 err 0 orphan; PR #1175
 bench-sdk	2026-06-21T11:00:28Z	PASS	24	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
