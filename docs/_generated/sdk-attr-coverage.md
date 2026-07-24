@@ -52,7 +52,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::Kinesis::Stream` | covered | `Arn` (cached) |
 | `AWS::KinesisFirehose::DeliveryStream` | covered | `Arn` (cached) |
 | `AWS::KMS::Key` | covered | `Arn` (cached) |
-| `AWS::Lambda::EventSourceMapping` | covered | `EventSourceMappingArn` (allow) |
+| `AWS::Lambda::EventSourceMapping` | covered | `EventSourceMappingArn` (cached) |
 | `AWS::Lambda::Function` | covered | `Arn` (cached) |
 | `AWS::Lambda::LayerVersion` | covered | `LayerVersionArn` (cached) |
 | `AWS::Lambda::Url` | covered | `FunctionArn` (cached), `FunctionUrl` (cached) |

@@ -111,5 +111,13 @@ def handler(event, context):
       value: fn.functionName,
       description: 'Consumer Lambda function name',
     });
+    // issue #1190: exercise `Fn::GetAtt [Esm, EventSourceMappingArn]` on deploy.
+    // Pre-fix this output failed to resolve (the ESM physical id is the UUID,
+    // not ARN-shaped, and the ARN was not cached), hard-failing the resolver's
+    // shape guard; the fix caches EventSourceMappingArn under its CFn name.
+    new cdk.CfnOutput(this, 'EsmArn', {
+      value: (esms[0] as lambda.CfnEventSourceMapping).attrEventSourceMappingArn,
+      description: 'EventSourceMapping ARN (Fn::GetAtt EventSourceMappingArn; #1190)',
+    });
   }
 }

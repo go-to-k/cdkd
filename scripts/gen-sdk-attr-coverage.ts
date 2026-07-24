@@ -135,17 +135,6 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
       rationale: 'Arn == physicalId (create returns the subscription ARN as the physical id); guard fallback resolves it',
     },
   ],
-  [
-    'AWS::Lambda::EventSourceMapping',
-    {
-      // KNOWN GAP tracked in #1190: the provider caches only { Id } and the
-      // physicalId is the ESM UUID (not ARN-shaped), so this hard-fails. The
-      // fix (cache EventSourceMappingArn in create/update) ships separately with
-      // its own real-AWS integ; remove this entry when #1190 lands.
-      attributes: ['EventSourceMappingArn'],
-      rationale: 'KNOWN GAP tracked in #1190 (cache EventSourceMappingArn in create/update); fix ships separately with an ESM integ',
-    },
-  ],
 ]);
 
 interface SchemaFixture {

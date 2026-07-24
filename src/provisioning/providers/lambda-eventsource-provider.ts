@@ -330,6 +330,12 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         physicalId: uuid,
         attributes: {
           Id: uuid,
+          // Cache the ARN under its CFn read-only name so
+          // `Fn::GetAtt [Esm, EventSourceMappingArn]` resolves from state
+          // (issue #1190). The physical id is the ESM UUID (not ARN-shaped) and
+          // the resolver's `constructAttribute` has no ESM branch, so without
+          // this the resolver's shape guard hard-fails the deploy.
+          EventSourceMappingArn: response.EventSourceMappingArn,
         },
       };
     } catch (error) {
@@ -537,6 +543,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       wasReplaced: false,
       attributes: {
         Id: physicalId,
+        // Re-cache the ARN under its CFn read-only name (issue #1190); see the
+        // matching note in create(). `updateResp.EventSourceMappingArn` is
+        // already read above for the tag diff.
+        EventSourceMappingArn: updateResp.EventSourceMappingArn,
       },
     };
   }
