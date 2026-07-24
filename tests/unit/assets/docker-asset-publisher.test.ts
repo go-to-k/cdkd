@@ -57,7 +57,10 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { DescribeImagesCommand } from '@aws-sdk/client-ecr';
-import { DockerAssetPublisher } from '../../../src/assets/docker-asset-publisher.js';
+import {
+  DockerAssetPublisher,
+  resetEcrLoginCache,
+} from '../../../src/assets/docker-asset-publisher.js';
 import { AssetError } from '../../../src/utils/error-handler.js';
 import type { DockerImageAsset } from '../../../src/types/assets.js';
 
@@ -85,6 +88,9 @@ describe('DockerAssetPublisher', () => {
     mockEcrDestroy.mockReset();
     mockRunDocker.mockReset();
     mockRunDocker.mockResolvedValue({ stdout: '', stderr: '' });
+    // The ECR login cache is module-level (process-lifetime), so reset it
+    // between tests to keep them isolated.
+    resetEcrLoginCache();
     publisher = new DockerAssetPublisher();
   });
 
@@ -395,5 +401,161 @@ describe('DockerAssetPublisher', () => {
         'us-east-1'
       )
     ).rejects.toThrow('Docker build failed: ERROR: failed to solve');
+  });
+
+  describe('ECR login caching (issue #1184)', () => {
+    // Wire ECR mock so DescribeImages always reports "not found" (so the
+    // build + push path runs) and GetAuthorizationToken returns a valid token.
+    const wireLoginMocks = () => {
+      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'DescribeImages') {
+          const err = new Error('Image not found') as Error & { name: string };
+          err.name = 'ImageNotFoundException';
+          throw err;
+        }
+        if (cmd._type === 'GetAuthorizationToken') {
+          return {
+            authorizationData: [
+              {
+                authorizationToken: authToken,
+                proxyEndpoint: 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
+              },
+            ],
+          };
+        }
+        return {};
+      });
+    };
+
+    const countAuthTokenCalls = () =>
+      mockEcrSend.mock.calls.filter(
+        ([cmd]) => (cmd as { _type?: string })?._type === 'GetAuthorizationToken'
+      ).length;
+
+    const countLoginExecs = () =>
+      mockRunDocker.mock.calls.filter(([args]) => Array.isArray(args) && args[0] === 'login').length;
+
+    it('logs in on the first publish to a registry (GetAuthorizationToken + docker login once)', async () => {
+      wireLoginMocks();
+
+      await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
+
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+    });
+
+    it('does NOT re-login on a second publish to the SAME registry', async () => {
+      wireLoginMocks();
+
+      // First publish logs in.
+      await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
+      // Second publish (fresh publisher instance too — cache is process-wide).
+      const second = new DockerAssetPublisher();
+      await second.publish('h2', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
+
+      // Still exactly one login across BOTH publishes.
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+      // But the second publish still built + pushed its own image.
+      const pushCalls = mockRunDocker.mock.calls.filter(
+        ([args]) => Array.isArray(args) && args[0] === 'push'
+      );
+      expect(pushCalls.length).toBe(2);
+    });
+
+    it('DOES log in again for a DIFFERENT region (different registry host)', async () => {
+      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'DescribeImages') {
+          const err = new Error('Image not found') as Error & { name: string };
+          err.name = 'ImageNotFoundException';
+          throw err;
+        }
+        if (cmd._type === 'GetAuthorizationToken') {
+          return { authorizationData: [{ authorizationToken: authToken }] };
+        }
+        return {};
+      });
+
+      const asset = (region: string): DockerImageAsset =>
+        makeDockerAsset({
+          destinations: {
+            d: {
+              repositoryName: 'repo-${AWS::AccountId}',
+              imageTag: 'tag',
+              region,
+            },
+          },
+        });
+
+      await publisher.publish('h1', asset('us-east-1'), '/tmp/cdk.out', '123456789012', 'us-east-1');
+      await publisher.publish('h2', asset('eu-west-1'), '/tmp/cdk.out', '123456789012', 'us-east-1');
+
+      // Two distinct registries -> two logins.
+      expect(countAuthTokenCalls()).toBe(2);
+      expect(countLoginExecs()).toBe(2);
+    });
+
+    it('DOES log in again for a DIFFERENT account (different registry host)', async () => {
+      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'DescribeImages') {
+          const err = new Error('Image not found') as Error & { name: string };
+          err.name = 'ImageNotFoundException';
+          throw err;
+        }
+        if (cmd._type === 'GetAuthorizationToken') {
+          return { authorizationData: [{ authorizationToken: authToken }] };
+        }
+        return {};
+      });
+
+      const asset: DockerImageAsset = makeDockerAsset({
+        destinations: {
+          d: { repositoryName: 'repo-${AWS::AccountId}', imageTag: 'tag' },
+        },
+      });
+
+      await publisher.publish('h1', asset, '/tmp/cdk.out', '111111111111', 'us-east-1');
+      await publisher.publish('h2', asset, '/tmp/cdk.out', '222222222222', 'us-east-1');
+
+      // Two distinct accounts -> two logins.
+      expect(countAuthTokenCalls()).toBe(2);
+      expect(countLoginExecs()).toBe(2);
+    });
+
+    it('push() (WorkGraph asset-publish path) also caches the login', async () => {
+      wireLoginMocks();
+
+      await publisher.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
+      const second = new DockerAssetPublisher();
+      await second.push(makeDockerAsset(), '123456789012', 'us-east-1', 'local-tag');
+
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+    });
+
+    it('does NOT cache a FAILED login (retries on the next publish)', async () => {
+      wireLoginMocks();
+      // Make the docker login subprocess fail.
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'login') {
+          const err = new Error('login failed') as Error & { stderr: string };
+          err.stderr = 'denied';
+          return Promise.reject(err);
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      await expect(
+        publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
+      ).rejects.toThrow(AssetError);
+
+      // Second attempt must try to log in again (the failed one was not cached).
+      await expect(
+        publisher.publish('h2', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
+      ).rejects.toThrow(AssetError);
+
+      expect(countAuthTokenCalls()).toBe(2);
+      expect(countLoginExecs()).toBe(2);
+    });
   });
 });

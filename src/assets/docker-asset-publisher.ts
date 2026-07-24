@@ -10,6 +10,29 @@ import { AssetError } from '../utils/error-handler.js';
 import { buildDockerImage } from './docker-build.js';
 
 /**
+ * Registries this process has already logged in to, keyed by registry host
+ * (`<accountId>.dkr.ecr.<region>.amazonaws.com`, which uniquely encodes the
+ * account + region credential context). ECR authorization tokens are valid
+ * for ~12h and a deploy process is short-lived, so a successful login is
+ * reused for the process lifetime — mirroring `cdk-assets`, which skips
+ * re-login on repeat publishes. Keyed per registry (NOT globally) so that
+ * cross-account / cross-region assets each get their own login.
+ *
+ * Module-level (not an instance field) because the deploy pipeline may
+ * construct more than one `DockerAssetPublisher` per run (e.g. one per
+ * WorkGraph asset-publish node), and the login is genuinely process-wide.
+ */
+const loggedInRegistries = new Set<string>();
+
+/**
+ * Test-only: reset the process-lifetime ECR login cache so each test starts
+ * from a clean slate.
+ */
+export function resetEcrLoginCache(): void {
+  loggedInRegistries.clear();
+}
+
+/**
  * Publishes Docker image assets to ECR
  *
  * Handles:
@@ -185,8 +208,21 @@ export class DockerAssetPublisher {
 
   /**
    * Authenticate with ECR via `docker login --password-stdin`.
+   *
+   * The login is cached per registry (`<accountId>.dkr.ecr.<region>`) for the
+   * process lifetime: a repeat publish to the same registry returns early
+   * without the `GetAuthorizationToken` call or the `docker login` subprocess
+   * (mirrors `cdk-assets`). ECR tokens are valid ~12h and a deploy process is
+   * short-lived, so this is safe. Keyed per registry so cross-account /
+   * cross-region assets each get their own login.
    */
   private async ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
+    const registryKey = `${accountId}.dkr.ecr.${region}.amazonaws.com`;
+    if (loggedInRegistries.has(registryKey)) {
+      this.logger.debug(`Reusing cached ECR login for ${registryKey}`);
+      return;
+    }
+
     const response = await client.send(new GetAuthorizationTokenCommand({}));
     const authData = response.authorizationData?.[0];
 
@@ -208,6 +244,9 @@ export class DockerAssetPublisher {
       await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {
         input: password,
       });
+      // Only cache after a successful login so a failed attempt is retried on
+      // the next publish rather than silently skipped.
+      loggedInRegistries.add(registryKey);
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw new AssetError(
