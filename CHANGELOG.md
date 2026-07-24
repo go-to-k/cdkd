@@ -1,3 +1,10 @@
+## [0.260.13](https://github.com/go-to-k/cdkd/compare/v0.260.12...v0.260.13) (2026-07-24)
+
+
+### Performance Improvements
+
+* **assets:** cache ECR docker login per registry for the process lifetime ([#1184](https://github.com/go-to-k/cdkd/issues/1184)) ([#1185](https://github.com/go-to-k/cdkd/issues/1185)) ([7b6a11d](https://github.com/go-to-k/cdkd/commit/7b6a11d4124c1883c9a4de971a860a2328bea8ad))
+
 ## [0.260.12](https://github.com/go-to-k/cdkd/compare/v0.260.11...v0.260.12) (2026-07-23)
 
 
