@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-// Regression tests for issue #1195: the custom-resource response bucket is
-// cdkd's STATE bucket, which can live in a different region from the deploy
-// region (account-scoped region-free default bucket). The provider must
-// region-correct its S3 client (placeholder PutObject + pre-signed
-// ResponseURL) via the shared rebuildClientForBucketRegion helper instead of
-// blindly trusting the deploy region passed by deploy.ts — otherwise S3
-// returns a 301 PermanentRedirect on every cross-region deploy that carries
-// a custom resource.
+// Regression tests for issues #1195 / #1202: the custom-resource response
+// bucket is cdkd's STATE bucket, which can live in a different region from
+// the deploy region (account-scoped region-free default bucket). The
+// provider must region-correct its S3 client (placeholder PutObject +
+// pre-signed ResponseURL) via the shared rebuildClientForBucketRegion
+// helper — pre-#1195 it blindly trusted the deploy region, so S3 returned a
+// 301 PermanentRedirect on every cross-region deploy carrying a custom
+// resource. Since #1202 setResponseBucket takes no region argument at all:
+// correction always starts from the shared AwsClients.s3 client.
 
 const mockLambdaSend = vi.fn();
 const mockSnsSend = vi.fn();
@@ -89,7 +90,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     });
 
   it('region-corrects the response S3 client before the placeholder PutObject and presign', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     mockRebuildClientForBucketRegion.mockResolvedValueOnce(correctedClient);
     queueSuccessfulCreate(correctedSend);
 
@@ -132,7 +133,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
   });
 
   it('memoizes the probe: a second operation does not re-resolve the bucket region', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     mockRebuildClientForBucketRegion.mockResolvedValueOnce(correctedClient);
 
     queueSuccessfulCreate(correctedSend);
@@ -144,13 +145,13 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
   });
 
   it('re-resolves after setResponseBucket is called again', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     mockRebuildClientForBucketRegion.mockResolvedValue(correctedClient);
 
     queueSuccessfulCreate(correctedSend);
     await createOnce();
 
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     queueSuccessfulCreate(correctedSend);
     await createOnce();
 
@@ -199,8 +200,60 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     expect(correctedSend).toHaveBeenCalledTimes(2);
   });
 
+  it('a stale probe settling while a successor probe is in flight does not clobber the successor (issue #1202)', async () => {
+    // Pins the finally-block generation guard in ensureResponseClient: when
+    // stale probe A (superseded by a re-arm) settles AFTER successor probe B
+    // has already started, A's finally must NOT null out B's single-flight
+    // promise — otherwise a third operation would start a redundant probe C.
+    // Implementation-based mocks throughout (queued mocks interleave
+    // non-deterministically across concurrent creates).
+    mockLambdaSend.mockImplementation((cmd: { input?: { Payload?: Uint8Array } }) =>
+      cmd?.input?.Payload
+        ? Promise.resolve({
+            Payload: Buffer.from(JSON.stringify({ PhysicalResourceId: 'phys-1202', Data: {} })),
+          })
+        : Promise.resolve({ Configuration: { State: 'Active', LastUpdateStatus: 'Successful' } })
+    );
+    mockS3Send.mockResolvedValue({});
+    correctedSend.mockResolvedValue({});
+
+    provider.setResponseBucket('bucket-a');
+    let releaseA: (value: unknown) => void = () => {};
+    mockRebuildClientForBucketRegion.mockImplementationOnce(
+      () => new Promise((resolve) => (releaseA = resolve))
+    );
+    const first = createOnce(); // starts probe A (bucket-a)
+    await new Promise((resolve) => setImmediate(resolve));
+
+    provider.setResponseBucket('bucket-b'); // re-arm; A is now stale
+    let releaseB: (value: unknown) => void = () => {};
+    mockRebuildClientForBucketRegion.mockImplementationOnce(
+      () => new Promise((resolve) => (releaseB = resolve))
+    );
+    const second = createOnce(); // starts probe B (bucket-b)
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const staleClient = { send: vi.fn(), destroy: vi.fn() };
+    releaseA(staleClient); // stale A settles while B is still in flight
+    await first; // first proceeds on the original shared client
+
+    // B's single-flight promise must have survived A's finally: a third
+    // operation joins B instead of starting probe C.
+    const third = createOnce();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRebuildClientForBucketRegion).toHaveBeenCalledTimes(2); // A + B only
+
+    releaseB(correctedClient);
+    await Promise.all([second, third]);
+
+    expect(staleClient.destroy).toHaveBeenCalledTimes(1);
+    expect(staleClient.send).not.toHaveBeenCalled();
+    expect(mockS3Send).toHaveBeenCalledTimes(2); // first op: placeholder + cleanup
+    expect(correctedSend).toHaveBeenCalledTimes(4); // second + third ops on B's client
+  });
+
   it('shares one in-flight probe across concurrent operations', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     let releaseProbe: (value: typeof correctedClient) => void = () => {};
     mockRebuildClientForBucketRegion.mockImplementationOnce(
       () =>
