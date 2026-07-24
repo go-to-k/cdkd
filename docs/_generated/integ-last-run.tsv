@@ -129,7 +129,7 @@ intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run);
 kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
 kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
 kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy ok+destroy 3 del 0 err (split across subshell-death; re-destroyed clean); KMS key PendingDeletion
-lambda	2026-07-24T06:15:24Z	PASS		verify.sh	broad integ for #1183 deploy-engine change; 9 deleted 0 errors, orph clean
+lambda	2026-07-24T08:30:37Z	PASS	300	verify.sh	broad run for 1198/1199 deploy-engine change; rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
 lambda-arch-switch	2026-07-02T06:26:16Z	PASS	60	verify.sh	new fixture: arch switch reaches AWS config+runtime, destroy clean 0 orphans
 lambda-config-field-removal	2026-07-22T08:19:38Z	PASS	140	verify.sh	issue #1158 post-rebase re-verify; 6-field removal reset + destroy clean
@@ -209,7 +209,7 @@ remove-protection	2026-07-23T15:56:48Z	PASS		verify.sh	1176 poll-cap follow-up; 
 rename-refactor	2026-07-21T14:37:30Z	PASS	107	verify.sh	new fixture; review-fix re-run; destroy 0 err 0 orph
 replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
 replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
-rollback-command	2026-07-24T06:11:49Z	PASS		verify.sh	no-rollback fail -> cdkd rollback revert + initialDeploy state delete; rc ok, orph clean
+rollback-command	2026-07-24T08:28:01Z	PASS	660	verify.sh	1198/1199 phases R+F added; rc ok, orph clean
 rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
