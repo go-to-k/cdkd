@@ -20,6 +20,18 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *   - `Extra` — an SSM StringParameter created ONLY when `WITH_EXTRA=true`
  *     (the v2 deploy). This is the CREATE-rollback target: `cdkd rollback`
  *     must delete it.
+ *   - `ReplaceParam` — an SSM StringParameter whose NAME carries
+ *     `REPLACE_SUFFIX` (default `a`). Changing the suffix changes the
+ *     create-only `Name` property, driving a REPLACEMENT — the
+ *     reverse-replacement rollback target (issue #1199): `cdkd rollback`
+ *     must re-create the old-named parameter and delete the new-named one.
+ *   - `RevertQueue` — an SQS queue whose `messageRetentionPeriod` is valid
+ *     (3600) by default and out-of-range (9999999) when
+ *     `INJECT_UPDATE_FAIL=true`. AWS rejects the `SetQueueAttributes`
+ *     UPDATE, so the deploy fails ON AN UPDATE — the `--revert-failed`
+ *     target (issue #1198): the journal records the failed op with its
+ *     pre-op state + attempted properties, and
+ *     `cdkd rollback --revert-failed` force-reverts it.
  *   - `FailingQueue` — an SQS queue with an out-of-range
  *     `messageRetentionPeriod` (valid range [60, 1209600]) added ONLY when
  *     `INJECT_FAIL=true`. AWS rejects `CreateQueue`, so the deploy fails. It
@@ -41,6 +53,26 @@ export class RollbackCommandStack extends cdk.Stack {
     });
 
     const deps: Construct[] = [marker];
+
+    // Reverse-replacement target (issue #1199): the create-only Name changes
+    // with REPLACE_SUFFIX, so a suffix flip drives a REPLACEMENT.
+    const replaceSuffix = process.env.REPLACE_SUFFIX ?? 'a';
+    const replaceParam = new ssm.StringParameter(this, 'ReplaceParam', {
+      parameterName: `${this.stackName}-replace-${replaceSuffix}`,
+      stringValue: 'replace-target',
+      description: 'reverse-replacement rollback target for the cdkd rollback integ',
+    });
+    deps.push(replaceParam);
+
+    // --revert-failed target (issue #1198): valid on CREATE, out-of-range on
+    // UPDATE when INJECT_UPDATE_FAIL=true (SetQueueAttributes rejects it).
+    // Depends on Marker so the Marker update COMPLETES before this fails.
+    const revertQueue = new sqs.CfnQueue(this, 'RevertQueue', {
+      queueName: `${this.stackName}-revert-queue`,
+      messageRetentionPeriod: process.env.INJECT_UPDATE_FAIL === 'true' ? 9999999 : 3600,
+    });
+    revertQueue.node.addDependency(marker);
+    deps.push(revertQueue);
 
     if (process.env.WITH_EXTRA === 'true') {
       const extra = new ssm.StringParameter(this, 'Extra', {

@@ -55,6 +55,7 @@ interface FakeBackend {
   loadRollbackJournal: ReturnType<typeof vi.fn>;
   saveState: ReturnType<typeof vi.fn>;
   popRollbackJournalSegment: ReturnType<typeof vi.fn>;
+  setRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
   deleteState: ReturnType<typeof vi.fn>;
   deleteRollbackJournal: ReturnType<typeof vi.fn>;
   setCustomResourceResponseBucket?: ReturnType<typeof vi.fn>;
@@ -68,6 +69,7 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
     loadRollbackJournal: vi.fn().mockResolvedValue(null),
     saveState: vi.fn().mockResolvedValue('etag-1'),
     popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+    setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
     deleteState: vi.fn().mockResolvedValue(undefined),
     deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     ...backend,
@@ -228,6 +230,125 @@ describe('rollbackCommand', () => {
     expect(err).toBeInstanceOf(PartialFailureError);
     // A warning (not a failure) still pops the segment.
     expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+  });
+
+  it('--revert-failed off: journaled failed op is left as-is, segment still pops (#1198)', async () => {
+    replayProvider.update.mockClear();
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] },
+      attemptedProperties: { a: 2 },
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: { Q: { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] } },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [failedOp] }],
+      }),
+    });
+    await expect(rollbackCommand('S', { ...baseOpts })).resolves.toBeUndefined();
+    expect(replayProvider.update).not.toHaveBeenCalled();
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+  });
+
+  it('--revert-failed on: force-reverts the failed UPDATE with previous-vs-attempted (#1198)', async () => {
+    replayProvider.update.mockClear();
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] },
+      attemptedProperties: { a: 2 },
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: { Q: { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] } },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [failedOp] }],
+      }),
+    });
+    await expect(rollbackCommand('S', { ...baseOpts, revertFailed: true })).resolves.toBeUndefined();
+    expect(replayProvider.update).toHaveBeenCalledWith(
+      'Q',
+      'phys-Q',
+      'AWS::SQS::Queue',
+      { a: 1 }, // desired = previous properties
+      { a: 2 } // previous side of the diff = ATTEMPTED properties
+    );
+    expect(backend.saveState).toHaveBeenCalled();
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+    // Idempotency: the replayed failed-ops are stripped from the journal so a
+    // later completed-op failure re-run cannot re-issue the revert.
+    expect(backend.setRollbackJournalFailedOperations).toHaveBeenCalledWith('S', 'us-east-1', []);
+  });
+
+  it('--revert-failed on: a failed-op revert failure keeps the segment (exit 2)', async () => {
+    replayProvider.update.mockClear();
+    replayProvider.update.mockRejectedValueOnce(new Error('revert boom'));
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] },
+      attemptedProperties: { a: 2 },
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: { Q: { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] } },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [failedOp] }],
+      }),
+    });
+    const err = await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch((e) => e);
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+    // Failed revert → the failed-op stays in the journal for the re-run
+    // (remaining list unchanged, so no strip write is issued).
+    expect(backend.setRollbackJournalFailedOperations).not.toHaveBeenCalled();
   });
 
   it('initialDeploy segment with empty ops → pops journal and deletes state.json', async () => {

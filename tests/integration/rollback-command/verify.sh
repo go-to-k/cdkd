@@ -15,6 +15,23 @@
 #     3. `cdkd rollback --force`: exit 0. Marker is back to v1, Extra is GONE,
 #        the journal is GONE, and state.json records exactly the v1 resource set
 #        (1 resource: Marker). `cdkd events` shows a rollback run = SUCCEEDED.
+#   PHASE R (reverse-replacement, issue #1199):
+#     R1. Deploy with REPLACE_SUFFIX=b + INJECT_FAIL under --no-rollback:
+#         ReplaceParam is REPLACED (old `-replace-a` deleted, new `-replace-b`
+#         created — Name is create-only), then FailingQueue fails. Journal
+#         records the replacement op.
+#     R2. `cdkd rollback --force`: exit 0. The replacement is REVERSED —
+#         `-replace-a` re-created, `-replace-b` deleted, journal gone, and
+#         the rollback output mentions the reverse-replacement.
+#   PHASE F (--revert-failed, issue #1198):
+#     F1. Deploy with MARKER_VALUE=vF + INJECT_UPDATE_FAIL under
+#         --no-rollback: Marker updates to vF (completes first), then
+#         RevertQueue's UPDATE fails (out-of-range retention). The journal
+#         segment carries failedOperations[] with the failed op's pre-op
+#         state + ATTEMPTED properties.
+#     F2. `cdkd rollback --force --revert-failed`: exit 0. Marker back to v1
+#         AND the failed RevertQueue is force-reverted (retention 3600),
+#         journal gone.
 #   PHASE 2 (initialDeploy rollback):
 #     4. First-ever deploy of a second stack with INJECT_FAIL + --no-rollback:
 #        exit non-zero, journal present, InitMarker created.
@@ -70,6 +87,9 @@ STACK="CdkdRollbackCommandExample"
 INIT_STACK="CdkdRollbackCommandInitial"
 MARKER_NAME="${STACK}-marker"
 EXTRA_NAME="${STACK}-extra"
+REPLACE_A_NAME="${STACK}-replace-a"
+REPLACE_B_NAME="${STACK}-replace-b"
+REVERT_QUEUE_NAME="${STACK}-revert-queue"
 FAILING_QUEUE_NAME="${STACK}-failing-queue"
 INIT_MARKER_NAME="${INIT_STACK}-marker"
 INIT_FAILING_QUEUE_NAME="${INIT_STACK}-failing-queue"
@@ -114,10 +134,10 @@ aggressive_cleanup() {
   (
   set +eu
   local name q_url
-  for name in "${MARKER_NAME}" "${EXTRA_NAME}" "${INIT_MARKER_NAME}"; do
+  for name in "${MARKER_NAME}" "${EXTRA_NAME}" "${REPLACE_A_NAME}" "${REPLACE_B_NAME}" "${INIT_MARKER_NAME}"; do
     aws ssm delete-parameter --name "${name}" --region "${REGION}" >/dev/null 2>&1 || true
   done
-  for name in "${FAILING_QUEUE_NAME}" "${INIT_FAILING_QUEUE_NAME}"; do
+  for name in "${FAILING_QUEUE_NAME}" "${REVERT_QUEUE_NAME}" "${INIT_FAILING_QUEUE_NAME}"; do
     q_url="$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
       --query 'QueueUrl' --output text 2>/dev/null || true)"
     if [ -n "${q_url}" ] && [ "${q_url}" != "None" ]; then
@@ -172,11 +192,11 @@ if [ "${V1_MARKER}" != "v1" ]; then
   exit 1
 fi
 V1_COUNT="$(state_resource_count "${STATE_KEY}")"
-if [ "${V1_COUNT}" != "1" ]; then
-  echo "[verify] FAIL: v1 state records ${V1_COUNT} resource(s) (expected 1: Marker)"
+if [ "${V1_COUNT}" != "3" ]; then
+  echo "[verify] FAIL: v1 state records ${V1_COUNT} resource(s) (expected 3: Marker + ReplaceParam + RevertQueue)"
   exit 1
 fi
-echo "[verify] step 2 ok: v1 deployed, Marker=v1, state has 1 resource"
+echo "[verify] step 2 ok: v1 deployed, Marker=v1, state has 3 resources"
 
 echo "[verify] step 3: deploy ${STACK} v2 (Marker=v2 + Extra + INJECT_FAIL) --no-rollback (expect FAILURE)"
 set +e
@@ -209,11 +229,11 @@ if ! aws ssm get-parameter --name "${EXTRA_NAME}" --region "${REGION}" >/dev/nul
   exit 1
 fi
 V2_COUNT="$(state_resource_count "${STATE_KEY}")"
-if [ "${V2_COUNT}" != "2" ]; then
-  echo "[verify] FAIL: v2 partial state records ${V2_COUNT} resource(s) (expected 2: Marker + Extra)"
+if [ "${V2_COUNT}" != "4" ]; then
+  echo "[verify] FAIL: v2 partial state records ${V2_COUNT} resource(s) (expected 4: Marker + Extra + ReplaceParam + RevertQueue)"
   exit 1
 fi
-echo "[verify] step 3b ok: Marker=v2 on AWS, Extra created, partial state has 2 resources"
+echo "[verify] step 3b ok: Marker=v2 on AWS, Extra created, partial state has 4 resources"
 
 echo "[verify] step 4: cdkd rollback ${STACK} --force (expect exit 0)"
 ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force
@@ -234,8 +254,8 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNA
   exit 1
 fi
 POST_COUNT="$(state_resource_count "${STATE_KEY}")"
-if [ "${POST_COUNT}" != "1" ]; then
-  echo "[verify] FAIL: post-rollback state records ${POST_COUNT} resource(s) (expected 1: Marker only)"
+if [ "${POST_COUNT}" != "3" ]; then
+  echo "[verify] FAIL: post-rollback state records ${POST_COUNT} resource(s) (expected 3: the v1 resource set)"
   exit 1
 fi
 echo "[verify] step 4b ok: journal gone, state back to the v1 resource set"
@@ -250,6 +270,120 @@ if [ "${RB_CMD}" != "rollback" ] || [ "${RB_RESULT}" != "SUCCEEDED" ]; then
   exit 1
 fi
 echo "[verify] step 4c ok: newest run = rollback / SUCCEEDED"
+
+# ---------------------------------------------------------------------------
+# PHASE R: reverse-replacement rollback (issue #1199)
+# ---------------------------------------------------------------------------
+echo "[verify] step R1: deploy ${STACK} with REPLACE_SUFFIX=b + INJECT_FAIL --no-rollback (expect FAILURE after the replacement)"
+# --force-stateful-recreation: AWS::SSM::Parameter is a stateful type, so the
+# property-driven replacement (create-only Name change) requires the explicit
+# data-loss confirmation flag.
+set +e
+REPLACE_SUFFIX=b INJECT_FAIL=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback --force-stateful-recreation > /tmp/rollback-cmd-replace.log 2>&1
+REPLACE_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-replace.log || true
+if [ "${REPLACE_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: REPLACE_SUFFIX=b --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: no rollback journal after the replacement deploy"
+  exit 1
+fi
+# The replacement landed: new-named param exists, old-named param deleted.
+if ! aws ssm get-parameter --name "${REPLACE_B_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: ${REPLACE_B_NAME} missing — the replacement did not land"
+  exit 1
+fi
+assert_gone "old ${REPLACE_A_NAME} still exists — the replacement did not delete it" \
+  aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}"
+echo "[verify] step R1 ok: replacement landed (b created, a deleted), journal present"
+
+echo "[verify] step R2: cdkd rollback ${STACK} --force (expect reverse-replacement, exit 0)"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-replace-rb.log 2>&1
+sed 's/^/  /' /tmp/rollback-cmd-replace-rb.log || true
+if ! grep -qi 'reverse-replace\|Reversing replacement' /tmp/rollback-cmd-replace-rb.log; then
+  echo "[verify] FAIL: rollback output does not mention the reverse-replacement"
+  exit 1
+fi
+if ! aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: ${REPLACE_A_NAME} was not re-created by the reverse-replacement"
+  exit 1
+fi
+assert_gone "new ${REPLACE_B_NAME} still exists — the reverse-replacement did not delete it" \
+  aws ssm get-parameter --name "${REPLACE_B_NAME}" --region "${REGION}"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the reverse-replacement rollback"
+  exit 1
+fi
+R2_COUNT="$(state_resource_count "${STATE_KEY}")"
+if [ "${R2_COUNT}" != "3" ]; then
+  echo "[verify] FAIL: post-reverse-replacement state records ${R2_COUNT} resource(s) (expected 3)"
+  exit 1
+fi
+echo "[verify] step R2 ok: replacement reversed (a re-created, b deleted), journal gone"
+
+# ---------------------------------------------------------------------------
+# PHASE F: --revert-failed (issue #1198)
+# ---------------------------------------------------------------------------
+echo "[verify] step F1: deploy ${STACK} with MARKER_VALUE=vF + INJECT_UPDATE_FAIL --no-rollback (expect FAILURE on the RevertQueue UPDATE)"
+set +e
+MARKER_VALUE=vF INJECT_UPDATE_FAIL=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-updfail.log 2>&1
+UPDFAIL_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-updfail.log || true
+if [ "${UPDFAIL_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_UPDATE_FAIL --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+FM_MARKER="$(ssm_value "${MARKER_NAME}")"
+if [ "${FM_MARKER}" != "vF" ]; then
+  echo "[verify] FAIL: Marker is '${FM_MARKER}' (expected 'vF' — the completed update should have landed before the queue UPDATE failed)"
+  exit 1
+fi
+echo "[verify] step F1a: assert the journal records failedOperations with the attempted properties"
+JOURNAL_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"
+FAILED_COUNT="$(echo "${JOURNAL_BODY}" | jq '.segments[-1].failedOperations | length')"
+FAILED_ID="$(echo "${JOURNAL_BODY}" | jq -r '.segments[-1].failedOperations[0].logicalId')"
+FAILED_ATTEMPTED="$(echo "${JOURNAL_BODY}" | jq -r '.segments[-1].failedOperations[0].attemptedProperties.MessageRetentionPeriod')"
+FAILED_PREV="$(echo "${JOURNAL_BODY}" | jq -r '.segments[-1].failedOperations[0].previousState.properties.MessageRetentionPeriod')"
+if [ "${FAILED_COUNT}" != "1" ] || [ "${FAILED_ID}" != "RevertQueue" ]; then
+  echo "[verify] FAIL: journal failedOperations wrong (count=${FAILED_COUNT} id=${FAILED_ID})"
+  exit 1
+fi
+if [ "${FAILED_ATTEMPTED}" != "9999999" ] || [ "${FAILED_PREV}" != "3600" ]; then
+  echo "[verify] FAIL: failed op properties wrong (attempted=${FAILED_ATTEMPTED} previous=${FAILED_PREV})"
+  exit 1
+fi
+echo "[verify] step F1 ok: deploy failed on the UPDATE, journal carries the failed op (prev=3600, attempted=9999999)"
+
+echo "[verify] step F2: cdkd rollback ${STACK} --force --revert-failed (expect exit 0)"
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > /tmp/rollback-cmd-updfail-rb.log 2>&1
+sed 's/^/  /' /tmp/rollback-cmd-updfail-rb.log || true
+if ! grep -qi 'force-reverting failed UPDATE' /tmp/rollback-cmd-updfail-rb.log; then
+  echo "[verify] FAIL: rollback output does not mention the failed-op force-revert"
+  exit 1
+fi
+F2_MARKER="$(ssm_value "${MARKER_NAME}")"
+if [ "${F2_MARKER}" != "v1" ]; then
+  echo "[verify] FAIL: after --revert-failed rollback, Marker is '${F2_MARKER}' (expected 'v1')"
+  exit 1
+fi
+REVERT_Q_URL="$(aws sqs get-queue-url --queue-name "${REVERT_QUEUE_NAME}" --region "${REGION}" --query 'QueueUrl' --output text)"
+REVERT_RETENTION="$(aws sqs get-queue-attributes --queue-url "${REVERT_Q_URL}" --region "${REGION}" \
+  --attribute-names MessageRetentionPeriod --query 'Attributes.MessageRetentionPeriod' --output text)"
+if [ "${REVERT_RETENTION}" != "3600" ]; then
+  echo "[verify] FAIL: RevertQueue retention is '${REVERT_RETENTION}' (expected 3600 — the failed UPDATE was not force-reverted)"
+  exit 1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the --revert-failed rollback"
+  exit 1
+fi
+echo "[verify] step F2 ok: Marker back to v1, RevertQueue force-reverted to 3600, journal gone"
 
 # ---------------------------------------------------------------------------
 # PHASE 2: first-ever failing deploy → cdkd rollback deletes state.json
@@ -298,6 +432,8 @@ ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 echo "[verify] step 7a: assert destroy is clean (state gone, 0 orphans)"
 assert_gone "state.json still present after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 assert_gone "Marker ${MARKER_NAME} still exists after destroy" aws ssm get-parameter --name "${MARKER_NAME}" --region "${REGION}"
+assert_gone "ReplaceParam ${REPLACE_A_NAME} still exists after destroy" aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}"
+assert_gone "RevertQueue ${REVERT_QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${REVERT_QUEUE_NAME}" --region "${REGION}"
 echo "[verify] step 7a ok: destroy clean"
 
 echo "[verify] step 8: cleanup — remove the events sidecars so the integ leaves nothing behind"

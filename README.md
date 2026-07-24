@@ -463,13 +463,18 @@ clean rollback, and by `cdkd destroy`.
 
 Flags: `--force` (skip confirm), `--orphan <logicalId>` (repeatable —
 leave the resource alone during replay, like `cdk rollback --orphan`),
+`--revert-failed` (also attempt to revert the resource whose operation
+FAILED mid-deploy — off by default because its remote state is unknown),
 `--stack-region <region>` (disambiguate a same-named stack across
-regions), `--role-arn`, `--state-bucket`. Exit codes: `0` = fully clean
+regions), `--role-arn`, `--state-bucket`. A **replacement** is reverted
+by reversing it: the old resource is re-created from its journaled
+pre-deploy state and the new one deleted (for a stateful type the old
+data is unrecoverable — warned loudly). Exit codes: `0` = fully clean
 (journal deleted), `2` = partial (some ops failed / were skipped — the
 journal is kept so you can re-run), `1` = hard error. See
 [docs/cli-reference.md](docs/cli-reference.md#cdkd-rollback) for the
 full reference and known limitations (a DELETE that already happened
-cannot be restored; replacements roll back best-effort).
+cannot be restored).
 
 ## Importing existing resources
 

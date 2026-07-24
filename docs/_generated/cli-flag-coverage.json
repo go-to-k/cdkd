@@ -253,6 +253,7 @@
         "loggroup-class-guard",
         "recreate-via-cc-api",
         "replacement-immutable-name",
+        "rollback-command",
         "update-replace"
       ]
     },
@@ -1294,6 +1295,7 @@
     "--rest-api-id",
     "--retire-cfn-stack",
     "--revert",
+    "--revert-failed",
     "--rm",
     "--role-name",
     "--route-id",

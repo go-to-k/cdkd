@@ -21,7 +21,7 @@
  * whole replay).
  */
 
-import type { CompletedOperation } from '../deployment/rollback-executor.js';
+import type { CompletedOperation, FailedOperation } from '../deployment/rollback-executor.js';
 
 /**
  * Journal format version, INDEPENDENT of the state schema. An unknown value
@@ -64,6 +64,14 @@ export interface RollbackJournalSegment {
   cdkdVersion?: string;
   /** `CompletedOperation[]`, serialized verbatim, in completion order. */
   operations: CompletedOperation[];
+  /**
+   * The operation(s) that FAILED mid-deploy (issue #1198) — usually one.
+   * ADDITIVE field, no `journalVersion` bump: an older binary reading this
+   * journal simply ignores it (its replay only consults `operations`).
+   * Consumed only by `cdkd rollback --revert-failed`, which is opt-in
+   * because the failed resource's remote state is unknown.
+   */
+  failedOperations?: FailedOperation[];
 }
 
 /** On-disk shape of `rollback-journal.json`. */

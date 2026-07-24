@@ -187,8 +187,12 @@ avoided so old binaries reading state are unaffected and the
 `integ-schema-migration` gate is not triggered. It is written by the deploy
 engine whenever a deploy ends without a completed rollback (a `--no-rollback`
 failure, a SIGINT interruption, or before an automatic rollback), holds one
-`segment` per failed deploy attempt (each a verbatim `CompletedOperation[]`),
-and is consumed by the standalone `cdkd rollback` command. Lifecycle: created
+`segment` per failed deploy attempt (each a verbatim `CompletedOperation[]`,
+plus — since issue #1198 — an ADDITIVE optional `failedOperations` list
+recording the op(s) that FAILED mid-deploy with their pre-op `previousState`
+and intrinsic-resolved `attemptedProperties`; no `journalVersion` bump, old
+binaries ignore the field), and is consumed by the standalone `cdkd rollback`
+command (`--revert-failed` opts in to replaying `failedOperations`). Lifecycle: created
 on failure, segment-popped per replayed segment, deleted on the next
 successful deploy / a clean rollback / `cdkd destroy` / `cdkd state destroy`
 (the last two via `S3StateBackend.deleteState`, which sweeps the journal key).
