@@ -274,6 +274,14 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-enrichment-coverage.ts --check',
         cache: false,
       },
+      'gen:sdk-attr-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-sdk-attr-coverage.ts',
+        cache: false,
+      },
+      'audit:sdk-attr-coverage:check': {
+        command: 'node --experimental-strip-types scripts/gen-sdk-attr-coverage.ts --check',
+        cache: false,
+      },
       'compat-corpus': {
         command: 'node --experimental-strip-types scripts/compat-corpus.ts',
         cache: false,

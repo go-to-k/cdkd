@@ -163,6 +163,23 @@ jobs:
           fi
       - run: vp run audit:enrichment-coverage:check
 
+      # Fail CI when docs/_generated/sdk-attr-coverage.{json,md} is stale
+      # relative to the CFn schema fixtures + each SDK provider's create/update
+      # attribute keys + the constructAttribute type coverage. The matrix records
+      # which SDK-backed types' read-only Arn/Url Fn::GetAtt attributes are
+      # resolvable (cached by the provider OR constructAttribute-handled); a gap
+      # is the #1179 deploy-break class. The second step is the CRITIC: it
+      # hard-fails on any unresolvable Arn/Url attribute that is not allow-listed.
+      - name: sdk-attr-coverage matrix is up-to-date
+        run: |
+          vp run gen:sdk-attr-coverage
+          if ! git diff --quiet -- docs/_generated/sdk-attr-coverage.json docs/_generated/sdk-attr-coverage.md; then
+            echo "::error::sdk-attr-coverage matrix is stale — run \`vp run gen:sdk-attr-coverage\` and commit the regenerated docs/_generated/sdk-attr-coverage.{json,md}"
+            git --no-pager diff -- docs/_generated/sdk-attr-coverage.json docs/_generated/sdk-attr-coverage.md
+            exit 1
+          fi
+      - run: vp run audit:sdk-attr-coverage:check
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
