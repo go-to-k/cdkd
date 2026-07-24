@@ -202,10 +202,14 @@ describe('real repo coverage (regression floor)', () => {
     expect(findGaps(report)).toEqual([]);
   });
 
-  it('carries the two known allow-list entries', () => {
+  it('carries the SNS::Subscription not-a-bug allow-list entry', () => {
     expect(SDK_ATTR_ALLOW_LIST.get('AWS::SNS::Subscription')?.attributes).toContain('Arn');
-    expect(SDK_ATTR_ALLOW_LIST.get('AWS::Lambda::EventSourceMapping')?.attributes).toContain(
-      'EventSourceMappingArn'
-    );
+  });
+
+  it('does NOT allow-list AWS::Lambda::EventSourceMapping (the #1190 gap was fixed by caching the ARN)', () => {
+    // The ESM ARN is now cached in create()/update(), so it must be resolved as
+    // `covered` by real caching — not carried as an allow-list carve-out. A
+    // regression that drops the caching should re-flag it, not silently pass.
+    expect(SDK_ATTR_ALLOW_LIST.has('AWS::Lambda::EventSourceMapping')).toBe(false);
   });
 });

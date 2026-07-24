@@ -586,4 +586,49 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(input['MaximumRetryAttempts']).toBeUndefined();
     });
   });
+
+  describe('EventSourceMappingArn attribute caching (issue #1190)', () => {
+    const UUID = 'abcdef12-3456-7890-abcd-ef1234567890';
+    const ARN = 'arn:aws:lambda:us-east-1:123456789012:event-source-mapping:' + UUID;
+
+    it('create() caches EventSourceMappingArn under its CFn name so Fn::GetAtt resolves', async () => {
+      mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: ARN });
+
+      const result = await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
+        FunctionName: 'fn',
+        EventSourceArn: 'arn:aws:sqs:us-east-1:123:q',
+      });
+
+      // The physical id is the UUID (not ARN-shaped), so the ARN MUST be cached
+      // under `EventSourceMappingArn` or the resolver's shape guard hard-fails.
+      expect(result.physicalId).toBe(UUID);
+      expect(result.attributes).toEqual({
+        Id: UUID,
+        EventSourceMappingArn: ARN,
+      });
+    });
+
+    it('update() re-caches EventSourceMappingArn under its CFn name', async () => {
+      mockSend.mockImplementation((cmd) => {
+        if (cmd instanceof UpdateEventSourceMappingCommand) {
+          return Promise.resolve({ UUID, EventSourceMappingArn: ARN });
+        }
+        return Promise.resolve({ UUID, State: 'Enabled' });
+      });
+
+      const result = await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: 'arn:aws:sqs:us-east-1:123:q', BatchSize: 20 },
+        { FunctionName: 'fn', EventSourceArn: 'arn:aws:sqs:us-east-1:123:q', BatchSize: 10 }
+      );
+
+      expect(result.physicalId).toBe(UUID);
+      expect(result.attributes).toEqual({
+        Id: UUID,
+        EventSourceMappingArn: ARN,
+      });
+    });
+  });
 });
