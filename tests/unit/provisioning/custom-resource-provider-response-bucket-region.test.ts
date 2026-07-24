@@ -157,6 +157,48 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     expect(mockRebuildClientForBucketRegion).toHaveBeenCalledTimes(2);
   });
 
+  it('discards a stale in-flight probe superseded by a setResponseBucket re-arm', async () => {
+    // No region hint anywhere, so this.s3Client stays the mocked shared
+    // client and no real S3Client is ever constructed.
+    provider.setResponseBucket('bucket-a');
+    let releaseProbe: (value: unknown) => void = () => {};
+    mockRebuildClientForBucketRegion.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseProbe = resolve;
+        })
+    );
+
+    queueSuccessfulCreate(mockS3Send);
+    const first = createOnce();
+    await new Promise((resolve) => setImmediate(resolve)); // probe for bucket-a is in flight
+
+    // Re-arm mid-probe: the stale probe's result must NOT be committed.
+    provider.setResponseBucket('bucket-b');
+    const staleClient = { send: vi.fn(), destroy: vi.fn() };
+    releaseProbe(staleClient);
+    await first;
+
+    // The stale client was discarded (destroyed, never adopted): the first
+    // create's S3 ops went through the original shared client.
+    expect(staleClient.destroy).toHaveBeenCalledTimes(1);
+    expect(staleClient.send).not.toHaveBeenCalled();
+    expect(mockS3Send).toHaveBeenCalledTimes(2); // placeholder + cleanup
+
+    // The next operation re-probes against the NEW bucket and adopts its
+    // replacement normally.
+    mockRebuildClientForBucketRegion.mockResolvedValueOnce(correctedClient);
+    queueSuccessfulCreate(correctedSend);
+    await createOnce();
+    expect(mockRebuildClientForBucketRegion).toHaveBeenCalledTimes(2);
+    expect(mockRebuildClientForBucketRegion).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'bucket-b',
+      expect.anything()
+    );
+    expect(correctedSend).toHaveBeenCalledTimes(2);
+  });
+
   it('shares one in-flight probe across concurrent operations', async () => {
     provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
     let releaseProbe: (value: typeof correctedClient) => void = () => {};

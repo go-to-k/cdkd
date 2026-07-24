@@ -175,10 +175,22 @@ export class CustomResourceProvider implements ResourceProvider {
    * Memoization for the lazy response-bucket region correction
    * (`ensureResponseClient`). Mirrors the `clientResolved` /
    * `resolveInFlight` pattern of the three other state-bucket S3
-   * consumers (S3StateBackend / LockManager / ExportIndexStore).
+   * consumers (S3StateBackend / LockManager / ExportIndexStore), plus a
+   * generation counter: `setResponseBucket` bumps it so a probe that was
+   * still in flight when the bucket was re-set cannot commit its stale
+   * client / resolved flag against the new bucket.
    */
   private responseClientResolved = false;
   private responseClientResolveInFlight: Promise<void> | null = null;
+  private responseClientGeneration = 0;
+
+  /**
+   * Whether `this.s3Client` is a provider-OWNED client (built from the
+   * `setResponseBucket` region hint or by a region-correction rebuild)
+   * vs the shared `AwsClients.s3` instance from the constructor. Owned
+   * clients are `destroy()`ed when replaced; the shared one never is.
+   */
+  private ownsS3Client = false;
 
   /**
    * Opt out of the deploy engine's outer transient-error retry loop.
@@ -273,10 +285,24 @@ export class CustomResourceProvider implements ResourceProvider {
     // before the first S3 operation, so the pre-signed ResponseURL always
     // targets the right regional endpoint.
     if (bucketRegion) {
-      this.s3Client = new S3Client({ region: bucketRegion });
+      this.replaceS3Client(new S3Client({ region: bucketRegion }));
     }
+    this.responseClientGeneration++;
     this.responseClientResolved = false;
     this.responseClientResolveInFlight = null;
+  }
+
+  /**
+   * Swap `this.s3Client`, destroying the previous client when the
+   * provider owned it (never the shared `AwsClients.s3` instance).
+   * The optional call tolerates test doubles without a `destroy`.
+   */
+  private replaceS3Client(replacement: S3Client): void {
+    if (this.ownsS3Client) {
+      (this.s3Client as { destroy?: () => void }).destroy?.();
+    }
+    this.s3Client = replacement;
+    this.ownsS3Client = true;
   }
 
   /**
@@ -305,6 +331,7 @@ export class CustomResourceProvider implements ResourceProvider {
     if (this.responseClientResolveInFlight) return this.responseClientResolveInFlight;
 
     const bucket = this.responseBucket;
+    const generation = this.responseClientGeneration;
     this.responseClientResolveInFlight = (async (): Promise<void> => {
       try {
         const replacement = await rebuildClientForBucketRegion(this.s3Client, bucket, {
@@ -316,12 +343,22 @@ export class CustomResourceProvider implements ResourceProvider {
             );
           },
         });
+        if (generation !== this.responseClientGeneration) {
+          // A setResponseBucket re-arm superseded this probe while it was
+          // in flight — its result targets the OLD bucket; committing it
+          // would pin the wrong client AND suppress the new bucket's
+          // resolution. Discard it (the next operation re-probes).
+          (replacement as { destroy?: () => void } | null)?.destroy?.();
+          return;
+        }
         if (replacement) {
-          this.s3Client = replacement;
+          this.replaceS3Client(replacement);
         }
         this.responseClientResolved = true;
       } finally {
-        this.responseClientResolveInFlight = null;
+        if (generation === this.responseClientGeneration) {
+          this.responseClientResolveInFlight = null;
+        }
       }
     })();
 
