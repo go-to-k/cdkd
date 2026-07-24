@@ -947,9 +947,24 @@ export class DeployEngine {
       try {
         const journal = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
         if (journal && journal.segments.length > 0) {
+          // A journal whose every segment carries no completed ops is the
+          // failed-only shape kept after a CLEAN automatic rollback (issue
+          // #1208) — the stack is already back at its pre-deploy baseline,
+          // so the generic "run cdkd rollback to revert" advice would be
+          // misleading (a plain rollback is a no-op replay there). Detected
+          // structurally, not by reason, so mixed journals keep the generic
+          // note.
+          const failedOnly =
+            journal.segments.every((s) => s.operations.length === 0) &&
+            journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
           this.logger.info(
-            `A previous deploy of '${stackName}' failed or was interrupted. ` +
-              `Run 'cdkd rollback ${stackName}' to revert it, or continue deploying to fix forward.`
+            failedOnly
+              ? `A previous deploy of '${stackName}' failed and was automatically rolled back. ` +
+                  `The failed resource may be partially applied — run ` +
+                  `'cdkd rollback ${stackName} --revert-failed' to revert it, or continue ` +
+                  `deploying to fix forward (a successful deploy clears this note).`
+              : `A previous deploy of '${stackName}' failed or was interrupted. ` +
+                  `Run 'cdkd rollback ${stackName}' to revert it, or continue deploying to fix forward.`
           );
         }
       } catch {
@@ -1193,6 +1208,18 @@ export class DeployEngine {
               );
             }
           }
+        }
+
+        // A clean no-change deploy is still a SUCCESSFUL deploy — drop any
+        // lingering rollback journal, matching the documented "deleted on
+        // the next successful deploy" contract (the changes path does this
+        // at its end too). This matters for the failed-only segment a clean
+        // auto-rollback retains (issue #1208): the typical fix-forward is
+        // REMOVING the failed resource from the template, which lands here
+        // with hasChanges=false — without this delete the journal (and its
+        // "previous deploy failed" note) would linger indefinitely.
+        if (!this.options.dryRun) {
+          await this.deleteRollbackJournalBestEffort(stackName);
         }
 
         return {
@@ -1746,11 +1773,14 @@ export class DeployEngine {
         );
         this.logger.debug('State saved after deployment failure');
         // Auto-rollback replayed cleanly AND the post-rollback state save
-        // succeeded — the pre-deploy baseline is restored, so drop the
-        // journal segment (issue #1183). A partial / failed rollback keeps
-        // it so `cdkd rollback` can resume.
+        // succeeded — the pre-deploy baseline is restored, so settle the
+        // journal (issue #1183): drop it entirely, or — when the segment
+        // carries failed in-flight op(s) — keep a failed-only segment so
+        // `cdkd rollback --revert-failed` still works (issue #1208). A
+        // partial / failed rollback keeps the full segment so `cdkd
+        // rollback` can resume.
         if (autoRollbackClean) {
-          await this.deleteRollbackJournalBestEffort(stackName);
+          await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy);
         }
       } catch (saveError) {
         // ETag mismatch from per-resource saves — force overwrite with fresh ETag
@@ -1786,7 +1816,7 @@ export class DeployEngine {
           );
           this.logger.debug('State saved after deployment failure (retry succeeded)');
           if (autoRollbackClean) {
-            await this.deleteRollbackJournalBestEffort(stackName);
+            await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy);
           }
         } catch (retryError) {
           this.logger.warn(
@@ -1967,6 +1997,54 @@ export class DeployEngine {
         `Failed to delete rollback journal for ${stackName}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+  }
+
+  /**
+   * Settle the rollback journal after a CLEAN automatic rollback (issue
+   * #1208). The completed ops are reverted, but the op that FAILED mid-deploy
+   * may have left its resource half-applied — and its journaled record is the
+   * ONLY input `cdkd rollback --revert-failed` has. So instead of deleting the
+   * journal outright (which made --revert-failed unusable in the DEFAULT
+   * deploy flow), pop this attempt's segment and re-record a failed-only one
+   * (`operations: []` + the failed ops). Older segments from prior
+   * un-reverted attempts are preserved by the pop. The next successful deploy
+   * still deletes the whole journal, bounding the lingering window. With no
+   * failed ops there is nothing left to revert — delete as before.
+   *
+   * Best-effort like every journal write: a pop failure warns and leaves the
+   * full segment in place (the pre-#1208 partial-rollback shape — replay is
+   * idempotent, so a later `cdkd rollback` is still safe).
+   */
+  private async settleJournalAfterCleanRollback(
+    stackName: string,
+    failedOperations: FailedOperation[],
+    initialDeploy: boolean
+  ): Promise<void> {
+    if (failedOperations.length === 0) {
+      await this.deleteRollbackJournalBestEffort(stackName);
+      return;
+    }
+    try {
+      await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
+          `The journal keeps the full segment; a later 'cdkd rollback' replay is idempotent.`
+      );
+      return;
+    }
+    await this.writeRollbackJournalSegment(
+      stackName,
+      [],
+      failedOperations,
+      'auto-rollback-clean',
+      initialDeploy
+    );
+    this.logger.info(
+      `The automatic rollback restored the pre-deploy state. The failed resource's pre-failure ` +
+        `record was kept — if it was left partially applied, run ` +
+        `'cdkd rollback ${stackName} --revert-failed' to revert it.`
+    );
   }
 
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */

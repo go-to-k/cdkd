@@ -1783,9 +1783,13 @@ credentials, etc.).
   [#1198](https://github.com/go-to-k/cdkd/issues/1198)) — opt-in because the
   failed resource's remote state is genuinely unknown. A failed CREATE that
   recorded no physical id still cannot be acted on (skipped with a warning).
-  Note: after a **clean automatic** rollback the journal is deleted (the
-  pre-deploy baseline is restored), so `--revert-failed` applies to
-  `--no-rollback` / interrupted / partially-failed-rollback journals.
+  Note: after a **clean automatic** rollback the journal is settled to a
+  **failed-only** segment (`operations: []` plus the failed op records —
+  issue [#1208](https://github.com/go-to-k/cdkd/issues/1208)): the completed
+  ops are already reverted, but the failed resource's record is kept so
+  `cdkd rollback --revert-failed` works in the DEFAULT deploy flow too. A
+  plain `cdkd rollback` on such a journal is a no-op replay that clears it;
+  the next successful deploy also deletes it.
 - **Replacements** are reverted by **reversing the replacement** (issue
   [#1199](https://github.com/go-to-k/cdkd/issues/1199)): the old resource is
   re-CREATEd from its journaled pre-deploy state and the new resource is

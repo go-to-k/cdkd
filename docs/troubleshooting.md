@@ -828,7 +828,7 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 
 4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
 
-5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed (issue #1183). This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy, after a clean rollback, and by `cdkd destroy`.
+5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed (issue #1183). This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted (issue #1208): the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it.
 
 ### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
 

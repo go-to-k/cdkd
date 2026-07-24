@@ -458,8 +458,10 @@ journal records the exact operations that completed, so `cdkd rollback`
 replays them in reverse (deleting created resources, restoring updated
 ones) with no synth and no CDK app needed. It is **synth-free** on
 purpose: a broken app is a common reason you want to roll back. The
-journal is deleted automatically on the next successful deploy, after a
-clean rollback, and by `cdkd destroy`.
+journal is deleted automatically on the next successful deploy and by
+`cdkd destroy`; after a clean automatic rollback it keeps only the
+failed resource's record so `cdkd rollback --revert-failed` still works
+in the default deploy flow.
 
 Flags: `--force` (skip confirm), `--orphan <logicalId>` (repeatable —
 leave the resource alone during replay, like `cdk rollback --orphan`),

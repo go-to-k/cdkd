@@ -12,7 +12,8 @@
  *   unaffected, and the `integ-schema-migration` gate is not triggered.
  * - Not under the `deployments/` prefix — that layer intentionally survives
  *   destroy (#808); the journal must not (it is deleted on deploy success /
- *   clean rollback / destroy / state destroy).
+ *   destroy / state destroy; a CLEAN automatic rollback settles it to a
+ *   failed-only segment instead — issue #1208).
  * - Carries resolved properties, the same sensitivity class as `state.json`
  *   itself (documented in state-management.md).
  *
@@ -34,7 +35,14 @@ export const ROLLBACK_JOURNAL_VERSION = 1;
 export type RollbackSegmentReason =
   | 'no-rollback-failure' // deploy failed with --no-rollback (or output-resolution failed)
   | 'interrupted' // deploy interrupted by SIGINT
-  | 'auto-rollback-started'; // written before an automatic in-process rollback
+  | 'auto-rollback-started' // written before an automatic in-process rollback
+  // issue #1208: the automatic rollback replayed CLEANLY, so the completed
+  // ops are already reverted — only the failed in-flight op(s) are retained
+  // (`operations: []` + `failedOperations`) so `cdkd rollback --revert-failed`
+  // still works in the default deploy flow. The next successful deploy
+  // deletes the journal, bounding how long this segment lingers. ADDITIVE
+  // value, no journalVersion bump (reason is informational on read).
+  | 'auto-rollback-clean';
 
 /**
  * One failed deploy attempt's worth of completed operations. Segments are
