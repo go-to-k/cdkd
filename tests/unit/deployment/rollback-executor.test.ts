@@ -243,7 +243,7 @@ describe('replayRollback', () => {
 
   it('--orphan on a CREATE leaves the resource, drops it from state', async () => {
     const del = vi.fn();
-    const { ctx } = makeCtx({ delete: del });
+    const { ctx, events } = makeCtx({ delete: del });
     const ops: CompletedOperation[] = [
       { logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-B' },
     ];
@@ -251,11 +251,13 @@ describe('replayRollback', () => {
     await replayRollback(ops, state, 'S', ctx, { orphanLogicalIds: new Set(['B']) });
     expect(del).not.toHaveBeenCalled();
     expect(state.B).toBeUndefined();
+    // Parity with orphan-retain: the orphaned CREATE surfaces in events.
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
   });
 
-  it('--orphan on an UPDATE leaves state as-is (no provider.update)', async () => {
+  it('--orphan on an UPDATE leaves state as-is (no provider.update, no event)', async () => {
     const update = vi.fn();
-    const { ctx } = makeCtx({ update });
+    const { ctx, events } = makeCtx({ update });
     const cur = res({ physicalId: 'phys-B', properties: { a: 2 } });
     const ops: CompletedOperation[] = [
       { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-B', previousState: res({ properties: { a: 1 } }) },
@@ -264,6 +266,8 @@ describe('replayRollback', () => {
     await replayRollback(ops, state, 'S', ctx, { orphanLogicalIds: new Set(['B']) });
     expect(update).not.toHaveBeenCalled();
     expect(state.B).toBe(cur);
+    // An orphaned UPDATE changes nothing in state/AWS → no event.
+    expect(events.map((e) => e.eventType)).not.toContain('ROLLBACK_RESOURCE_SUCCEEDED');
   });
 
   it('per-op failure is caught, counted, and does not abort remaining ops', async () => {
