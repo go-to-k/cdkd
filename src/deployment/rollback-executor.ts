@@ -38,7 +38,23 @@ import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import { withRetry } from './retry.js';
-import { isNameCollisionError } from './retryable-errors.js';
+import {
+  isNameCollisionError,
+  isNameCooldownError,
+  isRecreateRetryableError,
+} from './retryable-errors.js';
+
+/**
+ * Retry schedule for a re-create that must wait out a name-release delay:
+ * an async delete's late name release ("already exists") or the SQS 60s
+ * same-name cooldown (issue #1206). 2s/4s/8s then capped at 10s over 8
+ * retries ≈ 64s of total sleep — enough to cover the full cooldown window.
+ */
+const RECREATE_RETRY_SCHEDULE = {
+  maxRetries: 8,
+  initialDelayMs: 2_000,
+  maxDelayMs: 10_000,
+} as const;
 
 /**
  * Completed operation record for rollback tracking. Pushed by the deploy
@@ -626,9 +642,26 @@ async function replaySingle(
         let deletedNewFirst = false;
         let createResult: { physicalId: string; attributes?: Record<string, unknown> };
         try {
-          createResult = await createProvider.create(op.logicalId, op.resourceType, {
-            ...prev.properties,
-          });
+          // The initial create-first attempt retries ONLY the SQS name
+          // cooldown (issue #1206): the forward replacement deleted the OLD
+          // name moments ago (create-then-destroy with a changed name), so a
+          // rollback within 60s deterministically hits QueueDeletedRecently.
+          // A genuine collision must NOT be retried here — it falls through
+          // to the delete-new-first fallback below instead.
+          createResult = await withRetry(
+            () => createProvider.create(op.logicalId, op.resourceType, { ...prev.properties }),
+            op.logicalId,
+            {
+              ...RECREATE_RETRY_SCHEDULE,
+              logger,
+              ...(isInterrupted && {
+                isInterrupted,
+                onInterrupted: () =>
+                  new Error('Rollback interrupted while waiting out the name cooldown'),
+              }),
+              isRetryable: isNameCooldownError,
+            }
+          );
         } catch (createError) {
           const msg = createError instanceof Error ? createError.message : String(createError);
           const nameCollision = isNameCollisionError(msg);
@@ -654,18 +687,16 @@ async function replaySingle(
               () => createProvider.create(op.logicalId, op.resourceType, { ...prev.properties }),
               op.logicalId,
               {
-                maxRetries: 5,
-                initialDelayMs: 2_000,
-                maxDelayMs: 10_000,
+                ...RECREATE_RETRY_SCHEDULE,
                 logger,
                 // Mirror the deploy engine's delete-first fallback: honor
-                // SIGINT mid-sleep instead of blocking up to ~34s.
+                // SIGINT mid-sleep instead of blocking up to ~64s.
                 ...(isInterrupted && {
                   isInterrupted,
                   onInterrupted: () =>
                     new Error('Rollback interrupted while waiting for the old name to release'),
                 }),
-                isRetryable: isNameCollisionError,
+                isRetryable: isRecreateRetryableError,
               }
             );
           } catch (recreateError) {
