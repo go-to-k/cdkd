@@ -126,7 +126,7 @@ inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstrea
 intrinsic-functions	2026-06-21T11:00:28Z	PASS	18	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 intrinsics-torture	2026-07-21T05:24:57Z	PASS	48	verify.sh	rc ok, orph clean
 intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); intrinsic-function torture; 12 checks; 11 deleted 0 err; SSM cleared
-kinesis-esm-filter	2026-06-27T19:34:46Z	PASS	62	verify.sh	bughunt-clean regression fixture; FilterCriteria content asserted; clean destroy
+kinesis-esm-filter	2026-07-24T10:29:51Z	PASS	73	verify.sh	0724 P0 sweep: lambda-eventsource-provider #1194 coverage; FilterCriteria verified; 5 del 0 err
 kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
 kms-encryption	2026-06-21T16:16:44Z	PASS	200	verify.sh	stale-real re-run; deploy ok+destroy 3 del 0 err (split across subshell-death; re-destroyed clean); KMS key PendingDeletion
 lambda	2026-07-24T10:30:51Z	PASS	180	verify.sh	rc ok, 9/9 deploy+destroy, orph clean (PR 1208 broad gate)
@@ -210,7 +210,7 @@ rename-refactor	2026-07-21T14:37:30Z	PASS	107	verify.sh	new fixture; review-fix 
 replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
 replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
 rollback-command	2026-07-24T09:05:25Z	PASS	620	verify.sh	post-rebase (main #1201) re-run; rc ok, orph clean
-rollback-failure-injection	2026-07-02T16:12:06Z	PASS	436	verify.sh	post-merge validation batch; clean
+rollback-failure-injection	2026-07-24T10:22:57Z	PASS	355	verify.sh	0724 P0 sweep: rollback-executor #1196/#1200/#1203/#1210 coverage; 17 del 0 err, 0 orphans
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
@@ -223,8 +223,8 @@ s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to
 s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
 scheduled-task	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
-schema-v5-to-v6-migration	2026-06-21T14:38:30Z	PASS	57	verify.sh	sweep-G verify.sh re-run (rc=0)
-schema-v6-to-v7-migration	2026-06-21T14:39:23Z	PASS	51	verify.sh	sweep-G verify.sh re-run (rc=0)
+schema-v5-to-v6-migration	2026-07-24T10:27:22Z	PASS	61	verify.sh	0724 P0 sweep: v5->v8 transparent upgrade verified; 1 del 0 err
+schema-v6-to-v7-migration	2026-07-24T10:25:01Z	PASS	66	verify.sh	0724 P0 sweep: s3-state-backend #1196/#1203 coverage; v6->v8 transparent upgrade; 1 del 0 err
 schema-v7-to-v8-migration	2026-07-19T19:56:03Z	PASS	100	verify.sh	rc ok, transparent auto-migration, orph clean
 sdk-ccapi-crossref	2026-07-22T07:07:07Z	PASS		verify.sh	P0: CC-provider changes (#1135/#1109) covered; heterogeneous SDK/CC routing + bidirectional cross-ref, 4 del 0 err, state.json gone (deployments/ logs retained)
 secrets-dynamic-ref	2026-07-21T14:30:00Z	PASS	58	verify.sh	rc ok, orph clean
