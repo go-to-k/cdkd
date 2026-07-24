@@ -82,7 +82,7 @@ Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [test
 - **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
-- **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair. See [Rollback behavior](#rollback-behavior).
+- **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair — then either fix forward with another `cdkd deploy`, revert with the standalone `cdkd rollback`, or `cdkd destroy` to clean up. See [Rollback behavior](#rollback-behavior).
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway / Lambda MicroVM Image and return as soon as the create call returns (CloudFormation always blocks)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
 - **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore` / `start-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, CloudFront distributions, and Bedrock AgentCore Runtimes from your CDK code. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols (one-shot `invoke-agentcore` and long-running warm serve via `start-agentcore`, which serves the native contract — `POST /invocations` + `GET /ping`, MCP `/mcp`, A2A `/` — plus the `/ws` bridge for HTTP / AGUI). The Docker-backed commands work for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks; `start-cloudfront` serves the viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline (CloudFront-Functions + S3-only distributions run in-process with no Docker). See [Local execution](#local-execution).
@@ -227,6 +227,7 @@ cdkd deploy MyStack                 # by name (or 'MyStage/Api' display path)
 cdkd deploy --all
 cdkd deploy --dry-run               # plan only, no changes
 cdkd deploy --no-rollback           # Terraform-style: keep partial state on failure
+cdkd rollback MyStack               # revert a failed --no-rollback / interrupted deploy
 cdkd deploy --no-wait               # skip multi-minute waits (CloudFront / RDS / NAT)
 
 # Inspect what would change
@@ -434,6 +435,41 @@ Mid-deploy state is also saved per-resource as work completes, so even
 if cdkd itself crashes between the failure and the rollback, the state
 file accurately reflects what's on AWS and a follow-up `cdkd destroy`
 won't orphan anything.
+
+### `cdkd rollback` — revert a failed deploy
+
+After a `--no-rollback` failure (or a Ctrl+C-interrupted deploy, or an
+automatic rollback that itself died partway), you have three options:
+fix forward (`cdkd deploy` again), revert (`cdkd rollback`), or clean up
+(`cdkd destroy`). The standalone `cdkd rollback` command is the "revert"
+option — the cdkd equivalent of `cdk rollback` / CloudFormation
+`RollbackStack`:
+
+```bash
+cdkd rollback MyStack          # revert MyStack to its pre-deploy state
+cdkd rollback                  # single journaled stack (no arg)
+cdkd rollback MyStack --force  # skip the confirmation prompt
+```
+
+It works from a **rollback journal** cdkd writes to
+`s3://bucket/cdkd/{stack}/{region}/rollback-journal.json` (a sibling of
+`state.json`) whenever a deploy ends without a completed rollback — the
+journal records the exact operations that completed, so `cdkd rollback`
+replays them in reverse (deleting created resources, restoring updated
+ones) with no synth and no CDK app needed. It is **synth-free** on
+purpose: a broken app is a common reason you want to roll back. The
+journal is deleted automatically on the next successful deploy, after a
+clean rollback, and by `cdkd destroy`.
+
+Flags: `--force` (skip confirm), `--orphan <logicalId>` (repeatable —
+leave the resource alone during replay, like `cdk rollback --orphan`),
+`--stack-region <region>` (disambiguate a same-named stack across
+regions), `--role-arn`, `--state-bucket`. Exit codes: `0` = fully clean
+(journal deleted), `2` = partial (some ops failed / were skipped — the
+journal is kept so you can re-run), `1` = hard error. See
+[docs/cli-reference.md](docs/cli-reference.md#cdkd-rollback) for the
+full reference and known limitations (a DELETE that already happened
+cannot be restored; replacements roll back best-effort).
 
 ## Importing existing resources
 

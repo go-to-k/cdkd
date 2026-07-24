@@ -21,10 +21,10 @@ Each deploy / destroy run appends one **JSONL** line per lifecycle event:
 
 | Event type | When |
 | --- | --- |
-| `RUN_STARTED` / `RUN_FINISHED` | Once per deploy / destroy run (carries command, region, cdkd version, terminal result, per-op counts). |
+| `RUN_STARTED` / `RUN_FINISHED` | Once per deploy / destroy / rollback run (carries command, region, cdkd version, terminal result, per-op counts). The `command` field is `deploy`, `destroy`, or `rollback` (issue #1183). |
 | `RESOURCE_STARTED` / `RESOURCE_SUCCEEDED` / `RESOURCE_FAILED` | Per per-resource CREATE / UPDATE / DELETE (carries logicalId, resourceType, `provisionedBy`, physicalId on success, duration, error metadata on failure). |
 | `RESOURCE_RETAINED` | Destroy-side skip for a `DeletionPolicy: Retain` resource. |
-| `ROLLBACK_STARTED` / `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` / `ROLLBACK_FINISHED` | Deploy-failure rollback phase. |
+| `ROLLBACK_STARTED` / `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` / `ROLLBACK_FINISHED` | Rollback phase — emitted both by the deploy-failure automatic rollback AND by a standalone `cdkd rollback` run (issue #1183), which records them under its own `runId` (with `command: rollback` in `index.json`). |
 
 Failure events carry an `error` object: `{ name, message, awsErrorCode?,
 requestId? }`. The AWS error code + request id are extracted from the

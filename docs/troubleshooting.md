@@ -824,6 +824,34 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 
 4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
 
+5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed (issue #1183). This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy, after a clean rollback, and by `cdkd destroy`.
+
+### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
+
+After a deploy fails with `--no-rollback`, is interrupted with Ctrl+C, or its
+automatic rollback dies partway, you have three options: fix forward
+(`cdkd deploy` again), revert (`cdkd rollback`), or clean up (`cdkd destroy`).
+
+```bash
+cdkd rollback MyStack        # revert to the pre-deploy state
+cdkd rollback MyStack --force # skip the confirmation prompt
+```
+
+- **Exit `2`** means the rollback was partial — one or more ops failed
+  best-effort or were skipped with a warning (e.g. a resource whose physical
+  id changed after a later fix-forward attempt, or an unrecoverable DELETE).
+  The rollback journal is **kept** so you can re-run `cdkd rollback` — replay
+  is idempotent (already-reverted resources are skipped).
+- Use `--orphan <logicalId>` (repeatable) to leave a specific resource alone
+  during the revert (mirrors `cdk rollback --orphan`).
+- If `cdkd rollback` reports "nothing to roll back", the journal is already
+  gone — the deploy either succeeded on a later attempt (journal deleted on
+  success) or the process was killed before the journal was written (a
+  SIGKILL before the PUT). In the latter case use `cdkd deploy` to resume or
+  `cdkd destroy` to clean up.
+- See [docs/cli-reference.md](cli-reference.md#cdkd-rollback) for the full flag
+  reference and known limitations.
+
 ### Detecting Orphaned Resources
 
 If you suspect orphaned resources exist (e.g., due to a process crash before state could be saved), you can manually compare the state file against actual AWS resources:
@@ -978,7 +1006,7 @@ A: On next deployment, all resources will be treated as CREATE. If existing reso
 
 ### Q: Is there a rollback feature?
 
-A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff.
+A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback <stack>` command (issue #1183) — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
 
 ### Q: Are custom resources supported?
 

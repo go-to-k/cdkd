@@ -530,6 +530,11 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect((cmds[0] as DeleteObjectCommand).input.Key).toBe('cdkd/S/us-east-1/state.json');
       expect(cmds[2]).toBeInstanceOf(DeleteObjectCommand);
       expect((cmds[2] as DeleteObjectCommand).input.Key).toBe('cdkd/S/state.json');
+      // deleteState also sweeps the rollback journal (issue #1183).
+      const deletedKeys = cmds
+        .filter((c: unknown) => c instanceof DeleteObjectCommand)
+        .map((c: DeleteObjectCommand) => c.input.Key);
+      expect(deletedKeys).toContain('cdkd/S/us-east-1/rollback-journal.json');
     });
 
     it('leaves a legacy key alone when its region does not match', async () => {
@@ -538,11 +543,15 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       await backend.deleteState('S', 'us-east-1');
 
-      // No second DeleteObject for the legacy key.
-      const deletes = s3Client.send.mock.calls.filter(
-        (c: unknown[]) => c[0] instanceof DeleteObjectCommand
-      );
-      expect(deletes).toHaveLength(1);
+      // No DeleteObject for the legacy key (region mismatch). A journal
+      // sweep (issue #1183) also fires but targets a different key, so
+      // assert on the legacy key specifically rather than the raw count.
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
+      expect(deletedKeys).toContain('cdkd/S/us-east-1/state.json');
     });
   });
 
@@ -593,5 +602,97 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const keys = await backend.listRawKeys('cdkd/Nope/');
       expect(keys).toEqual([]);
     });
+  });
+});
+
+describe('S3StateBackend rollback journal (issue #1183)', () => {
+  let s3Client: ReturnType<typeof makeFakeClient>;
+  let backend: S3StateBackend;
+  const config: StateBackendConfig = { bucket: 'state-bucket', prefix: 'cdkd' };
+
+  const journalKey = 'cdkd/S/us-east-1/rollback-journal.json';
+  function rawBody(obj: unknown) {
+    return { transformToString: () => Promise.resolve(JSON.stringify(obj)) };
+  }
+  function segment(reason: string, ops: unknown[] = []) {
+    return { timestamp: 1, reason, initialDeploy: false, operations: ops };
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    clearBucketRegionCache();
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+    s3Client = makeFakeClient('us-east-1');
+    backend = new S3StateBackend(s3Client as unknown as S3Client, config);
+  });
+
+  it('loadRollbackJournal returns null when no journal exists', async () => {
+    s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
+    const journal = await backend.loadRollbackJournal('S', 'us-east-1');
+    expect(journal).toBeNull();
+  });
+
+  it('appendRollbackJournalSegment creates a new journal when absent', async () => {
+    s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} })); // load
+    s3Client.send.mockResolvedValueOnce({}); // put
+    await backend.appendRollbackJournalSegment('S', 'us-east-1', segment('interrupted') as never);
+    const put = s3Client.send.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand;
+    expect(put.input.Key).toBe(journalKey);
+    const body = JSON.parse(put.input.Body as string);
+    expect(body.journalVersion).toBe(1);
+    expect(body.segments).toHaveLength(1);
+  });
+
+  it('appendRollbackJournalSegment preserves existing segments', async () => {
+    const existing = { journalVersion: 1, stackName: 'S', region: 'us-east-1', segments: [segment('interrupted')] };
+    s3Client.send.mockResolvedValueOnce({ Body: rawBody(existing) }); // load
+    s3Client.send.mockResolvedValueOnce({}); // put
+    await backend.appendRollbackJournalSegment('S', 'us-east-1', segment('no-rollback-failure') as never);
+    const put = s3Client.send.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand;
+    const body = JSON.parse(put.input.Body as string);
+    expect(body.segments).toHaveLength(2);
+    expect(body.segments[0].reason).toBe('interrupted');
+    expect(body.segments[1].reason).toBe('no-rollback-failure');
+  });
+
+  it('popRollbackJournalSegment deletes the journal when the last segment is removed', async () => {
+    const one = { journalVersion: 1, stackName: 'S', region: 'us-east-1', segments: [segment('interrupted')] };
+    s3Client.send.mockResolvedValueOnce({ Body: rawBody(one) }); // load
+    s3Client.send.mockResolvedValueOnce({}); // delete
+    const remaining = await backend.popRollbackJournalSegment('S', 'us-east-1');
+    expect(remaining).toBe(0);
+    const del = s3Client.send.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((cmd: unknown) => cmd instanceof DeleteObjectCommand) as DeleteObjectCommand;
+    expect(del.input.Key).toBe(journalKey);
+  });
+
+  it('popRollbackJournalSegment rewrites the journal when segments remain', async () => {
+    const two = {
+      journalVersion: 1,
+      stackName: 'S',
+      region: 'us-east-1',
+      segments: [segment('interrupted'), segment('no-rollback-failure')],
+    };
+    s3Client.send.mockResolvedValueOnce({ Body: rawBody(two) }); // load
+    s3Client.send.mockResolvedValueOnce({}); // put
+    const remaining = await backend.popRollbackJournalSegment('S', 'us-east-1');
+    expect(remaining).toBe(1);
+    const put = s3Client.send.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand;
+    const body = JSON.parse(put.input.Body as string);
+    expect(body.segments).toHaveLength(1);
+    expect(body.segments[0].reason).toBe('interrupted');
+  });
+
+  it('deleteRollbackJournal tolerates a missing journal', async () => {
+    s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
+    await expect(backend.deleteRollbackJournal('S', 'us-east-1')).resolves.toBeUndefined();
   });
 });

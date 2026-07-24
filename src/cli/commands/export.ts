@@ -814,6 +814,27 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     }
     const { state, etag, migrationPending } = stateData;
 
+    // Guard (issue #1183): a rollback journal means the stack is in a failed,
+    // not-yet-reverted state. Exporting that half-deployed state to
+    // CloudFormation is almost certainly unintended — warn and require
+    // confirmation (or --yes), pointing at `cdkd rollback` / re-deploy first.
+    const exportJournal = await stateBackend.loadRollbackJournal(resolvedStackName, targetRegion);
+    if (exportJournal && exportJournal.segments.length > 0) {
+      logger.warn(
+        `Stack '${resolvedStackName}' has a rollback journal — a previous deploy failed or was ` +
+          `interrupted and has not been reverted. Exporting this half-deployed state to ` +
+          `CloudFormation is likely unintended; run 'cdkd rollback ${resolvedStackName}' to revert ` +
+          `(or 'cdkd deploy' to fix forward) first.`
+      );
+      if (!options.yes && !options.dryRun) {
+        const proceed = await confirmPrompt('Export anyway?');
+        if (!proceed) {
+          logger.info('Export cancelled');
+          return;
+        }
+      }
+    }
+
     // Acquire the lock before any AWS write. Dry-run skips the lock so it
     // is a pure read.
     //

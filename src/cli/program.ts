@@ -10,6 +10,7 @@ import { createDeployCommand } from './commands/deploy.js';
 import { createDiffCommand } from './commands/diff.js';
 import { createDriftCommand } from './commands/drift.js';
 import { createDestroyCommand } from './commands/destroy.js';
+import { createRollbackCommand } from './commands/rollback.js';
 import { createEventsCommand } from './commands/events.js';
 import { createGcCommand } from './commands/gc.js';
 import { createOrphanCommand } from './commands/orphan.js';
@@ -65,6 +66,7 @@ export function buildProgram(): Command {
   program.addCommand(createDiffCommand());
   program.addCommand(createDriftCommand());
   program.addCommand(createDestroyCommand());
+  program.addCommand(createRollbackCommand());
   program.addCommand(createEventsCommand());
   program.addCommand(createGcCommand());
   program.addCommand(createOrphanCommand());

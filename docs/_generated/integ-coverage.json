@@ -4686,6 +4686,7 @@
         "migrate-from-cfn",
         "multi-resource",
         "rename-refactor",
+        "rollback-command",
         "rollback-failure-injection",
         "scheduler-custom-group",
         "sns-inline-subscription",
@@ -4773,6 +4774,9 @@
           "l2",
           "literal"
         ],
+        "rollback-command": [
+          "l1"
+        ],
         "rollback-failure-injection": [
           "l1"
         ],
@@ -4859,6 +4863,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "rollback-command",
         "rollback-failure-injection",
         "s3-tables",
         "schema-v5-to-v6-migration",
@@ -5006,6 +5011,9 @@
         "replacement-immutable-name": [
           "l2",
           "literal"
+        ],
+        "rollback-command": [
+          "l2"
         ],
         "rollback-failure-injection": [
           "l2"

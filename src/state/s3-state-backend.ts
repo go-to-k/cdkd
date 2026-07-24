@@ -15,6 +15,12 @@ import {
   type StackState,
 } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
+import {
+  ROLLBACK_JOURNAL_VERSION,
+  parseRollbackJournal,
+  type RollbackJournal,
+  type RollbackJournalSegment,
+} from '../types/rollback-journal.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
@@ -113,6 +119,17 @@ export class S3StateBackend {
    */
   private getLegacyStateKey(stackName: string): string {
     return `${this.config.prefix}/${stackName}/state.json`;
+  }
+
+  /**
+   * Get the rollback-journal S3 key — a sibling of `state.json` (issue
+   * #1183). Only the region-scoped layout is used: journals are new objects
+   * only ever written by journal-aware binaries, and the deploy failure path
+   * migrates legacy-layout state before the journal write, so a legacy-key
+   * journal can never exist.
+   */
+  private getRollbackJournalKey(stackName: string, region: string): string {
+    return `${this.config.prefix}/${stackName}/${region}/rollback-journal.json`;
   }
 
   /**
@@ -438,6 +455,10 @@ export class S3StateBackend {
         this.logger.debug(`Deleted legacy state for stack: ${stackName}`);
       }
 
+      // Sweep the rollback journal (issue #1183) so `cdkd destroy` /
+      // `cdkd state destroy` leave no dangling revert data behind.
+      await this.deleteRollbackJournal(stackName, region);
+
       this.logger.debug(`State deleted: ${stackName} (${region})`);
     } catch (error) {
       const normalized = normalizeAwsError(error, {
@@ -637,6 +658,90 @@ export class S3StateBackend {
     if (failures.length > 0) {
       throw new StateError(
         `Failed to delete ${failures.length} object(s) from bucket '${this.config.bucket}': ${failures.join('; ')}`
+      );
+    }
+  }
+
+  /**
+   * Load the rollback journal for a stack (issue #1183). Returns `null` when
+   * no journal exists (the common case — a journal only lives between a
+   * failed/interrupted deploy and its `cdkd rollback`). Throws
+   * {@link UnknownRollbackJournalVersionError} on a newer-version journal.
+   */
+  async loadRollbackJournal(stackName: string, region: string): Promise<RollbackJournal | null> {
+    const body = await this.getRawObject(this.getRollbackJournalKey(stackName, region));
+    if (body === null) return null;
+    return parseRollbackJournal(body, stackName);
+  }
+
+  /**
+   * Append one segment to the stack's rollback journal, creating it if
+   * absent. Existing segments are preserved (never overwritten) so
+   * consecutive failed deploys accumulate one segment each. Every writer
+   * holds the stack lock, so no optimistic locking is needed.
+   */
+  async appendRollbackJournalSegment(
+    stackName: string,
+    region: string,
+    segment: RollbackJournalSegment
+  ): Promise<void> {
+    const existing = await this.loadRollbackJournal(stackName, region);
+    const journal: RollbackJournal = existing ?? {
+      journalVersion: ROLLBACK_JOURNAL_VERSION,
+      stackName,
+      region,
+      segments: [],
+    };
+    journal.segments.push(segment);
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+  }
+
+  /**
+   * Pop the newest segment off the stack's rollback journal after it has
+   * been fully replayed. When the last segment is removed, the journal
+   * object is deleted entirely. Returns the number of segments remaining.
+   */
+  async popRollbackJournalSegment(stackName: string, region: string): Promise<number> {
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal || journal.segments.length === 0) {
+      await this.deleteRollbackJournal(stackName, region);
+      return 0;
+    }
+    journal.segments.pop();
+    if (journal.segments.length === 0) {
+      await this.deleteRollbackJournal(stackName, region);
+      return 0;
+    }
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return journal.segments.length;
+  }
+
+  /**
+   * Delete the stack's rollback journal object (idempotent). Called on the
+   * deploy success path, after a clean rollback, and via {@link deleteState}
+   * so `cdkd destroy` / `cdkd state destroy` sweep it too.
+   */
+  async deleteRollbackJournal(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
+    try {
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: this.getRollbackJournalKey(stackName, region),
+        })
+      );
+    } catch (error) {
+      // Best-effort: a missing journal is not an error; other failures warn.
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return;
+      this.logger.warn(
+        `Failed to delete rollback journal for '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
