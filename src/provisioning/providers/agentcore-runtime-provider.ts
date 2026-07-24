@@ -152,11 +152,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
 
       return {
         physicalId: agentRuntimeId,
-        attributes: {
-          Arn: agentRuntimeArn,
-          AgentRuntimeId: agentRuntimeId,
-          AgentRuntimeName: agentRuntimeName,
-        },
+        attributes: this.buildAttributes(response, agentRuntimeName),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -241,7 +237,6 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       const response = await this.client.send(new UpdateAgentRuntimeCommand(input as any));
 
-      const agentRuntimeArn = response.agentRuntimeArn!;
       const agentRuntimeId = response.agentRuntimeId!;
 
       this.logger.debug(`Successfully updated BedrockAgentCore Runtime ${logicalId}`);
@@ -249,11 +244,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       return {
         physicalId: agentRuntimeId,
         wasReplaced: false,
-        attributes: {
-          Arn: agentRuntimeArn,
-          AgentRuntimeId: agentRuntimeId,
-          AgentRuntimeName: properties['AgentRuntimeName'] as string,
-        },
+        attributes: this.buildAttributes(response, properties['AgentRuntimeName'] as string),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -312,32 +303,103 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
   }
 
   /**
-   * Get resource attribute (for Fn::GetAtt resolution)
+   * Build the CFn read-only attribute map recorded in cdkd state for
+   * `Fn::GetAtt` resolution.
+   *
+   * CloudFormation exposes `AWS::BedrockAgentCore::Runtime`'s read-only
+   * attributes under the names `AgentRuntimeArn` / `AgentRuntimeId` /
+   * `AgentRuntimeVersion` / `Status` / `CreatedAt` /
+   * `WorkloadIdentityDetails` (the type's registry-schema
+   * `readOnlyProperties`). The stored `attributes` map is looked up BY CFn
+   * attribute name during output / cross-resource `Fn::GetAtt` resolution
+   * (`IntrinsicFunctionResolver.constructAttribute` never calls
+   * `getAttribute`), so the keys MUST match those CFn names. The previous
+   * `Arn` key meant `Fn::GetAtt [Runtime, AgentRuntimeArn]` missed the
+   * cached attribute, fell through to the unknown-attribute guard, and hard
+   * -failed because the physical id (the runtime name) is not ARN-shaped
+   * (issue #1179).
+   */
+  private buildAttributes(
+    response: {
+      agentRuntimeArn?: string | undefined;
+      agentRuntimeId?: string | undefined;
+      agentRuntimeVersion?: string | undefined;
+      status?: string | undefined;
+      createdAt?: Date | undefined;
+      workloadIdentityDetails?: unknown;
+    },
+    agentRuntimeName: string
+  ): Record<string, unknown> {
+    const attributes: Record<string, unknown> = {
+      AgentRuntimeArn: response.agentRuntimeArn,
+      AgentRuntimeId: response.agentRuntimeId,
+      AgentRuntimeName: agentRuntimeName,
+    };
+    if (response.agentRuntimeVersion !== undefined) {
+      attributes['AgentRuntimeVersion'] = response.agentRuntimeVersion;
+    }
+    if (response.status !== undefined) {
+      attributes['Status'] = response.status;
+    }
+    if (response.createdAt !== undefined) {
+      attributes['CreatedAt'] = response.createdAt.toISOString();
+    }
+    if (response.workloadIdentityDetails !== undefined) {
+      attributes['WorkloadIdentityDetails'] = camelToPascalCaseKeys(
+        response.workloadIdentityDetails
+      );
+    }
+    return attributes;
+  }
+
+  /**
+   * Get resource attribute (for a live `Fn::GetAtt` fetch, e.g. `cdkd
+   * orphan`). Output / cross-resource resolution reads the cached
+   * `attributes` map written by {@link buildAttributes}; this live path
+   * covers callers that bypass that cache.
+   *
+   * `WorkloadIdentityDetails` is NOT resolvable here because
+   * `GetAgentRuntime` does not return it (it is a create/update-time
+   * response field only); it stays available via the cached attributes.
    */
   async getAttribute(
     physicalId: string,
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    if (attributeName === 'Arn' || attributeName === 'AgentRuntimeArn') {
-      const response = await this.client.send(
-        new GetAgentRuntimeCommand({ agentRuntimeId: physicalId })
-      );
-      return response.agentRuntimeArn;
-    }
-
+    // The physical id IS the runtime id - a known-correct answer with no
+    // API call needed.
     if (attributeName === 'AgentRuntimeId') {
       return physicalId;
     }
 
-    if (attributeName === 'AgentRuntimeName') {
-      const response = await this.client.send(
-        new GetAgentRuntimeCommand({ agentRuntimeId: physicalId })
-      );
-      return response.agentRuntimeName;
-    }
+    const response = await this.client.send(
+      new GetAgentRuntimeCommand({ agentRuntimeId: physicalId })
+    );
 
-    throw new Error(`Unsupported attribute: ${attributeName} for AWS::BedrockAgentCore::Runtime`);
+    switch (attributeName) {
+      // `Arn` is not a CFn attribute of this type; kept as an alias for
+      // any caller still using the pre-#1179 key.
+      case 'Arn':
+      case 'AgentRuntimeArn':
+        return response.agentRuntimeArn;
+      case 'AgentRuntimeName':
+        return response.agentRuntimeName;
+      case 'AgentRuntimeVersion':
+        return response.agentRuntimeVersion;
+      case 'Status':
+        return response.status;
+      case 'CreatedAt':
+        return response.createdAt?.toISOString();
+      case 'LastUpdatedAt':
+        return response.lastUpdatedAt?.toISOString();
+      case 'FailureReason':
+        return response.failureReason;
+      default:
+        throw new Error(
+          `Unsupported attribute: ${attributeName} for AWS::BedrockAgentCore::Runtime`
+        );
+    }
   }
 
   /**

@@ -57,17 +57,55 @@ describe('AgentCoreRuntimeProvider', () => {
       );
 
       expect(result.physicalId).toBe('runtime-12345');
+      // Read-only attributes are recorded under their CFn names so
+      // `Fn::GetAtt [Runtime, AgentRuntimeArn]` resolves from the cache
+      // (issue #1179) - NOT the pre-fix `Arn` key.
       expect(result.attributes).toEqual({
-        Arn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+        AgentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
         AgentRuntimeId: 'runtime-12345',
         AgentRuntimeName: 'my-runtime',
+        Status: 'CREATING',
       });
+      expect(result.attributes).not.toHaveProperty('Arn');
       expect(mockSend).toHaveBeenCalledTimes(1);
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.constructor.name).toBe('CreateAgentRuntimeCommand');
       expect(createCall.input.agentRuntimeName).toBe('my-runtime');
       expect(createCall.input.roleArn).toBe('arn:aws:iam::123456789012:role/my-role');
+    });
+
+    it('captures optional read-only attributes (CreatedAt / WorkloadIdentityDetails) when present', async () => {
+      mockSend.mockResolvedValueOnce({
+        agentRuntimeId: 'runtime-12345',
+        agentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+        agentRuntimeVersion: '1',
+        status: 'CREATING',
+        createdAt: new Date('2026-07-24T00:00:00.000Z'),
+        workloadIdentityDetails: {
+          workloadIdentityArn:
+            'arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/wi',
+        },
+      });
+
+      const result = await provider.create('MyRuntime', 'AWS::BedrockAgentCore::Runtime', {
+        AgentRuntimeName: 'my-runtime',
+        RoleArn: 'arn:aws:iam::123456789012:role/my-role',
+      });
+
+      expect(result.attributes).toEqual({
+        AgentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+        AgentRuntimeId: 'runtime-12345',
+        AgentRuntimeName: 'my-runtime',
+        AgentRuntimeVersion: '1',
+        Status: 'CREATING',
+        CreatedAt: '2026-07-24T00:00:00.000Z',
+        // camelCase SDK shape re-mapped to CFn PascalCase.
+        WorkloadIdentityDetails: {
+          WorkloadIdentityArn:
+            'arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/wi',
+        },
+      });
     });
 
     it('should pass optional properties to CreateAgentRuntimeCommand', async () => {
@@ -147,11 +185,14 @@ describe('AgentCoreRuntimeProvider', () => {
 
       expect(result.physicalId).toBe('runtime-12345');
       expect(result.wasReplaced).toBe(false);
+      // CFn-named read-only attributes on the update path too (issue #1179).
       expect(result.attributes).toEqual({
-        Arn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+        AgentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
         AgentRuntimeId: 'runtime-12345',
         AgentRuntimeName: 'my-runtime',
+        Status: 'UPDATING',
       });
+      expect(result.attributes).not.toHaveProperty('Arn');
       expect(mockSend).toHaveBeenCalledTimes(1);
 
       const updateCall = mockSend.mock.calls[0][0];
@@ -302,6 +343,36 @@ describe('AgentCoreRuntimeProvider', () => {
       );
 
       expect(name).toBe('my-runtime');
+    });
+
+    it('should return AgentRuntimeVersion / Status / timestamps from GetAgentRuntime', async () => {
+      mockSend.mockResolvedValue({
+        agentRuntimeVersion: '3',
+        status: 'READY',
+        createdAt: new Date('2026-07-24T00:00:00.000Z'),
+        lastUpdatedAt: new Date('2026-07-24T01:00:00.000Z'),
+      });
+
+      expect(
+        await provider.getAttribute(
+          'runtime-12345',
+          'AWS::BedrockAgentCore::Runtime',
+          'AgentRuntimeVersion'
+        )
+      ).toBe('3');
+      expect(
+        await provider.getAttribute('runtime-12345', 'AWS::BedrockAgentCore::Runtime', 'Status')
+      ).toBe('READY');
+      expect(
+        await provider.getAttribute('runtime-12345', 'AWS::BedrockAgentCore::Runtime', 'CreatedAt')
+      ).toBe('2026-07-24T00:00:00.000Z');
+      expect(
+        await provider.getAttribute(
+          'runtime-12345',
+          'AWS::BedrockAgentCore::Runtime',
+          'LastUpdatedAt'
+        )
+      ).toBe('2026-07-24T01:00:00.000Z');
     });
 
     it('should throw for unsupported attribute', async () => {
