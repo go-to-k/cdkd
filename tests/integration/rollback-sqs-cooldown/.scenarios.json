@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "rollback-reverse-replacement-name-cooldown",
+    "failed-only-journal-retention-cycle"
+  ]
+}

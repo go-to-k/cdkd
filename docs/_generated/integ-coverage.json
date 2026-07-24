@@ -4688,6 +4688,7 @@
         "rename-refactor",
         "rollback-command",
         "rollback-failure-injection",
+        "rollback-sqs-cooldown",
         "scheduler-custom-group",
         "sns-inline-subscription",
         "sns-sqs-event",
@@ -4778,6 +4779,9 @@
           "l1"
         ],
         "rollback-failure-injection": [
+          "l1"
+        ],
+        "rollback-sqs-cooldown": [
           "l1"
         ],
         "scheduler-custom-group": [
