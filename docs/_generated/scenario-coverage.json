@@ -1523,6 +1523,11 @@
       "scenarios": []
     },
     {
+      "name": "rollback-command",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rollback-failure-injection",
       "annotated": true,
       "scenarios": [
@@ -2441,6 +2446,7 @@
     "recreate-via-sdk-provider",
     "rename-refactor",
     "replacement-immutable-name",
+    "rollback-command",
     "s3-event-notification",
     "s3-lifecycle",
     "s3-object-lock",

@@ -209,6 +209,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "rollback-command",
         "rollback-failure-injection",
         "route53",
         "s3-cloudfront",
@@ -261,6 +262,12 @@
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration"
+      ]
+    },
+    {
+      "flag": "--no-rollback",
+      "integs": [
+        "rollback-command"
       ]
     },
     {
@@ -416,6 +423,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "rollback-command",
         "rollback-failure-injection",
         "route53",
         "s3-asset-deploy",
@@ -612,6 +620,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "rollback-command",
         "rollback-failure-injection",
         "route53",
         "s3-asset-deploy",
@@ -832,6 +841,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "rollback-command",
         "rollback-failure-injection",
         "route53",
         "s3-asset-deploy",
@@ -1087,7 +1097,6 @@
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--no-capture-observed-state",
-    "--no-rollback",
     "--prefix-user-supplied-names",
     "--role-arn",
     "--stack",

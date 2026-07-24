@@ -250,18 +250,40 @@ export async function rollbackCommand(
       };
 
       // 7. Serialized incremental state save after every mutating op.
+      //
+      // Best-effort by design: the AWS revert already succeeded by the time
+      // this runs, so a state-save failure must NOT be counted as a rollback
+      // failure (which would block the segment pop and mislabel a clean revert
+      // as a per-op failure). It also must not desync `currentEtag`: on a
+      // conflict we re-read the fresh ETag and retry once (mirrors the deploy
+      // engine's post-rollback save) so a single transient blip cannot cascade
+      // every remaining op into a 412. `afterOp` therefore never throws.
       let currentEtag = stateData.etag;
       const saveState = async (): Promise<void> => {
-        const next: StackState = {
+        const next = (): StackState => ({
           ...baseState,
           version: STATE_SCHEMA_VERSION_CURRENT,
           region,
-          resources: stateResources,
+          resources: { ...stateResources },
           lastModified: Date.now(),
-        };
-        currentEtag = await setup.stateBackend.saveState(stackName, region, next, {
-          ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
         });
+        try {
+          currentEtag = await setup.stateBackend.saveState(stackName, region, next(), {
+            ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
+          });
+        } catch {
+          try {
+            const fresh = await setup.stateBackend.getState(stackName, region);
+            currentEtag = await setup.stateBackend.saveState(stackName, region, next(), {
+              ...(fresh?.etag !== undefined && { expectedEtag: fresh.etag }),
+            });
+          } catch (retryError) {
+            logger.warn(
+              `Failed to persist state after a rollback operation: ${retryError instanceof Error ? retryError.message : String(retryError)}. ` +
+                `The resource was reverted in AWS; re-run 'cdkd rollback ${stackName}' to reconcile state.`
+            );
+          }
+        }
       };
 
       // 8. Replay segments strictly newest-first; pop each after a clean run.

@@ -530,6 +530,11 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect((cmds[0] as DeleteObjectCommand).input.Key).toBe('cdkd/S/us-east-1/state.json');
       expect(cmds[2]).toBeInstanceOf(DeleteObjectCommand);
       expect((cmds[2] as DeleteObjectCommand).input.Key).toBe('cdkd/S/state.json');
+      // deleteState also sweeps the rollback journal (issue #1183).
+      const deletedKeys = cmds
+        .filter((c: unknown) => c instanceof DeleteObjectCommand)
+        .map((c: DeleteObjectCommand) => c.input.Key);
+      expect(deletedKeys).toContain('cdkd/S/us-east-1/rollback-journal.json');
     });
 
     it('leaves a legacy key alone when its region does not match', async () => {

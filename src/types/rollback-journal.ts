@@ -108,8 +108,10 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
     throw new Error(`Rollback journal for '${stackName}' is malformed (not an object).`);
   }
   const j = parsed as Partial<RollbackJournal>;
-  if (typeof j.journalVersion !== 'number') {
-    throw new Error(`Rollback journal for '${stackName}' is missing 'journalVersion'.`);
+  if (typeof j.journalVersion !== 'number' || j.journalVersion < 1) {
+    throw new Error(
+      `Rollback journal for '${stackName}' has an invalid 'journalVersion' (${String(j.journalVersion)}).`
+    );
   }
   if (j.journalVersion > ROLLBACK_JOURNAL_VERSION) {
     throw new UnknownRollbackJournalVersionError(j.journalVersion, stackName);

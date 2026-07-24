@@ -160,6 +160,36 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(seg.initialDeploy).toBe(true);
   });
 
+  // Note: the `interrupted` (SIGINT) journal-write reason is exercised
+  // end-to-end by the `rollback-command` integ fixture and shares the exact
+  // `writeRollbackJournalSegment` helper the `no-rollback-failure` /
+  // `auto-rollback-started` paths above use (only the reason literal +
+  // initialDeploy differ). A unit test that emits a real `process.emit('SIGINT')`
+  // races the test runner's own SIGINT listeners, so it is deliberately not
+  // added here.
+
+  it('a successful deploy deletes a pre-existing journal (fix-forward succeeded)', async () => {
+    const changes = new Map([
+      ['A', makeChange('A')],
+      ['B', makeChange('B')],
+    ]);
+    const engine = buildEngine({ changes, deps: { A: [], B: [] }, currentEtag: 'e0' });
+    await engine.deploy(stackName, template); // no failOn → succeeds
+    expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
+    expect(journal.appendRollbackJournalSegment).not.toHaveBeenCalled();
+  });
+
+  it('a journal-write failure warns but does not mask the original deploy error', async () => {
+    const changes = new Map([
+      ['A', makeChange('A')],
+      ['B', makeChange('B')],
+    ]);
+    const engine = buildEngine({ changes, deps: { A: [], B: [] }, failOn: new Set(['B']), noRollback: true, currentEtag: 'e0' });
+    journal.appendRollbackJournalSegment.mockRejectedValueOnce(new Error('S3 down'));
+    // The original create-failure still propagates (not the journal error).
+    await expect(engine.deploy(stackName, template)).rejects.toThrow(/FailingQueue|create failed|Failed to create resource B|B/);
+  });
+
   it('auto-rollback writes an auto-rollback-started segment then deletes it on a clean replay', async () => {
     const changes = new Map([
       ['A', makeChange('A')],

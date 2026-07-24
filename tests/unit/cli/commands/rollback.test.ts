@@ -9,6 +9,19 @@ vi.mock('../../../../src/provisioning/register-providers.js', () => ({
   registerAllProviders: vi.fn(),
 }));
 
+// A ProviderRegistry stub whose getProviderFor returns a shared spyable
+// provider so the replay path (CREATE delete / UPDATE update) can be driven.
+const replayProvider = {
+  delete: vi.fn().mockResolvedValue(undefined),
+  update: vi.fn().mockResolvedValue({ physicalId: 'p' }),
+};
+vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
+  ProviderRegistry: vi.fn().mockImplementation(() => ({
+    getProviderFor: () => ({ provider: replayProvider }),
+    setCustomResourceResponseBucket: vi.fn(),
+  })),
+}));
+
 vi.mock('../../../../src/provisioning/nested-stack-context.js', () => ({
   withNestedStackContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
@@ -118,6 +131,105 @@ describe('rollbackCommand', () => {
     await expect(rollbackCommand('S', { ...baseOpts })).rejects.toThrow(/state appears corrupted|state\.json is missing/i);
   });
 
+  it('replays a real CREATE segment → deletes the resource, saves state, pops the journal', async () => {
+    replayProvider.delete.mockClear();
+    const createOp = {
+      logicalId: 'Bucket',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-Bucket',
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: { Bucket: { physicalId: 'phys-Bucket', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {}, dependencies: [] } },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [createOp] }],
+      }),
+    });
+    await expect(rollbackCommand('S', { ...baseOpts })).resolves.toBeUndefined();
+    expect(replayProvider.delete).toHaveBeenCalledWith(
+      'Bucket',
+      'phys-Bucket',
+      'AWS::S3::Bucket',
+      undefined,
+      expect.objectContaining({ expectedRegion: 'us-east-1' })
+    );
+    expect(backend.saveState).toHaveBeenCalled(); // state persisted after the delete
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+    // Not an initialDeploy → state.json NOT deleted.
+    expect(backend.deleteState).not.toHaveBeenCalled();
+  });
+
+  it('a per-op provider failure → exit code 2 (PartialFailureError), journal kept', async () => {
+    replayProvider.delete.mockClear();
+    replayProvider.delete.mockRejectedValueOnce(new Error('AWS delete boom'));
+    const createOp = {
+      logicalId: 'Bucket',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-Bucket',
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: { Bucket: { physicalId: 'phys-Bucket', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {}, dependencies: [] } },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [createOp] }],
+      }),
+    });
+    const err = await rollbackCommand('S', { ...baseOpts }).catch((e) => e);
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect((err as PartialFailureError).exitCode).toBe(2);
+    // Failed segment is NOT popped (kept for re-run).
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+  });
+
+  it('a skip-with-warning op (unrecoverable DELETE) → exit code 2 but segment still pops', async () => {
+    const deleteOp = { logicalId: 'Gone', changeType: 'DELETE', resourceType: 'AWS::S3::Bucket' };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: { version: 8, stackName: 'S', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [deleteOp] }],
+      }),
+    });
+    const err = await rollbackCommand('S', { ...baseOpts }).catch((e) => e);
+    expect(err).toBeInstanceOf(PartialFailureError);
+    // A warning (not a failure) still pops the segment.
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
+  });
+
   it('initialDeploy segment with empty ops → pops journal and deletes state.json', async () => {
     const backend = installSetup({
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
@@ -135,11 +247,22 @@ describe('rollbackCommand', () => {
   });
 });
 
-describe('rollbackCommand exit codes', () => {
+describe('rollbackCommand corruption path', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('is a PartialFailureError (exit 2) shape for the corruption path guard', () => {
-    // Sanity: PartialFailureError maps to exit code 2 (used for partial replay).
-    expect(new PartialFailureError('x').exitCode).toBe(2);
+  it('journal-without-state is a HARD error (exit 1, plain Error — NOT PartialFailureError)', async () => {
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue(null),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [] }],
+      }),
+    });
+    const err = await rollbackCommand('S', { ...baseOpts }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(PartialFailureError); // hard error → exit 1, not partial
   });
 });

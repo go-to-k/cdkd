@@ -306,6 +306,38 @@ describe('replayRollback', () => {
     expect(afterOp).toHaveBeenCalledWith('B');
   });
 
+  it('a CREATE with no physicalId is a warning, not a provider call', async () => {
+    const del = vi.fn();
+    const { ctx } = makeCtx({ delete: del });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'CREATE', resourceType: 'T' }, // no physicalId
+    ];
+    const state = { B: res({ physicalId: 'phys-B' }) };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    expect(del).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(1);
+    expect(result.failures).toBe(0);
+  });
+
+  it('deletes dependent CREATEs before their dependencies (reverse dep order)', async () => {
+    const order: string[] = [];
+    const del = vi.fn().mockImplementation((logicalId: string) => {
+      order.push(logicalId);
+      return Promise.resolve(undefined);
+    });
+    const { ctx } = makeCtx({ delete: del });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'Role', changeType: 'CREATE', resourceType: 'AWS::IAM::Role', physicalId: 'r' },
+      { logicalId: 'Policy', changeType: 'CREATE', resourceType: 'AWS::IAM::Policy', physicalId: 'p' },
+    ];
+    const state = {
+      Role: res({ physicalId: 'r', dependencies: [] }),
+      Policy: res({ physicalId: 'p', dependencies: ['Role'] }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect(order.indexOf('Policy')).toBeLessThan(order.indexOf('Role'));
+  });
+
   it('stops early when isInterrupted flips true', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ delete: del });
