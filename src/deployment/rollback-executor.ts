@@ -38,6 +38,7 @@ import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import { withRetry } from './retry.js';
+import { isNameCollisionError } from './retryable-errors.js';
 
 /**
  * Completed operation record for rollback tracking. Pushed by the deploy
@@ -630,7 +631,7 @@ async function replaySingle(
           });
         } catch (createError) {
           const msg = createError instanceof Error ? createError.message : String(createError);
-          const nameCollision = /already exists/i.test(msg) || msg.includes('AlreadyExists');
+          const nameCollision = isNameCollisionError(msg);
           if (!nameCollision) throw createError;
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
@@ -664,8 +665,7 @@ async function replaySingle(
                   onInterrupted: () =>
                     new Error('Rollback interrupted while waiting for the old name to release'),
                 }),
-                isRetryable: (message: string) =>
-                  /already exists/i.test(message) || message.includes('AlreadyExists'),
+                isRetryable: isNameCollisionError,
               }
             );
           } catch (recreateError) {

@@ -306,3 +306,19 @@ export function isRetryableTransientError(error: unknown, message: string): bool
 
   return RETRYABLE_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
 }
+
+/**
+ * Match the "already exists" name-collision signature raised when a create
+ * targets a physical name still held by another resource (or by the same
+ * name's not-yet-released tombstone after an async delete).
+ *
+ * Deliberately NOT part of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}: a name
+ * collision is only worth retrying at the specific re-create sites that just
+ * deleted the old holder (the deploy engine's --replace delete-first fallback
+ * and the rollback executor's reverse-replacement) — everywhere else it is a
+ * genuine conflict that must fail fast. Shared by those sites' collision
+ * detection + retry filters so a signature extension lands in one place.
+ */
+export function isNameCollisionError(message: string): boolean {
+  return /already exists/i.test(message) || message.includes('AlreadyExists');
+}

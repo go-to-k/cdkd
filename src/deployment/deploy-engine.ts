@@ -44,6 +44,7 @@ import {
   computeImplicitDeleteEdges,
 } from '../analyzer/implicit-delete-deps.js';
 import { withRetry } from './retry.js';
+import { isNameCollisionError } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
 import {
@@ -2673,8 +2674,7 @@ export class DeployEngine {
               // only fires under the explicit --replace opt-in, targets
               // only the state-recorded old physicalId, and the stateful
               // guard has already run.
-              const nameCollision =
-                /already exists/i.test(createMsg) || createMsg.includes('AlreadyExists');
+              const nameCollision = isNameCollisionError(createMsg);
               if (!nameCollision) throw createError;
               // Retain pins the old resource (and its name) in place, so a
               // same-name replacement can never proceed under any flag.
@@ -2757,8 +2757,7 @@ export class DeployEngine {
                     logger: this.logger,
                     isInterrupted: () => this.interrupted,
                     onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
-                    isRetryable: (message: string) =>
-                      /already exists/i.test(message) || message.includes('AlreadyExists'),
+                    isRetryable: isNameCollisionError,
                   }
                 );
               } catch (recreateError) {
