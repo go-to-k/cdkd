@@ -37,11 +37,30 @@ region's record.
 s3://{STATE_BUCKET}/{STATE_PREFIX}/
   └── {StackName}/
       └── {Region}/
-          ├── lock.json      # Exclusive lock information (region-scoped)
-          └── state.json     # Resource state (region-scoped)
+          ├── lock.json               # Exclusive lock information (region-scoped)
+          ├── state.json              # Resource state (region-scoped)
+          └── rollback-journal.json   # Transient — present only between a failed
+                                      #   deploy and its `cdkd rollback` (issue #1183)
 s3://{STATE_BUCKET}/cdkd-bootstrap/
   └── {Region}.json          # Asset-storage bootstrap marker (issue #1002)
 ```
+
+The `rollback-journal.json` sibling (issue
+[#1183](https://github.com/go-to-k/cdkd/issues/1183)) is written whenever a
+deploy ends **without a completed rollback** — a `--no-rollback` failure, a
+Ctrl+C interruption, or before an automatic rollback (so a rollback that
+dies partway is resumable). It records the exact operations the failed
+deploy completed (one `segment` per failed attempt) so `cdkd rollback` can
+revert them with no synth. It is deliberately **not** part of the state
+schema (its own `journalVersion` field, no `StackState.version` bump) and
+**not** under the `deployments/` prefix (that layer survives destroy by
+design; the journal must not). Lifecycle: created on a failed / interrupted
+deploy and before an auto-rollback; each replayed segment is popped; the
+object is deleted on the next **successful deploy**, after a **clean
+`cdkd rollback`**, and by `cdkd destroy` / `cdkd state destroy`. It carries
+resolved properties, the **same sensitivity class as `state.json`** (no new
+secret-exposure class). Every writer holds the stack lock, so no optimistic
+locking is needed.
 
 The `cdkd-bootstrap/{region}.json` marker is written by `cdkd bootstrap`
 (unless `--no-assets`) and records that the region opted into cdkd-owned

@@ -16,8 +16,13 @@
  * in state.json.
  */
 
-/** The cdkd command that produced a deployment run. */
-export type DeploymentRunCommand = 'deploy' | 'destroy';
+/**
+ * The cdkd command that produced a deployment run. `'rollback'` (issue
+ * #1183) is the standalone `cdkd rollback` replay — additive literal, no
+ * event-schema bump (per the #808 design). Readers must render the new label
+ * rather than assuming the old two.
+ */
+export type DeploymentRunCommand = 'deploy' | 'destroy' | 'rollback';
 
 /** Terminal result of a deployment run. */
 export type DeploymentRunResult = 'SUCCEEDED' | 'FAILED';
@@ -131,6 +136,13 @@ export interface DeploymentEvent {
  */
 export interface DeploymentEventRecorder {
   record(event: Omit<DeploymentEvent, 'timestamp'>): void;
+  /**
+   * The run's id, when the recorder is a real `DeploymentEventsStore`. The
+   * deploy engine stamps it into the rollback-journal segment it writes on a
+   * failed deploy (issue #1183) so `cdkd events` can correlate the failed
+   * run with its later `cdkd rollback` run.
+   */
+  readonly runId?: string;
 }
 
 /**

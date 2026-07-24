@@ -175,3 +175,25 @@ behavior). Pass `--no-capture-observed-state` (or set `cdk.json
 context.cdkd.captureObservedState: false`) to disable the deploy-time
 capture and regain the pre-v3 deploy time at the cost of weaker drift
 detection.
+
+## Rollback journal (NOT part of the state schema)
+
+The `rollback-journal.json` object (issue
+[#1183](https://github.com/go-to-k/cdkd/issues/1183)) is a **sibling** of
+`state.json` at `s3://bucket/cdkd/{stackName}/{region}/rollback-journal.json`,
+NOT a field inside `StackState`. It carries its own `journalVersion` (starting
+at `1`), independent of `StackState.version` — a schema bump is deliberately
+avoided so old binaries reading state are unaffected and the
+`integ-schema-migration` gate is not triggered. It is written by the deploy
+engine whenever a deploy ends without a completed rollback (a `--no-rollback`
+failure, a SIGINT interruption, or before an automatic rollback), holds one
+`segment` per failed deploy attempt (each a verbatim `CompletedOperation[]`),
+and is consumed by the standalone `cdkd rollback` command. Lifecycle: created
+on failure, segment-popped per replayed segment, deleted on the next
+successful deploy / a clean rollback / `cdkd destroy` / `cdkd state destroy`
+(the last two via `S3StateBackend.deleteState`, which sweeps the journal key).
+An unknown `journalVersion` on read is a hard error asking the user to upgrade
+cdkd (forward-compat guard, mirrors the state-schema handling). Types live in
+`src/types/rollback-journal.ts`; the replay executor in
+`src/deployment/rollback-executor.ts` (shared with the engine's in-process
+automatic rollback).

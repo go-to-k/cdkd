@@ -748,6 +748,7 @@ async function deployCommand(
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: !options.rollback,
+          ...(options.roleArn && { roleArn: options.roleArn }),
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
           ...(recreateViaCcApiTargets &&

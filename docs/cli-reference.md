@@ -1720,6 +1720,75 @@ cdkd destroy MyStack --purge-events -y
 - Per-stack: when destroying multiple stacks, each clean stack's history is
   purged independently.
 
+## `cdkd rollback` (revert a failed deploy)
+
+`cdkd rollback [STACK]` reverts a stack to its pre-deploy state after a
+deploy that failed with `--no-rollback`, was interrupted with Ctrl+C, or
+whose automatic rollback died partway. It is the cdkd equivalent of
+`cdk rollback` / CloudFormation `RollbackStack`, and the third option (next
+to fix-forward `cdkd deploy` and clean-up `cdkd destroy`) after such a
+failure. Issue [#1183](https://github.com/go-to-k/cdkd/issues/1183).
+
+**Synth-free.** Everything it needs lives in cdkd state plus a **rollback
+journal** — the exact `CompletedOperation[]` of the failed deploy, persisted
+to `s3://bucket/cdkd/{stack}/{region}/rollback-journal.json` (a sibling of
+`state.json`) whenever a deploy ends without a completed rollback. The
+command loads that journal and replays it in reverse (delete created
+resources; restore updated ones to their previous properties) via the same
+rollback executor the in-process automatic rollback uses. No CDK app is
+needed — a broken app is a common reason to roll back.
+
+```bash
+cdkd rollback MyStack          # roll back one stack
+cdkd rollback                  # no arg: the single journaled stack (else lists candidates, exits 1)
+cdkd rollback MyStack --force  # skip the confirmation prompt
+cdkd rollback MyStack --orphan MyBucket --orphan MyTable
+cdkd rollback MyStack --stack-region us-west-2
+```
+
+Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--force` | Skip the confirmation prompt (`-y` / `--yes` also works). |
+| `--orphan <logicalId>` | Repeatable. Skip the resource during replay, like `cdk rollback --orphan`. An orphaned CREATE is left in AWS and removed from state; an orphaned UPDATE is left at its new properties with state kept as-is. |
+| `--stack-region <region>` | Disambiguate when the same stack name has state in multiple regions (same UX as the `state` subcommands). |
+| `--role-arn <arn>` | Assume-role before touching AWS. If the journal recorded a role and the flag is not passed, an informational note is printed. |
+| `--state-bucket <bucket>` | Same resolution as other commands. |
+| `--verbose` | Standard debug logging. |
+
+**Flow**: resolve the stack + region → acquire the stack lock (a concurrent
+deploy holding it fails the command with the standard lock error;
+`cdkd force-unlock` applies) → print a per-segment plan → confirm (skipped by
+`--force`) → replay segments newest-first, saving state after each op and
+popping each segment when it finishes cleanly → if the oldest replayed
+segment was the stack's first-ever deploy and state is now empty, delete
+`state.json` too. Replay is idempotent: re-running after a partial rollback
+skips resources already reverted.
+
+**Exit codes**: `0` = fully clean (journal deleted); `2` = partial (one or
+more ops failed best-effort, or were skipped with a warning — the journal is
+kept so you can re-run); `1` = hard error (no journal, lock held,
+credentials, etc.).
+
+**Known limitations** (surfaced in the plan, not silent):
+
+- A resource that was **DELETED** during the deploy cannot be restored (same
+  as CloudFormation). Deletes run after creates/updates, so a typical
+  mid-deploy failure has not deleted anything yet.
+- The resource whose operation **failed** is left as-is (only completed ops
+  are journaled — same as the in-process rollback today).
+- **Replacements** roll back best-effort: the op records the old and new
+  physical ids, but the old physical resource is already gone, so replaying
+  the update against the new resource may throw on an immutable property
+  (warned; the plan labels these "replacement occurred, best-effort revert").
+- Reverts that reference old **asset objects** (e.g. Lambda `Code.S3Key`)
+  need those objects to still exist — relevant to `cdkd gc` retention.
+
+`cdkd export` refuses (with a confirmation gate) to hand a stack over to
+CloudFormation while a rollback journal exists — the half-deployed state is
+almost certainly not what you want exported; roll back or re-deploy first.
+
 ## Exit codes
 
 cdkd commands distinguish three outcomes via the process exit code so
@@ -1729,7 +1798,7 @@ CI / bench scripts can react without grepping log output:
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected**, and **`cdkd diff --fail` exits `1` when any change is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
-| `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures), `cdkd publish-assets` (per-stack asset publish failures) |
+| `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run) |
 
 The implementation hangs off a `PartialFailureError` class in
 `src/utils/error-handler.ts`. `handleError` reads the error's

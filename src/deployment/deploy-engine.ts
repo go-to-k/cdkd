@@ -46,32 +46,13 @@ import {
 import { withRetry } from './retry.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
-
-/**
- * Completed operation record for rollback tracking
- */
-interface CompletedOperation {
-  /** Logical ID of the resource */
-  logicalId: string;
-  /** Type of change that was applied */
-  changeType: 'CREATE' | 'UPDATE' | 'DELETE';
-  /** Resource type (e.g., "AWS::S3::Bucket") */
-  resourceType: string;
-  /**
-   * Provisioning layer the resource ran on. Load-bearing for rollback
-   * dispatch — a CC-routed CREATE must roll back via the CC provider's
-   * delete, NOT the SDK provider's (#614). Populated from the routing
-   * decision (CREATE) or from the previous state (UPDATE / DELETE).
-   * `undefined` falls back to legacy SDK semantics for legacy state.
-   */
-  provisionedBy?: 'sdk' | 'cc-api' | undefined;
-  /** Previous resource state (for UPDATE rollback) */
-  previousState?: ResourceState | undefined;
-  /** Physical ID of newly created resource (for CREATE rollback) */
-  physicalId?: string | undefined;
-  /** Properties used for creation (for CREATE rollback / delete) */
-  properties?: Record<string, unknown> | undefined;
-}
+import {
+  replayRollback,
+  type CompletedOperation,
+  type RollbackExecutorContext,
+} from './rollback-executor.js';
+import { getCdkdVersion } from '../state/deployment-events-store.js';
+import type { RollbackJournalSegment } from '../types/rollback-journal.js';
 
 /**
  * Default per-resource warn threshold: warn the user when a single
@@ -101,6 +82,13 @@ export interface DeployEngineOptions {
   parameters?: Record<string, string>;
   /** Skip rollback on failure (save partial state and fail) */
   noRollback?: boolean;
+  /**
+   * The `--role-arn` the deploy is running with, if any. Informational only
+   * — recorded into the rollback-journal segment (issue #1183) so `cdkd
+   * rollback` can note that the deploy used a role when it is about to run
+   * with ambient credentials.
+   */
+  roleArn?: string;
   /**
    * Per-resource warn threshold (ms). When a single CREATE / UPDATE /
    * DELETE has been running this long, the live renderer's task label
@@ -940,6 +928,23 @@ export class DeployEngine {
         `Loaded current state: ${Object.keys(currentState.resources).length} resources`
       );
 
+      // 1b. If a rollback journal exists, a previous deploy failed / was
+      // interrupted and has not yet been reverted (issue #1183). Note that
+      // `cdkd rollback` can revert it; the deploy proceeds (fix-forward is
+      // still supported). Best-effort — a journal read failure must not
+      // block the deploy.
+      try {
+        const journal = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+        if (journal && journal.segments.length > 0) {
+          this.logger.info(
+            `A previous deploy of '${stackName}' failed or was interrupted. ` +
+              `Run 'cdkd rollback ${stackName}' to revert it, or continue deploying to fix forward.`
+          );
+        }
+      } catch {
+        // ignore — journal is advisory here
+      }
+
       // 1a. Auto-refresh observedProperties for any state entry that lacks it
       // (state written by an older binary / direct edit). Fires
       // `provider.readCurrentState` fire-and-forget through the same
@@ -1263,6 +1268,11 @@ export class DeployEngine {
       );
       this.logger.debug(`State saved (ETag: ${newEtag})`);
 
+      // Deploy succeeded — the stable baseline has moved, so any rollback
+      // journal from a prior failed attempt (fix-forward that now succeeded)
+      // must NOT be replayable past this point (issue #1183). Best-effort.
+      await this.deleteRollbackJournalBestEffort(stackName);
+
       // 7c. Update the persistent exports index with this stack's
       // outputs so subsequent `Fn::ImportValue` resolves hit O(1).
       // Best-effort: failures are swallowed inside updateForStack and
@@ -1568,6 +1578,12 @@ export class DeployEngine {
         }
       }
     } catch (error) {
+      // `initialDeploy` (issue #1183): the failed deploy was the FIRST deploy
+      // (no prior state loaded). Captured BEFORE the partial-state save below,
+      // which reassigns `currentEtag`. Recorded on the journal segment so
+      // `cdkd rollback` deletes state.json entirely once everything is unwound.
+      const initialDeploy = currentEtag === undefined;
+
       // Save partial state BEFORE rollback to track all successfully provisioned
       // resources (including those that completed concurrently with the one that
       // failed). This prevents orphaned resources — resources that exist in AWS
@@ -1605,21 +1621,59 @@ export class DeployEngine {
         );
       }
 
-      // On SIGINT, skip rollback — just save partial state and let the caller exit
+      // Set true when an automatic rollback replayed with zero per-op
+      // failures — gates the post-save journal deletion below.
+      let autoRollbackClean = false;
+
+      // On SIGINT, skip rollback — just save partial state, record a rollback
+      // journal segment so the interrupted deploy is REVERTIBLE (not just
+      // resumable), and let the caller exit.
       if (error instanceof InterruptedError) {
+        await this.writeRollbackJournalSegment(
+          stackName,
+          completedOperations,
+          'interrupted',
+          initialDeploy
+        );
         this.logger.info(
           `Partial state saved (${Object.keys(newResources).length} resources). ` +
-            'Run deploy again to resume, or destroy to clean up.'
+            "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
         );
         throw error;
       }
 
       // Deployment failed — attempt rollback unless --no-rollback is set
       if (this.options.noRollback) {
+        // Record a journal segment so `cdkd rollback` can revert the failed
+        // deploy later instead of only fixing forward / destroying.
+        await this.writeRollbackJournalSegment(
+          stackName,
+          completedOperations,
+          'no-rollback-failure',
+          initialDeploy
+        );
         this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
-        this.logger.warn('Partial state has been saved. Manual cleanup may be required.');
+        this.logger.warn(
+          "Partial state has been saved. Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, " +
+            'or destroy to clean up.'
+        );
       } else {
-        await this.performRollback(completedOperations, newResources, stackName);
+        // Automatic in-process rollback. Write a journal segment FIRST so a
+        // rollback that dies partway (crash / network / per-op failure)
+        // leaves the segment behind and becomes resumable via `cdkd
+        // rollback`; the segment is deleted after a clean replay + save.
+        await this.writeRollbackJournalSegment(
+          stackName,
+          completedOperations,
+          'auto-rollback-started',
+          initialDeploy
+        );
+        const rollbackResult = await this.performRollback(
+          completedOperations,
+          newResources,
+          stackName
+        );
+        autoRollbackClean = rollbackResult.failures === 0;
       }
 
       // Save state after rollback (reflects rolled-back resource state).
@@ -1651,6 +1705,13 @@ export class DeployEngine {
           }
         );
         this.logger.debug('State saved after deployment failure');
+        // Auto-rollback replayed cleanly AND the post-rollback state save
+        // succeeded — the pre-deploy baseline is restored, so drop the
+        // journal segment (issue #1183). A partial / failed rollback keeps
+        // it so `cdkd rollback` can resume.
+        if (autoRollbackClean) {
+          await this.deleteRollbackJournalBestEffort(stackName);
+        }
       } catch (saveError) {
         // ETag mismatch from per-resource saves — force overwrite with fresh ETag
         this.logger.debug(
@@ -1684,6 +1745,9 @@ export class DeployEngine {
             }
           );
           this.logger.debug('State saved after deployment failure (retry succeeded)');
+          if (autoRollbackClean) {
+            await this.deleteRollbackJournalBestEffort(stackName);
+          }
         } catch (retryError) {
           this.logger.warn(
             `Failed to save state after rollback: ${retryError instanceof Error ? retryError.message : String(retryError)}`
@@ -1720,6 +1784,15 @@ export class DeployEngine {
         newResources,
         currentEtag,
         pendingMigration
+      );
+      // Every resource op succeeded here — provisioning was clean, only
+      // output resolution failed — so rolling back is a legitimate use case
+      // (issue #1183). Record a journal segment so `cdkd rollback` can revert.
+      await this.writeRollbackJournalSegment(
+        stackName,
+        completedOperations,
+        'no-rollback-failure',
+        currentEtag === undefined
       );
       throw outputError;
     }
@@ -1820,257 +1893,85 @@ export class DeployEngine {
   }
 
   /**
-   * Perform best-effort rollback of completed operations respecting dependencies
-   *
-   * - CREATE → delete the newly created resource (in reverse dependency order)
-   * - UPDATE → update back to previous properties
-   * - DELETE → cannot rollback (resource already deleted), log warning
-   *
-   * Resources completed concurrently in the dispatcher may have dependencies
-   * between them (e.g., IAM Policy depends on IAM Role). When rolling back
-   * CREATEs (deleting), dependent resources must be deleted before their
-   * dependencies. This method sorts CREATE rollback operations using dependency
-   * information from state, then processes UPDATE/DELETE rollbacks, and finally
-   * processes sorted CREATE rollback deletions.
+   * Perform best-effort rollback of completed operations (issue #1183:
+   * extracted into `rollback-executor.ts` so the standalone `cdkd rollback`
+   * command drives identical semantics). Thin wrapper that builds the
+   * executor context from the engine's collaborators and delegates.
    */
   private async performRollback(
     completedOperations: CompletedOperation[],
     stateResources: Record<string, ResourceState>,
     stackName: string
-  ): Promise<void> {
-    if (completedOperations.length === 0) {
-      this.logger.info('No completed operations to roll back.');
-      return;
-    }
-
-    this.logger.info(`Rolling back ${completedOperations.length} completed operation(s)...`);
-    this.recordEvent({ eventType: 'ROLLBACK_STARTED', stackName });
-
-    // Separate CREATE operations (which need dependency-aware ordering) from others
-    const createOps: CompletedOperation[] = [];
-    const otherOps: CompletedOperation[] = [];
-
-    for (const op of completedOperations) {
-      if (op.changeType === 'CREATE') {
-        createOps.push(op);
-      } else {
-        otherOps.push(op);
-      }
-    }
-
-    // Step 1: Process UPDATE/DELETE rollbacks in reverse order (simple reversal is fine)
-    for (let i = otherOps.length - 1; i >= 0; i--) {
-      const op = otherOps[i]!;
-      await this.performSingleRollback(op, stateResources, stackName);
-    }
-
-    // Step 2: Process CREATE rollbacks (deletions) in dependency-aware order
-    // (reverse dependency: dependents are deleted before their dependencies)
-    if (createOps.length > 0) {
-      const sortedCreateOps = this.sortRollbackCreates(createOps, stateResources);
-      for (const op of sortedCreateOps) {
-        await this.performSingleRollback(op, stateResources, stackName);
-      }
-    }
-
-    this.logger.info('Rollback completed. Some resources may remain if deletion failed.');
-    this.recordEvent({ eventType: 'ROLLBACK_FINISHED', stackName });
-  }
-
-  /**
-   * Sort CREATE rollback operations so that resources depending on others
-   * are deleted first (reverse dependency order).
-   *
-   * Uses state dependencies to determine reverse-dependency order, similar to buildDeletionDependencies.
-   */
-  private sortRollbackCreates(
-    createOps: CompletedOperation[],
-    stateResources: Record<string, ResourceState>
-  ): CompletedOperation[] {
-    const opMap = new Map<string, CompletedOperation>();
-    const deleteIds = new Set<string>();
-    for (const op of createOps) {
-      opMap.set(op.logicalId, op);
-      deleteIds.add(op.logicalId);
-    }
-
-    // Build reverse dependency map: resource → resources that depend on it
-    const dependedBy = new Map<string, Set<string>>();
-    for (const id of deleteIds) {
-      if (!dependedBy.has(id)) dependedBy.set(id, new Set());
-    }
-
-    for (const id of deleteIds) {
-      const resource = stateResources[id];
-      if (!resource?.dependencies) continue;
-      for (const dep of resource.dependencies) {
-        if (!deleteIds.has(dep)) continue;
-        // id depends on dep → dep must be deleted AFTER id
-        if (!dependedBy.has(dep)) dependedBy.set(dep, new Set());
-        dependedBy.get(dep)!.add(id);
-      }
-    }
-
-    // Topological sort (Kahn's algorithm) — produces levels for parallel delete
-    const sorted: CompletedOperation[] = [];
-    let remaining = new Set(deleteIds);
-
-    while (remaining.size > 0) {
-      // Find resources with no remaining dependents (safe to delete now)
-      const level: string[] = [];
-      for (const id of remaining) {
-        const dependents = dependedBy.get(id);
-        const hasPendingDependents = dependents
-          ? [...dependents].some((d) => remaining.has(d))
-          : false;
-        if (!hasPendingDependents) {
-          level.push(id);
-        }
-      }
-
-      if (level.length === 0) {
-        // Circular dependency fallback: add all remaining
-        this.logger.warn(
-          `Circular dependency detected in rollback order, processing remaining ${remaining.size} resources`
-        );
-        for (const id of remaining) {
-          const op = opMap.get(id);
-          if (op) sorted.push(op);
-        }
-        break;
-      }
-
-      for (const id of level) {
-        const op = opMap.get(id);
-        if (op) sorted.push(op);
-      }
-      remaining = new Set([...remaining].filter((id) => !level.includes(id)));
-    }
-
-    this.logger.debug(
-      `Rollback CREATE deletion order: ${sorted.map((op) => op.logicalId).join(' → ')}`
+  ): Promise<{ failures: number; warnings: number }> {
+    const result = await replayRollback(
+      completedOperations,
+      stateResources,
+      stackName,
+      this.rollbackExecutorContext()
     );
-    return sorted;
+    return { failures: result.failures, warnings: result.warnings };
   }
 
   /**
-   * Perform a single rollback operation (extracted for reuse)
+   * Best-effort rollback-journal deletion (issue #1183) used on the deploy
+   * success path and after a clean automatic rollback. Never throws — a
+   * failed delete only warns (the journal is advisory; the worst case is a
+   * spurious "previous deploy failed" note on the next deploy).
    */
-  private async performSingleRollback(
-    op: CompletedOperation,
-    stateResources: Record<string, ResourceState>,
-    stackName: string
-  ): Promise<void> {
+  private async deleteRollbackJournalBestEffort(stackName: string): Promise<void> {
     try {
-      switch (op.changeType) {
-        case 'CREATE': {
-          // Rollback CREATE by deleting the newly created resource
-          if (!op.physicalId) {
-            this.logger.warn(`  Rollback: Cannot delete ${op.logicalId} — no physical ID recorded`);
-            break;
-          }
-
-          this.logger.info(
-            `  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})`
-          );
-          // Route via the SAME provider the CREATE landed on (#614). Without
-          // threading `provisionedBy`, a CC-routed CREATE would roll back
-          // via the SDK provider — wrong API, wrong identifier semantics.
-          const { provider } = this.providerRegistry.getProviderFor({
-            resourceType: op.resourceType,
-            provisionedBy: op.provisionedBy,
-          });
-          await provider.delete(op.logicalId, op.physicalId, op.resourceType, op.properties, {
-            expectedRegion: this.stackRegion,
-          });
-
-          // Remove from state
-          delete stateResources[op.logicalId];
-          this.logger.info(`  Rollback: ${op.logicalId} deleted successfully`);
-          this.recordEvent({
-            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
-            stackName,
-            operation: 'CREATE',
-            logicalId: op.logicalId,
-            resourceType: op.resourceType,
-            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-          });
-          break;
-        }
-
-        case 'UPDATE': {
-          // Rollback UPDATE by restoring previous properties
-          if (!op.previousState) {
-            this.logger.warn(
-              `  Rollback: Cannot restore ${op.logicalId} — no previous state available`
-            );
-            break;
-          }
-
-          this.logger.info(
-            `  Rollback: Restoring ${op.logicalId} (${op.resourceType}) to previous state`
-          );
-          // Route via the provider that owns the resource right now per
-          // state (#614). For a CC-managed resource being rolled back, the
-          // SDK provider would have the wrong patch semantics.
-          const { provider } = this.providerRegistry.getProviderFor({
-            resourceType: op.resourceType,
-            provisionedBy: op.provisionedBy,
-          });
-          const currentResource = stateResources[op.logicalId];
-
-          if (!currentResource) {
-            this.logger.warn(
-              `  Rollback: Cannot restore ${op.logicalId} — resource not found in current state`
-            );
-            break;
-          }
-
-          await provider.update(
-            op.logicalId,
-            currentResource.physicalId,
-            op.resourceType,
-            op.previousState.properties,
-            currentResource.properties
-          );
-
-          // Restore previous state
-          stateResources[op.logicalId] = op.previousState;
-          this.logger.info(`  Rollback: ${op.logicalId} restored successfully`);
-          this.recordEvent({
-            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
-            stackName,
-            operation: 'UPDATE',
-            logicalId: op.logicalId,
-            resourceType: op.resourceType,
-            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-          });
-          break;
-        }
-
-        case 'DELETE': {
-          // Cannot rollback DELETE — resource is already deleted
-          this.logger.warn(
-            `  Rollback: Cannot restore deleted resource ${op.logicalId} (${op.resourceType}) — resource has already been deleted`
-          );
-          break;
-        }
-      }
-    } catch (rollbackError) {
-      // Best-effort: log warning and continue with remaining rollbacks
-      this.logger.warn(
-        `  Rollback failed for ${op.logicalId} (${op.changeType}): ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+      await this.stateBackend.deleteRollbackJournal(stackName, this.stackRegion);
+    } catch (err) {
+      this.logger.debug(
+        `Failed to delete rollback journal for ${stackName}: ${err instanceof Error ? err.message : String(err)}`
       );
-      this.logger.warn('  Continuing with remaining rollback operations...');
-      this.recordEvent({
-        eventType: 'ROLLBACK_RESOURCE_FAILED',
-        stackName,
-        operation: op.changeType,
-        logicalId: op.logicalId,
-        resourceType: op.resourceType,
-        ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-        error: extractDeploymentEventError(rollbackError),
-      });
+    }
+  }
+
+  /** Build the {@link RollbackExecutorContext} from the engine's fields. */
+  private rollbackExecutorContext(): RollbackExecutorContext {
+    return {
+      providerRegistry: this.providerRegistry,
+      region: this.stackRegion,
+      logger: this.logger,
+      recordEvent: (event) => this.recordEvent(event),
+    };
+  }
+
+  /**
+   * Record one rollback-journal segment (issue #1183) so the failed /
+   * interrupted / about-to-auto-rollback deploy can be reverted later by
+   * `cdkd rollback`. Best-effort like the partial-state save, but warns
+   * LOUDLY on failure — the user just lost the ability to `cdkd rollback`.
+   */
+  private async writeRollbackJournalSegment(
+    stackName: string,
+    completedOperations: CompletedOperation[],
+    reason: RollbackJournalSegment['reason'],
+    initialDeploy: boolean
+  ): Promise<void> {
+    // A segment with no operations carries nothing to revert — skip it so a
+    // failure before any resource completed does not create an empty journal.
+    if (completedOperations.length === 0) return;
+    try {
+      const segment: RollbackJournalSegment = {
+        ...(this.options.eventRecorder?.runId !== undefined && {
+          runId: this.options.eventRecorder.runId,
+        }),
+        timestamp: Date.now(),
+        reason,
+        initialDeploy,
+        ...(this.options.roleArn && { roleArn: this.options.roleArn }),
+        cdkdVersion: getCdkdVersion(),
+        operations: completedOperations,
+      };
+      await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
+      this.logger.debug(`Rollback journal segment written (${reason})`);
+    } catch (journalError) {
+      this.logger.warn(
+        `Failed to write rollback journal: ${journalError instanceof Error ? journalError.message : String(journalError)}. ` +
+          `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
+      );
     }
   }
 

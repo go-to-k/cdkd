@@ -91,7 +91,7 @@ function formatStackRef(ref: StackStateRef): string {
  * didn't pin one, surface a clear error listing the candidates so the user
  * knows exactly which `--region X` to add.
  */
-function resolveSingleRegion(
+export function resolveSingleRegion(
   stackName: string,
   refs: StackStateRef[],
   requestedRegion: string | undefined
@@ -132,7 +132,7 @@ function resolveSingleRegion(
  *
  * The returned `dispose` function MUST be called in a `finally` block.
  */
-async function setupStateBackend(options: {
+export async function setupStateBackend(options: {
   stateBucket?: string;
   statePrefix: string;
   region?: string;
