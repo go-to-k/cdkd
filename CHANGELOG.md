@@ -1,3 +1,10 @@
+# [0.262.0](https://github.com/go-to-k/cdkd/compare/v0.261.0...v0.262.0) (2026-07-24)
+
+
+### Features
+
+* **scripts:** lint SDK provider ARN/URL attribute keys vs CFn readOnlyProperties ([#1187](https://github.com/go-to-k/cdkd/issues/1187)) ([#1191](https://github.com/go-to-k/cdkd/issues/1191)) ([863414a](https://github.com/go-to-k/cdkd/commit/863414aa01d1993d016ae17a11793c403d2c6036))
+
 # [0.261.0](https://github.com/go-to-k/cdkd/compare/v0.260.14...v0.261.0) (2026-07-24)
 
 
