@@ -1,3 +1,10 @@
+## [0.264.2](https://github.com/go-to-k/cdkd/compare/v0.264.1...v0.264.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **rollback:** retry re-create through the SQS QueueDeletedRecently 60s name cooldown ([#1211](https://github.com/go-to-k/cdkd/issues/1211)) ([69bba9f](https://github.com/go-to-k/cdkd/commit/69bba9fd670d930ee011299ccebe75051b6325a1))
+
 ## [0.264.1](https://github.com/go-to-k/cdkd/compare/v0.264.0...v0.264.1) (2026-07-24)
 
 
