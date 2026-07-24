@@ -49,6 +49,7 @@ import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets
 import {
   replayRollback,
   type CompletedOperation,
+  type FailedOperation,
   type RollbackExecutorContext,
 } from './rollback-executor.js';
 import { getCdkdVersion } from '../state/deployment-events-store.js';
@@ -474,6 +475,15 @@ export class DeployEngine {
    * for the weak-reference `Fn::GetStackOutput` intrinsic.
    */
   private recordedOutputReads: StateOutputReadEntry[] = [];
+
+  /**
+   * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
+   * each CREATE / UPDATE attempted (issue #1198). Written just before the
+   * provider call; read only when the op FAILS, to journal the failed op's
+   * `attemptedProperties` so `cdkd rollback --revert-failed` can generate a
+   * patch that undoes a half-applied update.
+   */
+  private attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
    * Target region for this stack. Required — load-bearing for the
@@ -1355,6 +1365,10 @@ export class DeployEngine {
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
     const actualCounts = { created: 0, updated: 0, deleted: 0, skipped: 0 };
     const completedOperations: CompletedOperation[] = [];
+    // #1198: the op(s) that FAILED mid-deploy (usually one; concurrent
+    // siblings can add more). Journaled alongside completedOperations so
+    // `cdkd rollback --revert-failed` can optionally revert them.
+    const failedOperations: FailedOperation[] = [];
     // Tracked here so the FIRST per-resource save sweeps the legacy key; we
     // don't want to delete it on every save.
     let pendingMigration = migrationPending;
@@ -1472,6 +1486,18 @@ export class DeployEngine {
                 // until their own polling timeouts fire.
                 this.interrupted = true;
                 this.interruptCause ??= 'sibling-failure';
+                // #1198: journal the failed op's pre-op state + attempted
+                // properties so `cdkd rollback --revert-failed` can act on it.
+                failedOperations.push({
+                  logicalId,
+                  changeType: change.changeType as 'CREATE' | 'UPDATE',
+                  resourceType: change.resourceType,
+                  provisionedBy:
+                    newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
+                  ...(previousState && { previousState }),
+                  physicalId: newResources[logicalId]?.physicalId ?? previousState?.physicalId,
+                  attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+                });
                 throw provisionError;
               }
 
@@ -1554,6 +1580,16 @@ export class DeployEngine {
               } catch (provisionError) {
                 this.interrupted = true;
                 this.interruptCause ??= 'sibling-failure';
+                // #1198: a failed DELETE leaves the resource in place — the
+                // record documents it in the journal (no revert needed).
+                failedOperations.push({
+                  logicalId,
+                  changeType: 'DELETE',
+                  resourceType: change.resourceType,
+                  provisionedBy: previousState?.provisionedBy,
+                  ...(previousState && { previousState }),
+                  physicalId: previousState?.physicalId,
+                });
                 throw provisionError;
               }
 
@@ -1632,6 +1668,7 @@ export class DeployEngine {
         await this.writeRollbackJournalSegment(
           stackName,
           completedOperations,
+          failedOperations,
           'interrupted',
           initialDeploy
         );
@@ -1649,6 +1686,7 @@ export class DeployEngine {
         await this.writeRollbackJournalSegment(
           stackName,
           completedOperations,
+          failedOperations,
           'no-rollback-failure',
           initialDeploy
         );
@@ -1665,6 +1703,7 @@ export class DeployEngine {
         await this.writeRollbackJournalSegment(
           stackName,
           completedOperations,
+          failedOperations,
           'auto-rollback-started',
           initialDeploy
         );
@@ -1791,6 +1830,7 @@ export class DeployEngine {
       await this.writeRollbackJournalSegment(
         stackName,
         completedOperations,
+        failedOperations,
         'no-rollback-failure',
         currentEtag === undefined
       );
@@ -1947,12 +1987,15 @@ export class DeployEngine {
   private async writeRollbackJournalSegment(
     stackName: string,
     completedOperations: CompletedOperation[],
+    failedOperations: FailedOperation[],
     reason: RollbackJournalSegment['reason'],
     initialDeploy: boolean
   ): Promise<void> {
     // A segment with no operations carries nothing to revert — skip it so a
     // failure before any resource completed does not create an empty journal.
-    if (completedOperations.length === 0) return;
+    // A failed op alone (#1198) IS worth journaling: `cdkd rollback
+    // --revert-failed` can act on it even with zero completed ops.
+    if (completedOperations.length === 0 && failedOperations.length === 0) return;
     try {
       const segment: RollbackJournalSegment = {
         ...(this.options.eventRecorder?.runId !== undefined && {
@@ -1964,6 +2007,7 @@ export class DeployEngine {
         ...(this.options.roleArn && { roleArn: this.options.roleArn }),
         cdkdVersion: getCdkdVersion(),
         operations: completedOperations,
+        ...(failedOperations.length > 0 && { failedOperations }),
       };
       await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
       this.logger.debug(`Rollback journal segment written (${reason})`);
@@ -2278,6 +2322,10 @@ export class DeployEngine {
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
+        // #1198: snapshot the attempted (resolved) properties so a failed
+        // CREATE can be journaled with what it tried to apply.
+        this.attemptedResolvedProps.set(logicalId, resolvedProps);
+
         // #614 routing: consult the registry with the resolved properties.
         // If the SDK provider would silent-drop a top-level key (and the
         // user has not overridden it via `--allow-unsupported-properties`),
@@ -2372,6 +2420,11 @@ export class DeployEngine {
         >;
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
+
+        // #1198: snapshot the attempted (resolved) properties so a failed
+        // UPDATE can be journaled with what it tried to apply (load-bearing
+        // for the --revert-failed patch generation).
+        this.attemptedResolvedProps.set(logicalId, resolvedProps);
 
         // Re-check diff after resolving intrinsic functions
         // DiffCalculator compares unresolved template vs resolved state, which may produce false positives

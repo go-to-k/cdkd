@@ -18,6 +18,23 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   --force` → assert Marker reverted to v1, Extra deleted, journal gone, state
   back to the v1 resource set, and `cdkd events` shows a `rollback` run =
   `SUCCEEDED`.
+- **Phase R (reverse-replacement, issue
+  [#1199](https://github.com/go-to-k/cdkd/issues/1199))**: deploy with
+  `REPLACE_SUFFIX=b` (+ injected create failure) under `--no-rollback
+  --force-stateful-recreation` — the create-only SSM parameter Name change
+  REPLACES `ReplaceParam` (old `-replace-a` deleted, new `-replace-b`
+  created) before the deploy fails → `cdkd rollback --force` REVERSES the
+  replacement: `-replace-a` re-created, `-replace-b` deleted, journal gone,
+  exit 0.
+- **Phase F (`--revert-failed`, issue
+  [#1198](https://github.com/go-to-k/cdkd/issues/1198))**: deploy with
+  `MARKER_VALUE=vF` + `INJECT_UPDATE_FAIL=true` under `--no-rollback` — the
+  Marker update completes, then `RevertQueue`'s UPDATE fails (out-of-range
+  `messageRetentionPeriod`) → assert the journal segment carries
+  `failedOperations[]` with the pre-op state (retention 3600) AND the
+  attempted properties (9999999) → `cdkd rollback --force --revert-failed`
+  → Marker back to v1, the failed queue force-reverted to retention 3600,
+  journal gone, exit 0.
 - **Phase 2 (initialDeploy path)**: first-ever failing `--no-rollback` deploy
   of a second stack → `cdkd rollback --force` deletes the created parameter AND
   removes `state.json` entirely.
@@ -28,6 +45,9 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
 Both stacks add an `AWS::SQS::Queue` with an out-of-range
 `messageRetentionPeriod` (valid range `[60, 1209600]`) when `INJECT_FAIL=true`,
 wired to depend on every other resource so those complete first — guaranteeing
-the rollback journal records real work. See
+the rollback journal records real work. `INJECT_UPDATE_FAIL=true` instead
+flips the always-present `RevertQueue`'s retention to the out-of-range value so
+the failure lands on an UPDATE (the `--revert-failed` target). See
 `lib/rollback-command-stack.ts` for the env-gated resource set
-(`MARKER_VALUE` / `WITH_EXTRA` / `INJECT_FAIL`).
+(`MARKER_VALUE` / `WITH_EXTRA` / `REPLACE_SUFFIX` / `INJECT_FAIL` /
+`INJECT_UPDATE_FAIL`).

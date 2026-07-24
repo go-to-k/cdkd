@@ -1,11 +1,15 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   classifyRollbackOp,
+  classifyFailedOp,
   planRollback,
+  planFailedOps,
   replayRollback,
+  replayFailedOperations,
   sortRollbackCreates,
   isReplacementOp,
   type CompletedOperation,
+  type FailedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
@@ -30,7 +34,7 @@ const silentLogger = {
   child: () => silentLogger,
 } as unknown as RollbackExecutorContext['logger'];
 
-function makeCtx(provider: { delete?: unknown; update?: unknown }): {
+function makeCtx(provider: { delete?: unknown; update?: unknown; create?: unknown }): {
   ctx: RollbackExecutorContext;
   events: Array<{ eventType: string; logicalId?: string }>;
 } {
@@ -157,7 +161,7 @@ describe('classifyRollbackOp', () => {
     expect(classifyRollbackOp(create, state, new Set(['B']))).toBe('orphan-flag');
   });
 
-  it('replacement UPDATE never deep-equal-skips (physicalId differs)', () => {
+  it('replacement UPDATE → reverse-replacement (#1199), never deep-equal-skips', () => {
     const op: CompletedOperation = {
       logicalId: 'B',
       changeType: 'UPDATE',
@@ -168,7 +172,139 @@ describe('classifyRollbackOp', () => {
     // Even if current props match previous, a replacement still attempts.
     const state = { B: res({ physicalId: 'phys-new', properties: { a: 1 } }) };
     expect(isReplacementOp(op)).toBe(true);
-    expect(classifyRollbackOp(op, state, new Set())).toBe('revert');
+    expect(classifyRollbackOp(op, state, new Set())).toBe('reverse-replacement');
+  });
+
+  it('replacement with UpdateReplacePolicy: Retain on previousState → readopt (#1199)', () => {
+    const op: CompletedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-new',
+      previousState: res({
+        physicalId: 'phys-old',
+        properties: { a: 1 },
+        updateReplacePolicy: 'Retain',
+      }),
+    };
+    const state = { B: res({ physicalId: 'phys-new', properties: { a: 2 } }) };
+    expect(classifyRollbackOp(op, state, new Set())).toBe('reverse-replacement-readopt');
+  });
+
+  it('replacement with Snapshot policy re-creates (NOT readopt — old was deleted)', () => {
+    const op: CompletedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-new',
+      previousState: res({
+        physicalId: 'phys-old',
+        properties: { a: 1 },
+        updateReplacePolicy: 'Snapshot',
+      }),
+    };
+    const state = { B: res({ physicalId: 'phys-new' }) };
+    expect(classifyRollbackOp(op, state, new Set())).toBe('reverse-replacement');
+  });
+
+  it('replacement already reverted (state points at old physical id) → skip-already-done', () => {
+    const op: CompletedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-new',
+      previousState: res({ physicalId: 'phys-old', properties: { a: 1 } }),
+    };
+    const state = { B: res({ physicalId: 'phys-old', properties: { a: 1 } }) };
+    expect(classifyRollbackOp(op, state, new Set())).toBe('skip-already-done');
+  });
+
+  it('replacement whose state id is neither old nor new → skip-mismatch', () => {
+    const op: CompletedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-new',
+      previousState: res({ physicalId: 'phys-old', properties: { a: 1 } }),
+    };
+    const state = { B: res({ physicalId: 'phys-even-newer' }) };
+    expect(classifyRollbackOp(op, state, new Set())).toBe('skip-mismatch');
+  });
+});
+
+describe('classifyFailedOp (#1198)', () => {
+  it('failed DELETE → skip-failed-noop (resource still in place)', () => {
+    const op: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'DELETE',
+      resourceType: 'AWS::S3::Bucket',
+      previousState: res(),
+      physicalId: 'phys',
+    };
+    expect(classifyFailedOp(op, { B: res() })).toBe('skip-failed-noop');
+  });
+
+  it('failed CREATE with no physical id → skip-failed-unknown', () => {
+    const op: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+    };
+    expect(classifyFailedOp(op, {})).toBe('skip-failed-unknown');
+  });
+
+  it('failed CREATE with matching state record → delete-failed-create', () => {
+    const op: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-B',
+    };
+    expect(classifyFailedOp(op, { B: res({ physicalId: 'phys-B' }) })).toBe('delete-failed-create');
+  });
+
+  it('failed CREATE with recorded id already gone from state → skip-failed-noop', () => {
+    const op: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-B',
+    };
+    expect(classifyFailedOp(op, {})).toBe('skip-failed-noop');
+  });
+
+  it('failed UPDATE with previousState → revert-failed-update', () => {
+    const op: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      previousState: res({ properties: { a: 1 } }),
+      physicalId: 'phys-B',
+      attemptedProperties: { a: 2 },
+    };
+    expect(classifyFailedOp(op, { B: res({ physicalId: 'phys-B' }) })).toBe('revert-failed-update');
+  });
+
+  it('failed UPDATE without previousState / state entry → skip-failed-absent', () => {
+    const op: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-B',
+    };
+    expect(classifyFailedOp(op, { B: res() })).toBe('skip-failed-absent');
+    expect(
+      classifyFailedOp({ ...op, previousState: res({ properties: { a: 1 } }) }, {})
+    ).toBe('skip-failed-absent');
+  });
+
+  it('planFailedOps maps each failed op to its action', () => {
+    const ops: FailedOperation[] = [
+      { logicalId: 'U', changeType: 'UPDATE', resourceType: 'T', previousState: res(), physicalId: 'p' },
+      { logicalId: 'C', changeType: 'CREATE', resourceType: 'T' },
+    ];
+    const plan = planFailedOps(ops, { U: res({ physicalId: 'p' }) });
+    expect(plan.map((i) => i.action)).toEqual(['revert-failed-update', 'skip-failed-unknown']);
   });
 });
 
@@ -342,6 +478,111 @@ describe('replayRollback', () => {
     expect(order.indexOf('Policy')).toBeLessThan(order.indexOf('Role'));
   });
 
+  it('reverse-replacement: re-creates the old resource, deletes the new (#1199)', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2', attributes: { Arn: 'arn:old' } });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const afterOp = vi.fn();
+    const result = await replayRollback(ops, state, 'S', ctx, { afterOp });
+    expect(create).toHaveBeenCalledWith('B', 'AWS::SQS::Queue', { a: 1 });
+    expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, { expectedRegion: 'us-east-1' });
+    expect(state.B).toMatchObject({ physicalId: 'phys-old-2', properties: { a: 1 }, attributes: { Arn: 'arn:old' } });
+    expect(result.failures).toBe(0);
+    expect(afterOp).toHaveBeenCalledWith('B');
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('reverse-replacement warns on a stateful type but does NOT count a warning (exit stays 0)', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'tbl-old-2' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({
+      physicalId: 'tbl-old',
+      resourceType: 'AWS::DynamoDB::Table',
+      properties: { a: 1 },
+    });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'T', changeType: 'UPDATE', resourceType: 'AWS::DynamoDB::Table', physicalId: 'tbl-new', previousState: prev },
+    ];
+    const state = { T: res({ physicalId: 'tbl-new', resourceType: 'AWS::DynamoDB::Table' }) };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    // Advisory data-loss warn is logged loudly but the op succeeded — no
+    // warning count (warnings map to exit code 2).
+    expect(silentLogger.warn).toHaveBeenCalledWith(expect.stringContaining('stateful type'));
+    expect(result.warnings).toBe(0);
+    expect(result.failures).toBe(0);
+    expect(create).toHaveBeenCalled();
+  });
+
+  it('reverse-replacement name collision: deletes new first, retries create', async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockResolvedValue({ physicalId: 'phys-old' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    expect(create).toHaveBeenCalledTimes(2);
+    // The new resource is deleted exactly once (before the create retry).
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(state.B!.physicalId).toBe('phys-old');
+    expect(result.failures).toBe(0);
+  });
+
+  it('reverse-replacement-readopt: deletes new, restores state to the retained old', async () => {
+    const create = vi.fn();
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ create, delete: del });
+    const prev = res({
+      physicalId: 'phys-old',
+      properties: { a: 1 },
+      updateReplacePolicy: 'Retain' as const,
+    });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::S3::Bucket', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    expect(create).not.toHaveBeenCalled();
+    expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::S3::Bucket', { a: 2 }, { expectedRegion: 'us-east-1' });
+    expect(state.B).toBe(prev);
+    expect(result.failures).toBe(0);
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('reverse-replacement: delete-new failure after re-create is a warning, old is restored', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
+    const del = vi.fn().mockRejectedValue(new Error('delete boom'));
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    expect(state.B!.physicalId).toBe('phys-old-2');
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBeGreaterThan(0);
+  });
+
   it('stops early when isInterrupted flips true', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ delete: del });
@@ -351,6 +592,107 @@ describe('replayRollback', () => {
     ];
     const state = { A: res({ physicalId: 'pA', properties: { x: 1 } }), B: res({ physicalId: 'pB', properties: { x: 1 } }) };
     const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => true });
+    expect(result.interrupted).toBe(true);
+  });
+});
+
+describe('replayFailedOperations (#1198)', () => {
+  it('force-reverts a failed UPDATE with previous-vs-attempted diff sides', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx, events } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+        previousState: prev,
+        attemptedProperties: { a: 2 },
+      },
+    ];
+    // A failed UPDATE leaves state at the pre-op values (props equal prev) —
+    // the revert must STILL run (remote state unknown), unlike the completed
+    // path's deep-equal skip.
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 1 } }),
+    };
+    const afterOp = vi.fn();
+    const result = await replayFailedOperations(failedOps, state, 'S', ctx, { afterOp });
+    // Diff sides: desired = previous props, previous = ATTEMPTED props, so a
+    // patch-based provider generates ops undoing the half-applied update.
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'AWS::S3::Bucket', { a: 1 }, { a: 2 });
+    expect(state.B).toBe(prev);
+    expect(result.failures).toBe(0);
+    expect(afterOp).toHaveBeenCalledWith('B');
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('falls back to current props as the previous side when attemptedProperties absent', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
+    await replayFailedOperations(failedOps, state, 'S', ctx);
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 });
+  });
+
+  it('deletes a partially-recorded failed CREATE and drops it from state', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'C', changeType: 'CREATE', resourceType: 'T', physicalId: 'pC' },
+    ];
+    const state: Record<string, ResourceState> = { C: res({ physicalId: 'pC' }) };
+    const result = await replayFailedOperations(failedOps, state, 'S', ctx);
+    expect(del).toHaveBeenCalledWith('C', 'pC', 'T', undefined, { expectedRegion: 'us-east-1' });
+    expect(state.C).toBeUndefined();
+    expect(result.failures).toBe(0);
+  });
+
+  it('failed CREATE with nothing recorded warns; failed DELETE is a silent noop', async () => {
+    const { ctx } = makeCtx({});
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'C', changeType: 'CREATE', resourceType: 'T' },
+      { logicalId: 'D', changeType: 'DELETE', resourceType: 'T', previousState: res(), physicalId: 'pD' },
+    ];
+    const result = await replayFailedOperations(failedOps, { D: res({ physicalId: 'pD' }) }, 'S', ctx);
+    expect(result.warnings).toBe(1); // only the CREATE-unknown warns
+    expect(result.failures).toBe(0);
+  });
+
+  it('a revert failure is caught, counted, and emits ROLLBACK_RESOURCE_FAILED', async () => {
+    const update = vi.fn().mockRejectedValue(new Error('boom'));
+    const { ctx, events } = makeCtx({ update });
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'T',
+        physicalId: 'phys-B',
+        previousState: res({ physicalId: 'phys-B', properties: { a: 1 } }),
+        attemptedProperties: { a: 2 },
+      },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
+    const result = await replayFailedOperations(failedOps, state, 'S', ctx);
+    expect(result.failures).toBe(1);
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_FAILED');
+  });
+
+  it('stops early when isInterrupted flips true', async () => {
+    const update = vi.fn().mockResolvedValue({});
+    const { ctx } = makeCtx({ update });
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'p', previousState: res() },
+    ];
+    const result = await replayFailedOperations(failedOps, { B: res() }, 'S', ctx, {
+      isInterrupted: () => true,
+    });
+    expect(update).not.toHaveBeenCalled();
     expect(result.interrupted).toBe(true);
   });
 });

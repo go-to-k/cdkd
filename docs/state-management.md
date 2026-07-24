@@ -51,7 +51,11 @@ deploy ends **without a completed rollback** — a `--no-rollback` failure, a
 Ctrl+C interruption, or before an automatic rollback (so a rollback that
 dies partway is resumable). It records the exact operations the failed
 deploy completed (one `segment` per failed attempt) so `cdkd rollback` can
-revert them with no synth. It is deliberately **not** part of the state
+revert them with no synth. Since issue
+[#1198](https://github.com/go-to-k/cdkd/issues/1198) each segment also
+carries the op(s) that **FAILED** mid-deploy (`failedOperations[]` — pre-op
+state + attempted properties; an additive field, no `journalVersion` bump)
+so `cdkd rollback --revert-failed` can optionally revert them too. It is deliberately **not** part of the state
 schema (its own `journalVersion` field, no `StackState.version` bump) and
 **not** under the `deployments/` prefix (that layer survives destroy by
 design; the journal must not). Lifecycle: created on a failed / interrupted

@@ -203,6 +203,74 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(journal.deleteRollbackJournal).toHaveBeenCalled();
   });
 
+  it('records the failed op with previousState + attemptedProperties (#1198)', async () => {
+    const changes = new Map([
+      ['A', makeChange('A')],
+      ['B', makeChange('B')],
+    ]);
+    // B is an UPDATE whose provider call fails — its pre-op state and the
+    // attempted (resolved) desired properties must land on the segment.
+    const bChange = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      desiredProperties: { p: 'new' },
+      currentProperties: { p: 'old' },
+      propertyChanges: [{ path: 'p', requiresReplacement: false }],
+    } as unknown as ResourceChange;
+    changes.set('B', bChange);
+    const prevB: ResourceState = {
+      physicalId: 'phys-B-old',
+      resourceType: 'AWS::S3::Bucket',
+      properties: { p: 'old' },
+      attributes: {},
+      dependencies: [],
+    };
+    const engine = buildEngine({
+      changes,
+      deps: { A: [], B: [] },
+      noRollback: true,
+      currentEtag: 'e0',
+      currentResources: { B: prevB },
+    });
+    const provider = (
+      engine as unknown as {
+        providerRegistry: {
+          getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } };
+        };
+      }
+    ).providerRegistry.getProviderFor().provider;
+    provider.update.mockRejectedValue(new Error('update failed: B'));
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+    expect(seg.failedOperations).toHaveLength(1);
+    const failed = seg.failedOperations[0];
+    expect(failed.logicalId).toBe('B');
+    expect(failed.changeType).toBe('UPDATE');
+    expect(failed.previousState).toMatchObject({ physicalId: 'phys-B-old', properties: { p: 'old' } });
+    expect(failed.physicalId).toBe('phys-B-old');
+    expect(failed.attemptedProperties).toEqual({ p: 'new' });
+  });
+
+  it('journals a failed-only segment when the very first op fails (#1198)', async () => {
+    const changes = new Map([['A', makeChange('A')]]);
+    const engine = buildEngine({
+      changes,
+      deps: { A: [] },
+      failOn: new Set(['A']),
+      noRollback: true,
+      currentEtag: 'e0',
+    });
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    // Zero completed ops, but the failed op alone is worth journaling.
+    expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+    const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+    expect(seg.operations).toEqual([]);
+    expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['A']);
+    // A failed CREATE records no physical id (the provider threw).
+    expect(seg.failedOperations[0].physicalId).toBeUndefined();
+  });
+
   it('writes a no-rollback-failure segment when provisioning succeeds but output resolution fails', async () => {
     // Every resource op succeeds; resolveOutputs then throws (only reachable
     // under --strict-getatt). The engine persists state then journals a

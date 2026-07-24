@@ -16,9 +16,12 @@ import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
 import {
   replayRollback,
+  replayFailedOperations,
   planRollback,
+  planFailedOps,
   type RollbackExecutorContext,
   type RollbackPlanItem,
+  type FailedOpPlanItem,
 } from '../../deployment/rollback-executor.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -31,6 +34,7 @@ interface RollbackOptions {
   force?: boolean;
   yes?: boolean;
   orphan?: string[];
+  revertFailed?: boolean;
   stackRegion?: string;
   stateBucket?: string;
   statePrefix: string;
@@ -94,6 +98,10 @@ function actionLabel(item: RollbackPlanItem): string {
       return `  - orphan   ${op.logicalId} (${op.resourceType}) [--orphan]`;
     case 'revert':
       return `  - revert   ${op.logicalId} (${op.resourceType})${rep}`;
+    case 'reverse-replacement':
+      return `  - reverse-replace ${op.logicalId} (${op.resourceType}) [re-create old resource, delete new]`;
+    case 'reverse-replacement-readopt':
+      return `  - reverse-replace ${op.logicalId} (${op.resourceType}) [delete new, re-adopt retained old resource]`;
     case 'unrecoverable-delete':
       return `  - (cannot restore) ${op.logicalId} (${op.resourceType}) — was DELETED, unrecoverable`;
     case 'skip-mismatch':
@@ -102,6 +110,23 @@ function actionLabel(item: RollbackPlanItem): string {
       return `  - skip     ${op.logicalId} (${op.resourceType}) — no longer in state`;
     case 'skip-already-done':
       return `  - skip     ${op.logicalId} (${op.resourceType}) — already reverted`;
+  }
+}
+
+/** Human label for a planned FAILED-op revert (issue #1198, --revert-failed). */
+function failedActionLabel(item: FailedOpPlanItem): string {
+  const { op, action } = item;
+  switch (action) {
+    case 'revert-failed-update':
+      return `  - revert   ${op.logicalId} (${op.resourceType}) [FAILED update — remote state unknown, force-applying previous properties]`;
+    case 'delete-failed-create':
+      return `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create]`;
+    case 'skip-failed-unknown':
+      return `  - skip     ${op.logicalId} (${op.resourceType}) — failed CREATE recorded no physical id`;
+    case 'skip-failed-noop':
+      return `  - skip     ${op.logicalId} (${op.resourceType}) — failed ${op.changeType} left nothing to revert`;
+    case 'skip-failed-absent':
+      return `  - skip     ${op.logicalId} (${op.resourceType}) — no previous state available`;
   }
 }
 
@@ -218,6 +243,22 @@ export async function rollbackCommand(
         logger.info(
           `\n  Segment ${s + 1}/${journal.segments.length} (${segment.reason}${segment.runId ? `, run ${segment.runId}` : ''}):`
         );
+        // #1198: the segment's FAILED in-flight op(s) come first (they are
+        // the newest work of the failed deploy).
+        if (segment.failedOperations && segment.failedOperations.length > 0) {
+          if (options.revertFailed) {
+            const failedPlan = planFailedOps(segment.failedOperations, planStateView);
+            for (const item of failedPlan) logger.info(failedActionLabel(item));
+            applyFailedPlanToPreview(failedPlan, planStateView);
+          } else {
+            for (const fop of segment.failedOperations) {
+              logger.info(
+                `  - (left as-is) ${fop.logicalId} (${fop.resourceType}) — its ${fop.changeType} ` +
+                  `FAILED mid-deploy; pass --revert-failed to attempt reverting it`
+              );
+            }
+          }
+        }
         const plan = planRollback(segment.operations, planStateView, orphanLogicalIds);
         for (const item of plan) logger.info(actionLabel(item));
         // Apply the segment's effect to the preview so an earlier segment's
@@ -310,13 +351,53 @@ export async function rollbackCommand(
               },
             },
             () =>
-              withStackName(stackName, () =>
-                replayRollback(segment.operations, stateResources, stackName, ctx, {
-                  orphanLogicalIds,
-                  afterOp: saveState,
-                  isInterrupted: () => interrupted,
-                })
-              )
+              withStackName(stackName, async () => {
+                // #1198: revert the segment's FAILED in-flight op(s) first
+                // (opt-in). Their revert is independent of the completed-op
+                // replay (one op per resource per deploy), so a failed-op
+                // revert failure still lets the completed ops replay — the
+                // summed failure count keeps the segment from popping.
+                let failedOpFailures = 0;
+                let failedOpWarnings = 0;
+                if (
+                  options.revertFailed &&
+                  segment.failedOperations &&
+                  segment.failedOperations.length > 0
+                ) {
+                  const failedResult = await replayFailedOperations(
+                    segment.failedOperations,
+                    stateResources,
+                    stackName,
+                    ctx,
+                    { afterOp: saveState, isInterrupted: () => interrupted }
+                  );
+                  failedOpFailures = failedResult.failures;
+                  failedOpWarnings = failedResult.warnings;
+                  if (failedResult.interrupted) {
+                    return {
+                      failures: failedOpFailures,
+                      warnings: failedOpWarnings,
+                      interrupted: true,
+                    };
+                  }
+                }
+                const replayResult = await replayRollback(
+                  segment.operations,
+                  stateResources,
+                  stackName,
+                  ctx,
+                  {
+                    orphanLogicalIds,
+                    afterOp: saveState,
+                    isInterrupted: () => interrupted,
+                  }
+                );
+                return {
+                  failures: replayResult.failures + failedOpFailures,
+                  warnings: replayResult.warnings + failedOpWarnings,
+                  interrupted: replayResult.interrupted,
+                };
+              })
           );
           totalFailures += result.failures;
           totalWarnings += result.warnings;
@@ -396,6 +477,31 @@ function applyPlanToPreview(
         if (op.changeType === 'CREATE') delete previewState[op.logicalId];
         break;
       case 'revert':
+      case 'reverse-replacement':
+      case 'reverse-replacement-readopt':
+        if (op.previousState) previewState[op.logicalId] = op.previousState;
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/**
+ * Apply a planned FAILED-op revert's effect to the plan-preview state
+ * (issue #1198). Mirrors `replayFailedOperations` without touching AWS.
+ */
+function applyFailedPlanToPreview(
+  plan: FailedOpPlanItem[],
+  previewState: Record<string, ResourceState>
+): void {
+  for (const item of plan) {
+    const { op, action } = item;
+    switch (action) {
+      case 'delete-failed-create':
+        delete previewState[op.logicalId];
+        break;
+      case 'revert-failed-update':
         if (op.previousState) previewState[op.logicalId] = op.previousState;
         break;
       default:
@@ -418,6 +524,14 @@ export function createRollbackCommand(): Command {
         'Skip the given resource during replay (repeatable). Mirrors cdk rollback --orphan.'
       ).argParser((value: string, previous: string[] | undefined) => [...(previous ?? []), value])
     )
+    .addOption(
+      new Option(
+        '--revert-failed',
+        'Also attempt to revert the resource whose operation FAILED mid-deploy. Off by ' +
+          'default: the remote state of the failed resource is unknown, so force-applying ' +
+          'its previous state is opt-in.'
+      ).default(false)
+    )
     .addOption(stackRegionOption())
     .addHelpText(
       'after',
@@ -428,6 +542,7 @@ export function createRollbackCommand(): Command {
         '  cdkd rollback                       # single journaled stack',
         '  cdkd rollback MyStack --force',
         '  cdkd rollback MyStack --orphan MyBucket --orphan MyTable',
+        '  cdkd rollback MyStack --revert-failed   # also revert the failed in-flight resource',
         '  cdkd rollback MyStack --stack-region us-west-2',
         '',
         'Exit codes: 0 = clean, 2 = partial (journal kept for re-run), 1 = hard error.',

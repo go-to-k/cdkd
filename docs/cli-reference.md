@@ -1752,6 +1752,7 @@ Flags:
 | --- | --- |
 | `--force` | Skip the confirmation prompt (`-y` / `--yes` also works). |
 | `--orphan <logicalId>` | Repeatable. Skip the resource during replay, like `cdk rollback --orphan`. An orphaned CREATE is left in AWS and removed from state; an orphaned UPDATE is left at its new properties with state kept as-is. |
+| `--revert-failed` | Also attempt to revert the resource whose operation **FAILED** mid-deploy (issue [#1198](https://github.com/go-to-k/cdkd/issues/1198)). Off by default because the failed resource's remote state is unknown (the op died partway): a failed UPDATE is force-reverted to its pre-deploy properties (the journal records the *attempted* properties, so patch-based providers generate a real undo diff); a failed CREATE that recorded no physical id is skipped with a warning; a failed DELETE needs no revert (the resource is still in place). |
 | `--stack-region <region>` | Disambiguate when the same stack name has state in multiple regions (same UX as the `state` subcommands). |
 | `--role-arn <arn>` | Assume-role before touching AWS. If the journal recorded a role and the flag is not passed, an informational note is printed. |
 | `--state-bucket <bucket>` | Same resolution as other commands. |
@@ -1776,12 +1777,26 @@ credentials, etc.).
 - A resource that was **DELETED** during the deploy cannot be restored (same
   as CloudFormation). Deletes run after creates/updates, so a typical
   mid-deploy failure has not deleted anything yet.
-- The resource whose operation **failed** is left as-is (only completed ops
-  are journaled — same as the in-process rollback today).
-- **Replacements** roll back best-effort: the op records the old and new
-  physical ids, but the old physical resource is already gone, so replaying
-  the update against the new resource may throw on an immutable property
-  (warned; the plan labels these "replacement occurred, best-effort revert").
+- The resource whose operation **failed** is left as-is by default. The
+  journal records the failed op (its pre-op state + the attempted
+  properties), and `--revert-failed` opts in to reverting it (issue
+  [#1198](https://github.com/go-to-k/cdkd/issues/1198)) — opt-in because the
+  failed resource's remote state is genuinely unknown. A failed CREATE that
+  recorded no physical id still cannot be acted on (skipped with a warning).
+  Note: after a **clean automatic** rollback the journal is deleted (the
+  pre-deploy baseline is restored), so `--revert-failed` applies to
+  `--no-rollback` / interrupted / partially-failed-rollback journals.
+- **Replacements** are reverted by **reversing the replacement** (issue
+  [#1199](https://github.com/go-to-k/cdkd/issues/1199)): the old resource is
+  re-CREATEd from its journaled pre-deploy state and the new resource is
+  deleted (create-first; a user-supplied physical name still held by the new
+  resource falls back to delete-new-first with a bounded name-release retry).
+  Under `UpdateReplacePolicy: Retain` the orphaned old resource still exists,
+  so it is simply re-adopted after the new one is deleted — a true clean
+  revert. **Data caveat:** for a stateful type (DynamoDB / RDS / S3 / etc.)
+  the old resource's data was destroyed by the replacement and cannot be
+  recovered — the re-created resource starts empty (warned loudly in the
+  replay; the plan labels these "reverse-replace").
 - Reverts that reference old **asset objects** (e.g. Lambda `Code.S3Key`)
   need those objects to still exist — relevant to `cdkd gc` retention.
 
