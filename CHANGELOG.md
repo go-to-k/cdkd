@@ -1,3 +1,10 @@
+## [0.264.1](https://github.com/go-to-k/cdkd/compare/v0.264.0...v0.264.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **providers:** drop the CR response-bucket region-hint client so --profile credentials reach the presign path ([#1205](https://github.com/go-to-k/cdkd/issues/1205)) ([1d96c6c](https://github.com/go-to-k/cdkd/commit/1d96c6cde90bf53727de704999d0d4b3709dff3e))
+
 # [0.264.0](https://github.com/go-to-k/cdkd/compare/v0.263.2...v0.264.0) (2026-07-24)
 
 
