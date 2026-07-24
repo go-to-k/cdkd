@@ -65,7 +65,7 @@ destroy-interrupt	2026-07-02T18:23:15Z	PASS	531	verify.sh	0703 staleness sweep (
 diff-intrinsic-target-change	2026-07-20T15:00:54Z	PASS	54	verify.sh	diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-07-18T18:42:46Z	PASS	74	verify.sh	added Phase 1b zero-drift assertion; deploy+drift(0)+update+destroy clean, 0 orphans
 docdb-neptune	2026-07-21T08:30:54Z	PASS	1583	verify.sh	14 deleted 0 orphans, docdb+neptune slow-delete ok
-docker-image-asset	2026-07-03T05:15:31Z	PASS	64	verify.sh	0703 sweep; Docker recovered (hard-restart + docker logout public.ecr.aws for stale 403); clean
+docker-image-asset	2026-07-24T04:58:55Z	PASS	45	verify.sh	lazy ECR login: warm-cred no-login + logged-out self-heal both PASS; destroy 0 err 0 orph
 drift-revert	2026-07-19T19:15:52Z	PASS	93	verify.sh	rc ok, 13 deleted, orph clean
 drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
 drift-revert-vpc	2026-07-19T19:20:48Z	PASS	242	verify.sh	rc ok, 21 deleted, orph clean
