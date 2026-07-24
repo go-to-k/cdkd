@@ -1,0 +1,1106 @@
+{
+  "schemaVersion": 1,
+  "summary": {
+    "classifiedCount": 131,
+    "covered": 55,
+    "noArnAttr": 76,
+    "gap": 0
+  },
+  "types": [
+    {
+      "resourceType": "AWS::ApiGateway::Account",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Authorizer",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Deployment",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Method",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Resource",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Stage",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Api",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Authorizer",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Integration",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Route",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Stage",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AppSync::ApiKey",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AppSync::DataSource",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "DataSourceArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLApi",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "GraphQLEndpointArn",
+          "status": "construct-attribute"
+        },
+        {
+          "name": "GraphQLUrl",
+          "status": "cached"
+        },
+        {
+          "name": "RealtimeUrl",
+          "status": "construct-attribute"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLSchema",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AppSync::Resolver",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ResolverArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AutoScaling::AutoScalingGroup",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Browser",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::CodeInterpreter",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Evaluator",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Runtime",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "AgentRuntimeArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Budgets::Budget",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CertificateManager::Certificate",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::Stack",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::Distribution",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudTrail::Trail",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "SnsTopicArn",
+          "status": "construct-attribute"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudWatch::Alarm",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CodeBuild::Project",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CodeCommit::Repository",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPool",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::DLM::LifecyclePolicy",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBCluster",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBInstance",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBSubnetGroup",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::DynamoDB::GlobalTable",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "StreamArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::DynamoDB::Table",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "StreamArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::EIP",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::Instance",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::InternetGateway",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::NatGateway",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAcl",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAclEntry",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::Route",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::RouteTable",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroup",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::Subnet",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPC",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPCGatewayAttachment",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ECR::Repository",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ECS::Cluster",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ECS::Service",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ServiceArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ECS::TaskDefinition",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TaskDefinitionArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EFS::AccessPoint",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EFS::FileSystem",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EFS::MountTarget",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ElastiCache::CacheCluster",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ElastiCache::SubnetGroup",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ListenerArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "LoadBalancerArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TargetGroupArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EMR::Cluster",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceFleetConfig",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceGroupConfig",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Events::EventBus",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Events::Rule",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::FSx::FileSystem",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Connection",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Crawler",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Database",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Job",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Table",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Trigger",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Glue::Workflow",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::Group",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::InstanceProfile",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::ManagedPolicy",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "PolicyArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::Policy",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::Role",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::User",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::UserToGroupAddition",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Kinesis::Stream",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Kinesis::StreamConsumer",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::KinesisFirehose::DeliveryStream",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::KMS::Alias",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::KMS::Key",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventSourceMapping",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "EventSourceMappingArn",
+          "status": "allow-listed",
+          "rationale": "KNOWN GAP tracked in #1190 (cache EventSourceMappingArn in create/update); fix ships separately with an ESM integ"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Function",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::LayerVersion",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "LayerVersionArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::MicrovmImage",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Permission",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Url",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "FunctionArn",
+          "status": "cached"
+        },
+        {
+          "name": "FunctionUrl",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Logs::LogGroup",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBCluster",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBInstance",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBSubnetGroup",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBCluster",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "DBClusterArn",
+          "status": "construct-attribute"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBInstance",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "DBInstanceArn",
+          "status": "construct-attribute"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxy",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "DBProxyArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyEndpoint",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "DBProxyEndpointArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyTargetGroup",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TargetGroupArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBSubnetGroup",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Route53::HostedZone",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSet",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3::Bucket",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3::BucketPolicy",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3Express::DirectoryBucket",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::Namespace",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::Table",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::TableBucket",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::S3Vectors::VectorBucket",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "VectorBucketArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Scheduler::Schedule",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SecretsManager::Secret",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PublicDnsNamespace",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::Service",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SNS::Subscription",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "allow-listed",
+          "rationale": "Arn == physicalId (create returns the subscription ARN as the physical id); guard fallback resolves it"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SNS::Topic",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "TopicArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SNS::TopicPolicy",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SQS::Queue",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "QueueUrl",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SQS::QueuePolicy",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SSM::Parameter",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::StepFunctions::StateMachine",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACL",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    }
+  ]
+}
