@@ -185,10 +185,10 @@ export class CustomResourceProvider implements ResourceProvider {
   private responseClientGeneration = 0;
 
   /**
-   * Whether `this.s3Client` is a provider-OWNED client (built from the
-   * `setResponseBucket` region hint or by a region-correction rebuild)
-   * vs the shared `AwsClients.s3` instance from the constructor. Owned
-   * clients are `destroy()`ed when replaced; the shared one never is.
+   * Whether `this.s3Client` is a provider-OWNED client (built by a
+   * region-correction rebuild) vs the shared `AwsClients.s3` instance
+   * from the constructor. Owned clients are `destroy()`ed when replaced;
+   * the shared one never is.
    */
   private ownsS3Client = false;
 
@@ -273,20 +273,20 @@ export class CustomResourceProvider implements ResourceProvider {
   }
 
   /**
-   * Set the S3 bucket for custom resource responses
-   * Called by ProviderRegistry when state bucket is configured
+   * Set the S3 bucket for custom resource responses.
+   * Called by ProviderRegistry when the state bucket is configured.
+   *
+   * There is deliberately NO region parameter (issue #1202): the bucket's
+   * ACTUAL region is resolved lazily via `ensureResponseClient()` before
+   * the first S3 operation (issue #1195), starting from the shared
+   * `AwsClients.s3` client so `--profile` / static credentials carry into
+   * both the `GetBucketLocation` probe and the rebuilt client. The former
+   * deploy-region hint parameter built a default-credential-chain client
+   * (dropping `--profile`) and added nothing — the probe resolves the
+   * bucket's real region regardless of the starting client's region.
    */
-  setResponseBucket(bucket: string, bucketRegion?: string): void {
+  setResponseBucket(bucket: string): void {
     this.responseBucket = bucket;
-    // The supplied bucketRegion is only a starting HINT (deploy.ts passes the
-    // deploy/base region, which is NOT necessarily where the state bucket
-    // lives — the account-scoped default bucket is region-free, issue #1195).
-    // The bucket's ACTUAL region is resolved lazily via ensureResponseClient()
-    // before the first S3 operation, so the pre-signed ResponseURL always
-    // targets the right regional endpoint.
-    if (bucketRegion) {
-      this.replaceS3Client(new S3Client({ region: bucketRegion }));
-    }
     this.responseClientGeneration++;
     this.responseClientResolved = false;
     this.responseClientResolveInFlight = null;

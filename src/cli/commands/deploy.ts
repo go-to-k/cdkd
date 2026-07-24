@@ -598,7 +598,7 @@ async function deployCommand(
       const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
       const stackProviderRegistry = new ProviderRegistry();
       registerAllProviders(stackProviderRegistry);
-      stackProviderRegistry.setCustomResourceResponseBucket(stateBucket, baseRegion);
+      stackProviderRegistry.setCustomResourceResponseBucket(stateBucket);
       if (options.allowUnsupportedTypes?.length) {
         stackProviderRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
       }

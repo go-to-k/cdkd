@@ -89,7 +89,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     });
 
   it('region-corrects the response S3 client before the placeholder PutObject and presign', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     mockRebuildClientForBucketRegion.mockResolvedValueOnce(correctedClient);
     queueSuccessfulCreate(correctedSend);
 
@@ -132,7 +132,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
   });
 
   it('memoizes the probe: a second operation does not re-resolve the bucket region', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     mockRebuildClientForBucketRegion.mockResolvedValueOnce(correctedClient);
 
     queueSuccessfulCreate(correctedSend);
@@ -144,13 +144,13 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
   });
 
   it('re-resolves after setResponseBucket is called again', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     mockRebuildClientForBucketRegion.mockResolvedValue(correctedClient);
 
     queueSuccessfulCreate(correctedSend);
     await createOnce();
 
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     queueSuccessfulCreate(correctedSend);
     await createOnce();
 
@@ -199,8 +199,60 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     expect(correctedSend).toHaveBeenCalledTimes(2);
   });
 
+  it('a stale probe settling while a successor probe is in flight does not clobber the successor (issue #1202)', async () => {
+    // Pins the finally-block generation guard in ensureResponseClient: when
+    // stale probe A (superseded by a re-arm) settles AFTER successor probe B
+    // has already started, A's finally must NOT null out B's single-flight
+    // promise — otherwise a third operation would start a redundant probe C.
+    // Implementation-based mocks throughout (queued mocks interleave
+    // non-deterministically across concurrent creates).
+    mockLambdaSend.mockImplementation((cmd: { input?: { Payload?: Uint8Array } }) =>
+      cmd?.input?.Payload
+        ? Promise.resolve({
+            Payload: Buffer.from(JSON.stringify({ PhysicalResourceId: 'phys-1202', Data: {} })),
+          })
+        : Promise.resolve({ Configuration: { State: 'Active', LastUpdateStatus: 'Successful' } })
+    );
+    mockS3Send.mockResolvedValue({});
+    correctedSend.mockResolvedValue({});
+
+    provider.setResponseBucket('bucket-a');
+    let releaseA: (value: unknown) => void = () => {};
+    mockRebuildClientForBucketRegion.mockImplementationOnce(
+      () => new Promise((resolve) => (releaseA = resolve))
+    );
+    const first = createOnce(); // starts probe A (bucket-a)
+    await new Promise((resolve) => setImmediate(resolve));
+
+    provider.setResponseBucket('bucket-b'); // re-arm; A is now stale
+    let releaseB: (value: unknown) => void = () => {};
+    mockRebuildClientForBucketRegion.mockImplementationOnce(
+      () => new Promise((resolve) => (releaseB = resolve))
+    );
+    const second = createOnce(); // starts probe B (bucket-b)
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const staleClient = { send: vi.fn(), destroy: vi.fn() };
+    releaseA(staleClient); // stale A settles while B is still in flight
+    await first; // first proceeds on the original shared client
+
+    // B's single-flight promise must have survived A's finally: a third
+    // operation joins B instead of starting probe C.
+    const third = createOnce();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRebuildClientForBucketRegion).toHaveBeenCalledTimes(2); // A + B only
+
+    releaseB(correctedClient);
+    await Promise.all([second, third]);
+
+    expect(staleClient.destroy).toHaveBeenCalledTimes(1);
+    expect(staleClient.send).not.toHaveBeenCalled();
+    expect(mockS3Send).toHaveBeenCalledTimes(2); // first op: placeholder + cleanup
+    expect(correctedSend).toHaveBeenCalledTimes(4); // second + third ops on B's client
+  });
+
   it('shares one in-flight probe across concurrent operations', async () => {
-    provider.setResponseBucket('cdkd-state-123456789012', 'us-west-2');
+    provider.setResponseBucket('cdkd-state-123456789012');
     let releaseProbe: (value: typeof correctedClient) => void = () => {};
     mockRebuildClientForBucketRegion.mockImplementationOnce(
       () =>
