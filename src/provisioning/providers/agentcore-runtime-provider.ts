@@ -495,15 +495,43 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
    * adopting an existing runtime should pass
    * `--resource <logicalId>=<agentRuntimeId>` (e.g. `runtime-12345`,
    * matching the physical id format returned by `create()`).
+   *
+   * The imported record's `attributes` are enriched to the same CFn read-only
+   * set `create()` / `update()` write (via {@link buildAttributes}) so an
+   * imported runtime resolves `Fn::GetAtt [Runtime, AgentRuntimeArn]` (and the
+   * other read-only attributes) from cached state, matching deploy-created
+   * runtimes (issue #1188). The enrichment is best-effort: a single
+   * `GetAgentRuntime` is issued, and any failure (throttle, transient error,
+   * a `--resource` id that does not resolve) falls back to the minimal
+   * `{ AgentRuntimeId }` record — the live `getAttribute()` path still resolves
+   * the ARN, so import never fails on the enrichment. `WorkloadIdentityDetails`
+   * is not populated here (`GetAgentRuntime` does not return it — it is a
+   * create/update-response field only).
    */
-  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
+    if (!input.knownPhysicalId) {
+      return null;
+    }
+
+    const physicalId = input.knownPhysicalId;
+    try {
+      const resp = await this.client.send(
+        new GetAgentRuntimeCommand({ agentRuntimeId: physicalId })
+      );
       return {
-        physicalId: input.knownPhysicalId,
-        attributes: { AgentRuntimeId: input.knownPhysicalId },
+        physicalId,
+        attributes: this.buildAttributes(resp, resp.agentRuntimeName ?? ''),
+      };
+    } catch (err) {
+      this.logger.debug(
+        `Could not enrich imported BedrockAgentCore Runtime ${physicalId} attributes ` +
+          `(${err instanceof Error ? err.message : String(err)}); ` +
+          `recording AgentRuntimeId only (Fn::GetAtt resolves live via getAttribute)`
+      );
+      return {
+        physicalId,
+        attributes: { AgentRuntimeId: physicalId },
       };
     }
-    return null;
   }
 }
