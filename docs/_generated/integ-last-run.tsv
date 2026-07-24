@@ -211,6 +211,7 @@ replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
 replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
 rollback-command	2026-07-24T09:05:25Z	PASS	620	verify.sh	post-rebase (main #1201) re-run; rc ok, orph clean
 rollback-failure-injection	2026-07-24T10:50:16Z	PASS	368	verify.sh	0724b sweep P1: #1212 journal-after-clean-rollback coverage; 17 del 0 err 0 orphans
+rollback-sqs-cooldown	2026-07-24T13:48:12Z	PASS	183	verify.sh	new fixture #1218: #1206 cooldown reverse-replacement + #1208 failed-only journal cycle, destroy clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean

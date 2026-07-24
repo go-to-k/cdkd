@@ -211,6 +211,7 @@
         "replacement-immutable-name",
         "rollback-command",
         "rollback-failure-injection",
+        "rollback-sqs-cooldown",
         "route53",
         "s3-cloudfront",
         "s3-event-notification",
@@ -254,6 +255,7 @@
         "recreate-via-cc-api",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-sqs-cooldown",
         "update-replace"
       ]
     },
@@ -268,7 +270,8 @@
     {
       "flag": "--no-rollback",
       "integs": [
-        "rollback-command"
+        "rollback-command",
+        "rollback-sqs-cooldown"
       ]
     },
     {
@@ -426,6 +429,7 @@
         "replacement-immutable-name",
         "rollback-command",
         "rollback-failure-injection",
+        "rollback-sqs-cooldown",
         "route53",
         "s3-asset-deploy",
         "s3-cloudfront",
@@ -623,6 +627,7 @@
         "replacement-immutable-name",
         "rollback-command",
         "rollback-failure-injection",
+        "rollback-sqs-cooldown",
         "route53",
         "s3-asset-deploy",
         "s3-cloudfront",
@@ -844,6 +849,7 @@
         "replacement-immutable-name",
         "rollback-command",
         "rollback-failure-injection",
+        "rollback-sqs-cooldown",
         "route53",
         "s3-asset-deploy",
         "s3-cloudfront",
@@ -926,6 +932,7 @@
         "opensearch-domain-getatt",
         "redshift-cluster-getatt",
         "remove-protection",
+        "rollback-sqs-cooldown",
         "stepfunctions",
         "tags-propagation",
         "throttle-wide-dag"

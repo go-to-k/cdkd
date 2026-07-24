@@ -677,6 +677,17 @@ self-contained env-gated failing SQS Queue), see
 back with no orphan VPC/SG/ENI/Role/Lambda/SSM and that the #808 events
 captured `RESOURCE_FAILED` + `ROLLBACK_*` + `RUN_FINISHED result=FAILED`.
 
+For the `cdkd rollback` command's harder paths, see
+`tests/integration/rollback-sqs-cooldown/` (scenario tags
+`rollback-reverse-replacement-name-cooldown` +
+`failed-only-journal-retention-cycle`, issue #1218): the reverse-replacement
+re-create retrying through the SQS ~60s `QueueDeletedRecently` same-name
+cooldown (issue #1206), and the failed-only journal retention cycle after a
+clean automatic rollback — retained `auto-rollback-clean` journal, the
+next-deploy `--revert-failed` note, `cdkd rollback --force --revert-failed`
+consuming it, and the NO-CHANGE fix-forward deploy clearing the journal
+(issues #1208 / #1198 / PR #1212).
+
 ### Drift revert E2E (`tests/integration/drift-revert/`)
 
 End-to-end real-AWS test for `cdkd drift` + `cdkd drift --revert`.

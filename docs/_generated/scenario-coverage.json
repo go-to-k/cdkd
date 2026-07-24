@@ -109,6 +109,10 @@
       "description": "Exports index store (`Fn::ImportValue` tracking, `_index/{region}/exports.json`) auto-detects the bucket region via `GetBucketLocation` before its write/remove, so a cross-region state bucket no longer hits S3 301 PermanentRedirect (issue #819)."
     },
     {
+      "tag": "failed-only-journal-retention-cycle",
+      "description": "Failed-only rollback-journal retention after a CLEAN automatic rollback (issue #1208): the journal survives as reason=auto-rollback-clean / operations=[] / failedOperations=[<bad resource>] (raw S3 read), the next deploy prints the --revert-failed note, `cdkd rollback --force --revert-failed` consumes it via the #1198 skip-with-warning for a physical-id-less failed CREATE (exit 2 accepted), and a NO-CHANGE fix-forward deploy (bad resource removed) clears the journal + note (the PR #1212 no-change gap)."
+    },
+    {
       "tag": "fresh-principal-consumer-race",
       "description": "A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal (\"Invalid principal in policy\"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts."
     },
@@ -259,6 +263,10 @@
     {
       "tag": "rollback-failure-injection",
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED."
+    },
+    {
+      "tag": "rollback-reverse-replacement-name-cooldown",
+      "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0."
     },
     {
       "tag": "s3-asset-deploy",
@@ -1535,6 +1543,14 @@
       ]
     },
     {
+      "name": "rollback-sqs-cooldown",
+      "annotated": true,
+      "scenarios": [
+        "failed-only-journal-retention-cycle",
+        "rollback-reverse-replacement-name-cooldown"
+      ]
+    },
+    {
       "name": "route53",
       "annotated": true,
       "scenarios": []
@@ -1995,6 +2011,13 @@
       ]
     },
     {
+      "scenario": "failed-only-journal-retention-cycle",
+      "description": "Failed-only rollback-journal retention after a CLEAN automatic rollback (issue #1208): the journal survives as reason=auto-rollback-clean / operations=[] / failedOperations=[<bad resource>] (raw S3 read), the next deploy prints the --revert-failed note, `cdkd rollback --force --revert-failed` consumes it via the #1198 skip-with-warning for a physical-id-less failed CREATE (exit 2 accepted), and a NO-CHANGE fix-forward deploy (bad resource removed) clears the journal + note (the PR #1212 no-change gap).",
+      "fixtures": [
+        "rollback-sqs-cooldown"
+      ]
+    },
+    {
       "scenario": "fresh-principal-consumer-race",
       "description": "A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal (\"Invalid principal in policy\"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts.",
       "fixtures": [
@@ -2287,6 +2310,13 @@
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.",
       "fixtures": [
         "rollback-failure-injection"
+      ]
+    },
+    {
+      "scenario": "rollback-reverse-replacement-name-cooldown",
+      "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0.",
+      "fixtures": [
+        "rollback-sqs-cooldown"
       ]
     },
     {
