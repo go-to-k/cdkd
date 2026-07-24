@@ -1,3 +1,10 @@
+# [0.263.0](https://github.com/go-to-k/cdkd/compare/v0.262.3...v0.263.0) (2026-07-24)
+
+
+### Features
+
+* **rollback:** standalone cdkd rollback command to revert a failed --no-rollback / interrupted deploy ([#1183](https://github.com/go-to-k/cdkd/issues/1183)) ([#1196](https://github.com/go-to-k/cdkd/issues/1196)) ([8b0b3b0](https://github.com/go-to-k/cdkd/commit/8b0b3b00bdc499088bfe1e73fc0e43e490b07f0e))
+
 ## [0.262.3](https://github.com/go-to-k/cdkd/compare/v0.262.2...v0.262.3) (2026-07-24)
 
 
