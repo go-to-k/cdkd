@@ -1,3 +1,10 @@
+# [0.264.0](https://github.com/go-to-k/cdkd/compare/v0.263.2...v0.264.0) (2026-07-24)
+
+
+### Features
+
+* **rollback:** reverse-replacement reverts + opt-in --revert-failed for the failed in-flight resource ([#1203](https://github.com/go-to-k/cdkd/issues/1203)) ([17c531f](https://github.com/go-to-k/cdkd/commit/17c531ff8a6425dc227442ed8de0f1fa420cb06c))
+
 ## [0.263.2](https://github.com/go-to-k/cdkd/compare/v0.263.1...v0.263.2) (2026-07-24)
 
 
