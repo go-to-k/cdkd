@@ -187,6 +187,16 @@ export function loadAllFixtures(fixtureDir: string = FIXTURE_DIR): SchemaFixture
  * comparison expression, not an object key or an assignment LHS) — which is
  * exactly why a provider that handles the ARN in `getAttribute` but forgets it
  * in create/update is still flagged.
+ *
+ * KNOWN false-negative (accepted): a provider FILE that serves two types
+ * sharing the SAME PascalCase ARN attribute name (e.g. `appsync-provider.ts`
+ * serves both `AWS::AppSync::ApiKey.Arn` and `AWS::AppSync::GraphQLApi.Arn`)
+ * pools keys at the file level, so caching the ARN for ONE type marks BOTH
+ * `cached`. Dropping the ARN caching for one but not the other would stay green.
+ * The #1179 deploy-BREAKING shape — a type totally absent from both the file's
+ * cached keys AND `constructAttribute` — is still caught, which is the point;
+ * per-type key scoping (parsing create/update's `switch (resourceType)` arms)
+ * is a future tightening if the same-name-across-types case ever regresses.
  */
 export function collectStoredAttributeKeys(source: string, fileName = 'provider.ts'): Set<string> {
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
