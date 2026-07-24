@@ -1,3 +1,10 @@
+## [0.262.3](https://github.com/go-to-k/cdkd/compare/v0.262.2...v0.262.3) (2026-07-24)
+
+
+### Bug Fixes
+
+* honor --profile for AWS SDK credentials ([#1126](https://github.com/go-to-k/cdkd/issues/1126)) ([d2c7b79](https://github.com/go-to-k/cdkd/commit/d2c7b793b07f089f51c7c34ac56366b3f4bebc84))
+
 ## [0.262.2](https://github.com/go-to-k/cdkd/compare/v0.262.1...v0.262.2) (2026-07-24)
 
 
