@@ -1,3 +1,10 @@
+## [0.263.2](https://github.com/go-to-k/cdkd/compare/v0.263.1...v0.263.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **providers:** region-correct custom-resource response presign to the state bucket's actual region ([#1201](https://github.com/go-to-k/cdkd/issues/1201)) ([7603da5](https://github.com/go-to-k/cdkd/commit/7603da5e827dda2f0304f8b04b76aa5d85754298))
+
 ## [0.263.1](https://github.com/go-to-k/cdkd/compare/v0.263.0...v0.263.1) (2026-07-24)
 
 
