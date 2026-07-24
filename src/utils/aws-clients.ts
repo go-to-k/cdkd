@@ -62,6 +62,14 @@ export class AwsClients {
     this.config = config;
   }
 
+  private get clientOptions(): Pick<AwsClientConfig, 'region' | 'profile' | 'credentials'> {
+    return {
+      ...(this.config.region && { region: this.config.region }),
+      ...(this.config.profile && { profile: this.config.profile }),
+      ...(this.config.credentials && { credentials: this.config.credentials }),
+    };
+  }
+
   /**
    * Get S3 client
    *
@@ -73,8 +81,7 @@ export class AwsClients {
   getS3Client(): S3Client {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
         // Suppress "Are you using a Stream of unknown length" warning
         logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       });
@@ -93,8 +100,7 @@ export class AwsClients {
   getCloudControlClient(): CloudControlClient {
     if (!this.cloudControlClient) {
       this.cloudControlClient = new CloudControlClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.cloudControlClient;
@@ -109,8 +115,8 @@ export class AwsClients {
   getIAMClient(): IAMClient {
     if (!this.iamClient) {
       this.iamClient = new IAMClient({
+        ...this.clientOptions,
         region: this.config.region || 'us-east-1',
-        ...(this.config.credentials && { credentials: this.config.credentials }),
       });
     }
     return this.iamClient;
@@ -143,8 +149,7 @@ export class AwsClients {
   getSQSClient(): SQSClient {
     if (!this.sqsClient) {
       this.sqsClient = new SQSClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.sqsClient;
@@ -163,8 +168,7 @@ export class AwsClients {
   getSNSClient(): SNSClient {
     if (!this.snsClient) {
       this.snsClient = new SNSClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.snsClient;
@@ -183,8 +187,7 @@ export class AwsClients {
   getLambdaClient(): LambdaClient {
     if (!this.lambdaClient) {
       this.lambdaClient = new LambdaClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.lambdaClient;
@@ -203,8 +206,7 @@ export class AwsClients {
   getEC2Client(): EC2Client {
     if (!this.ec2Client) {
       this.ec2Client = new EC2Client({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.ec2Client;
@@ -223,8 +225,7 @@ export class AwsClients {
   getSTSClient(): STSClient {
     if (!this.stsClient) {
       this.stsClient = new STSClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.stsClient;
@@ -243,8 +244,7 @@ export class AwsClients {
   getDynamoDBClient(): DynamoDBClient {
     if (!this.dynamoDBClient) {
       this.dynamoDBClient = new DynamoDBClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.dynamoDBClient;
@@ -263,8 +263,7 @@ export class AwsClients {
   getCloudFormationClient(): CloudFormationClient {
     if (!this.cloudFormationClient) {
       this.cloudFormationClient = new CloudFormationClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.cloudFormationClient;
@@ -283,8 +282,7 @@ export class AwsClients {
   getAPIGatewayClient(): APIGatewayClient {
     if (!this.apiGatewayClient) {
       this.apiGatewayClient = new APIGatewayClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.apiGatewayClient;
@@ -303,8 +301,7 @@ export class AwsClients {
   getEventBridgeClient(): EventBridgeClient {
     if (!this.eventBridgeClient) {
       this.eventBridgeClient = new EventBridgeClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.eventBridgeClient;
@@ -323,8 +320,7 @@ export class AwsClients {
   getSecretsManagerClient(): SecretsManagerClient {
     if (!this.secretsManagerClient) {
       this.secretsManagerClient = new SecretsManagerClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.secretsManagerClient;
@@ -343,8 +339,7 @@ export class AwsClients {
   getSSMClient(): SSMClient {
     if (!this.ssmClient) {
       this.ssmClient = new SSMClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.ssmClient;
@@ -363,8 +358,7 @@ export class AwsClients {
   getCloudFrontClient(): CloudFrontClient {
     if (!this.cloudFrontClient) {
       this.cloudFrontClient = new CloudFrontClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.cloudFrontClient;
@@ -387,8 +381,7 @@ export class AwsClients {
   getACMClient(): ACMClient {
     if (!this.acmClient) {
       this.acmClient = new ACMClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.acmClient;
@@ -413,8 +406,7 @@ export class AwsClients {
   getLambdaMicrovmsClient(): LambdaMicrovmsClient {
     if (!this.lambdaMicrovmsClient) {
       this.lambdaMicrovmsClient = new LambdaMicrovmsClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.lambdaMicrovmsClient;
@@ -433,8 +425,7 @@ export class AwsClients {
   getCloudWatchClient(): CloudWatchClient {
     if (!this.cloudWatchClient) {
       this.cloudWatchClient = new CloudWatchClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.cloudWatchClient;
@@ -453,8 +444,7 @@ export class AwsClients {
   getCloudWatchLogsClient(): CloudWatchLogsClient {
     if (!this.cloudWatchLogsClient) {
       this.cloudWatchLogsClient = new CloudWatchLogsClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.cloudWatchLogsClient;
@@ -473,8 +463,7 @@ export class AwsClients {
   getBedrockAgentCoreControlClient(): BedrockAgentCoreControlClient {
     if (!this.bedrockAgentCoreControlClient) {
       this.bedrockAgentCoreControlClient = new BedrockAgentCoreControlClient({
-        ...(this.config.region && { region: this.config.region }),
-        ...(this.config.credentials && { credentials: this.config.credentials }),
+        ...this.clientOptions,
       });
     }
     return this.bedrockAgentCoreControlClient;
