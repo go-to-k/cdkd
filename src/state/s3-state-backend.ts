@@ -700,6 +700,27 @@ export class S3StateBackend {
   }
 
   /**
+   * Remove the `failedOperations` list from the NEWEST journal segment
+   * (issue #1198). Called by `cdkd rollback --revert-failed` right after the
+   * failed ops replayed cleanly, BEFORE the segment's completed ops replay —
+   * so a later completed-op failure that keeps the segment for a re-run does
+   * not re-issue the already-applied failed-op reverts (the journal's
+   * `attemptedProperties` would generate a patch undoing changes that are no
+   * longer present, which can fail on patch-based providers). No-op when the
+   * journal / segment / field is absent.
+   */
+  async clearRollbackJournalFailedOperations(stackName: string, region: string): Promise<void> {
+    const journal = await this.loadRollbackJournal(stackName, region);
+    const newest = journal?.segments[journal.segments.length - 1];
+    if (!journal || !newest || !newest.failedOperations) return;
+    delete newest.failedOperations;
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+  }
+
+  /**
    * Pop the newest segment off the stack's rollback journal after it has
    * been fully replayed. When the last segment is removed, the journal
    * object is deleted entirely. Returns the number of segments remaining.

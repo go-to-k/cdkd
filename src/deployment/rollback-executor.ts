@@ -236,8 +236,14 @@ export function classifyRollbackOp(
       return 'skip-already-done';
     }
     if (op.physicalId !== undefined && current.physicalId !== op.physicalId) {
-      // Neither the old nor the recorded new id — a later attempt replaced
-      // it again; manual attention required.
+      // Neither the old nor the recorded new id. An AUTO-NAMED resource
+      // re-created by a prior reverse-replacement lands here (its fresh
+      // physical id matches neither) — recognize it by the properties
+      // already matching the previous state. Anything else is a later
+      // attempt's replacement; manual attention required.
+      if (deepEqual(current.properties, op.previousState!.properties)) {
+        return 'skip-already-done';
+      }
       return 'skip-mismatch';
     }
     // `Retain` orphaned the old resource instead of deleting it (the deploy
@@ -377,7 +383,8 @@ export async function replayRollback(
       ctx,
       orphanLogicalIds,
       result,
-      options.afterOp
+      options.afterOp,
+      options.isInterrupted
     );
   }
 
@@ -396,7 +403,8 @@ export async function replayRollback(
         ctx,
         orphanLogicalIds,
         result,
-        options.afterOp
+        options.afterOp,
+        options.isInterrupted
       );
     }
   }
@@ -413,7 +421,8 @@ async function replaySingle(
   ctx: RollbackExecutorContext,
   orphanLogicalIds: Set<string>,
   result: RollbackReplayResult,
-  afterOp?: (logicalId: string) => Promise<void> | void
+  afterOp?: (logicalId: string) => Promise<void> | void,
+  isInterrupted?: () => boolean
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
@@ -636,6 +645,13 @@ async function replaySingle(
                 initialDelayMs: 2_000,
                 maxDelayMs: 10_000,
                 logger,
+                // Mirror the deploy engine's delete-first fallback: honor
+                // SIGINT mid-sleep instead of blocking up to ~34s.
+                ...(isInterrupted && {
+                  isInterrupted,
+                  onInterrupted: () =>
+                    new Error('Rollback interrupted while waiting for the old name to release'),
+                }),
                 isRetryable: (message: string) =>
                   /already exists/i.test(message) || message.includes('AlreadyExists'),
               }
@@ -652,10 +668,17 @@ async function replaySingle(
           }
         }
 
+        // Rebuild the record from the previous state, but NEVER carry the
+        // OLD physical resource's attributes / observedProperties over — the
+        // re-created resource has fresh identifiers (ARNs etc.), and stale
+        // cached attributes would poison later Fn::GetAtt resolution and
+        // drift comparison. Mirrors the deploy engine's replacement path,
+        // which constructs the record fresh from the create result.
+        const { observedProperties: _staleObserved, ...prevRecord } = prev;
         stateResources[op.logicalId] = {
-          ...prev,
+          ...prevRecord,
           physicalId: createResult.physicalId,
-          ...(createResult.attributes && { attributes: createResult.attributes }),
+          attributes: createResult.attributes ?? {},
         };
         await afterOp?.(op.logicalId);
 
@@ -771,10 +794,19 @@ export async function replayFailedOperations(
   options: {
     afterOp?: (logicalId: string) => Promise<void> | void;
     isInterrupted?: () => boolean;
+    /**
+     * Emit the ROLLBACK_STARTED / ROLLBACK_FINISHED envelope around the
+     * failed-op replay. The command passes true for a failed-only segment
+     * (zero completed ops), where `replayRollback` returns early without
+     * emitting the envelope — keeping `cdkd events` output symmetric.
+     */
+    emitEnvelope?: boolean;
   } = {}
 ): Promise<RollbackReplayResult> {
   const result: RollbackReplayResult = { failures: 0, warnings: 0, interrupted: false };
   const { logger } = ctx;
+  const emitEnvelope = options.emitEnvelope === true && failedOps.length > 0;
+  if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
 
   for (let i = failedOps.length - 1; i >= 0; i--) {
     if (options.isInterrupted?.()) {
@@ -889,6 +921,7 @@ export async function replayFailedOperations(
       });
     }
   }
+  if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
   return result;
 }
 

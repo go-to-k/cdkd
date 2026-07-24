@@ -369,7 +369,14 @@ export async function rollbackCommand(
                     stateResources,
                     stackName,
                     ctx,
-                    { afterOp: saveState, isInterrupted: () => interrupted }
+                    {
+                      afterOp: saveState,
+                      isInterrupted: () => interrupted,
+                      // Failed-only segment: replayRollback below returns
+                      // early without the STARTED/FINISHED envelope, so the
+                      // failed-op replay owns it (events symmetry).
+                      emitEnvelope: segment.operations.length === 0,
+                    }
                   );
                   failedOpFailures = failedResult.failures;
                   failedOpWarnings = failedResult.warnings;
@@ -379,6 +386,27 @@ export async function rollbackCommand(
                       warnings: failedOpWarnings,
                       interrupted: true,
                     };
+                  }
+                  if (failedResult.failures === 0) {
+                    // Idempotency: the failed-op reverts are DONE. Strip them
+                    // from the persisted segment so a completed-op failure
+                    // that keeps the segment for a re-run does not re-issue
+                    // them — replaying `attemptedProperties` as the previous
+                    // diff side against an already-reverted resource would
+                    // generate a patch undoing changes that no longer exist
+                    // (fails on patch-based providers). Best-effort: on a
+                    // strip failure the re-run merely re-attempts the revert.
+                    try {
+                      await setup.stateBackend.clearRollbackJournalFailedOperations(
+                        stackName,
+                        region
+                      );
+                      delete segment.failedOperations;
+                    } catch (stripError) {
+                      logger.warn(
+                        `Failed to clear replayed failed-ops from the journal: ${stripError instanceof Error ? stripError.message : String(stripError)}`
+                      );
+                    }
                   }
                 }
                 const replayResult = await replayRollback(
