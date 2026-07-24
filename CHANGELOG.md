@@ -1,3 +1,10 @@
+## [0.260.14](https://github.com/go-to-k/cdkd/compare/v0.260.13...v0.260.14) (2026-07-24)
+
+
+### Bug Fixes
+
+* **providers:** enrich AWS::BedrockAgentCore::Runtime read-only GetAtt attributes ([#1179](https://github.com/go-to-k/cdkd/issues/1179)) ([#1186](https://github.com/go-to-k/cdkd/issues/1186)) ([4a3c742](https://github.com/go-to-k/cdkd/commit/4a3c74244baaf100204dc9f1603e66a7e9069b50))
+
 ## [0.260.13](https://github.com/go-to-k/cdkd/compare/v0.260.12...v0.260.13) (2026-07-24)
 
 
