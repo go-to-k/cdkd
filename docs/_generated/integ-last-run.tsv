@@ -56,7 +56,7 @@ cross-stack-references	2026-07-19T19:57:33Z	PASS	27	standard	rc ok, 2 stacks, or
 custom-resource-getatt-data	2026-07-20T14:59:39Z	PASS	63	verify.sh	CR Data GetAtt->dependent prop, 6 res clean
 custom-resource-provider	2026-07-24T08:31:58Z	PASS	480	standard	cross-region us-west-2 vs us-east-1 bucket (issue #1195 fix + hardening live-verified); 17 res, destroy 0 err 0 orphan
 data-analytics	2026-07-21T18:30:46Z	PASS	50	verify.sh	rc ok, orph clean
-data-pipeline	2026-06-21T04:36:15Z	PASS	42	standard	deploy 7 / destroy 7, 0 err
+data-pipeline	2026-07-24T10:53:59Z	PASS	47	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 deep-getatt-chains	2026-07-20T08:10:49Z	PASS	66	verify.sh	rc ok, orph clean
 deletion-ordering-complex	2026-07-02T18:23:15Z	PASS	194	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 deletion-policy-retain	2026-07-21T07:21:45Z	PASS	29	verify.sh	retain honored, manual cleanup ok, 0 orphans
@@ -183,7 +183,7 @@ microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed
 migrate-from-bare-cfn	2026-07-21T13:56:13Z	PASS	152	verify.sh	post import-tag-walk refactor #1139; bare-CFn migrate 3 types+destroy clean
 migrate-from-bare-cfn-codegen-only	2026-06-21T19:09:34Z	PASS	55	verify.sh	fixed: bumped pinned aws-cdk 2.1112->2.1128 (schema 54 float); 3/3 logical IDs + aws:cdk:path preserved; AWS-free codegen smoke
 migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk refactor #1139; import+migrate+destroy clean
-monitoring	2026-06-21T04:34:50Z	PASS	40	standard	CW alarms/dashboard deploy 7 / destroy 7, 0 err
+monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
 multi-region-same-stack	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 multi-resource	2026-07-17T12:05:00Z	PASS	85	standard	broad refresh for #1041 register-providers edit (post-rebase): 17 created/deleted, 0 errors, log groups swept
@@ -210,7 +210,7 @@ rename-refactor	2026-07-21T14:37:30Z	PASS	107	verify.sh	new fixture; review-fix 
 replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
 replacement-immutable-name	2026-07-19T19:03:36Z	PASS	120	verify.sh	rc ok, 7 deleted, orph clean
 rollback-command	2026-07-24T09:05:25Z	PASS	620	verify.sh	post-rebase (main #1201) re-run; rc ok, orph clean
-rollback-failure-injection	2026-07-24T10:22:57Z	PASS	355	verify.sh	0724 P0 sweep: rollback-executor #1196/#1200/#1203/#1210 coverage; 17 del 0 err, 0 orphans
+rollback-failure-injection	2026-07-24T10:50:16Z	PASS	368	verify.sh	0724b sweep P1: #1212 journal-after-clean-rollback coverage; 17 del 0 err 0 orphans
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
@@ -251,8 +251,8 @@ throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (
 update-policy-mutations	2026-07-21T14:01:35Z	PASS	74	verify.sh	post #1138 UpdateReplacePolicy Retain guard fix on merged main; retain honored, 0 leftover
 update-replace	2026-07-21T07:23:47Z	PASS	80	verify.sh	in-place+replace, 7 deleted 0 orphans
 vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
-vpc-lambda-cr-race	2026-06-21T11:00:28Z	PASS	343	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-vpc-lookup	2026-06-21T11:00:28Z	PASS	15	standard	sweep staleness re-run (re-verified PASS; ledger-restore)
+vpc-lambda-cr-race	2026-07-24T11:03:24Z	PASS	432	standard	0724b sweep staleness; 9 del 0 err 0 orphans incl hyperplane ENI
+vpc-lookup	2026-07-24T10:55:09Z	PASS	20	standard	0724b sweep staleness; context-provider loop ok; 1 del 0 err 0 orphans
 vpc-nat-gateway	2026-07-22T08:08:02Z	PASS		standard	TTL-refresh sweep; standard flow (classifier-approved direct deploy/destroy); 21 created / 21 deleted 0 err; NAT GW + VPC + EIP + ENI all gone, state gone
 wafv2	2026-07-03T04:24:38Z	PASS	120	standard	re-run on rebased tree (PR 972 + #971 base); 0 errors, retained CW role swept, events pruned
 wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review-nit JSDoc edit, orph clean
