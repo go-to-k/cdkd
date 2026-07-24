@@ -19,6 +19,14 @@
 # already on main) would block EVERY merge, including pure
 # src/provisioning PRs — the over-fire this guard fixes.
 #
+# The same scope guard applies to `git merge [flags] <ref>` (issue
+# #1204): the incoming diff is enumerated locally via the merge-base
+# three-dot form (`git diff --name-only HEAD...<ref>`), so the routine
+# post-squash-merge `git merge --ff-only origin/main` sync of a
+# non-local range passes through even when the marker is stale.
+# Unparsable shapes (`--abort` / `--continue` / octopus / unresolvable
+# refs) still fall through to the unconditional verify.
+#
 # This is the structural counterpart for local-execution changes,
 # mirroring `integ-destroy-gate.sh` for deletion logic.
 #
@@ -126,10 +134,11 @@ cd "$target_dir" 2>/dev/null || exit 0
 # The sibling gates integ-destroy / integ-broad already scope-check their
 # diff and pass non-matching PRs through; integ-local must do the same.
 #
-# Only applies to `gh pr merge <N>` where we can fetch the PR's file list.
-# `git merge` and number-less `gh pr merge` fall through to the
-# unconditional verify below (conservative — those are rarer and we
-# cannot cheaply enumerate the incoming diff).
+# Applies to `gh pr merge <N>` (file list via `gh pr view <N> --json
+# files`) AND to `git merge [flags] <ref>` (incoming range enumerated
+# locally, see the git-merge branch below; issue #1204). Number-less
+# `gh pr merge` falls through to the unconditional verify below
+# (conservative — we cannot cheaply enumerate the incoming diff there).
 LOCAL_SCOPE_REGEX='^src/local/|^src/cli/commands/local-[A-Za-z0-9_-]*\.ts$|^tests/integration/local-'
 
 if printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
@@ -177,6 +186,103 @@ EOF_FILES
   fi
 fi
 
+# --- git-merge incoming-diff scope check (issue #1204) ---
+# For `git merge [flags] <ref>` the incoming diff IS cheaply enumerable
+# locally: `git diff --name-only HEAD...<ref>` (merge-base three-dot).
+# The most frequent main-tree `git merge` is the post-squash-merge
+# `git merge --ff-only origin/main` sync, which the previous
+# unconditional verify blocked whenever the main tree's marker was
+# stale — the steady state, since local-* integs only run in feature
+# worktrees. That block bought nothing (`git pull` / `git rebase` are
+# not gated, so the equivalent command side-stepped it); pure friction.
+# Parse the merge ref and apply the same LOCAL_SCOPE_REGEX check as the
+# `gh pr merge <N>` path above. Bail conservatively (fall through to
+# the unconditional verify) on `--abort` / `--continue` / `--quit`,
+# octopus (2+ refs), a ref we cannot resolve, or an unparsable shape.
+if printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])' \
+  && ! printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
+  merge_ref=""
+  parse_ok=1
+  # Locate the `merge` subcommand token by walking the git invocation's
+  # tokens (a naive `${cmd#*merge}` slice would cut inside a path
+  # component containing "merge", e.g. a worktree named .../x-merge).
+  # Strip a leading `cd <path> && ` prefix first, then truncate at the
+  # first pipeline / chain separator.
+  git_seg="$cmd"
+  if [[ "$git_seg" =~ ^[[:space:]]*cd[[:space:]]+[^[:space:]]+[[:space:]]*\&\&[[:space:]]*(.*)$ ]]; then
+    git_seg="${BASH_REMATCH[1]}"
+  fi
+  git_seg="${git_seg%%[;|&\`]*}"
+  merge_args=""
+  seen_merge=0
+  # shellcheck disable=SC2086
+  set -- $git_seg
+  if [ "${1:-}" = "git" ]; then
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -C|-c|--git-dir|--work-tree|--namespace|--exec-path)
+          # Value-taking git global options.
+          shift; [ $# -gt 0 ] && shift ;;
+        merge)
+          shift; seen_merge=1; merge_args="$*"; break ;;
+        -*)
+          shift ;;
+        *)
+          # Unexpected bare token before `merge` — not a git-merge
+          # shape we can parse; bail to the unconditional verify.
+          break ;;
+      esac
+    done
+  fi
+  if [ "$seen_merge" -eq 0 ]; then
+    parse_ok=0
+  fi
+  # shellcheck disable=SC2086
+  set -- $merge_args
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --abort|--continue|--quit)
+        # In-progress-merge control commands; no incoming range exists.
+        parse_ok=0; break ;;
+      -m|-F|--file|-X|--strategy-option|-s|--strategy|-S|--gpg-sign|--cleanup|--into-name)
+        # Value-taking flags: skip the value too. A quoted multi-word
+        # value word-splits into stray tokens, which the octopus guard
+        # below then rejects conservatively.
+        shift; [ $# -gt 0 ] && shift ;;
+      --*=*|-*)
+        shift ;;
+      *)
+        if [ -n "$merge_ref" ]; then
+          # Two+ refs = octopus merge — fall through to the verify.
+          parse_ok=0; break
+        fi
+        merge_ref="$1"
+        shift ;;
+    esac
+  done
+
+  if [ "$parse_ok" -eq 1 ] && [ -n "$merge_ref" ] \
+    && git rev-parse --verify --quiet "${merge_ref}^{commit}" >/dev/null 2>&1; then
+    if incoming=$(git diff --name-only "HEAD...${merge_ref}" 2>/dev/null); then
+      touches_local=0
+      while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        if printf '%s' "$f" | grep -qE "$LOCAL_SCOPE_REGEX"; then
+          touches_local=1
+          break
+        fi
+      done <<EOF_INCOMING
+$incoming
+EOF_INCOMING
+      # No local-execution file in the incoming range -> gate does not apply.
+      if [ "$touches_local" -eq 0 ]; then
+        exit 0
+      fi
+    fi
+  fi
+fi
+
 # Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's
 # canonical markgate wins over an older PATH binary; see check-gate.sh for
 # the schema-bump rationale (0.3.0 markers are silently invisible to 0.3.1).
@@ -208,10 +314,10 @@ reason=$("${markgate[@]}" status integ-local 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
 if [ -n "$reason" ]; then
-  printf "Blocked by integ-local-gate: this PR touches local-execution code and the \`integ-local\` marker is stale %s.\n\n" "$reason" >&2
+  printf "Blocked by integ-local-gate: this merge touches local-execution code and the \`integ-local\` marker is stale %s.\n\n" "$reason" >&2
 else
   cat >&2 <<'EOF_HEAD'
-Blocked by integ-local-gate: this PR touches local-execution code
+Blocked by integ-local-gate: this merge touches local-execution code
 (src/local/**, src/cli/commands/local-*.ts, or
 tests/integration/local-*) and the `integ-local` marker is stale.
 

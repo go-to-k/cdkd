@@ -193,6 +193,68 @@ GH_STUB_FAIL="1" run_case "gh pr view failure fails open" 0 \
 
 export PATH="$OLD_PATH"
 
+# --- GIT-MERGE INCOMING-DIFF SCOPE-CHECK cases (issue #1204) ---
+#
+# For `git merge [flags] <ref>` the hook enumerates the incoming range
+# locally (`git diff --name-only HEAD...<ref>`) and passes through when
+# no incoming file touches local-execution scope — the post-squash
+# `git merge --ff-only origin/main` sync must not be blocked by a stale
+# marker when the incoming commits touch no local code. Unparsable /
+# unresolvable shapes still fall through to the (stale-here) verify.
+merge_repo="$TMPDIR/merge-repo"
+git init -q -b main "$merge_repo"
+git -C "$merge_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+git -C "$merge_repo" branch -q incoming-nonlocal
+git -C "$merge_repo" branch -q incoming-local
+git -C "$merge_repo" switch -q incoming-nonlocal
+mkdir -p "$merge_repo/src/provisioning"
+echo x > "$merge_repo/src/provisioning/foo.ts"
+git -C "$merge_repo" add -A
+git -C "$merge_repo" -c user.email=t@t -c user.name=t commit -q -m nonlocal
+git -C "$merge_repo" switch -q incoming-local
+mkdir -p "$merge_repo/src/local"
+echo x > "$merge_repo/src/local/docker-runner.ts"
+git -C "$merge_repo" add -A
+git -C "$merge_repo" -c user.email=t@t -c user.name=t commit -q -m local
+git -C "$merge_repo" switch -q main
+
+# 21. ff-merge of a NON-local incoming range passes through even though
+#     the marker is stale (the #1204 symptom shape).
+run_case "git merge --ff-only <non-local range> passes through" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-nonlocal"}}' "$merge_repo")"
+
+# 22. Merge of a range that DOES touch src/local -> scope check engages,
+#     the (stale) marker blocks (exit 2).
+run_case "git merge <local-touching range> gate fires" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge incoming-local"}}' "$merge_repo")"
+
+# 23. `git -C <merge_repo> merge --ff-only <non-local>` from another cwd
+#     resolves the diff in the target dir and passes through. The repo
+#     dir is named "merge-repo", so this also proves the subcommand
+#     locator is token-based and not fooled by "merge" in a path.
+run_case "git -C <merge_repo> merge non-local range passes through" 0 \
+  "$(printf '{"cwd":"/tmp","tool_input":{"command":"git -C %s merge --ff-only incoming-nonlocal"}}' "$merge_repo")"
+
+# 23b. `cd <merge_repo> && git merge --ff-only <non-local>` resolves via
+#      the cd target and passes through.
+run_case "cd <merge_repo> && git merge non-local range passes through" 0 \
+  "$(printf '{"cwd":"/tmp","tool_input":{"command":"cd %s && git merge --ff-only incoming-nonlocal"}}' "$merge_repo")"
+
+# 24. Unresolvable ref (no `origin` remote here) -> conservative
+#     fall-through to the unconditional (stale) verify (exit 2).
+run_case "git merge --ff-only unresolvable ref still blocks" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only origin/main"}}' "$merge_repo")"
+
+# 25. `git merge --abort` -> no incoming range; conservative
+#     fall-through (exit 2).
+run_case "git merge --abort falls through to verify" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --abort"}}' "$merge_repo")"
+
+# 26. Octopus merge (2+ refs) -> conservative fall-through (exit 2)
+#     even though one ref's range is non-local.
+run_case "git merge octopus falls through to verify" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge incoming-nonlocal incoming-local"}}' "$merge_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
