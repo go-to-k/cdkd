@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-// Regression tests for issue #1195: the custom-resource response bucket is
-// cdkd's STATE bucket, which can live in a different region from the deploy
-// region (account-scoped region-free default bucket). The provider must
-// region-correct its S3 client (placeholder PutObject + pre-signed
-// ResponseURL) via the shared rebuildClientForBucketRegion helper instead of
-// blindly trusting the deploy region passed by deploy.ts — otherwise S3
-// returns a 301 PermanentRedirect on every cross-region deploy that carries
-// a custom resource.
+// Regression tests for issues #1195 / #1202: the custom-resource response
+// bucket is cdkd's STATE bucket, which can live in a different region from
+// the deploy region (account-scoped region-free default bucket). The
+// provider must region-correct its S3 client (placeholder PutObject +
+// pre-signed ResponseURL) via the shared rebuildClientForBucketRegion
+// helper — pre-#1195 it blindly trusted the deploy region, so S3 returned a
+// 301 PermanentRedirect on every cross-region deploy carrying a custom
+// resource. Since #1202 setResponseBucket takes no region argument at all:
+// correction always starts from the shared AwsClients.s3 client.
 
 const mockLambdaSend = vi.fn();
 const mockSnsSend = vi.fn();
