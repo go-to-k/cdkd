@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   isNameCollisionError,
+  isNameCooldownError,
+  isRecreateRetryableError,
   isRetryableTransientError,
 } from '../../../src/deployment/retryable-errors.js';
 
@@ -448,5 +450,53 @@ describe('isNameCollisionError', () => {
     ['resource alreadyexists', 'run-on lowercase'],
   ])('does not match %j (%s)', (message) => {
     expect(isNameCollisionError(message)).toBe(false);
+  });
+});
+
+describe('isNameCooldownError', () => {
+  it.each([
+    // Error-code style (wrapped SDK error name)
+    ['AWS.SimpleQueueService.QueueDeletedRecently: try again later', 'error-code style'],
+    // Full wire message form
+    [
+      'You must wait 60 seconds after deleting a queue before you can create another with the same name.',
+      'wire message',
+    ],
+    // Provider-wrapped message
+    [
+      'Failed to create SQS queue MyQueue: You must wait 60 seconds after deleting a queue before you can create another with the same name.',
+      'provider-wrapped',
+    ],
+  ])('matches %j (%s)', (message) => {
+    expect(isNameCooldownError(message)).toBe(true);
+  });
+
+  it.each([
+    // A collision is NOT a cooldown (kept separate on purpose: deleting the
+    // new resource cannot release a cooldown)
+    ['Queue already exists', 'collision'],
+    ['AccessDenied: not authorized', 'permanent failure'],
+    // A different wait duration must not match the anchored phrase
+    ['please wait a few seconds and retry', 'generic wait advice'],
+  ])('does not match %j (%s)', (message) => {
+    expect(isNameCooldownError(message)).toBe(false);
+  });
+});
+
+describe('isRecreateRetryableError', () => {
+  it('accepts both the collision and the cooldown signatures', () => {
+    expect(isRecreateRetryableError('Queue already exists')).toBe(true);
+    expect(isRecreateRetryableError('ResourceAlreadyExistsException')).toBe(true);
+    expect(
+      isRecreateRetryableError(
+        'You must wait 60 seconds after deleting a queue before you can create another with the same name.'
+      )
+    ).toBe(true);
+    expect(isRecreateRetryableError('QueueDeletedRecently')).toBe(true);
+  });
+
+  it('rejects unrelated failures', () => {
+    expect(isRecreateRetryableError('AccessDenied: not authorized')).toBe(false);
+    expect(isRecreateRetryableError('Rate exceeded')).toBe(false);
   });
 });

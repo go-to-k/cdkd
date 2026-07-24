@@ -63,6 +63,15 @@ describe('DeployEngine — custom-named replacement collision', () => {
       "CREATE failed for Pipe: Resource of type 'AWS::Pipes::Pipe' with identifier 'my-pipe' already exists."
     );
 
+  // SQS same-name re-creation cooldown in its error-CODE form. Deliberately
+  // NOT the "wait 60 seconds" wire-message form: that phrase is also in the
+  // generic transient table, so the INNER generic retry would absorb it and
+  // this test could pass without the outer cooldown filter (the fix under
+  // test). The code form is matched ONLY by isNameCooldownError, so this
+  // test fails if the outer filter regresses to collision-only.
+  const queueDeletedRecently = () =>
+    new Error('Failed to create SQS queue Pipe: AWS.SimpleQueueService.QueueDeletedRecently');
+
   beforeEach(() => {
     callOrder = [];
     createFailures = [];
@@ -213,6 +222,19 @@ describe('DeployEngine — custom-named replacement collision', () => {
     // SECOND create still collides once (async delete not settled), then
     // succeeds — the bounded collision retry absorbs the release window.
     createFailures = [alreadyExists(), alreadyExists()];
+
+    await invokeProvision(makeEngine({ replace: true }));
+
+    expect(callOrder).toEqual(['create', 'delete', 'create', 'create']);
+  }, 15_000);
+
+  it('retries the re-create through the SQS QueueDeletedRecently cooldown (issue #1206)', async () => {
+    // First create: collision (old holds the name). After the delete-first
+    // fallback, the re-create hits the SQS 60s same-name cooldown once, then
+    // succeeds — the cooldown signature matches NEITHER the collision
+    // detector NOR the old collision-only retry filter, so pre-fix this
+    // failed fast with the old resource already gone.
+    createFailures = [alreadyExists(), queueDeletedRecently()];
 
     await invokeProvision(makeEngine({ replace: true }));
 

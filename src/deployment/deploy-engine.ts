@@ -44,7 +44,7 @@ import {
   computeImplicitDeleteEdges,
 } from '../analyzer/implicit-delete-deps.js';
 import { withRetry } from './retry.js';
-import { isNameCollisionError } from './retryable-errors.js';
+import { isNameCollisionError, isRecreateRetryableError } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
 import {
@@ -2739,7 +2739,12 @@ export class DeployEngine {
                 // Pipes DELETING state). "already exists" is deliberately
                 // NOT in the transient-retry patterns, so give the re-create
                 // its own bounded collision retry instead of failing fast
-                // with the old resource already gone.
+                // with the old resource already gone. SQS additionally
+                // enforces a ~60s same-name re-creation cooldown after the
+                // delete (QueueDeletedRecently, issue #1206) — the schedule
+                // (2s/4s/8s then capped at 10s over 8 retries ≈ 64s total
+                // sleep) covers the full cooldown window even when the inner
+                // generic retry's budget is exhausted first.
                 createResult = await withRetry(
                   () =>
                     this.withRetry(
@@ -2751,13 +2756,13 @@ export class DeployEngine {
                     ),
                   logicalId,
                   {
-                    maxRetries: 5,
+                    maxRetries: 8,
                     initialDelayMs: 2_000,
                     maxDelayMs: 10_000,
                     logger: this.logger,
                     isInterrupted: () => this.interrupted,
                     onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
-                    isRetryable: isNameCollisionError,
+                    isRetryable: isRecreateRetryableError,
                   }
                 );
               } catch (recreateError) {

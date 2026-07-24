@@ -322,3 +322,37 @@ export function isRetryableTransientError(error: unknown, message: string): bool
 export function isNameCollisionError(message: string): boolean {
   return /already exists/i.test(message) || message.includes('AlreadyExists');
 }
+
+/**
+ * Match the SQS same-name re-creation cooldown: after `DeleteQueue`, creating
+ * a queue with the SAME name inside ~60s fails with
+ * `AWS.SimpleQueueService.QueueDeletedRecently` ("You must wait 60 seconds
+ * after deleting a queue before you can create another with the same name").
+ *
+ * The generic transient table above already carries 'wait 60 seconds' for
+ * plain CREATEs (rapid destroy → redeploy loops), but the delete-then-re-create
+ * sites (the deploy engine's --replace delete-first fallback and the rollback
+ * executor's reverse-replacement) override the retry filter with
+ * {@link isNameCollisionError}, which this signature does NOT match — so a
+ * replacement revert used to fail fast mid-flight with the resource absent
+ * from both AWS and state (issue #1206). Those sites now OR this matcher into
+ * their retry filter, with a schedule long enough to cover the 60s window.
+ *
+ * Kept separate from {@link isNameCollisionError} on purpose: a cooldown at a
+ * create-first site must NOT be treated as a collision (deleting the new
+ * resource would not release the cooldown on the old name).
+ */
+export function isNameCooldownError(message: string): boolean {
+  return message.includes('QueueDeletedRecently') || message.includes('wait 60 seconds');
+}
+
+/**
+ * Retry filter for the delete-then-re-create sites: the old name holder was
+ * just deleted, so both the late name release ("already exists" from an async
+ * delete) and the SQS 60s name cooldown are worth waiting out. Pair with a
+ * schedule that covers the full cooldown window (maxRetries 8, delays
+ * 2s/4s/8s then capped at 10s ≈ 64s total sleep).
+ */
+export function isRecreateRetryableError(message: string): boolean {
+  return isNameCollisionError(message) || isNameCooldownError(message);
+}

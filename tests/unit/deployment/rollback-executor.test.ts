@@ -597,6 +597,72 @@ describe('replayRollback', () => {
     expect(retryOpts?.onInterrupted).toBeTypeOf('function');
   });
 
+  it('reverse-replacement initial re-create retries ONLY the SQS name cooldown (issue #1206)', async () => {
+    // The initial create-first attempt is wrapped in withRetry with a
+    // cooldown-only filter: QueueDeletedRecently is waited out (the forward
+    // replacement deleted the old name moments ago), but a genuine collision
+    // must NOT be retried there — it falls through to delete-new-first.
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
+    expect(result.failures).toBe(0);
+
+    // The FIRST withRetry call is the initial create wrap.
+    const initialOpts = vi.mocked(withRetry).mock.calls[0]?.[2] as
+      | { maxRetries?: number; isRetryable?: (m: string) => boolean }
+      | undefined;
+    expect(initialOpts?.maxRetries).toBe(8);
+    expect(
+      initialOpts?.isRetryable?.(
+        'You must wait 60 seconds after deleting a queue before you can create another with the same name.'
+      )
+    ).toBe(true);
+    expect(initialOpts?.isRetryable?.('QueueDeletedRecently')).toBe(true);
+    // Collisions are deliberately NOT retried at the initial attempt.
+    expect(initialOpts?.isRetryable?.('Queue already exists')).toBe(false);
+  });
+
+  it('reverse-replacement delete-new-first retry accepts BOTH collision and cooldown (issue #1206)', async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockResolvedValue({ physicalId: 'phys-old' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    expect(result.failures).toBe(0);
+
+    // The LAST withRetry call is the post-delete re-create retry: it must
+    // wait out the late name release AND the SQS same-name cooldown (the
+    // delete-new-first path deterministically starts the 60s window).
+    const retryOpts = vi.mocked(withRetry).mock.calls.at(-1)?.[2] as
+      | { maxRetries?: number; isRetryable?: (m: string) => boolean }
+      | undefined;
+    expect(retryOpts?.maxRetries).toBe(8);
+    expect(retryOpts?.isRetryable?.('Queue already exists')).toBe(true);
+    expect(
+      retryOpts?.isRetryable?.(
+        'You must wait 60 seconds after deleting a queue before you can create another with the same name.'
+      )
+    ).toBe(true);
+    expect(retryOpts?.isRetryable?.('AccessDenied')).toBe(false);
+  });
+
   it('reverse-replacement collision-retry exhaustion: resource absent, actionable failure', async () => {
     // The delete-new-first fallback already deleted the new resource; the
     // re-create keeps colliding (withRetry is a single-attempt pass-through
