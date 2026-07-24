@@ -61,7 +61,12 @@ schema (its own `journalVersion` field, no `StackState.version` bump) and
 design; the journal must not). Lifecycle: created on a failed / interrupted
 deploy and before an auto-rollback; each replayed segment is popped; the
 object is deleted on the next **successful deploy**, after a **clean
-`cdkd rollback`**, and by `cdkd destroy` / `cdkd state destroy`. It carries
+`cdkd rollback`**, and by `cdkd destroy` / `cdkd state destroy`. A **clean
+automatic rollback** settles it to a failed-only segment instead of
+deleting it (issue [#1208](https://github.com/go-to-k/cdkd/issues/1208):
+`operations: []` plus the failed op records, `reason:
+auto-rollback-clean`) so `cdkd rollback --revert-failed` works in the
+default deploy flow too. It carries
 resolved properties, the **same sensitivity class as `state.json`** (no new
 secret-exposure class). Every writer holds the stack lock, so no optimistic
 locking is needed.
