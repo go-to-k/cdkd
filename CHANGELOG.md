@@ -1,3 +1,10 @@
+## [0.263.1](https://github.com/go-to-k/cdkd/compare/v0.263.0...v0.263.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **rollback:** emit rollback event for --orphan CREATE + cover output-failure journal reason ([#1183](https://github.com/go-to-k/cdkd/issues/1183)) ([#1200](https://github.com/go-to-k/cdkd/issues/1200)) ([b11cff9](https://github.com/go-to-k/cdkd/commit/b11cff96776d9c5aa91a3472a1ea0042b6b445dc))
+
 # [0.263.0](https://github.com/go-to-k/cdkd/compare/v0.262.3...v0.263.0) (2026-07-24)
 
 
