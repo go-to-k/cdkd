@@ -401,14 +401,44 @@ describe('AgentCoreRuntimeProvider', () => {
       };
     }
 
-    it('returns physicalId when knownPhysicalId is supplied (no AWS calls)', async () => {
+    it('enriches attributes from GetAgentRuntime when knownPhysicalId is supplied (issue #1188)', async () => {
+      mockSend.mockResolvedValueOnce({
+        agentRuntimeId: 'runtime-12345',
+        agentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+        agentRuntimeName: 'my-runtime',
+        agentRuntimeVersion: '4',
+        status: 'READY',
+        createdAt: new Date('2026-07-24T00:00:00.000Z'),
+      });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'runtime-12345' }));
+
+      // Full read-only attribute set cached under CFn names, so an imported
+      // runtime's Fn::GetAtt AgentRuntimeArn resolves from state.
+      expect(result).toEqual({
+        physicalId: 'runtime-12345',
+        attributes: {
+          AgentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+          AgentRuntimeId: 'runtime-12345',
+          AgentRuntimeName: 'my-runtime',
+          AgentRuntimeVersion: '4',
+          Status: 'READY',
+          CreatedAt: '2026-07-24T00:00:00.000Z',
+        },
+      });
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetAgentRuntimeCommand');
+      expect(mockSend.mock.calls[0][0].input.agentRuntimeId).toBe('runtime-12345');
+    });
+
+    it('falls back to AgentRuntimeId only when GetAgentRuntime fails (best-effort enrichment)', async () => {
+      mockSend.mockRejectedValueOnce(new Error('Throttling: rate exceeded'));
+
       const result = await provider.import(makeInput({ knownPhysicalId: 'runtime-12345' }));
 
       expect(result).toEqual({
         physicalId: 'runtime-12345',
         attributes: { AgentRuntimeId: 'runtime-12345' },
       });
-      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('returns null when knownPhysicalId is not supplied (no auto lookup)', async () => {
