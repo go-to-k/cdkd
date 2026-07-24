@@ -350,6 +350,17 @@ async function replaySingle(
           delete stateResources[op.logicalId];
           logger.info(`  Rollback: Orphaning created resource ${op.logicalId} (--orphan)`);
           await afterOp?.(op.logicalId);
+          // Emit the same rollback event as the DeletionPolicy-orphan path
+          // (`orphan-retain`) so `cdkd events` surfaces the orphaned resource
+          // consistently regardless of which orphan trigger fired.
+          ctx.recordEvent?.({
+            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+            stackName,
+            operation: 'CREATE',
+            logicalId: op.logicalId,
+            resourceType: op.resourceType,
+            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          });
         } else {
           // --orphan on an UPDATE: leave the resource at its new properties;
           // keep state as-is so it keeps describing AWS truth.

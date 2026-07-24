@@ -202,4 +202,33 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     // Clean rollback (A deletes fine) → journal deleted after the post-rollback save.
     expect(journal.deleteRollbackJournal).toHaveBeenCalled();
   });
+
+  it('writes a no-rollback-failure segment when provisioning succeeds but output resolution fails', async () => {
+    // Every resource op succeeds; resolveOutputs then throws (only reachable
+    // under --strict-getatt). The engine persists state then journals a
+    // `no-rollback-failure` segment so `cdkd rollback` can revert.
+    const changes = new Map([
+      ['A', makeChange('A')],
+      ['B', makeChange('B')],
+    ]);
+    const engine = buildEngine({ changes, deps: { A: [], B: [] }, currentEtag: 'e0' });
+    // Turn on strict-getatt + make the Output value resolution throw.
+    (engine as unknown as { options: { strictGetAtt: boolean } }).options.strictGetAtt = true;
+    const outputSentinel = { 'Fn::GetAtt': ['Missing', 'Arn'] };
+    const resolver = (engine as unknown as { resolver: { resolve: ReturnType<typeof vi.fn> } }).resolver;
+    resolver.resolve.mockImplementation((value: unknown) => {
+      if (value === outputSentinel) return Promise.reject(new Error('unresolvable output'));
+      return Promise.resolve(value);
+    });
+    const templateWithOutput: CloudFormationTemplate = {
+      Resources: template.Resources,
+      Outputs: { Bad: { Value: outputSentinel } },
+    };
+    await expect(engine.deploy(stackName, templateWithOutput)).rejects.toThrow(/unresolvable output|Missing/);
+    expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+    const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+    expect(seg.reason).toBe('no-rollback-failure');
+    // Both A and B completed before the output failure → both are journaled.
+    expect(seg.operations.map((o: { logicalId: string }) => o.logicalId).sort()).toEqual(['A', 'B']);
+  });
 });
