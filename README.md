@@ -30,7 +30,7 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 
 | Stack | Normal (CFn) | Express | cdkd | cdkd `--no-wait` |
 | --- | ---: | ---: | ---: | ---: |
-| VPC + Lambda + SQS + CloudFront | 562 | 366 | 197 | **40** |
+| VPC + Lambda + SQS + CloudFront | 562 | 366 | 168 | **40** |
 | DynamoDB | 34 | 34 | 19 | 15 |
 | DynamoDB + KMS | 71 | 55 | 27 | 27 |
 | EC2 | 44 | 31 | 27 | 26 |
