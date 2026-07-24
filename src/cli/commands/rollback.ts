@@ -374,39 +374,48 @@ export async function rollbackCommand(
                       isInterrupted: () => interrupted,
                       // Failed-only segment: replayRollback below returns
                       // early without the STARTED/FINISHED envelope, so the
-                      // failed-op replay owns it (events symmetry).
+                      // failed-op replay owns it (events symmetry). For a
+                      // MIXED segment the failed-op ROLLBACK_RESOURCE_*
+                      // events land just before replayRollback's
+                      // ROLLBACK_STARTED — accepted cosmetic ordering (the
+                      // events stream is informational; the reader derives
+                      // nothing from envelope position).
                       emitEnvelope: segment.operations.length === 0,
                     }
                   );
                   failedOpFailures = failedResult.failures;
                   failedOpWarnings = failedResult.warnings;
+                  // Idempotency: persist ONLY the still-pending failed ops
+                  // (per-op strip). A handled op must never be re-issued on a
+                  // re-run — replaying `attemptedProperties` as the previous
+                  // diff side against an already-reverted resource would
+                  // generate a patch undoing changes that no longer exist
+                  // (fails on patch-based providers). Runs on the interrupt /
+                  // failure paths too so partial progress is never lost.
+                  // Best-effort: on a strip failure the re-run merely
+                  // re-attempts the revert.
+                  const remaining = failedResult.remainingFailedOps;
+                  if (remaining.length !== segment.failedOperations.length) {
+                    try {
+                      await setup.stateBackend.setRollbackJournalFailedOperations(
+                        stackName,
+                        region,
+                        remaining
+                      );
+                      if (remaining.length === 0) delete segment.failedOperations;
+                      else segment.failedOperations = remaining;
+                    } catch (stripError) {
+                      logger.warn(
+                        `Failed to strip replayed failed-ops from the journal: ${stripError instanceof Error ? stripError.message : String(stripError)}`
+                      );
+                    }
+                  }
                   if (failedResult.interrupted) {
                     return {
                       failures: failedOpFailures,
                       warnings: failedOpWarnings,
                       interrupted: true,
                     };
-                  }
-                  if (failedResult.failures === 0) {
-                    // Idempotency: the failed-op reverts are DONE. Strip them
-                    // from the persisted segment so a completed-op failure
-                    // that keeps the segment for a re-run does not re-issue
-                    // them — replaying `attemptedProperties` as the previous
-                    // diff side against an already-reverted resource would
-                    // generate a patch undoing changes that no longer exist
-                    // (fails on patch-based providers). Best-effort: on a
-                    // strip failure the re-run merely re-attempts the revert.
-                    try {
-                      await setup.stateBackend.clearRollbackJournalFailedOperations(
-                        stackName,
-                        region
-                      );
-                      delete segment.failedOperations;
-                    } catch (stripError) {
-                      logger.warn(
-                        `Failed to clear replayed failed-ops from the journal: ${stripError instanceof Error ? stripError.message : String(stripError)}`
-                      );
-                    }
                   }
                 }
                 const replayResult = await replayRollback(

@@ -148,6 +148,18 @@ export interface RollbackPlanItem {
   replacement: boolean;
 }
 
+/**
+ * Outcome of {@link replayFailedOperations}: the shared counters plus the
+ * failed ops that are STILL pending (revert threw, or unprocessed due to an
+ * interrupt). The command persists this list back onto the journal segment
+ * so a re-run only re-attempts what is genuinely outstanding — a
+ * successfully-reverted op must never be re-issued (its attempted-properties
+ * diff side would patch-undo changes that no longer exist).
+ */
+export interface FailedOpReplayResult extends RollbackReplayResult {
+  remainingFailedOps: FailedOperation[];
+}
+
 /** Outcome of replaying a list of ops (one journal segment). */
 export interface RollbackReplayResult {
   /** Provider delete/update threw (best-effort caught). Blocks segment pop. */
@@ -802,15 +814,27 @@ export async function replayFailedOperations(
      */
     emitEnvelope?: boolean;
   } = {}
-): Promise<RollbackReplayResult> {
-  const result: RollbackReplayResult = { failures: 0, warnings: 0, interrupted: false };
+): Promise<FailedOpReplayResult> {
+  const result: FailedOpReplayResult = {
+    failures: 0,
+    warnings: 0,
+    interrupted: false,
+    remainingFailedOps: [],
+  };
   const { logger } = ctx;
   const emitEnvelope = options.emitEnvelope === true && failedOps.length > 0;
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
 
+  // Ops still pending after this replay: revert threw, or never reached due
+  // to an interrupt. Everything else (reverted, deleted, or skipped — a skip
+  // has nothing left to act on and its warning was already shown once) is
+  // considered handled and drops out of the journal.
+  const pending = new Set<FailedOperation>();
+
   for (let i = failedOps.length - 1; i >= 0; i--) {
     if (options.isInterrupted?.()) {
       result.interrupted = true;
+      for (let j = i; j >= 0; j--) pending.add(failedOps[j]!);
       break;
     }
     const op = failedOps[i]!;
@@ -910,6 +934,7 @@ export async function replayFailedOperations(
           `${revertError instanceof Error ? revertError.message : String(revertError)}`
       );
       result.failures++;
+      pending.add(op);
       ctx.recordEvent?.({
         eventType: 'ROLLBACK_RESOURCE_FAILED',
         stackName,
@@ -922,6 +947,7 @@ export async function replayFailedOperations(
     }
   }
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
+  result.remainingFailedOps = failedOps.filter((op) => pending.has(op));
   return result;
 }
 

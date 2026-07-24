@@ -13,6 +13,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { withRetry } from '../../../src/deployment/retry.js';
 
 // Single-attempt pass-through for withRetry so the reverse-replacement
 // collision-retry tests do not sleep through the real 2-10s backoff schedule.
@@ -573,7 +574,10 @@ describe('replayRollback', () => {
     const state: Record<string, ResourceState> = {
       B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
     };
-    const result = await replayRollback(ops, state, 'S', ctx, { afterOp });
+    const result = await replayRollback(ops, state, 'S', ctx, {
+      afterOp,
+      isInterrupted: () => false,
+    });
     expect(create).toHaveBeenCalledTimes(2);
     // The new resource is deleted exactly once (before the create retry).
     expect(del).toHaveBeenCalledTimes(1);
@@ -584,6 +588,13 @@ describe('replayRollback', () => {
     expect(afterOp).toHaveBeenCalledTimes(2);
     expect(afterOp).toHaveBeenNthCalledWith(1, 'B');
     expect(afterOp).toHaveBeenNthCalledWith(2, 'B');
+    // The name-release retry must honor SIGINT: the caller's isInterrupted is
+    // threaded into withRetry (binding for the interrupt-wiring fix).
+    const retryOpts = vi.mocked(withRetry).mock.calls.at(-1)?.[2] as
+      | { isInterrupted?: () => boolean; onInterrupted?: () => Error }
+      | undefined;
+    expect(retryOpts?.isInterrupted).toBeTypeOf('function');
+    expect(retryOpts?.onInterrupted).toBeTypeOf('function');
   });
 
   it('reverse-replacement collision-retry exhaustion: resource absent, actionable failure', async () => {
@@ -767,6 +778,78 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, { D: res({ physicalId: 'pD' }) }, 'S', ctx);
     expect(result.warnings).toBe(1); // only the CREATE-unknown warns
     expect(result.failures).toBe(0);
+    // Skips are HANDLED (warning shown once) — nothing remains pending.
+    expect(result.remainingFailedOps).toEqual([]);
+  });
+
+  it('partial success: only the failed / unprocessed ops remain pending (per-op strip)', async () => {
+    // Two failed UPDATEs; the revert of A succeeds, the revert of B throws.
+    const update = vi
+      .fn()
+      .mockImplementation((logicalId: string) =>
+        logicalId === 'B'
+          ? Promise.reject(new Error('boom'))
+          : Promise.resolve({ physicalId: 'pA' })
+      );
+    const { ctx } = makeCtx({ update });
+    const opA: FailedOperation = {
+      logicalId: 'A',
+      changeType: 'UPDATE',
+      resourceType: 'T',
+      physicalId: 'pA',
+      previousState: res({ physicalId: 'pA', properties: { a: 1 } }),
+      attemptedProperties: { a: 2 },
+    };
+    const opB: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'T',
+      physicalId: 'pB',
+      previousState: res({ physicalId: 'pB', properties: { b: 1 } }),
+      attemptedProperties: { b: 2 },
+    };
+    const state = {
+      A: res({ physicalId: 'pA', properties: { a: 1 } }),
+      B: res({ physicalId: 'pB', properties: { b: 1 } }),
+    };
+    const result = await replayFailedOperations([opA, opB], state, 'S', ctx);
+    expect(result.failures).toBe(1);
+    // A was reverted — it must NOT be re-issued on a re-run; B stays.
+    expect(result.remainingFailedOps).toEqual([opB]);
+  });
+
+  it('interrupt mid-replay keeps the unprocessed ops pending', async () => {
+    // Reverse iteration: B (last) replays first, then the interrupt fires
+    // before A is reached — A must remain pending.
+    let calls = 0;
+    const update = vi.fn().mockImplementation(() => {
+      calls++;
+      return Promise.resolve({ physicalId: 'p' });
+    });
+    const { ctx } = makeCtx({ update });
+    const opA: FailedOperation = {
+      logicalId: 'A',
+      changeType: 'UPDATE',
+      resourceType: 'T',
+      physicalId: 'pA',
+      previousState: res({ physicalId: 'pA', properties: { a: 1 } }),
+    };
+    const opB: FailedOperation = {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: 'T',
+      physicalId: 'pB',
+      previousState: res({ physicalId: 'pB', properties: { b: 1 } }),
+    };
+    const state = {
+      A: res({ physicalId: 'pA' }),
+      B: res({ physicalId: 'pB' }),
+    };
+    const result = await replayFailedOperations([opA, opB], state, 'S', ctx, {
+      isInterrupted: () => calls >= 1,
+    });
+    expect(result.interrupted).toBe(true);
+    expect(result.remainingFailedOps).toEqual([opA]);
   });
 
   it('a revert failure is caught, counted, and emits ROLLBACK_RESOURCE_FAILED', async () => {

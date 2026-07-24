@@ -696,7 +696,7 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     await expect(backend.deleteRollbackJournal('S', 'us-east-1')).resolves.toBeUndefined();
   });
 
-  it('clearRollbackJournalFailedOperations strips the field from the NEWEST segment only (#1198)', async () => {
+  it('setRollbackJournalFailedOperations([]) strips the field from the NEWEST segment only (#1198)', async () => {
     const failedOp = { logicalId: 'Q', changeType: 'UPDATE', resourceType: 'T' };
     const two = {
       journalVersion: 1,
@@ -709,7 +709,7 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     };
     s3Client.send.mockResolvedValueOnce({ Body: rawBody(two) }); // load
     s3Client.send.mockResolvedValueOnce({}); // put
-    await backend.clearRollbackJournalFailedOperations('S', 'us-east-1');
+    await backend.setRollbackJournalFailedOperations('S', 'us-east-1', []);
     const put = s3Client.send.mock.calls
       .map((c: unknown[]) => c[0])
       .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand;
@@ -719,10 +719,29 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     expect(body.segments[0].failedOperations).toHaveLength(1);
   });
 
-  it('clearRollbackJournalFailedOperations is a no-op without a journal / field', async () => {
+  it('setRollbackJournalFailedOperations persists a PARTIAL remaining list (per-op strip)', async () => {
+    const opA = { logicalId: 'A', changeType: 'UPDATE', resourceType: 'T' };
+    const opB = { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T' };
+    const one = {
+      journalVersion: 1,
+      stackName: 'S',
+      region: 'us-east-1',
+      segments: [{ ...segment('no-rollback-failure'), failedOperations: [opA, opB] }],
+    };
+    s3Client.send.mockResolvedValueOnce({ Body: rawBody(one) }); // load
+    s3Client.send.mockResolvedValueOnce({}); // put
+    await backend.setRollbackJournalFailedOperations('S', 'us-east-1', [opB] as never);
+    const put = s3Client.send.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand;
+    const body = JSON.parse(put.input.Body as string);
+    expect(body.segments[0].failedOperations).toEqual([opB]);
+  });
+
+  it('setRollbackJournalFailedOperations is a no-op without a journal / field', async () => {
     s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
     await expect(
-      backend.clearRollbackJournalFailedOperations('S', 'us-east-1')
+      backend.setRollbackJournalFailedOperations('S', 'us-east-1', [])
     ).resolves.toBeUndefined();
     // No PutObject was issued.
     const put = s3Client.send.mock.calls
@@ -732,7 +751,7 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     // Field absent on the newest segment → also a silent no-op.
     const noField = { journalVersion: 1, stackName: 'S', region: 'us-east-1', segments: [segment('interrupted')] };
     s3Client.send.mockResolvedValueOnce({ Body: rawBody(noField) });
-    await backend.clearRollbackJournalFailedOperations('S', 'us-east-1');
+    await backend.setRollbackJournalFailedOperations('S', 'us-east-1', []);
     const put2 = s3Client.send.mock.calls
       .map((c: unknown[]) => c[0])
       .find((cmd: unknown) => cmd instanceof PutObjectCommand);

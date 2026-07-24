@@ -55,7 +55,7 @@ interface FakeBackend {
   loadRollbackJournal: ReturnType<typeof vi.fn>;
   saveState: ReturnType<typeof vi.fn>;
   popRollbackJournalSegment: ReturnType<typeof vi.fn>;
-  clearRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
+  setRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
   deleteState: ReturnType<typeof vi.fn>;
   deleteRollbackJournal: ReturnType<typeof vi.fn>;
   setCustomResourceResponseBucket?: ReturnType<typeof vi.fn>;
@@ -69,7 +69,7 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
     loadRollbackJournal: vi.fn().mockResolvedValue(null),
     saveState: vi.fn().mockResolvedValue('etag-1'),
     popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
-    clearRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
+    setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
     deleteState: vi.fn().mockResolvedValue(undefined),
     deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     ...backend,
@@ -309,7 +309,7 @@ describe('rollbackCommand', () => {
     expect(backend.popRollbackJournalSegment).toHaveBeenCalled();
     // Idempotency: the replayed failed-ops are stripped from the journal so a
     // later completed-op failure re-run cannot re-issue the revert.
-    expect(backend.clearRollbackJournalFailedOperations).toHaveBeenCalledWith('S', 'us-east-1');
+    expect(backend.setRollbackJournalFailedOperations).toHaveBeenCalledWith('S', 'us-east-1', []);
   });
 
   it('--revert-failed on: a failed-op revert failure keeps the segment (exit 2)', async () => {
@@ -346,8 +346,9 @@ describe('rollbackCommand', () => {
     const err = await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch((e) => e);
     expect(err).toBeInstanceOf(PartialFailureError);
     expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
-    // Failed revert → the failed-ops stay in the journal for the re-run.
-    expect(backend.clearRollbackJournalFailedOperations).not.toHaveBeenCalled();
+    // Failed revert → the failed-op stays in the journal for the re-run
+    // (remaining list unchanged, so no strip write is issued).
+    expect(backend.setRollbackJournalFailedOperations).not.toHaveBeenCalled();
   });
 
   it('initialDeploy segment with empty ops → pops journal and deletes state.json', async () => {

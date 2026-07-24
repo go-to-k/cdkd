@@ -21,6 +21,7 @@ import {
   type RollbackJournal,
   type RollbackJournalSegment,
 } from '../types/rollback-journal.js';
+import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
@@ -700,20 +701,27 @@ export class S3StateBackend {
   }
 
   /**
-   * Remove the `failedOperations` list from the NEWEST journal segment
-   * (issue #1198). Called by `cdkd rollback --revert-failed` right after the
-   * failed ops replayed cleanly, BEFORE the segment's completed ops replay —
-   * so a later completed-op failure that keeps the segment for a re-run does
-   * not re-issue the already-applied failed-op reverts (the journal's
+   * Replace the `failedOperations` list on the NEWEST journal segment
+   * (issue #1198) with the ops STILL pending after a `--revert-failed`
+   * replay — an empty list removes the field. Called right after the
+   * failed-op replay, BEFORE the segment's completed ops replay, so a later
+   * completed-op failure that keeps the segment for a re-run does not
+   * re-issue the already-applied failed-op reverts (the journal's
    * `attemptedProperties` would generate a patch undoing changes that are no
-   * longer present, which can fail on patch-based providers). No-op when the
+   * longer present, which can fail on patch-based providers). Per-op — a
+   * partially-successful replay strips only the handled ops. No-op when the
    * journal / segment / field is absent.
    */
-  async clearRollbackJournalFailedOperations(stackName: string, region: string): Promise<void> {
+  async setRollbackJournalFailedOperations(
+    stackName: string,
+    region: string,
+    remaining: FailedOperation[]
+  ): Promise<void> {
     const journal = await this.loadRollbackJournal(stackName, region);
     const newest = journal?.segments[journal.segments.length - 1];
     if (!journal || !newest || !newest.failedOperations) return;
-    delete newest.failedOperations;
+    if (remaining.length === 0) delete newest.failedOperations;
+    else newest.failedOperations = remaining;
     await this.putRawObject(
       this.getRollbackJournalKey(stackName, region),
       JSON.stringify(journal, null, 2)
