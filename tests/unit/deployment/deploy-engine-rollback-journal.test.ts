@@ -230,7 +230,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(retained.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
   });
 
-  it('clean auto-rollback with NO failed ops still deletes the journal (issue #1208)', async () => {
+  it('clean auto-rollback with NO failed ops pops only THIS segment, preserving older ones (issue #1215)', async () => {
     const changes = new Map([['A', makeChange('A')]]);
     const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
     // Reach the private settle helper directly: a deploy that fails WITHOUT a
@@ -245,8 +245,12 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         ) => Promise<void>;
       }
     ).settleJournalAfterCleanRollback(stackName, [], false);
-    expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
-    expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+    // The clean rollback reverted only THIS attempt's ops — older segments
+    // from prior un-reverted attempts keep their revert records. Pop deletes
+    // the object itself when the last segment goes, so the common
+    // single-segment case still ends journal-free.
+    expect(journal.popRollbackJournalSegment).toHaveBeenCalledWith(stackName, 'us-east-1');
+    expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
     expect(journal.appendRollbackJournalSegment).not.toHaveBeenCalled();
   });
 

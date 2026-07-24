@@ -2009,7 +2009,12 @@ export class DeployEngine {
    * (`operations: []` + the failed ops). Older segments from prior
    * un-reverted attempts are preserved by the pop. The next successful deploy
    * still deletes the whole journal, bounding the lingering window. With no
-   * failed ops there is nothing left to revert — delete as before.
+   * failed ops there is nothing left to revert from THIS attempt — but only
+   * this attempt's segment is popped, NOT the whole journal (issue #1215):
+   * the clean rollback reverted only this attempt's ops, so older segments'
+   * completed ops are still live in AWS/state and must keep their revert
+   * records; pop deletes the object itself when the last segment goes, so
+   * the common single-segment case still ends with no journal.
    *
    * Best-effort like every journal write: a pop failure warns and leaves the
    * full segment in place (the pre-#1208 partial-rollback shape — replay is
@@ -2021,7 +2026,13 @@ export class DeployEngine {
     initialDeploy: boolean
   ): Promise<void> {
     if (failedOperations.length === 0) {
-      await this.deleteRollbackJournalBestEffort(stackName);
+      try {
+        await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
+      } catch (err) {
+        this.logger.debug(
+          `Failed to pop the rollback journal segment after the clean rollback: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
       return;
     }
     try {
@@ -2713,12 +2724,34 @@ export class DeployEngine {
             }
 
             this.logger.info(`  Creating new ${logicalId}...`);
-            createResult = await this.withRetry(
-              () => replaceProvider.create(logicalId, resourceType, replaceProps),
+            // Delete-then-create just released the old resource's name, so
+            // the re-create can hit a late name release ("already exists"
+            // from an async delete) or the SQS 60s same-name cooldown
+            // (QueueDeletedRecently, issue #1214). The inner generic retry
+            // matches the cooldown's wire message but its ~47s budget starts
+            // ~1s after the delete and typically ends inside the 60s window
+            // — mirror the --replace delete-first fallback's outer retry
+            // (2s/4s/8s then capped at 10s over 8 retries ≈ 64s total sleep)
+            // so the full cooldown is covered.
+            createResult = await withRetry(
+              () =>
+                this.withRetry(
+                  () => replaceProvider.create(logicalId, resourceType, replaceProps),
+                  logicalId,
+                  undefined,
+                  undefined,
+                  replaceProvider
+                ),
               logicalId,
-              undefined,
-              undefined,
-              replaceProvider
+              {
+                maxRetries: 8,
+                initialDelayMs: 2_000,
+                maxDelayMs: 10_000,
+                logger: this.logger,
+                isInterrupted: () => this.interrupted,
+                onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
+                isRetryable: isRecreateRetryableError,
+              }
             );
           } else {
             // Property-driven replacement: create-then-destroy (CFn
