@@ -1,3 +1,10 @@
+## [0.262.2](https://github.com/go-to-k/cdkd/compare/v0.262.1...v0.262.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **providers:** cache AWS::Lambda::EventSourceMapping EventSourceMappingArn for Fn::GetAtt ([#1190](https://github.com/go-to-k/cdkd/issues/1190)) ([#1194](https://github.com/go-to-k/cdkd/issues/1194)) ([91b0a43](https://github.com/go-to-k/cdkd/commit/91b0a43bafd0952721fc46f999a6712033f46c0d))
+
 ## [0.262.1](https://github.com/go-to-k/cdkd/compare/v0.262.0...v0.262.1) (2026-07-24)
 
 
