@@ -1,3 +1,10 @@
+# [0.265.0](https://github.com/go-to-k/cdkd/compare/v0.264.2...v0.265.0) (2026-07-24)
+
+
+### Features
+
+* **rollback:** keep a failed-only journal after a clean automatic rollback so --revert-failed works in the default flow ([#1212](https://github.com/go-to-k/cdkd/issues/1212)) ([58363f8](https://github.com/go-to-k/cdkd/commit/58363f8be68ef511047484829f0270318a45c017))
+
 ## [0.264.2](https://github.com/go-to-k/cdkd/compare/v0.264.1...v0.264.2) (2026-07-24)
 
 
