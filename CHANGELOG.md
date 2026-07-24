@@ -1,3 +1,10 @@
+## [0.265.1](https://github.com/go-to-k/cdkd/compare/v0.265.0...v0.265.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **deployment:** cover the SQS name cooldown on --recreate-via-* and preserve older journal segments on clean rollback ([#1216](https://github.com/go-to-k/cdkd/issues/1216)) ([fb099c3](https://github.com/go-to-k/cdkd/commit/fb099c31d4d656dece5a61b509f6a29467a33ba2))
+
 # [0.265.0](https://github.com/go-to-k/cdkd/compare/v0.264.2...v0.265.0) (2026-07-24)
 
 
