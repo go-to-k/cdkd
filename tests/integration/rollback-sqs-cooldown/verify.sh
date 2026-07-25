@@ -210,8 +210,18 @@ fi
 echo "[verify] step 3 ok: replacement landed (y created, x deleted — cooldown running), journal present"
 
 echo "[verify] step 4: cdkd rollback ${STACK} --force --verbose immediately (expect the re-create to retry through QueueDeletedRecently, exit 0)"
+# Success-expected, but echo the captured output BEFORE asserting the exit
+# code — a bare invocation under `set -e` would abort before the sed echo,
+# losing the failing rollback's output from the harness log (issue #1220).
+set +e
 ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --verbose > /tmp/rollback-sqs-rb.log 2>&1
+RB_RC=$?
+set -e
 sed 's/^/  /' /tmp/rollback-sqs-rb.log || true
+if [ "${RB_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: cooldown reverse-replacement rollback exited ${RB_RC} (output above)"
+  exit 1
+fi
 if ! grep -qi 'reverse-replace\|Reversing replacement' /tmp/rollback-sqs-rb.log; then
   echo "[verify] FAIL: rollback output does not mention the reverse-replacement"
   exit 1
@@ -346,8 +356,16 @@ fi
 echo "[verify] step 8 ok: failing state re-created, journal retained"
 
 echo "[verify] step 9: NO-CHANGE fix-forward deploy (bad resource removed) must clear the journal (PR #1212 regression)"
+# Same echo-before-assert pattern as step 4 (issue #1220).
+set +e
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-sqs-fixforward.log 2>&1
+FF_RC=$?
+set -e
 sed 's/^/  /' /tmp/rollback-sqs-fixforward.log || true
+if [ "${FF_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: fix-forward deploy exited ${FF_RC} (output above)"
+  exit 1
+fi
 if ! grep -qi 'No changes detected' /tmp/rollback-sqs-fixforward.log; then
   echo "[verify] FAIL: fix-forward deploy was not the no-change path — the #1212 regression is not being exercised"
   exit 1
@@ -359,8 +377,16 @@ fi
 echo "[verify] step 9 ok: no-change deploy cleared the journal"
 
 echo "[verify] step 10: one more clean deploy must NOT print the journal note"
+# Same echo-before-assert pattern as step 4 (issue #1220).
+set +e
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-sqs-clean.log 2>&1
+CLEAN_RC=$?
+set -e
 sed 's/^/  /' /tmp/rollback-sqs-clean.log || true
+if [ "${CLEAN_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: final clean deploy exited ${CLEAN_RC} (output above)"
+  exit 1
+fi
 if grep -qi 'automatically rolled back\|revert-failed' /tmp/rollback-sqs-clean.log; then
   echo "[verify] FAIL: the journal note survived the fix-forward deploy"
   exit 1
