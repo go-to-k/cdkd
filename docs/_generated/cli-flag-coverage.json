@@ -670,6 +670,8 @@
       "integs": [
         "dynamodb-globaltable",
         "ec2-instance",
+        "rds-aurora",
+        "rds-dbinstance-backfill",
         "remove-protection"
       ]
     },
@@ -1124,6 +1126,7 @@
     "--api-key",
     "--application-id",
     "--application-name",
+    "--apply-immediately",
     "--archive-name",
     "--arg",
     "--asset-bucket",
@@ -1251,6 +1254,7 @@
     "--no-audit",
     "--no-buffer",
     "--no-build",
+    "--no-deletion-protection",
     "--no-disable-api-termination",
     "--no-fund",
     "--no-path-metadata",

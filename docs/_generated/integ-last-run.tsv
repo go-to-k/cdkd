@@ -198,8 +198,8 @@ outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep 
 parameters	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run); 4 fresh-principal/consumer race edges; clean destroy
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
-rds-aurora	2026-07-22T07:49:42Z	PASS		verify.sh	TTL-refresh sweep; Aurora cluster + #609 security backfill, 23 del 0 err, cluster/instances/subnet-groups gone, state gone
-rds-dbinstance-backfill	2026-06-21T19:05:04Z	PASS	560	verify.sh	re-run after pg 17.4->17.6 fixture fix (AWS retired 17.4); all #609 backfill props verified incl EngineVersion==17.6; 11 deleted 0 err
+rds-aurora	2026-07-25T06:38:38Z	PASS	2085	verify.sh	1160 removal reset: cluster DeletionProtection+IAMAuth reset live-verified, destroy 23/0
+rds-dbinstance-backfill	2026-07-25T07:01:56Z	PASS	725	verify.sh	re-run after 1222 review fixes; destroy 11/0
 rds-full-stack	2026-07-21T08:03:48Z	PASS	2346	verify.sh	15 deleted 0 orphans, RDS slow-delete floor ok
 recreate-mixed-direction	2026-07-21T05:15:35Z	PASS	100	verify.sh	rc ok, orph clean
 recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean

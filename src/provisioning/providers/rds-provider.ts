@@ -617,15 +617,47 @@ export class RDSProvider implements ResourceProvider {
       // field `MasterUserSecretKmsKeyId` (same flip as create()).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
 
+      // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
+      // absent input field means "no change"), so a property REMOVED from
+      // the template must be sent as its explicit CFn-default reset value
+      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // NOT reset here:
+      //   * EngineVersion — removal would imply moving to the engine's
+      //     default version, a risky (possibly major) version change cdkd
+      //     must not synthesize; leave unchanged.
+      //   * ManageMasterUserPassword + MasterUserSecret — flipping
+      //     ManageMasterUserPassword off requires supplying a
+      //     MasterUserPassword, which cannot be synthesized from a removal.
+      //   * MonitoringRoleArn — no documented clear value; inert once
+      //     MonitoringInterval is reset to 0.
+      //   * ServerlessV2ScalingConfiguration — cannot be removed via Modify
+      //     without engine-mode implications (the Class-2 guard above also
+      //     skips empty shapes).
+      //   * VpcSecurityGroupIds — deliberate empty-guard above
+      //     (readCurrentState placeholder defense); classified UNCERTAIN in
+      //     the #1160 audit, out of this batch's scope.
+      //   * Port — default is engine-dependent; no single safe reset value.
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
           EngineVersion: properties['EngineVersion'] as string | undefined,
-          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          BackupRetentionPeriod:
+          // CFn default: deletion protection isn't enabled by default
+          // (ModifyDBClusterMessage doc).
+          DeletionProtection: this.clearOnUpdateRemoval(
+            properties['DeletionProtection'] as boolean | undefined,
+            previousProperties['DeletionProtection'] as boolean | undefined,
+            false
+          ),
+          // CFn/API default for Aurora: 1 day (ModifyDBClusterMessage doc).
+          BackupRetentionPeriod: this.clearOnUpdateRemoval(
             properties['BackupRetentionPeriod'] != null
               ? Number(properties['BackupRetentionPeriod'])
               : undefined,
+            previousProperties['BackupRetentionPeriod'] != null
+              ? Number(previousProperties['BackupRetentionPeriod'])
+              : undefined,
+            1
+          ),
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
@@ -639,14 +671,27 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          ...(properties['MonitoringInterval'] !== undefined && {
-            MonitoringInterval: Number(properties['MonitoringInterval']),
-          }),
-          ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
-            EnableIAMDatabaseAuthentication: properties[
-              'EnableIAMDatabaseAuthentication'
-            ] as boolean,
-          }),
+          // CFn default: 0 (Enhanced Monitoring off). NOTE: the AWS API docs
+          // require a non-zero MonitoringInterval whenever MonitoringRoleArn
+          // is present in the request, so a template that KEEPS the role but
+          // DROPS the interval gets a loud InvalidParameterCombination — the
+          // same request CloudFormation would submit for that template
+          // (CFn-parity failure, never a silent keep of the old interval).
+          MonitoringInterval: this.clearOnUpdateRemoval(
+            properties['MonitoringInterval'] != null
+              ? Number(properties['MonitoringInterval'])
+              : undefined,
+            previousProperties['MonitoringInterval'] != null
+              ? Number(previousProperties['MonitoringInterval'])
+              : undefined,
+            0
+          ),
+          // CFn default: IAM database authentication isn't enabled.
+          EnableIAMDatabaseAuthentication: this.clearOnUpdateRemoval(
+            properties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
+            previousProperties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
+            false
+          ),
           ...(hasServerlessV2 && {
             ServerlessV2ScalingConfiguration: {
               MinCapacity: serverlessV2Config.MinCapacity,
@@ -692,6 +737,27 @@ export class RDSProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Resolve an optional ModifyDBCluster / ModifyDBInstance field so that a
+   * property REMOVED from the template is reset to its CloudFormation
+   * default instead of silently retaining the old live value (issue #1160 —
+   * the absent-field removal silent-drop bug class; reference fix
+   * `LambdaFunctionProvider`, #1157).
+   *
+   * Returns `newValue` when present, the `clearValue` when the field was
+   * present before and is now absent (removal), and `undefined` when it was
+   * never present (so a genuinely-absent field stays absent = no change).
+   */
+  private clearOnUpdateRemoval<T>(
+    newValue: T | undefined,
+    previousValue: T | undefined,
+    clearValue: T
+  ): T | undefined {
+    if (newValue !== undefined) return newValue;
+    if (previousValue !== undefined) return clearValue;
+    return undefined;
   }
 
   private async deleteDBCluster(
@@ -926,6 +992,29 @@ export class RDSProvider implements ResourceProvider {
       // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
       // `MasterUserSecretKmsKeyId` (same flip as create()).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
+      // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
+      // absent input field means "no change"), so a property REMOVED from
+      // the template must be sent as its explicit CFn-default reset value
+      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // NOT reset here:
+      //   * EngineVersion — removal would imply moving to the engine's
+      //     default version, a risky (possibly major) version change cdkd
+      //     must not synthesize; leave unchanged.
+      //   * ManageMasterUserPassword + MasterUserSecret — flipping
+      //     ManageMasterUserPassword off requires supplying a
+      //     MasterUserPassword, which cannot be synthesized from a removal.
+      //   * MonitoringRoleArn — no documented clear value; inert once
+      //     MonitoringInterval is reset to 0.
+      //   * PubliclyAccessible — CFn documents the default as
+      //     context-dependent (varies by subnet / DNS configuration); no
+      //     single safe reset value.
+      //   * VPCSecurityGroups — classified UNCERTAIN in the #1160 audit
+      //     (readCurrentState placeholder concern on the cluster twin), out
+      //     of this batch's scope.
+      //   * AllocatedStorage — storage cannot shrink; removal is not
+      //     resettable.
+      //   * Port / DBPortNumber — default is engine-dependent; no single
+      //     safe reset value.
       await this.getClient().send(
         new ModifyDBInstanceCommand({
           DBInstanceIdentifier: physicalId,
@@ -938,9 +1027,13 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['AllocatedStorage'] !== undefined && {
             AllocatedStorage: Number(properties['AllocatedStorage']),
           }),
-          ...(properties['DeletionProtection'] !== undefined && {
-            DeletionProtection: properties['DeletionProtection'] as boolean,
-          }),
+          // CFn default: deletion protection isn't enabled by default
+          // (ModifyDBInstanceMessage doc).
+          DeletionProtection: this.clearOnUpdateRemoval(
+            properties['DeletionProtection'] as boolean | undefined,
+            previousProperties['DeletionProtection'] as boolean | undefined,
+            false
+          ),
           ...(newEngineVersion !== undefined && {
             EngineVersion: newEngineVersion,
             ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
@@ -968,14 +1061,27 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          ...(properties['MonitoringInterval'] !== undefined && {
-            MonitoringInterval: Number(properties['MonitoringInterval']),
-          }),
-          ...(properties['EnableIAMDatabaseAuthentication'] !== undefined && {
-            EnableIAMDatabaseAuthentication: properties[
-              'EnableIAMDatabaseAuthentication'
-            ] as boolean,
-          }),
+          // CFn default: 0 (Enhanced Monitoring off). NOTE: the AWS API docs
+          // require a non-zero MonitoringInterval whenever MonitoringRoleArn
+          // is present in the request, so a template that KEEPS the role but
+          // DROPS the interval gets a loud InvalidParameterCombination — the
+          // same request CloudFormation would submit for that template
+          // (CFn-parity failure, never a silent keep of the old interval).
+          MonitoringInterval: this.clearOnUpdateRemoval(
+            properties['MonitoringInterval'] != null
+              ? Number(properties['MonitoringInterval'])
+              : undefined,
+            previousProperties['MonitoringInterval'] != null
+              ? Number(previousProperties['MonitoringInterval'])
+              : undefined,
+            0
+          ),
+          // CFn default: IAM database authentication isn't enabled.
+          EnableIAMDatabaseAuthentication: this.clearOnUpdateRemoval(
+            properties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
+            previousProperties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
+            false
+          ),
         })
       );
 

@@ -47,6 +47,12 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // #1160 (reset-on-removal) UPDATE phase: CDKD_TEST_UPDATE=true DROPS
+    // DeletionProtection + EnableIAMDatabaseAuthentication from the
+    // DBInstance below so cdkd's ModifyDBInstance sees ABSENT fields
+    // (removal), not a value change.
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+
     const vpc = new ec2.Vpc(this, 'BackfillVpc', {
       maxAzs: 2,
       natGateways: 0,
@@ -90,9 +96,12 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     // can prove it reached AWS:
     //   * AllocatedStorage: '20' (CFn string-typed) — AWS-required for
     //     standalone Postgres.
-    //   * DeletionProtection: false — explicit user opt-out. Pre-#609
-    //     this would have defaulted to false too, so it is the weakest
-    //     signal of the 5 readable props — kept for completeness.
+    //   * DeletionProtection: true in phase 1 — the strong #1160 signal:
+    //     phase 2 (CDKD_TEST_UPDATE=true) DROPS the property, and
+    //     ModifyDBInstance's merge semantics would silently keep `true`
+    //     without the #1160 reset-on-removal fix. verify.sh asserts the
+    //     reset to false, and the destroy succeeding WITHOUT
+    //     --remove-protection is itself proof the reset landed.
     //   * EngineVersion: '17.6' — pinned so verify.sh can assert the
     //     literal string. A silent-drop would have AWS pick the default
     //     for the engine family.
@@ -117,7 +126,9 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     //   * MonitoringRoleArn: the shared monitoring role; silent-drop would
     //     fail Enhanced Monitoring activation.
     //   * EnableIAMDatabaseAuthentication: true — AWS surfaces as
-    //     IAMDatabaseAuthenticationEnabled; silent-drop → false.
+    //     IAMDatabaseAuthenticationEnabled; silent-drop → false. Also a
+    //     #1160 removable field: DROPPED in phase 2 alongside
+    //     DeletionProtection; verify.sh asserts the reset to false.
     new rds.CfnDBInstance(this, 'BackfillInstance', {
       dbInstanceClass: 'db.t3.micro',
       engine: 'postgres',
@@ -129,12 +140,12 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
       port: '5433',
       engineVersion: '17.6',
-      deletionProtection: false,
+      ...(isUpdate ? {} : { deletionProtection: true }),
       storageEncrypted: true,
       kmsKeyId: 'alias/aws/rds',
       monitoringInterval: 60,
       monitoringRoleArn: monitoringRole.roleArn,
-      enableIamDatabaseAuthentication: true,
+      ...(isUpdate ? {} : { enableIamDatabaseAuthentication: true }),
       vpcSecurityGroups: [securityGroup.securityGroupId],
       dbSubnetGroupName: subnetGroup.subnetGroupName,
       publiclyAccessible: false,

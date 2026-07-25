@@ -14,6 +14,16 @@
 #   MonitoringInterval / EnableIAMDatabaseAuthentication
 #   — asserted via DescribeDBClusters (MonitoringRoleArn deploy also proves the #794 IAM-race retry).
 #
+# #1160 (reset-on-removal): DeletionProtection + EnableIAMDatabaseAuthentication
+# are SET on the SecurityCluster in phase 1 and DROPPED in the phase-2 UPDATE
+# pass (CDKD_TEST_UPDATE=true). ModifyDBCluster has merge semantics (an absent
+# input field means "no change"), so before the #1160 fix the removed fields
+# silently kept their old live values — worst case DeletionProtection, which
+# would make the destroy fail. Phase 2 asserts both reset to their CFn
+# defaults (false / false) via DescribeDBClusters, and the phase-3 destroy
+# succeeding WITHOUT --remove-protection is itself proof the
+# DeletionProtection reset landed.
+#
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
 # to the Cloud Control path (which would make the SDK-provider verification
@@ -84,12 +94,23 @@ cleanup() {
   # calls are expected to NotFound after state destroy succeeds.
   set +eu
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    # --remove-protection: an aborted run can leave the phase-1
+    # DeletionProtection=true live on the SecurityCluster (#1160 fixture
+    # shape); idempotent when protection is already off.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" \
+      --remove-protection \
       --yes
   fi
   if [ -n "${DB_CLUSTER_ID}" ]; then
+    # Best-effort flip-off before the redundant raw delete — a protected
+    # cluster (aborted between phases 1 and 2) refuses delete-db-cluster.
+    aws rds modify-db-cluster \
+      --db-cluster-identifier "${DB_CLUSTER_ID}" \
+      --region "${REGION}" \
+      --no-deletion-protection \
+      --apply-immediately >/dev/null 2>&1 || true
     aws rds delete-db-cluster \
       --db-cluster-identifier "${DB_CLUSTER_ID}" \
       --region "${REGION}" \
@@ -200,6 +221,15 @@ if [ "${ACTUAL_IAM}" != "${EXPECTED_IAM_AUTH}" ]; then
 fi
 echo "    OK: DBCluster EnableIAMDatabaseAuthentication == ${EXPECTED_IAM_AUTH} (silent-drop CLOSED by #609)"
 
+# DeletionProtection: SET true by the phase-1 template (#1160 removable
+# field). Same false-vs-null jq trap — use the explicit-presence check.
+ACTUAL_PROTECTION=$(echo "${CLUSTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
+if [ "${ACTUAL_PROTECTION}" != "true" ]; then
+  echo "FAIL: base DBCluster DeletionProtection is '${ACTUAL_PROTECTION}', expected 'true'" >&2
+  exit 1
+fi
+echo "    OK: base DBCluster DeletionProtection == true (#1160 phase-1 field set)"
+
 # NOTE: PubliclyAccessible is NOT asserted — AWS rejects it for aurora-postgresql
 # ("PubliclyAccessible isn't supported for DB engine aurora-postgresql"); it is
 # valid only for Multi-AZ DB clusters (non-Aurora). The provider wiring is
@@ -219,8 +249,45 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: DBCluster MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Phase 2: UPDATE pass (#1160 reset-on-removal) --------------------
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# The removed fields must have reset to their CFn defaults (false / false),
+# NOT kept the phase-1 values (the merge-semantics silent drop #1160 closes).
+# DeletionProtection applies immediately; the IAM-auth flip can leave the
+# cluster briefly 'modifying', so poll until the cluster settles back to
+# 'available' with both fields reset (also guards the destroy below against
+# an InvalidDBClusterState race).
+echo "==> Waiting for the SecurityCluster to settle with both #1160 fields reset"
+RESET_OK=""
+for _ in $(seq 1 60); do
+  AFTER=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0]' --output json)
+  AFTER_STATUS=$(echo "${AFTER}" | jq -r '.Status // "null"')
+  AFTER_PROTECTION=$(echo "${AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
+  AFTER_IAM=$(echo "${AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
+  if [ "${AFTER_STATUS}" = "available" ] && [ "${AFTER_PROTECTION}" = "false" ] && [ "${AFTER_IAM}" = "false" ]; then
+    RESET_OK="yes"
+    break
+  fi
+  sleep 10
+done
+if [ -z "${RESET_OK}" ]; then
+  echo "FAIL: after removal, SecurityCluster did not settle to DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (status='${AFTER_STATUS}', protection='${AFTER_PROTECTION}', iamAuth='${AFTER_IAM}') — #1160 ModifyDBCluster reset-on-removal NOT closed" >&2
+  exit 1
+fi
+echo "    OK: after removal, AWS reset DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (#1160 silent-drop CLOSED)"
+
+# --- Phase 3: destroy -------------------------------------------------
+# Deliberately NO --remove-protection: the destroy succeeding is itself
+# proof the #1160 DeletionProtection reset landed on AWS.
+echo "==> Phase 3: destroy (no --remove-protection — proves the reset landed)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -253,4 +320,4 @@ else
 fi
 
 echo ""
-echo "=== PASS: RDS Aurora integ + #609 DBCluster security backfill ==="
+echo "=== PASS: RDS Aurora integ + #609 DBCluster security backfill + #1160 reset-on-removal ==="
