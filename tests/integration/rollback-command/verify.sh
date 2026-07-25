@@ -302,8 +302,18 @@ assert_gone "old ${REPLACE_A_NAME} still exists — the replacement did not dele
 echo "[verify] step R1 ok: replacement landed (b created, a deleted), journal present"
 
 echo "[verify] step R2: cdkd rollback ${STACK} --force (expect reverse-replacement, exit 0)"
+# Success-expected, but echo the captured output BEFORE asserting the exit
+# code — a bare invocation under `set -e` would abort before the sed echo,
+# losing the failing rollback's output from the harness log (issue #1220).
+set +e
 ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-replace-rb.log 2>&1
+R2_RC=$?
+set -e
 sed 's/^/  /' /tmp/rollback-cmd-replace-rb.log || true
+if [ "${R2_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: reverse-replacement rollback exited ${R2_RC} (output above)"
+  exit 1
+fi
 if ! grep -qi 'reverse-replace\|Reversing replacement' /tmp/rollback-cmd-replace-rb.log; then
   echo "[verify] FAIL: rollback output does not mention the reverse-replacement"
   exit 1
@@ -361,8 +371,16 @@ fi
 echo "[verify] step F1 ok: deploy failed on the UPDATE, journal carries the failed op (prev=3600, attempted=9999999)"
 
 echo "[verify] step F2: cdkd rollback ${STACK} --force --revert-failed (expect exit 0)"
+# Same echo-before-assert pattern as step R2 (issue #1220).
+set +e
 ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > /tmp/rollback-cmd-updfail-rb.log 2>&1
+F2_RC=$?
+set -e
 sed 's/^/  /' /tmp/rollback-cmd-updfail-rb.log || true
+if [ "${F2_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: --revert-failed rollback exited ${F2_RC} (output above)"
+  exit 1
+fi
 if ! grep -qi 'force-reverting failed UPDATE' /tmp/rollback-cmd-updfail-rb.log; then
   echo "[verify] FAIL: rollback output does not mention the failed-op force-revert"
   exit 1
