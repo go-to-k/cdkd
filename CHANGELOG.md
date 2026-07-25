@@ -1,3 +1,10 @@
+## [0.265.3](https://github.com/go-to-k/cdkd/compare/v0.265.2...v0.265.3) (2026-07-25)
+
+
+### Bug Fixes
+
+* **providers:** reset ASG update fields to CFn defaults on removal ([#1160](https://github.com/go-to-k/cdkd/issues/1160)) ([#1224](https://github.com/go-to-k/cdkd/issues/1224)) ([0d0b4e1](https://github.com/go-to-k/cdkd/commit/0d0b4e15a6cc5d6b66d252d54d7876dcb37c6939))
+
 ## [0.265.2](https://github.com/go-to-k/cdkd/compare/v0.265.1...v0.265.2) (2026-07-25)
 
 
