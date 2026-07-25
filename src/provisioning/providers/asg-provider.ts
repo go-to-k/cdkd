@@ -24,6 +24,10 @@ import {
   DetachLoadBalancerTargetGroupsCommand,
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
+  type AvailabilityZoneDistribution,
+  type CapacityReservationSpecification,
+  type DeletionProtection,
+  type InstanceMaintenancePolicy,
 } from '@aws-sdk/client-auto-scaling';
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
@@ -68,6 +72,12 @@ import type {
  * / AvailabilityZoneImpairmentPolicy / SkipZonalShiftValidation /
  * CapacityReservationSpecification / InstanceMaintenancePolicy /
  * DeletionProtection / MixedInstancesPolicy / LaunchTemplate.
+ *
+ * `UpdateAutoScalingGroup` has merge semantics (absent input field = "no
+ * change"), so update() routes every optional mutable field through
+ * `clearOnUpdateRemoval` — a property REMOVED from the template is reset to
+ * its CFn default / SDK-documented clear sentinel, matching CloudFormation
+ * (issue #1160).
  *
  * Sub-shape diffs are applied via dedicated AWS APIs before the main
  * `UpdateAutoScalingGroup` call:
@@ -380,6 +390,139 @@ export class ASGProvider implements ResourceProvider {
       const launchTemplate = this.buildLaunchTemplate(properties);
       const vpcZoneIdentifier = this.joinVpcZoneIdentifier(properties['VPCZoneIdentifier']);
 
+      // issue #1160: `UpdateAutoScalingGroup` has merge semantics — an absent
+      // input field means "no change" — while CloudFormation resets a property
+      // REMOVED from the template to its default. Resolve every optional
+      // mutable field through `clearOnUpdateRemoval` so a removal sends the
+      // explicit CFn default (or the SDK-documented clear sentinel) instead of
+      // silently keeping the old live value. Each reset value's doc basis is
+      // noted inline (models_0.d.ts = the AWS SDK command/model doc).
+      //
+      // Deliberately NOT reset on removal:
+      //   - DesiredCapacity: CFn leaves current capacity unmanaged when the
+      //     property is absent (scaling policies own it) — leaving it
+      //     unchanged IS the CFn-parity behavior.
+      //   - MinSize / MaxSize: required properties, never removable.
+      //   - LaunchTemplate vs MixedInstancesPolicy, VPCZoneIdentifier vs
+      //     AvailabilityZones: mutually-exclusive pairs — a "removal" is
+      //     really a switch to the other member, which the API applies by
+      //     presence; pure removal of both is an invalid template.
+      //   - ServiceLinkedRoleARN: no documented clear sentinel; the default
+      //     is an account-specific service-linked-role ARN — leave unchanged.
+      //   - Context: SDK doc says "Reserved." — leave unchanged.
+      //   - SkipZonalShiftValidation: transient per-request validation flag,
+      //     not persisted group config — nothing to reset.
+      //   - AvailabilityZoneImpairmentPolicy: DEFERRED — the SDK model
+      //     documents no default for `ImpairedZoneHealthCheckBehavior` (and
+      //     none for `ZonalShiftEnabled`), so a reset shape cannot be derived
+      //     without guessing; removal currently keeps the live value.
+      const healthCheckTypeInput = this.clearOnUpdateRemoval(
+        properties['HealthCheckType'] as string | undefined,
+        previousProperties['HealthCheckType'] as string | undefined,
+        // SDK doc: "EC2 is the default health check and cannot be disabled.
+        // ... Only specify EC2 if you must clear a value that was previously
+        // set."
+        'EC2'
+      );
+      const healthCheckGracePeriodInput = this.clearOnUpdateRemoval(
+        properties['HealthCheckGracePeriod'] != null
+          ? Number(properties['HealthCheckGracePeriod'])
+          : undefined,
+        previousProperties['HealthCheckGracePeriod'] != null
+          ? Number(previousProperties['HealthCheckGracePeriod'])
+          : undefined,
+        // CFn default: 0 seconds.
+        0
+      );
+      // CFn's template key is `Cooldown`; cdkd also accepts the SDK-side
+      // spelling `DefaultCooldown`. Treat the two keys as ONE logical field on
+      // both sides so switching spellings is never misread as a removal.
+      const cooldownRaw = properties['Cooldown'] ?? properties['DefaultCooldown'];
+      const prevCooldownRaw =
+        previousProperties['Cooldown'] ?? previousProperties['DefaultCooldown'];
+      const defaultCooldownInput = this.clearOnUpdateRemoval(
+        cooldownRaw != null ? Number(cooldownRaw) : undefined,
+        prevCooldownRaw != null ? Number(prevCooldownRaw) : undefined,
+        // CFn default: 300 seconds.
+        300
+      );
+      const terminationPoliciesInput = this.clearOnUpdateRemoval(
+        properties['TerminationPolicies'] as string[] | undefined,
+        previousProperties['TerminationPolicies'] as string[] | undefined,
+        // CFn/API default termination policy.
+        ['Default']
+      );
+      const newInstancesProtectedInput = this.clearOnUpdateRemoval(
+        properties['NewInstancesProtectedFromScaleIn'] as boolean | undefined,
+        previousProperties['NewInstancesProtectedFromScaleIn'] as boolean | undefined,
+        false
+      );
+      const capacityRebalanceInput = this.clearOnUpdateRemoval(
+        properties['CapacityRebalance'] as boolean | undefined,
+        previousProperties['CapacityRebalance'] as boolean | undefined,
+        false
+      );
+      const maxInstanceLifetimeInput = this.clearOnUpdateRemoval(
+        properties['MaxInstanceLifetime'] != null
+          ? Number(properties['MaxInstanceLifetime'])
+          : undefined,
+        previousProperties['MaxInstanceLifetime'] != null
+          ? Number(previousProperties['MaxInstanceLifetime'])
+          : undefined,
+        // SDK doc: "To clear a previously set value, specify a new value of 0."
+        0
+      );
+      const desiredCapacityTypeInput = this.clearOnUpdateRemoval(
+        properties['DesiredCapacityType'] as string | undefined,
+        previousProperties['DesiredCapacityType'] as string | undefined,
+        // SDK doc: "By default, Amazon EC2 Auto Scaling specifies units".
+        'units'
+      );
+      const defaultInstanceWarmupInput = this.clearOnUpdateRemoval(
+        properties['DefaultInstanceWarmup'] != null
+          ? Number(properties['DefaultInstanceWarmup'])
+          : undefined,
+        previousProperties['DefaultInstanceWarmup'] != null
+          ? Number(previousProperties['DefaultInstanceWarmup'])
+          : undefined,
+        // SDK doc: "To remove a value that you previously set, include the
+        // property but specify -1 for the value."
+        -1
+      );
+      const instanceMaintenancePolicyInput = this.clearOnUpdateRemoval(
+        properties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
+        previousProperties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
+        // SDK doc (both sub-fields): "To clear a previously set value,
+        // specify a value of -1."
+        { MinHealthyPercentage: -1, MaxHealthyPercentage: -1 }
+      );
+      const capacityReservationSpecInput = this.clearOnUpdateRemoval(
+        properties['CapacityReservationSpecification'] as
+          | CapacityReservationSpecification
+          | undefined,
+        previousProperties['CapacityReservationSpecification'] as
+          | CapacityReservationSpecification
+          | undefined,
+        // SDK doc: "default - Auto Scaling uses the Capacity Reservation
+        // preference from your launch template or an open Capacity
+        // Reservation." — the behavior of a group that never set the field.
+        { CapacityReservationPreference: 'default' }
+      );
+      const availabilityZoneDistributionInput = this.clearOnUpdateRemoval(
+        properties['AvailabilityZoneDistribution'] as AvailabilityZoneDistribution | undefined,
+        previousProperties['AvailabilityZoneDistribution'] as
+          | AvailabilityZoneDistribution
+          | undefined,
+        // SDK doc: "The default is balanced-best-effort."
+        { CapacityDistributionStrategy: 'balanced-best-effort' }
+      );
+      const deletionProtectionInput = this.clearOnUpdateRemoval(
+        properties['DeletionProtection'] as DeletionProtection | undefined,
+        previousProperties['DeletionProtection'] as DeletionProtection | undefined,
+        // SDK doc: "Default: none" — also the flip-off value delete() uses.
+        'none'
+      );
+
       await this.getClient().send(
         new UpdateAutoScalingGroupCommand({
           AutoScalingGroupName: physicalId,
@@ -396,47 +539,44 @@ export class ASGProvider implements ResourceProvider {
           ...(properties['AvailabilityZones'] !== undefined && {
             AvailabilityZones: properties['AvailabilityZones'] as string[],
           }),
-          ...(properties['HealthCheckType'] !== undefined && {
-            HealthCheckType: properties['HealthCheckType'] as string,
+          ...(healthCheckTypeInput !== undefined && {
+            HealthCheckType: healthCheckTypeInput,
           }),
-          ...(properties['HealthCheckGracePeriod'] != null && {
-            HealthCheckGracePeriod: Number(properties['HealthCheckGracePeriod']),
+          ...(healthCheckGracePeriodInput !== undefined && {
+            HealthCheckGracePeriod: healthCheckGracePeriodInput,
           }),
-          ...(properties['Cooldown'] != null && {
-            DefaultCooldown: Number(properties['Cooldown']),
+          ...(defaultCooldownInput !== undefined && {
+            DefaultCooldown: defaultCooldownInput,
           }),
-          ...(properties['DefaultCooldown'] != null && {
-            DefaultCooldown: Number(properties['DefaultCooldown']),
+          ...(terminationPoliciesInput !== undefined && {
+            TerminationPolicies: terminationPoliciesInput,
           }),
-          ...(properties['TerminationPolicies'] !== undefined && {
-            TerminationPolicies: properties['TerminationPolicies'] as string[],
+          ...(newInstancesProtectedInput !== undefined && {
+            NewInstancesProtectedFromScaleIn: newInstancesProtectedInput,
           }),
-          ...(properties['NewInstancesProtectedFromScaleIn'] !== undefined && {
-            NewInstancesProtectedFromScaleIn: properties[
-              'NewInstancesProtectedFromScaleIn'
-            ] as boolean,
-          }),
-          ...(properties['CapacityRebalance'] !== undefined && {
-            CapacityRebalance: properties['CapacityRebalance'] as boolean,
+          ...(capacityRebalanceInput !== undefined && {
+            CapacityRebalance: capacityRebalanceInput,
           }),
           ...(properties['ServiceLinkedRoleARN'] !== undefined && {
             ServiceLinkedRoleARN: properties['ServiceLinkedRoleARN'] as string,
           }),
-          ...(properties['MaxInstanceLifetime'] != null && {
-            MaxInstanceLifetime: Number(properties['MaxInstanceLifetime']),
+          ...(maxInstanceLifetimeInput !== undefined && {
+            MaxInstanceLifetime: maxInstanceLifetimeInput,
           }),
           ...(properties['Context'] !== undefined && {
             Context: properties['Context'] as string,
           }),
-          ...(properties['DesiredCapacityType'] !== undefined && {
-            DesiredCapacityType: properties['DesiredCapacityType'] as string,
+          ...(desiredCapacityTypeInput !== undefined && {
+            DesiredCapacityType: desiredCapacityTypeInput,
           }),
-          ...(properties['DefaultInstanceWarmup'] != null && {
-            DefaultInstanceWarmup: Number(properties['DefaultInstanceWarmup']),
+          ...(defaultInstanceWarmupInput !== undefined && {
+            DefaultInstanceWarmup: defaultInstanceWarmupInput,
           }),
-          ...(properties['AvailabilityZoneDistribution'] !== undefined && {
-            AvailabilityZoneDistribution: properties['AvailabilityZoneDistribution'] as never,
+          ...(availabilityZoneDistributionInput !== undefined && {
+            AvailabilityZoneDistribution: availabilityZoneDistributionInput,
           }),
+          // Removal reset DEFERRED (no SDK-documented default for the
+          // sub-fields) — see the comment block above.
           ...(properties['AvailabilityZoneImpairmentPolicy'] !== undefined && {
             AvailabilityZoneImpairmentPolicy: properties[
               'AvailabilityZoneImpairmentPolicy'
@@ -445,16 +585,14 @@ export class ASGProvider implements ResourceProvider {
           ...(properties['SkipZonalShiftValidation'] !== undefined && {
             SkipZonalShiftValidation: properties['SkipZonalShiftValidation'] as boolean,
           }),
-          ...(properties['CapacityReservationSpecification'] !== undefined && {
-            CapacityReservationSpecification: properties[
-              'CapacityReservationSpecification'
-            ] as never,
+          ...(capacityReservationSpecInput !== undefined && {
+            CapacityReservationSpecification: capacityReservationSpecInput,
           }),
-          ...(properties['InstanceMaintenancePolicy'] !== undefined && {
-            InstanceMaintenancePolicy: properties['InstanceMaintenancePolicy'] as never,
+          ...(instanceMaintenancePolicyInput !== undefined && {
+            InstanceMaintenancePolicy: instanceMaintenancePolicyInput,
           }),
-          ...(properties['DeletionProtection'] !== undefined && {
-            DeletionProtection: properties['DeletionProtection'] as never,
+          ...(deletionProtectionInput !== undefined && {
+            DeletionProtection: deletionProtectionInput,
           }),
         })
       );
@@ -479,6 +617,27 @@ export class ASGProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Resolve an optional UpdateAutoScalingGroup field so that a property
+   * REMOVED from the template is reset to its CloudFormation default instead
+   * of silently retaining the old live value (issue #1160 — the absent-field
+   * removal silent-drop bug class; reference fix `LambdaFunctionProvider`,
+   * #1157).
+   *
+   * Returns `newValue` when present, the `clearValue` when the field was
+   * present before and is now absent (removal), and `undefined` when it was
+   * never present (so a genuinely-absent field stays absent = no change).
+   */
+  private clearOnUpdateRemoval<T>(
+    newValue: T | undefined,
+    previousValue: T | undefined,
+    clearValue: T
+  ): T | undefined {
+    if (newValue !== undefined) return newValue;
+    if (previousValue !== undefined) return clearValue;
+    return undefined;
   }
 
   async delete(
