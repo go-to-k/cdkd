@@ -9,6 +9,16 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
 - **Aurora Serverless v2 Cluster** - MySQL 3.08.0, 0.5-1 ACU capacity
 - **Secrets Manager Secret** - Auto-generated database credentials (created by CDK)
 
+- **SecurityCluster** (L1 `CfnDBCluster`, aurora-postgresql, no instance) - the
+  issue #609 DBCluster security-property silent-drop assertions
+  (`ManageMasterUserPassword` / `MasterUserSecret` / `MonitoringRoleArn` /
+  `MonitoringInterval` / `EnableIAMDatabaseAuthentication`) plus the issue
+  #1160 reset-on-removal assertions: `DeletionProtection` +
+  `EnableIAMDatabaseAuthentication` are set in phase 1 and DROPPED in the
+  `CDKD_TEST_UPDATE=true` phase; verify.sh asserts both reset to their
+  CloudFormation defaults (false), and the final destroy runs WITHOUT
+  `--remove-protection` as proof the `DeletionProtection` reset landed.
+
 ## Outputs
 
 - `ClusterEndpoint` - Aurora cluster endpoint hostname

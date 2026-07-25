@@ -41,6 +41,12 @@ export class RdsAuroraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // #1160 (reset-on-removal) UPDATE phase: CDKD_TEST_UPDATE=true DROPS
+    // DeletionProtection + EnableIAMDatabaseAuthentication from the
+    // SecurityCluster below so cdkd's ModifyDBCluster sees ABSENT fields
+    // (removal), not a value change.
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+
     // Create VPC with 2 AZs (Aurora requires at least 2 subnets) and no NAT gateways
     const vpc = new ec2.Vpc(this, 'AuroraVpc', {
       maxAzs: 2,
@@ -153,12 +159,22 @@ export class RdsAuroraStack extends cdk.Stack {
     // field; AWS validates per-engine) and is unit-tested; a real-AWS integ
     // assertion would need a Multi-AZ DB cluster fixture (3 instances, slow) —
     // deferred. So PubliclyAccessible stays unit-test-only.
+    // #1160 (reset-on-removal): DeletionProtection + EnableIAMDatabaseAuthentication
+    // are SET in phase 1 and DROPPED in phase 2 (CDKD_TEST_UPDATE=true).
+    // ModifyDBCluster has merge semantics (an absent input field means "no
+    // change"), so without the #1160 fix AWS would keep the phase-1 values —
+    // and DeletionProtection=true would then make the phase-3 destroy fail.
+    // verify.sh asserts both reset to their CFn defaults (false / false), and
+    // the destroy succeeding WITHOUT --remove-protection is itself proof the
+    // DeletionProtection reset landed.
     new rds.CfnDBCluster(this, 'SecurityCluster', {
       engine: 'aurora-postgresql',
       masterUsername: 'postgres',
       manageMasterUserPassword: true,
       masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
-      enableIamDatabaseAuthentication: true,
+      ...(isUpdate
+        ? {}
+        : { deletionProtection: true, enableIamDatabaseAuthentication: true }),
       monitoringInterval: 60,
       monitoringRoleArn: monitoringRole.roleArn,
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,

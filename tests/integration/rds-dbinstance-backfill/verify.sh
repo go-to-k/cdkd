@@ -28,6 +28,16 @@
 # the Cloud Control path (which would make the SDK-provider verification
 # meaningless). Also asserts the destroy path cleans up.
 #
+# #1160 (reset-on-removal): DeletionProtection + EnableIAMDatabaseAuthentication
+# are SET (true) in phase 1 and DROPPED in the phase-2 UPDATE pass
+# (CDKD_TEST_UPDATE=true). ModifyDBInstance has merge semantics (an absent
+# input field means "no change"), so before the #1160 fix the removed fields
+# silently kept their old live values — worst case DeletionProtection, which
+# would make the destroy fail. Phase 2 asserts both reset to their CFn
+# defaults (false / false) via DescribeDBInstances, and the phase-3 destroy
+# succeeding WITHOUT --remove-protection is itself proof the
+# DeletionProtection reset landed.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -74,7 +84,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 EXPECTED_ENGINE_VERSION="17.6"
 EXPECTED_PORT=5433
-EXPECTED_DELETION_PROTECTION="false"
+EXPECTED_DELETION_PROTECTION="true"
 EXPECTED_STORAGE_ENCRYPTED="true"
 EXPECTED_MASTER_USERNAME="postgres"
 EXPECTED_MONITORING_INTERVAL=60
@@ -105,12 +115,23 @@ cleanup() {
     # bogus bucket name — every other integ fixture's cdk.json carries
     # the same placeholder, so the env-var passthrough is load-bearing
     # for any cleanup that needs to find the test's actual state.
+    # --remove-protection: an aborted run can leave the phase-1
+    # DeletionProtection=true live on the DBInstance (#1160 fixture
+    # shape); idempotent when protection is already off.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" \
+      --remove-protection \
       --yes
   fi
   if [ -n "${DB_INSTANCE_ID}" ]; then
+    # Best-effort flip-off before the redundant raw delete — a protected
+    # instance (aborted between phases 1 and 2) refuses delete-db-instance.
+    aws rds modify-db-instance \
+      --db-instance-identifier "${DB_INSTANCE_ID}" \
+      --region "${REGION}" \
+      --no-deletion-protection \
+      --apply-immediately >/dev/null 2>&1 || true
     aws rds delete-db-instance \
       --db-instance-identifier "${DB_INSTANCE_ID}" \
       --region "${REGION}" \
@@ -219,9 +240,8 @@ if [ "${ACTUAL_PORT}" != "${EXPECTED_PORT}" ]; then
 fi
 echo "    OK: Endpoint.Port == ${EXPECTED_PORT} on AWS (Port silent-drop CLOSED by #609)"
 
-# DeletionProtection: explicit false from the template. Pre-#609 this
-# would have defaulted to false too, so it is the weakest signal of the
-# asserted props — kept for completeness but not load-bearing.
+# DeletionProtection: explicit true from the phase-1 template (#1160
+# removable field — phase 2 drops it and asserts the reset to false).
 # NOTE: use `tostring` instead of `// "null"` because jq's `//` operator
 # treats `false` as a missing value (it's the "alternative-on-null-or-false"
 # operator), so an explicit `false` from AWS would falsely register as `null`.
@@ -312,8 +332,45 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Phase 2: UPDATE pass (#1160 reset-on-removal) --------------------
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# The removed fields must have reset to their CFn defaults (false / false),
+# NOT kept the phase-1 values (the merge-semantics silent drop #1160 closes).
+# DeletionProtection applies immediately; the IAM-auth flip can leave the
+# instance briefly 'modifying', so poll until the instance settles back to
+# 'available' with both fields reset (also guards the destroy below against
+# an InvalidDBInstanceState race).
+echo "==> Waiting for the DBInstance to settle with both #1160 fields reset"
+RESET_OK=""
+for _ in $(seq 1 60); do
+  AFTER=$(aws rds describe-db-instances \
+    --db-instance-identifier "${DB_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'DBInstances[0]' --output json)
+  AFTER_STATUS=$(echo "${AFTER}" | jq -r '.DBInstanceStatus // "null"')
+  AFTER_PROTECTION=$(echo "${AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
+  AFTER_IAM=$(echo "${AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
+  if [ "${AFTER_STATUS}" = "available" ] && [ "${AFTER_PROTECTION}" = "false" ] && [ "${AFTER_IAM}" = "false" ]; then
+    RESET_OK="yes"
+    break
+  fi
+  sleep 10
+done
+if [ -z "${RESET_OK}" ]; then
+  echo "FAIL: after removal, DBInstance did not settle to DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (status='${AFTER_STATUS}', protection='${AFTER_PROTECTION}', iamAuth='${AFTER_IAM}') — #1160 ModifyDBInstance reset-on-removal NOT closed" >&2
+  exit 1
+fi
+echo "    OK: after removal, AWS reset DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (#1160 silent-drop CLOSED)"
+
+# --- Phase 3: destroy -------------------------------------------------
+# Deliberately NO --remove-protection: the destroy succeeding is itself
+# proof the #1160 DeletionProtection reset landed on AWS.
+echo "==> Phase 3: destroy (no --remove-protection — proves the reset landed)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -346,4 +403,4 @@ else
 fi
 
 echo ""
-echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) ==="
+echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #1160 reset-on-removal ==="
