@@ -671,13 +671,17 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          // CFn default: 0 (Enhanced Monitoring off). Resetting to 0 is
-          // valid even while a MonitoringRoleArn remains set.
+          // CFn default: 0 (Enhanced Monitoring off). NOTE: the AWS API docs
+          // require a non-zero MonitoringInterval whenever MonitoringRoleArn
+          // is present in the request, so a template that KEEPS the role but
+          // DROPS the interval gets a loud InvalidParameterCombination — the
+          // same request CloudFormation would submit for that template
+          // (CFn-parity failure, never a silent keep of the old interval).
           MonitoringInterval: this.clearOnUpdateRemoval(
-            properties['MonitoringInterval'] !== undefined
+            properties['MonitoringInterval'] != null
               ? Number(properties['MonitoringInterval'])
               : undefined,
-            previousProperties['MonitoringInterval'] !== undefined
+            previousProperties['MonitoringInterval'] != null
               ? Number(previousProperties['MonitoringInterval'])
               : undefined,
             0
@@ -1057,13 +1061,17 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          // CFn default: 0 (Enhanced Monitoring off). Resetting to 0 is
-          // valid even while a MonitoringRoleArn remains set.
+          // CFn default: 0 (Enhanced Monitoring off). NOTE: the AWS API docs
+          // require a non-zero MonitoringInterval whenever MonitoringRoleArn
+          // is present in the request, so a template that KEEPS the role but
+          // DROPS the interval gets a loud InvalidParameterCombination — the
+          // same request CloudFormation would submit for that template
+          // (CFn-parity failure, never a silent keep of the old interval).
           MonitoringInterval: this.clearOnUpdateRemoval(
-            properties['MonitoringInterval'] !== undefined
+            properties['MonitoringInterval'] != null
               ? Number(properties['MonitoringInterval'])
               : undefined,
-            previousProperties['MonitoringInterval'] !== undefined
+            previousProperties['MonitoringInterval'] != null
               ? Number(previousProperties['MonitoringInterval'])
               : undefined,
             0

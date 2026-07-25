@@ -69,6 +69,12 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
           EnableIAMDatabaseAuthentication: true,
           // Deliberately NOT reset on removal — must stay absent.
           EngineVersion: '15.4',
+          ManageMasterUserPassword: true,
+          MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/k1' },
+          MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
+          ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 2 },
+          VpcSecurityGroupIds: ['sg-1'],
+          Port: 5432,
         }
       );
 
@@ -78,9 +84,44 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.BackupRetentionPeriod).toBe(1);
       expect(modifyCall.input.MonitoringInterval).toBe(0);
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
-      // EngineVersion removal must NOT synthesize an engine-default version
-      // change — the field stays absent (no change).
+      // Deliberate non-resets: removal of these must NOT synthesize any
+      // value — each stays absent (no change). Pins the per-field rationale
+      // comment in updateDBCluster.
       expect(modifyCall.input.EngineVersion).toBeUndefined();
+      expect(modifyCall.input.ManageMasterUserPassword).toBeUndefined();
+      expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
+      expect(modifyCall.input.MonitoringRoleArn).toBeUndefined();
+      expect(modifyCall.input.ServerlessV2ScalingConfiguration).toBeUndefined();
+      expect(modifyCall.input.VpcSecurityGroupIds).toBeUndefined();
+      expect(modifyCall.input.Port).toBeUndefined();
+    });
+
+    it('sends the CFn-parity request when the role is kept but the interval is removed', async () => {
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        {
+          Engine: 'aurora-postgresql',
+          MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
+        },
+        {
+          Engine: 'aurora-postgresql',
+          MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
+          MonitoringInterval: 60,
+        }
+      );
+
+      // The request carries the kept role + the interval reset to 0 — the
+      // same combination CloudFormation would submit for this template. AWS
+      // rejects it loudly (a non-zero interval is required alongside a
+      // role), which is the intended CFn-parity behavior; the old interval
+      // is never silently kept.
+      const modifyCall = mockSend.mock.calls[0][0];
+      expect(modifyCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/monitoring');
+      expect(modifyCall.input.MonitoringInterval).toBe(0);
     });
 
     it('leaves a never-present field absent (no spurious reset value)', async () => {
@@ -157,6 +198,11 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
           EngineVersion: '17.6',
           AllocatedStorage: '20',
           Port: 5433,
+          ManageMasterUserPassword: true,
+          MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/k1' },
+          MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
+          PubliclyAccessible: true,
+          VPCSecurityGroups: ['sg-1'],
         }
       );
 
@@ -165,10 +211,43 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.DeletionProtection).toBe(false);
       expect(modifyCall.input.MonitoringInterval).toBe(0);
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
-      // Deliberately-not-reset fields stay absent on removal.
+      // Deliberate non-resets: removal of these must NOT synthesize any
+      // value — each stays absent (no change). Pins the per-field rationale
+      // comment in updateDBInstance.
       expect(modifyCall.input.EngineVersion).toBeUndefined();
       expect(modifyCall.input.AllocatedStorage).toBeUndefined();
       expect(modifyCall.input.DBPortNumber).toBeUndefined();
+      expect(modifyCall.input.ManageMasterUserPassword).toBeUndefined();
+      expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
+      expect(modifyCall.input.MonitoringRoleArn).toBeUndefined();
+      expect(modifyCall.input.PubliclyAccessible).toBeUndefined();
+      expect(modifyCall.input.VpcSecurityGroupIds).toBeUndefined();
+    });
+
+    it('sends the CFn-parity request when the role is kept but the interval is removed', async () => {
+      mockInstanceUpdate();
+
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::RDS::DBInstance',
+        {
+          Engine: 'postgres',
+          MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
+        },
+        {
+          Engine: 'postgres',
+          MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
+          MonitoringInterval: 60,
+        }
+      );
+
+      // Same CFn-parity shape as the cluster twin: kept role + interval 0
+      // go out together; AWS rejects the combination loudly rather than the
+      // old interval being silently kept.
+      const modifyCall = mockSend.mock.calls[0][0];
+      expect(modifyCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/monitoring');
+      expect(modifyCall.input.MonitoringInterval).toBe(0);
     });
 
     it('leaves a never-present field absent (no spurious reset value)', async () => {
