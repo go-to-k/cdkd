@@ -1,3 +1,10 @@
+## [0.265.2](https://github.com/go-to-k/cdkd/compare/v0.265.1...v0.265.2) (2026-07-25)
+
+
+### Bug Fixes
+
+* **providers:** reset RDS DBCluster/DBInstance update fields to CFn defaults on removal ([#1160](https://github.com/go-to-k/cdkd/issues/1160)) ([#1222](https://github.com/go-to-k/cdkd/issues/1222)) ([65029d2](https://github.com/go-to-k/cdkd/commit/65029d28ec92ae036cb6656ff7e5f391b0fb4998))
+
 ## [0.265.1](https://github.com/go-to-k/cdkd/compare/v0.265.0...v0.265.1) (2026-07-24)
 
 
