@@ -24,6 +24,10 @@ import {
   DetachLoadBalancerTargetGroupsCommand,
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
+  type AvailabilityZoneDistribution,
+  type CapacityReservationSpecification,
+  type DeletionProtection,
+  type InstanceMaintenancePolicy,
 } from '@aws-sdk/client-auto-scaling';
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
@@ -486,16 +490,18 @@ export class ASGProvider implements ResourceProvider {
         -1
       );
       const instanceMaintenancePolicyInput = this.clearOnUpdateRemoval(
-        properties['InstanceMaintenancePolicy'] as Record<string, unknown> | undefined,
-        previousProperties['InstanceMaintenancePolicy'] as Record<string, unknown> | undefined,
+        properties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
+        previousProperties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
         // SDK doc (both sub-fields): "To clear a previously set value,
         // specify a value of -1."
         { MinHealthyPercentage: -1, MaxHealthyPercentage: -1 }
       );
       const capacityReservationSpecInput = this.clearOnUpdateRemoval(
-        properties['CapacityReservationSpecification'] as Record<string, unknown> | undefined,
+        properties['CapacityReservationSpecification'] as
+          | CapacityReservationSpecification
+          | undefined,
         previousProperties['CapacityReservationSpecification'] as
-          | Record<string, unknown>
+          | CapacityReservationSpecification
           | undefined,
         // SDK doc: "default - Auto Scaling uses the Capacity Reservation
         // preference from your launch template or an open Capacity
@@ -503,14 +509,16 @@ export class ASGProvider implements ResourceProvider {
         { CapacityReservationPreference: 'default' }
       );
       const availabilityZoneDistributionInput = this.clearOnUpdateRemoval(
-        properties['AvailabilityZoneDistribution'] as Record<string, unknown> | undefined,
-        previousProperties['AvailabilityZoneDistribution'] as Record<string, unknown> | undefined,
+        properties['AvailabilityZoneDistribution'] as AvailabilityZoneDistribution | undefined,
+        previousProperties['AvailabilityZoneDistribution'] as
+          | AvailabilityZoneDistribution
+          | undefined,
         // SDK doc: "The default is balanced-best-effort."
         { CapacityDistributionStrategy: 'balanced-best-effort' }
       );
       const deletionProtectionInput = this.clearOnUpdateRemoval(
-        properties['DeletionProtection'] as string | undefined,
-        previousProperties['DeletionProtection'] as string | undefined,
+        properties['DeletionProtection'] as DeletionProtection | undefined,
+        previousProperties['DeletionProtection'] as DeletionProtection | undefined,
         // SDK doc: "Default: none" — also the flip-off value delete() uses.
         'none'
       );
@@ -565,7 +573,7 @@ export class ASGProvider implements ResourceProvider {
             DefaultInstanceWarmup: defaultInstanceWarmupInput,
           }),
           ...(availabilityZoneDistributionInput !== undefined && {
-            AvailabilityZoneDistribution: availabilityZoneDistributionInput as never,
+            AvailabilityZoneDistribution: availabilityZoneDistributionInput,
           }),
           // Removal reset DEFERRED (no SDK-documented default for the
           // sub-fields) — see the comment block above.
@@ -578,13 +586,13 @@ export class ASGProvider implements ResourceProvider {
             SkipZonalShiftValidation: properties['SkipZonalShiftValidation'] as boolean,
           }),
           ...(capacityReservationSpecInput !== undefined && {
-            CapacityReservationSpecification: capacityReservationSpecInput as never,
+            CapacityReservationSpecification: capacityReservationSpecInput,
           }),
           ...(instanceMaintenancePolicyInput !== undefined && {
-            InstanceMaintenancePolicy: instanceMaintenancePolicyInput as never,
+            InstanceMaintenancePolicy: instanceMaintenancePolicyInput,
           }),
           ...(deletionProtectionInput !== undefined && {
-            DeletionProtection: deletionProtectionInput as never,
+            DeletionProtection: deletionProtectionInput,
           }),
         })
       );
