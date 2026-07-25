@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
 # verify.sh -- LaunchTemplate + AutoScalingGroup in-place GetAtt propagation
-# (issue #985).
+# (issue #985) + UPDATE property-removal reset (issue #1160).
 #
-# The ASG's LaunchTemplate.Version is Fn::GetAtt [Lt, LatestVersionNumber]. An
-# in-place edit of the LaunchTemplate's instanceType (t3.micro -> t3.small under
-# CDKD_TEST_UPDATE=true) bumps the LaunchTemplate's computed LatestVersionNumber
-# 1 -> 2. Before the fix the ASG was classified NO_CHANGE (its raw template did
-# not change and diff-time resolution saw the pre-update version "1"), so it
-# stayed pinned at version "1" and only caught up on the NEXT deploy. This test
-# asserts:
-#   1. Phase 1: the LaunchTemplate is at version 1 and the ASG's live
-#      LaunchTemplate.Version resolves to "1".
+# Issue #985 leg: the ASG's LaunchTemplate.Version is Fn::GetAtt [Lt,
+# LatestVersionNumber]. An in-place edit of the LaunchTemplate's instanceType
+# (t3.micro -> t3.small under CDKD_TEST_UPDATE=true) bumps the LaunchTemplate's
+# computed LatestVersionNumber 1 -> 2. Before the fix the ASG was classified
+# NO_CHANGE (its raw template did not change and diff-time resolution saw the
+# pre-update version "1"), so it stayed pinned at version "1" and only caught up
+# on the NEXT deploy.
+#
+# Issue #1160 leg: phases 1-2 set non-default HealthCheckGracePeriod (90) /
+# MaxInstanceLifetime (604800) / TerminationPolicies (['OldestInstance']) on the
+# ASG; the removal phase (CDKD_TEST_REMOVAL=true) drops them from the template.
+# UpdateAutoScalingGroup has merge semantics (absent = unchanged), so pre-fix
+# the live values silently survived the removal.
+#
+# This test asserts:
+#   1. Phase 1: the LaunchTemplate is at version 1, the ASG's live
+#      LaunchTemplate.Version resolves to "1", and the three non-default ASG
+#      properties are live.
 #   2. UPDATE phase (change only instanceType): the LaunchTemplate advances to
 #      version 2 AND the ASG's live LaunchTemplate.Version is "2" in the SAME
-#      deploy (NOT "1" -- the #985 symptom is a one-deploy-behind "1").
+#      deploy (NOT "1" -- the #985 symptom is a one-deploy-behind "1"). The
+#      three non-default ASG properties are still live (kept, not reset).
+#   3. REMOVAL phase (drop the three ASG properties): the live values return to
+#      the CFn defaults -- HealthCheckGracePeriod 0, MaxInstanceLifetime
+#      cleared, TerminationPolicies ['Default'] (issue #1160).
 # Then destroys and confirms a clean teardown.
 #
 # desiredCapacity is 0 so no EC2 instances launch (cheap deploy, fast destroy).
@@ -124,6 +137,29 @@ lt_latest_version() {
     --query 'LaunchTemplates[0].LatestVersionNumber' --output text 2>/dev/null
 }
 
+# Read the issue #1160 removal-leg properties in one call. Prints ONE
+# tab-separated line: HealthCheckGracePeriod, MaxInstanceLifetime (the literal
+# string "None" when AWS omits the field = no max lifetime), and the
+# comma-joined TerminationPolicies list.
+asg_removal_props() {
+  local asg_name="$1"
+  aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names "${asg_name}" --region "${REGION}" \
+    --query 'AutoScalingGroups[0].[HealthCheckGracePeriod, MaxInstanceLifetime, join(`,`, TerminationPolicies)]' \
+    --output text
+}
+
+# Assert the three #1160 properties hold their phase 1-2 non-default values.
+assert_nondefault_props() {
+  local phase="$1" asg_name="$2" grace lifetime policies
+  read -r grace lifetime policies < <(asg_removal_props "${asg_name}")
+  if [ "${grace}" != "90" ] || [ "${lifetime}" != "604800" ] || [ "${policies}" != "OldestInstance" ]; then
+    echo "FAIL: ${phase}: expected HealthCheckGracePeriod=90 / MaxInstanceLifetime=604800 / TerminationPolicies=OldestInstance, got '${grace}' / '${lifetime}' / '${policies}'" >&2
+    exit 1
+  fi
+  echo "    OK: ${phase}: non-default ASG props live (grace=90, lifetime=604800, policies=OldestInstance)"
+}
+
 # --- Phase 1: deploy (base) -------------------------------------------
 echo "==> Phase 1: deploy with the local binary (LT v1)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -159,6 +195,9 @@ if [ "${ASG_V1}" != "1" ]; then
 fi
 echo "    OK: ASG LaunchTemplate.Version == 1"
 
+# Issue #1160 baseline: the three non-default properties must be live.
+assert_nondefault_props "Phase 1" "${ASG_NAME}"
+
 # --- Phase 2: UPDATE (change only instanceType -> LT v2) --------------
 echo "==> Phase 2: UPDATE (instanceType t3.micro -> t3.small; LT v1 -> v2)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -185,8 +224,46 @@ if [ "${ASG_V2}" != "2" ]; then
 fi
 echo "    OK: ASG LaunchTemplate.Version == 2 in the SAME deploy (issue #985 fixed)"
 
-# --- Phase 3: destroy -------------------------------------------------
-echo "==> Phase 3: destroy"
+# The three non-default properties are still templated in Phase 2 — they must
+# pass through unchanged (kept fields are never spuriously reset).
+assert_nondefault_props "Phase 2 (props kept)" "${ASG_NAME}"
+
+# --- Phase 3: REMOVAL (drop the three ASG props -> CFn defaults) ------
+# Issue #1160: UpdateAutoScalingGroup has merge semantics, so pre-fix the
+# removed properties silently kept their old live values. The removal phase
+# keeps the Phase-2 instance type, so the ONLY template delta is the three
+# dropped ASG properties.
+echo "==> Phase 3: REMOVAL (drop HealthCheckGracePeriod / MaxInstanceLifetime / TerminationPolicies)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+read -r GRACE_R LIFETIME_R POLICIES_R < <(asg_removal_props "${ASG_NAME}")
+if [ "${GRACE_R}" != "0" ]; then
+  echo "FAIL: HealthCheckGracePeriod is '${GRACE_R}' after removal, expected the CFn default '0'." >&2
+  echo "      This is the issue #1160 symptom -- UpdateAutoScalingGroup merge semantics kept the old live value." >&2
+  exit 1
+fi
+echo "    OK: HealthCheckGracePeriod reset to 0"
+# AWS clears MaxInstanceLifetime via the documented sentinel 0; Describe then
+# reports the cleared state as 0 or omits the field entirely ("None" in
+# --output text) -- both mean "no max lifetime".
+if [ "${LIFETIME_R}" != "None" ] && [ "${LIFETIME_R}" != "0" ]; then
+  echo "FAIL: MaxInstanceLifetime is '${LIFETIME_R}' after removal, expected cleared (None or 0)." >&2
+  echo "      This is the issue #1160 symptom -- UpdateAutoScalingGroup merge semantics kept the old live value." >&2
+  exit 1
+fi
+echo "    OK: MaxInstanceLifetime cleared (${LIFETIME_R})"
+if [ "${POLICIES_R}" != "Default" ]; then
+  echo "FAIL: TerminationPolicies is '${POLICIES_R}' after removal, expected the CFn default 'Default'." >&2
+  echo "      This is the issue #1160 symptom -- UpdateAutoScalingGroup merge semantics kept the old live value." >&2
+  exit 1
+fi
+echo "    OK: TerminationPolicies reset to ['Default'] (issue #1160 fixed)"
+
+# --- Phase 4: destroy -------------------------------------------------
+echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -208,4 +285,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy + clean destroy)"
+echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy; issue #1160: removed ASG properties reset to CFn defaults + clean destroy)"
