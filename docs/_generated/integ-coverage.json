@@ -4016,6 +4016,7 @@
         "cloudwatch",
         "composite-stack",
         "drift-revert",
+        "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
         "full-stack-demo",
@@ -4043,6 +4044,9 @@
         ],
         "drift-revert": [
           "l1"
+        ],
+        "ec2-vpc": [
+          "l2"
         ],
         "ecs-fargate": [
           "l2"

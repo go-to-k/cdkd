@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
  * EC2/VPC example stack
@@ -51,10 +52,18 @@ export class Ec2VpcStack extends cdk.Stack {
       'Allow HTTP from anywhere'
     );
 
-    // VPC Flow Log (to CloudWatch Logs)
+    // VPC Flow Log (to CloudWatch Logs). The log group is explicit with
+    // RemovalPolicy.DESTROY so the fixture is self-cleaning: the CDK-default
+    // auto-created log group carries DeletionPolicy: Retain and leaked one
+    // log group per integ run (issue 1241). Retain semantics are covered by
+    // the dedicated deletion-policy-retain fixture.
+    const flowLogGroup = new logs.LogGroup(this, 'VpcFlowLogGroup', {
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
     const flowLog = new ec2.FlowLog(this, 'VpcFlowLog', {
       resourceType: ec2.FlowLogResourceType.fromVpc(vpc),
-      destination: ec2.FlowLogDestination.toCloudWatchLogs(),
+      destination: ec2.FlowLogDestination.toCloudWatchLogs(flowLogGroup),
     });
 
     // Custom Network ACL
