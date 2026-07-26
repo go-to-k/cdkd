@@ -101,11 +101,9 @@ function serializeRedriveAllowPolicy(value: unknown): string {
  *     fires when the PREVIOUS properties carried the key, and only a FIFO
  *     queue can ever have it set (AWS rejects it on standard queues), so the
  *     reset is always sent to a FIFO queue — no extra guard needed.
- *     NOTE: currently UNREACHABLE via a plain deploy — replacement-rules.ts
- *     misclassifies `ContentBasedDeduplication` as replacement-requiring
- *     (CFn documents it as "No interruption"; issue #1237), so a removal is
- *     routed to replacement before `update()` runs. The entry is pinned by
- *     unit tests + a raw-SDK live probe until #1237 lands.
+ *     Reachable via a plain deploy since issue #1237 classified
+ *     `ContentBasedDeduplication` as updateable in replacement-rules.ts
+ *     (CFn "Update requires: No interruption").
  *   - `SqsManagedSseEnabled` resets to `'true'` (SSE-SQS is enabled by
  *     default when the property is undefined, per the CFn docs). CAVEAT:
  *     SSE-SQS and SSE-KMS are mutually exclusive — AWS rejects a
@@ -118,10 +116,14 @@ function serializeRedriveAllowPolicy(value: unknown): string {
  *     together with `SqsManagedSseEnabled: 'true'` — IS accepted by AWS
  *     (live-verified), so removing both fields at once needs no guard.
  *
- * Attributes NOT in this map (immutable / FIFO-discriminated ones such as
- * `FifoQueue` / `DeduplicationScope` / `FifoThroughputLimit`) are never
- * reset on removal — flipping them would either be rejected by AWS or
- * require a replacement, which the diff layer handles separately.
+ * Attributes NOT in this map:
+ *   - `FifoQueue` is createOnly — flipping it requires a replacement, which
+ *     the diff layer handles separately.
+ *   - `DeduplicationScope` / `FifoThroughputLimit` ARE in-place updateable
+ *     (CFn "No interruption") but have no reset entry yet, so a template
+ *     removal currently keeps the live value — the #1160 silent-drop bug
+ *     class, tracked as SUSPECT entries on that umbrella (defaults would be
+ *     'queue' / 'perQueue'; needs the #1157-style trio + live verify).
  */
 const SQS_ATTRIBUTE_REMOVAL_RESET: Record<string, string> = {
   RedrivePolicy: '',
