@@ -12,10 +12,12 @@
 # Phases:
 #   1. Deploy baseline (code v1). Assert the CodeDeploy application (compute
 #      platform Lambda) + deployment group (LambdaCanary10Percent5Minutes,
-#      BLUE_GREEN) reached AWS, the alias points at version 1, and the
-#      DeploymentGroup routed via cc-api.
+#      BLUE_GREEN) reached AWS, the alias points at a freshly published
+#      version N (Lambda never reuses version numbers for a function name,
+#      even across delete + re-create, so N is 1 only on the account's very
+#      first run), and the DeploymentGroup routed via cc-api.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (code v1 -> v2, which mints a NEW
-#      Lambda::Version logical id). Assert the alias flipped to version 2 and
+#      Lambda::Version logical id). Assert the alias flipped to version N+1 and
 #      an invoke through the alias returns v2. (cdkd flips the alias directly;
 #      the CFn CodeDeployLambdaAliasUpdate canary shift is a documented
 #      divergence — see the stack file header.)
@@ -143,13 +145,17 @@ if [ "${DG_JSON}" != "CodeDeployDefault.LambdaCanary10Percent5Minutes	BLUE_GREEN
 fi
 echo "    Application (Lambda) + DeploymentGroup (Canary10Percent5Minutes, BLUE_GREEN) reached AWS"
 
+# Lambda never reuses version numbers for a function name, even across a
+# delete + re-create, so the fresh deploy publishes :1 only on the very
+# first run in an account. Capture the version and assert relatively.
 ALIAS_V1="$(aws lambda get-alias --function-name "${FN_NAME}" --name live \
   --region "${REGION}" --query 'FunctionVersion' --output text)"
-if [ "${ALIAS_V1}" != "1" ]; then
-  echo "FAIL: expected alias at version 1 after Phase 1, got '${ALIAS_V1}'" >&2
-  exit 1
-fi
-echo "    Alias 'live' -> version 1"
+case "${ALIAS_V1}" in
+  ''|*[!0-9]*)
+    echo "FAIL: expected alias at a numeric version after Phase 1, got '${ALIAS_V1}'" >&2
+    exit 1 ;;
+esac
+echo "    Alias 'live' -> version ${ALIAS_V1}"
 
 # Assert the DeploymentGroup routed via Cloud Control (no SDK provider).
 PROVISIONED_BY="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
@@ -166,10 +172,11 @@ echo "==> Phase 2: UPDATE (code v1 -> v2, new Lambda::Version, alias flip)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
+EXPECTED_V2=$((ALIAS_V1 + 1))
 ALIAS_V2="$(aws lambda get-alias --function-name "${FN_NAME}" --name live \
   --region "${REGION}" --query 'FunctionVersion' --output text)"
-if [ "${ALIAS_V2}" != "2" ]; then
-  echo "FAIL: expected alias at version 2 after Phase 2, got '${ALIAS_V2}'" >&2
+if [ "${ALIAS_V2}" != "${EXPECTED_V2}" ]; then
+  echo "FAIL: expected alias at version ${EXPECTED_V2} after Phase 2, got '${ALIAS_V2}'" >&2
   exit 1
 fi
 
@@ -182,7 +189,7 @@ if ! grep -q '"version":"v2"' "${INVOKE_OUT}"; then
   exit 1
 fi
 rm -f "${INVOKE_OUT}"
-echo "    Alias 'live' -> version 2; invoke returns v2"
+echo "    Alias 'live' -> version ${ALIAS_V2}; invoke returns v2"
 
 # --- Phase 3: destroy + orphan-zero -------------------------------------
 echo "==> Phase 3: destroy"

@@ -143,14 +143,26 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     addition to the conditions above for `integ-destroy`):
 
     ```bash
-    # Both queries MUST return empty. If either lists any IDs, the
+    # All three queries MUST return empty. If any lists IDs, the
     # marker is NOT set and the user is shown the orphan container /
     # network IDs to clean up via `docker rm -f` / `docker network rm`.
     docker ps --filter name=cdkd-local- --format '{{.ID}}'
     docker network ls --filter name=cdkd-local-task- --format '{{.ID}}'
+    docker network ls --filter name=cdkd-local-svc- --format '{{.ID}}'
     ```
 
-    When BOTH return empty AND the integ test exited cleanly:
+    Subnet-overlap gotcha (seen 2026-07-27): `cdkd local start-service`
+    creates its shared network on the FIXED subnet `169.254.171.0/24`,
+    so a `local-start-*` test can fail with `Pool overlaps with other
+    one on this address space` even when all three queries above are
+    empty — a foreign leftover network (e.g. cdk-local's `cdkl-svc-*`
+    from a crashed run) may own that subnet. Diagnose with
+    `docker network inspect $(docker network ls -q) --format
+    '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}} {{len .Containers}}'`
+    and remove the holder ONLY when it has 0 attached containers (a
+    non-empty one may belong to a live parallel run).
+
+    When all three return empty AND the integ test exited cleanly:
 
     ```bash
     mise exec -- markgate set integ-local

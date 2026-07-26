@@ -27,8 +27,10 @@
 #     bash tests/integration/local-invoke-from-cfn-stack/verify.sh
 #
 # Requires Docker AND AWS credentials with deploy permissions in the
-# target account. Also requires the global `cdk` (aws-cdk) CLI on $PATH —
-# see step 2's note on the vp-managed environment.
+# target account. The `cdk` (aws-cdk) CLI comes from this fixture's own
+# devDependencies (node_modules/.bin is prepended to PATH below) so a
+# stale global CLI can't hit a cloud-assembly schema-version mismatch
+# against the freshly-installed aws-cdk-lib.
 
 set -euo pipefail
 
@@ -40,6 +42,12 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-invoke-from-cfn-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
+# Vendored cdk CLI: install the fixture's deps when absent (node_modules is
+# gitignored, and the repo-root pnpm install does NOT populate fixture dirs),
+# otherwise the PATH prepend is inert and `cdk` falls through to a possibly
+# stale global CLI.
+[ -x "${TEST_DIR}/node_modules/.bin/cdk" ] || (cd "${TEST_DIR}" && npm install)
+export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
 
 echo "[verify] region=${REGION} stack=${STACK} (CloudFormation-deployed)"
 
@@ -83,10 +91,9 @@ fi
 
 echo "[verify] step 3: cdk deploy (upstream CDK CLI, NOT cdkd)"
 # The fixture deliberately uses upstream `cdk deploy` so the resulting
-# stack is owned by CloudFormation, not cdkd. The cdk CLI is supplied by
-# vp's globally-managed environment (same pattern as
-# import-nested-stack); no per-fixture install round-trip needed since
-# Node's parent-dir resolution finds aws-cdk-lib from the repo root.
+# stack is owned by CloudFormation, not cdkd. The cdk CLI is the fixture's
+# own vendored devDependency (node_modules/.bin was prepended to PATH
+# above) so it always matches the freshly-installed aws-cdk-lib.
 # Set the sentinel BEFORE `cdk deploy` rather than after — pre-flight
 # has already verified the namespace is clean, so once we issue the
 # deploy command we OWN the namespace (cdk destroy is a no-op on
