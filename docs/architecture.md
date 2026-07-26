@@ -106,6 +106,12 @@ Reads the cloud assembly output directly from the `cdk.out/` directory:
 - Extracts CloudFormation templates (`{StackName}.template.json`)
 - Extracts asset manifests (`{StackName}.assets.json`)
 - Resolves artifact dependencies and metadata
+- Collects CDK annotation messages (`Annotations.addError` / `addWarning` /
+  `addInfo`) per stack via `stack-messages.ts` — from both the inline
+  `manifest.json` `metadata` field and the `{artifactId}.metadata.json` side
+  file (`additionalMetadataFile`) written by current aws-cdk-lib. `synth` and
+  `deploy` print warnings/infos and refuse to proceed when a selected stack
+  carries an error annotation (CDK CLI `Found errors` parity, issue #1228)
 
 #### `synthesizer.ts` - Synthesizer
 

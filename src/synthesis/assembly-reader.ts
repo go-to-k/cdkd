@@ -11,6 +11,7 @@ import { parseEnvironment } from '../types/assembly.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
+import { collectStackMessages, type StackMessage } from './stack-messages.js';
 
 /**
  * Stack information extracted from cloud assembly
@@ -75,6 +76,18 @@ export interface StackInfo {
    * `AWS::CloudFormation::Stack` resources.
    */
   nestedTemplates?: Record<string, string> | undefined;
+
+  /**
+   * CDK annotation messages (`Annotations.addError` / `addWarning` /
+   * `addInfo`) attached to this stack's construct tree, collected from the
+   * artifact's inline `metadata` AND its `additionalMetadataFile` side file
+   * (issue #1228). Consumed by `processStackMessages` in
+   * `stack-messages.ts` — `synth` / `deploy` print warnings + infos and
+   * refuse to proceed when any selected stack carries an error.
+   * Optional so hand-built StackInfo literals (tests, tooling) stay valid;
+   * absent is equivalent to "no messages".
+   */
+  messages?: StackMessage[];
 }
 
 /**
@@ -318,6 +331,7 @@ export class AssemblyReader {
         terminationProtection: props.terminationProtection,
       }),
       ...(Object.keys(nestedTemplates).length > 0 && { nestedTemplates }),
+      messages: collectStackMessages(assemblyDir, artifact),
     };
   }
 

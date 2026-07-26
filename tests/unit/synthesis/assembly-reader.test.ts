@@ -481,6 +481,42 @@ describe('AssemblyReader', () => {
       vi.mocked(readFileSync).mockReturnValueOnce(JSON.stringify(templateWithAbsoluteNested));
       expect(() => reader.getAllStacks('/tmp/cdk.out', manifest)).toThrow(/absolute/);
     });
+
+    it('collects annotation messages from inline metadata and additionalMetadataFile (issue #1228)', () => {
+      const manifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          MyStack: {
+            type: 'aws:cloudformation:stack',
+            properties: {
+              templateFile: 'MyStack.template.json',
+              stackName: 'MyStack',
+            },
+            metadata: {
+              '/MyStack': [{ type: 'aws:cdk:warning', data: 'inline warning' }],
+            },
+            additionalMetadataFile: 'MyStack.metadata.json',
+          },
+        },
+      };
+      vi.mocked(readFileSync)
+        .mockReturnValueOnce(JSON.stringify(sampleTemplate)) // template read
+        .mockReturnValueOnce(
+          JSON.stringify({
+            '/MyStack/Bucket': [{ type: 'aws:cdk:error', data: 'side-file error' }],
+          })
+        ); // additionalMetadataFile read
+
+      const stacks = reader.getAllStacks('/tmp/cdk.out', manifest);
+
+      expect(stacks[0].messages).toEqual(
+        expect.arrayContaining([
+          { level: 'warning', path: '/MyStack', message: 'inline warning' },
+          { level: 'error', path: '/MyStack/Bucket', message: 'side-file error' },
+        ])
+      );
+      expect(stacks[0].messages).toHaveLength(2);
+    });
   });
 
   describe('getStack', () => {

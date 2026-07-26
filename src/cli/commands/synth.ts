@@ -19,6 +19,7 @@ import {
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
 import { AssemblyReader } from '../../synthesis/assembly-reader.js';
+import { processStackMessages } from '../../synthesis/stack-messages.js';
 import { resolveApp } from '../config-loader.js';
 import { toYaml } from '../../utils/yaml.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -89,6 +90,11 @@ async function synthCommand(options: {
 
   const result = await synthesizer.synthesize(synthOptions);
   const { stacks, assemblyDir } = result;
+
+  // CDK CLI parity (issue #1228): surface Annotations messages — print
+  // warnings/infos, refuse to emit a template when any stack carries an
+  // error annotation (`cdk synth` fails with "Found errors" too).
+  processStackMessages(stacks, logger);
 
   // Print YAML template to stdout (like CDK CLI) for single stack
   if (stacks.length === 1) {

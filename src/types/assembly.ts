@@ -46,6 +46,14 @@ export interface ArtifactManifest {
 
   /** Metadata entries */
   metadata?: Record<string, MetadataEntry[]>;
+
+  /**
+   * Side file (`<artifactId>.metadata.json`, relative to the assembly dir)
+   * carrying the metadata entries current aws-cdk-lib no longer embeds
+   * inline in `manifest.json` — including annotation messages
+   * (`aws:cdk:error` / `aws:cdk:warning` / `aws:cdk:info`). See issue #1228.
+   */
+  additionalMetadataFile?: string;
 }
 
 /**
