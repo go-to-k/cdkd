@@ -1,3 +1,10 @@
+## [0.267.2](https://github.com/go-to-k/cdkd/compare/v0.267.1...v0.267.2) (2026-07-26)
+
+
+### Bug Fixes
+
+* **sqs:** reset ContentBasedDeduplication and SqsManagedSseEnabled on template removal ([#1240](https://github.com/go-to-k/cdkd/issues/1240)) ([8298c65](https://github.com/go-to-k/cdkd/commit/8298c65f276670a9fe7de89485a31aad5e62f75b))
+
 ## [0.267.1](https://github.com/go-to-k/cdkd/compare/v0.267.0...v0.267.1) (2026-07-26)
 
 
