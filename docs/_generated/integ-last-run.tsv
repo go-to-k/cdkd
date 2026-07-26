@@ -78,11 +78,11 @@ dynamodb-stream-filter	2026-07-21T18:08:16Z	PASS	62	verify.sh	rc ok, orph clean
 dynamodb-streams	2026-07-20T17:40:13Z	PASS	86	verify.sh	DDB streams WarmThroughput+ESM+StreamSpec UPDATE, 10 res clean
 dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
-ec2-instance	2026-06-21T17:00:38Z	PASS	91	verify.sh	stale-real re-run; clean destroy
-ec2-vpc	2026-06-21T11:12:35Z	PASS	53	standard	sweep-F staleness re-run (rc=0)
+ec2-instance	2026-07-26T16:41:51Z	PASS	123	verify.sh	0727 P0 sweep (ec2-provider changed #1175/#1177); clean destroy 0 orphans
+ec2-vpc	2026-07-26T16:45:20Z	PASS	36	standard	0727 P0 sweep (ec2-provider changed #1175/#1177); 19 deleted 0 err; retained FlowLog LogGroup swept manually
 ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
-ecs-fargate	2026-07-02T18:23:15Z	PASS	373	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+ecs-fargate	2026-07-26T16:30:13Z	FAIL	210	verify.sh	UPDATE phase: DescribeType throttled -> write-only VolumeConfigurations dropped -> ECS UpdateService 400; reproduced 2/2; destroy clean both runs; suspect #1182 prefetch regression
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
 efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
@@ -214,7 +214,7 @@ rollback-failure-injection	2026-07-24T10:50:16Z	PASS	368	verify.sh	0724b sweep P
 rollback-sqs-cooldown	2026-07-25T05:24:26Z	PASS	180	verify.sh	#1220 echo-before-assert on steps 4/9/10, destroy clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-02T18:23:15Z	PASS	49	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-s3-cloudfront	2026-07-02T18:23:15Z	PASS	396	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+s3-cloudfront	2026-07-26T16:38:01Z	PASS	364	verify.sh	0727 P0 sweep (cloudfront-distribution-provider changed #1175); clean destroy 0 orphans
 s3-directory-bucket	2026-07-20T09:10:31Z	PASS	60	standard	clean deploy+destroy from #1124 tree (integ-destroy gate refresh): 1 deleted 0 err, directory bucket + state gone
 s3-event-notification	2026-07-21T05:28:05Z	PASS	79	verify.sh	rc ok, orph clean
 s3-lifecycle	2026-07-21T14:28:43Z	PASS	58	verify.sh	rc ok, orph clean
@@ -251,7 +251,7 @@ tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag
 throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 update-policy-mutations	2026-07-21T14:01:35Z	PASS	74	verify.sh	post #1138 UpdateReplacePolicy Retain guard fix on merged main; retain honored, 0 leftover
 update-replace	2026-07-21T07:23:47Z	PASS	80	verify.sh	in-place+replace, 7 deleted 0 orphans
-vpc-lambda	2026-06-21T16:00:57Z	PASS	330	standard	stale-real re-run; 16 created/16 deleted 0 err; VPC+ENI clean (benign Pending detach-skip)
+vpc-lambda	2026-07-26T16:53:02Z	PASS	386	standard	0727 P0 sweep (ec2-provider changed #1175/#1177); 16 deleted 0 err; NAT/ENI/EIP clean
 vpc-lambda-cr-race	2026-07-24T11:03:24Z	PASS	432	standard	0724b sweep staleness; 9 del 0 err 0 orphans incl hyperplane ENI
 vpc-lookup	2026-07-24T10:55:09Z	PASS	20	standard	0724b sweep staleness; context-provider loop ok; 1 del 0 err 0 orphans
 vpc-nat-gateway	2026-07-22T08:08:02Z	PASS		standard	TTL-refresh sweep; standard flow (classifier-approved direct deploy/destroy); 21 created / 21 deleted 0 err; NAT GW + VPC + EIP + ENI all gone, state gone
