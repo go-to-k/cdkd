@@ -1,3 +1,10 @@
+## [0.267.4](https://github.com/go-to-k/cdkd/compare/v0.267.3...v0.267.4) (2026-07-26)
+
+
+### Bug Fixes
+
+* **provisioning:** retry throttled DescribeType before dropping write-only/create-only schemas ([#1244](https://github.com/go-to-k/cdkd/issues/1244)) ([947b53e](https://github.com/go-to-k/cdkd/commit/947b53e99556eb65b44ac2a05d4a283456387db1))
+
 ## [0.267.3](https://github.com/go-to-k/cdkd/compare/v0.267.2...v0.267.3) (2026-07-26)
 
 
