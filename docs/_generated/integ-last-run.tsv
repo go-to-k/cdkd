@@ -79,7 +79,7 @@ dynamodb-streams	2026-07-20T17:40:13Z	PASS	86	verify.sh	DDB streams WarmThroughp
 dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: TableClass switch reaches AWS, destroy clean 0 orphans
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 ec2-instance	2026-07-26T16:41:51Z	PASS	123	verify.sh	0727 P0 sweep (ec2-provider changed #1175/#1177); clean destroy 0 orphans
-ec2-vpc	2026-07-26T16:45:20Z	PASS	36	standard	0727 P0 sweep (ec2-provider changed #1175/#1177); 19 deleted 0 err; retained FlowLog LogGroup swept manually
+ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
 ecs-fargate	2026-07-26T17:17:11Z	PASS	388	verify.sh	issue 1236 fix verified: DescribeType throttle retry; update phase green, destroy clean 0 orphans
