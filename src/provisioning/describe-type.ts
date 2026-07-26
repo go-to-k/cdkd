@@ -26,7 +26,7 @@ import {
 } from '@aws-sdk/client-cloudformation';
 import { withRetry } from '../deployment/retry.js';
 import { isThrottlingError } from '../deployment/retryable-errors.js';
-import { getAwsClients } from '../utils/aws-clients.js';
+import { getAwsClients, type AwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -47,13 +47,18 @@ const MAX_THROTTLE_RETRIES = 4;
  * Issue `DescribeType` for a resource type, retrying throttle-shaped failures
  * with exponential backoff. Any other failure (or a throttle persisting past
  * the retry budget) is thrown to the caller unchanged.
+ *
+ * `client` defaults to the shared `AwsClients.cloudFormation`; callers that
+ * carry their own injected client (`cdkd export`'s primary-identifier
+ * resolution) pass it so test doubles keep intercepting.
  */
 export function describeTypeWithThrottleRetry(
-  resourceType: string
+  resourceType: string,
+  client?: AwsClients['cloudFormation']
 ): Promise<DescribeTypeCommandOutput> {
   return withRetry(
     () =>
-      getAwsClients().cloudFormation.send(
+      (client ?? getAwsClients().cloudFormation).send(
         new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
       ),
     resourceType,
