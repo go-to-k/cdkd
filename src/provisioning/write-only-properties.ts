@@ -32,8 +32,7 @@
  * each update simply re-warns and re-falls-back.
  */
 
-import { DescribeTypeCommand } from '@aws-sdk/client-cloudformation';
-import { getAwsClients } from '../utils/aws-clients.js';
+import { describeTypeWithThrottleRetry } from './describe-type.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -95,9 +94,12 @@ async function fetchTopLevelWriteOnlyProperties(
   resourceType: string
 ): Promise<ReadonlySet<string>> {
   const logger = getLogger().child('WriteOnlyProperties');
-  const response = await getAwsClients().cloudFormation.send(
-    new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
-  );
+  // Throttle-shaped DescribeType failures are retried with backoff (issue
+  // #1236) — the graceful empty-set fallback below is safe for a missing
+  // permission but converts a transient throttle into a dropped write-only
+  // property, which hard-fails CC-routed updates of types like
+  // AWS::ECS::Service.
+  const response = await describeTypeWithThrottleRetry(resourceType);
 
   const result = new Set<string>();
   // A response without a Schema (e.g. a still-registering / publisher type)

@@ -30,8 +30,7 @@
  * simply keeps the pre-existing registry-only behavior — no regression.
  */
 
-import { DescribeTypeCommand } from '@aws-sdk/client-cloudformation';
-import { getAwsClients } from '../utils/aws-clients.js';
+import { describeTypeWithThrottleRetry } from './describe-type.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -207,9 +206,11 @@ async function fetchCreateOnlyPropertyPaths(
   resourceType: string
 ): Promise<ReadonlyArray<readonly string[]>> {
   const logger = getLogger().child('CreateOnlyProperties');
-  const response = await getAwsClients().cloudFormation.send(
-    new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
-  );
+  // Throttle-shaped DescribeType failures are retried with backoff (issue
+  // #1236) — a throttled lookup here degrades replacement detection to the
+  // registry-only classification, and the #1182 prefetch burst made that a
+  // realistic in-deploy condition rather than a rare edge.
+  const response = await describeTypeWithThrottleRetry(resourceType);
 
   const result: string[][] = [];
   // A response without a Schema (e.g. a still-registering / private type, or a
