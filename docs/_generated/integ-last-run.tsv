@@ -115,7 +115,7 @@ iam-managed-policy	2026-07-21T13:08:15Z	PASS	29	verify.sh	converted; policy atta
 iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
 iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
 iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
-iam-role-prefixed-name-update	2026-07-21T18:19:31Z	PASS	52	verify.sh	rc ok, orph clean
+iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-role removal phase 3 verified; destroy 1/0 errors, 0 orphans
 import-attributes	2026-07-21T13:51:28Z	PASS	42	verify.sh	post import-tag-walk refactor #1139; attr reconstruct+destroy clean
 import-auto-mode	2026-07-21T13:53:15Z	PASS	74	verify.sh	post import-tag-walk refactor #1139; CFn physId resolve (no tag) clean
 import-nested-stack	2026-07-21T13:59:14Z	PASS	144	verify.sh	post import-tag-walk refactor #1139; recursive import+nested destroy clean

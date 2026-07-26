@@ -420,43 +420,83 @@ describe('IAMRoleProvider', () => {
       expect(mockSend.mock.calls.some((c) => c[0] instanceof GetRoleCommand)).toBe(true);
     });
 
-    it('omits Description from UpdateRoleCommand when newProperties does not carry the key', async () => {
-      // Confirms the fix did not flip the gate from truthy to "always
-      // send" — `undefined` (key absent) still skips the update field
-      // so a partial newProps does NOT silently clear AWS-side
-      // description.
-      mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
-      mockSend.mockResolvedValueOnce({}); // updateManagedPolicies (no-op)
-      mockSend.mockResolvedValueOnce({}); // updateInlinePolicies (no-op)
-      mockSend.mockResolvedValueOnce({}); // updateTags (no-op)
-      mockSend.mockResolvedValueOnce({
-        Role: {
-          RoleName: 'my-role',
-          Arn: 'arn:aws:iam::0:role/my-role',
-          Path: '/',
-          RoleId: 'role-id',
-        },
+    // Issue #1160 clear-on-removal trio (docs/provider-development.md §2a):
+    // IAM UpdateRole has merge semantics (absent field = "no change",
+    // live-verified 2026-07-27), while CFn resets a template-removed
+    // property to its default. update() must therefore send an explicit
+    // reset when a field was present before and is absent now — and ONLY
+    // then.
+    describe('clear-on-removal (issue #1160)', () => {
+      const mockUpdateFlow = () => {
+        // With no policies/tags in the props, the policy/tag helpers issue
+        // zero sends — the actual consumption is UpdateRoleCommand then
+        // GetRoleCommand. (The trio tests only inspect the
+        // UpdateRoleCommand input.)
+        mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
+        mockSend.mockResolvedValueOnce({
+          Role: {
+            RoleName: 'my-role',
+            Arn: 'arn:aws:iam::0:role/my-role',
+            Path: '/',
+            RoleId: 'role-id',
+          },
+        }); // GetRoleCommand
+      };
+      const baseProps = {
+        RoleName: 'my-role',
+        AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+      };
+      const findUpdateInput = () => {
+        const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
+        expect(updateCall).toBeDefined();
+        return updateCall![0].input as {
+          RoleName: string;
+          Description?: string;
+          MaxSessionDuration?: number;
+        };
+      };
+
+      it('removal: Description and MaxSessionDuration present before, absent now -> explicit resets ("" / 3600)', async () => {
+        mockUpdateFlow();
+
+        await provider.update('L', 'my-role', 'AWS::IAM::Role', baseProps, {
+          ...baseProps,
+          Description: 'old-description',
+          MaxSessionDuration: 7200,
+        });
+
+        const input = findUpdateInput();
+        // Merge semantics: omitting the fields would silently keep the
+        // old live values, so removal must send the CFn defaults.
+        expect(input.Description).toBe('');
+        expect(input.MaxSessionDuration).toBe(3600);
       });
 
-      await provider.update(
-        'L',
-        'my-role',
-        'AWS::IAM::Role',
-        {
-          RoleName: 'my-role',
-          AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
-        },
-        {
-          RoleName: 'my-role',
-          AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
-          Description: 'kept-on-aws',
-        }
-      );
+      it('never present: fields absent from both sides stay absent from the input (no spurious reset)', async () => {
+        mockUpdateFlow();
 
-      const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
-      expect(updateCall).toBeDefined();
-      const input = updateCall![0].input as { Description?: string };
-      expect(input).not.toHaveProperty('Description');
+        await provider.update('L', 'my-role', 'AWS::IAM::Role', baseProps, baseProps);
+
+        const input = findUpdateInput();
+        expect(input).not.toHaveProperty('Description');
+        expect(input).not.toHaveProperty('MaxSessionDuration');
+      });
+
+      it('mixed: kept Description passes through unchanged while removed MaxSessionDuration resets to 3600', async () => {
+        mockUpdateFlow();
+
+        await provider.update(
+          'L',
+          'my-role',
+          'AWS::IAM::Role',
+          { ...baseProps, Description: 'kept-description' },
+          { ...baseProps, Description: 'kept-description', MaxSessionDuration: 7200 }
+        );
+
+        const input = findUpdateInput();
+        expect(input.Description).toBe('kept-description');
+        expect(input.MaxSessionDuration).toBe(3600);
+      });
     });
 
     it('round-trip: empty-string Description placeholder reaches UpdateRoleCommand (truthy-gate guard)', async () => {
