@@ -236,3 +236,82 @@ describe('SecretsManagerSecretProvider read-update round-trip', () => {
     expect(input['Description']).toBe('');
   });
 });
+
+describe('SecretsManagerSecretProvider #1160 reset-on-removal', () => {
+  // UpdateSecret has merge semantics (absent input field = "no change"),
+  // while CloudFormation resets a template-removed property to its default.
+  // Removal must therefore send the explicit clear sentinel. Live-probed
+  // 2026-07-27 (us-east-1): UpdateSecret accepts `Description: ''` and
+  // `KmsKeyId: ''` (the latter documented as "use the AWS managed key
+  // aws/secretsmanager"), and DescribeSecret OMITS both fields afterwards,
+  // so the resets are drift-clean.
+  let provider: SecretsManagerSecretProvider;
+
+  const CUSTOMER_KEY = 'arn:aws:kms:us-east-1:0:key/11111111-2222-3333-4444-555555555555';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    provider = new SecretsManagerSecretProvider();
+  });
+
+  async function updateInput(
+    next: Record<string, unknown>,
+    previous: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    await provider.update('L', SECRET_ARN, 'AWS::SecretsManager::Secret', next, previous);
+    const updateCalls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateSecretCommand);
+    expect(updateCalls).toHaveLength(1);
+    return updateCalls[0]![0].input as Record<string, unknown>;
+  }
+
+  it('Description present before, absent now -> explicit "" reset in UpdateSecret input', async () => {
+    const input = await updateInput(
+      { Name: 'my-secret' },
+      { Name: 'my-secret', Description: 'old description' }
+    );
+    expect(input['Description']).toBe('');
+  });
+
+  it('KmsKeyId (customer key) present before, absent now -> explicit "" reset (revert to aws/secretsmanager)', async () => {
+    const input = await updateInput(
+      { Name: 'my-secret' },
+      { Name: 'my-secret', KmsKeyId: CUSTOMER_KEY }
+    );
+    expect(input['KmsKeyId']).toBe('');
+  });
+
+  it('never-present Description / KmsKeyId stay absent from the UpdateSecret input', async () => {
+    const input = await updateInput({ Name: 'my-secret' }, { Name: 'my-secret' });
+    expect('Description' in input).toBe(false);
+    expect('KmsKeyId' in input).toBe(false);
+  });
+
+  it('mixed: kept Description passes through unchanged while removed KmsKeyId resets', async () => {
+    const input = await updateInput(
+      { Name: 'my-secret', Description: 'kept description' },
+      { Name: 'my-secret', Description: 'kept description', KmsKeyId: CUSTOMER_KEY }
+    );
+    expect(input['Description']).toBe('kept description');
+    expect(input['KmsKeyId']).toBe('');
+  });
+
+  it('placeholder-only previous KmsKeyId ("" = no customer key) fires NO reset on removal', async () => {
+    // previousProperties carrying the readCurrentState `''` placeholder means
+    // the secret never had a customer key — a reset would be a pointless
+    // write. The placeholder is normalized to "absent" on both sides.
+    const input = await updateInput(
+      { Name: 'my-secret' },
+      { Name: 'my-secret', KmsKeyId: '' }
+    );
+    expect('KmsKeyId' in input).toBe(false);
+  });
+
+  it('customer KmsKeyId kept on both sides still passes through (removal logic does not clobber)', async () => {
+    const input = await updateInput(
+      { Name: 'my-secret', KmsKeyId: CUSTOMER_KEY },
+      { Name: 'my-secret', KmsKeyId: CUSTOMER_KEY }
+    );
+    expect(input['KmsKeyId']).toBe(CUSTOMER_KEY);
+  });
+});

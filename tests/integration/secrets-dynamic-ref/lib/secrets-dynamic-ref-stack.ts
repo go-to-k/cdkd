@@ -52,6 +52,19 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     });
     secret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // CDKD_TEST_REMOVAL (issue #1160, secretsmanager batch): the baseline
+    // template sets Description + KmsKeyId (the AWS-managed key alias) via the
+    // L1 escape hatch; the removal phase drops both properties entirely.
+    // UpdateSecret MERGES (absent = "no change"), so pre-fix the live secret
+    // silently kept both values; the provider must reset Description to ''
+    // and KmsKeyId to '' (the documented "use aws/secretsmanager" sentinel,
+    // which restores the pristine no-explicit-key shape).
+    if (process.env.CDKD_TEST_REMOVAL !== 'true') {
+      const cfnSecret = secret.node.defaultChild as secretsmanager.CfnSecret;
+      cfnSecret.description = 'cdkd f1160 removal-reset probe';
+      cfnSecret.kmsKeyId = 'alias/aws/secretsmanager';
+    }
+
     // --- SSM String parameter with a KNOWN value -----------------------
     const param = new ssm.StringParameter(this, 'DynRefParam', {
       parameterName: paramName,

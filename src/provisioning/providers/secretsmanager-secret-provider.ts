@@ -17,6 +17,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -157,26 +158,62 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         SecretId: physicalId,
       };
       if (secretString) updateParams.SecretString = secretString;
-      // `!== undefined` (not truthy): readCurrentState emits `Description: ''`
-      // as a placeholder for "no description set" so the drift comparator can
-      // detect a console-side description add. A truthy gate here would silently
-      // drop a user-intended `Description: ''` (clear-the-description) on
+      // `Description`: pass-through is `!== undefined` (not truthy) —
+      // readCurrentState emits `Description: ''` as a placeholder for "no
+      // description set" so the drift comparator can detect a console-side
+      // description add. A truthy gate here would silently drop a
+      // user-intended `Description: ''` (clear-the-description) on
       // `cdkd drift --revert`. AWS UpdateSecret accepts empty string for
       // Description (treated as "no description").
-      if (properties['Description'] !== undefined)
-        updateParams.Description = properties['Description'] as string;
-      // `KmsKeyId`: same `!== undefined` semantics, but Class 2 sanitize at the
-      // write layer — readCurrentState emits `KmsKeyId: ''` as a placeholder
-      // when the secret uses the AWS-managed key (no KMS key set). Passing an
-      // empty string to UpdateSecret is rejected by AWS as an invalid ARN, so
-      // the placeholder must NOT reach the wire. Symmetric with the
-      // serializeRedrivePolicy pattern in sqs-queue-provider.ts.
-      if (properties['KmsKeyId'] !== undefined && properties['KmsKeyId'] !== '')
-        updateParams.KmsKeyId = properties['KmsKeyId'] as string;
+      // #1160 reset-on-removal — UpdateSecret has merge semantics (an absent
+      // input field means "no change"), so a Description REMOVED from the
+      // template must be sent as the explicit clear sentinel `''` via
+      // `clearOnUpdateRemoval` (CFn resets a removed Description to "no
+      // description"; live-verified 2026-07-27: after `Description: ''`
+      // DescribeSecret omits Description again, so the reset is drift-clean).
+      const description = clearOnUpdateRemoval(
+        properties['Description'] as string | undefined,
+        previousProperties['Description'] as string | undefined,
+        ''
+      );
+      if (description !== undefined) updateParams.Description = description;
+      // `KmsKeyId`: readCurrentState emits `KmsKeyId: ''` as a placeholder
+      // when the secret uses the AWS-managed key (no customer KMS key set), so
+      // `''` on EITHER side is normalized to "absent" before the #1160
+      // removal-reset resolution — a placeholder must never pass through as a
+      // customer-key value, and a placeholder-only previous side must not fire
+      // a pointless reset (keeps `cdkd drift --revert` round-trips a wire
+      // no-op, symmetric with the serializeRedrivePolicy pattern in
+      // sqs-queue-provider.ts).
+      // The reset sentinel for a REAL removal (previous had a customer key,
+      // template no longer does) IS the empty string: the UpdateSecret API
+      // documents `KmsKeyId: ''` as "use the Amazon Web Services managed key
+      // aws/secretsmanager", exactly CloudFormation's behavior when KmsKeyId
+      // is removed from the template. Live-probed 2026-07-27 (us-east-1):
+      // UpdateSecret with `KmsKeyId: ''` is accepted (an earlier comment here
+      // claimed AWS rejects it as an invalid ARN — no longer true), and a
+      // subsequent DescribeSecret OMITS KmsKeyId again, which readCurrentState
+      // maps back to the `''` placeholder — so the reset is drift-clean.
+      // (`alias/aws/secretsmanager` is also accepted but leaves an EXPLICIT
+      // KmsKeyId in DescribeSecret, which would diverge from the
+      // never-had-a-key shape; `''` is the strictly better sentinel.)
+      const newKmsKeyId = properties['KmsKeyId'] as string | undefined;
+      const prevKmsKeyId = previousProperties['KmsKeyId'] as string | undefined;
+      const kmsKeyId = clearOnUpdateRemoval(
+        newKmsKeyId === '' ? undefined : newKmsKeyId,
+        prevKmsKeyId === '' ? undefined : prevKmsKeyId,
+        ''
+      );
+      if (kmsKeyId !== undefined) updateParams.KmsKeyId = kmsKeyId;
       // `Type`: emit-when-present (no placeholder in readCurrentState).
       // Truthy gate matches create() — Type is the partner identifier for
       // Secrets Manager managed external secrets and is rarely user-set;
       // passing an empty string would be a no-op on AWS side.
+      // DELIBERATELY NOT routed through clearOnUpdateRemoval (issue #1160
+      // secretsmanager batch): a template-removed Type still keeps its live
+      // value — the umbrella's UNCERTAIN bucket tracks it (partner-managed
+      // secrets; no documented clear sentinel, and probing one requires a
+      // partner-linked secret we cannot fabricate).
       if (properties['Type']) updateParams.Type = properties['Type'] as string;
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));

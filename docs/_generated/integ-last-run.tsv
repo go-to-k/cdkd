@@ -228,7 +228,7 @@ schema-v5-to-v6-migration	2026-07-24T10:27:22Z	PASS	61	verify.sh	0724 P0 sweep: 
 schema-v6-to-v7-migration	2026-07-24T10:25:01Z	PASS	66	verify.sh	0724 P0 sweep: s3-state-backend #1196/#1203 coverage; v6->v8 transparent upgrade; 1 del 0 err
 schema-v7-to-v8-migration	2026-07-19T19:56:03Z	PASS	100	verify.sh	rc ok, transparent auto-migration, orph clean
 sdk-ccapi-crossref	2026-07-22T07:07:07Z	PASS		verify.sh	P0: CC-provider changes (#1135/#1109) covered; heterogeneous SDK/CC routing + bidirectional cross-ref, 4 del 0 err, state.json gone (deployments/ logs retained)
-secrets-dynamic-ref	2026-07-21T14:30:00Z	PASS	58	verify.sh	rc ok, orph clean
+secrets-dynamic-ref	2026-07-26T17:14:50Z	PASS	72	verify.sh	#1160 secretsmanager removal phase 2 verified; destroy 4/0 errors, 0 orphans
 secrets-rotation-schedule	2026-06-27T16:08:39Z	PASS	58	verify.sh	CC-API RotationSchedule create+destroy (no UPDATE by design); 0 errors 0 orphans
 serverless-api	2026-07-02T18:23:15Z	PASS	50	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 servicediscovery	2026-07-19T19:00:29Z	PASS	111	verify.sh	rc ok, 3 deleted, orph clean

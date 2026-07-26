@@ -18,6 +18,12 @@
 # If a reference stays literal or resolves to the wrong value, the test FAILS
 # with specifics.
 #
+# Phase 2 (CDKD_TEST_REMOVAL=true, issue #1160 secretsmanager batch) then
+# drops the secret's Description + KmsKeyId from the template and asserts the
+# live secret resets to the pristine defaults (both absent from
+# DescribeSecret) instead of silently keeping the old values (UpdateSecret
+# merges absent input fields). Phase 3 destroys.
+#
 # SECURITY: secret-derived values are NEVER printed. Assertions compare
 # against a masked representation; only PASS/FAIL + a masked snippet is shown.
 #
@@ -229,8 +235,46 @@ fi
 echo "    OK: all dynamic references resolved to the correct values (none left literal)"
 echo "    SKIP: ssm-secure:<name> not exercised (cdkd does not resolve it; see header note)"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Assertion 1b: baseline Description + KmsKeyId reached AWS ------------
+DESC_P1=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
+  --region "${REGION}" --query 'Description' --output text)
+KMS_P1=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
+  --region "${REGION}" --query 'KmsKeyId' --output text)
+if [ "${DESC_P1}" != "cdkd f1160 removal-reset probe" ] || [ "${KMS_P1}" != "alias/aws/secretsmanager" ]; then
+  echo "FAIL: expected baseline Description/'alias/aws/secretsmanager' on the secret, got '${DESC_P1}' / '${KMS_P1}'" >&2
+  exit 1
+fi
+echo "    OK: baseline Description + KmsKeyId set on the secret"
+
+# --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
+echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# Pre-fix UpdateSecret merge semantics silently kept both values; post-fix
+# the provider sends Description='' and KmsKeyId='' (the SDK-documented
+# "revert to aws/secretsmanager" sentinel) and DescribeSecret reports the
+# pristine shape again: Description absent (text output 'None') and KmsKeyId
+# absent ('None').
+DESC_P2=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
+  --region "${REGION}" --query 'Description' --output text)
+KMS_P2=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
+  --region "${REGION}" --query 'KmsKeyId' --output text)
+# Asymmetry is deliberate: a cleared Description may surface as omitted
+# ('None') or as a literal empty string depending on how AWS normalizes the
+# '' write — both mean "no description". A cleared KmsKeyId is always OMITTED
+# from DescribeSecret (the pristine managed-key shape), so it must be exactly
+# 'None' — an empty string there would be an unexpected wire shape.
+if { [ "${DESC_P2}" != "None" ] && [ -n "${DESC_P2}" ]; } || [ "${KMS_P2}" != "None" ]; then
+  echo "FAIL: expected Description/KmsKeyId cleared after removal redeploy, got '${DESC_P2}' / '${KMS_P2}'" >&2
+  exit 1
+fi
+echo "    OK: Description + KmsKeyId reset to the pristine defaults on AWS"
+
+# --- Phase 3: destroy -------------------------------------------------
+echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
