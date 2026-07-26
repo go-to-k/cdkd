@@ -152,11 +152,11 @@ local-ecs-service-connect	2026-06-21T11:00:28Z	PASS	20	verify.sh	sweep-4..8 stal
 local-invoke	2026-07-20T03:08:51Z	PASS	120	verify.sh	integ-local refresh for pattern-2 sweep (local-start-alb-from-state probe change); docker sweep clean
 local-invoke-agentcore	2026-06-21T10:51:48Z	PASS	103	verify.sh	creds materialized (export-credentials); 21 tests; arm64-native container (no qemu); docker clean
 local-invoke-agentcore-from-state	2026-06-21T10:51:48Z	PASS	55	verify.sh	creds materialized; 8 del 0 err; --from-state intrinsic env-var substitution; docker clean
-local-invoke-buildkit	2026-06-21T11:00:28Z	PASS	32	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-container	2026-06-21T11:00:28Z	PASS	29	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-dotnet	2026-06-21T11:00:28Z	PASS	78	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-from-cfn-stack	2026-06-21T11:00:28Z	PASS	100	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-from-cfn-stack-multi-stack	2026-07-26T20:29:11Z	FAIL	10	verify.sh	fixture staleness: global cdk 2.1120 vs assembly schema 54; fixture now vendors aws-cdk, re-run queued
+local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
+local-invoke-container	2026-07-26T20:35:19Z	PASS	24	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
+local-invoke-dotnet	2026-07-26T20:35:19Z	PASS	58	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
+local-invoke-from-cfn-stack	2026-07-26T20:35:19Z	PASS	91	verify.sh	re-run with vendored aws-cdk CLI (schema-54 fix); live-verified, docker + account + CFn clean
+local-invoke-from-cfn-stack-multi-stack	2026-07-26T20:35:19Z	PASS	113	verify.sh	re-run with vendored aws-cdk CLI (schema-54 fix); live-verified, docker + account + CFn clean
 local-invoke-from-state	2026-07-26T20:29:11Z	PASS	61	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-java	2026-07-26T20:29:11Z	PASS	36	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
