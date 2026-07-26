@@ -417,6 +417,22 @@ export class ASGProvider implements ResourceProvider {
       //     documents no default for `ImpairedZoneHealthCheckBehavior` (and
       //     none for `ZonalShiftEnabled`), so a reset shape cannot be derived
       //     without guessing; removal currently keeps the live value.
+      //
+      // Sub-field removal inside a KEPT config object (issue #1225 — the
+      // #1160 bug class one level down) is deliberately passed through
+      // verbatim here:
+      //   - InstanceMaintenancePolicy: a kept-but-partial object (one of the
+      //     two percentages dropped) is REJECTED by AWS — the SDK doc requires
+      //     "Both MinHealthyPercentage and MaxHealthyPercentage must be
+      //     specified". CloudFormation submits the same partial object, so the
+      //     loud failure IS the CFn-parity behavior; there is no silent drop
+      //     to normalize away.
+      //   - CapacityReservationSpecification: whether AWS keeps or clears a
+      //     previously-set CapacityReservationTarget when only the preference
+      //     is re-sent is UNPROBED (a live probe needs a billed Capacity
+      //     Reservation); the kept-partial object passes through unchanged.
+      //   - AvailabilityZoneDistribution: single sub-field — no partial shape
+      //     exists.
       const healthCheckTypeInput = clearOnUpdateRemoval(
         properties['HealthCheckType'] as string | undefined,
         previousProperties['HealthCheckType'] as string | undefined,

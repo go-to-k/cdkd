@@ -930,6 +930,14 @@ export class ECSProvider implements ResourceProvider {
     // fields (whose reset is a plain empty list), it merges at the SUB-FIELD
     // level, so a correct reset must send the full default shape whose exact
     // values need a per-field live probe against real AWS (the #1160 rule).
+    // The SAME sub-field merge also means a KEPT-but-partial
+    // DeploymentConfiguration (one sub-field dropped from a still-present
+    // block) silently retains the dropped sub-field's live value — the #1160
+    // bug class one level down, tracked as issue #1225 alongside the
+    // whole-block reset (both blocked on the same live probes:
+    // deployment-type-dependent MaximumPercent/MinimumHealthyPercent defaults
+    // — REPLICA 200/100, DAEMON min 0 via API — plus the
+    // DeploymentCircuitBreaker / Alarms clear shapes).
     // Absent-from-template still passes `undefined` (no reset) below. Also not
     // reset (immutable / required / always-carried): ServiceName (immutable,
     // guarded above), Cluster / TaskDefinition / DesiredCount /
