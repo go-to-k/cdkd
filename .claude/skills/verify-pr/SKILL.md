@@ -63,10 +63,18 @@ Run each check and report pass/fail:
      ```bash
      fixtures_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$|^tests/integration/[^/]+/(lib|bin)/.+\.ts$|^tests/integration/[^/]+/\.scenarios\.json$|^tests/integration/[^/]+/verify\.sh$' && echo yes)
      providers_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$' && echo yes)
+     # cli-flag-coverage counts DECLARED flags, so a flag-only diff (options.ts
+     # or a command file adding/removing an Option) stales it with NO fixture
+     # change — PR #1231 (--strict/--ignore-errors) merged that way and turned
+     # main's check-build-test red until the regen landed (PR #1232).
+     cli_flags_changed=$(git diff main...HEAD --name-only | grep -qE '^src/cli/options\.ts$|^src/cli/commands/.+\.ts$' && echo yes)
 
      if [ "$fixtures_changed" = "yes" ]; then
        vp run integ-coverage
        vp run scenario-coverage
+     fi
+
+     if [ "$fixtures_changed" = "yes" ] || [ "$cli_flags_changed" = "yes" ]; then
        vp run cli-flag-coverage
      fi
 
