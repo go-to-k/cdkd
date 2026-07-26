@@ -9,6 +9,9 @@
 #   - AWS::SNS::Subscription RawMessageDelivery on the primary subscription
 #     (true) and RedrivePolicy on the secondary subscription (a
 #     deadLetterQueue), both via the Subscribe Attributes map.
+# Then re-deploys with CDKD_TEST_REMOVAL=true (drops SqsManagedSseEnabled from
+# the SSE-removal queue — issue #1160 sqs batch) and asserts the live queue
+# resets to the SQS/CFn default (SSE on) instead of silently keeping SSE off.
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -59,6 +62,7 @@ TOPIC_NAME="cdkd-sns-sqs-test-topic"
 DLQ_NAME="cdkd-sns-sqs-test-dlq"
 PRIMARY_QUEUE_NAME="cdkd-sns-sqs-test-primary"
 SECONDARY_QUEUE_NAME="cdkd-sns-sqs-test-secondary"
+SSE_QUEUE_NAME="cdkd-sns-sqs-test-sse-removal"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -134,6 +138,21 @@ if [ "${PERMISSION}" != "allowAll" ]; then
 fi
 echo "    OK: DLQ RedriveAllowPolicy.redrivePermission == 'allowAll' on AWS (SQS backfill CLOSED)"
 
+# --- Assertion 1b: SSE-removal queue starts with SSE off (issue #1160) ----
+SSE_QUEUE_URL=$(aws sqs get-queue-url --queue-name "${SSE_QUEUE_NAME}" --region "${REGION}" \
+  --query 'QueueUrl' --output text)
+SSE_P1=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
+  --attribute-names SqsManagedSseEnabled --region "${REGION}" \
+  --query 'Attributes.SqsManagedSseEnabled' --output text)
+SSE_CREATED_P1=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
+  --attribute-names CreatedTimestamp --region "${REGION}" \
+  --query 'Attributes.CreatedTimestamp' --output text)
+if [ "${SSE_P1}" != "false" ]; then
+  echo "FAIL: expected SqsManagedSseEnabled=false on ${SSE_QUEUE_NAME} after Phase 1, got '${SSE_P1}'" >&2
+  exit 1
+fi
+echo "    OK: SSE-removal queue deployed with SqsManagedSseEnabled=false"
+
 # --- Resolve the topic + subscription ARNs --------------------------------
 TOPIC_ARN=$(aws sns list-topics --region "${REGION}" \
   --query "Topics[?ends_with(TopicArn, ':${TOPIC_NAME}')].TopicArn | [0]" \
@@ -198,8 +217,38 @@ if [ -z "${DLT_ARN}" ]; then
 fi
 echo "    OK: secondary subscription RedrivePolicy.deadLetterTargetArn is set on AWS (SNS backfill CLOSED)"
 
-# --- Phase 2: destroy -----------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Phase 2: removal-reset redeploy (issue #1160 sqs batch) --------------
+echo "==> Phase 2: re-deploy dropping SqsManagedSseEnabled (removal reset)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# Pre-fix the provider passed the absent attribute through and SQS kept SSE
+# off (SetQueueAttributes merges); post-fix the removal sends the explicit
+# reset and the queue returns to the SQS/CFn default (SSE-SQS on).
+SSE_P2=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
+  --attribute-names SqsManagedSseEnabled --region "${REGION}" \
+  --query 'Attributes.SqsManagedSseEnabled' --output text)
+SSE_CREATED_P2=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
+  --attribute-names CreatedTimestamp --region "${REGION}" \
+  --query 'Attributes.CreatedTimestamp' --output text)
+if [ "${SSE_P2}" != "true" ]; then
+  echo "FAIL: expected SqsManagedSseEnabled=true after the removal redeploy, got '${SSE_P2}'" >&2
+  exit 1
+fi
+# Replacement guard: the removal must be an in-place UPDATE. A replacement
+# here would be doubly wrong — SqsManagedSseEnabled is not a create-only
+# property, and a same-name replacement can silently delete the queue
+# (issue #1238).
+if [ "${SSE_CREATED_P1}" != "${SSE_CREATED_P2}" ]; then
+  echo "FAIL: SSE-removal queue was REPLACED (CreatedTimestamp ${SSE_CREATED_P1} -> ${SSE_CREATED_P2})" >&2
+  exit 1
+fi
+echo "    OK: SqsManagedSseEnabled reset to true in place (CreatedTimestamp unchanged)"
+
+# --- Phase 3: destroy -----------------------------------------------------
+echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -207,6 +256,9 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "DLQ ${DLQ_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${DLQ_NAME}" --region "${REGION}"
 echo "    OK: DLQ is gone"
+
+assert_gone "SSE-removal queue ${SSE_QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${SSE_QUEUE_NAME}" --region "${REGION}"
+echo "    OK: SSE-removal queue is gone"
 
 assert_gone "primary subscription still exists after destroy" aws sns get-subscription-attributes --subscription-arn "${PRIMARY_SUB_ARN}" --region "${REGION}"
 echo "    OK: subscriptions are gone"

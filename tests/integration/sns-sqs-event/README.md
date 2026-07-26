@@ -6,6 +6,9 @@ Tests event-driven architecture: SNS topic with multiple SQS subscribers, DLQ, a
 
 - SNS Topic
 - 2 SQS Queues (primary + secondary with filter policy)
+- SSE-removal queue (L1 `CfnQueue` with `SqsManagedSseEnabled: false`; the
+  `CDKD_TEST_REMOVAL=true` redeploy drops the property and asserts the live
+  queue resets to the SQS/CFn default SSE-on, in place — issue #1160 sqs batch)
 - Dead Letter Queue
 - Lambda function triggered by primary queue
 - IAM roles/policies (auto-created)
