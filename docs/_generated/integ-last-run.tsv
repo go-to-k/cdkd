@@ -116,8 +116,8 @@ glue-securityconfig-replace	2026-07-26T18:20:27Z	PASS	59	verify.sh	0727b sweep-b
 glue-update-hardening	2026-07-02T18:23:15Z	PASS	68	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 iam-managed-policy	2026-07-21T13:08:15Z	PASS	29	verify.sh	converted; policy attached, detach-before-delete clean, 0 orphans
 iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
-iam-propagation-stress	2026-06-21T18:33:45Z	PASS	80	verify.sh	first run (never-run); 4 fresh-role race edges + role consumers work; clean destroy
-iam-role-policies-drift-clean	2026-06-22T02:14:54Z	PASS		verify.sh	no IAM Role phantom drift; destroy 6/0 errors, 0 orphans
+iam-propagation-stress	2026-07-26T18:57:55Z	PASS	71	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
+iam-role-policies-drift-clean	2026-07-26T18:57:55Z	PASS	84	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-role removal phase 3 verified; destroy 1/0 errors, 0 orphans
 import-attributes	2026-07-21T13:51:28Z	PASS	42	verify.sh	post import-tag-walk refactor #1139; attr reconstruct+destroy clean
 import-auto-mode	2026-07-21T13:53:15Z	PASS	74	verify.sh	post import-tag-walk refactor #1139; CFn physId resolve (no tag) clean
@@ -128,9 +128,9 @@ infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness r
 inplace-attr-propagation	2026-06-29T02:40:51Z	PASS	47	verify.sh	in-place upstream attr propagates to GetAtt dependent
 intrinsic-functions	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 intrinsics-torture	2026-07-21T05:24:57Z	PASS	48	verify.sh	rc ok, orph clean
-intrinsics-torture-2	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); intrinsic-function torture; 12 checks; 11 deleted 0 err; SSM cleared
+intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 kinesis-esm-filter	2026-07-24T10:29:51Z	PASS	73	verify.sh	0724 P0 sweep: lambda-eventsource-provider #1194 coverage; FilterCriteria verified; 5 del 0 err
-kinesis-stream-mode-switch	2026-06-22T04:55:10Z	PASS	68	verify.sh	StreamMode switch reaches AWS (re-run on merged tree); unique stream name avoids mode-change rate limit
+kinesis-stream-mode-switch	2026-07-26T18:57:55Z	PASS	73	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda	2026-07-26T15:31:59Z	PASS	85	verify.sh	PR #1231 broad integ; destroy 0 errors 0 orphans
 lambda-alias-provisioned-concurrency	2026-06-27T19:25:47Z	PASS	251	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
@@ -184,7 +184,7 @@ loggroup-kms-associate	2026-07-02T11:32:39Z	PASS	150	verify.sh	new fixture: KmsK
 macro-expansion	2026-07-21T19:45:50Z	PASS	107	verify.sh	re-run w/ new diff-expands + destroy-no-expand asserts (1150)
 microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
 migrate-from-bare-cfn	2026-07-21T13:56:13Z	PASS	152	verify.sh	post import-tag-walk refactor #1139; bare-CFn migrate 3 types+destroy clean
-migrate-from-bare-cfn-codegen-only	2026-06-21T19:09:34Z	PASS	55	verify.sh	fixed: bumped pinned aws-cdk 2.1112->2.1128 (schema 54 float); 3/3 logical IDs + aws:cdk:path preserved; AWS-free codegen smoke
+migrate-from-bare-cfn-codegen-only	2026-07-26T18:57:55Z	PASS	17	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk refactor #1139; import+migrate+destroy clean
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
@@ -199,7 +199,7 @@ opensearch-domain-getatt	2026-07-20T18:25:27Z	PASS	1796	verify.sh	FIXED: 60m CC 
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run); 4 fresh-principal/consumer race edges; clean destroy
+propagation-races-2	2026-07-26T18:57:55Z	PASS	169	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
 rds-aurora	2026-07-25T06:38:38Z	PASS	2085	verify.sh	1160 removal reset: cluster DeletionProtection+IAMAuth reset live-verified, destroy 23/0
 rds-dbinstance-backfill	2026-07-25T07:01:56Z	PASS	725	verify.sh	re-run after 1222 review fixes; destroy 11/0
