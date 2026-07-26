@@ -2364,6 +2364,85 @@ export class DeployEngine {
   }
 
   /**
+   * `--replace` delete-first fallback for a property-driven replacement of a
+   * custom-named resource: delete the old name holder, then re-create it
+   * under the same name. Shared by the create-first collision catch (issue
+   * #960 follow-up) and the name-idempotent same-id guard (issue #1238) so
+   * the two --replace escape hatches cannot drift apart.
+   */
+  private async replaceDeleteFirstAndRecreate(
+    logicalId: string,
+    resourceType: string,
+    currentResource: ResourceState,
+    oldDeleteProvider: ResourceProvider,
+    replaceProvider: ResourceProvider,
+    replaceProps: Record<string, unknown>
+  ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
+    try {
+      await oldDeleteProvider.delete(
+        logicalId,
+        currentResource.physicalId,
+        resourceType,
+        currentResource.properties,
+        { expectedRegion: this.stackRegion }
+      );
+    } catch (deleteError) {
+      // Mirror the recreate-flagged path's wrapping: the delete is
+      // load-bearing here (without it the re-create collides again).
+      throw new Error(
+        `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
+          `during the --replace delete-first fallback: ` +
+          `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+      );
+    }
+    this.logger.info(`  ${green('✓')} Old resource deleted`);
+    this.logger.info(`  Re-creating ${logicalId}...`);
+    try {
+      // Some providers return from delete() before the name is
+      // actually released (async deletes: Step Functions, Kinesis,
+      // Pipes DELETING state). "already exists" is deliberately
+      // NOT in the transient-retry patterns, so give the re-create
+      // its own bounded collision retry instead of failing fast
+      // with the old resource already gone. SQS additionally
+      // enforces a ~60s same-name re-creation cooldown after the
+      // delete (QueueDeletedRecently, issue #1206) — the schedule
+      // (2s/4s/8s then capped at 10s over 8 retries ≈ 64s total
+      // sleep) covers the full cooldown window even when the inner
+      // generic retry's budget is exhausted first.
+      return await withRetry(
+        () =>
+          this.withRetry(
+            () => replaceProvider.create(logicalId, resourceType, replaceProps),
+            logicalId,
+            undefined,
+            undefined,
+            replaceProvider
+          ),
+        logicalId,
+        {
+          maxRetries: 8,
+          initialDelayMs: 2_000,
+          maxDelayMs: 10_000,
+          logger: this.logger,
+          isInterrupted: () => this.interrupted,
+          onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
+          isRetryable: isRecreateRetryableError,
+        }
+      );
+    } catch (recreateError) {
+      // The old resource is ALREADY deleted at this point — say so,
+      // because state still records it and the next deploy's UPDATE
+      // would otherwise chase a resource that no longer exists.
+      throw new Error(
+        `Failed to re-create ${logicalId} after the --replace delete-first fallback ` +
+          `already deleted the old resource (${currentResource.physicalId}): ` +
+          `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
+          `Re-run the deploy to create it fresh.`
+      );
+    }
+  }
+
+  /**
    * Inner body of provisionResource, extracted so the outer wrapper can
    * apply the per-resource deadline (`withResourceDeadline`) without
    * having the timeout / warn timer code dwarf the real provisioning
@@ -2753,6 +2832,30 @@ export class DeployEngine {
                 isRetryable: isRecreateRetryableError,
               }
             );
+
+            // Issue #1238: under `UpdateReplacePolicy: Retain` the old
+            // resource was NOT destroyed above, so a name-idempotent Create
+            // API (e.g. SQS CreateQueue with an unchanged QueueName) can
+            // silently return the EXISTING resource instead of colliding.
+            // Recording that id as the "new" resource would re-adopt the
+            // resource the Retain policy just orphaned — without the new
+            // properties ever being applied. Fail before the state
+            // bookkeeping runs; the old resource and its state record stay
+            // intact.
+            if (
+              updateReplacePolicy === 'Retain' &&
+              createResult.physicalId === currentResource.physicalId
+            ) {
+              throw new CdkdError(
+                `${logicalId} (${resourceType}) recreate returned the existing resource ` +
+                  `(${currentResource.physicalId}) instead of creating a new one — its Create ` +
+                  `API is name-idempotent — and UpdateReplacePolicy: Retain means the old ` +
+                  `resource was never destroyed, so the new properties were not applied. ` +
+                  `Rename the resource in your CDK code (or remove the explicit physical ` +
+                  `name) so the recreate can produce a genuinely new resource.`,
+                'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
+              );
+            }
           } else {
             // Property-driven replacement: create-then-destroy (CFn
             // safe-replacement order — keeps the old alive if CREATE
@@ -2824,69 +2927,76 @@ export class DeployEngine {
                 `  Create-first collided with the custom-named resource and --replace is set — ` +
                   `deleting old ${logicalId} (${currentResource.physicalId}) first...`
               );
-              try {
-                await oldDeleteProvider.delete(
-                  logicalId,
-                  currentResource.physicalId,
-                  resourceType,
-                  currentResource.properties,
-                  { expectedRegion: this.stackRegion }
-                );
-              } catch (deleteError) {
-                // Mirror the recreate-flagged path's wrapping: the delete is
-                // load-bearing here (without it the re-create collides again).
-                throw new Error(
-                  `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
-                    `during the --replace delete-first fallback: ` +
-                    `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-                );
-              }
-              this.logger.info(`  ${green('✓')} Old resource deleted`);
               deletedOldFirst = true;
-              this.logger.info(`  Re-creating ${logicalId}...`);
-              try {
-                // Some providers return from delete() before the name is
-                // actually released (async deletes: Step Functions, Kinesis,
-                // Pipes DELETING state). "already exists" is deliberately
-                // NOT in the transient-retry patterns, so give the re-create
-                // its own bounded collision retry instead of failing fast
-                // with the old resource already gone. SQS additionally
-                // enforces a ~60s same-name re-creation cooldown after the
-                // delete (QueueDeletedRecently, issue #1206) — the schedule
-                // (2s/4s/8s then capped at 10s over 8 retries ≈ 64s total
-                // sleep) covers the full cooldown window even when the inner
-                // generic retry's budget is exhausted first.
-                createResult = await withRetry(
-                  () =>
-                    this.withRetry(
-                      () => replaceProvider.create(logicalId, resourceType, replaceProps),
-                      logicalId,
-                      undefined,
-                      undefined,
-                      replaceProvider
-                    ),
-                  logicalId,
-                  {
-                    maxRetries: 8,
-                    initialDelayMs: 2_000,
-                    maxDelayMs: 10_000,
-                    logger: this.logger,
-                    isInterrupted: () => this.interrupted,
-                    onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
-                    isRetryable: isRecreateRetryableError,
-                  }
-                );
-              } catch (recreateError) {
-                // The old resource is ALREADY deleted at this point — say so,
-                // because state still records it and the next deploy's UPDATE
-                // would otherwise chase a resource that no longer exists.
-                throw new Error(
-                  `Failed to re-create ${logicalId} after the --replace delete-first fallback ` +
-                    `already deleted the old resource (${currentResource.physicalId}): ` +
-                    `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
-                    `Re-run the deploy to create it fresh.`
+              createResult = await this.replaceDeleteFirstAndRecreate(
+                logicalId,
+                resourceType,
+                currentResource,
+                oldDeleteProvider,
+                replaceProvider,
+                replaceProps
+              );
+            }
+
+            // Issue #1238: a name-idempotent Create API (e.g. SQS
+            // CreateQueue with an unchanged QueueName) does NOT collide
+            // when the template carries an explicit physical name — it
+            // silently returns the OLD resource's physicalId as the "new"
+            // one. The "new" resource IS the old one, so the delete-old
+            // step below would destroy the very resource the deploy just
+            // reported as created, and state would keep pointing at a
+            // deleted resource (observed live with a FIFO queue). Mirror
+            // the create-first collision handling above: hard-fail under
+            // Retain, fail with the rename / --replace remediation without
+            // the opt-in, and fall back to delete-first + re-create under
+            // --replace. Skipped when the old resource was already deleted
+            // (delete-first fallback) — there, re-acquiring the same
+            // physical id under the same name is the expected outcome.
+            if (!deletedOldFirst && createResult.physicalId === currentResource.physicalId) {
+              if (updateReplacePolicy === 'Retain') {
+                throw new CdkdError(
+                  `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
+                    `name-idempotent: the create-first attempt returned the existing resource ` +
+                    `(${currentResource.physicalId}) instead of creating a new one, and ` +
+                    `UpdateReplacePolicy: Retain pins that resource in place. Rename the ` +
+                    `resource in your CDK code — with Retain, the old resource keeps the ` +
+                    `name, so a same-name replacement can never proceed.`,
+                  'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
                 );
               }
+              if (this.options.replace !== true) {
+                throw new CdkdError(
+                  `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
+                    `name-idempotent: the create-first attempt returned the EXISTING resource ` +
+                    `(${currentResource.physicalId}) instead of creating a new one, so deleting ` +
+                    `the "old" resource would silently destroy the resource the deploy just ` +
+                    `reported as created. The resource has a user-supplied physical name; ` +
+                    `either change or remove the explicit name in your CDK code (a fresh or ` +
+                    `generated name lets the safe create-first order proceed), or re-run with ` +
+                    `\`cdkd deploy --replace\` to delete the old resource FIRST and recreate ` +
+                    `it under the same name (the resource is briefly unavailable while it is ` +
+                    `recreated).`,
+                  'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
+                );
+              }
+              // --replace opt-in: same delete-first fallback as the
+              // collision path — the "created" resource is the old one, so
+              // deleting the old physical id releases the name, and the
+              // re-create applies the new properties for real.
+              this.logger.info(
+                `  Create-first returned the existing resource (name-idempotent Create API) ` +
+                  `and --replace is set — deleting old ${logicalId} ` +
+                  `(${currentResource.physicalId}) first...`
+              );
+              deletedOldFirst = true;
+              createResult = await this.replaceDeleteFirstAndRecreate(
+                logicalId,
+                resourceType,
+                currentResource,
+                oldDeleteProvider,
+                replaceProvider,
+                replaceProps
+              );
             }
 
             if (deletedOldFirst) {
