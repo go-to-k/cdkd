@@ -67,14 +67,20 @@ export function collectStackMessages(
     let sideFile: Record<string, MetadataEntry[]>;
     try {
       sideFile = JSON.parse(readFileSync(metadataPath, 'utf-8')) as Record<string, MetadataEntry[]>;
+      if (sideFile === null || typeof sideFile !== 'object' || Array.isArray(sideFile)) {
+        throw new Error('expected a JSON object mapping construct paths to metadata entry arrays');
+      }
+      for (const [path, entries] of Object.entries(sideFile)) {
+        if (!Array.isArray(entries)) {
+          throw new Error(`entry for path '${path}' is not an array`);
+        }
+        merged[path] = [...(merged[path] ?? []), ...entries];
+      }
     } catch (error) {
       throw new SynthesisError(
         `Failed to read stack metadata file ${metadataPath}: ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined
       );
-    }
-    for (const [path, entries] of Object.entries(sideFile)) {
-      merged[path] = [...(merged[path] ?? []), ...entries];
     }
   }
 
@@ -82,12 +88,20 @@ export function collectStackMessages(
   for (const [path, entries] of Object.entries(merged)) {
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
-      const level = MESSAGE_ENTRY_TYPES[entry?.type ?? ''];
+      const type = entry?.type ?? '';
+      const level = Object.hasOwn(MESSAGE_ENTRY_TYPES, type)
+        ? MESSAGE_ENTRY_TYPES[type]
+        : undefined;
       if (!level) continue;
       messages.push({
         level,
         path,
-        message: typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data),
+        message:
+          typeof entry.data === 'string'
+            ? entry.data
+            : entry.data === undefined
+              ? ''
+              : JSON.stringify(entry.data),
       });
     }
   }

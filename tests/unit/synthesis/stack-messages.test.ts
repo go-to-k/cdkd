@@ -133,6 +133,42 @@ describe('collectStackMessages', () => {
     expect(() => collectStackMessages('/asm', artifact)).toThrow(SynthesisError);
   });
 
+  it('throws SynthesisError (not a raw TypeError) when the side file is valid JSON of the wrong shape', () => {
+    const artifact = stackArtifact({ additionalMetadataFile: 'MyStack.metadata.json' });
+
+    // Non-array path value: spreading it would otherwise throw a raw TypeError
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ '/MyStack': 42 }));
+    expect(() => collectStackMessages('/asm', artifact)).toThrow(SynthesisError);
+
+    // String path value: would otherwise spread into per-character garbage entries
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ '/MyStack': 'oops' }));
+    expect(() => collectStackMessages('/asm', artifact)).toThrow(SynthesisError);
+
+    // Top-level array / null instead of a record
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify([{ type: 'aws:cdk:error' }]));
+    expect(() => collectStackMessages('/asm', artifact)).toThrow(SynthesisError);
+    vi.mocked(readFileSync).mockReturnValue('null');
+    expect(() => collectStackMessages('/asm', artifact)).toThrow(SynthesisError);
+  });
+
+  it('renders an entry with no data as an empty message, not "undefined"', () => {
+    const artifact = stackArtifact({
+      metadata: { '/MyStack': [{ type: 'aws:cdk:warning' }] },
+    });
+
+    expect(collectStackMessages('/asm', artifact)).toEqual([
+      { level: 'warning', path: '/MyStack', message: '' },
+    ]);
+  });
+
+  it('ignores entry types that collide with Object.prototype keys', () => {
+    const artifact = stackArtifact({
+      metadata: { '/MyStack': [{ type: 'constructor', data: 'x' }, { type: 'toString', data: 'y' }] },
+    });
+
+    expect(collectStackMessages('/asm', artifact)).toEqual([]);
+  });
+
   it('JSON-stringifies non-string message data', () => {
     const artifact = stackArtifact({
       metadata: { '/MyStack': [{ type: 'aws:cdk:error', data: { code: 42 } }] },
