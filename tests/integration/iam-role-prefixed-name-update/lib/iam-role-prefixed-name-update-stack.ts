@@ -19,6 +19,12 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * in-place IAM update that must NOT be blocked by the migration prompt and must
  * NOT replace the role.
  *
+ * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 iam-role batch)
+ * keeps the phase-2 inline policy and ADDITIONALLY drops `description` +
+ * `maxSessionDuration` from the template. IAM UpdateRole MERGES (absent =
+ * "no change"), so pre-fix the live role silently kept both values;
+ * IAMRoleProvider.update() must reset them to the CFn defaults ('' / 3600).
+ *
  * covers: AWS::IAM::Role
  */
 export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
@@ -26,6 +32,9 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
     super(scope, id, props);
 
     const updating = process.env.CDKD_TEST_UPDATE === 'true';
+    // CDKD_TEST_REMOVAL drops description + maxSessionDuration so the only
+    // template diff vs phase 2 is the two removed fields (issue #1160).
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
 
     const statements = [
       new iam.PolicyStatement({
@@ -49,6 +58,12 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
       inlinePolicies: {
         own: new iam.PolicyDocument({ statements }),
       },
+      ...(removal
+        ? {}
+        : {
+            description: 'cdkd f1160 removal-reset probe',
+            maxSessionDuration: cdk.Duration.hours(2),
+          }),
     });
   }
 }

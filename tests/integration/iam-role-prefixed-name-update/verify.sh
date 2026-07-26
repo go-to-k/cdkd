@@ -17,7 +17,11 @@
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (adds a 2nd statement) — an in-place
 #      IAM update. Assert it succeeds WITHOUT -y, the RoleId is UNCHANGED (no
 #      replacement), and the new statement reached AWS.
-#   3. Destroy + assert the role and cdkd state are gone.
+#   3. Re-deploy with CDKD_TEST_REMOVAL=true (keeps the phase-2 policy, DROPS
+#      description + maxSessionDuration — issue #1160 iam-role batch). Assert
+#      the live role resets to the CFn defaults ('' / 3600) instead of silently
+#      keeping the old values (IAM UpdateRole merges absent fields).
+#   4. Destroy + assert the role and cdkd state are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -119,6 +123,13 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 
 ROLE_ID_P1="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.RoleId' --output text)"
 echo "    role created, RoleId=${ROLE_ID_P1}"
+DESC_P1="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.Description' --output text)"
+MAX_P1="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.MaxSessionDuration' --output text)"
+if [ "${DESC_P1}" != "cdkd f1160 removal-reset probe" ] || [ "${MAX_P1}" != "7200" ]; then
+  echo "FAIL: expected Description='cdkd f1160 removal-reset probe' / MaxSessionDuration=7200 after Phase 1, got '${DESC_P1}' / '${MAX_P1}'" >&2
+  exit 1
+fi
+echo "    description + maxSessionDuration set (7200)"
 STMTS_P1="$(aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name own \
   --query 'length(PolicyDocument.Statement)' --output text)"
 if [ "${STMTS_P1}" != "1" ]; then
@@ -148,8 +159,29 @@ if [ "${STMTS_P2}" != "2" ]; then
 fi
 echo "    in-place UPDATE reached AWS (inline policy now has 2 statements), no migration prompt"
 
-# --- Phase 3: destroy --------------------------------------------------
-echo "==> Phase 3: destroy"
+# --- Phase 3: removal-reset (issue #1160 iam-role batch) ----------------
+echo "==> Phase 3: re-deploy dropping description + maxSessionDuration (removal reset)"
+CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+
+ROLE_ID_P3="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.RoleId' --output text)"
+if [ "${ROLE_ID_P1}" != "${ROLE_ID_P3}" ]; then
+  echo "FAIL: role was REPLACED during the removal redeploy (RoleId ${ROLE_ID_P1} -> ${ROLE_ID_P3})" >&2
+  exit 1
+fi
+# Cleared Description comes back as absent (text output 'None'); MaxSessionDuration
+# must be back at the IAM/CFn default 3600 — pre-fix both silently kept the
+# phase-1 values because UpdateRole merges absent input fields.
+DESC_P3="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.Description' --output text)"
+MAX_P3="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.MaxSessionDuration' --output text)"
+if { [ "${DESC_P3}" != "None" ] && [ -n "${DESC_P3}" ]; } || [ "${MAX_P3}" != "3600" ]; then
+  echo "FAIL: expected Description cleared / MaxSessionDuration=3600 after removal redeploy, got '${DESC_P3}' / '${MAX_P3}'" >&2
+  exit 1
+fi
+echo "    removal reset reached AWS (description cleared, maxSessionDuration back to 3600), role identity preserved"
+
+# --- Phase 4: destroy --------------------------------------------------
+echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
