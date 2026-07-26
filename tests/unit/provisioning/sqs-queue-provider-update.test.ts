@@ -246,6 +246,175 @@ describe('SQSQueueProvider.update', () => {
     expect(setAttrsCall).toBeUndefined();
   });
 
+  it('resets ContentBasedDeduplication to "false" when removed on update (issue #1160)', async () => {
+    // FIFO queue had ContentBasedDeduplication: true; the property is now
+    // absent from the desired template. CFn resets a removed property to its
+    // default (disabled) — SetQueueAttributes has merge semantics, so the
+    // provider must send the explicit 'false'. Only a FIFO queue can carry
+    // the attribute in previousProperties (AWS rejects it on standard
+    // queues), so the reset is always FIFO-safe.
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { FifoQueue: true },
+      { FifoQueue: true, ContentBasedDeduplication: true }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['ContentBasedDeduplication']).toBe('false');
+  });
+
+  it('does NOT send ContentBasedDeduplication when never present on either side', async () => {
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { VisibilityTimeout: 45 },
+      { VisibilityTimeout: 30 }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['ContentBasedDeduplication']).toBeUndefined();
+    expect(input.Attributes['SqsManagedSseEnabled']).toBeUndefined();
+    expect(input.Attributes['VisibilityTimeout']).toBe('45');
+  });
+
+  it('mixed removal: kept fields pass through while ContentBasedDeduplication resets (issue #1160)', async () => {
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { FifoQueue: true, DelaySeconds: 5 },
+      { FifoQueue: true, DelaySeconds: 5, ContentBasedDeduplication: true }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['ContentBasedDeduplication']).toBe('false');
+    // Kept field passes through unchanged, not reset to its default.
+    expect(input.Attributes['DelaySeconds']).toBe('5');
+  });
+
+  it('resets SqsManagedSseEnabled to "true" when removed on update (issue #1160)', async () => {
+    // A standard queue had SqsManagedSseEnabled: false; the property is now
+    // absent. SSE-SQS is enabled by default when the property is undefined
+    // (CFn docs), so removal resets to 'true'.
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      {},
+      { SqsManagedSseEnabled: false }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['SqsManagedSseEnabled']).toBe('true');
+  });
+
+  it('skips the SqsManagedSseEnabled reset when the new template carries a non-empty KmsMasterKeyId', async () => {
+    // SSE-SQS and SSE-KMS are mutually exclusive: AWS rejects a
+    // SetQueueAttributes call carrying both a non-empty KmsMasterKeyId and
+    // SqsManagedSseEnabled 'true' ("You can use one type of server-side
+    // encryption (SSE) at one time.", live-verified). The template switched
+    // to SSE-KMS, so the reset must be suppressed — setting the CMK
+    // implicitly turns SSE-SQS off.
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { KmsMasterKeyId: 'alias/aws/sqs' },
+      { SqsManagedSseEnabled: false }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['SqsManagedSseEnabled']).toBeUndefined();
+    expect(input.Attributes['KmsMasterKeyId']).toBe('alias/aws/sqs');
+  });
+
+  it('still resets SqsManagedSseEnabled when the new KmsMasterKeyId is the empty-string placeholder', async () => {
+    // readCurrentState emits KmsMasterKeyId: '' as the "no CMK" placeholder.
+    // An empty key means SSE-KMS is NOT desired, so the SSE-SQS reset must
+    // fire — AWS accepts KmsMasterKeyId '' + SqsManagedSseEnabled 'true' in
+    // one call (live-verified).
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { KmsMasterKeyId: '' },
+      { SqsManagedSseEnabled: false }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['SqsManagedSseEnabled']).toBe('true');
+    expect(input.Attributes['KmsMasterKeyId']).toBe('');
+  });
+
+  it('resets both KmsMasterKeyId and SqsManagedSseEnabled when both are removed at once', async () => {
+    // Template dropped SSE config entirely: KmsMasterKeyId resets to '' and
+    // SqsManagedSseEnabled resets to 'true' (back to the SSE-SQS default).
+    // AWS accepts this combination in a single call (live-verified).
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      {},
+      { KmsMasterKeyId: 'alias/aws/sqs', SqsManagedSseEnabled: false }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['KmsMasterKeyId']).toBe('');
+    expect(input.Attributes['SqsManagedSseEnabled']).toBe('true');
+  });
+
   it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
     // Mechanical guard for Class 2 placeholder regression. See
     // docs/provider-development.md § 3b "Read-update round-trip test".
