@@ -10,9 +10,10 @@
 # genuine legacy auto-prefix (`physicalId === ${stackName}-${userName}`), so a
 # verbatim user name that merely starts with the stack name is left alone.
 #
-# Phases (BOTH deploys intentionally omit -y — the absence of an auto-confirm
-# flag is the regression guard: pre-fix Phase 2 hard-fails with the migration
-# prompt's non-interactive error; post-fix it succeeds with no prompt):
+# Phases (all three deploys intentionally omit -y — the absence of an
+# auto-confirm flag is the regression guard: pre-fix Phase 2 hard-fails with
+# the migration prompt's non-interactive error; post-fix it succeeds with no
+# prompt):
 #   1. Deploy baseline (role with 1 inline-policy statement). Capture RoleId.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (adds a 2nd statement) — an in-place
 #      IAM update. Assert it succeeds WITHOUT -y, the RoleId is UNCHANGED (no
@@ -118,7 +119,7 @@ cleanup
 
 # --- Phase 1: deploy baseline (NO -y) ---------------------------------
 echo "==> Phase 1: deploy baseline role (name starts with stack name)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 
 ROLE_ID_P1="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.RoleId' --output text)"
@@ -141,7 +142,7 @@ fi
 echo "==> Phase 2: re-deploy adding an inline-policy statement (in-place, NO -y)"
 # Pre-fix this hard-fails: "--no-prefix-user-supplied-names migration confirm
 # prompt cannot run in a non-interactive environment. Pass --yes ...".
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 
 ROLE_ID_P2="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.RoleId' --output text)"

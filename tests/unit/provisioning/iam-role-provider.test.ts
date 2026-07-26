@@ -428,10 +428,11 @@ describe('IAMRoleProvider', () => {
     // then.
     describe('clear-on-removal (issue #1160)', () => {
       const mockUpdateFlow = () => {
+        // With no policies/tags in the props, the policy/tag helpers issue
+        // zero sends — the actual consumption is UpdateRoleCommand then
+        // GetRoleCommand. (The trio tests only inspect the
+        // UpdateRoleCommand input.)
         mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
-        mockSend.mockResolvedValueOnce({}); // updateManagedPolicies (no-op)
-        mockSend.mockResolvedValueOnce({}); // updateInlinePolicies (no-op)
-        mockSend.mockResolvedValueOnce({}); // updateTags (no-op)
         mockSend.mockResolvedValueOnce({
           Role: {
             RoleName: 'my-role',
