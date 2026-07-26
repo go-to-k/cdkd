@@ -1,3 +1,10 @@
+## [0.267.5](https://github.com/go-to-k/cdkd/compare/v0.267.4...v0.267.5) (2026-07-26)
+
+
+### Bug Fixes
+
+* **export:** route primary-identifier DescribeType through the shared throttle retry ([#1246](https://github.com/go-to-k/cdkd/issues/1246)) ([8bb0ef7](https://github.com/go-to-k/cdkd/commit/8bb0ef79e4f02e733fd0d9ac467ab82473fe2688))
+
 ## [0.267.4](https://github.com/go-to-k/cdkd/compare/v0.267.3...v0.267.4) (2026-07-26)
 
 
