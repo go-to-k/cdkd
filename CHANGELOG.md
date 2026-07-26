@@ -1,3 +1,10 @@
+## [0.267.1](https://github.com/go-to-k/cdkd/compare/v0.267.0...v0.267.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* **iam:** reset Role Description and MaxSessionDuration on template removal ([#1239](https://github.com/go-to-k/cdkd/issues/1239)) ([331ca73](https://github.com/go-to-k/cdkd/commit/331ca7320353c3530bba432abaa9ba0d79110dc4))
+
 # [0.267.0](https://github.com/go-to-k/cdkd/compare/v0.266.0...v0.267.0) (2026-07-26)
 
 
