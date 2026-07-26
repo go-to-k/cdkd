@@ -27,8 +27,10 @@
 #     bash tests/integration/local-invoke-from-cfn-stack/verify.sh
 #
 # Requires Docker AND AWS credentials with deploy permissions in the
-# target account. Also requires the global `cdk` (aws-cdk) CLI on $PATH —
-# see step 2's note on the vp-managed environment.
+# target account. The `cdk` (aws-cdk) CLI comes from this fixture's own
+# devDependencies (node_modules/.bin is prepended to PATH below) so a
+# stale global CLI can't hit a cloud-assembly schema-version mismatch
+# against the freshly-installed aws-cdk-lib.
 
 set -euo pipefail
 
@@ -40,6 +42,7 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-invoke-from-cfn-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
+export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
 
 echo "[verify] region=${REGION} stack=${STACK} (CloudFormation-deployed)"
 
