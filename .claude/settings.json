@@ -69,6 +69,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/ci-green-gate.sh",
+            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*)",
+            "timeout": 20,
+            "statusMessage": "Checking PR CI status is green..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/closes-paren-form-gate.sh",
             "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*)",
             "timeout": 10,
