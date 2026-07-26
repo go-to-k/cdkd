@@ -10,6 +10,7 @@
     "--exclusively",
     "--force",
     "--force-stateful-recreation",
+    "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--no-auto-asset-storage",
@@ -32,6 +33,7 @@
     "--stack-concurrency",
     "--state-bucket",
     "--state-prefix",
+    "--strict",
     "--strict-getatt",
     "--use-cdk-bootstrap-assets",
     "--verbose",
@@ -1104,13 +1106,15 @@
     "--allow-unsupported-types",
     "--asset-publish-concurrency",
     "--context",
+    "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
     "--no-capture-observed-state",
     "--prefix-user-supplied-names",
     "--role-arn",
     "--stack",
-    "--stack-concurrency"
+    "--stack-concurrency",
+    "--strict"
   ],
   "unknownFlagsInIntegs": [
     "--Arn--",

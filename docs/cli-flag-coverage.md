@@ -4,7 +4,7 @@
 
 Run `vp run cli-flag-coverage` to regenerate.
 
-**26 / 36 declared CLI flags** appear in at least one `tests/integration/<name>/verify.sh` script. 10 flags are not exercised by any integ verify.sh.
+**26 / 38 declared CLI flags** appear in at least one `tests/integration/<name>/verify.sh` script. 12 flags are not exercised by any integ verify.sh.
 
 ## Important: this is a VISIBILITY report, not a CI gate
 
@@ -12,13 +12,14 @@ Many cdkd flags are tested at the **unit-test level** rather than via an integ `
 
 See the script docstring for the design rationale; the *coverage numbers* here are intentionally not wired to a CI hard-fail (contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where a coverage gate IS appropriate because every registered provider is expected to have real-AWS verification). CI does, however, run a *staleness* check on this generated file — `vp run cli-flag-coverage` followed by `git diff --exit-code` — so the matrix cannot silently drift; that guards freshness, not coverage %.
 
-## Flags with no integ verify.sh mention (10)
+## Flags with no integ verify.sh mention (12)
 
 Reviewer judgment required per flag — many of these are pure-logic flags adequately tested at the unit level.
 
 - `--allow-unsupported-types`
 - `--asset-publish-concurrency`
 - `--context`
+- `--ignore-errors`
 - `--image-build-concurrency`
 - `--no-aggressive-vpc-parallel`
 - `--no-capture-observed-state`
@@ -26,6 +27,7 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 - `--role-arn`
 - `--stack`
 - `--stack-concurrency`
+- `--strict`
 
 ## Flags exercised by integ verify.sh (26)
 
