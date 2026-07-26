@@ -961,6 +961,19 @@ same semantics as the CDK CLI (issue #1228):
 - `addWarning(...)` / `addInfo(...)` — printed as
   `[Warning at /path] ...` / `[Info at /path] ...`; the run proceeds.
 
+Two flags adjust the failure threshold (issue #1230, CDK CLI parity —
+both accepted by `synth` and `deploy`):
+
+- `--strict` — additionally fail when any warning annotation exists
+  (`Found warnings (--strict mode)`, non-zero exit). Info messages never
+  fail. Errors still fail with `Found errors` (the error check wins when
+  both exist).
+- `--ignore-errors` — display every message but never fail the run
+  ("Ignores synthesis errors, which will likely produce an invalid
+  deployment" — same caveat as the CDK CLI flag). When combined with
+  `--strict`, strict wins and warnings/errors fail again (CDK CLI
+  precedence).
+
 `cdkd synth` checks every synthesized stack (it has no stack selection).
 Other synth-driven commands (`diff`, `list`, `import`, ...) do not fail on
 error annotations, matching the upstream CLI. Both cloud-assembly metadata

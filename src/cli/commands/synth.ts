@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import {
+  annotationMessageOptions,
   appOptions,
   commonOptions,
   contextOptions,
@@ -47,6 +48,8 @@ async function synthCommand(options: {
   profile?: string;
   roleArn?: string;
   context?: string[];
+  strict?: boolean;
+  ignoreErrors?: boolean;
 }): Promise<void> {
   const logger = getLogger();
 
@@ -94,7 +97,11 @@ async function synthCommand(options: {
   // CDK CLI parity (issue #1228): surface Annotations messages — print
   // warnings/infos, refuse to emit a template when any stack carries an
   // error annotation (`cdk synth` fails with "Found errors" too).
-  processStackMessages(stacks, logger);
+  // #1230: `--strict` also fails on warnings; `--ignore-errors` never fails.
+  processStackMessages(stacks, logger, {
+    strict: options.strict === true,
+    ignoreErrors: options.ignoreErrors === true,
+  });
 
   // Print YAML template to stdout (like CDK CLI) for single stack
   if (stacks.length === 1) {
@@ -132,7 +139,9 @@ export function createSynthCommand(): Command {
     .action(withErrorHandling(synthCommand));
 
   // Add options
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  [...commonOptions, ...appOptions, ...contextOptions, ...annotationMessageOptions].forEach((opt) =>
+    cmd.addOption(opt)
+  );
 
   // --region is deprecated for synth (PR 5). Accepted for backward
   // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.

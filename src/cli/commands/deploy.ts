@@ -5,6 +5,7 @@ import {
   deprecatedRegionOption,
   stateOptions,
   stackOptions,
+  annotationMessageOptions,
   deployOptions,
   contextOptions,
   parseContextOptions,
@@ -103,6 +104,8 @@ async function deployCommand(
     recreateViaSdkProvider?: string[];
     forceStatefulRecreation?: boolean;
     replace?: boolean;
+    strict?: boolean;
+    ignoreErrors?: boolean;
     strictGetatt?: boolean;
     useCdkBootstrapAssets?: boolean;
     autoAssetStorage?: boolean;
@@ -395,7 +398,11 @@ async function deployCommand(
     // "Found errors" too). Selection-aware like the #1150 macro expansion
     // below: an error in a non-selected sibling stack does not block this
     // deploy. Runs before any AWS mutation (assets, locks, provisioning).
-    processStackMessages(targetStacks, logger);
+    // #1230: `--strict` also fails on warnings; `--ignore-errors` never fails.
+    processStackMessages(targetStacks, logger, {
+      strict: options.strict === true,
+      ignoreErrors: options.ignoreErrors === true,
+    });
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
@@ -940,6 +947,7 @@ export function createDeployCommand(): Command {
     ...stackOptions,
     ...deployOptions,
     ...contextOptions,
+    ...annotationMessageOptions,
   ].forEach((opt) => cmd.addOption(opt));
 
   // --region is deprecated for deploy (PR 5). Accepted for backward

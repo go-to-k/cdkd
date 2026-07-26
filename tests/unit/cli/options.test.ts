@@ -162,6 +162,20 @@ describe('cli/options.ts', () => {
     );
   });
 
+  describe('annotation-message flag wiring (issue #1230)', () => {
+    // Guards the shared annotationMessageOptions spread in each command's
+    // option array — a merge-conflict resolution dropping the spread would
+    // otherwise surface only as a runtime `unknown option '--strict'`.
+    it.each([
+      ['synth', () => createSynthCommand()],
+      ['deploy', () => createDeployCommand()],
+    ])('%s registers --strict and --ignore-errors', (_name, build) => {
+      const cmd = build();
+      expect(cmd.options.some((o) => /^--strict$/.test(o.flags))).toBe(true);
+      expect(cmd.options.some((o) => /^--ignore-errors$/.test(o.flags))).toBe(true);
+    });
+  });
+
   describe('parseDuration', () => {
     it.each([
       ['5s', 5_000],
