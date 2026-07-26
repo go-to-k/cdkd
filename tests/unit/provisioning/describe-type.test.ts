@@ -83,4 +83,21 @@ describe('describeTypeWithThrottleRetry (issue #1236)', () => {
     );
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
   });
+
+  it('uses an injected client (export path) and still retries through a throttle on it', async () => {
+    const injectedSend = vi
+      .fn()
+      .mockRejectedValueOnce(throttlingError())
+      .mockResolvedValueOnce({ Schema: '{"primaryIdentifier":["/properties/BucketName"]}' });
+    const injectedClient = { send: injectedSend } as unknown as Parameters<
+      typeof describeTypeWithThrottleRetry
+    >[1];
+
+    const response = await describeTypeWithThrottleRetry('AWS::S3::Bucket', injectedClient);
+
+    expect(response).toEqual({ Schema: '{"primaryIdentifier":["/properties/BucketName"]}' });
+    expect(injectedSend).toHaveBeenCalledTimes(2);
+    // The shared client must NOT be touched when a client is injected.
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+  });
 });

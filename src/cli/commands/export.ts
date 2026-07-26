@@ -9,7 +9,6 @@ import {
   DescribeStackEventsCommand,
   ExecuteChangeSetCommand,
   DescribeStacksCommand,
-  DescribeTypeCommand,
   DeleteChangeSetCommand,
   GetTemplateCommand,
   UpdateStackCommand,
@@ -30,6 +29,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
@@ -2237,9 +2237,11 @@ async function fetchPrimaryIdentifier(
   cfnClient: AwsClients['cloudFormation']
 ): Promise<PrimaryIdentifierCacheEntry> {
   try {
-    const resp = await cfnClient.send(
-      new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
-    );
+    // Throttle-shaped DescribeType failures retry with backoff (issue #1236
+    // follow-up) instead of instantly degrading to the hardcoded fallback
+    // table — a type absent from the table would otherwise abort the export
+    // on a transient throttle.
+    const resp = await describeTypeWithThrottleRetry(resourceType, cfnClient);
     if (resp.Schema) {
       const parsed = JSON.parse(resp.Schema) as { primaryIdentifier?: unknown };
       const primary = parsed.primaryIdentifier;
