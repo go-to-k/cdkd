@@ -791,6 +791,22 @@ export const strictGetattOption = new Option(
     'be resolved (default: warn and store no value).'
 ).default(false);
 
+/**
+ * CDK annotation-message behavior flags (issue #1230, CDK CLI parity).
+ * Shared by `cdkd synth` and `cdkd deploy` — the two commands that fail on
+ * `Annotations.addError` (issue #1228). `--strict` additionally fails when
+ * any WARNING annotation exists (`Found warnings (--strict mode)`);
+ * `--ignore-errors` displays every message but never fails the run. When
+ * both are passed, strict wins (matches the CDK CLI's failAt resolution).
+ */
+export const annotationMessageOptions = [
+  new Option('--strict', 'Do not proceed with stacks carrying warning annotations').default(false),
+  new Option(
+    '--ignore-errors',
+    'Ignore error annotations from stack synthesis, which will likely produce an invalid deployment'
+  ).default(false),
+];
+
 export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)

@@ -11,6 +11,23 @@ import type { StackInfo } from './assembly-reader.js';
 interface MessageLogger {
   info(message: string): void;
   warn(message: string): void;
+  error(message: string): void;
+}
+
+/**
+ * Behavior knobs for {@link processStackMessages} (issue #1230) — mirrors
+ * the CDK CLI's `validateMetadataFailAt()` three-state resolution:
+ * default fails on errors only; `--ignore-errors` fails on nothing;
+ * `--strict` fails on warnings too. When both flags are set, strict wins
+ * (same precedence as the CDK CLI, which applies `ignoreErrors` first and
+ * then lets `strict` overwrite it).
+ */
+export interface StackMessageOptions {
+  /** `--strict`: also fail when any warning annotation exists. */
+  strict?: boolean;
+
+  /** `--ignore-errors`: display messages but never fail the run. */
+  ignoreErrors?: boolean;
 }
 
 /**
@@ -109,35 +126,56 @@ export function collectStackMessages(
 }
 
 /**
- * Print annotation messages for the given stacks and fail on errors
- * (CDK CLI parity, issue #1228): warnings and infos are displayed,
- * error annotations abort with the CLI-format `[Error at /path] message`
- * lines + `Found errors`.
+ * Print annotation messages for the given stacks and fail per the CDK
+ * CLI's rules (issues #1228 / #1230): every message is displayed at its
+ * level (`[Error|Warning|Info at /path] message`); by default any error
+ * annotation aborts with `Found errors`, `--strict` additionally aborts
+ * on warnings with `Found warnings (--strict mode)`, and
+ * `--ignore-errors` never aborts. Errors win over strict warnings when
+ * both exist (CDK CLI parity).
  *
  * Call AFTER stack selection so an error in a non-selected stack does not
  * block the selected ones (same selection-awareness as the #1150 deferred
  * macro expansion).
  */
-export function processStackMessages(stacks: StackInfo[], logger: MessageLogger): void {
-  const errorLines: string[] = [];
+export function processStackMessages(
+  stacks: StackInfo[],
+  logger: MessageLogger,
+  options: StackMessageOptions = {}
+): void {
+  let hasErrors = false;
+  let hasWarnings = false;
 
   for (const stack of stacks) {
     for (const msg of stack.messages ?? []) {
       switch (msg.level) {
         case 'warning':
+          hasWarnings = true;
           logger.warn(`[Warning at ${msg.path}] ${msg.message}`);
           break;
         case 'info':
           logger.info(`[Info at ${msg.path}] ${msg.message}`);
           break;
         case 'error':
-          errorLines.push(`[Error at ${msg.path}] ${msg.message}`);
+          hasErrors = true;
+          logger.error(`[Error at ${msg.path}] ${msg.message}`);
           break;
       }
     }
   }
 
-  if (errorLines.length > 0) {
-    throw new SynthesisError(`${errorLines.join('\n')}\nFound errors`);
+  // CDK CLI failAt resolution: 'error' by default, 'none' under
+  // --ignore-errors, 'warn' under --strict (strict overwrites ignore).
+  const failAt: 'error' | 'none' | 'warn' = options.strict
+    ? 'warn'
+    : options.ignoreErrors
+      ? 'none'
+      : 'error';
+
+  if (hasErrors && failAt !== 'none') {
+    throw new SynthesisError('Found errors');
+  }
+  if (hasWarnings && failAt === 'warn') {
+    throw new SynthesisError('Found warnings (--strict mode)');
   }
 }

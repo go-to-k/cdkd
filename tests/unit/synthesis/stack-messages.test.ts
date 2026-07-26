@@ -26,6 +26,7 @@ function makeLogger() {
   return {
     info: vi.fn(),
     warn: vi.fn(),
+    error: vi.fn(),
   };
 }
 
@@ -210,7 +211,7 @@ describe('processStackMessages', () => {
     expect(logger.info).toHaveBeenCalledWith('[Info at /MyStack] heads up');
   });
 
-  it('throws SynthesisError with all error lines + "Found errors" (CDK CLI parity)', () => {
+  it('logs all error lines and throws "Found errors" (CDK CLI parity)', () => {
     const logger = makeLogger();
     const stack = makeStack([
       { level: 'error', path: '/MyStack', message: 'first problem' },
@@ -226,20 +227,21 @@ describe('processStackMessages', () => {
     }
 
     expect(thrown).toBeInstanceOf(SynthesisError);
-    const message = (thrown as Error).message;
-    expect(message).toContain('[Error at /MyStack] first problem');
-    expect(message).toContain('[Error at /MyStack/Bucket] second problem');
-    expect(message).toContain('Found errors');
+    expect((thrown as Error).message).toBe('Found errors');
+    expect(logger.error).toHaveBeenCalledWith('[Error at /MyStack] first problem');
+    expect(logger.error).toHaveBeenCalledWith('[Error at /MyStack/Bucket] second problem');
     // The warning is still displayed before the throw
     expect(logger.warn).toHaveBeenCalledWith('[Warning at /MyStack] also this');
   });
 
-  it('aggregates errors across multiple stacks', () => {
+  it('logs errors across multiple stacks before throwing', () => {
     const logger = makeLogger();
     const stackA = { ...makeStack([{ level: 'error', path: '/A', message: 'a' }]), stackName: 'A' };
     const stackB = { ...makeStack([{ level: 'error', path: '/B', message: 'b' }]), stackName: 'B' };
 
-    expect(() => processStackMessages([stackA, stackB], logger)).toThrow(/\[Error at \/A\] a[\s\S]*\[Error at \/B\] b/);
+    expect(() => processStackMessages([stackA, stackB], logger)).toThrow('Found errors');
+    expect(logger.error).toHaveBeenCalledWith('[Error at /A] a');
+    expect(logger.error).toHaveBeenCalledWith('[Error at /B] b');
   });
 
   it('is a no-op for stacks without a messages field', () => {
@@ -248,5 +250,54 @@ describe('processStackMessages', () => {
     expect(() => processStackMessages([makeStack(undefined)], logger)).not.toThrow();
     expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it('--strict: fails on warnings with "Found warnings (--strict mode)" (issue #1230)', () => {
+    const logger = makeLogger();
+    const stack = makeStack([{ level: 'warning', path: '/S', message: 'w' }]);
+
+    expect(() => processStackMessages([stack], logger, { strict: true })).toThrow(
+      'Found warnings (--strict mode)'
+    );
+    // The warning line is still displayed
+    expect(logger.warn).toHaveBeenCalledWith('[Warning at /S] w');
+  });
+
+  it('--strict: info-only stacks still pass', () => {
+    const logger = makeLogger();
+    const stack = makeStack([{ level: 'info', path: '/S', message: 'i' }]);
+
+    expect(() => processStackMessages([stack], logger, { strict: true })).not.toThrow();
+  });
+
+  it('--strict: errors win over strict warnings ("Found errors" thrown)', () => {
+    const logger = makeLogger();
+    const stack = makeStack([
+      { level: 'warning', path: '/S', message: 'w' },
+      { level: 'error', path: '/S', message: 'e' },
+    ]);
+
+    expect(() => processStackMessages([stack], logger, { strict: true })).toThrow('Found errors');
+  });
+
+  it('--ignore-errors: errors are displayed but the run proceeds (issue #1230)', () => {
+    const logger = makeLogger();
+    const stack = makeStack([{ level: 'error', path: '/S', message: 'e' }]);
+
+    expect(() => processStackMessages([stack], logger, { ignoreErrors: true })).not.toThrow();
+    expect(logger.error).toHaveBeenCalledWith('[Error at /S] e');
+  });
+
+  it('--strict wins when combined with --ignore-errors (CDK CLI precedence)', () => {
+    const logger = makeLogger();
+    const errorStack = makeStack([{ level: 'error', path: '/S', message: 'e' }]);
+    const warnStack = makeStack([{ level: 'warning', path: '/S', message: 'w' }]);
+
+    expect(() =>
+      processStackMessages([errorStack], logger, { strict: true, ignoreErrors: true })
+    ).toThrow('Found errors');
+    expect(() =>
+      processStackMessages([warnStack], logger, { strict: true, ignoreErrors: true })
+    ).toThrow('Found warnings (--strict mode)');
   });
 });
