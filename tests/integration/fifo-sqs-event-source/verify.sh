@@ -11,6 +11,13 @@
 #   1. Deploy. send 3 messages across 2 MessageGroupIds, then poll the DynamoDB
 #      table until all 3 are recorded (proves the FIFO ESM fires end-to-end and
 #      preserves the group ids).
+#   1b. CDKD_TEST_REMOVAL=true redeploy DROPS contentBasedDeduplication from
+#      the queue and asserts ContentBasedDeduplication reads 'false' IN PLACE
+#      (issue #1237 updateable classification + the #1160 removal reset),
+#      with an unchanged CreatedTimestamp as the no-replacement guard
+#      (re issue #1238 same-name deletion hazard). SetQueueAttributes
+#      documents up to 60s propagation, so the attribute read is a bounded
+#      retry loop.
 #   2. Destroy + assert the queue / function / table are gone, the ESM is gone,
 #      the cdkd state file is removed, and Lambda log groups are swept.
 #
@@ -178,6 +185,51 @@ if [ "${GROUP_B1}" != "g2" ]; then
   exit 1
 fi
 echo "    all 3 FIFO messages processed; MessageGroupId preserved (msg-A1 -> g1, msg-B1 -> g2)"
+
+# --- Phase 1b: ContentBasedDeduplication in-place removal (issue #1237) ------
+echo "==> Phase 1b: capture baseline queue attributes"
+BASE_CBD="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+  --attribute-names ContentBasedDeduplication --region "${REGION}" \
+  --query 'Attributes.ContentBasedDeduplication' --output text)"
+if [ "${BASE_CBD}" != "true" ]; then
+  echo "FAIL: baseline ContentBasedDeduplication expected 'true', got '${BASE_CBD}'" >&2
+  exit 1
+fi
+BASE_CREATED="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+  --attribute-names CreatedTimestamp --region "${REGION}" \
+  --query 'Attributes.CreatedTimestamp' --output text)"
+
+echo "==> Phase 1b: redeploy with contentBasedDeduplication DROPPED (CDKD_TEST_REMOVAL=true)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+# SetQueueAttributes documents up to 60s propagation for attribute reads, so
+# poll bounded (~60s budget). The if/then/break form (not `[ ... ] && break`)
+# keeps a failed test from ever being the loop body's trailing && list.
+CBD_AFTER=""
+for i in $(seq 1 6); do
+  CBD_AFTER="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+    --attribute-names ContentBasedDeduplication --region "${REGION}" \
+    --query 'Attributes.ContentBasedDeduplication' --output text)"
+  echo "    poll ${i}: ContentBasedDeduplication=${CBD_AFTER}"
+  if [ "${CBD_AFTER}" = "false" ]; then break; fi
+  sleep 10 2>/dev/null || true
+done
+if [ "${CBD_AFTER}" != "false" ]; then
+  echo "FAIL: ContentBasedDeduplication expected 'false' after removal redeploy, got '${CBD_AFTER}'" >&2
+  exit 1
+fi
+
+# Replacement guard (re issue #1238): the SAME queue must survive the update —
+# a replacement would mint a new CreatedTimestamp (and lose queued messages).
+CREATED_AFTER="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+  --attribute-names CreatedTimestamp --region "${REGION}" \
+  --query 'Attributes.CreatedTimestamp' --output text)"
+if [ "${CREATED_AFTER}" != "${BASE_CREATED}" ]; then
+  echo "FAIL: CreatedTimestamp changed (${BASE_CREATED} -> ${CREATED_AFTER}) — queue was REPLACED, not updated in place" >&2
+  exit 1
+fi
+echo "    ContentBasedDeduplication removed in place (reads 'false', CreatedTimestamp unchanged)"
 
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"

@@ -319,7 +319,6 @@ export class ReplacementRulesRegistry {
       replacementProperties: new Set([
         'QueueName', // Changing queue name requires replacement
         'FifoQueue', // Changing FIFO attribute requires replacement
-        'ContentBasedDeduplication', // Only for FIFO queues
       ]),
       updateableProperties: new Set([
         'DelaySeconds',
@@ -329,6 +328,14 @@ export class ReplacementRulesRegistry {
         'VisibilityTimeout',
         'RedrivePolicy',
         'Tags',
+        // FIFO-only, but mutable in place: CFn documents it as "Update
+        // requires: No interruption" and the registry schema's
+        // createOnlyProperties is only [FifoQueue, QueueName].
+        // SetQueueAttributes flips it on a live FIFO queue (live-verified
+        // 2026-07-27, issue #1237). Classifying it as replacement would
+        // DELETE the queue (message loss) on a toggle, and made the
+        // provider's #1160 removal reset unreachable via a plain deploy.
+        'ContentBasedDeduplication',
       ]),
     });
 

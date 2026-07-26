@@ -15,11 +15,17 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
  * functional check can confirm the messages were actually delivered + processed
  * (a deploy-only smoke test would not prove the ESM fires).
  *
+ * CDKD_TEST_REMOVAL=true drops `contentBasedDeduplication` from the queue so
+ * the redeploy exercises the issue #1237 in-place UPDATE classification plus
+ * the #1160 removal reset (SetQueueAttributes ContentBasedDeduplication ->
+ * 'false' on the SAME queue — no replacement).
+ *
  * covers: AWS::SQS::Queue
  * covers: AWS::Lambda::EventSourceMapping
  * covers: AWS::Lambda::Function
  * covers: AWS::DynamoDB::Table
  */
+const TEST_REMOVAL = process.env.CDKD_TEST_REMOVAL === 'true';
 export class FifoSqsEventSourceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -34,7 +40,9 @@ export class FifoSqsEventSourceStack extends cdk.Stack {
     const fifo = new sqs.Queue(this, 'Fifo', {
       queueName: 'cdkd-fifo-sqs-source.fifo',
       fifo: true,
-      contentBasedDeduplication: true,
+      // CDKD_TEST_REMOVAL=true OMITS the property entirely (undefined is not
+      // synthesized), exercising the #1160 removal reset via a plain deploy.
+      ...(TEST_REMOVAL ? {} : { contentBasedDeduplication: true }),
       visibilityTimeout: cdk.Duration.seconds(60),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
