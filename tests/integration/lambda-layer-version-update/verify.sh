@@ -144,8 +144,10 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
 
 # A new version :V1+1 must have been published.
 V2=$((V1 + 1))
+# `--output text` list projections are TAB-separated; normalize to spaces so
+# the case pattern below matches even when multiple versions coexist.
 VERSIONS="$(aws lambda list-layer-versions --layer-name "${LAYER_NAME}" --region "${REGION}" \
-  --query 'LayerVersions[].Version' --output text)"
+  --query 'LayerVersions[].Version' --output text | tr '\t' ' ')"
 echo "    published layer versions: ${VERSIONS}"
 case " ${VERSIONS} " in
   *" ${V2} "*) ;;

@@ -55,6 +55,11 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-invoke-from-cfn-stack-multi-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
+# Vendored cdk CLI: install the fixture's deps when absent (node_modules is
+# gitignored, and the repo-root pnpm install does NOT populate fixture dirs),
+# otherwise the PATH prepend is inert and `cdk` falls through to a possibly
+# stale global CLI.
+[ -x "${TEST_DIR}/node_modules/.bin/cdk" ] || (cd "${TEST_DIR}" && npm install)
 export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
 
 echo "[verify] region=${REGION} producer=${PRODUCER_STACK} consumer=${CONSUMER_STACK} export=${EXPORT_NAME}"

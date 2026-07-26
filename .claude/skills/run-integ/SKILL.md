@@ -162,7 +162,7 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     and remove the holder ONLY when it has 0 attached containers (a
     non-empty one may belong to a live parallel run).
 
-    When BOTH return empty AND the integ test exited cleanly:
+    When all three return empty AND the integ test exited cleanly:
 
     ```bash
     mise exec -- markgate set integ-local
