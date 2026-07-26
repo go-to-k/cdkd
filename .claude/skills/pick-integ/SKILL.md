@@ -38,15 +38,18 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
    now=$(date -u +%s)
    # The ledger merges with the union driver (.gitattributes), so a rare
    # same-test collision can leave duplicate rows — the LAST row per test is
-   # authoritative (deduped below before any staleness math).
+   # authoritative (deduped below before any staleness math). The header is
+   # MULTIPLE `#` comment lines — skip them all (a single NR==1 guard used to
+   # let later header lines through as phantom stale rows); DEDUPED holds
+   # data rows only.
    DEDUPED="$(mktemp)"
-   awk -F'\t' 'NR==1{print; next} {last[$1]=$0; order[$1]=NR} END{for (t in last) print last[t]}' "$LEDGER" > "$DEDUPED"
+   awk -F'\t' '/^#/{next} {last[$1]=$0} END{for (t in last) print last[t]}' "$LEDGER" > "$DEDUPED"
    # never-run: fixtures with no ledger row
    comm -23 \
      <(ls -d tests/integration/*/ | sed 's#tests/integration/##;s#/##' | sort) \
-     <(awk -F'\t' 'NR>1{print $1}' "$DEDUPED" | sort)
+     <(awk -F'\t' '{print $1}' "$DEDUPED" | sort)
    # stale (>14d) or failing, from the ledger:
-   awk -F'\t' -v now="$now" 'NR>1 {
+   awk -F'\t' -v now="$now" '{
      cmd="date -u -j -f %Y-%m-%dT%H:%M:%SZ \""$2"\" +%s 2>/dev/null || date -u -d \""$2"\" +%s 2>/dev/null";
      cmd | getline t; close(cmd);
      age=int((now-t)/86400);
