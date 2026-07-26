@@ -227,14 +227,21 @@ CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
 # Pre-fix the provider passed the absent attribute through and SQS kept SSE
 # off (SetQueueAttributes merges); post-fix the removal sends the explicit
 # reset and the queue returns to the SQS/CFn default (SSE-SQS on).
-SSE_P2=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
-  --attribute-names SqsManagedSseEnabled --region "${REGION}" \
-  --query 'Attributes.SqsManagedSseEnabled' --output text)
+# SetQueueAttributes documents up to 60s propagation — poll with a bounded
+# retry so a read-after-write lag cannot flake the run as a false FAIL.
+SSE_P2=""
+for _i in 1 2 3 4 5 6; do
+  SSE_P2=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
+    --attribute-names SqsManagedSseEnabled --region "${REGION}" \
+    --query 'Attributes.SqsManagedSseEnabled' --output text)
+  [ "${SSE_P2}" = "true" ] && break
+  sleep 10
+done
 SSE_CREATED_P2=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
   --attribute-names CreatedTimestamp --region "${REGION}" \
   --query 'Attributes.CreatedTimestamp' --output text)
 if [ "${SSE_P2}" != "true" ]; then
-  echo "FAIL: expected SqsManagedSseEnabled=true after the removal redeploy, got '${SSE_P2}'" >&2
+  echo "FAIL: expected SqsManagedSseEnabled=true after the removal redeploy (waited 60s), got '${SSE_P2}'" >&2
   exit 1
 fi
 # Replacement guard: the removal must be an in-place UPDATE. A replacement

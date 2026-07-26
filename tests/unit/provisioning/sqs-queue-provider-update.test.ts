@@ -247,6 +247,10 @@ describe('SQSQueueProvider.update', () => {
   });
 
   it('resets ContentBasedDeduplication to "false" when removed on update (issue #1160)', async () => {
+    // NOTE: this reset is currently unreachable via a plain deploy —
+    // replacement-rules.ts misroutes a ContentBasedDeduplication change to
+    // replacement (issue #1237) — so this unit pin + the raw-SDK live probe
+    // are the only coverage until #1237 lands.
     // FIFO queue had ContentBasedDeduplication: true; the property is now
     // absent from the desired template. CFn resets a removed property to its
     // default (disabled) — SetQueueAttributes has merge semantics, so the
