@@ -185,7 +185,7 @@ migrate-from-bare-cfn-codegen-only	2026-06-21T19:09:34Z	PASS	55	verify.sh	fixed:
 migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk refactor #1139; import+migrate+destroy clean
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
-multi-region-same-stack	2026-06-21T11:00:28Z	PASS	14	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 multi-resource	2026-07-17T12:05:00Z	PASS	85	standard	broad refresh for #1041 register-providers edit (post-rebase): 17 created/deleted, 0 errors, log groups swept
 multi-stack-deps	2026-07-19T19:48:39Z	PASS	63	standard	rc ok, 3 stacks 13 res, all destroyed, orph clean
 nested-stack	2026-06-21T11:16:17Z	PASS	24	standard	sweep-F staleness re-run (rc=0)
@@ -193,9 +193,9 @@ nested-stack-3level	2026-07-21T05:11:36Z	PASS	78	verify.sh	rc ok, orph clean
 nested-stack-deep	2026-06-21T11:17:08Z	PASS	49	verify.sh	sweep-F staleness re-run (rc=0)
 nodejs-function	2026-07-21T18:03:38Z	PASS	56	verify.sh	rc ok, orph clean
 opensearch-domain-getatt	2026-07-20T18:25:27Z	PASS	1796	verify.sh	FIXED: 60m CC delete floor; destroy 0 err, 0 orphans
-orphan-resource	2026-06-21T11:00:28Z	PASS	30	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 outputs-only-export	2026-07-02T18:23:15Z	PASS	69	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-parameters	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-06-21T18:33:45Z	PASS	139	verify.sh	first run (never-run); 4 fresh-principal/consumer race edges; clean destroy
 raw-cfn-conditions-params	2026-07-17T05:02:58Z	PASS	76	verify.sh	re-run with #1032 fix: PASS + destroy param-dep warn gone (live verify)
 rds-aurora	2026-07-25T06:38:38Z	PASS	2085	verify.sh	1160 removal reset: cluster DeletionProtection+IAMAuth reset live-verified, destroy 23/0
@@ -222,7 +222,7 @@ s3-object-lock	2026-07-21T14:42:20Z	PASS	53	verify.sh	rc ok, orph clean
 s3-replication-and-filter	2026-07-21T14:43:45Z	PASS	63	verify.sh	rc ok, orph clean
 s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to table name (#974); clean destroy
 s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
-scheduled-task	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
 schema-v5-to-v6-migration	2026-07-24T10:27:22Z	PASS	61	verify.sh	0724 P0 sweep: v5->v8 transparent upgrade verified; 1 del 0 err
 schema-v6-to-v7-migration	2026-07-24T10:25:01Z	PASS	66	verify.sh	0724 P0 sweep: s3-state-backend #1196/#1203 coverage; v6->v8 transparent upgrade; 1 del 0 err
@@ -239,9 +239,9 @@ sns-event-source	2026-07-20T08:12:14Z	PASS	68	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-07-20T17:38:28Z	PASS	53	verify.sh	SNS inline subscription create+update, clean destroy
 sns-sqs-event	2026-07-26T17:01:09Z	PASS	78	verify.sh	#1160 sqs SSE removal phase 2 verified; destroy 20/0 errors, 0 orphans
 sns-subscription-filter	2026-07-21T18:09:46Z	PASS	46	verify.sh	rc ok, orph clean
-sqs-cloudwatch	2026-06-21T11:00:28Z	PASS	41	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+sqs-cloudwatch	2026-07-26T18:04:53Z	PASS	56	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 sqs-esm-max-concurrency	2026-07-21T14:49:55Z	PASS	85	verify.sh	rc ok, orph clean
-state-destroy	2026-06-21T11:00:28Z	PASS	17	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+state-destroy	2026-07-26T18:04:53Z	PASS	25	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055 GetBucketLocation exercised, orph clean
 stepfunctions	2026-07-21T13:08:15Z	PASS	97	verify.sh	converted; SM ACTIVE w/ auto role, async-delete poll, 0 orphans
 stepfunctions-logging	2026-07-20T17:36:15Z	PASS	117	verify.sh	SFN Express logging/tracing removal-clear, clean destroy
