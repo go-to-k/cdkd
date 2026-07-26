@@ -49,6 +49,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 
 /**
  * Pick the inline-code filename for a Lambda runtime.
@@ -408,19 +409,19 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // CFn for their package type, so removal is not a valid template
           // transition and they pass through directly.)
           // CFn default: 3 seconds.
-          Timeout: this.clearOnUpdateRemoval(
+          Timeout: clearOnUpdateRemoval(
             properties['Timeout'] as number | undefined,
             previousProperties['Timeout'] as number | undefined,
             3
           ),
           // CFn default: 128 MB.
-          MemorySize: this.clearOnUpdateRemoval(
+          MemorySize: clearOnUpdateRemoval(
             properties['MemorySize'] as number | undefined,
             previousProperties['MemorySize'] as number | undefined,
             128
           ),
           // Empty string clears the description.
-          Description: this.clearOnUpdateRemoval(
+          Description: clearOnUpdateRemoval(
             properties['Description'] as string | undefined,
             previousProperties['Description'] as string | undefined,
             ''
@@ -432,7 +433,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // 2026-07-22 that the API keeps the old env vars for a
           // Variables-less Environment, while the template's declarative
           // meaning is "no env vars" (issue #1158).
-          Environment: this.clearOnUpdateRemoval(
+          Environment: clearOnUpdateRemoval(
             this.normalizeEnvironmentForUpdate(
               properties['Environment'] as { Variables?: Record<string, string> } | undefined
             ),
@@ -440,19 +441,19 @@ export class LambdaFunctionProvider implements ResourceProvider {
             { Variables: {} }
           ),
           // Empty list detaches all layers.
-          Layers: this.clearOnUpdateRemoval(
+          Layers: clearOnUpdateRemoval(
             properties['Layers'] as string[] | undefined,
             previousProperties['Layers'] as string[] | undefined,
             []
           ),
           // CFn default: PassThrough.
-          TracingConfig: this.clearOnUpdateRemoval(
+          TracingConfig: clearOnUpdateRemoval(
             properties['TracingConfig'] as TracingConfig | undefined,
             previousProperties['TracingConfig'] as TracingConfig | undefined,
             { Mode: 'PassThrough' }
           ),
           // CFn default: 512 MB.
-          EphemeralStorage: this.clearOnUpdateRemoval(
+          EphemeralStorage: clearOnUpdateRemoval(
             properties['EphemeralStorage'] as EphemeralStorage | undefined,
             previousProperties['EphemeralStorage'] as EphemeralStorage | undefined,
             { Size: 512 }
@@ -461,7 +462,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             properties['VpcConfig'],
             previousProperties['VpcConfig']
           ),
-          DeadLetterConfig: this.clearOnUpdateRemoval(
+          DeadLetterConfig: clearOnUpdateRemoval(
             properties['DeadLetterConfig'] as DeadLetterConfig | undefined,
             previousProperties['DeadLetterConfig'] as DeadLetterConfig | undefined,
             // Empty TargetArn detaches the DLQ.
@@ -469,32 +470,32 @@ export class LambdaFunctionProvider implements ResourceProvider {
           ),
           // CFn names this `KmsKeyArn`; the Lambda SDK input field is `KMSKeyArn`.
           // Empty string resets to the AWS-managed default key.
-          KMSKeyArn: this.clearOnUpdateRemoval(
+          KMSKeyArn: clearOnUpdateRemoval(
             properties['KmsKeyArn'] as string | undefined,
             previousProperties['KmsKeyArn'] as string | undefined,
             ''
           ),
           // Empty list removes all EFS mounts.
-          FileSystemConfigs: this.clearOnUpdateRemoval(
+          FileSystemConfigs: clearOnUpdateRemoval(
             properties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
             previousProperties['FileSystemConfigs'] as FileSystemConfig[] | undefined,
             []
           ),
           // Empty object resets container image overrides to the image defaults.
-          ImageConfig: this.clearOnUpdateRemoval(
+          ImageConfig: clearOnUpdateRemoval(
             properties['ImageConfig'] as ImageConfig | undefined,
             previousProperties['ImageConfig'] as ImageConfig | undefined,
             {}
           ),
           // ApplyOn: 'None' disables SnapStart.
-          SnapStart: this.clearOnUpdateRemoval(
+          SnapStart: clearOnUpdateRemoval(
             properties['SnapStart'] as SnapStart | undefined,
             previousProperties['SnapStart'] as SnapStart | undefined,
             { ApplyOn: 'None' }
           ),
           // LogFormat: 'Text' resets to the CFn default (Text format clears
           // the JSON-only ApplicationLogLevel / SystemLogLevel filters).
-          LoggingConfig: this.clearOnUpdateRemoval(
+          LoggingConfig: clearOnUpdateRemoval(
             properties['LoggingConfig'] as LoggingConfig | undefined,
             previousProperties['LoggingConfig'] as LoggingConfig | undefined,
             { LogFormat: 'Text' }
@@ -799,30 +800,6 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (this.hasVpcConfig(previousRaw)) {
       return { SubnetIds: [], SecurityGroupIds: [] };
     }
-    return undefined;
-  }
-
-  /**
-   * Build an UpdateFunctionConfiguration field value that clears on removal.
-   *
-   * `UpdateFunctionConfiguration` treats an absent field as "no change", so
-   * passing `undefined` for a field the user just dropped from the template
-   * leaves the old value live on AWS — the update reports success while the
-   * field silently persists. For every optional config field we send its
-   * CFn-default / explicit reset value (e.g. Timeout `3`, MemorySize `128`,
-   * Environment `{Variables:{}}`, Layers `[]`, TracingConfig
-   * `{Mode:'PassThrough'}`, EphemeralStorage `{Size:512}`, DeadLetterConfig
-   * `{TargetArn:''}`, KMSKeyArn `''`, FileSystemConfigs `[]`, ImageConfig `{}`,
-   * SnapStart `{ApplyOn:'None'}`, LoggingConfig `{LogFormat:'Text'}`) when the
-   * field was present before and is now absent. Mirrors `buildVpcConfigForUpdate`.
-   */
-  private clearOnUpdateRemoval<T>(
-    newValue: T | undefined,
-    previousValue: T | undefined,
-    clearValue: T
-  ): T | undefined {
-    if (newValue !== undefined) return newValue;
-    if (previousValue !== undefined) return clearValue;
     return undefined;
   }
 

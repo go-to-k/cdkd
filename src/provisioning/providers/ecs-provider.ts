@@ -84,6 +84,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
@@ -933,7 +934,7 @@ export class ECSProvider implements ResourceProvider {
     // reset (immutable / required / always-carried): ServiceName (immutable,
     // guarded above), Cluster / TaskDefinition / DesiredCount /
     // NetworkConfiguration, SchedulingStrategy (create-only).
-    const capacityProviderStrategyInput = this.clearOnUpdateRemoval(
+    const capacityProviderStrategyInput = clearOnUpdateRemoval(
       this.convertCapacityProviderStrategy(
         properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
       ),
@@ -943,14 +944,14 @@ export class ECSProvider implements ResourceProvider {
       // AWS rejects the reset — the same constraint CloudFormation faces.
       []
     );
-    const placementConstraintsInput = this.clearOnUpdateRemoval(
+    const placementConstraintsInput = clearOnUpdateRemoval(
       this.convertPlacementConstraints(
         properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
       ),
       previousProperties['PlacementConstraints'] as PlacementConstraint[] | undefined,
       []
     );
-    const placementStrategyInput = this.clearOnUpdateRemoval(
+    const placementStrategyInput = clearOnUpdateRemoval(
       this.convertPlacementStrategies(
         (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
           | Array<Record<string, unknown>>
@@ -961,27 +962,27 @@ export class ECSProvider implements ResourceProvider {
         | undefined,
       []
     );
-    const platformVersionInput = this.clearOnUpdateRemoval(
+    const platformVersionInput = clearOnUpdateRemoval(
       properties['PlatformVersion'] as string | undefined,
       previousProperties['PlatformVersion'] as string | undefined,
       'LATEST'
     );
-    const healthCheckGracePeriodSecondsInput = this.clearOnUpdateRemoval(
+    const healthCheckGracePeriodSecondsInput = clearOnUpdateRemoval(
       properties['HealthCheckGracePeriodSeconds'] as number | undefined,
       previousProperties['HealthCheckGracePeriodSeconds'] as number | undefined,
       0
     );
-    const enableECSManagedTagsInput = this.clearOnUpdateRemoval(
+    const enableECSManagedTagsInput = clearOnUpdateRemoval(
       properties['EnableECSManagedTags'] as boolean | undefined,
       previousProperties['EnableECSManagedTags'] as boolean | undefined,
       false
     );
-    const propagateTagsInput = this.clearOnUpdateRemoval(
+    const propagateTagsInput = clearOnUpdateRemoval(
       properties['PropagateTags'] as PropagateTags | undefined,
       previousProperties['PropagateTags'] as PropagateTags | undefined,
       'NONE'
     );
-    const enableExecuteCommandInput = this.clearOnUpdateRemoval(
+    const enableExecuteCommandInput = clearOnUpdateRemoval(
       properties['EnableExecuteCommand'] as boolean | undefined,
       previousProperties['EnableExecuteCommand'] as boolean | undefined,
       false
@@ -1046,26 +1047,6 @@ export class ECSProvider implements ResourceProvider {
         cause
       );
     }
-  }
-
-  /**
-   * Resolve an optional UpdateService field so that a property REMOVED from the
-   * template is reset to its CloudFormation default instead of silently
-   * retaining the old live value (issue #1160 — the absent-field removal
-   * silent-drop bug class; reference fix `LambdaFunctionProvider`, #1157).
-   *
-   * Returns `newValue` when present, the `clearValue` when the field was
-   * present before and is now absent (removal), and `undefined` when it was
-   * never present (so a genuinely-absent field stays absent = no change).
-   */
-  private clearOnUpdateRemoval<T>(
-    newValue: T | undefined,
-    previousValue: T | undefined,
-    clearValue: T
-  ): T | undefined {
-    if (newValue !== undefined) return newValue;
-    if (previousValue !== undefined) return clearValue;
-    return undefined;
   }
 
   private async deleteService(

@@ -929,23 +929,20 @@ the old value. Permanent, undetectable divergence from CloudFormation
 
 **Rule: every optional, mutable property passed to a merge-semantics update
 API needs an explicit reset when it was present before and is absent now.**
-The reference pattern is `LambdaFunctionProvider.clearOnUpdateRemoval`:
+The shared helper is `clearOnUpdateRemoval` in
+`src/provisioning/update-removal.ts` (extracted in #1223 from the per-provider
+copies that Lambda #1157 / ECS #1164 / RDS #1222 / ASG #1224 shipped):
 
 ```typescript
-private clearOnUpdateRemoval<T>(
-  newValue: T | undefined,
-  previousValue: T | undefined,
-  clearValue: T
-): T | undefined {
-  if (newValue !== undefined) return newValue;   // still present: pass through
-  if (previousValue !== undefined) return clearValue; // removed: explicit reset
-  return undefined;                               // never set: stay absent
-}
+import { clearOnUpdateRemoval } from '../update-removal.js';
 
-// Usage — the reset value is the property's CFn default:
-Timeout: this.clearOnUpdateRemoval(newTimeout, prevTimeout, 3),
-MemorySize: this.clearOnUpdateRemoval(newMem, prevMem, 128),
-Environment: this.clearOnUpdateRemoval(newEnv, prevEnv, { Variables: {} }),
+// clearOnUpdateRemoval(newValue, previousValue, clearValue):
+//   present -> pass through; removed -> explicit reset; never set -> stay absent.
+// Usage — the reset value is the property's CFn default or the
+// SDK-documented clear sentinel:
+Timeout: clearOnUpdateRemoval(newTimeout, prevTimeout, 3),
+MemorySize: clearOnUpdateRemoval(newMem, prevMem, 128),
+Environment: clearOnUpdateRemoval(newEnv, prevEnv, { Variables: {} }),
 ```
 
 Checklist when writing or reviewing an `update()`:
