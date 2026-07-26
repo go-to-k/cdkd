@@ -288,6 +288,14 @@ describe('processStackMessages', () => {
     expect(logger.error).toHaveBeenCalledWith('[Error at /S] e');
   });
 
+  it('--ignore-errors: warnings-only input displays and proceeds', () => {
+    const logger = makeLogger();
+    const stack = makeStack([{ level: 'warning', path: '/S', message: 'w' }]);
+
+    expect(() => processStackMessages([stack], logger, { ignoreErrors: true })).not.toThrow();
+    expect(logger.warn).toHaveBeenCalledWith('[Warning at /S] w');
+  });
+
   it('--strict wins when combined with --ignore-errors (CDK CLI precedence)', () => {
     const logger = makeLogger();
     const errorStack = makeStack([{ level: 'error', path: '/S', message: 'e' }]);
