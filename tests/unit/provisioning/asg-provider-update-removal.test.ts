@@ -4,7 +4,7 @@
 // the template must be sent as its explicit CFn-default / SDK-documented clear
 // sentinel, else the old live value silently persists (CloudFormation resets
 // removed properties to their defaults). Reference fix pattern:
-// `ECSProvider.clearOnUpdateRemoval` (#1164) / `LambdaFunctionProvider` (#1157).
+// the shared `clearOnUpdateRemoval` helper (#1164 / #1157; extracted in #1223).
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
