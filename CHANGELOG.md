@@ -1,3 +1,10 @@
+# [0.266.0](https://github.com/go-to-k/cdkd/compare/v0.265.3...v0.266.0) (2026-07-26)
+
+
+### Features
+
+* **synth:** fail on Annotations.addError, display addWarning/addInfo ([#1229](https://github.com/go-to-k/cdkd/issues/1229)) ([2249a86](https://github.com/go-to-k/cdkd/commit/2249a863b708a1b0c691006368551cb4c99929d4))
+
 ## [0.265.3](https://github.com/go-to-k/cdkd/compare/v0.265.2...v0.265.3) (2026-07-25)
 
 
