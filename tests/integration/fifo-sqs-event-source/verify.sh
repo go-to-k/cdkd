@@ -213,7 +213,8 @@ for i in $(seq 1 6); do
     --query 'Attributes.ContentBasedDeduplication' --output text)"
   echo "    poll ${i}: ContentBasedDeduplication=${CBD_AFTER}"
   if [ "${CBD_AFTER}" = "false" ]; then break; fi
-  sleep 10 2>/dev/null || true
+  # No sleep after the final poll — it would only delay the failure report.
+  if [ "${i}" -lt 6 ]; then sleep 10; fi
 done
 if [ "${CBD_AFTER}" != "false" ]; then
   echo "FAIL: ContentBasedDeduplication expected 'false' after removal redeploy, got '${CBD_AFTER}'" >&2
@@ -237,6 +238,12 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
+
+assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
+echo "    OK: queue is gone"
+
+assert_gone "table ${TABLE_NAME} still exists after destroy" aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
+echo "    OK: table is gone"
 LEFT_ESM="$(aws lambda list-event-source-mappings --region "${REGION}" \
   --query "length(EventSourceMappings[?contains(FunctionArn, '${FN_NAME}')])" --output text)"
 if [ "${LEFT_ESM}" != "0" ]; then
