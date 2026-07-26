@@ -1,3 +1,10 @@
+# [0.267.0](https://github.com/go-to-k/cdkd/compare/v0.266.0...v0.267.0) (2026-07-26)
+
+
+### Features
+
+* **synth:** add --strict and --ignore-errors annotation flags ([#1231](https://github.com/go-to-k/cdkd/issues/1231)) ([ed45069](https://github.com/go-to-k/cdkd/commit/ed45069f8075eac65a8fd9c01ade42b4c58221fd))
+
 # [0.266.0](https://github.com/go-to-k/cdkd/compare/v0.265.3...v0.266.0) (2026-07-26)
 
 
