@@ -10,6 +10,12 @@ paths:
 
 - `tests/unit/**/*.test.ts`
 - Uses Vitest
+- **Import test APIs from `'vite-plus/test'`, never `'vitest'`** — vitest is a
+  transitive dep bundled inside `vite-plus`, so a bare `'vitest'` specifier
+  resolves locally (pnpm hoisting) but fails CI's `vp run typecheck:test` with
+  TS2307 (PR #1226). Copy the import line from a sibling test. Enforced by
+  `tests/unit/scripts/test-import-convention.test.ts` (fails the local test
+  run, naming the offending file).
 - Mocking: Mock AWS SDK with vi.mock()
 
 ## Integration Tests
