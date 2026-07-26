@@ -11,13 +11,16 @@
 #   1. Deploy. send 3 messages across 2 MessageGroupIds, then poll the DynamoDB
 #      table until all 3 are recorded (proves the FIFO ESM fires end-to-end and
 #      preserves the group ids).
-#   1b. CDKD_TEST_REMOVAL=true redeploy DROPS contentBasedDeduplication from
-#      the queue and asserts ContentBasedDeduplication reads 'false' IN PLACE
-#      (issue #1237 updateable classification + the #1160 removal reset),
-#      with an unchanged CreatedTimestamp as the no-replacement guard
-#      (re issue #1238 same-name deletion hazard). SetQueueAttributes
-#      documents up to 60s propagation, so the attribute read is a bounded
-#      retry loop.
+#   1b. CDKD_TEST_REMOVAL=true redeploy DROPS contentBasedDeduplication,
+#      deduplicationScope, and fifoThroughputLimit from the queue and asserts
+#      ContentBasedDeduplication reads 'false', DeduplicationScope reads
+#      'queue', and FifoThroughputLimit reads 'perQueue' IN PLACE (issue
+#      #1237 updateable classification + the #1160 removal resets; the
+#      baseline is the high-throughput pair messageGroup+perMessageGroupId,
+#      removed together — the only removal shape AWS accepts), with an
+#      unchanged CreatedTimestamp as the no-replacement guard (re issue
+#      #1238 same-name deletion hazard). SetQueueAttributes documents up to
+#      60s propagation, so the attribute read is a bounded retry loop.
 #   2. Destroy + assert the queue / function / table are gone, the ESM is gone,
 #      the cdkd state file is removed, and Lambda log groups are swept.
 #
@@ -186,7 +189,7 @@ if [ "${GROUP_B1}" != "g2" ]; then
 fi
 echo "    all 3 FIFO messages processed; MessageGroupId preserved (msg-A1 -> g1, msg-B1 -> g2)"
 
-# --- Phase 1b: ContentBasedDeduplication in-place removal (issue #1237) ------
+# --- Phase 1b: in-place removal of FIFO attributes (issues #1237 / #1160) ----
 echo "==> Phase 1b: capture baseline queue attributes"
 BASE_CBD="$(aws sqs get-queue-attributes --queue-url "${URL}" \
   --attribute-names ContentBasedDeduplication --region "${REGION}" \
@@ -195,29 +198,60 @@ if [ "${BASE_CBD}" != "true" ]; then
   echo "FAIL: baseline ContentBasedDeduplication expected 'true', got '${BASE_CBD}'" >&2
   exit 1
 fi
+BASE_SCOPE="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+  --attribute-names DeduplicationScope --region "${REGION}" \
+  --query 'Attributes.DeduplicationScope' --output text)"
+if [ "${BASE_SCOPE}" != "messageGroup" ]; then
+  echo "FAIL: baseline DeduplicationScope expected 'messageGroup', got '${BASE_SCOPE}'" >&2
+  exit 1
+fi
+BASE_LIMIT="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+  --attribute-names FifoThroughputLimit --region "${REGION}" \
+  --query 'Attributes.FifoThroughputLimit' --output text)"
+if [ "${BASE_LIMIT}" != "perMessageGroupId" ]; then
+  echo "FAIL: baseline FifoThroughputLimit expected 'perMessageGroupId', got '${BASE_LIMIT}'" >&2
+  exit 1
+fi
 BASE_CREATED="$(aws sqs get-queue-attributes --queue-url "${URL}" \
   --attribute-names CreatedTimestamp --region "${REGION}" \
   --query 'Attributes.CreatedTimestamp' --output text)"
 
-echo "==> Phase 1b: redeploy with contentBasedDeduplication DROPPED (CDKD_TEST_REMOVAL=true)"
+echo "==> Phase 1b: redeploy with contentBasedDeduplication + deduplicationScope + fifoThroughputLimit DROPPED (CDKD_TEST_REMOVAL=true)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # SetQueueAttributes documents up to 60s propagation for attribute reads, so
-# poll bounded (~60s budget). The if/then/break form (not `[ ... ] && break`)
-# keeps a failed test from ever being the loop body's trailing && list.
+# poll bounded (~60s budget) until ALL THREE attributes read their defaults.
+# The if/then/break form (not `[ ... ] && break`) keeps a failed test from
+# ever being the loop body's trailing && list.
 CBD_AFTER=""
+SCOPE_AFTER=""
+LIMIT_AFTER=""
 for i in $(seq 1 6); do
-  CBD_AFTER="$(aws sqs get-queue-attributes --queue-url "${URL}" \
-    --attribute-names ContentBasedDeduplication --region "${REGION}" \
-    --query 'Attributes.ContentBasedDeduplication' --output text)"
-  echo "    poll ${i}: ContentBasedDeduplication=${CBD_AFTER}"
-  if [ "${CBD_AFTER}" = "false" ]; then break; fi
+  # One API call per poll, one consistent snapshot for all three reads.
+  ATTRS_JSON="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+    --attribute-names ContentBasedDeduplication DeduplicationScope FifoThroughputLimit \
+    --region "${REGION}" --query 'Attributes' --output json)"
+  CBD_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.ContentBasedDeduplication // "None"')"
+  SCOPE_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.DeduplicationScope // "None"')"
+  LIMIT_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.FifoThroughputLimit // "None"')"
+  echo "    poll ${i}: ContentBasedDeduplication=${CBD_AFTER} DeduplicationScope=${SCOPE_AFTER} FifoThroughputLimit=${LIMIT_AFTER}"
+  if [ "${CBD_AFTER}" = "false" ] && [ "${SCOPE_AFTER}" = "queue" ] && [ "${LIMIT_AFTER}" = "perQueue" ]; then
+    break
+  fi
   # No sleep after the final poll — it would only delay the failure report.
   if [ "${i}" -lt 6 ]; then sleep 10; fi
 done
 if [ "${CBD_AFTER}" != "false" ]; then
   echo "FAIL: ContentBasedDeduplication expected 'false' after removal redeploy, got '${CBD_AFTER}'" >&2
+  exit 1
+fi
+if [ "${SCOPE_AFTER}" != "queue" ]; then
+  echo "FAIL: DeduplicationScope expected 'queue' after removal redeploy, got '${SCOPE_AFTER}'" >&2
+  exit 1
+fi
+if [ "${LIMIT_AFTER}" != "perQueue" ]; then
+  echo "FAIL: FifoThroughputLimit expected 'perQueue' after removal redeploy, got '${LIMIT_AFTER}'" >&2
   exit 1
 fi
 
@@ -230,7 +264,7 @@ if [ "${CREATED_AFTER}" != "${BASE_CREATED}" ]; then
   echo "FAIL: CreatedTimestamp changed (${BASE_CREATED} -> ${CREATED_AFTER}) — queue was REPLACED, not updated in place" >&2
   exit 1
 fi
-echo "    ContentBasedDeduplication removed in place (reads 'false', CreatedTimestamp unchanged)"
+echo "    FIFO attrs removed in place (CBD 'false', scope 'queue', limit 'perQueue', CreatedTimestamp unchanged)"
 
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"
@@ -244,10 +278,20 @@ echo "    OK: queue is gone"
 
 assert_gone "table ${TABLE_NAME} still exists after destroy" aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
 echo "    OK: table is gone"
-LEFT_ESM="$(aws lambda list-event-source-mappings --region "${REGION}" \
-  --query "length(EventSourceMappings[?contains(FunctionArn, '${FN_NAME}')])" --output text)"
+# A just-deleted ESM lingers in `Deleting` state and still appears in
+# list-event-source-mappings for up to ~1 min after DeleteEventSourceMapping
+# returns, so poll bounded (~60s) instead of reading once — a single
+# immediate read flakes as a false leak (observed 2026-07-27).
+LEFT_ESM="1"
+for i in $(seq 1 6); do
+  LEFT_ESM="$(aws lambda list-event-source-mappings --region "${REGION}" \
+    --query "length(EventSourceMappings[?contains(FunctionArn, '${FN_NAME}')])" --output text)"
+  if [ "${LEFT_ESM}" = "0" ]; then break; fi
+  echo "    poll ${i}: ${LEFT_ESM} event source mapping(s) still listed (Deleting-state lag)"
+  if [ "${i}" -lt 6 ]; then sleep 10; fi
+done
 if [ "${LEFT_ESM}" != "0" ]; then
-  echo "FAIL: ${LEFT_ESM} event source mapping(s) left after destroy" >&2
+  echo "FAIL: ${LEFT_ESM} event source mapping(s) left after destroy (waited 60s)" >&2
   exit 1
 fi
 echo "    function + event source mapping deleted"

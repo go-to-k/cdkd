@@ -115,15 +115,27 @@ function serializeRedriveAllowPolicy(value: unknown): string {
  *     The reverse combination — `KmsMasterKeyId: ''` (the KMS removal reset)
  *     together with `SqsManagedSseEnabled: 'true'` — IS accepted by AWS
  *     (live-verified), so removing both fields at once needs no guard.
+ *   - `DeduplicationScope` resets to `'queue'` and `FifoThroughputLimit`
+ *     resets to `'perQueue'` (the documented defaults — a bare FIFO queue
+ *     reads exactly those values; live-verified 2026-07-27 for issue #1160).
+ *     FIFO-only, same reasoning as `ContentBasedDeduplication`: the reset
+ *     only fires when the PREVIOUS properties carried the key, and AWS
+ *     rejects both attributes on standard queues, so it always targets a
+ *     FIFO queue — no extra guard needed. Removing BOTH in one call
+ *     (`'queue'` + `'perQueue'`) is accepted, as is removing only
+ *     `FifoThroughputLimit` while keeping `DeduplicationScope:
+ *     'messageGroup'`. Removing ONLY `DeduplicationScope` while the template
+ *     KEEPS `FifoThroughputLimit: 'perMessageGroupId'` makes AWS reject the
+ *     call loudly (`InvalidAttributeValue: To set FifoThroughputLimit to
+ *     perMessageGroupId, the DeduplicationScope must be messageGroup` —
+ *     live-verified 2026-07-27, queue state unchanged). That is CFn PARITY:
+ *     CloudFormation's reset-to-default hits the same service constraint, so
+ *     the reset is deliberately passed through with NO suppression guard —
+ *     the user must drop / change `FifoThroughputLimit` too.
  *
  * Attributes NOT in this map:
  *   - `FifoQueue` is createOnly — flipping it requires a replacement, which
  *     the diff layer handles separately.
- *   - `DeduplicationScope` / `FifoThroughputLimit` ARE in-place updateable
- *     (CFn "No interruption") but have no reset entry yet, so a template
- *     removal currently keeps the live value — the #1160 silent-drop bug
- *     class, tracked as SUSPECT entries on that umbrella (defaults would be
- *     'queue' / 'perQueue'; needs the #1157-style trio + live verify).
  */
 const SQS_ATTRIBUTE_REMOVAL_RESET: Record<string, string> = {
   RedrivePolicy: '',
@@ -137,6 +149,8 @@ const SQS_ATTRIBUTE_REMOVAL_RESET: Record<string, string> = {
   KmsDataKeyReusePeriodSeconds: '300',
   ContentBasedDeduplication: 'false',
   SqsManagedSseEnabled: 'true',
+  DeduplicationScope: 'queue',
+  FifoThroughputLimit: 'perQueue',
 };
 
 /**

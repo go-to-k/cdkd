@@ -15,10 +15,12 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
  * functional check can confirm the messages were actually delivered + processed
  * (a deploy-only smoke test would not prove the ESM fires).
  *
- * CDKD_TEST_REMOVAL=true drops `contentBasedDeduplication` from the queue so
- * the redeploy exercises the issue #1237 in-place UPDATE classification plus
- * the #1160 removal reset (SetQueueAttributes ContentBasedDeduplication ->
- * 'false' on the SAME queue — no replacement).
+ * CDKD_TEST_REMOVAL=true drops `contentBasedDeduplication`,
+ * `deduplicationScope`, and `fifoThroughputLimit` from the queue so the
+ * redeploy exercises the issue #1237 in-place UPDATE classification plus the
+ * #1160 removal resets (SetQueueAttributes ContentBasedDeduplication ->
+ * 'false', DeduplicationScope -> 'queue', FifoThroughputLimit -> 'perQueue'
+ * on the SAME queue — no replacement).
  *
  * covers: AWS::SQS::Queue
  * covers: AWS::Lambda::EventSourceMapping
@@ -40,9 +42,19 @@ export class FifoSqsEventSourceStack extends cdk.Stack {
     const fifo = new sqs.Queue(this, 'Fifo', {
       queueName: 'cdkd-fifo-sqs-source.fifo',
       fifo: true,
-      // CDKD_TEST_REMOVAL=true OMITS the property entirely (undefined is not
-      // synthesized), exercising the #1160 removal reset via a plain deploy.
-      ...(TEST_REMOVAL ? {} : { contentBasedDeduplication: true }),
+      // CDKD_TEST_REMOVAL=true OMITS the properties entirely (undefined is
+      // not synthesized), exercising the #1160 removal resets via a plain
+      // deploy. The baseline high-throughput pair (messageGroup +
+      // perMessageGroupId) must be removed TOGETHER: resetting only
+      // DeduplicationScope while keeping perMessageGroupId is rejected by
+      // AWS (and would be by CFn too — parity, see the provider map comment).
+      ...(TEST_REMOVAL
+        ? {}
+        : {
+            contentBasedDeduplication: true,
+            deduplicationScope: sqs.DeduplicationScope.MESSAGE_GROUP,
+            fifoThroughputLimit: sqs.FifoThroughputLimit.PER_MESSAGE_GROUP_ID,
+          }),
       visibilityTimeout: cdk.Duration.seconds(60),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
