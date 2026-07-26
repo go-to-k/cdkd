@@ -28,6 +28,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 
 /**
  * AWS RDS Provider
@@ -643,13 +644,13 @@ export class RDSProvider implements ResourceProvider {
           EngineVersion: properties['EngineVersion'] as string | undefined,
           // CFn default: deletion protection isn't enabled by default
           // (ModifyDBClusterMessage doc).
-          DeletionProtection: this.clearOnUpdateRemoval(
+          DeletionProtection: clearOnUpdateRemoval(
             properties['DeletionProtection'] as boolean | undefined,
             previousProperties['DeletionProtection'] as boolean | undefined,
             false
           ),
           // CFn/API default for Aurora: 1 day (ModifyDBClusterMessage doc).
-          BackupRetentionPeriod: this.clearOnUpdateRemoval(
+          BackupRetentionPeriod: clearOnUpdateRemoval(
             properties['BackupRetentionPeriod'] != null
               ? Number(properties['BackupRetentionPeriod'])
               : undefined,
@@ -677,7 +678,7 @@ export class RDSProvider implements ResourceProvider {
           // DROPS the interval gets a loud InvalidParameterCombination — the
           // same request CloudFormation would submit for that template
           // (CFn-parity failure, never a silent keep of the old interval).
-          MonitoringInterval: this.clearOnUpdateRemoval(
+          MonitoringInterval: clearOnUpdateRemoval(
             properties['MonitoringInterval'] != null
               ? Number(properties['MonitoringInterval'])
               : undefined,
@@ -687,7 +688,7 @@ export class RDSProvider implements ResourceProvider {
             0
           ),
           // CFn default: IAM database authentication isn't enabled.
-          EnableIAMDatabaseAuthentication: this.clearOnUpdateRemoval(
+          EnableIAMDatabaseAuthentication: clearOnUpdateRemoval(
             properties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
             previousProperties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
             false
@@ -737,27 +738,6 @@ export class RDSProvider implements ResourceProvider {
         cause
       );
     }
-  }
-
-  /**
-   * Resolve an optional ModifyDBCluster / ModifyDBInstance field so that a
-   * property REMOVED from the template is reset to its CloudFormation
-   * default instead of silently retaining the old live value (issue #1160 —
-   * the absent-field removal silent-drop bug class; reference fix
-   * `LambdaFunctionProvider`, #1157).
-   *
-   * Returns `newValue` when present, the `clearValue` when the field was
-   * present before and is now absent (removal), and `undefined` when it was
-   * never present (so a genuinely-absent field stays absent = no change).
-   */
-  private clearOnUpdateRemoval<T>(
-    newValue: T | undefined,
-    previousValue: T | undefined,
-    clearValue: T
-  ): T | undefined {
-    if (newValue !== undefined) return newValue;
-    if (previousValue !== undefined) return clearValue;
-    return undefined;
   }
 
   private async deleteDBCluster(
@@ -1029,7 +1009,7 @@ export class RDSProvider implements ResourceProvider {
           }),
           // CFn default: deletion protection isn't enabled by default
           // (ModifyDBInstanceMessage doc).
-          DeletionProtection: this.clearOnUpdateRemoval(
+          DeletionProtection: clearOnUpdateRemoval(
             properties['DeletionProtection'] as boolean | undefined,
             previousProperties['DeletionProtection'] as boolean | undefined,
             false
@@ -1067,7 +1047,7 @@ export class RDSProvider implements ResourceProvider {
           // DROPS the interval gets a loud InvalidParameterCombination — the
           // same request CloudFormation would submit for that template
           // (CFn-parity failure, never a silent keep of the old interval).
-          MonitoringInterval: this.clearOnUpdateRemoval(
+          MonitoringInterval: clearOnUpdateRemoval(
             properties['MonitoringInterval'] != null
               ? Number(properties['MonitoringInterval'])
               : undefined,
@@ -1077,7 +1057,7 @@ export class RDSProvider implements ResourceProvider {
             0
           ),
           // CFn default: IAM database authentication isn't enabled.
-          EnableIAMDatabaseAuthentication: this.clearOnUpdateRemoval(
+          EnableIAMDatabaseAuthentication: clearOnUpdateRemoval(
             properties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
             previousProperties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
             false

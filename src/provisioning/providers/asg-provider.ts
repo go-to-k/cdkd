@@ -41,6 +41,7 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
 } from '../../types/resource.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 
 /**
  * AWS Auto Scaling Provider
@@ -416,7 +417,7 @@ export class ASGProvider implements ResourceProvider {
       //     documents no default for `ImpairedZoneHealthCheckBehavior` (and
       //     none for `ZonalShiftEnabled`), so a reset shape cannot be derived
       //     without guessing; removal currently keeps the live value.
-      const healthCheckTypeInput = this.clearOnUpdateRemoval(
+      const healthCheckTypeInput = clearOnUpdateRemoval(
         properties['HealthCheckType'] as string | undefined,
         previousProperties['HealthCheckType'] as string | undefined,
         // SDK doc: "EC2 is the default health check and cannot be disabled.
@@ -424,7 +425,7 @@ export class ASGProvider implements ResourceProvider {
         // set."
         'EC2'
       );
-      const healthCheckGracePeriodInput = this.clearOnUpdateRemoval(
+      const healthCheckGracePeriodInput = clearOnUpdateRemoval(
         properties['HealthCheckGracePeriod'] != null
           ? Number(properties['HealthCheckGracePeriod'])
           : undefined,
@@ -440,29 +441,29 @@ export class ASGProvider implements ResourceProvider {
       const cooldownRaw = properties['Cooldown'] ?? properties['DefaultCooldown'];
       const prevCooldownRaw =
         previousProperties['Cooldown'] ?? previousProperties['DefaultCooldown'];
-      const defaultCooldownInput = this.clearOnUpdateRemoval(
+      const defaultCooldownInput = clearOnUpdateRemoval(
         cooldownRaw != null ? Number(cooldownRaw) : undefined,
         prevCooldownRaw != null ? Number(prevCooldownRaw) : undefined,
         // CFn default: 300 seconds.
         300
       );
-      const terminationPoliciesInput = this.clearOnUpdateRemoval(
+      const terminationPoliciesInput = clearOnUpdateRemoval(
         properties['TerminationPolicies'] as string[] | undefined,
         previousProperties['TerminationPolicies'] as string[] | undefined,
         // CFn/API default termination policy.
         ['Default']
       );
-      const newInstancesProtectedInput = this.clearOnUpdateRemoval(
+      const newInstancesProtectedInput = clearOnUpdateRemoval(
         properties['NewInstancesProtectedFromScaleIn'] as boolean | undefined,
         previousProperties['NewInstancesProtectedFromScaleIn'] as boolean | undefined,
         false
       );
-      const capacityRebalanceInput = this.clearOnUpdateRemoval(
+      const capacityRebalanceInput = clearOnUpdateRemoval(
         properties['CapacityRebalance'] as boolean | undefined,
         previousProperties['CapacityRebalance'] as boolean | undefined,
         false
       );
-      const maxInstanceLifetimeInput = this.clearOnUpdateRemoval(
+      const maxInstanceLifetimeInput = clearOnUpdateRemoval(
         properties['MaxInstanceLifetime'] != null
           ? Number(properties['MaxInstanceLifetime'])
           : undefined,
@@ -472,13 +473,13 @@ export class ASGProvider implements ResourceProvider {
         // SDK doc: "To clear a previously set value, specify a new value of 0."
         0
       );
-      const desiredCapacityTypeInput = this.clearOnUpdateRemoval(
+      const desiredCapacityTypeInput = clearOnUpdateRemoval(
         properties['DesiredCapacityType'] as string | undefined,
         previousProperties['DesiredCapacityType'] as string | undefined,
         // SDK doc: "By default, Amazon EC2 Auto Scaling specifies units".
         'units'
       );
-      const defaultInstanceWarmupInput = this.clearOnUpdateRemoval(
+      const defaultInstanceWarmupInput = clearOnUpdateRemoval(
         properties['DefaultInstanceWarmup'] != null
           ? Number(properties['DefaultInstanceWarmup'])
           : undefined,
@@ -489,14 +490,14 @@ export class ASGProvider implements ResourceProvider {
         // property but specify -1 for the value."
         -1
       );
-      const instanceMaintenancePolicyInput = this.clearOnUpdateRemoval(
+      const instanceMaintenancePolicyInput = clearOnUpdateRemoval(
         properties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
         previousProperties['InstanceMaintenancePolicy'] as InstanceMaintenancePolicy | undefined,
         // SDK doc (both sub-fields): "To clear a previously set value,
         // specify a value of -1."
         { MinHealthyPercentage: -1, MaxHealthyPercentage: -1 }
       );
-      const capacityReservationSpecInput = this.clearOnUpdateRemoval(
+      const capacityReservationSpecInput = clearOnUpdateRemoval(
         properties['CapacityReservationSpecification'] as
           | CapacityReservationSpecification
           | undefined,
@@ -508,7 +509,7 @@ export class ASGProvider implements ResourceProvider {
         // Reservation." — the behavior of a group that never set the field.
         { CapacityReservationPreference: 'default' }
       );
-      const availabilityZoneDistributionInput = this.clearOnUpdateRemoval(
+      const availabilityZoneDistributionInput = clearOnUpdateRemoval(
         properties['AvailabilityZoneDistribution'] as AvailabilityZoneDistribution | undefined,
         previousProperties['AvailabilityZoneDistribution'] as
           | AvailabilityZoneDistribution
@@ -516,7 +517,7 @@ export class ASGProvider implements ResourceProvider {
         // SDK doc: "The default is balanced-best-effort."
         { CapacityDistributionStrategy: 'balanced-best-effort' }
       );
-      const deletionProtectionInput = this.clearOnUpdateRemoval(
+      const deletionProtectionInput = clearOnUpdateRemoval(
         properties['DeletionProtection'] as DeletionProtection | undefined,
         previousProperties['DeletionProtection'] as DeletionProtection | undefined,
         // SDK doc: "Default: none" — also the flip-off value delete() uses.
@@ -617,27 +618,6 @@ export class ASGProvider implements ResourceProvider {
         cause
       );
     }
-  }
-
-  /**
-   * Resolve an optional UpdateAutoScalingGroup field so that a property
-   * REMOVED from the template is reset to its CloudFormation default instead
-   * of silently retaining the old live value (issue #1160 — the absent-field
-   * removal silent-drop bug class; reference fix `LambdaFunctionProvider`,
-   * #1157).
-   *
-   * Returns `newValue` when present, the `clearValue` when the field was
-   * present before and is now absent (removal), and `undefined` when it was
-   * never present (so a genuinely-absent field stays absent = no change).
-   */
-  private clearOnUpdateRemoval<T>(
-    newValue: T | undefined,
-    previousValue: T | undefined,
-    clearValue: T
-  ): T | undefined {
-    if (newValue !== undefined) return newValue;
-    if (previousValue !== undefined) return clearValue;
-    return undefined;
   }
 
   async delete(
